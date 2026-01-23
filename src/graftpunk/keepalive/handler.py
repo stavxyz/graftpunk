@@ -8,7 +8,7 @@ from typing import Protocol, TypedDict, runtime_checkable
 
 import requests
 
-from bsc.logging import get_logger
+from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
@@ -37,7 +37,7 @@ class KeepaliveHandler(Protocol):
     touch/validate functionality for their particular platform.
 
     Implementations should be registered via entry points:
-        [project.entry-points."bsc.keepalive_handlers"]
+        [project.entry-points."graftpunk.keepalive_handlers"]
         mysite = "mypackage.handler:MySiteHandler"
 
     Example:

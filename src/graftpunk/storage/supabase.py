@@ -5,9 +5,9 @@ import time
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from bsc.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
-from bsc.logging import get_logger
-from bsc.storage.base import (
+from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
+from graftpunk.logging import get_logger
+from graftpunk.storage.base import (
     SessionMetadata,
     parse_datetime_iso,
 )
@@ -26,7 +26,7 @@ class SupabaseSessionStorage:
     - Metadata → session_cache database table (queryable, TTL)
 
     The encryption key is stored in Supabase Vault and retrieved
-    by the encryption module when BSC_STORAGE_BACKEND=supabase.
+    by the encryption module when GRAFTPUNK_STORAGE_BACKEND=supabase.
     """
 
     def __init__(
@@ -51,7 +51,7 @@ class SupabaseSessionStorage:
         except ImportError as exc:
             raise StorageError(
                 "supabase package is required for Supabase storage. "
-                "Install with: pip install bsc[supabase]"
+                "Install with: pip install graftpunk[supabase]"
             ) from exc
 
         # Normalize URL (ensure trailing slash for Supabase client)
@@ -238,7 +238,7 @@ class SupabaseSessionStorage:
                 if datetime.now(UTC) > expires_at:
                     LOG.warning("session_expired_ttl", name=name, expires_at=expires_at_str)
                     raise SessionExpiredError(
-                        f"Session '{name}' has expired (TTL). Please run 'bsc clear' and re-login."
+                        f"Session '{name}' has expired (TTL). Run 'gp clear' and re-login."
                     )
             except (ValueError, TypeError) as exc:
                 LOG.warning(

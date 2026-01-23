@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial release of BSC as a standalone package
+- Initial release of graftpunk as a standalone package
 - Encrypted session persistence with Fernet (AES-128-CBC + HMAC-SHA256)
 - Stealth browser automation with undetected-chromedriver and selenium-stealth
 - Pluggable storage backends: local filesystem, Supabase, S3

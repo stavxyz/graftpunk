@@ -1,15 +1,15 @@
 """Session caching and persistence using dill (enhanced pickle).
 
 This module provides session storage functionality with pluggable backends:
-- Local filesystem (default): ~/.config/bsc/sessions/
-- Supabase (BSC_STORAGE_BACKEND=supabase): Supabase Storage + database
+- Local filesystem (default): ~/.config/graftpunk/sessions/
+- Supabase (GRAFTPUNK_STORAGE_BACKEND=supabase): Supabase Storage + database
 
-Backend selection is automatic based on BSC_STORAGE_BACKEND environment variable.
+Backend selection is automatic based on GRAFTPUNK_STORAGE_BACKEND environment variable.
 
 Thread Safety:
     This module uses a global cached storage backend for performance. The cache
     is NOT thread-safe. This is acceptable for the current single-threaded CLI
-    usage pattern. If using BSC in a multi-threaded application, external
+    usage pattern. If using graftpunk in a multi-threaded application, external
     synchronization is required when calling cache functions.
 """
 
@@ -21,14 +21,14 @@ from urllib.parse import urlparse
 import dill as pickle
 import requests
 
-from bsc.config import get_settings
-from bsc.encryption import decrypt_data, encrypt_data
-from bsc.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
-from bsc.logging import get_logger
-from bsc.storage.base import SessionMetadata
+from graftpunk.config import get_settings
+from graftpunk.encryption import decrypt_data, encrypt_data
+from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
+from graftpunk.logging import get_logger
+from graftpunk.storage.base import SessionMetadata
 
 if TYPE_CHECKING:
-    from bsc.storage.base import SessionStorageBackend
+    from graftpunk.storage.base import SessionStorageBackend
 
 
 @runtime_checkable
@@ -55,7 +55,7 @@ _session_storage_backend: "SessionStorageBackend | None" = None
 def _get_session_storage_backend() -> "SessionStorageBackend":
     """Get or create the session storage backend.
 
-    Returns the appropriate backend based on BSC_STORAGE_BACKEND env var:
+    Returns the appropriate backend based on GRAFTPUNK_STORAGE_BACKEND env var:
     - "local" (default): Returns LocalSessionStorage
     - "supabase": Returns SupabaseSessionStorage
     """
@@ -68,7 +68,7 @@ def _get_session_storage_backend() -> "SessionStorageBackend":
 
     if settings.storage_backend == "supabase":
         # Lazy import to avoid circular imports
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         config = settings.get_storage_config()
         _session_storage_backend = SupabaseSessionStorage(
@@ -78,7 +78,7 @@ def _get_session_storage_backend() -> "SessionStorageBackend":
         )
     else:
         # Default: local filesystem backend
-        from bsc.storage.local import LocalSessionStorage
+        from graftpunk.storage.local import LocalSessionStorage
 
         _session_storage_backend = LocalSessionStorage(base_dir=settings.sessions_dir)
 
@@ -163,7 +163,7 @@ def get_session_metadata(name: str) -> dict[str, Any] | None:
 def cache_session(session: T, session_name: str | None = None) -> str:
     """Cache a session with metadata.
 
-    Storage location depends on BSC_STORAGE_BACKEND:
+    Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
     - "local" (default): sessions/{session_name}/session.pickle + metadata.json
     - "supabase": Supabase Storage bucket + session_cache database table
 
@@ -219,7 +219,7 @@ def cache_session(session: T, session_name: str | None = None) -> str:
 def load_session(name: str) -> SessionLike:
     """Load a cached session.
 
-    Storage location depends on BSC_STORAGE_BACKEND:
+    Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
     - "local" (default): Local filesystem
     - "supabase": Supabase Storage + database
 
@@ -259,7 +259,7 @@ def load_session(name: str) -> SessionLike:
             LOG.error("session_decryption_failed", name=name, backend=settings.storage_backend)
             raise SessionExpiredError(
                 f"Session '{name}' cannot be decrypted. The session file may be corrupted "
-                "or the encryption key has changed. Please run 'bsc clear' and re-login."
+                "or the encryption key has changed. Please run 'graftpunk clear' and re-login."
             ) from exc
 
         # Verify checksum (required for new sessions, skipped for legacy)
@@ -269,7 +269,7 @@ def load_session(name: str) -> SessionLike:
             if actual_checksum != metadata.checksum:
                 LOG.error("session_checksum_mismatch", name=name, backend=settings.storage_backend)
                 raise SessionExpiredError(
-                    f"Session '{name}' failed integrity check. Please run 'bsc clear' and re-login."
+                    f"Session '{name}' failed integrity check. Run 'gp clear' and re-login."
                 )
         else:
             # Legacy session without checksum - log warning but allow loading
@@ -285,7 +285,7 @@ def load_session(name: str) -> SessionLike:
         # Runtime validation: verify unpickled object has expected attributes
         if not hasattr(session, "cookies") or not hasattr(session, "headers"):
             raise SessionExpiredError(
-                f"Session '{name}' has invalid structure. Please run 'bsc clear' and re-login."
+                f"Session '{name}' has invalid structure. Run 'gp clear' and re-login."
             )
 
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)

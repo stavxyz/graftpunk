@@ -1,11 +1,11 @@
-"""Custom exceptions for BSC package."""
+"""Custom exceptions for graftpunk package."""
 
 
-class BSCError(Exception):
-    """Base exception for BSC package."""
+class GraftpunkError(Exception):
+    """Base exception for graftpunk package."""
 
 
-class BrowserError(BSCError):
+class BrowserError(GraftpunkError):
     """Browser automation failed."""
 
 
@@ -13,31 +13,31 @@ class ChromeDriverError(BrowserError):
     """ChromeDriver initialization or version mismatch error."""
 
 
-class SessionExpiredError(BSCError):
+class SessionExpiredError(GraftpunkError):
     """Saved session has expired or is invalid."""
 
 
-class SessionNotFoundError(BSCError):
+class SessionNotFoundError(GraftpunkError):
     """No cached session found."""
 
 
-class EncryptionError(BSCError):
+class EncryptionError(GraftpunkError):
     """Encryption or decryption failed."""
 
 
-class StorageError(BSCError):
+class StorageError(GraftpunkError):
     """Storage backend operation failed."""
 
 
-class PluginError(BSCError):
+class PluginError(GraftpunkError):
     """Plugin loading or execution failed."""
 
 
-class KeepaliveError(BSCError):
+class KeepaliveError(GraftpunkError):
     """Keepalive operation failed."""
 
 
-class MFARequiredError(BSCError):
+class MFARequiredError(GraftpunkError):
     """Multi-factor authentication is required to proceed.
 
     This exception should be raised by site plugins when login fails

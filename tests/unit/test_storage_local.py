@@ -4,9 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from bsc.exceptions import SessionExpiredError, SessionNotFoundError
-from bsc.storage.base import SessionMetadata
-from bsc.storage.local import LocalSessionStorage
+from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
+from graftpunk.storage.base import SessionMetadata
+from graftpunk.storage.local import LocalSessionStorage
 
 
 class TestLocalSessionStorage:

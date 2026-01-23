@@ -3,13 +3,13 @@
 import pytest
 from cryptography.fernet import Fernet
 
-from bsc.encryption import (
+from graftpunk.encryption import (
     decrypt_data,
     encrypt_data,
     get_encryption_key,
     reset_encryption_key_cache,
 )
-from bsc.exceptions import EncryptionError
+from graftpunk.exceptions import EncryptionError
 
 
 class TestEncryption:
@@ -22,12 +22,12 @@ class TestEncryption:
     def test_encrypt_decrypt_roundtrip(self, tmp_path, monkeypatch):
         """Test that encrypt/decrypt is a valid roundtrip."""
         # Set up temporary config directory
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         reset_encryption_key_cache()
 
         # Reset settings to pick up new config
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -44,11 +44,11 @@ class TestEncryption:
 
     def test_encryption_key_is_cached(self, tmp_path, monkeypatch):
         """Test that encryption key is cached."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         reset_encryption_key_cache()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -59,11 +59,11 @@ class TestEncryption:
 
     def test_encryption_key_is_valid_fernet_key(self, tmp_path, monkeypatch):
         """Test that generated key is a valid Fernet key."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         reset_encryption_key_cache()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -75,11 +75,11 @@ class TestEncryption:
 
     def test_decrypt_with_wrong_key_raises_error(self, tmp_path, monkeypatch):
         """Test that decrypting with wrong key raises EncryptionError."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         reset_encryption_key_cache()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -107,11 +107,11 @@ class TestEncryptionKeyFile:
         """Test that key file is created with 0o600 permissions."""
         import os
 
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         reset_encryption_key_cache()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -129,11 +129,11 @@ class TestEncryptionKeyFile:
 
     def test_existing_key_file_is_reused(self, tmp_path, monkeypatch):
         """Test that existing key file is reused."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         reset_encryption_key_cache()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 

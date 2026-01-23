@@ -13,7 +13,7 @@ class TestSessionName:
 
     def test_session_name_setter(self):
         """Test that session_name can be set directly on an instance."""
-        from bsc.session import BrowserSession
+        from graftpunk.session import BrowserSession
 
         with patch.object(BrowserSession, "__init__", return_value=None):
             session = BrowserSession.__new__(BrowserSession)
@@ -22,7 +22,7 @@ class TestSessionName:
 
     def test_session_name_getter_uses_cached_name(self):
         """Test that session_name getter returns cached name."""
-        from bsc.session import BrowserSession
+        from graftpunk.session import BrowserSession
 
         with patch.object(BrowserSession, "__init__", return_value=None):
             session = BrowserSession.__new__(BrowserSession)
@@ -34,22 +34,22 @@ class TestBrowserError:
     """Tests for browser error handling."""
 
     def test_browser_error_inheritance(self):
-        """Test that BrowserError inherits from BSCError."""
-        from bsc.exceptions import BrowserError, BSCError
+        """Test that BrowserError inherits from GraftpunkError."""
+        from graftpunk.exceptions import BrowserError, GraftpunkError
 
-        assert issubclass(BrowserError, BSCError)
+        assert issubclass(BrowserError, GraftpunkError)
 
     def test_chrome_driver_error_inheritance(self):
         """Test that ChromeDriverError inherits from BrowserError."""
-        from bsc.exceptions import BrowserError, ChromeDriverError
+        from graftpunk.exceptions import BrowserError, ChromeDriverError
 
         assert issubclass(ChromeDriverError, BrowserError)
 
     def test_mfa_required_error(self):
         """Test MFARequiredError exception."""
-        from bsc.exceptions import BSCError, MFARequiredError
+        from graftpunk.exceptions import GraftpunkError, MFARequiredError
 
-        assert issubclass(MFARequiredError, BSCError)
+        assert issubclass(MFARequiredError, GraftpunkError)
 
         # Test with default message
         error = MFARequiredError()

@@ -1,22 +1,26 @@
-"""BSC (Browser Session Cache) - A pluggable browser session caching library.
+"""graftpunk - Turn any website into an API.
+
+Graft scriptable access onto authenticated web services.
+Log in once, script forever.
 
 This package provides:
 - Encrypted browser session persistence
 - Stealth browser automation
 - Pluggable storage backends (local, Supabase, S3)
-- Keepalive daemon with handler protocol
-- Plugin architecture for site-specific authentication
+- Keepalive daemon for session maintenance
+- Plugin architecture for site-specific commands
 
 Example:
-    >>> from bsc import BrowserSession, cache_session, load_session
-    >>> session = BrowserSession(headless=True)
-    >>> # ... authenticate ...
+    >>> from graftpunk import BrowserSession, cache_session, load_session_for_api
+    >>> session = BrowserSession(headless=False)
+    >>> # Log in manually in the browser...
     >>> cache_session(session, "mysite")
-    >>> # Later:
-    >>> session = load_session("mysite")
+    >>> # Later, use like an API:
+    >>> api = load_session_for_api("mysite")
+    >>> response = api.get("https://mysite.com/api/data")
 """
 
-from bsc.cache import (
+from graftpunk.cache import (
     cache_session,
     clear_session_cache,
     get_session_metadata,
@@ -26,18 +30,18 @@ from bsc.cache import (
     load_session_for_api,
     update_session_status,
 )
-from bsc.config import BSCSettings, get_settings
-from bsc.encryption import decrypt_data, encrypt_data, get_encryption_key
-from bsc.exceptions import (
+from graftpunk.config import GraftpunkSettings, get_settings
+from graftpunk.encryption import decrypt_data, encrypt_data, get_encryption_key
+from graftpunk.exceptions import (
     BrowserError,
-    BSCError,
     EncryptionError,
+    GraftpunkError,
     SessionExpiredError,
     SessionNotFoundError,
 )
-from bsc.session import BrowserSession
-from bsc.stealth import create_stealth_driver
-from bsc.storage.base import SessionMetadata, SessionStorageBackend
+from graftpunk.session import BrowserSession
+from graftpunk.stealth import create_stealth_driver
+from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
 
 __version__ = "0.1.0"
 
@@ -64,10 +68,10 @@ __all__ = [
     "SessionMetadata",
     "SessionStorageBackend",
     # Configuration
-    "BSCSettings",
+    "GraftpunkSettings",
     "get_settings",
     # Exceptions
-    "BSCError",
+    "GraftpunkError",
     "BrowserError",
     "SessionExpiredError",
     "SessionNotFoundError",

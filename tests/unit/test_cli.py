@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from bsc.cli.main import app
-from bsc.exceptions import BSCError, SessionExpiredError, SessionNotFoundError
+from graftpunk.cli.main import app
+from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
 
 runner = CliRunner()
 
@@ -17,13 +17,13 @@ class TestVersionCommand:
         """Test that version command outputs version info."""
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
-        assert "BSC" in result.output
+        assert "graftpunk" in result.output
 
 
 class TestListCommand:
     """Tests for list command."""
 
-    @patch("bsc.cli.main.list_sessions_with_metadata")
+    @patch("graftpunk.cli.main.list_sessions_with_metadata")
     def test_list_empty(self, mock_list):
         """Test list command with no sessions."""
         mock_list.return_value = []
@@ -33,7 +33,7 @@ class TestListCommand:
         assert result.exit_code == 0
         assert "No Sessions" in result.output or "No sessions" in result.output
 
-    @patch("bsc.cli.main.list_sessions_with_metadata")
+    @patch("graftpunk.cli.main.list_sessions_with_metadata")
     def test_list_with_sessions(self, mock_list):
         """Test list command with sessions."""
         mock_list.return_value = [
@@ -51,7 +51,7 @@ class TestListCommand:
         assert result.exit_code == 0
         assert "test-session" in result.output
 
-    @patch("bsc.cli.main.list_sessions_with_metadata")
+    @patch("graftpunk.cli.main.list_sessions_with_metadata")
     def test_list_json_output(self, mock_list):
         """Test list command with JSON output."""
         mock_list.return_value = [{"name": "test", "domain": "example.com"}]
@@ -65,7 +65,7 @@ class TestListCommand:
 class TestShowCommand:
     """Tests for show command."""
 
-    @patch("bsc.cli.main.get_session_metadata")
+    @patch("graftpunk.cli.main.get_session_metadata")
     def test_show_not_found(self, mock_get):
         """Test show command with non-existent session."""
         mock_get.return_value = None
@@ -75,7 +75,7 @@ class TestShowCommand:
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    @patch("bsc.cli.main.get_session_metadata")
+    @patch("graftpunk.cli.main.get_session_metadata")
     def test_show_success(self, mock_get):
         """Test show command with existing session."""
         mock_get.return_value = {
@@ -99,7 +99,7 @@ class TestShowCommand:
 class TestClearCommand:
     """Tests for clear command."""
 
-    @patch("bsc.cli.main.clear_session_cache")
+    @patch("graftpunk.cli.main.clear_session_cache")
     def test_clear_specific_session(self, mock_clear):
         """Test clearing a specific session."""
         mock_clear.return_value = ["test-session"]
@@ -110,7 +110,7 @@ class TestClearCommand:
         assert "Removed session" in result.output
         mock_clear.assert_called_once_with("test-session")
 
-    @patch("bsc.cli.main.clear_session_cache")
+    @patch("graftpunk.cli.main.clear_session_cache")
     def test_clear_not_found(self, mock_clear):
         """Test clearing a session that doesn't exist."""
         mock_clear.return_value = []
@@ -120,7 +120,7 @@ class TestClearCommand:
         assert result.exit_code == 0
         assert "not found" in result.output
 
-    @patch("bsc.cli.main.list_sessions")
+    @patch("graftpunk.cli.main.list_sessions")
     def test_clear_all_empty(self, mock_list):
         """Test clearing all when no sessions exist."""
         mock_list.return_value = []
@@ -134,7 +134,7 @@ class TestClearCommand:
 class TestExportCommand:
     """Tests for export command."""
 
-    @patch("bsc.cli.main.load_session")
+    @patch("graftpunk.cli.main.load_session")
     def test_export_not_found(self, mock_load):
         """Test export command with non-existent session."""
         mock_load.side_effect = SessionNotFoundError("Session not found")
@@ -144,7 +144,7 @@ class TestExportCommand:
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    @patch("bsc.cli.main.load_session")
+    @patch("graftpunk.cli.main.load_session")
     def test_export_expired(self, mock_load):
         """Test export command with expired session."""
         mock_load.side_effect = SessionExpiredError("Session expired")
@@ -154,10 +154,10 @@ class TestExportCommand:
         assert result.exit_code == 1
         assert "expired" in result.output
 
-    @patch("bsc.cli.main.load_session")
-    def test_export_bsc_error(self, mock_load):
-        """Test export command with BSC error."""
-        mock_load.side_effect = BSCError("Some BSC error")
+    @patch("graftpunk.cli.main.load_session")
+    def test_export_graftpunk_error(self, mock_load):
+        """Test export command with graftpunk error."""
+        mock_load.side_effect = GraftpunkError("Some graftpunk error")
 
         result = runner.invoke(app, ["export", "broken"])
 
@@ -168,7 +168,7 @@ class TestExportCommand:
 class TestKeepaliveCommands:
     """Tests for keepalive subcommands."""
 
-    @patch("bsc.cli.main.read_keepalive_pid")
+    @patch("graftpunk.cli.main.read_keepalive_pid")
     def test_keepalive_status_not_running(self, mock_pid):
         """Test keepalive status when not running."""
         mock_pid.return_value = None
@@ -178,8 +178,8 @@ class TestKeepaliveCommands:
         assert result.exit_code == 0
         assert "not running" in result.output
 
-    @patch("bsc.cli.main.read_keepalive_pid")
-    @patch("bsc.cli.main.read_keepalive_state")
+    @patch("graftpunk.cli.main.read_keepalive_pid")
+    @patch("graftpunk.cli.main.read_keepalive_state")
     def test_keepalive_status_running(self, mock_state, mock_pid):
         """Test keepalive status when running."""
         mock_pid.return_value = 12345
@@ -197,7 +197,7 @@ class TestKeepaliveCommands:
         assert "12345" in result.output
         assert "running" in result.output
 
-    @patch("bsc.cli.main.read_keepalive_pid")
+    @patch("graftpunk.cli.main.read_keepalive_pid")
     def test_keepalive_stop_not_running(self, mock_pid):
         """Test keepalive stop when not running."""
         mock_pid.return_value = None
@@ -211,9 +211,9 @@ class TestKeepaliveCommands:
 class TestPluginsCommand:
     """Tests for plugins command."""
 
-    @patch("bsc.cli.main.discover_storage_backends")
-    @patch("bsc.cli.main.discover_keepalive_handlers")
-    @patch("bsc.cli.main.discover_site_plugins")
+    @patch("graftpunk.cli.main.discover_storage_backends")
+    @patch("graftpunk.cli.main.discover_keepalive_handlers")
+    @patch("graftpunk.cli.main.discover_site_plugins")
     def test_plugins_none_installed(self, mock_site, mock_handlers, mock_storage):
         """Test plugins command with no plugins installed."""
         mock_storage.return_value = {}
@@ -230,12 +230,12 @@ class TestPluginsCommand:
 class TestConfigCommand:
     """Tests for config command."""
 
-    @patch("bsc.cli.main.get_settings")
+    @patch("graftpunk.cli.main.get_settings")
     def test_config_command(self, mock_settings):
         """Test config command output."""
         mock_settings.return_value = MagicMock(
-            config_dir="/home/user/.config/bsc",
-            sessions_dir="/home/user/.config/bsc/sessions",
+            config_dir="/home/user/.config/graftpunk",
+            sessions_dir="/home/user/.config/graftpunk/sessions",
             storage_backend="local",
             session_ttl_hours=720,
             log_level="INFO",

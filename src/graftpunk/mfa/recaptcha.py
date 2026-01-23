@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from selenium.webdriver.remote.webdriver import WebDriver
 
-from bsc.logging import get_logger
+from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 

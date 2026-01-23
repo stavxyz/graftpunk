@@ -2,7 +2,7 @@
 
 import pytest
 
-from bsc.mfa.totp import (
+from graftpunk.mfa.totp import (
     generate_totp,
     get_totp_remaining_seconds,
     verify_totp,

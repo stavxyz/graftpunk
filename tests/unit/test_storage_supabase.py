@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bsc.exceptions import SessionNotFoundError, StorageError
-from bsc.storage.base import SessionMetadata
+from graftpunk.exceptions import SessionNotFoundError, StorageError
+from graftpunk.storage.base import SessionMetadata
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ class TestSupabaseSessionStorage:
         """Test that storage initializes correctly."""
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         storage = SupabaseSessionStorage(
             url="https://test.supabase.co",
@@ -55,7 +55,7 @@ class TestSupabaseSessionStorage:
         """Test listing sessions when none exist."""
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         # Set up mock chain for empty result
         mock_table = MagicMock()
@@ -76,7 +76,7 @@ class TestSupabaseSessionStorage:
         """Test listing sessions with results."""
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         # Set up mock chain
         mock_table = MagicMock()
@@ -102,7 +102,7 @@ class TestSupabaseSessionStorage:
         """Test getting metadata for non-existent session."""
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         # Set up mock chain for empty result
         mock_table = MagicMock()
@@ -125,7 +125,7 @@ class TestSupabaseSessionStorage:
         """Test deleting a session."""
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         # Set up mock chain
         mock_storage = MagicMock()
@@ -152,7 +152,7 @@ class TestSupabaseSessionStorage:
         """Test that invalid status raises ValueError."""
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         storage = SupabaseSessionStorage(
             url="https://test.supabase.co",
@@ -173,7 +173,7 @@ class TestSupabaseExceptionHandling:
 
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         # Create a proper HTTPStatusError
         mock_request = MagicMock(spec=Request)
@@ -205,7 +205,7 @@ class TestSupabaseExceptionHandling:
 
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         # Create a proper HTTPStatusError
         mock_request = MagicMock(spec=Request)
@@ -241,7 +241,7 @@ class TestRetryLogic:
 
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         storage = SupabaseSessionStorage(
             url="https://test.supabase.co",
@@ -262,7 +262,7 @@ class TestRetryLogic:
 
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         storage = SupabaseSessionStorage(
             url="https://test.supabase.co",
@@ -283,7 +283,7 @@ class TestRetryLogic:
 
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         storage = SupabaseSessionStorage(
             url="https://test.supabase.co",
@@ -302,7 +302,7 @@ class TestRetryLogic:
         """Test that connection errors are retryable."""
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         storage = SupabaseSessionStorage(
             url="https://test.supabase.co",
@@ -317,7 +317,7 @@ class TestRetryLogic:
         """Test that timeout errors are retryable."""
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
-        from bsc.storage.supabase import SupabaseSessionStorage
+        from graftpunk.storage.supabase import SupabaseSessionStorage
 
         storage = SupabaseSessionStorage(
             url="https://test.supabase.co",

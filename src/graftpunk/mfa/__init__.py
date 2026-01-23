@@ -6,19 +6,19 @@ This package provides utilities for handling common MFA flows:
 - Magic Links: Detection and extraction of magic link tokens
 """
 
-from bsc.mfa.magiclink import (
+from graftpunk.mfa.magiclink import (
     MagicLinkConfig,
     detect_magic_link,
     extract_magic_link_token,
     wait_for_magic_link,
 )
-from bsc.mfa.recaptcha import (
+from graftpunk.mfa.recaptcha import (
     ReCaptchaConfig,
     detect_recaptcha,
     get_recaptcha_type,
     wait_for_recaptcha_solution,
 )
-from bsc.mfa.totp import (
+from graftpunk.mfa.totp import (
     generate_totp,
     get_totp_remaining_seconds,
     verify_totp,

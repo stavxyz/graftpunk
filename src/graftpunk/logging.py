@@ -21,7 +21,7 @@ def configure_logging(
     level: str = "INFO",
     json_output: bool = False,
 ) -> None:
-    """Configure structlog for BSC.
+    """Configure structlog for graftpunk.
 
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).

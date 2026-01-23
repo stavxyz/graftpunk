@@ -7,12 +7,12 @@ This package provides:
 - run_keepalive_daemon for the main daemon entry point
 """
 
-from bsc.keepalive.handler import (
+from graftpunk.keepalive.handler import (
     GenericHTTPHandler,
     KeepaliveHandler,
     SessionStatus,
 )
-from bsc.keepalive.state import (
+from graftpunk.keepalive.state import (
     DaemonStatus,
     KeepaliveState,
 )

@@ -4,8 +4,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from bsc.exceptions import ChromeDriverError
-from bsc.logging import get_logger
+from graftpunk.exceptions import ChromeDriverError
+from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 

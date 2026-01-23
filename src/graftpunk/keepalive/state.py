@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from bsc.config import get_settings
+from graftpunk.config import get_settings
 
 
 class DaemonStatus(str, Enum):

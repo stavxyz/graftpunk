@@ -12,8 +12,8 @@ from pathlib import Path
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
 
-from bsc.config import get_settings
-from bsc.logging import get_logger
+from graftpunk.config import get_settings
+from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
@@ -22,7 +22,7 @@ def get_profile_dir() -> Path:
     """Get persistent Chrome profile directory.
 
     Returns:
-        Path to Chrome profile directory (~/.config/bsc/chrome_profile).
+        Path to Chrome profile directory (~/.config/graftpunk/chrome_profile).
     """
     return get_settings().config_dir / "chrome_profile"
 
@@ -60,7 +60,7 @@ def create_stealth_driver(
 
     Args:
         headless: Run in headless mode (less stealthy, use with caution).
-        profile_dir: Custom profile directory (default: ~/.config/bsc/chrome_profile).
+        profile_dir: Custom profile directory (default: ~/.config/graftpunk/chrome_profile).
 
     Returns:
         Configured undetected Chrome driver with stealth settings applied.

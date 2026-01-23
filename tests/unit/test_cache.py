@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bsc.cache import (
+from graftpunk.cache import (
     SessionLike,
     _extract_session_metadata,
     _reset_session_storage_backend,
@@ -17,7 +17,7 @@ from bsc.cache import (
     load_session_for_api,
     update_session_status,
 )
-from bsc.exceptions import SessionExpiredError, SessionNotFoundError
+from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 
 
 class TestSessionLikeProtocol:
@@ -107,13 +107,13 @@ class TestCacheSession:
 
     def test_cache_session_with_name(self, tmp_path, monkeypatch):
         """Test caching a session with explicit name."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
-        monkeypatch.setenv("BSC_SESSION_TTL_HOURS", "24")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_SESSION_TTL_HOURS", "24")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
-        from bsc.encryption import reset_encryption_key_cache
+        from graftpunk.config import reset_settings
+        from graftpunk.encryption import reset_encryption_key_cache
 
         reset_settings()
         reset_encryption_key_cache()
@@ -126,12 +126,12 @@ class TestCacheSession:
 
     def test_cache_session_without_name(self, tmp_path, monkeypatch):
         """Test caching a session that has a session_name attribute."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
-        from bsc.encryption import reset_encryption_key_cache
+        from graftpunk.config import reset_settings
+        from graftpunk.encryption import reset_encryption_key_cache
 
         reset_settings()
         reset_encryption_key_cache()
@@ -151,11 +151,11 @@ class TestLoadSession:
 
     def test_load_nonexistent_session_raises_error(self, tmp_path, monkeypatch):
         """Test that loading non-existent session raises SessionNotFoundError."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -164,12 +164,12 @@ class TestLoadSession:
 
     def test_load_session_with_checksum_mismatch(self, tmp_path, monkeypatch):
         """Test that checksum mismatch raises SessionExpiredError."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
-        from bsc.encryption import reset_encryption_key_cache
+        from graftpunk.config import reset_settings
+        from graftpunk.encryption import reset_encryption_key_cache
 
         reset_settings()
         reset_encryption_key_cache()
@@ -203,7 +203,7 @@ class TestLoadSession:
         # Create encrypted session file with different data
         import dill as pickle
 
-        from bsc.encryption import encrypt_data
+        from graftpunk.encryption import encrypt_data
 
         # Use a simple picklable session instead of MagicMock
         session = SimpleSession()
@@ -224,11 +224,11 @@ class TestLoadSessionForApi:
 
     def test_load_session_for_api_not_found(self, tmp_path, monkeypatch):
         """Test that loading non-existent session for API raises error."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -245,11 +245,11 @@ class TestListSessions:
 
     def test_list_sessions_empty(self, tmp_path, monkeypatch):
         """Test listing sessions when none exist."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -266,11 +266,11 @@ class TestClearSessionCache:
 
     def test_clear_nonexistent_session(self, tmp_path, monkeypatch):
         """Test clearing a session that doesn't exist."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -287,11 +287,11 @@ class TestUpdateSessionStatus:
 
     def test_update_invalid_status_raises_error(self, tmp_path, monkeypatch):
         """Test that invalid status raises ValueError."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -300,11 +300,11 @@ class TestUpdateSessionStatus:
 
     def test_update_nonexistent_session_raises_error(self, tmp_path, monkeypatch):
         """Test that updating non-existent session raises error."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 
@@ -321,11 +321,11 @@ class TestGetSessionMetadata:
 
     def test_get_nonexistent_metadata_returns_none(self, tmp_path, monkeypatch):
         """Test that getting metadata for non-existent session returns None."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setenv("BSC_STORAGE_BACKEND", "local")
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
         _reset_session_storage_backend()
 
-        from bsc.config import reset_settings
+        from graftpunk.config import reset_settings
 
         reset_settings()
 

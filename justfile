@@ -1,4 +1,4 @@
-# Justfile for BSC - see https://github.com/casey/just
+# Justfile for graftpunk - see https://github.com/casey/just
 
 # Show available commands
 default:
@@ -50,7 +50,7 @@ test *ARGS:
 
 # Run tests with coverage report
 test-cov:
-    pytest tests/ --cov=src/bsc --cov-report=term-missing --cov-report=html
+    pytest tests/ --cov=src/graftpunk --cov-report=term-missing --cov-report=html
 
 # Run only unit tests (fast)
 test-unit:
@@ -74,7 +74,7 @@ check-dist: build
 publish-test: check-dist
     twine upload --repository testpypi dist/*
     @echo "📦 Uploaded to Test PyPI"
-    @echo "🔗 https://test.pypi.org/project/bsc/"
+    @echo "🔗 https://test.pypi.org/project/graftpunk/"
 
 # Upload to PyPI (production)
 publish: check-dist
@@ -82,7 +82,7 @@ publish: check-dist
     @read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ]
     twine upload dist/*
     @echo "📦 Uploaded to PyPI"
-    @echo "🔗 https://pypi.org/project/bsc/"
+    @echo "🔗 https://pypi.org/project/graftpunk/"
 
 # Install build/publish dependencies
 install-publish-deps:
@@ -101,8 +101,8 @@ clean:
 
 # Show current version
 version:
-    @python -c "import bsc; print(bsc.__version__)"
+    @python -c "import graftpunk; print(graftpunk.__version__)"
 
 # Run the CLI
 cli *ARGS:
-    python -m bsc.cli.main {{ARGS}}
+    python -m graftpunk.cli.main {{ARGS}}

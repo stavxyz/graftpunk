@@ -4,14 +4,15 @@ This module provides encryption/decryption for session data using
 Fernet (AES-128-CBC with HMAC authentication). Keys are sourced based
 on the storage backend configuration:
 
-- BSC_STORAGE_BACKEND=local: Local file (~/.config/bsc/.session_key)
-- BSC_STORAGE_BACKEND=supabase: Supabase Vault (secret name from BSC_SESSION_KEY_VAULT_NAME)
+- GRAFTPUNK_STORAGE_BACKEND=local: Local file (~/.config/graftpunk/.session_key)
+- GRAFTPUNK_STORAGE_BACKEND=supabase: Supabase Vault
+  (secret name from GRAFTPUNK_SESSION_KEY_VAULT_NAME)
 
 Thread Safety:
     The encryption key is cached globally for performance (avoids repeated
     round-trips to Vault or filesystem). The cache is NOT thread-safe.
     This is acceptable for the current single-threaded CLI usage pattern.
-    If using BSC in a multi-threaded application, external synchronization
+    If using graftpunk in a multi-threaded application, external synchronization
     is required when calling get_encryption_key() or reset_encryption_key_cache().
 """
 
@@ -20,9 +21,9 @@ import os
 
 from cryptography.fernet import Fernet
 
-from bsc.config import get_settings
-from bsc.exceptions import EncryptionError
-from bsc.logging import get_logger
+from graftpunk.config import get_settings
+from graftpunk.exceptions import EncryptionError
+from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
@@ -33,9 +34,9 @@ _encryption_key_cache: bytes | None = None
 def get_encryption_key() -> bytes:
     """Get encryption key for session data.
 
-    Key source is determined by BSC_STORAGE_BACKEND:
-    - "local" (default): Local file (~/.config/bsc/.session_key)
-    - "supabase": Supabase Vault (using BSC_SESSION_KEY_VAULT_NAME or default)
+    Key source is determined by GRAFTPUNK_STORAGE_BACKEND:
+    - "local" (default): Local file (~/.config/graftpunk/.session_key)
+    - "supabase": Supabase Vault (using GRAFTPUNK_SESSION_KEY_VAULT_NAME or default)
 
     The key is cached in memory after first retrieval to avoid
     repeated round-trips to Vault or filesystem.
@@ -96,7 +97,7 @@ def _get_key_from_supabase_vault() -> bytes:
     """Fetch encryption key from Supabase Vault.
 
     Uses the vault.decrypted_secrets view to read the secret.
-    The secret name is configured via BSC_SESSION_KEY_VAULT_NAME env var,
+    The secret name is configured via GRAFTPUNK_SESSION_KEY_VAULT_NAME env var,
     defaulting to "session-encryption-key".
 
     Returns:
@@ -111,7 +112,7 @@ def _get_key_from_supabase_vault() -> bytes:
     except ImportError as exc:
         raise EncryptionError(
             "supabase package is required for Supabase Vault. "
-            "Install with: pip install bsc[supabase]"
+            "Install with: pip install graftpunk[supabase]"
         ) from exc
 
     settings = get_settings()
@@ -119,8 +120,8 @@ def _get_key_from_supabase_vault() -> bytes:
 
     if not settings.supabase_url or not settings.supabase_service_key:
         raise EncryptionError(
-            "BSC_SUPABASE_URL and BSC_SUPABASE_SERVICE_KEY required "
-            "when BSC_STORAGE_BACKEND=supabase"
+            "GRAFTPUNK_SUPABASE_URL and GRAFTPUNK_SUPABASE_SERVICE_KEY required "
+            "when GRAFTPUNK_STORAGE_BACKEND=supabase"
         )
 
     LOG.info("fetching_encryption_key_from_vault", vault_name=vault_name)

@@ -1,10 +1,10 @@
 <div align="center">
 
-# 🔐 BSC
+# 🔌 graftpunk
 
-**Browser Session Cache**
+**Turn any website into an API.**
 
-*Turn any website into an API.*
+*Graft scriptable access onto authenticated web services.*
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -25,11 +25,11 @@ Your bank. Your 401k provider. Your insurance portal. Your HR system. They all h
 
 You're left with two options: click through the UI manually every time, or give up.
 
-**BSC gives you a third option.**
+**graftpunk gives you a third option.**
 
 ## The Solution
 
-BSC lets you log in once and script forever.
+Log in once, script forever.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -59,38 +59,38 @@ Once your session is cached, you can:
 
 ## What You Can Build
 
-With BSC as your foundation, you can turn any authenticated website into a terminal-based interface:
+With graftpunk as your foundation, you can turn any authenticated website into a terminal-based interface:
 
 ```bash
 # Download your latest bank statements
-mybank statements --month january --output ./statements/
+gp mybank statements --month january --output ./statements/
 
 # Export transactions to CSV
-mybank transactions --start 2024-01-01 --format csv > transactions.csv
+gp mybank transactions --start 2024-01-01 --format csv > transactions.csv
 
 # Check your 401k balance
-my401k balance
+gp my401k balance
 # → Total: $142,857.32 (+2.4% this month)
 
 # Download insurance documents
-myinsurance documents --type claims --year 2024
+gp insurance documents --type claims --year 2024
 # → Downloaded 12 documents to ./claims/
 ```
 
-These aren't real APIs—they're Python scripts using BSC to maintain authenticated sessions and make the same XHR calls the website makes. To anyone watching, it looks like magic. To you, it's just automation.
+These aren't real APIs—they're commands defined in graftpunk plugins that make the same XHR calls the website makes. To anyone watching, it looks like magic. To you, it's just automation.
 
 ## Installation
 
 ```bash
-pip install bsc
+pip install graftpunk
 ```
 
 **With cloud storage:**
 
 ```bash
-pip install bsc[supabase]   # Supabase backend
-pip install bsc[s3]         # AWS S3 backend
-pip install bsc[all]        # Everything
+pip install graftpunk[supabase]   # Supabase backend
+pip install graftpunk[s3]         # AWS S3 backend
+pip install graftpunk[all]        # Everything
 ```
 
 ## Quick Start
@@ -98,7 +98,7 @@ pip install bsc[all]        # Everything
 ### 1. Cache a Session
 
 ```python
-from bsc import BrowserSession, cache_session
+from graftpunk import BrowserSession, cache_session
 
 # Create a stealth browser (avoids bot detection)
 session = BrowserSession(headless=False, use_stealth=True)
@@ -116,7 +116,7 @@ cache_session(session, "example")
 ### 2. Use It Like an API
 
 ```python
-from bsc import load_session_for_api
+from graftpunk import load_session_for_api
 
 # Load your cached session (no browser needed)
 api = load_session_for_api("example")
@@ -134,7 +134,7 @@ for doc in documents:
 
 ### 3. Keep It Alive
 
-Sessions expire. BSC can keep them alive in the background:
+Sessions expire. graftpunk can keep them alive in the background:
 
 ```python
 # Your keepalive handler pings the site periodically
@@ -145,44 +145,44 @@ Sessions expire. BSC can keep them alive in the background:
 
 | | Feature | Why It Matters |
 |:--|:--|:--|
-| 🥷 | **Stealth Mode** | Many sites block automation. BSC uses undetected-chromedriver and selenium-stealth to fly under the radar. |
-| 🔒 | **Encrypted Storage** | Sessions contain sensitive auth tokens. BSC encrypts everything with AES-128 (Fernet). |
+| 🥷 | **Stealth Mode** | Many sites block automation. graftpunk uses undetected-chromedriver and selenium-stealth to fly under the radar. |
+| 🔒 | **Encrypted Storage** | Sessions contain sensitive auth tokens. graftpunk encrypts everything with AES-128 (Fernet). |
 | ☁️ | **Cloud Storage** | Access your sessions from anywhere. Store in Supabase or S3 for multi-machine workflows. |
-| 🔄 | **Keepalive Daemon** | Sessions expire. BSC can ping sites in the background to keep you logged in. |
-| 🔌 | **Plugin System** | Automate login flows for specific sites. Community can share plugins (you maintain your own). |
+| 🔄 | **Keepalive Daemon** | Sessions expire. graftpunk can ping sites in the background to keep you logged in. |
+| 🔌 | **Plugin System** | Define commands for reverse-engineered APIs. Python for complex logic, YAML for simple calls. |
 | 🛠️ | **Beautiful CLI** | Manage sessions from the terminal with rich, colorful output. |
 
 ## CLI
 
 ```
-$ bsc --help
+$ gp --help
 
- 🔐 BSC - Browser Session Cache
+ 🔌 graftpunk - turn any website into an API
 
- Securely cache and restore authenticated browser sessions.
- Sessions are encrypted with Fernet (AES-128) and stored locally or in the cloud.
+ Graft scriptable access onto authenticated web services.
+ Log in once, script forever.
 
  Quick start:
-   bsc list              Show all cached sessions
-   bsc show <name>       View session details
-   bsc clear <name>      Remove a session
-   bsc config            Show current configuration
+   gp list              Show all cached sessions
+   gp show <name>       View session details
+   gp clear <name>      Remove a session
+   gp config            Show current configuration
 
 Commands:
   list       List all cached sessions with status and metadata.
   show       Show detailed information about a cached session.
   clear      Remove cached session(s).
   export     Export session cookies to HTTPie format.
-  config     Show current BSC configuration.
+  config     Show current graftpunk configuration.
   plugins    List discovered plugins.
-  version    Show BSC version and installation info.
+  version    Show graftpunk version and installation info.
   keepalive  Manage the session keepalive daemon.
 ```
 
 ### List Sessions
 
 ```
-$ bsc list
+$ gp list
 
               🔐 Cached Sessions
 ┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓
@@ -199,7 +199,7 @@ $ bsc list
 ### Export to HTTPie
 
 ```
-$ bsc export mybank
+$ gp export mybank
 
 ✓ Exported to: ~/.config/httpie/sessions/secure.mybank.com/mybank.json
 
@@ -211,14 +211,14 @@ Usage:
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `BSC_STORAGE_BACKEND` | `local` | Storage: `local`, `supabase`, or `s3` |
-| `BSC_CONFIG_DIR` | `~/.config/bsc` | Config and encryption key location |
-| `BSC_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
-| `BSC_LOG_LEVEL` | `INFO` | Logging verbosity |
+| `GRAFTPUNK_STORAGE_BACKEND` | `local` | Storage: `local`, `supabase`, or `s3` |
+| `GRAFTPUNK_CONFIG_DIR` | `~/.config/graftpunk` | Config and encryption key location |
+| `GRAFTPUNK_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
+| `GRAFTPUNK_LOG_LEVEL` | `INFO` | Logging verbosity |
 
 ## Roadmap
 
-BSC is actively developed. Here's what's coming:
+graftpunk is actively developed. Here's what's coming:
 
 ### 🧙 Plugin Auto-Generation Wizard
 
@@ -227,14 +227,14 @@ BSC is actively developed. Here's what's coming:
 A built-in tool that watches you log in and generates the plugin code automatically:
 
 ```bash
-$ bsc wizard mybank
+$ gp wizard mybank
 → Opening browser to capture auth flow...
 → Log in normally (use dummy creds if you prefer)
 → Capturing cookies, headers, session validation...
-→ Generated plugin: ~/.config/bsc/plugins/mybank.py
+→ Generated plugin: ~/.config/graftpunk/plugins/mybank.py
 
 # Next time, login is automated:
-$ bsc login mybank
+$ gp login mybank
 ```
 
 ### 📦 HAR Import
@@ -242,7 +242,7 @@ $ bsc login mybank
 Import authentication flows from browser dev tools:
 
 ```bash
-$ bsc import-har mybank-login.har --name mybank
+$ gp import-har mybank-login.har --name mybank
 ```
 
 ### 📚 Example Plugins
@@ -251,83 +251,101 @@ Templates and examples for common auth patterns (form login, OAuth, SSO).
 
 ## Plugins
 
-BSC is extensible via Python entry points. Write plugins to automate login for specific sites.
+graftpunk is extensible via Python entry points or YAML configuration.
 
-### Custom Login Plugin
+### Python Plugin (Complex Logic)
 
 ```python
 # my_plugins/mybank.py
-from bsc.plugins import SitePlugin
+from graftpunk.plugins import SitePlugin, command
 
 class MyBankPlugin(SitePlugin):
     site_name = "mybank"
-    login_url = "https://secure.mybank.com/login"
+    session_name = "mybank"
 
-    def login(self, session, username, password):
-        """Automate the login flow."""
-        session.driver.get(self.login_url)
-        session.driver.find_element("id", "username").send_keys(username)
-        session.driver.find_element("id", "password").send_keys(password)
-        session.driver.find_element("id", "submit").click()
-        # Handle MFA if needed...
-        return session
+    @command(help="List all accounts")
+    def accounts(self, session):
+        return session.get("https://mybank.com/api/accounts").json()
+
+    @command(help="Get statements for a month")
+    def statements(self, session, month: str, year: int = 2024):
+        url = f"https://mybank.com/api/statements/{year}/{month}"
+        return session.get(url).json()
 ```
 
 Register in `pyproject.toml`:
 
 ```toml
-[project.entry-points."bsc.plugins"]
+[project.entry-points."graftpunk.cli_plugins"]
 mybank = "my_plugins.mybank:MyBankPlugin"
 ```
 
-### Custom Keepalive Handler
+### YAML Plugin (Simple Calls)
 
-```python
-# my_plugins/mybank_keepalive.py
-class MyBankKeepalive:
-    site_name = "mybank"
+For straightforward GET/POST calls, no Python needed:
 
-    def touch_session(self, session):
-        """Ping the site to prevent session timeout."""
-        r = session.get("https://secure.mybank.com/api/ping")
-        return r.ok, None
+```yaml
+# ~/.config/graftpunk/plugins/mybank.yaml
+site_name: mybank
+session_name: mybank
+help: "Commands for MyBank"
 
-    def validate_session(self, session):
-        """Verify we're still logged in."""
-        r = session.get("https://secure.mybank.com/api/me")
-        return r.status_code == 200
+commands:
+  accounts:
+    help: "List all accounts"
+    method: GET
+    url: "https://mybank.com/api/accounts"
+
+  statements:
+    help: "Get statements for a month"
+    method: GET
+    url: "https://mybank.com/api/statements/{year}/{month}"
+    params:
+      - name: month
+        required: true
+        help: "Month name"
+      - name: year
+        default: 2024
+        help: "Year"
+```
+
+Then use directly:
+
+```bash
+gp mybank accounts
+gp mybank statements --month january --year 2024
 ```
 
 ## Security
 
 ### Your Data, Your Rules
 
-BSC is for automating access to **your own accounts**. You're not scraping other people's data—you're building tools to access information that already belongs to you.
+graftpunk is for automating access to **your own accounts**. You're not scraping other people's data—you're building tools to access information that already belongs to you.
 
 Some services may consider automation a ToS violation. Use your judgment.
 
 ### Encryption
 
 - **Algorithm:** Fernet (AES-128-CBC + HMAC-SHA256)
-- **Key storage:** `~/.config/bsc/.session_key` with `0600` permissions
+- **Key storage:** `~/.config/graftpunk/.session_key` with `0600` permissions
 - **Integrity:** SHA-256 checksum validated before deserializing
 
 ### ⚠️ Pickle Warning
 
-BSC uses Python's `pickle` for serialization. Only load sessions you created.
+graftpunk uses Python's `pickle` for serialization. Only load sessions you created.
 
 ### Best Practices
 
 - Keep your encryption key secure
 - Don't share session files
-- Run BSC on trusted machines
+- Run graftpunk on trusted machines
 - Use unique, strong passwords for automated accounts
 
 ## Development
 
 ```bash
-git clone https://github.com/stavxyz/bsc.git
-cd bsc
+git clone https://github.com/stavxyz/graftpunk.git
+cd graftpunk
 just setup    # Create venv and install deps
 just check    # Run lint, typecheck, tests
 just build    # Build for PyPI

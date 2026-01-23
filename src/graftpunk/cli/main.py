@@ -1,4 +1,4 @@
-"""BSC CLI - browser session cache command-line interface.
+"""graftpunk CLI - turn any website into an API.
 
 Manage encrypted browser sessions from the terminal.
 """
@@ -11,60 +11,61 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-import bsc
-from bsc import (
+import graftpunk
+from graftpunk import (
     clear_session_cache,
     get_session_metadata,
     list_sessions,
     list_sessions_with_metadata,
     load_session,
 )
-from bsc.config import get_settings
-from bsc.exceptions import BSCError, SessionExpiredError, SessionNotFoundError
-from bsc.keepalive.state import read_keepalive_pid, read_keepalive_state
-from bsc.plugins import (
+from graftpunk.config import get_settings
+from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
+from graftpunk.keepalive.state import read_keepalive_pid, read_keepalive_state
+from graftpunk.plugins import (
     discover_keepalive_handlers,
     discover_site_plugins,
     discover_storage_backends,
 )
 
 if TYPE_CHECKING:
-    from bsc.session import BrowserSession
+    from graftpunk.session import BrowserSession
 
 app = typer.Typer(
-    name="bsc",
+    name="graftpunk",
     help="""
-    🔐 BSC - Browser Session Cache
+    🔌 graftpunk - turn any website into an API
 
-    Securely cache and restore authenticated browser sessions.
-    Sessions are encrypted with Fernet (AES-128) and stored locally or in the cloud.
+    Graft scriptable access onto authenticated web services.
+    Log in once, script forever.
 
     \b
     Quick start:
-      bsc list              Show all cached sessions
-      bsc show <name>       View session details
-      bsc clear <name>      Remove a session
-      bsc config            Show current configuration
+      gp list              Show all cached sessions
+      gp show <name>       View session details
+      gp clear <name>      Remove a session
+      gp config            Show current configuration
 
     \b
-    Documentation: https://github.com/stavxyz/bsc
+    Documentation: https://github.com/stavxyz/graftpunk
     """,
     no_args_is_help=True,
     rich_markup_mode="rich",
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 console = Console()
 
 
 @app.command("version")
 def version() -> None:
-    """Show BSC version and installation info."""
+    """Show graftpunk version and installation info."""
     settings = get_settings()
     console.print(
         Panel(
-            f"[bold cyan]BSC[/bold cyan] v{bsc.__version__}\n\n"
+            f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n\n"
             f"[dim]Config:[/dim]  {settings.config_dir}\n"
             f"[dim]Storage:[/dim] {settings.storage_backend}",
-            title="Browser Session Cache",
+            title="Turn any website into an API",
             border_style="cyan",
         )
     )
@@ -89,7 +90,7 @@ def list_cmd(
             Panel(
                 "[dim]No sessions cached yet.[/dim]\n\n"
                 "Use your application to create a session, then cache it with:\n"
-                "[cyan]from bsc import cache_session[/cyan]",
+                "[cyan]from graftpunk import cache_session[/cyan]",
                 title="📭 No Sessions",
                 border_style="yellow",
             )
@@ -292,7 +293,7 @@ def export(
     except SessionExpiredError as exc:
         console.print(f"[red]✗ Session expired: {exc}[/red]")
         raise typer.Exit(1) from None
-    except BSCError as exc:
+    except GraftpunkError as exc:
         console.print(f"[red]✗ Failed to load: {exc}[/red]")
         raise typer.Exit(1) from None
 
@@ -313,6 +314,7 @@ keepalive_app = typer.Typer(
     name="keepalive",
     help="Manage the session keepalive daemon.",
     no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 app.add_typer(keepalive_app)
 
@@ -416,7 +418,7 @@ def plugins() -> None:
 
 @app.command("config")
 def config() -> None:
-    """Show current BSC configuration."""
+    """Show current graftpunk configuration."""
     settings = get_settings()
 
     storage_display = settings.storage_backend

@@ -16,9 +16,9 @@ import selenium.common.exceptions
 import slugify as slugify_lib
 import webdriver_manager.chrome
 
-from bsc.chrome import get_chrome_version
-from bsc.exceptions import BrowserError, ChromeDriverError
-from bsc.logging import get_logger
+from graftpunk.chrome import get_chrome_version
+from graftpunk.exceptions import BrowserError, ChromeDriverError
+from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
@@ -53,7 +53,7 @@ class BrowserSession(requestium.Session):  # type: ignore[misc]
 
         if use_stealth:
             # Use stealth driver (undetected-chromedriver + selenium-stealth)
-            from bsc.stealth import create_stealth_driver
+            from graftpunk.stealth import create_stealth_driver
 
             LOG.info("creating_stealth_browser_session", headless=headless)
             try:
@@ -104,7 +104,7 @@ class BrowserSession(requestium.Session):  # type: ignore[misc]
             except selenium.common.exceptions.SessionNotCreatedException as exc:
                 LOG.error("failed_to_create_browser_session", error=str(exc))
                 raise BrowserError(
-                    "Failed to create browser session. Try clearing session cache with: bsc clear"
+                    "Failed to create browser session. Try clearing session cache with: gp clear"
                 ) from exc
 
     @property
@@ -174,7 +174,7 @@ class BrowserSession(requestium.Session):  # type: ignore[misc]
             except selenium.common.exceptions.SessionNotCreatedException as exc:
                 LOG.error("failed_to_restore_session", error=str(exc))
                 raise BrowserError(
-                    "Failed to restore session. Try clearing cache with: bsc clear"
+                    "Failed to restore session. Try clearing cache with: gp clear"
                 ) from exc
 
     def save_httpie_session(self, session_name: str | None = None) -> Path:

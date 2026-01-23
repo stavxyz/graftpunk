@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 if TYPE_CHECKING:
     from selenium.webdriver.remote.webdriver import WebDriver
 
-from bsc.logging import get_logger
+from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 

@@ -7,9 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from bsc.exceptions import SessionExpiredError, SessionNotFoundError
-from bsc.logging import get_logger
-from bsc.storage.base import SessionMetadata, parse_datetime_iso
+from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
+from graftpunk.logging import get_logger
+from graftpunk.storage.base import SessionMetadata, parse_datetime_iso
 
 LOG = get_logger(__name__)
 
@@ -115,7 +115,7 @@ class LocalSessionStorage:
         if not metadata_path.exists():
             LOG.error("session_metadata_missing", name=name)
             raise SessionExpiredError(
-                f"Session '{name}' is missing metadata. Please run 'bsc clear' and re-login."
+                f"Session '{name}' is missing metadata. Please run 'graftpunk clear' and re-login."
             )
 
         try:
@@ -124,7 +124,7 @@ class LocalSessionStorage:
         except (OSError, json.JSONDecodeError) as exc:
             LOG.error("session_metadata_invalid", name=name, error=str(exc))
             raise SessionExpiredError(
-                f"Session '{name}' has invalid metadata. Please run 'bsc clear' and re-login."
+                f"Session '{name}' has invalid metadata. Please run 'graftpunk clear' and re-login."
             ) from exc
 
         # Check TTL
@@ -137,7 +137,7 @@ class LocalSessionStorage:
                 if datetime.now(UTC) > expires_at:
                     LOG.warning("session_expired_ttl", name=name, expires_at=expires_at_str)
                     raise SessionExpiredError(
-                        f"Session '{name}' has expired (TTL). Please run 'bsc clear' and re-login."
+                        f"Session '{name}' has expired (TTL). Run 'gp clear' and re-login."
                     )
             except (ValueError, TypeError) as exc:
                 LOG.warning(

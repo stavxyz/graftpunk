@@ -7,10 +7,10 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class BSCSettings(BaseSettings):
-    """BSC application settings loaded from environment variables.
+class GraftpunkSettings(BaseSettings):
+    """graftpunk application settings loaded from environment variables.
 
-    All settings use the BSC_ prefix for environment variables.
+    All settings use the GRAFTPUNK_ prefix for environment variables.
     """
 
     # Storage configuration
@@ -19,8 +19,8 @@ class BSCSettings(BaseSettings):
         description="Storage backend: local, supabase, s3",
     )
     config_dir: Path = Field(
-        default=Path.home() / ".config" / "bsc",
-        description="Configuration directory for BSC data",
+        default=Path.home() / ".config" / "graftpunk",
+        description="Configuration directory for graftpunk data",
     )
     session_ttl_hours: int = Field(
         default=720,  # 30 days
@@ -73,7 +73,7 @@ class BSCSettings(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_prefix="BSC_",
+        env_prefix="GRAFTPUNK_",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
@@ -114,12 +114,12 @@ class BSCSettings(BaseSettings):
         if storage_type == "supabase":
             if not self.supabase_url:
                 raise ValueError(
-                    "BSC_SUPABASE_URL environment variable is required "
+                    "GRAFTPUNK_SUPABASE_URL environment variable is required "
                     "when using supabase storage backend"
                 )
             if not self.supabase_service_key:
                 raise ValueError(
-                    "BSC_SUPABASE_SERVICE_KEY environment variable is required "
+                    "GRAFTPUNK_SUPABASE_SERVICE_KEY environment variable is required "
                     "when using supabase storage backend"
                 )
 
@@ -134,7 +134,8 @@ class BSCSettings(BaseSettings):
         if storage_type == "s3":
             if not self.s3_bucket:
                 raise ValueError(
-                    "BSC_S3_BUCKET environment variable is required when using s3 storage backend"
+                    "GRAFTPUNK_S3_BUCKET environment variable is required "
+                    "when using s3 storage backend"
                 )
 
             return {
@@ -151,14 +152,14 @@ class BSCSettings(BaseSettings):
 
 
 # Global settings instance
-_settings: BSCSettings | None = None
+_settings: GraftpunkSettings | None = None
 
 
-def get_settings() -> BSCSettings:
+def get_settings() -> GraftpunkSettings:
     """Get or create the global settings instance."""
     global _settings
     if _settings is None:
-        _settings = BSCSettings()
+        _settings = GraftpunkSettings()
     return _settings
 
 

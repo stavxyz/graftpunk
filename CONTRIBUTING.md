@@ -1,6 +1,6 @@
-# Contributing to BSC
+# Contributing to graftpunk
 
-Thank you for your interest in contributing to BSC! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to graftpunk! This document provides guidelines and instructions for contributing.
 
 ## Code of Conduct
 
@@ -19,8 +19,8 @@ Be respectful, inclusive, and constructive. We're all here to build something us
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/stavxyz/bsc.git
-   cd bsc
+   git clone https://github.com/stavxyz/graftpunk.git
+   cd graftpunk
    ```
 
 2. **Create a virtual environment**
@@ -39,7 +39,7 @@ Be respectful, inclusive, and constructive. We're all here to build something us
 4. **Verify the installation**
 
    ```bash
-   bsc --help
+   gp --help
    pytest tests/ -v
    ```
 
@@ -139,16 +139,16 @@ git commit -m "docs: improve plugin development guide"
 
    ```python
    # Good
-   from bsc.exceptions import SessionNotFoundError
+   from graftpunk.exceptions import SessionNotFoundError
 
    # Avoid
-   from bsc.exceptions import *
+   from graftpunk.exceptions import *
    ```
 
 4. **Use structured logging**
 
    ```python
-   from bsc.logging import get_logger
+   from graftpunk.logging import get_logger
 
    LOG = get_logger(__name__)
    LOG.info("session_cached", name=name, storage_backend="local")
@@ -163,7 +163,7 @@ git commit -m "docs: improve plugin development guide"
 pytest tests/ -v
 
 # Run with coverage
-pytest tests/ --cov=src/bsc --cov-report=term-missing
+pytest tests/ --cov=src/graftpunk --cov-report=term-missing
 
 # Run specific test file
 pytest tests/unit/test_cache.py -v
@@ -184,7 +184,7 @@ Example:
 ```python
 def test_cache_session_creates_encrypted_file(tmp_path, mock_session):
     """Verify that cache_session encrypts and persists the session."""
-    with patch("bsc.cache.get_storage_backend") as mock_storage:
+    with patch("graftpunk.cache.get_storage_backend") as mock_storage:
         mock_storage.return_value = LocalSessionStorage(tmp_path)
 
         result = cache_session(mock_session, "test-session")
@@ -195,14 +195,14 @@ def test_cache_session_creates_encrypted_file(tmp_path, mock_session):
 
 ## Plugin Development
 
-BSC supports three types of plugins via entry points:
+graftpunk supports three types of plugins via entry points:
 
 ### 1. Storage Backends
 
 Implement `SessionStorageBackend` protocol:
 
 ```python
-from bsc.storage.base import SessionStorageBackend, SessionMetadata
+from graftpunk.storage.base import SessionStorageBackend, SessionMetadata
 
 class MyStorage:
     def save_session(self, name: str, data: bytes, metadata: SessionMetadata) -> str: ...
@@ -214,7 +214,7 @@ class MyStorage:
 Register in `pyproject.toml`:
 
 ```toml
-[project.entry-points."bsc.storage"]
+[project.entry-points."graftpunk.storage"]
 mystorage = "mypackage:MyStorage"
 ```
 
@@ -223,7 +223,7 @@ mystorage = "mypackage:MyStorage"
 Implement `KeepaliveHandler` protocol:
 
 ```python
-from bsc.keepalive.handler import KeepaliveHandler, SessionStatus
+from graftpunk.keepalive.handler import KeepaliveHandler, SessionStatus
 
 class MyHandler:
     site_name: str = "My Site"
@@ -235,7 +235,7 @@ class MyHandler:
 Register in `pyproject.toml`:
 
 ```toml
-[project.entry-points."bsc.keepalive_handlers"]
+[project.entry-points."graftpunk.keepalive_handlers"]
 myhandler = "mypackage:MyHandler"
 ```
 
@@ -262,7 +262,7 @@ For site-specific authentication logic, implement custom plugins that handle log
 
 When reporting bugs, please include:
 
-- BSC version (`bsc --version`)
+- graftpunk version (`gp --version`)
 - Python version (`python --version`)
 - Operating system
 - Chrome version (if browser-related)
@@ -272,7 +272,7 @@ When reporting bugs, please include:
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/stavxyz/bsc/discussions) for questions
-- Open an [Issue](https://github.com/stavxyz/bsc/issues) for bugs or feature requests
+- Open a [GitHub Discussion](https://github.com/stavxyz/graftpunk/discussions) for questions
+- Open an [Issue](https://github.com/stavxyz/graftpunk/issues) for bugs or feature requests
 
 Thank you for contributing!
