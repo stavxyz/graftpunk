@@ -111,7 +111,7 @@ class TestKeepaliveStateIO:
 
     def test_write_and_read_state(self, tmp_path, monkeypatch):
         """Test writing and reading state file."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
 
         from graftpunk.config import reset_settings
 
@@ -139,7 +139,7 @@ class TestKeepaliveStateIO:
 
     def test_read_nonexistent_state_returns_none(self, tmp_path, monkeypatch):
         """Test reading non-existent state file returns None."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
 
         from graftpunk.config import reset_settings
 
@@ -150,7 +150,7 @@ class TestKeepaliveStateIO:
 
     def test_read_invalid_state_returns_none(self, tmp_path, monkeypatch):
         """Test reading invalid state file returns None."""
-        monkeypatch.setenv("BSC_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
 
         from graftpunk.config import reset_settings
 
