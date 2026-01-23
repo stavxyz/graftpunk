@@ -104,7 +104,7 @@ class BrowserSession(requestium.Session):  # type: ignore[misc]
             except selenium.common.exceptions.SessionNotCreatedException as exc:
                 LOG.error("failed_to_create_browser_session", error=str(exc))
                 raise BrowserError(
-                    "Failed to create browser session. Try clearing session cache with: bsc clear"
+                    "Failed to create browser session. Try clearing session cache with: gp clear"
                 ) from exc
 
     @property
@@ -174,7 +174,7 @@ class BrowserSession(requestium.Session):  # type: ignore[misc]
             except selenium.common.exceptions.SessionNotCreatedException as exc:
                 LOG.error("failed_to_restore_session", error=str(exc))
                 raise BrowserError(
-                    "Failed to restore session. Try clearing cache with: bsc clear"
+                    "Failed to restore session. Try clearing cache with: gp clear"
                 ) from exc
 
     def save_httpie_session(self, session_name: str | None = None) -> Path:

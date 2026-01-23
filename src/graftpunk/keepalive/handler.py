@@ -37,7 +37,7 @@ class KeepaliveHandler(Protocol):
     touch/validate functionality for their particular platform.
 
     Implementations should be registered via entry points:
-        [project.entry-points."bsc.keepalive_handlers"]
+        [project.entry-points."graftpunk.keepalive_handlers"]
         mysite = "mypackage.handler:MySiteHandler"
 
     Example:

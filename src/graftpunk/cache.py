@@ -1,15 +1,15 @@
 """Session caching and persistence using dill (enhanced pickle).
 
 This module provides session storage functionality with pluggable backends:
-- Local filesystem (default): ~/.config/bsc/sessions/
-- Supabase (BSC_STORAGE_BACKEND=supabase): Supabase Storage + database
+- Local filesystem (default): ~/.config/graftpunk/sessions/
+- Supabase (GRAFTPUNK_STORAGE_BACKEND=supabase): Supabase Storage + database
 
-Backend selection is automatic based on BSC_STORAGE_BACKEND environment variable.
+Backend selection is automatic based on GRAFTPUNK_STORAGE_BACKEND environment variable.
 
 Thread Safety:
     This module uses a global cached storage backend for performance. The cache
     is NOT thread-safe. This is acceptable for the current single-threaded CLI
-    usage pattern. If using BSC in a multi-threaded application, external
+    usage pattern. If using graftpunk in a multi-threaded application, external
     synchronization is required when calling cache functions.
 """
 
@@ -55,7 +55,7 @@ _session_storage_backend: "SessionStorageBackend | None" = None
 def _get_session_storage_backend() -> "SessionStorageBackend":
     """Get or create the session storage backend.
 
-    Returns the appropriate backend based on BSC_STORAGE_BACKEND env var:
+    Returns the appropriate backend based on GRAFTPUNK_STORAGE_BACKEND env var:
     - "local" (default): Returns LocalSessionStorage
     - "supabase": Returns SupabaseSessionStorage
     """
@@ -163,7 +163,7 @@ def get_session_metadata(name: str) -> dict[str, Any] | None:
 def cache_session(session: T, session_name: str | None = None) -> str:
     """Cache a session with metadata.
 
-    Storage location depends on BSC_STORAGE_BACKEND:
+    Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
     - "local" (default): sessions/{session_name}/session.pickle + metadata.json
     - "supabase": Supabase Storage bucket + session_cache database table
 
@@ -219,7 +219,7 @@ def cache_session(session: T, session_name: str | None = None) -> str:
 def load_session(name: str) -> SessionLike:
     """Load a cached session.
 
-    Storage location depends on BSC_STORAGE_BACKEND:
+    Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
     - "local" (default): Local filesystem
     - "supabase": Supabase Storage + database
 

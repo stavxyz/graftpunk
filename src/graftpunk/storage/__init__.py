@@ -1,4 +1,4 @@
-"""Session storage backends for BSC.
+"""Session storage backends for graftpunk.
 
 This package provides pluggable storage backends for session persistence:
 - LocalSessionStorage: Local filesystem storage (default)

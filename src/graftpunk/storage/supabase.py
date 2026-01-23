@@ -26,7 +26,7 @@ class SupabaseSessionStorage:
     - Metadata → session_cache database table (queryable, TTL)
 
     The encryption key is stored in Supabase Vault and retrieved
-    by the encryption module when BSC_STORAGE_BACKEND=supabase.
+    by the encryption module when GRAFTPUNK_STORAGE_BACKEND=supabase.
     """
 
     def __init__(
@@ -51,7 +51,7 @@ class SupabaseSessionStorage:
         except ImportError as exc:
             raise StorageError(
                 "supabase package is required for Supabase storage. "
-                "Install with: pip install bsc[supabase]"
+                "Install with: pip install graftpunk[supabase]"
             ) from exc
 
         # Normalize URL (ensure trailing slash for Supabase client)

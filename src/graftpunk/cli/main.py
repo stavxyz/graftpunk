@@ -20,7 +20,7 @@ from graftpunk import (
     load_session,
 )
 from graftpunk.config import get_settings
-from graftpunk.exceptions import BSCError, SessionExpiredError, SessionNotFoundError
+from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
 from graftpunk.keepalive.state import read_keepalive_pid, read_keepalive_state
 from graftpunk.plugins import (
     discover_keepalive_handlers,
@@ -293,7 +293,7 @@ def export(
     except SessionExpiredError as exc:
         console.print(f"[red]✗ Session expired: {exc}[/red]")
         raise typer.Exit(1) from None
-    except BSCError as exc:
+    except GraftpunkError as exc:
         console.print(f"[red]✗ Failed to load: {exc}[/red]")
         raise typer.Exit(1) from None
 
@@ -418,7 +418,7 @@ def plugins() -> None:
 
 @app.command("config")
 def config() -> None:
-    """Show current BSC configuration."""
+    """Show current graftpunk configuration."""
     settings = get_settings()
 
     storage_display = settings.storage_backend

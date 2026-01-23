@@ -151,9 +151,6 @@ class GraftpunkSettings(BaseSettings):
         )
 
 
-# Backwards compatibility alias
-BSCSettings = GraftpunkSettings
-
 # Global settings instance
 _settings: GraftpunkSettings | None = None
 

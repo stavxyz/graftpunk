@@ -34,10 +34,10 @@ class TestBrowserError:
     """Tests for browser error handling."""
 
     def test_browser_error_inheritance(self):
-        """Test that BrowserError inherits from BSCError."""
-        from graftpunk.exceptions import BrowserError, BSCError
+        """Test that BrowserError inherits from GraftpunkError."""
+        from graftpunk.exceptions import BrowserError, GraftpunkError
 
-        assert issubclass(BrowserError, BSCError)
+        assert issubclass(BrowserError, GraftpunkError)
 
     def test_chrome_driver_error_inheritance(self):
         """Test that ChromeDriverError inherits from BrowserError."""
@@ -47,9 +47,9 @@ class TestBrowserError:
 
     def test_mfa_required_error(self):
         """Test MFARequiredError exception."""
-        from graftpunk.exceptions import BSCError, MFARequiredError
+        from graftpunk.exceptions import GraftpunkError, MFARequiredError
 
-        assert issubclass(MFARequiredError, BSCError)
+        assert issubclass(MFARequiredError, GraftpunkError)
 
         # Test with default message
         error = MFARequiredError()

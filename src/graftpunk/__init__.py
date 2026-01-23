@@ -30,12 +30,12 @@ from graftpunk.cache import (
     load_session_for_api,
     update_session_status,
 )
-from graftpunk.config import BSCSettings, get_settings
+from graftpunk.config import GraftpunkSettings, get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data, get_encryption_key
 from graftpunk.exceptions import (
     BrowserError,
-    BSCError,
     EncryptionError,
+    GraftpunkError,
     SessionExpiredError,
     SessionNotFoundError,
 )
@@ -68,10 +68,10 @@ __all__ = [
     "SessionMetadata",
     "SessionStorageBackend",
     # Configuration
-    "BSCSettings",
+    "GraftpunkSettings",
     "get_settings",
     # Exceptions
-    "BSCError",
+    "GraftpunkError",
     "BrowserError",
     "SessionExpiredError",
     "SessionNotFoundError",

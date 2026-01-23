@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from graftpunk.cli.main import app
-from graftpunk.exceptions import BSCError, SessionExpiredError, SessionNotFoundError
+from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
 
 runner = CliRunner()
 
@@ -155,9 +155,9 @@ class TestExportCommand:
         assert "expired" in result.output
 
     @patch("graftpunk.cli.main.load_session")
-    def test_export_bsc_error(self, mock_load):
-        """Test export command with BSC error."""
-        mock_load.side_effect = BSCError("Some BSC error")
+    def test_export_graftpunk_error(self, mock_load):
+        """Test export command with graftpunk error."""
+        mock_load.side_effect = GraftpunkError("Some graftpunk error")
 
         result = runner.invoke(app, ["export", "broken"])
 
@@ -234,8 +234,8 @@ class TestConfigCommand:
     def test_config_command(self, mock_settings):
         """Test config command output."""
         mock_settings.return_value = MagicMock(
-            config_dir="/home/user/.config/bsc",
-            sessions_dir="/home/user/.config/bsc/sessions",
+            config_dir="/home/user/.config/graftpunk",
+            sessions_dir="/home/user/.config/graftpunk/sessions",
             storage_backend="local",
             session_ttl_hours=720,
             log_level="INFO",
