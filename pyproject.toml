@@ -103,8 +103,27 @@ quote-style = "double"
 python_version = "3.11"
 strict = true
 disallow_untyped_defs = true
-warn_return_any = true
+warn_return_any = false  # Too strict for third-party libraries
 warn_unused_ignores = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+    "dill.*",
+    "httpie.*",
+    "postgrest.*",
+    "pyotp.*",
+    "requestium.*",
+    "requests.*",
+    "selenium.*",
+    "selenium_stealth.*",
+    "storage3.*",
+    "structlog.*",
+    "supabase.*",
+    "undetected_chromedriver.*",
+    "webdriver_manager.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
