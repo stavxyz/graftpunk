@@ -206,8 +206,8 @@ class BrowserSession(requestium.Session):  # type: ignore[misc]
             host=None,
         )
 
-        cookiejar_dict = requests.utils.dict_from_cookiejar(self.cookies)
-        cookiejar = requests.utils.cookiejar_from_dict(cookiejar_dict)
+        cookiejar_dict = requests.utils.dict_from_cookiejar(self.cookies)  # type: ignore[no-untyped-call]
+        cookiejar = requests.utils.cookiejar_from_dict(cookiejar_dict)  # type: ignore[no-untyped-call]
         httpie_session.cookie_jar = cookiejar
         httpie_session.load()
         httpie_session.post_process_data(httpie_session)

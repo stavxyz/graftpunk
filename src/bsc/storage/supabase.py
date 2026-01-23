@@ -120,18 +120,10 @@ class SupabaseSessionStorage:
         ) from last_exception
 
     def _is_retryable_error(self, error: Exception) -> bool:
-        """Check if an error is retryable.
-
-        Args:
-            error: The exception to check
-
-        Returns:
-            True if the error is retryable
-        """
+        """Check if an error is retryable (5xx, 429, connection/timeout errors)."""
         from httpx import HTTPStatusError
 
         if isinstance(error, HTTPStatusError):
-            # Retry on 5xx errors and some 4xx
             return error.response.status_code >= 500 or error.response.status_code == 429
         return isinstance(error, (ConnectionError, TimeoutError))
 
@@ -479,14 +471,7 @@ class SupabaseSessionStorage:
             ) from e
 
     def _row_to_metadata(self, data: dict[str, Any]) -> SessionMetadata:
-        """Convert database row to SessionMetadata.
-
-        Args:
-            data: Database row dictionary
-
-        Returns:
-            SessionMetadata instance
-        """
+        """Convert database row to SessionMetadata."""
         return SessionMetadata(
             name=data.get("provider", ""),
             checksum=data.get("checksum", ""),
