@@ -4,14 +4,14 @@
 
 **Browser Session Cache**
 
-*Never re-authenticate your automated browsers again.*
+*Turn any website into an API.*
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Typed](https://img.shields.io/badge/typed-mypy-blue.svg)](https://mypy-lang.org/)
 
-[Installation](#installation) • [Quick Start](#quick-start) • [CLI](#cli) • [Configuration](#configuration) • [Plugins](#plugins)
+[Installation](#installation) • [Quick Start](#quick-start) • [CLI](#cli) • [Roadmap](#roadmap) • [Plugins](#plugins)
 
 </div>
 
@@ -19,20 +19,65 @@
 
 ## The Problem
 
-You're automating a browser workflow. It works great—until your script restarts and you're back at the login screen. Again.
+That service has your data—but no API.
 
-**BSC solves this.** It captures your authenticated browser session—cookies, headers, everything—encrypts it, and stores it safely. Next time? Your session is restored instantly.
+Your bank. Your 401k provider. Your insurance portal. Your HR system. They all have dashboards full of documents and data that belong to *you*, but no way to access them programmatically.
 
-## Features
+You're left with two options: click through the UI manually every time, or give up.
 
-| | Feature | What It Does |
-|:--|:--|:--|
-| 🔒 | **Encrypted Storage** | AES-128 encryption (Fernet) with HMAC authentication |
-| 🥷 | **Stealth Mode** | Undetected ChromeDriver + selenium-stealth to avoid bot detection |
-| ☁️ | **Cloud Storage** | Store sessions in Supabase or S3 for multi-machine access |
-| 🔄 | **Keepalive Daemon** | Background process that keeps sessions from expiring |
-| 🔌 | **Plugin System** | Extend with custom storage backends and site handlers |
-| 🛠️ | **Beautiful CLI** | Rich terminal output with session management commands |
+**BSC gives you a third option.**
+
+## The Solution
+
+BSC lets you log in once and script forever.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│   1. LOG IN                2. CACHE                 3. SCRIPT               │
+│                                                                             │
+│   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐          │
+│   │   Browser   │         │  Encrypted  │         │   Python    │          │
+│   │   Session   │───────▶ │   Storage   │───────▶ │   Script    │          │
+│   │             │         │             │         │             │          │
+│   └─────────────┘         └─────────────┘         └─────────────┘          │
+│                                                                             │
+│   Log in manually         Session cached          Use the session          │
+│   or with a plugin        with AES-128            to make requests         │
+│                           encryption              like a real API          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+Once your session is cached, you can:
+
+- **Make HTTP requests** with your authenticated cookies
+- **Reverse-engineer XHR calls** from browser dev tools
+- **Build CLI tools** that feel like real APIs
+- **Automate downloads** of documents and data
+- **Keep sessions alive** with background daemons
+
+## What You Can Build
+
+With BSC as your foundation, you can turn any authenticated website into a terminal-based interface:
+
+```bash
+# Download your latest bank statements
+mybank statements --month january --output ./statements/
+
+# Export transactions to CSV
+mybank transactions --start 2024-01-01 --format csv > transactions.csv
+
+# Check your 401k balance
+my401k balance
+# → Total: $142,857.32 (+2.4% this month)
+
+# Download insurance documents
+myinsurance documents --type claims --year 2024
+# → Downloaded 12 documents to ./claims/
+```
+
+These aren't real APIs—they're Python scripts using BSC to maintain authenticated sessions and make the same XHR calls the website makes. To anyone watching, it looks like magic. To you, it's just automation.
 
 ## Installation
 
@@ -50,48 +95,64 @@ pip install bsc[all]        # Everything
 
 ## Quick Start
 
-### Cache a Session
+### 1. Cache a Session
 
 ```python
 from bsc import BrowserSession, cache_session
 
-# Create a stealth browser
+# Create a stealth browser (avoids bot detection)
 session = BrowserSession(headless=False, use_stealth=True)
 
-# Log in manually or via automation
+# Navigate to login page
 session.driver.get("https://app.example.com/login")
-# ... authentication happens ...
 
-# Cache it
+# Log in manually in the browser window...
+# (or automate it with a plugin)
+
+# Cache the authenticated session
 cache_session(session, "example")
-print("Session cached!")
 ```
 
-### Restore Later
-
-```python
-from bsc import load_session
-
-# Restore without logging in again
-session = load_session("example")
-session.driver.get("https://app.example.com/dashboard")
-# You're already authenticated ✨
-```
-
-### API-Only Mode (No Browser)
+### 2. Use It Like an API
 
 ```python
 from bsc import load_session_for_api
 
-# Get a requests session with all the cookies
+# Load your cached session (no browser needed)
 api = load_session_for_api("example")
-response = api.get("https://app.example.com/api/data")
-print(response.json())
+
+# Make authenticated requests
+response = api.get("https://app.example.com/api/internal/documents")
+documents = response.json()
+
+for doc in documents:
+    print(f"Downloading {doc['name']}...")
+    content = api.get(doc['download_url']).content
+    with open(doc['name'], 'wb') as f:
+        f.write(content)
 ```
 
-## CLI
+### 3. Keep It Alive
 
-BSC includes a beautiful command-line interface:
+Sessions expire. BSC can keep them alive in the background:
+
+```python
+# Your keepalive handler pings the site periodically
+# to prevent session timeout
+```
+
+## Features
+
+| | Feature | Why It Matters |
+|:--|:--|:--|
+| 🥷 | **Stealth Mode** | Many sites block automation. BSC uses undetected-chromedriver and selenium-stealth to fly under the radar. |
+| 🔒 | **Encrypted Storage** | Sessions contain sensitive auth tokens. BSC encrypts everything with AES-128 (Fernet). |
+| ☁️ | **Cloud Storage** | Access your sessions from anywhere. Store in Supabase or S3 for multi-machine workflows. |
+| 🔄 | **Keepalive Daemon** | Sessions expire. BSC can ping sites in the background to keep you logged in. |
+| 🔌 | **Plugin System** | Automate login flows for specific sites. Community can share plugins (you maintain your own). |
+| 🛠️ | **Beautiful CLI** | Manage sessions from the terminal with rich, colorful output. |
+
+## CLI
 
 ```
 $ bsc --help
@@ -107,15 +168,13 @@ $ bsc --help
    bsc clear <name>      Remove a session
    bsc config            Show current configuration
 
- Documentation: https://github.com/stavxyz/bsc
-
 Commands:
   list       List all cached sessions with status and metadata.
   show       Show detailed information about a cached session.
   clear      Remove cached session(s).
   export     Export session cookies to HTTPie format.
   config     Show current BSC configuration.
-  plugins    List discovered plugins (storage, handlers, sites).
+  plugins    List discovered plugins.
   version    Show BSC version and installation info.
   keepalive  Manage the session keepalive daemon.
 ```
@@ -129,174 +188,123 @@ $ bsc list
 ┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓
 ┃ Session     ┃ Domain           ┃   Status   ┃ Cookies ┃ Last Modified    ┃
 ┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━┩
-│ github      │ github.com       │  ● active  │      12 │ 2024-01-15 09:30 │
-│ stripe      │ dashboard.stripe │  ● active  │       8 │ 2024-01-14 14:22 │
-│ oldservice  │ app.oldsite.com  │ ○ expired  │       5 │ 2024-01-01 11:00 │
+│ mybank      │ secure.mybank.com│  ● active  │      18 │ 2024-01-15 09:30 │
+│ my401k      │ participant.401k │  ● active  │      12 │ 2024-01-14 14:22 │
+│ insurance   │ portal.ins.com   │ ○ expired  │       8 │ 2024-01-01 11:00 │
 └─────────────┴──────────────────┴────────────┴─────────┴──────────────────┘
 
 3 session(s) cached
 ```
 
-### Show Session Details
-
-```
-$ bsc show github
-
-╭──────────────────────────────────────────────────────────╮
-│ ● github  active                                         │
-│                                                          │
-│ Domain:     github.com                                   │
-│ Cookies:    12                                           │
-│ Created:    2024-01-10 08:15:30                          │
-│ Modified:   2024-01-15 09:30:45                          │
-│ Expires:    2024-02-09 08:15:30                          │
-│ Domains:    github.com, api.github.com                   │
-╰──────────────────────────────────────────────────────────╯
-```
-
-### Configuration
-
-```
-$ bsc config
-
-╭─────────────────── ⚙ Configuration ───────────────────╮
-│ Config directory:   /home/user/.config/bsc            │
-│ Sessions directory: /home/user/.config/bsc/sessions   │
-│ Storage backend:    local (filesystem)                │
-│ Session TTL:        720 hours (30 days)               │
-│ Log level:          INFO                              │
-╰───────────────────────────────────────────────────────╯
-```
-
 ### Export to HTTPie
 
 ```
-$ bsc export github
+$ bsc export mybank
 
-✓ Exported to: /home/user/.config/httpie/sessions/github.com/github.json
+✓ Exported to: ~/.config/httpie/sessions/secure.mybank.com/mybank.json
 
 Usage:
-  http --session=github https://api.github.com/user
+  http --session=mybank https://secure.mybank.com/api/accounts
 ```
 
 ## Configuration
-
-BSC uses environment variables with the `BSC_` prefix:
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
 | `BSC_STORAGE_BACKEND` | `local` | Storage: `local`, `supabase`, or `s3` |
 | `BSC_CONFIG_DIR` | `~/.config/bsc` | Config and encryption key location |
-| `BSC_SESSION_TTL_HOURS` | `720` | Session lifetime (default: 30 days) |
+| `BSC_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
 | `BSC_LOG_LEVEL` | `INFO` | Logging verbosity |
 
-### Supabase Backend
+## Roadmap
+
+BSC is actively developed. Here's what's coming:
+
+### 🧙 Plugin Auto-Generation Wizard
+
+*Stop writing plugins by hand.*
+
+A built-in tool that watches you log in and generates the plugin code automatically:
 
 ```bash
-export BSC_STORAGE_BACKEND=supabase
-export BSC_SUPABASE_URL=https://xxx.supabase.co
-export BSC_SUPABASE_SERVICE_KEY=your-key
+$ bsc wizard mybank
+→ Opening browser to capture auth flow...
+→ Log in normally (use dummy creds if you prefer)
+→ Capturing cookies, headers, session validation...
+→ Generated plugin: ~/.config/bsc/plugins/mybank.py
+
+# Next time, login is automated:
+$ bsc login mybank
 ```
 
-### S3 Backend
+### 📦 HAR Import
+
+Import authentication flows from browser dev tools:
 
 ```bash
-export BSC_STORAGE_BACKEND=s3
-export BSC_S3_BUCKET=my-sessions-bucket
-export AWS_ACCESS_KEY_ID=xxx
-export AWS_SECRET_ACCESS_KEY=xxx
+$ bsc import-har mybank-login.har --name mybank
 ```
 
-## How It Works
+### 📚 Example Plugins
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Your Application                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│    ┌────────────┐         ┌────────────┐                    │
-│    │  Browser   │         │  API-only  │                    │
-│    │  Session   │         │   Session  │                    │
-│    └─────┬──────┘         └─────┬──────┘                    │
-│          │                      │                            │
-│          └──────────┬───────────┘                            │
-│                     ▼                                        │
-│    ┌────────────────────────────────────────┐               │
-│    │          SessionCache                   │               │
-│    │   • serialize with dill                 │               │
-│    │   • encrypt with Fernet (AES-128)       │               │
-│    │   • checksum with SHA-256               │               │
-│    └────────────────────┬───────────────────┘               │
-│                         ▼                                    │
-│    ┌────────────────────────────────────────┐               │
-│    │         Storage Backend                 │               │
-│    │  ┌─────────┐ ┌──────────┐ ┌─────────┐  │               │
-│    │  │  Local  │ │ Supabase │ │   S3    │  │               │
-│    │  └─────────┘ └──────────┘ └─────────┘  │               │
-│    └────────────────────────────────────────┘               │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
-```
+Templates and examples for common auth patterns (form login, OAuth, SSO).
 
 ## Plugins
 
-BSC is extensible via Python entry points.
+BSC is extensible via Python entry points. Write plugins to automate login for specific sites.
 
-### Custom Storage Backend
+### Custom Login Plugin
 
 ```python
-# my_package/storage.py
-from bsc.storage.base import SessionStorageBackend, SessionMetadata
+# my_plugins/mybank.py
+from bsc.plugins import SitePlugin
 
-class RedisStorage:
-    def save_session(self, name: str, data: bytes, metadata: SessionMetadata) -> str:
-        ...
+class MyBankPlugin(SitePlugin):
+    site_name = "mybank"
+    login_url = "https://secure.mybank.com/login"
 
-    def load_session(self, name: str) -> tuple[bytes, SessionMetadata]:
-        ...
-
-    def list_sessions(self) -> list[str]:
-        ...
-
-    def delete_session(self, name: str) -> bool:
-        ...
+    def login(self, session, username, password):
+        """Automate the login flow."""
+        session.driver.get(self.login_url)
+        session.driver.find_element("id", "username").send_keys(username)
+        session.driver.find_element("id", "password").send_keys(password)
+        session.driver.find_element("id", "submit").click()
+        # Handle MFA if needed...
+        return session
 ```
 
 Register in `pyproject.toml`:
 
 ```toml
-[project.entry-points."bsc.storage"]
-redis = "my_package.storage:RedisStorage"
+[project.entry-points."bsc.plugins"]
+mybank = "my_plugins.mybank:MyBankPlugin"
 ```
 
 ### Custom Keepalive Handler
 
 ```python
-# my_package/handler.py
-from bsc.keepalive.handler import KeepaliveHandler, SessionStatus
+# my_plugins/mybank_keepalive.py
+class MyBankKeepalive:
+    site_name = "mybank"
 
-class MyAppHandler:
-    site_name = "myapp"
+    def touch_session(self, session):
+        """Ping the site to prevent session timeout."""
+        r = session.get("https://secure.mybank.com/api/ping")
+        return r.ok, None
 
-    def touch_session(self, session) -> tuple[bool, SessionStatus | None]:
-        """Ping the app to keep the session alive."""
-        r = session.get("https://myapp.com/api/ping")
-        return r.ok, SessionStatus(authenticated=r.ok)
-
-    def validate_session(self, session) -> bool:
-        """Verify we're actually logged in."""
-        r = session.get("https://myapp.com/api/me")
+    def validate_session(self, session):
+        """Verify we're still logged in."""
+        r = session.get("https://secure.mybank.com/api/me")
         return r.status_code == 200
 ```
 
-Register:
-
-```toml
-[project.entry-points."bsc.keepalive_handlers"]
-myapp = "my_package.handler:MyAppHandler"
-```
-
 ## Security
+
+### Your Data, Your Rules
+
+BSC is for automating access to **your own accounts**. You're not scraping other people's data—you're building tools to access information that already belongs to you.
+
+Some services may consider automation a ToS violation. Use your judgment.
 
 ### Encryption
 
@@ -304,43 +312,25 @@ myapp = "my_package.handler:MyAppHandler"
 - **Key storage:** `~/.config/bsc/.session_key` with `0600` permissions
 - **Integrity:** SHA-256 checksum validated before deserializing
 
-### ⚠️ Important: Pickle Warning
+### ⚠️ Pickle Warning
 
-BSC uses Python's `pickle` for session serialization. Pickle can execute arbitrary code during deserialization.
+BSC uses Python's `pickle` for serialization. Only load sessions you created.
 
-**Mitigations:**
-- Sessions are encrypted—attackers need your key
-- Checksums are validated before unpickling
-- Only load sessions you created
+### Best Practices
 
-**Best practices:**
 - Keep your encryption key secure
 - Don't share session files
-- Run BSC on trusted machines only
-
-### Thread Safety
-
-BSC is **not thread-safe**. For concurrent use:
-- Use separate `BrowserSession` instances per thread
-- Or wrap operations with locks
-- For async: use `asyncio.to_thread()`
+- Run BSC on trusted machines
+- Use unique, strong passwords for automated accounts
 
 ## Development
 
 ```bash
-# Clone and setup
 git clone https://github.com/stavxyz/bsc.git
 cd bsc
-just setup
-
-# Run checks
-just check
-
-# Run tests
-just test
-
-# Build for PyPI
-just build
+just setup    # Create venv and install deps
+just check    # Run lint, typecheck, tests
+just build    # Build for PyPI
 ```
 
 ## License
@@ -348,8 +338,6 @@ just build
 MIT License—see [LICENSE](LICENSE).
 
 ## Acknowledgments
-
-BSC builds on these excellent projects:
 
 - [requestium](https://github.com/tryolabs/requestium) – Selenium + Requests integration
 - [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) – Anti-detection ChromeDriver
@@ -361,5 +349,5 @@ BSC builds on these excellent projects:
 ---
 
 <div align="center">
-<sub>Built with 🔐 by <a href="https://github.com/stavxyz">@stavxyz</a></sub>
+<sub>Built for automating your own data access.</sub>
 </div>
