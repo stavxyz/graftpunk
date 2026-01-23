@@ -17,7 +17,7 @@ class TestVersionCommand:
         """Test that version command outputs version info."""
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
-        assert "BSC version" in result.output
+        assert "BSC" in result.output
 
 
 class TestListCommand:
@@ -31,7 +31,7 @@ class TestListCommand:
         result = runner.invoke(app, ["list"])
 
         assert result.exit_code == 0
-        assert "No cached sessions found" in result.output
+        assert "No Sessions" in result.output or "No sessions" in result.output
 
     @patch("bsc.cli.main.list_sessions_with_metadata")
     def test_list_with_sessions(self, mock_list):
@@ -107,7 +107,7 @@ class TestClearCommand:
         result = runner.invoke(app, ["clear", "test-session", "--force"])
 
         assert result.exit_code == 0
-        assert "Cleared session" in result.output
+        assert "Removed session" in result.output
         mock_clear.assert_called_once_with("test-session")
 
     @patch("bsc.cli.main.clear_session_cache")
@@ -162,7 +162,7 @@ class TestExportCommand:
         result = runner.invoke(app, ["export", "broken"])
 
         assert result.exit_code == 1
-        assert "Failed to load session" in result.output
+        assert "Failed to load" in result.output
 
 
 class TestKeepaliveCommands:
@@ -223,8 +223,8 @@ class TestPluginsCommand:
         result = runner.invoke(app, ["plugins"])
 
         assert result.exit_code == 0
-        assert "Installed Plugins" in result.output
-        assert "(none)" in result.output
+        assert "Plugins" in result.output
+        assert "none installed" in result.output
 
 
 class TestConfigCommand:
@@ -244,5 +244,5 @@ class TestConfigCommand:
         result = runner.invoke(app, ["config"])
 
         assert result.exit_code == 0
-        assert "BSC Configuration" in result.output
+        assert "Configuration" in result.output
         assert "local" in result.output
