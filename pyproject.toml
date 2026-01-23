@@ -1,0 +1,126 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bsc"
+version = "0.1.0"
+description = "Browser Session Cache - A standalone, pluggable Python package for browser session caching and keepalive management"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "stavxyz", email = "stavxyz@users.noreply.github.com" }
+]
+keywords = ["browser", "session", "cache", "selenium", "automation", "keepalive"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "requestium>=0.2.5",
+    "selenium>=4.0.0",
+    "webdriver-manager>=4.0.0",
+    "undetected-chromedriver>=3.5.0",
+    "selenium-stealth>=1.0.6",
+    "cryptography>=42.0.0",
+    "dill>=0.3.0",
+    "pydantic-settings>=2.0.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "structlog>=23.0.0",
+    "python-slugify>=8.0.0",
+    "httpie>=3.0.0",
+    "pyotp>=2.9.0",
+]
+
+[project.optional-dependencies]
+supabase = [
+    "supabase>=2.10.0",
+]
+s3 = [
+    "boto3>=1.34.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.0.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]
+all = [
+    "bsc[supabase,s3,dev]",
+]
+
+[project.scripts]
+bsc = "bsc.cli.main:app"
+
+[project.entry-points."bsc.storage"]
+local = "bsc.storage.local:LocalSessionStorage"
+# Supabase backend registered when installed with [supabase] extra
+# supabase = "bsc.storage.supabase:SupabaseSessionStorage"
+
+[project.entry-points."bsc.keepalive_handlers"]
+# Site-specific handlers register themselves via entry points
+# Example: humaninterest = "document_pipeline.keepalive:HumanInterestHandler"
+
+[project.entry-points."bsc.plugins"]
+# Site authentication plugins register themselves via entry points
+# Example: humaninterest = "document_pipeline.plugins:HumanInterestPlugin"
+
+[project.urls]
+Homepage = "https://github.com/stavxyz/bsc"
+Repository = "https://github.com/stavxyz/bsc"
+Documentation = "https://github.com/stavxyz/bsc#readme"
+Changelog = "https://github.com/stavxyz/bsc/blob/main/CHANGELOG.md"
+Issues = "https://github.com/stavxyz/bsc/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bsc"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "S"]
+ignore = ["S101"]  # Allow assert in tests
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-v", "--strict-markers", "--tb=short"]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+]
+
+[tool.coverage.run]
+source = ["src/bsc"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
