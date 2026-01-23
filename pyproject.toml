@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graftpunk"
-version = "0.1.0"
+version = "1.0.0"
 description = "Turn any website into an API. Graft scriptable access onto authenticated web services."
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["browser", "session", "automation", "api", "scraping", "selenium", "requests"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
