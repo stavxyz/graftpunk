@@ -1,110 +1,182 @@
 <div align="center">
 
-# BSC
+# 🔐 BSC
 
 **Browser Session Cache**
 
-*Encrypted browser session persistence with stealth automation and pluggable storage*
+*Never re-authenticate your automated browsers again.*
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Typed](https://img.shields.io/badge/typed-mypy-blue.svg)](https://mypy-lang.org/)
 
+[Installation](#installation) • [Quick Start](#quick-start) • [CLI](#cli) • [Configuration](#configuration) • [Plugins](#plugins)
+
 </div>
 
 ---
 
-## What is BSC?
+## The Problem
 
-BSC is a Python library for persisting authenticated browser sessions across runs. It captures cookies, headers, and session state from a browser, encrypts them, and stores them locally or in the cloud. Later, sessions can be restored without re-authenticating.
+You're automating a browser workflow. It works great—until your script restarts and you're back at the login screen. Again.
 
-**Key use cases:**
-
-- **Automated workflows** that need to survive restarts
-- **CI/CD pipelines** requiring authenticated API access
-- **Session keepalive daemons** that maintain login state
-- **Multi-machine deployments** sharing session state via cloud storage
+**BSC solves this.** It captures your authenticated browser session—cookies, headers, everything—encrypts it, and stores it safely. Next time? Your session is restored instantly.
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Encrypted Persistence** | Fernet AES-128-CBC + HMAC-SHA256 encryption |
-| **Stealth Automation** | undetected-chromedriver + selenium-stealth to avoid bot detection |
-| **Pluggable Storage** | Local filesystem, Supabase, S3 (extensible) |
-| **Keepalive Daemon** | Automatic session refresh with customizable handlers |
-| **Plugin Architecture** | Entry points for site-specific authentication |
-| **MFA Support** | TOTP generation, reCAPTCHA detection, magic link extraction |
-| **CLI Interface** | Session management and daemon control |
-| **Type Safe** | Full type annotations with py.typed marker |
+| | Feature | What It Does |
+|:--|:--|:--|
+| 🔒 | **Encrypted Storage** | AES-128 encryption (Fernet) with HMAC authentication |
+| 🥷 | **Stealth Mode** | Undetected ChromeDriver + selenium-stealth to avoid bot detection |
+| ☁️ | **Cloud Storage** | Store sessions in Supabase or S3 for multi-machine access |
+| 🔄 | **Keepalive Daemon** | Background process that keeps sessions from expiring |
+| 🔌 | **Plugin System** | Extend with custom storage backends and site handlers |
+| 🛠️ | **Beautiful CLI** | Rich terminal output with session management commands |
 
 ## Installation
 
 ```bash
-# Core package
 pip install bsc
+```
 
-# With Supabase storage backend
-pip install bsc[supabase]
+**With cloud storage:**
 
-# With S3 storage backend
-pip install bsc[s3]
-
-# With all extras (including dev tools)
-pip install bsc[all]
+```bash
+pip install bsc[supabase]   # Supabase backend
+pip install bsc[s3]         # AWS S3 backend
+pip install bsc[all]        # Everything
 ```
 
 ## Quick Start
 
-### Basic Session Caching
+### Cache a Session
 
 ```python
-from bsc import BrowserSession, cache_session, load_session
+from bsc import BrowserSession, cache_session
 
-# Create a stealth browser session
-session = BrowserSession(headless=True, use_stealth=True)
+# Create a stealth browser
+session = BrowserSession(headless=False, use_stealth=True)
 
-# Navigate and authenticate
-session.driver.get("https://example.com/login")
-# ... perform login steps ...
+# Log in manually or via automation
+session.driver.get("https://app.example.com/login")
+# ... authentication happens ...
 
-# Cache the authenticated session
+# Cache it
 cache_session(session, "example")
-
-# Later: restore without re-authenticating
-session = load_session("example")
-session.driver.get("https://example.com/dashboard")
+print("Session cached!")
 ```
 
-### API-Only Usage (No Browser)
+### Restore Later
+
+```python
+from bsc import load_session
+
+# Restore without logging in again
+session = load_session("example")
+session.driver.get("https://app.example.com/dashboard")
+# You're already authenticated ✨
+```
+
+### API-Only Mode (No Browser)
 
 ```python
 from bsc import load_session_for_api
 
-# Load session for HTTP requests without spawning a browser
-api_session = load_session_for_api("example")
-response = api_session.get("https://example.com/api/data")
+# Get a requests session with all the cookies
+api = load_session_for_api("example")
+response = api.get("https://app.example.com/api/data")
 print(response.json())
 ```
 
-### CLI Usage
+## CLI
 
-```bash
-# List all cached sessions
-bsc list
+BSC includes a beautiful command-line interface:
 
-# Show session details (cookies, expiry, metadata)
-bsc show example
+```
+$ bsc --help
 
-# Export cookies to HTTPie session format
-bsc export example
+ 🔐 BSC - Browser Session Cache
 
-# Clear a session
-bsc clear example
+ Securely cache and restore authenticated browser sessions.
+ Sessions are encrypted with Fernet (AES-128) and stored locally or in the cloud.
 
-# Run keepalive daemon
-bsc keepalive start example --handler mypackage:MyHandler
+ Quick start:
+   bsc list              Show all cached sessions
+   bsc show <name>       View session details
+   bsc clear <name>      Remove a session
+   bsc config            Show current configuration
+
+ Documentation: https://github.com/stavxyz/bsc
+
+Commands:
+  list       List all cached sessions with status and metadata.
+  show       Show detailed information about a cached session.
+  clear      Remove cached session(s).
+  export     Export session cookies to HTTPie format.
+  config     Show current BSC configuration.
+  plugins    List discovered plugins (storage, handlers, sites).
+  version    Show BSC version and installation info.
+  keepalive  Manage the session keepalive daemon.
+```
+
+### List Sessions
+
+```
+$ bsc list
+
+              🔐 Cached Sessions
+┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓
+┃ Session     ┃ Domain           ┃   Status   ┃ Cookies ┃ Last Modified    ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━┩
+│ github      │ github.com       │  ● active  │      12 │ 2024-01-15 09:30 │
+│ stripe      │ dashboard.stripe │  ● active  │       8 │ 2024-01-14 14:22 │
+│ oldservice  │ app.oldsite.com  │ ○ expired  │       5 │ 2024-01-01 11:00 │
+└─────────────┴──────────────────┴────────────┴─────────┴──────────────────┘
+
+3 session(s) cached
+```
+
+### Show Session Details
+
+```
+$ bsc show github
+
+╭──────────────────────────────────────────────────────────╮
+│ ● github  active                                         │
+│                                                          │
+│ Domain:     github.com                                   │
+│ Cookies:    12                                           │
+│ Created:    2024-01-10 08:15:30                          │
+│ Modified:   2024-01-15 09:30:45                          │
+│ Expires:    2024-02-09 08:15:30                          │
+│ Domains:    github.com, api.github.com                   │
+╰──────────────────────────────────────────────────────────╯
+```
+
+### Configuration
+
+```
+$ bsc config
+
+╭─────────────────── ⚙ Configuration ───────────────────╮
+│ Config directory:   /home/user/.config/bsc            │
+│ Sessions directory: /home/user/.config/bsc/sessions   │
+│ Storage backend:    local (filesystem)                │
+│ Session TTL:        720 hours (30 days)               │
+│ Log level:          INFO                              │
+╰───────────────────────────────────────────────────────╯
+```
+
+### Export to HTTPie
+
+```
+$ bsc export github
+
+✓ Exported to: /home/user/.config/httpie/sessions/github.com/github.json
+
+Usage:
+  http --session=github https://api.github.com/user
 ```
 
 ## Configuration
@@ -112,198 +184,182 @@ bsc keepalive start example --handler mypackage:MyHandler
 BSC uses environment variables with the `BSC_` prefix:
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `BSC_STORAGE_BACKEND` | `local` | Storage backend: `local`, `supabase`, `s3` |
-| `BSC_CONFIG_DIR` | `~/.config/bsc` | Configuration and key storage directory |
-| `BSC_SESSION_TTL_HOURS` | `720` | Session time-to-live (30 days default) |
-| `BSC_LOG_LEVEL` | `INFO` | Logging level |
+|:---------|:--------|:------------|
+| `BSC_STORAGE_BACKEND` | `local` | Storage: `local`, `supabase`, or `s3` |
+| `BSC_CONFIG_DIR` | `~/.config/bsc` | Config and encryption key location |
+| `BSC_SESSION_TTL_HOURS` | `720` | Session lifetime (default: 30 days) |
+| `BSC_LOG_LEVEL` | `INFO` | Logging verbosity |
 
 ### Supabase Backend
 
 ```bash
 export BSC_STORAGE_BACKEND=supabase
-export SUPABASE_URL=https://your-project.supabase.co
-export SUPABASE_SERVICE_KEY=your-service-key
-export BSC_SESSION_KEY_VAULT_NAME=session-encryption-key
+export BSC_SUPABASE_URL=https://xxx.supabase.co
+export BSC_SUPABASE_SERVICE_KEY=your-key
 ```
 
 ### S3 Backend
 
 ```bash
 export BSC_STORAGE_BACKEND=s3
-export AWS_ACCESS_KEY_ID=your-access-key
-export AWS_SECRET_ACCESS_KEY=your-secret-key
-export BSC_S3_BUCKET=your-bucket-name
+export BSC_S3_BUCKET=my-sessions-bucket
+export AWS_ACCESS_KEY_ID=xxx
+export AWS_SECRET_ACCESS_KEY=xxx
 ```
 
-## Architecture
+## How It Works
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Application                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
-│   │ BrowserSession│    │ cache_session │    │ load_session │     │
-│   │              │───▶│              │    │              │     │
-│   │ (Requestium) │    │              │◀───│              │     │
-│   └──────────────┘    └──────┬───────┘    └──────┬───────┘     │
-│                              │                    │              │
-│   ┌──────────────────────────┴────────────────────┘              │
-│   │                                                              │
-│   ▼                                                              │
-│   ┌──────────────────────────────────────────────────────────┐  │
-│   │                    Encryption Layer                       │  │
-│   │              (Fernet AES-128-CBC + HMAC)                 │  │
-│   └──────────────────────────┬───────────────────────────────┘  │
-│                              │                                   │
-│   ┌──────────────────────────┴───────────────────────────────┐  │
-│   │                    Storage Backend                        │  │
-│   │  ┌─────────┐    ┌──────────┐    ┌────────┐              │  │
-│   │  │  Local  │    │ Supabase │    │   S3   │              │  │
-│   │  │  Files  │    │  + Vault │    │        │              │  │
-│   │  └─────────┘    └──────────┘    └────────┘              │  │
-│   └──────────────────────────────────────────────────────────┘  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Your Application                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│    ┌────────────┐         ┌────────────┐                    │
+│    │  Browser   │         │  API-only  │                    │
+│    │  Session   │         │   Session  │                    │
+│    └─────┬──────┘         └─────┬──────┘                    │
+│          │                      │                            │
+│          └──────────┬───────────┘                            │
+│                     ▼                                        │
+│    ┌────────────────────────────────────────┐               │
+│    │          SessionCache                   │               │
+│    │   • serialize with dill                 │               │
+│    │   • encrypt with Fernet (AES-128)       │               │
+│    │   • checksum with SHA-256               │               │
+│    └────────────────────┬───────────────────┘               │
+│                         ▼                                    │
+│    ┌────────────────────────────────────────┐               │
+│    │         Storage Backend                 │               │
+│    │  ┌─────────┐ ┌──────────┐ ┌─────────┐  │               │
+│    │  │  Local  │ │ Supabase │ │   S3    │  │               │
+│    │  └─────────┘ └──────────┘ └─────────┘  │               │
+│    └────────────────────────────────────────┘               │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Plugin Development
+## Plugins
 
-BSC is extensible via Python entry points. Create custom storage backends, keepalive handlers, or site-specific plugins.
+BSC is extensible via Python entry points.
 
 ### Custom Storage Backend
 
-Implement the `SessionStorageBackend` protocol:
-
 ```python
+# my_package/storage.py
 from bsc.storage.base import SessionStorageBackend, SessionMetadata
 
 class RedisStorage:
-    """Store sessions in Redis."""
-
     def save_session(self, name: str, data: bytes, metadata: SessionMetadata) -> str:
-        # Save encrypted data and metadata
         ...
-        return session_id
 
     def load_session(self, name: str) -> tuple[bytes, SessionMetadata]:
-        # Load and return encrypted data with metadata
         ...
 
     def list_sessions(self) -> list[str]:
-        # Return list of session names
         ...
 
     def delete_session(self, name: str) -> bool:
-        # Delete session, return True if existed
         ...
 ```
 
-Register via entry points in `pyproject.toml`:
+Register in `pyproject.toml`:
 
 ```toml
 [project.entry-points."bsc.storage"]
-redis = "mypackage.storage:RedisStorage"
+redis = "my_package.storage:RedisStorage"
 ```
 
 ### Custom Keepalive Handler
 
-Implement the `KeepaliveHandler` protocol to keep sessions alive for specific sites:
-
 ```python
+# my_package/handler.py
 from bsc.keepalive.handler import KeepaliveHandler, SessionStatus
 
 class MyAppHandler:
-    """Keepalive handler for MyApp."""
+    site_name = "myapp"
 
-    site_name: str = "MyApp"
+    def touch_session(self, session) -> tuple[bool, SessionStatus | None]:
+        """Ping the app to keep the session alive."""
+        r = session.get("https://myapp.com/api/ping")
+        return r.ok, SessionStatus(authenticated=r.ok)
 
-    def touch_session(self, api_session) -> tuple[bool, SessionStatus | None]:
-        """Touch session to prevent expiry.
-
-        Returns:
-            Tuple of (success, optional status with details)
-        """
-        response = api_session.get("https://myapp.com/api/ping")
-        return response.ok, SessionStatus(authenticated=response.ok)
-
-    def validate_session(self, api_session) -> bool:
-        """Verify session is truly authenticated."""
-        response = api_session.get("https://myapp.com/api/me")
-        return response.status_code == 200
+    def validate_session(self, session) -> bool:
+        """Verify we're actually logged in."""
+        r = session.get("https://myapp.com/api/me")
+        return r.status_code == 200
 ```
 
-Register via entry points:
+Register:
 
 ```toml
 [project.entry-points."bsc.keepalive_handlers"]
-myapp = "mypackage.handler:MyAppHandler"
+myapp = "my_package.handler:MyAppHandler"
 ```
 
 ## Security
 
-### Encryption Model
+### Encryption
 
-- **Algorithm**: Fernet (AES-128-CBC + HMAC-SHA256)
-- **Key Storage**: Local file with 0600 permissions, or cloud vault (Supabase Vault)
-- **Defense in Depth**: SHA-256 checksum validation before unpickling
-- **Runtime Validation**: Session objects validated after deserialization
+- **Algorithm:** Fernet (AES-128-CBC + HMAC-SHA256)
+- **Key storage:** `~/.config/bsc/.session_key` with `0600` permissions
+- **Integrity:** SHA-256 checksum validated before deserializing
 
-### Threat Model
+### ⚠️ Important: Pickle Warning
 
-BSC assumes you control the machines running it. The encryption protects session confidentiality at rest and in transit. Key compromise + file access would be required for an attacker to craft malicious payloads.
+BSC uses Python's `pickle` for session serialization. Pickle can execute arbitrary code during deserialization.
 
-### Security Recommendations
+**Mitigations:**
+- Sessions are encrypted—attackers need your key
+- Checksums are validated before unpickling
+- Only load sessions you created
 
-1. **Run on trusted machines only** - BSC stores authentication credentials
-2. **Protect your encryption key** - The key file (`~/.config/bsc/.session_key`) must be kept confidential
-3. **Use cloud storage for multi-machine** - Supabase/S3 provide transport encryption
-4. **Rotate sessions periodically** - Clear and re-create sessions to limit exposure
+**Best practices:**
+- Keep your encryption key secure
+- Don't share session files
+- Run BSC on trusted machines only
 
-### ⚠️ Security Warning: Pickle Deserialization
+### Thread Safety
 
-BSC uses Python's pickle module for session serialization. **Pickle deserialization can execute arbitrary code** - this is a well-known attack vector.
+BSC is **not thread-safe**. For concurrent use:
+- Use separate `BrowserSession` instances per thread
+- Or wrap operations with locks
+- For async: use `asyncio.to_thread()`
 
-While BSC protects sessions with encryption and SHA-256 checksum validation before unpickling, these safeguards assume:
-- The encryption key remains confidential
-- The machine running BSC is trusted
-- Session files originate from trusted sources
+## Development
 
-**Only run BSC on trusted machines and never load sessions from untrusted sources.**
+```bash
+# Clone and setup
+git clone https://github.com/stavxyz/bsc.git
+cd bsc
+just setup
 
-## Thread Safety
+# Run checks
+just check
 
-BSC uses global caches for encryption keys and storage backends. These are **NOT thread-safe**. For multi-threaded applications:
+# Run tests
+just test
 
-- **Recommended**: Use separate `BrowserSession` and storage instances per thread
-- **Alternative**: Implement external synchronization (locks) around BSC operations
-- **For async code**: BSC is synchronous; use `asyncio.to_thread()` for concurrent operations
+# Build for PyPI
+just build
+```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for:
-
-- Development setup instructions
-- Code style guidelines
-- Testing requirements
-- Pull request process
+MIT License—see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-Built on the shoulders of giants:
+BSC builds on these excellent projects:
 
-- [requestium](https://github.com/tryolabs/requestium) - Selenium + requests integration
-- [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) - Anti-detection ChromeDriver
-- [selenium-stealth](https://github.com/diprajpatra/selenium-stealth) - Stealth mode for Selenium
-- [cryptography](https://cryptography.io/) - Cryptographic recipes
+- [requestium](https://github.com/tryolabs/requestium) – Selenium + Requests integration
+- [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) – Anti-detection ChromeDriver
+- [selenium-stealth](https://github.com/diprajpatra/selenium-stealth) – Stealth patches
+- [cryptography](https://cryptography.io/) – Encryption primitives
+- [rich](https://github.com/Textualize/rich) – Beautiful terminal output
+- [typer](https://typer.tiangolo.com/) – CLI framework
 
 ---
 
 <div align="center">
-<sub>Made with determination and too much coffee</sub>
+<sub>Built with 🔐 by <a href="https://github.com/stavxyz">@stavxyz</a></sub>
 </div>
