@@ -434,6 +434,80 @@ def plugins() -> None:
     )
 
 
+@app.command("import-har")
+def import_har_cmd(
+    har_file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to HAR file to import",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ],
+    name: Annotated[
+        str,
+        typer.Option(
+            "--name",
+            "-n",
+            help="Plugin name (default: inferred from domain)",
+        ),
+    ] = "",
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output file path (default: ~/.config/graftpunk/plugins/)",
+        ),
+    ] = None,
+    format_type: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            "-f",
+            help="Output format: python or yaml",
+        ),
+    ] = "python",
+    discover_api: Annotated[
+        bool,
+        typer.Option(
+            "--discover-api/--no-discover-api",
+            help="Discover API endpoints from requests",
+        ),
+    ] = True,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Show what would be generated without writing files",
+        ),
+    ] = False,
+) -> None:
+    """Import HAR file and generate a graftpunk plugin.
+
+    Analyzes HTTP traffic captured in HAR format to detect authentication
+    flows and API endpoints, then generates a plugin you can customize.
+
+    \b
+    Examples:
+        gp import-har auth-flow.har --name mysite
+        gp import-har capture.har --format yaml --dry-run
+        gp import-har api-trace.har -o ./my_plugin.py
+    """
+    from graftpunk.cli.import_har import import_har
+
+    import_har(
+        har_file=har_file,
+        name=name,
+        output=output,
+        format_type=format_type,
+        discover_api=discover_api,
+        dry_run=dry_run,
+    )
+
+
 @app.command("config")
 def config() -> None:
     """Show current graftpunk configuration."""
