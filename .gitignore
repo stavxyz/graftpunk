@@ -53,3 +53,7 @@ htmlcov/
 
 # Claude Code
 .claude/
+.bandit
+.envrc.example
+Justfile.example
+lefthook.yml
