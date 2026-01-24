@@ -42,6 +42,7 @@ dependencies = [
     "python-slugify>=8.0.0",
     "httpie>=3.0.0",
     "pyotp>=2.9.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +52,9 @@ supabase = [
 s3 = [
     "boto3>=1.34.0",
 ]
+jmespath = [
+    "jmespath>=1.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
@@ -59,7 +63,7 @@ dev = [
     "mypy>=1.10.0",
 ]
 all = [
-    "graftpunk[supabase,s3,dev]",
+    "graftpunk[supabase,s3,jmespath,dev]",
 ]
 
 [project.scripts]
@@ -111,6 +115,7 @@ no_implicit_optional = true
 module = [
     "dill.*",
     "httpie.*",
+    "jmespath.*",
     "postgrest.*",
     "pyotp.*",
     "requestium.*",
@@ -122,6 +127,7 @@ module = [
     "supabase.*",
     "undetected_chromedriver.*",
     "webdriver_manager.*",
+    "yaml.*",
 ]
 ignore_missing_imports = true
 

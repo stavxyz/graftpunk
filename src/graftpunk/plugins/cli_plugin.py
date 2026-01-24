@@ -81,6 +81,10 @@ class CLIPluginProtocol(Protocol):
         """Return all commands defined by this plugin."""
         ...
 
+    def get_session(self) -> requests.Session:
+        """Load the graftpunk session for API calls."""
+        ...
+
 
 def command(
     help: str = "",  # noqa: A002 - shadows builtin but matches typer convention

@@ -22,14 +22,19 @@ from graftpunk import (
 from graftpunk.config import get_settings
 from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
 from graftpunk.keepalive.state import read_keepalive_pid, read_keepalive_state
+from graftpunk.logging import get_logger
 from graftpunk.plugins import (
+    discover_cli_plugins,
     discover_keepalive_handlers,
     discover_site_plugins,
     discover_storage_backends,
 )
+from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 
 if TYPE_CHECKING:
     from graftpunk.session import BrowserSession
+
+LOG = get_logger(__name__)
 
 app = typer.Typer(
     name="graftpunk",
@@ -379,12 +384,19 @@ def keepalive_stop() -> None:
 
 @app.command("plugins")
 def plugins() -> None:
-    """List discovered plugins (storage, handlers, sites)."""
+    """List discovered plugins (storage, handlers, sites, CLI)."""
     storage = discover_storage_backends()
     handlers = discover_keepalive_handlers()
     site_plugins = discover_site_plugins()
+    cli_plugins = discover_cli_plugins()
+    yaml_plugins = create_yaml_plugins()
 
-    total = len(storage) + len(handlers) + len(site_plugins)
+    # Combine CLI plugin names from both sources
+    cli_plugin_names = set(cli_plugins.keys())
+    for plugin in yaml_plugins:
+        cli_plugin_names.add(plugin.site_name)
+
+    total = len(storage) + len(handlers) + len(site_plugins) + len(cli_plugin_names)
 
     sections = []
 
@@ -405,6 +417,12 @@ def plugins() -> None:
         sections.append(f"[bold]Site Plugins[/bold]\n{items}")
     else:
         sections.append("[bold]Site Plugins[/bold]\n  [dim](none installed)[/dim]")
+
+    if cli_plugin_names:
+        items = "\n".join(f"  [green]✓[/green] {name}" for name in sorted(cli_plugin_names))
+        sections.append(f"[bold]CLI Plugins[/bold]\n{items}")
+    else:
+        sections.append("[bold]CLI Plugins[/bold]\n  [dim](none installed)[/dim]")
 
     content = "\n\n".join(sections)
     console.print(
@@ -435,6 +453,41 @@ def config() -> None:
 [dim]Log level:[/dim]          {settings.log_level}"""
 
     console.print(Panel(info.strip(), title="⚙ Configuration", border_style="cyan"))
+
+
+# Register plugin commands dynamically
+# This is done at module load time so plugins appear in --help
+_registered_plugins: dict[str, str] = {}
+try:
+    from graftpunk.cli.plugin_commands import inject_plugin_commands, register_plugin_commands
+
+    _registered_plugins = register_plugin_commands(app)
+    if _registered_plugins:
+        LOG.debug("plugins_registered", count=len(_registered_plugins))
+except Exception as exc:
+    # Don't crash the CLI if plugin registration fails
+    LOG.warning("plugin_registration_failed", error=str(exc))
+
+
+# Create a wrapper to inject plugin commands after Typer builds the Click group
+_original_typer_call = app.__class__.__call__
+
+
+def _patched_call(self: typer.Typer, *args: str, **kwargs: object) -> object:
+    """Wrapper that injects plugin commands before running the CLI."""
+    import click
+
+    # Get the Click group from Typer
+    click_group = typer.main.get_command(self)
+    if isinstance(click_group, click.Group) and _registered_plugins:
+        inject_plugin_commands(click_group)
+    # Call the original Click group directly
+    return click_group.main(standalone_mode=False)
+
+
+# Only patch if we have plugins to inject
+if _registered_plugins:
+    app.__class__.__call__ = _patched_call  # type: ignore[method-assign]
 
 
 if __name__ == "__main__":

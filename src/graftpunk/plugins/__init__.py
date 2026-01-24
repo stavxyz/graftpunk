@@ -20,6 +20,32 @@ from importlib.metadata import entry_points
 from typing import Any
 
 from graftpunk.logging import get_logger
+from graftpunk.plugins.cli_plugin import (
+    CLIPluginProtocol,
+    CommandSpec,
+    ParamSpec,
+    SitePlugin,
+    command,
+)
+
+__all__ = [
+    # Base classes and decorators
+    "SitePlugin",
+    "command",
+    "CLIPluginProtocol",
+    "CommandSpec",
+    "ParamSpec",
+    # Discovery functions
+    "discover_plugins",
+    "discover_storage_backends",
+    "discover_keepalive_handlers",
+    "discover_site_plugins",
+    "discover_cli_plugins",
+    "get_keepalive_handler",
+    "get_storage_backend",
+    "load_handler_from_string",
+    "list_available_plugins",
+]
 
 LOG = get_logger(__name__)
 

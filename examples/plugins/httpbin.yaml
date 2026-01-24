@@ -1,0 +1,88 @@
+# httpbin.org - HTTP testing service
+#
+# This is an example YAML plugin for graftpunk. httpbin.org is a free
+# service that returns information about HTTP requests, making it perfect
+# for testing plugin mechanics.
+#
+# To use this plugin:
+#   1. Copy to ~/.config/graftpunk/plugins/httpbin.yaml
+#   2. Run: gp httpbin ip
+#
+# No session or authentication is required for httpbin.org.
+
+site_name: httpbin
+session_name: ""  # Empty = no session required (public API)
+help: "Test commands using httpbin.org (no authentication required)"
+base_url: "https://httpbin.org"
+
+commands:
+  ip:
+    help: "Get your public IP address"
+    method: GET
+    url: "/ip"
+    jmespath: "origin"
+
+  headers:
+    help: "Echo the request headers sent by the client"
+    method: GET
+    url: "/headers"
+    jmespath: "headers"
+
+  user-agent:
+    help: "Get the User-Agent header value"
+    method: GET
+    url: "/user-agent"
+    jmespath: "user-agent"
+
+  get:
+    help: "Test GET request - echoes query parameters"
+    method: GET
+    url: "/get"
+    params:
+      - name: foo
+        required: false
+        default: "bar"
+        help: "Example query parameter 'foo'"
+
+  status:
+    help: "Return a specific HTTP status code"
+    method: GET
+    url: "/status/{code}"
+    params:
+      - name: code
+        type: int
+        required: true
+        is_option: false
+        help: "HTTP status code to return (e.g., 200, 404, 500)"
+
+  delay:
+    help: "Delay the response by N seconds (max 10)"
+    method: GET
+    url: "/delay/{seconds}"
+    params:
+      - name: seconds
+        type: int
+        required: true
+        is_option: false
+        help: "Number of seconds to delay (0-10)"
+
+  uuid:
+    help: "Generate a random UUID"
+    method: GET
+    url: "/uuid"
+    jmespath: "uuid"
+
+  json:
+    help: "Return a sample JSON response"
+    method: GET
+    url: "/json"
+
+  html:
+    help: "Return sample HTML page"
+    method: GET
+    url: "/html"
+
+  robots:
+    help: "Return robots.txt rules"
+    method: GET
+    url: "/robots.txt"
