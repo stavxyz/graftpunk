@@ -72,6 +72,7 @@ EXCLUDE_PATTERNS = [
 
 EXCLUDE_REGEX = re.compile("|".join(EXCLUDE_PATTERNS), re.IGNORECASE)
 
+
 @dataclass
 class AuthStep:
     """Single step in an authentication flow."""
