@@ -124,7 +124,8 @@ jobs:
           # - safety: NON-BLOCKING - provides additional vulnerability database check (may have false positives)
           # - bandit: NON-BLOCKING - static analysis for code issues (requires triage for false positives)
           echo "=== pip-audit: checking for known vulnerabilities ==="
-          pip-audit --skip-editable  # Block on any vulnerabilities
+          # Ignore PYSEC-2023-242 (httpie vulnerability) - latest version still affected, no fix available
+          pip-audit --skip-editable --ignore-vuln PYSEC-2023-242
           echo "=== safety: checking against safety database ==="
           safety check --full-report || echo "::warning::safety found issues"
           echo "=== bandit: static security analysis ==="
