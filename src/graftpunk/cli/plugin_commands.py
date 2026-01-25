@@ -243,8 +243,13 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
 
     # Discover YAML plugins
     try:
-        yaml_plugins = create_yaml_plugins()
+        yaml_plugins, yaml_errors = create_yaml_plugins()
         all_plugins.extend(yaml_plugins)
+        # Aggregate any YAML file load errors
+        for yaml_error in yaml_errors:
+            result.add_error(
+                str(yaml_error.filepath.name), yaml_error.error, "discovery"
+            )
     except Exception as exc:
         LOG.exception("yaml_plugin_discovery_failed", error=str(exc))
         result.add_error("yaml-plugins", str(exc), "discovery")

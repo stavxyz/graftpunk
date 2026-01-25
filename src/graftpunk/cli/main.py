@@ -325,7 +325,7 @@ def plugins() -> None:
     handlers = discover_keepalive_handlers()
     site_plugins = discover_site_plugins()
     cli_plugins = discover_cli_plugins()
-    yaml_plugins = create_yaml_plugins()
+    yaml_plugins, _ = create_yaml_plugins()  # Errors shown via plugin_commands
 
     # Combine CLI plugin names from both sources
     cli_plugin_names = set(cli_plugins.keys())

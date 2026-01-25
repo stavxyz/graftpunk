@@ -270,16 +270,18 @@ class TestDiscoverYamlPlugins:
 
     def test_discover_no_plugins_dir(self, isolated_config: Path) -> None:
         """Test discovery when plugins directory doesn't exist."""
-        plugins = discover_yaml_plugins()
-        assert plugins == []
+        result = discover_yaml_plugins()
+        assert result.plugins == []
+        assert result.errors == []
 
     def test_discover_empty_plugins_dir(self, isolated_config: Path) -> None:
         """Test discovery with empty plugins directory."""
         plugins_dir = isolated_config / "plugins"
         plugins_dir.mkdir()
 
-        plugins = discover_yaml_plugins()
-        assert plugins == []
+        result = discover_yaml_plugins()
+        assert result.plugins == []
+        assert result.errors == []
 
     def test_discover_single_plugin(self, isolated_config: Path) -> None:
         """Test discovering a single YAML plugin."""
@@ -294,9 +296,10 @@ commands:
 """
         (plugins_dir / "test.yaml").write_text(yaml_content)
 
-        plugins = discover_yaml_plugins()
-        assert len(plugins) == 1
-        assert plugins[0].site_name == "testplugin"
+        result = discover_yaml_plugins()
+        assert len(result.plugins) == 1
+        assert result.plugins[0].site_name == "testplugin"
+        assert result.errors == []
 
     def test_discover_multiple_plugins(self, isolated_config: Path) -> None:
         """Test discovering multiple YAML plugins."""
@@ -313,13 +316,14 @@ commands:
             "site_name: plugin3\ncommands:\n  cmd:\n    url: /c"
         )
 
-        plugins = discover_yaml_plugins()
-        assert len(plugins) == 3
-        site_names = {p.site_name for p in plugins}
+        result = discover_yaml_plugins()
+        assert len(result.plugins) == 3
+        site_names = {p.site_name for p in result.plugins}
         assert site_names == {"plugin1", "plugin2", "plugin3"}
+        assert result.errors == []
 
     def test_discover_skips_invalid_plugins(self, isolated_config: Path) -> None:
-        """Test that invalid plugins are skipped with warning."""
+        """Test that invalid plugins are skipped and error is recorded."""
         plugins_dir = isolated_config / "plugins"
         plugins_dir.mkdir()
 
@@ -328,7 +332,11 @@ commands:
         # Invalid plugin (missing commands)
         (plugins_dir / "invalid.yaml").write_text("site_name: invalid")
 
-        plugins = discover_yaml_plugins()
+        result = discover_yaml_plugins()
         # Only valid plugin should be loaded
-        assert len(plugins) == 1
-        assert plugins[0].site_name == "valid"
+        assert len(result.plugins) == 1
+        assert result.plugins[0].site_name == "valid"
+        # Error should be recorded for invalid plugin
+        assert result.has_errors
+        assert len(result.errors) == 1
+        assert "invalid.yaml" in str(result.errors[0].filepath)
