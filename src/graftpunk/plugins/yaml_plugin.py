@@ -191,6 +191,14 @@ class YAMLSitePlugin:
                         "jmespath_not_installed",
                         hint="Install jmespath: pip install 'graftpunk[jmespath]'",
                     )
+                    # Import here to avoid circular import at module level
+                    from rich.console import Console
+
+                    console = Console(stderr=True)
+                    console.print(
+                        "[yellow]Warning: jmespath filter ignored "
+                        "(install with: pip install 'graftpunk[jmespath]')[/yellow]"
+                    )
                     return data
                 data = jmespath_module.search(cmd_def.jmespath, data)
 
