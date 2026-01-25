@@ -9,6 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Skip all tests in this module if supabase is not installed
+pytest.importorskip("supabase")
+
 from graftpunk.exceptions import SessionNotFoundError, StorageError
 from graftpunk.storage.base import SessionMetadata
 
