@@ -53,6 +53,40 @@ class YAMLPluginDef:
     commands: list[YAMLCommandDef]
 
 
+@dataclass
+class YAMLDiscoveryError:
+    """Error encountered while loading a YAML plugin file.
+
+    Attributes:
+        filepath: Path to the YAML file that failed to load.
+        error: Human-readable error message describing the failure.
+    """
+
+    filepath: Path
+    error: str
+
+
+@dataclass
+class YAMLDiscoveryResult:
+    """Result of YAML plugin discovery.
+
+    Supports partial success: plugins that fail to load are recorded as
+    errors while valid plugins are still returned.
+
+    Attributes:
+        plugins: Successfully loaded YAML plugin definitions.
+        errors: Errors for plugins that could not be loaded.
+    """
+
+    plugins: list[YAMLPluginDef] = field(default_factory=list)
+    errors: list[YAMLDiscoveryError] = field(default_factory=list)
+
+    @property
+    def has_errors(self) -> bool:
+        """Return True if any load errors occurred."""
+        return bool(self.errors)
+
+
 def expand_env_vars(value: str) -> str:
     """Expand ${VAR} patterns in a string with environment variables.
 
@@ -234,22 +268,25 @@ def parse_yaml_plugin(filepath: Path) -> YAMLPluginDef:
     )
 
 
-def discover_yaml_plugins() -> list[YAMLPluginDef]:
+def discover_yaml_plugins() -> YAMLDiscoveryResult:
     """Discover all YAML plugins in the config directory.
 
     Looks for *.yaml and *.yml files in ~/.config/graftpunk/plugins/
 
+    Supports partial success: valid plugins are returned even if some files
+    fail to load. Check result.has_errors to see if any failures occurred.
+
     Returns:
-        List of parsed YAML plugin definitions.
+        YAMLDiscoveryResult containing loaded plugins and any errors.
     """
     settings = get_settings()
     plugins_dir = settings.config_dir / "plugins"
 
     if not plugins_dir.exists():
         LOG.debug("yaml_plugins_dir_not_found", path=str(plugins_dir))
-        return []
+        return YAMLDiscoveryResult()
 
-    plugins: list[YAMLPluginDef] = []
+    result = YAMLDiscoveryResult()
 
     # Support both .yaml and .yml extensions
     yaml_files = list(plugins_dir.glob("*.yaml")) + list(plugins_dir.glob("*.yml"))
@@ -257,9 +294,10 @@ def discover_yaml_plugins() -> list[YAMLPluginDef]:
     for yaml_file in yaml_files:
         try:
             plugin = parse_yaml_plugin(yaml_file)
-            plugins.append(plugin)
+            result.plugins.append(plugin)
             LOG.info("yaml_plugin_loaded", site_name=plugin.site_name, path=str(yaml_file))
         except PluginError as exc:
             LOG.warning("yaml_plugin_load_failed", path=str(yaml_file), error=str(exc))
+            result.errors.append(YAMLDiscoveryError(filepath=yaml_file, error=str(exc)))
 
-    return plugins
+    return result

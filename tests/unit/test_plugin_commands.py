@@ -134,7 +134,7 @@ class TestPluginRegistration:
             patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
         ):
             mock_py.return_value = {}
-            mock_yaml.return_value = []
+            mock_yaml.return_value = ([], [])
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert registered == {}
@@ -150,7 +150,7 @@ class TestPluginRegistration:
             patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
         ):
             mock_py.return_value = {"mock": MockPlugin}
-            mock_yaml.return_value = []
+            mock_yaml.return_value = ([], [])
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "mocksite" in registered
@@ -188,7 +188,7 @@ class TestPluginRegistration:
             patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
         ):
             mock_py.return_value = {}
-            mock_yaml.return_value = [yaml_plugin]
+            mock_yaml.return_value = ([yaml_plugin], [])
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "yamltest" in registered
@@ -220,7 +220,7 @@ class TestPluginRegistration:
             patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
         ):
             mock_py.return_value = {"mock": MockPlugin}
-            mock_yaml.return_value = [yaml_plugin]
+            mock_yaml.return_value = ([yaml_plugin], [])
             registered = register_plugin_commands(app, notify_errors=False)
 
         # Only one should be registered (Python plugin first)
@@ -248,7 +248,7 @@ class TestPluginRegistration:
             patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
         ):
             mock_py.return_value = {"mock": MockPlugin}
-            mock_yaml.return_value = []
+            mock_yaml.return_value = ([], [])
             register_plugin_commands(app, notify_errors=False)
 
         # Create a Click group and inject plugins
@@ -329,11 +329,33 @@ commands:
 """
         (plugins_dir / "test.yaml").write_text(yaml_content)
 
-        plugins = create_yaml_plugins()
+        plugins, errors = create_yaml_plugins()
 
         assert len(plugins) == 1
         assert plugins[0].site_name == "testplugin"
         assert plugins[0].requires_session is False
+        assert errors == []
+
+    def test_create_returns_errors_for_invalid_files(self, isolated_config: Path) -> None:
+        """Test that errors are returned for invalid YAML files."""
+        from graftpunk.plugins.yaml_plugin import create_yaml_plugins
+
+        plugins_dir = isolated_config / "plugins"
+        plugins_dir.mkdir()
+
+        # Valid plugin
+        (plugins_dir / "valid.yaml").write_text(
+            "site_name: valid\nsession_name: ''\ncommands:\n  cmd:\n    url: /a"
+        )
+        # Invalid plugin (missing commands)
+        (plugins_dir / "invalid.yaml").write_text("site_name: invalid")
+
+        plugins, errors = create_yaml_plugins()
+
+        assert len(plugins) == 1
+        assert plugins[0].site_name == "valid"
+        assert len(errors) == 1
+        assert "invalid.yaml" in str(errors[0].filepath)
 
 
 class TestPluginDiscoveryErrors:
@@ -383,7 +405,7 @@ class TestPluginDiscoveryErrors:
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
         ):
             mock_py.return_value = {"failing": FailingPlugin}
-            mock_yaml.return_value = []
+            mock_yaml.return_value = ([], [])
             registered = register_plugin_commands(app, notify_errors=True)
 
         # Plugin should not be registered
@@ -412,7 +434,7 @@ class TestPluginDiscoveryErrors:
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
         ):
             mock_py.return_value = {"failing": FailingPlugin}
-            mock_yaml.return_value = []
+            mock_yaml.return_value = ([], [])
             register_plugin_commands(app, notify_errors=False)
 
         # Error notification should NOT be called
@@ -473,7 +495,7 @@ class TestPluginDiscoveryErrors:
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
         ):
             mock_py.side_effect = RuntimeError("Discovery failed")
-            mock_yaml.return_value = []
+            mock_yaml.return_value = ([], [])
             registered = register_plugin_commands(app, notify_errors=True)
 
         assert registered == {}
@@ -498,7 +520,7 @@ class TestPluginDiscoveryErrors:
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
         ):
             mock_py.return_value = {"unexpected": UnexpectedlyFailingPlugin}
-            mock_yaml.return_value = []
+            mock_yaml.return_value = ([], [])
             registered = register_plugin_commands(app, notify_errors=True)
 
         assert "unexpected" not in registered

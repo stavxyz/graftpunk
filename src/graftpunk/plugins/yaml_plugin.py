@@ -16,6 +16,7 @@ from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandSpec, ParamSpec
 from graftpunk.plugins.yaml_loader import (
     YAMLCommandDef,
+    YAMLDiscoveryError,
     YAMLPluginDef,
     discover_yaml_plugins,
     expand_env_vars,
@@ -181,8 +182,23 @@ class YAMLSitePlugin:
             # Parse JSON response
             try:
                 data = response.json()
-            except ValueError:
-                # Return raw text if not JSON
+            except ValueError as exc:
+                content_type = response.headers.get("Content-Type", "unknown")
+                LOG.warning(
+                    "json_parse_failed_returning_text",
+                    url=url,
+                    content_type=content_type,
+                    error=str(exc),
+                )
+                # Warn user if response looks like an error page
+                if "<!DOCTYPE" in response.text or "<html" in response.text.lower():
+                    from rich.console import Console
+
+                    console = Console(stderr=True)
+                    console.print(
+                        "[yellow]Warning: Expected JSON but received HTML. "
+                        "The API may have returned an error page.[/yellow]"
+                    )
                 return response.text
 
             # Apply jmespath filter if specified
@@ -208,14 +224,17 @@ class YAMLSitePlugin:
         return handler
 
 
-def create_yaml_plugins() -> list[YAMLSitePlugin]:
+def create_yaml_plugins() -> tuple[list[YAMLSitePlugin], list[YAMLDiscoveryError]]:
     """Create YAMLSitePlugin instances from discovered YAML files.
 
-    Returns:
-        List of YAMLSitePlugin instances ready for CLI registration.
-    """
-    plugins = []
-    for plugin_def in discover_yaml_plugins():
-        plugins.append(YAMLSitePlugin(plugin_def))
+    Supports partial success: valid plugins are returned even if some YAML
+    files fail to load. Errors are returned separately for caller handling.
 
-    return plugins
+    Returns:
+        Tuple of (plugins, errors) where:
+        - plugins: List of YAMLSitePlugin instances ready for CLI registration.
+        - errors: List of YAMLDiscoveryError for files that failed to load.
+    """
+    discovery_result = discover_yaml_plugins()
+    plugins = [YAMLSitePlugin(plugin_def) for plugin_def in discovery_result.plugins]
+    return plugins, discovery_result.errors
