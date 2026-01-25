@@ -31,7 +31,8 @@ try:
     import jmespath as jmespath_module
 
     HAS_JMESPATH = True
-except ImportError:
+except ImportError as _jmespath_err:
+    LOG.debug("jmespath_import_failed", error=str(_jmespath_err))
     jmespath_module = None
     HAS_JMESPATH = False
 

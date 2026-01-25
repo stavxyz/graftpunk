@@ -119,6 +119,12 @@ def import_har(
         gp import-har capture.har --format yaml --dry-run
         gp import-har api-trace.har -o ./my_plugin.py
     """
+    # Validate format_type
+    valid_formats = {"python", "yaml"}
+    if format_type not in valid_formats:
+        console.print(f"[red]Invalid format '{format_type}'. Valid formats: python, yaml[/red]")
+        raise typer.Exit(1)
+
     # Parse HAR file
     console.print(f"[dim]Parsing HAR file:[/dim] {har_file}")
 

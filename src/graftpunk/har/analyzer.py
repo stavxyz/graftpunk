@@ -72,10 +72,6 @@ EXCLUDE_PATTERNS = [
 
 EXCLUDE_REGEX = re.compile("|".join(EXCLUDE_PATTERNS), re.IGNORECASE)
 
-# URL parameter pattern for detecting path parameters like /users/{id}
-PATH_PARAM_PATTERN = re.compile(r"/(\d+)(?=/|$)")
-
-
 @dataclass
 class AuthStep:
     """Single step in an authentication flow."""
@@ -179,11 +175,7 @@ def _detect_step_type(entry: HAREntry) -> str:
     if status in REDIRECT_STATUS_CODES:
         return "redirect"
 
-    # Landing on post-login page with cookies
-    if _is_post_login_url(url) and _get_set_cookies(entry):
-        return "authenticated"
-
-    # Has new session cookies
+    # Has new session cookies (whether on post-login page or not)
     if _get_set_cookies(entry):
         return "authenticated"
 

@@ -473,8 +473,14 @@ try:
     _registered_plugins = register_plugin_commands(app)
     if _registered_plugins:
         LOG.debug("plugins_registered", count=len(_registered_plugins))
+except (SystemExit, KeyboardInterrupt):
+    raise
 except Exception as exc:
-    LOG.warning("plugin_registration_failed", error=str(exc))
+    LOG.exception("plugin_registration_failed", error=str(exc))
+    # Notify user - plugins are optional but they should know if they fail
+    import sys
+
+    print(f"Warning: Plugin registration failed: {exc}", file=sys.stderr)
 
 
 def _patched_call(self: typer.Typer, *args: str, **kwargs: object) -> object:

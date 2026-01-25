@@ -246,3 +246,170 @@ class TestConfigCommand:
         assert result.exit_code == 0
         assert "Configuration" in result.output
         assert "local" in result.output
+
+
+class TestImportHarCommand:
+    """Tests for import-har command."""
+
+    def test_import_har_help(self):
+        """Test that import-har command exists and shows help."""
+        result = runner.invoke(app, ["import-har", "--help"])
+        assert result.exit_code == 0
+        assert "Import HAR file" in result.output
+        assert "--format" in result.output
+        assert "--dry-run" in result.output
+
+    def test_import_har_file_not_found(self, tmp_path):
+        """Test import-har with non-existent file."""
+        result = runner.invoke(app, ["import-har", str(tmp_path / "nonexistent.har")])
+        # Typer returns exit code 2 for validation errors (file doesn't exist)
+        assert result.exit_code in (1, 2)
+        assert "not found" in result.output.lower() or "does not exist" in result.output.lower()
+
+    def test_import_har_invalid_format(self, tmp_path):
+        """Test import-har with invalid format type."""
+        har_file = tmp_path / "test.har"
+        har_file.write_text('{"log": {"entries": []}}')
+
+        result = runner.invoke(app, ["import-har", str(har_file), "--format", "invalid"])
+        assert result.exit_code == 1
+        assert "Invalid format" in result.output
+        assert "python, yaml" in result.output
+
+    def test_import_har_invalid_json(self, tmp_path):
+        """Test import-har with invalid JSON file."""
+        har_file = tmp_path / "test.har"
+        har_file.write_text("not valid json")
+
+        result = runner.invoke(app, ["import-har", str(har_file)])
+        assert result.exit_code == 1
+        assert "Failed to parse" in result.output
+
+    def test_import_har_empty_entries(self, tmp_path):
+        """Test import-har with HAR file containing no entries."""
+        har_file = tmp_path / "test.har"
+        har_file.write_text('{"log": {"entries": []}}')
+
+        result = runner.invoke(app, ["import-har", str(har_file)])
+        assert result.exit_code == 1
+        assert "No HTTP entries" in result.output
+
+    def test_import_har_dry_run(self, tmp_path):
+        """Test import-har dry run mode."""
+        import json
+
+        har_content = json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {
+                            "startedDateTime": "2024-01-01T00:00:00Z",
+                            "request": {
+                                "method": "GET",
+                                "url": "https://example.com/api/test",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                            "response": {
+                                "status": 200,
+                                "statusText": "OK",
+                                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                                "cookies": [],
+                                "content": {"text": "{}"},
+                            },
+                        }
+                    ]
+                }
+            }
+        )
+        har_file = tmp_path / "test.har"
+        har_file.write_text(har_content)
+
+        result = runner.invoke(
+            app, ["import-har", str(har_file), "--name", "testsite", "--dry-run"]
+        )
+
+        assert result.exit_code == 0
+        assert "Dry run" in result.output or "class TestsitePlugin" in result.output
+
+    def test_import_har_yaml_format(self, tmp_path):
+        """Test import-har with YAML output format."""
+        import json
+
+        har_content = json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {
+                            "startedDateTime": "2024-01-01T00:00:00Z",
+                            "request": {
+                                "method": "GET",
+                                "url": "https://example.com/api/users",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                            "response": {
+                                "status": 200,
+                                "statusText": "OK",
+                                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                                "cookies": [],
+                                "content": {"text": "[]"},
+                            },
+                        }
+                    ]
+                }
+            }
+        )
+        har_file = tmp_path / "test.har"
+        har_file.write_text(har_content)
+
+        result = runner.invoke(
+            app,
+            ["import-har", str(har_file), "--name", "testsite", "--format", "yaml", "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "site_name:" in result.output or "Dry run" in result.output
+
+    def test_import_har_success_writes_file(self, tmp_path):
+        """Test import-har writes plugin file on success."""
+        import json
+
+        har_content = json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {
+                            "startedDateTime": "2024-01-01T00:00:00Z",
+                            "request": {
+                                "method": "GET",
+                                "url": "https://api.example.com/v1/users",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                            "response": {
+                                "status": 200,
+                                "statusText": "OK",
+                                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                                "cookies": [],
+                                "content": {"text": "[]"},
+                            },
+                        }
+                    ]
+                }
+            }
+        )
+        har_file = tmp_path / "test.har"
+        har_file.write_text(har_content)
+
+        output_file = tmp_path / "testsite.py"
+        result = runner.invoke(
+            app,
+            ["import-har", str(har_file), "--name", "testsite", "--output", str(output_file)],
+        )
+
+        assert result.exit_code == 0
+        assert output_file.exists()
+        content = output_file.read_text()
+        assert "class TestsitePlugin" in content
+        assert "SitePlugin" in content
