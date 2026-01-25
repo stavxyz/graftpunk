@@ -25,7 +25,7 @@ def sample_har_path() -> Path:
 @pytest.fixture
 def sample_entries(sample_har_path: Path) -> list:
     """Parsed entries from sample HAR."""
-    return parse_har_file(sample_har_path)
+    return parse_har_file(sample_har_path).entries
 
 
 class TestExtractDomain:
@@ -62,7 +62,7 @@ class TestExtractDomain:
             make_entry("https://cdn.other.com/file", "02"),
         ]
         content = json.dumps({"log": {"entries": entries_data}})
-        entries = parse_har_string(content)
+        entries = parse_har_string(content).entries
         assert extract_domain(entries) == "main.com"
 
 
@@ -111,7 +111,7 @@ class TestDetectAuthFlow:
             },
         }
         content = json.dumps({"log": {"entries": [entry]}})
-        entries = parse_har_string(content)
+        entries = parse_har_string(content).entries
         assert detect_auth_flow(entries) is None
 
     def test_empty_entries(self) -> None:
@@ -138,7 +138,7 @@ class TestDetectAuthFlow:
             },
         }
         content = json.dumps({"log": {"entries": [entry]}})
-        entries = parse_har_string(content)
+        entries = parse_har_string(content).entries
         auth_flow = detect_auth_flow(entries)
 
         assert auth_flow is not None
@@ -207,7 +207,7 @@ class TestDiscoverAPIEndpoints:
             },
         }
         content = json.dumps({"log": {"entries": [entry]}})
-        entries = parse_har_string(content)
+        entries = parse_har_string(content).entries
         endpoints = discover_api_endpoints(entries)
         assert len(endpoints) == 0
 
@@ -256,7 +256,7 @@ class TestPathParamExtraction:
             },
         }
         content = json.dumps({"log": {"entries": [entry]}})
-        entries = parse_har_string(content)
+        entries = parse_har_string(content).entries
         endpoints = discover_api_endpoints(entries)
 
         assert len(endpoints) == 1
@@ -282,7 +282,7 @@ class TestPathParamExtraction:
         import json
 
         content = json.dumps({"log": {"entries": [entry]}})
-        entries = parse_har_string(content)
+        entries = parse_har_string(content).entries
         endpoints = discover_api_endpoints(entries)
 
         assert len(endpoints) == 1
@@ -317,6 +317,6 @@ class TestExcludePatterns:
             },
         }
         content = json.dumps({"log": {"entries": [entry]}})
-        entries = parse_har_string(content)
+        entries = parse_har_string(content).entries
         endpoints = discover_api_endpoints(entries)
         assert len(endpoints) == 0

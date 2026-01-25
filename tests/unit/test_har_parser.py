@@ -10,8 +10,10 @@ import pytest
 from graftpunk.har.parser import (
     HAREntry,
     HARParseError,
+    HARParseResult,
     HARRequest,
     HARResponse,
+    ParseError,
     parse_har_file,
     parse_har_string,
     validate_har_schema,
@@ -93,27 +95,28 @@ class TestParseHarFile:
 
     def test_parse_sample_har(self, sample_har_path: Path) -> None:
         """Parse sample HAR file successfully."""
-        entries = parse_har_file(sample_har_path)
+        result = parse_har_file(sample_har_path)
 
-        assert len(entries) == 7
-        assert all(isinstance(e, HAREntry) for e in entries)
+        assert isinstance(result, HARParseResult)
+        assert len(result.entries) == 7
+        assert all(isinstance(e, HAREntry) for e in result.entries)
 
     def test_parse_requests(self, sample_har_path: Path) -> None:
         """Request data is parsed correctly."""
-        entries = parse_har_file(sample_har_path)
+        result = parse_har_file(sample_har_path)
 
         # First entry is GET /login
-        first = entries[0]
+        first = result.entries[0]
         assert first.request.method == "GET"
         assert first.request.url == "https://example.com/login"
         assert "User-Agent" in first.request.headers
 
     def test_parse_responses(self, sample_har_path: Path) -> None:
         """Response data is parsed correctly."""
-        entries = parse_har_file(sample_har_path)
+        result = parse_har_file(sample_har_path)
 
         # Second entry is POST /login with redirect
-        second = entries[1]
+        second = result.entries[1]
         assert second.response.status == 302
         assert second.response.status_text == "Found"
         assert len(second.response.cookies) == 1
@@ -121,7 +124,8 @@ class TestParseHarFile:
 
     def test_parse_post_data(self, sample_har_path: Path) -> None:
         """POST data is parsed correctly."""
-        entries = parse_har_file(sample_har_path)
+        result = parse_har_file(sample_har_path)
+        entries = result.entries
 
         # Second entry has POST data
         second = entries[1]
@@ -155,11 +159,12 @@ class TestParseHarString:
 
     def test_parse_minimal(self, minimal_har: str) -> None:
         """Parse minimal HAR string."""
-        entries = parse_har_string(minimal_har)
+        result = parse_har_string(minimal_har)
 
-        assert len(entries) == 1
-        assert entries[0].request.method == "GET"
-        assert entries[0].request.url == "https://example.com/test"
+        assert isinstance(result, HARParseResult)
+        assert len(result.entries) == 1
+        assert result.entries[0].request.method == "GET"
+        assert result.entries[0].request.url == "https://example.com/test"
 
     def test_invalid_json(self) -> None:
         """HARParseError for invalid JSON string."""
@@ -169,8 +174,9 @@ class TestParseHarString:
     def test_empty_entries(self) -> None:
         """Empty entries array returns empty list."""
         content = json.dumps({"log": {"entries": []}})
-        entries = parse_har_string(content)
-        assert entries == []
+        result = parse_har_string(content)
+        assert result.entries == []
+        assert result.errors == []
 
 
 class TestHARRequest:
@@ -209,9 +215,9 @@ class TestTimestampParsing:
 
     def test_z_suffix(self, minimal_har: str) -> None:
         """Timestamps with Z suffix are parsed."""
-        entries = parse_har_string(minimal_har)
-        assert entries[0].timestamp.year == 2024
-        assert entries[0].timestamp.month == 1
+        result = parse_har_string(minimal_har)
+        assert result.entries[0].timestamp.year == 2024
+        assert result.entries[0].timestamp.month == 1
 
     def test_timezone_offset(self) -> None:
         """Timestamps with timezone offset are parsed."""
@@ -238,8 +244,39 @@ class TestTimestampParsing:
                 }
             }
         )
-        entries = parse_har_string(content)
-        assert entries[0].timestamp.month == 6
+        result = parse_har_string(content)
+        assert result.entries[0].timestamp.month == 6
+
+    def test_invalid_timestamp_uses_epoch_fallback(self) -> None:
+        """Invalid timestamps use datetime.min (epoch) for predictable ordering."""
+        content = json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {
+                            "startedDateTime": "not-a-valid-timestamp",
+                            "request": {
+                                "method": "GET",
+                                "url": "https://x.com",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                            "response": {
+                                "status": 200,
+                                "statusText": "OK",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                        }
+                    ]
+                }
+            }
+        )
+        result = parse_har_string(content)
+
+        # Should be datetime.min (year 1), not current time
+        assert result.entries[0].timestamp.year == 1
+        assert result.entries[0].timestamp.tzinfo is not None
 
 
 class TestHeaderParsing:
@@ -273,8 +310,8 @@ class TestHeaderParsing:
                 }
             }
         )
-        entries = parse_har_string(content)
-        assert entries[0].request.headers["X-Custom"] == "second"
+        result = parse_har_string(content)
+        assert result.entries[0].request.headers["X-Custom"] == "second"
 
     def test_empty_header_name(self) -> None:
         """Empty header names are skipped."""
@@ -304,6 +341,87 @@ class TestHeaderParsing:
                 }
             }
         )
-        entries = parse_har_string(content)
-        assert "" not in entries[0].request.headers
-        assert "Valid" in entries[0].request.headers
+        result = parse_har_string(content)
+        assert "" not in result.entries[0].request.headers
+        assert "Valid" in result.entries[0].request.headers
+
+
+class TestHARParseResult:
+    """Tests for HARParseResult and error handling."""
+
+    def test_has_errors_property(self) -> None:
+        """has_errors property reflects error count."""
+        result = HARParseResult(entries=[], errors=[])
+        assert result.has_errors is False
+
+        result_with_error = HARParseResult(
+            entries=[],
+            errors=[ParseError(index=0, url="https://x.com", error="test error")],
+        )
+        assert result_with_error.has_errors is True
+
+    def test_malformed_entry_collected_as_error(self) -> None:
+        """Malformed entries are collected as errors, not raised."""
+        content = json.dumps(
+            {
+                "log": {
+                    "entries": [
+                        {
+                            "startedDateTime": "2024-01-01T00:00:00Z",
+                            "request": {
+                                "method": "GET",
+                                "url": "https://valid.com/test",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                            "response": {
+                                "status": 200,
+                                "statusText": "OK",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                        },
+                        {
+                            # Missing required fields - malformed entry
+                            "startedDateTime": "2024-01-01T00:00:00Z",
+                            "request": None,  # Invalid - should cause error
+                            "response": {"status": 200},
+                        },
+                        {
+                            "startedDateTime": "2024-01-01T00:00:00Z",
+                            "request": {
+                                "method": "GET",
+                                "url": "https://also-valid.com/test",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                            "response": {
+                                "status": 200,
+                                "statusText": "OK",
+                                "headers": [],
+                                "cookies": [],
+                            },
+                        },
+                    ]
+                }
+            }
+        )
+        result = parse_har_string(content)
+
+        # Valid entries are parsed
+        assert len(result.entries) == 2
+        assert result.entries[0].request.url == "https://valid.com/test"
+        assert result.entries[1].request.url == "https://also-valid.com/test"
+
+        # Malformed entry recorded as error
+        assert result.has_errors is True
+        assert len(result.errors) == 1
+        assert result.errors[0].index == 1
+        assert result.errors[0].url == "unknown"
+
+    def test_parse_error_contains_context(self) -> None:
+        """ParseError includes index, url, and error message."""
+        error = ParseError(index=5, url="https://x.com/api", error="missing field")
+        assert error.index == 5
+        assert error.url == "https://x.com/api"
+        assert error.error == "missing field"

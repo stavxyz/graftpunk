@@ -9,6 +9,7 @@ Analyzes HAR entries to identify:
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -34,7 +35,7 @@ AUTH_URL_PATTERNS = [
     r"/sso",
 ]
 
-# Compiled regex for auth URL detection
+# Pre-compile for performance when checking many URLs
 AUTH_URL_REGEX = re.compile("|".join(AUTH_URL_PATTERNS), re.IGNORECASE)
 
 # URL patterns indicating successful login destination
@@ -49,6 +50,9 @@ POST_LOGIN_PATTERNS = [
 ]
 
 POST_LOGIN_REGEX = re.compile("|".join(POST_LOGIN_PATTERNS), re.IGNORECASE)
+
+# HTTP redirect status codes
+REDIRECT_STATUS_CODES = (301, 302, 303, 307, 308)
 
 # Patterns to exclude from API discovery
 EXCLUDE_PATTERNS = [
@@ -116,18 +120,12 @@ def extract_domain(entries: list[HAREntry]) -> str:
     if not entries:
         return ""
 
-    domain_counts: dict[str, int] = {}
-    for entry in entries:
-        parsed = urlparse(entry.request.url)
-        domain = parsed.netloc
-        if domain:
-            domain_counts[domain] = domain_counts.get(domain, 0) + 1
-
-    if not domain_counts:
+    domains = [urlparse(e.request.url).netloc for e in entries]
+    domains = [d for d in domains if d]  # Filter empty
+    if not domains:
         return ""
 
-    # Return most common domain
-    return max(domain_counts, key=lambda d: domain_counts[d])
+    return Counter(domains).most_common(1)[0][0]
 
 
 def _is_auth_url(url: str) -> bool:
@@ -144,11 +142,7 @@ def _is_post_login_url(url: str) -> bool:
 
 def _get_set_cookies(entry: HAREntry) -> list[str]:
     """Get names of cookies set in response."""
-    cookies = []
-    for cookie in entry.response.cookies:
-        name = cookie.get("name", "")
-        if name:
-            cookies.append(name)
+    cookies = [c.get("name", "") for c in entry.response.cookies if c.get("name")]
 
     # Also check Set-Cookie headers
     for header_name, header_value in entry.response.headers.items():
@@ -161,7 +155,7 @@ def _get_set_cookies(entry: HAREntry) -> list[str]:
     return cookies
 
 
-def _detect_step_type(entry: HAREntry, prev_entry: HAREntry | None) -> str:
+def _detect_step_type(entry: HAREntry) -> str:
     """Determine the type of auth step for an entry."""
     url = entry.request.url
     method = entry.request.method.upper()
@@ -177,12 +171,12 @@ def _detect_step_type(entry: HAREntry, prev_entry: HAREntry | None) -> str:
 
     # GET to auth URL = form page or redirect
     if method == "GET" and _is_auth_url(url):
-        if status in (301, 302, 303, 307, 308):
+        if status in REDIRECT_STATUS_CODES:
             return "redirect"
         return "form_page"
 
     # Redirect after auth
-    if status in (301, 302, 303, 307, 308):
+    if status in REDIRECT_STATUS_CODES:
         return "redirect"
 
     # Landing on post-login page with cookies
@@ -215,16 +209,15 @@ def detect_auth_flow(entries: list[HAREntry]) -> AuthFlow | None:
 
     auth_steps: list[AuthStep] = []
     all_cookies_set: list[str] = []
-    prev_entry: HAREntry | None = None
 
     for entry in entries:
         url = entry.request.url
+        cookies = _get_set_cookies(entry)  # Get once per entry
 
         # Skip if not auth-related
         if not _is_auth_url(url) and not _is_post_login_url(url):
             # But check if this sets cookies after an auth step
-            if auth_steps and _get_set_cookies(entry):
-                cookies = _get_set_cookies(entry)
+            if auth_steps and cookies:
                 all_cookies_set.extend(cookies)
                 auth_steps.append(
                     AuthStep(
@@ -234,11 +227,9 @@ def detect_auth_flow(entries: list[HAREntry]) -> AuthFlow | None:
                         description=f"Session established at {urlparse(url).path}",
                     )
                 )
-            prev_entry = entry
             continue
 
-        step_type = _detect_step_type(entry, prev_entry)
-        cookies = _get_set_cookies(entry)
+        step_type = _detect_step_type(entry)
         all_cookies_set.extend(cookies)
 
         parsed = urlparse(url)
@@ -254,7 +245,6 @@ def detect_auth_flow(entries: list[HAREntry]) -> AuthFlow | None:
                 description=description,
             )
         )
-        prev_entry = entry
 
     if not auth_steps:
         return None

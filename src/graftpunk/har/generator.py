@@ -107,12 +107,27 @@ def _generate_url_format(endpoint: APIEndpoint, domain: str) -> str:
     Returns:
         URL format string with f-string interpolation.
     """
-    # Replace {param} with {param} for f-string
-    path = endpoint.path
-    for param in endpoint.params:
-        path = path.replace(f"{{{param}}}", "{" + param + "}")
+    # Path already contains {param} placeholders from analyzer
+    return f"https://{domain}{endpoint.path}"
 
-    return f"https://{domain}{path}"
+
+def _unique_name(base_name: str, seen: set[str]) -> str:
+    """Generate unique name by appending counter if needed.
+
+    Args:
+        base_name: Base name to make unique.
+        seen: Set of already-used names. Will be updated with the result.
+
+    Returns:
+        Unique name not in seen set.
+    """
+    name = base_name
+    counter = 1
+    while name in seen:
+        name = f"{base_name}_{counter}"
+        counter += 1
+    seen.add(name)
+    return name
 
 
 def generate_plugin_code(
@@ -150,15 +165,7 @@ def generate_plugin_code(
     seen_names: set[str] = set()
 
     for endpoint in endpoints:
-        cmd_name = _generate_command_name(endpoint)
-
-        # Handle duplicates
-        base_name = cmd_name
-        counter = 1
-        while cmd_name in seen_names:
-            cmd_name = f"{base_name}_{counter}"
-            counter += 1
-        seen_names.add(cmd_name)
+        cmd_name = _unique_name(_generate_command_name(endpoint), seen_names)
 
         signature = _generate_method_signature(endpoint)
         url = _generate_url_format(endpoint, domain)
@@ -276,15 +283,7 @@ def generate_yaml_plugin(
 
     seen_names: set[str] = set()
     for endpoint in endpoints:
-        cmd_name = _generate_command_name(endpoint)
-
-        # Handle duplicates
-        base_name = cmd_name
-        counter = 1
-        while cmd_name in seen_names:
-            cmd_name = f"{base_name}_{counter}"
-            counter += 1
-        seen_names.add(cmd_name)
+        cmd_name = _unique_name(_generate_command_name(endpoint), seen_names)
 
         lines.append(f"  {cmd_name}:")
         lines.append(f'    help: "{endpoint.description}"')

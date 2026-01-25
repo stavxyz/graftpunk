@@ -19,9 +19,9 @@ from graftpunk import (
     list_sessions_with_metadata,
     load_session,
 )
+from graftpunk.cli.keepalive_commands import keepalive_app
 from graftpunk.config import get_settings
 from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
-from graftpunk.keepalive.state import read_keepalive_pid, read_keepalive_state
 from graftpunk.logging import get_logger
 from graftpunk.plugins import (
     discover_cli_plugins,
@@ -314,72 +314,8 @@ def export(
         raise typer.Exit(1) from None
 
 
-# Keepalive subcommand group
-keepalive_app = typer.Typer(
-    name="keepalive",
-    help="Manage the session keepalive daemon.",
-    no_args_is_help=True,
-    context_settings={"help_option_names": ["-h", "--help"]},
-)
+# Keepalive subcommand group (defined in keepalive_commands.py)
 app.add_typer(keepalive_app)
-
-
-@keepalive_app.command("status")
-def keepalive_status() -> None:
-    """Show keepalive daemon status."""
-    pid = read_keepalive_pid()
-    state = read_keepalive_state()
-
-    if not pid:
-        console.print(
-            Panel(
-                "[dim]Daemon is not running[/dim]",
-                title="⏸ Keepalive Status",
-                border_style="yellow",
-            )
-        )
-        return
-
-    if state:
-        status = state.daemon_status.value
-        if status == "running":
-            status_display = "[green]● running[/green]"
-        elif status == "stopped":
-            status_display = "[red]○ stopped[/red]"
-        else:
-            status_display = f"[yellow]? {status}[/yellow]"
-
-        info = f"""
-{status_display}  PID {pid}
-
-[dim]Session:[/dim]     {state.current_session or "(searching...)"}
-[dim]Interval:[/dim]    {state.interval} minutes
-[dim]Watch mode:[/dim]  {"yes" if state.watch else "no"}
-[dim]Max switches:[/dim] {state.max_switches or "unlimited"}"""
-    else:
-        info = f"PID {pid}\n\n[dim]State file not found[/dim]"
-
-    console.print(Panel(info.strip(), title="🔄 Keepalive Status", border_style="cyan"))
-
-
-@keepalive_app.command("stop")
-def keepalive_stop() -> None:
-    """Stop the keepalive daemon."""
-    import os
-    import signal
-
-    pid = read_keepalive_pid()
-    if not pid:
-        console.print("[yellow]Daemon is not running[/yellow]")
-        return
-
-    try:
-        os.kill(pid, signal.SIGTERM)
-        console.print(f"[green]✓ Stopped daemon (PID {pid})[/green]")
-    except ProcessLookupError:
-        console.print("[yellow]Daemon already stopped[/yellow]")
-    except PermissionError:
-        console.print(f"[red]✗ Permission denied (PID {pid})[/red]")
 
 
 @app.command("plugins")
@@ -529,8 +465,7 @@ def config() -> None:
     console.print(Panel(info.strip(), title="⚙ Configuration", border_style="cyan"))
 
 
-# Register plugin commands dynamically
-# This is done at module load time so plugins appear in --help
+# Register plugin commands dynamically at module load time so they appear in --help
 _registered_plugins: dict[str, str] = {}
 try:
     from graftpunk.cli.plugin_commands import inject_plugin_commands, register_plugin_commands
@@ -539,30 +474,21 @@ try:
     if _registered_plugins:
         LOG.debug("plugins_registered", count=len(_registered_plugins))
 except Exception as exc:
-    # Don't crash the CLI if plugin registration fails
     LOG.warning("plugin_registration_failed", error=str(exc))
-
-
-# Create a wrapper to inject plugin commands after Typer builds the Click group
-_original_typer_call = app.__class__.__call__
 
 
 def _patched_call(self: typer.Typer, *args: str, **kwargs: object) -> object:
     """Wrapper that injects plugin commands before running the CLI."""
     import click
 
-    # Get the Click group from Typer
     click_group = typer.main.get_command(self)
     if isinstance(click_group, click.Group) and _registered_plugins:
         inject_plugin_commands(click_group)
-    # Call the original Click group directly
     return click_group.main(standalone_mode=False)
 
 
-# Only patch if we have plugins to inject
 if _registered_plugins:
     app.__class__.__call__ = _patched_call  # type: ignore[method-assign]
-
 
 if __name__ == "__main__":
     app()

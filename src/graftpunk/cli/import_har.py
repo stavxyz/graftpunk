@@ -18,6 +18,7 @@ from graftpunk.config import get_settings
 from graftpunk.har import (
     APIEndpoint,
     AuthFlow,
+    HARParseResult,
     detect_auth_flow,
     discover_api_endpoints,
     extract_domain,
@@ -122,13 +123,25 @@ def import_har(
     console.print(f"[dim]Parsing HAR file:[/dim] {har_file}")
 
     try:
-        entries = parse_har_file(har_file)
+        result: HARParseResult = parse_har_file(har_file)
     except HARParseError as exc:
         console.print(f"[red]Failed to parse HAR file: {exc}[/red]")
         raise typer.Exit(1) from None
     except FileNotFoundError:
         console.print(f"[red]File not found: {har_file}[/red]")
         raise typer.Exit(1) from None
+
+    entries = result.entries
+
+    # Warn user about parse errors
+    if result.has_errors:
+        console.print(f"[yellow]Warning: {len(result.errors)} entries failed to parse[/yellow]")
+        # Show first few errors for context
+        for error in result.errors[:3]:
+            console.print(f"  [dim]Entry {error.index}: {error.error}[/dim]")
+        if len(result.errors) > 3:
+            console.print(f"  [dim]... and {len(result.errors) - 3} more[/dim]")
+        console.print()
 
     if not entries:
         console.print("[yellow]No HTTP entries found in HAR file[/yellow]")

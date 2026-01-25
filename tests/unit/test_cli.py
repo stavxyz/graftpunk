@@ -168,7 +168,7 @@ class TestExportCommand:
 class TestKeepaliveCommands:
     """Tests for keepalive subcommands."""
 
-    @patch("graftpunk.cli.main.read_keepalive_pid")
+    @patch("graftpunk.cli.keepalive_commands.read_keepalive_pid")
     def test_keepalive_status_not_running(self, mock_pid):
         """Test keepalive status when not running."""
         mock_pid.return_value = None
@@ -178,8 +178,8 @@ class TestKeepaliveCommands:
         assert result.exit_code == 0
         assert "not running" in result.output
 
-    @patch("graftpunk.cli.main.read_keepalive_pid")
-    @patch("graftpunk.cli.main.read_keepalive_state")
+    @patch("graftpunk.cli.keepalive_commands.read_keepalive_pid")
+    @patch("graftpunk.cli.keepalive_commands.read_keepalive_state")
     def test_keepalive_status_running(self, mock_state, mock_pid):
         """Test keepalive status when running."""
         mock_pid.return_value = 12345
@@ -197,7 +197,7 @@ class TestKeepaliveCommands:
         assert "12345" in result.output
         assert "running" in result.output
 
-    @patch("graftpunk.cli.main.read_keepalive_pid")
+    @patch("graftpunk.cli.keepalive_commands.read_keepalive_pid")
     def test_keepalive_stop_not_running(self, mock_pid):
         """Test keepalive stop when not running."""
         mock_pid.return_value = None
