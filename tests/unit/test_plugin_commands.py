@@ -135,7 +135,7 @@ class TestPluginRegistration:
         ):
             mock_py.return_value = {}
             mock_yaml.return_value = []
-            registered = register_plugin_commands(app)
+            registered = register_plugin_commands(app, notify_errors=False)
 
         assert registered == {}
 
@@ -151,7 +151,7 @@ class TestPluginRegistration:
         ):
             mock_py.return_value = {"mock": MockPlugin}
             mock_yaml.return_value = []
-            registered = register_plugin_commands(app)
+            registered = register_plugin_commands(app, notify_errors=False)
 
         assert "mocksite" in registered
         assert registered["mocksite"] == "Mock plugin for testing"
@@ -189,7 +189,7 @@ class TestPluginRegistration:
         ):
             mock_py.return_value = {}
             mock_yaml.return_value = [yaml_plugin]
-            registered = register_plugin_commands(app)
+            registered = register_plugin_commands(app, notify_errors=False)
 
         assert "yamltest" in registered
 
@@ -221,12 +221,46 @@ class TestPluginRegistration:
         ):
             mock_py.return_value = {"mock": MockPlugin}
             mock_yaml.return_value = [yaml_plugin]
-            registered = register_plugin_commands(app)
+            registered = register_plugin_commands(app, notify_errors=False)
 
         # Only one should be registered (Python plugin first)
         assert len(registered) == 1
         assert "mocksite" in registered
         assert registered["mocksite"] == "Mock plugin for testing"
+
+    def test_inject_plugin_commands(self, isolated_config: Path) -> None:
+        """Test that inject_plugin_commands adds registered plugins to Click group."""
+        import click
+
+        from graftpunk.cli.plugin_commands import (
+            _plugin_groups,
+            inject_plugin_commands,
+            register_plugin_commands,
+        )
+
+        app = typer.Typer()
+
+        # Clear any previously registered plugins
+        _plugin_groups.clear()
+
+        with (
+            patch("graftpunk.cli.plugin_commands.discover_cli_plugins") as mock_py,
+            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
+        ):
+            mock_py.return_value = {"mock": MockPlugin}
+            mock_yaml.return_value = []
+            register_plugin_commands(app, notify_errors=False)
+
+        # Create a Click group and inject plugins
+        click_group = click.Group(name="test")
+        inject_plugin_commands(click_group)
+
+        # Verify plugin was added to the Click group
+        assert "mocksite" in click_group.commands
+        plugin_group = click_group.commands["mocksite"]
+        assert isinstance(plugin_group, click.Group)
+        assert "items" in plugin_group.commands
+        assert "item" in plugin_group.commands
 
 
 class TestCommandExecution:
@@ -238,7 +272,9 @@ class TestCommandExecution:
 
         mock_session = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(return_value=mock_session)  # type: ignore[method-assign]
+        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
+            return_value=mock_session
+        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -298,3 +334,174 @@ commands:
         assert len(plugins) == 1
         assert plugins[0].site_name == "testplugin"
         assert plugins[0].requires_session is False
+
+
+class TestPluginDiscoveryErrors:
+    """Tests for plugin discovery error handling and notifications."""
+
+    def test_plugin_discovery_error_dataclass(self) -> None:
+        """Test PluginDiscoveryError dataclass."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryError
+
+        error = PluginDiscoveryError(
+            plugin_name="test-plugin",
+            error="Failed to load",
+            phase="instantiation",
+        )
+        assert error.plugin_name == "test-plugin"
+        assert error.error == "Failed to load"
+        assert error.phase == "instantiation"
+
+    def test_plugin_discovery_result_dataclass(self) -> None:
+        """Test PluginDiscoveryResult dataclass."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryError, PluginDiscoveryResult
+
+        result = PluginDiscoveryResult()
+        assert result.registered == {}
+        assert result.errors == []
+        assert result.has_errors is False
+
+        result.add_error("plugin", "error message", "discovery")
+        assert result.has_errors is True
+        assert len(result.errors) == 1
+        assert isinstance(result.errors[0], PluginDiscoveryError)
+
+    def test_failed_plugin_instantiation_collected(self, isolated_config: Path) -> None:
+        """Test that failed plugin instantiation is collected as error."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+        from graftpunk.exceptions import PluginError
+
+        class FailingPlugin:
+            def __init__(self) -> None:
+                raise PluginError("Test error")
+
+        app = typer.Typer()
+
+        with (
+            patch("graftpunk.cli.plugin_commands.discover_cli_plugins") as mock_py,
+            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
+            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
+        ):
+            mock_py.return_value = {"failing": FailingPlugin}
+            mock_yaml.return_value = []
+            registered = register_plugin_commands(app, notify_errors=True)
+
+        # Plugin should not be registered
+        assert "failing" not in registered
+
+        # Error notification should be called
+        mock_notify.assert_called_once()
+        result = mock_notify.call_args[0][0]
+        assert result.has_errors is True
+        assert any("failing" in e.plugin_name for e in result.errors)
+
+    def test_notify_errors_disabled(self, isolated_config: Path) -> None:
+        """Test that notify_errors=False suppresses error output."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+        from graftpunk.exceptions import PluginError
+
+        class FailingPlugin:
+            def __init__(self) -> None:
+                raise PluginError("Test error")
+
+        app = typer.Typer()
+
+        with (
+            patch("graftpunk.cli.plugin_commands.discover_cli_plugins") as mock_py,
+            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
+            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
+        ):
+            mock_py.return_value = {"failing": FailingPlugin}
+            mock_yaml.return_value = []
+            register_plugin_commands(app, notify_errors=False)
+
+        # Error notification should NOT be called
+        mock_notify.assert_not_called()
+
+    def test_notify_plugin_errors_truncates_output(self) -> None:
+        """Test that error notification truncates to first 3 errors."""
+        from graftpunk.cli.plugin_commands import (
+            PluginDiscoveryResult,
+            _notify_plugin_errors,
+        )
+
+        result = PluginDiscoveryResult()
+        for i in range(5):
+            result.add_error(f"plugin{i}", f"error{i}", "discovery")
+
+        with patch("graftpunk.cli.plugin_commands.console") as mock_console:
+            _notify_plugin_errors(result)
+
+            calls = mock_console.print.call_args_list
+            # First call should show total count
+            assert "5 plugin(s) failed" in str(calls[0])
+            # Should show exactly 3 detailed errors (calls 1, 2, 3)
+            error_calls = [c for c in calls[1:4] if "plugin" in str(c)]
+            assert len(error_calls) == 3
+            # Last call should show "... and N more"
+            assert "2 more" in str(calls[-1])
+
+    def test_notify_plugin_errors_no_truncation_for_few(self) -> None:
+        """Test that 3 or fewer errors are shown without truncation."""
+        from graftpunk.cli.plugin_commands import (
+            PluginDiscoveryResult,
+            _notify_plugin_errors,
+        )
+
+        result = PluginDiscoveryResult()
+        result.add_error("plugin1", "error1", "discovery")
+        result.add_error("plugin2", "error2", "discovery")
+
+        with patch("graftpunk.cli.plugin_commands.console") as mock_console:
+            _notify_plugin_errors(result)
+
+            calls = mock_console.print.call_args_list
+            # Should show count + 2 errors = 3 calls total
+            assert len(calls) == 3
+            # Should NOT show "more" message
+            assert not any("more" in str(c) for c in calls)
+
+    def test_discovery_phase_failure_collected(self, isolated_config: Path) -> None:
+        """Test that discovery-level failures are collected as errors."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+
+        app = typer.Typer()
+
+        with (
+            patch("graftpunk.cli.plugin_commands.discover_cli_plugins") as mock_py,
+            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
+            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
+        ):
+            mock_py.side_effect = RuntimeError("Discovery failed")
+            mock_yaml.return_value = []
+            registered = register_plugin_commands(app, notify_errors=True)
+
+        assert registered == {}
+        mock_notify.assert_called_once()
+        result = mock_notify.call_args[0][0]
+        assert any(e.phase == "discovery" for e in result.errors)
+        assert any("Discovery failed" in e.error for e in result.errors)
+
+    def test_unexpected_exception_during_instantiation(self, isolated_config: Path) -> None:
+        """Test that unexpected exceptions (not PluginError) are collected."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+
+        class UnexpectedlyFailingPlugin:
+            def __init__(self) -> None:
+                raise RuntimeError("Unexpected error")
+
+        app = typer.Typer()
+
+        with (
+            patch("graftpunk.cli.plugin_commands.discover_cli_plugins") as mock_py,
+            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
+            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
+        ):
+            mock_py.return_value = {"unexpected": UnexpectedlyFailingPlugin}
+            mock_yaml.return_value = []
+            registered = register_plugin_commands(app, notify_errors=True)
+
+        assert "unexpected" not in registered
+        mock_notify.assert_called_once()
+        result = mock_notify.call_args[0][0]
+        assert any("Unexpected error" in e.error for e in result.errors)

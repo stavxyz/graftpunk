@@ -172,7 +172,7 @@ def parse_yaml_plugin(filepath: Path) -> YAMLPluginDef:
         PluginError: If parsing or validation fails.
     """
     try:
-        with open(filepath) as f:
+        with open(filepath, encoding="utf-8") as f:
             data = yaml.safe_load(f)
     except yaml.YAMLError as exc:
         raise PluginError(f"Invalid YAML in '{filepath}': {exc}") from exc

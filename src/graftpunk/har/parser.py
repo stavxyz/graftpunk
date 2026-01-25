@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,43 @@ class HAREntry:
     time_ms: float = 0.0  # Total time in milliseconds
 
 
+@dataclass
+class ParseError:
+    """Error encountered while parsing a single HAR entry.
+
+    Attributes:
+        index: Zero-based index of the entry in the HAR file's entries array.
+        url: URL of the request that failed to parse, or "unknown" if unavailable.
+        error: Human-readable error message describing the parse failure.
+    """
+
+    index: int
+    url: str
+    error: str
+
+
+@dataclass
+class HARParseResult:
+    """Result of parsing a HAR file.
+
+    Supports partial success: entries that fail to parse are recorded as
+    errors while valid entries are still returned. This allows callers to
+    process valid data while being aware of parsing failures.
+
+    Attributes:
+        entries: Successfully parsed HAR entries, in original file order.
+        errors: Parse errors for entries that could not be processed.
+    """
+
+    entries: list[HAREntry]
+    errors: list[ParseError] = field(default_factory=list)
+
+    @property
+    def has_errors(self) -> bool:
+        """Return True if any parse errors occurred."""
+        return bool(self.errors)
+
+
 def _parse_headers(headers_list: list[dict[str, str]]) -> dict[str, str]:
     """Convert HAR headers array to dict.
 
@@ -68,13 +105,7 @@ def _parse_headers(headers_list: list[dict[str, str]]) -> dict[str, str]:
         Dictionary mapping header names to values.
         Later values overwrite earlier ones for duplicate headers.
     """
-    result: dict[str, str] = {}
-    for header in headers_list:
-        name = header.get("name", "")
-        value = header.get("value", "")
-        if name:
-            result[name] = value
-    return result
+    return {h["name"]: h.get("value", "") for h in headers_list if h.get("name")}
 
 
 def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -175,9 +206,9 @@ def _parse_timestamp(started: str) -> datetime:
             return datetime.fromisoformat(started.replace("Z", "+00:00"))
         return datetime.fromisoformat(started)
     except ValueError:
-        # Fallback to current time if parsing fails
+        # Use epoch as fallback - makes failures visible in chronological ordering
         LOG.warning("timestamp_parse_failed", timestamp=started)
-        return datetime.now()
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def validate_har_schema(data: dict[str, Any]) -> None:
@@ -207,17 +238,67 @@ def validate_har_schema(data: dict[str, Any]) -> None:
         raise HARParseError("'entries' must be an array")
 
 
-def parse_har_file(filepath: Path | str) -> list[HAREntry]:
-    """Parse HAR file into list of entries.
+def _parse_entries(data: dict[str, Any]) -> HARParseResult:
+    """Parse entries from validated HAR data.
+
+    Args:
+        data: Validated HAR data with log.entries.
+
+    Returns:
+        HARParseResult containing successfully parsed entries and any errors.
+    """
+    entries: list[HAREntry] = []
+    errors: list[ParseError] = []
+
+    for idx, entry_data in enumerate(data["log"]["entries"]):
+        try:
+            request = _parse_request(entry_data.get("request", {}))
+            response = _parse_response(entry_data.get("response", {}))
+            timestamp = _parse_timestamp(entry_data.get("startedDateTime", ""))
+            time_ms = entry_data.get("time", 0.0)
+
+            entries.append(
+                HAREntry(
+                    request=request,
+                    response=response,
+                    timestamp=timestamp,
+                    time_ms=time_ms,
+                )
+            )
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            # Collect error for caller and log for debugging
+            request_data = entry_data.get("request") or {}
+            if isinstance(request_data, dict):
+                url = request_data.get("url", "unknown")
+            else:
+                url = "unknown"
+            errors.append(ParseError(index=idx, url=url, error=str(exc)))
+            LOG.warning(
+                "entry_parse_failed",
+                error=str(exc),
+                entry_index=idx,
+                url=url,
+            )
+            continue
+
+    return HARParseResult(entries=entries, errors=errors)
+
+
+def parse_har_file(filepath: Path | str) -> HARParseResult:
+    """Parse HAR file and return structured result with entries and errors.
+
+    Supports partial success: valid entries are returned even if some entries
+    fail to parse. Check result.has_errors to see if any parsing failures occurred.
 
     Args:
         filepath: Path to HAR file.
 
     Returns:
-        List of parsed HAREntry objects.
+        HARParseResult containing parsed entries and any errors.
 
     Raises:
-        HARParseError: If file cannot be parsed.
+        HARParseError: If file structure is invalid (not valid JSON or missing
+            required HAR structure).
         FileNotFoundError: If file does not exist.
     """
     filepath = Path(filepath)
@@ -232,42 +313,32 @@ def parse_har_file(filepath: Path | str) -> list[HAREntry]:
         raise HARParseError(f"Invalid JSON in HAR file: {exc}") from exc
 
     validate_har_schema(data)
+    result = _parse_entries(data)
 
-    entries: list[HAREntry] = []
-    for entry_data in data["log"]["entries"]:
-        try:
-            request = _parse_request(entry_data.get("request", {}))
-            response = _parse_response(entry_data.get("response", {}))
-            timestamp = _parse_timestamp(entry_data.get("startedDateTime", ""))
-            time_ms = entry_data.get("time", 0.0)
-
-            entries.append(
-                HAREntry(
-                    request=request,
-                    response=response,
-                    timestamp=timestamp,
-                    time_ms=time_ms,
-                )
-            )
-        except Exception as exc:
-            LOG.warning("entry_parse_failed", error=str(exc))
-            continue
-
-    LOG.info("har_file_parsed", filepath=str(filepath), entries=len(entries))
-    return entries
+    LOG.info(
+        "har_file_parsed",
+        filepath=str(filepath),
+        entries=len(result.entries),
+        errors=len(result.errors),
+    )
+    return result
 
 
-def parse_har_string(content: str) -> list[HAREntry]:
-    """Parse HAR content from string.
+def parse_har_string(content: str) -> HARParseResult:
+    """Parse HAR content from string and return structured result.
+
+    Supports partial success: valid entries are returned even if some entries
+    fail to parse. Check result.has_errors to see if any parsing failures occurred.
 
     Args:
         content: HAR file content as string.
 
     Returns:
-        List of parsed HAREntry objects.
+        HARParseResult containing parsed entries and any errors.
 
     Raises:
-        HARParseError: If content cannot be parsed.
+        HARParseError: If content structure is invalid (not valid JSON or
+            missing required HAR structure).
     """
     try:
         data = json.loads(content)
@@ -275,25 +346,4 @@ def parse_har_string(content: str) -> list[HAREntry]:
         raise HARParseError(f"Invalid JSON in HAR content: {exc}") from exc
 
     validate_har_schema(data)
-
-    entries: list[HAREntry] = []
-    for entry_data in data["log"]["entries"]:
-        try:
-            request = _parse_request(entry_data.get("request", {}))
-            response = _parse_response(entry_data.get("response", {}))
-            timestamp = _parse_timestamp(entry_data.get("startedDateTime", ""))
-            time_ms = entry_data.get("time", 0.0)
-
-            entries.append(
-                HAREntry(
-                    request=request,
-                    response=response,
-                    timestamp=timestamp,
-                    time_ms=time_ms,
-                )
-            )
-        except Exception as exc:
-            LOG.warning("entry_parse_failed", error=str(exc))
-            continue
-
-    return entries
+    return _parse_entries(data)
