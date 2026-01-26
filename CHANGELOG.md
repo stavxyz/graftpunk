@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-01-25
+
+### Added
+
+- **HAR File Import** (`gp import-har`): Generate plugins from browser network captures
+  - Parse HAR files exported from browser dev tools
+  - Detect authentication flows (login forms, OAuth, redirects, session cookies)
+  - Discover API endpoints from captured JSON responses
+  - Generate plugins in Python or YAML format
+  - Dry-run mode for previewing output without writing files
+
+- **YAML Plugin System**: Declarative command definitions without Python
+  - Define site commands in simple YAML files
+  - Automatic parameter handling with type validation
+  - Environment variable expansion for secrets
+  - JMESPath support for response extraction
+  - Drop-in plugin discovery from `~/.config/graftpunk/plugins/`
+
+- **Python Plugin System**: Extensible command architecture
+  - `@command` decorator for custom command logic
+  - `SitePlugin` base class with session integration
+  - Dynamic command registration at CLI startup
+  - Output formatting (`--format json|table|raw`) on all plugin commands
+
+### Changed
+
+- Extracted keepalive subcommands to dedicated module for cleaner architecture
+- Improved plugin discovery with structured error reporting
+
 ## [1.0.0] - 2026-01-23
 
 ### Added
