@@ -95,7 +95,7 @@ def get_totp_remaining_seconds() -> int:
     remain in the current period, useful for waiting until a fresh code.
 
     Returns:
-        Seconds remaining (0-29).
+        Seconds remaining (1-30).
 
     Example:
         >>> remaining = get_totp_remaining_seconds()

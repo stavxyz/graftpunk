@@ -50,9 +50,12 @@ class TestTOTP:
             generate_totp("not-a-valid-secret!")
 
     def test_get_totp_remaining_seconds_returns_valid_range(self):
-        """Test that remaining seconds is in valid range (0-29)."""
+        """Test that remaining seconds is in valid range (1-30)."""
         remaining = get_totp_remaining_seconds()
-        assert 0 <= remaining <= 29
+        # Function returns 30 - (time % 30), so range is 1-30
+        # At period start (time % 30 == 0): returns 30
+        # At period end (time % 30 == 29): returns 1
+        assert 1 <= remaining <= 30
 
     def test_different_secrets_produce_different_codes(self):
         """Test that different secrets produce different codes."""
