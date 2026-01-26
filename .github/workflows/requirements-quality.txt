@@ -10,6 +10,7 @@ pytest-asyncio==0.24.0
 
 # Type stubs and runtime deps needed for mypy to check optional modules
 # (pinned for reproducibility)
+types-requests==2.32.0.20250602
 pydantic==2.10.4
 # FastAPI 0.128.0 includes starlette fixes for:
 # - CVE-2025-54121 (GHSA-2c2j-9gv5-cj73) - DoS via multipart forms
