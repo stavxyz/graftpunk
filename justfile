@@ -89,6 +89,139 @@ install-publish-deps:
     pip install build twine
 
 # --------------------------------------------------------------------------
+# Release (full workflow)
+# --------------------------------------------------------------------------
+
+# Get version from pyproject.toml
+_get-version:
+    @grep '^version = ' pyproject.toml | head -1 | cut -d'"' -f2
+
+# Full release: tag, GitHub release, PyPI upload
+release: check
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    VERSION=$(grep '^version = ' pyproject.toml | head -1 | cut -d'"' -f2)
+    TAG="v${VERSION}"
+
+    echo "📦 Releasing ${TAG}"
+    echo ""
+
+    # ----------------------------
+    # Pre-flight checks
+    # ----------------------------
+
+    # Check required tools
+    for cmd in gh twine python git; do
+        if ! command -v "$cmd" &>/dev/null; then
+            echo "❌ Required command not found: $cmd"
+            exit 1
+        fi
+    done
+
+    # Check version format (semver-ish)
+    if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+        echo "❌ Invalid version format: ${VERSION} (expected X.Y.Z)"
+        exit 1
+    fi
+
+    # Check for uncommitted changes
+    if ! git diff --quiet HEAD; then
+        echo "❌ Uncommitted changes. Commit or stash first."
+        exit 1
+    fi
+
+    # Check for untracked files in src/
+    if [ -n "$(git ls-files --others --exclude-standard src/)" ]; then
+        echo "❌ Untracked files in src/. Add or ignore them first."
+        git ls-files --others --exclude-standard src/
+        exit 1
+    fi
+
+    # Check we're on main
+    BRANCH=$(git branch --show-current)
+    if [ "$BRANCH" != "main" ]; then
+        echo "❌ Must be on main branch (currently on ${BRANCH})"
+        exit 1
+    fi
+
+    # Check we're up to date with origin
+    git fetch origin main --quiet
+    LOCAL=$(git rev-parse HEAD)
+    REMOTE=$(git rev-parse origin/main)
+    if [ "$LOCAL" != "$REMOTE" ]; then
+        echo "❌ Local main differs from origin/main. Pull or push first."
+        echo "   Local:  $LOCAL"
+        echo "   Remote: $REMOTE"
+        exit 1
+    fi
+
+    # Check tag doesn't exist locally or remotely
+    if git rev-parse "$TAG" >/dev/null 2>&1; then
+        echo "❌ Tag ${TAG} already exists locally"
+        exit 1
+    fi
+    if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+        echo "❌ Tag ${TAG} already exists on origin"
+        exit 1
+    fi
+
+    # Check CHANGELOG has entry for this version
+    if ! grep -q "## \[${VERSION}\]" CHANGELOG.md; then
+        echo "❌ CHANGELOG.md missing entry for version ${VERSION}"
+        echo "   Add a section: ## [${VERSION}] - $(date +%Y-%m-%d)"
+        exit 1
+    fi
+
+    # Check version not already on PyPI
+    if curl -s "https://pypi.org/pypi/graftpunk/${VERSION}/json" | grep -q '"version"'; then
+        echo "❌ Version ${VERSION} already exists on PyPI"
+        exit 1
+    fi
+
+    # ----------------------------
+    # Confirmation
+    # ----------------------------
+
+    echo "✅ All pre-flight checks passed"
+    echo ""
+    echo "This will:"
+    echo "  1. Create git tag ${TAG}"
+    echo "  2. Push tag to origin"
+    echo "  3. Create GitHub release"
+    echo "  4. Build and upload to PyPI"
+    echo ""
+    read -p "Continue? [y/N] " confirm
+    if [ "$confirm" != "y" ]; then
+        echo "Aborted."
+        exit 1
+    fi
+
+    # ----------------------------
+    # Release
+    # ----------------------------
+
+    # Create and push tag
+    git tag -a "$TAG" -m "Release ${TAG}"
+    git push origin "$TAG" --no-verify
+    echo "✅ Tag ${TAG} pushed"
+
+    # Create GitHub release
+    gh release create "$TAG" --title "${TAG}" --generate-notes
+    echo "✅ GitHub release created"
+
+    # Build and upload to PyPI
+    just clean
+    python -m build
+    twine check dist/*
+    twine upload dist/*
+
+    echo ""
+    echo "✅ Released ${TAG}"
+    echo "🔗 https://github.com/stavxyz/graftpunk/releases/tag/${TAG}"
+    echo "🔗 https://pypi.org/project/graftpunk/${VERSION}/"
+
+# --------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------
 
