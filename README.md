@@ -169,14 +169,15 @@ $ gp --help
    gp config            Show current configuration
 
 Commands:
-  list       List all cached sessions with status and metadata.
-  show       Show detailed information about a cached session.
-  clear      Remove cached session(s).
-  export     Export session cookies to HTTPie format.
-  config     Show current graftpunk configuration.
-  plugins    List discovered plugins.
-  version    Show graftpunk version and installation info.
-  keepalive  Manage the session keepalive daemon.
+  list        List all cached sessions with status and metadata.
+  show        Show detailed information about a cached session.
+  clear       Remove cached session(s).
+  export      Export session cookies to HTTPie format.
+  import-har  Import HAR file and generate a plugin.
+  config      Show current graftpunk configuration.
+  plugins     List discovered plugins.
+  version     Show graftpunk version and installation info.
+  keepalive   Manage the session keepalive daemon.
 ```
 
 ### List Sessions
@@ -207,6 +208,39 @@ Usage:
   http --session=mybank https://secure.mybank.com/api/accounts
 ```
 
+### Import from HAR
+
+Generate plugins from browser dev tools network captures:
+
+```
+$ gp import-har auth-flow.har --name mybank
+
+Parsing HAR file: auth-flow.har
+Found 127 HTTP requests
+
+Site: mybank (secure.mybank.com)
+
+Auth Flow Detected (3 steps):
+  1. GET  /login (form page)
+  2. POST /auth/login (credentials submitted)
+  3. GET  /dashboard (authenticated, 2 cookies set)
+
+Session Cookies: sessionId, authToken
+
+API Endpoints (5 discovered):
+  GET  /api/accounts
+  GET  /api/transactions
+  POST /api/transfer
+
+Generated plugin: ~/.config/graftpunk/plugins/mybank.py
+```
+
+Options:
+- `--format python|yaml` - Output format (default: python)
+- `--output PATH` - Custom output path
+- `--dry-run` - Preview without writing
+- `--no-discover-api` - Skip API endpoint discovery
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -235,14 +269,6 @@ $ gp wizard mybank
 
 # Next time, login is automated:
 $ gp login mybank
-```
-
-### 📦 HAR Import
-
-Import authentication flows from browser dev tools:
-
-```bash
-$ gp import-har mybank-login.har --name mybank
 ```
 
 ### 📚 Example Plugins
