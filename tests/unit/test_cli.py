@@ -253,7 +253,7 @@ class TestImportHarCommand:
 
     def test_import_har_help(self):
         """Test that import-har command exists and shows help."""
-        result = runner.invoke(app, ["import-har", "--help"])
+        result = runner.invoke(app, ["import-har", "--help"], color=False)
         assert result.exit_code == 0
         assert "Import HAR file" in result.output
         assert "--format" in result.output
