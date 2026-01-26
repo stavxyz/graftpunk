@@ -57,3 +57,11 @@ htmlcov/
 .envrc.example
 Justfile.example
 lefthook.yml
+
+# Claude Code automation (shadow mode - not tracked)
+# Synced from template repository for local AI assistance
+# These files provide development automation but shouldn't be committed
+*.persuade.yml
+*.persuade.md
+*.persuade.txt
+*.persuade
