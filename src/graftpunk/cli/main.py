@@ -478,9 +478,7 @@ except (SystemExit, KeyboardInterrupt):
 except Exception as exc:
     LOG.exception("plugin_registration_failed", error=str(exc))
     # Notify user - plugins are optional but they should know if they fail
-    import sys
-
-    print(f"Warning: Plugin registration failed: {exc}", file=sys.stderr)
+    console.print(f"[yellow]Warning: Plugin registration failed: {exc}[/yellow]")
 
 
 def _patched_call(self: typer.Typer, *args: str, **kwargs: object) -> object:
