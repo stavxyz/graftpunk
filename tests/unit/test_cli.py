@@ -1,5 +1,6 @@
 """Tests for CLI module."""
 
+import re
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -8,6 +9,11 @@ from graftpunk.cli.main import app
 from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
 
 runner = CliRunner()
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from text."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 class TestVersionCommand:
@@ -253,11 +259,12 @@ class TestImportHarCommand:
 
     def test_import_har_help(self):
         """Test that import-har command exists and shows help."""
-        result = runner.invoke(app, ["import-har", "--help"], color=False)
+        result = runner.invoke(app, ["import-har", "--help"])
         assert result.exit_code == 0
-        assert "Import HAR file" in result.output
-        assert "--format" in result.output
-        assert "--dry-run" in result.output
+        output = strip_ansi(result.output)
+        assert "Import HAR file" in output
+        assert "--format" in output
+        assert "--dry-run" in output
 
     def test_import_har_file_not_found(self, tmp_path):
         """Test import-har with non-existent file."""
