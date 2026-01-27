@@ -5,8 +5,9 @@ The default backend is "selenium" (using undetected-chromedriver).
 
 Available backends:
     - selenium: Selenium + undetected-chromedriver (default)
-    - legacy: Alias for selenium
     - nodriver: CDP-direct Chrome automation (requires: pip install graftpunk[nodriver])
+
+Note: "legacy" is accepted as an alias for "selenium" for backward compatibility.
 
 Example:
     >>> from graftpunk.backends import get_backend, list_backends
@@ -40,8 +41,8 @@ def get_backend(name: str = "selenium", **kwargs: Any) -> BrowserBackend:
     aren't installed.
 
     Args:
-        name: Backend identifier. One of: "selenium", "legacy", "nodriver".
-            Default is "selenium".
+        name: Backend identifier. One of: "selenium", "nodriver".
+            Default is "selenium". ("legacy" is accepted as an alias for "selenium")
         **kwargs: Backend-specific initialization options passed to
             the backend constructor. Common options include:
             - headless: bool (selenium default True, nodriver default False)
