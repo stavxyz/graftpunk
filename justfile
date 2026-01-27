@@ -220,7 +220,7 @@ release: check
 
 # Clean build artifacts
 clean:
-    rm -rf .pytest_cache .ruff_cache .coverage htmlcov/
+    rm -rf .mypy_cache .pytest_cache .ruff_cache .coverage htmlcov/
     rm -rf dist/ build/ *.egg-info src/*.egg-info
     find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
     @echo "🧹 Cleaned"
