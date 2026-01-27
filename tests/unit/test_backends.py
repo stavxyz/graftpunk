@@ -797,3 +797,65 @@ class TestGetBackendImportError:
             mock_import.return_value = MagicMock(spec=[])  # Empty spec, no attributes
             with pytest.raises(ImportError, match="class.*not found"):
                 get_backend("selenium")
+
+
+class TestSeleniumBackendFromStateMismatch:
+    """Tests for from_state() with mismatched backend_type."""
+
+    def test_from_state_ignores_backend_type_mismatch(self) -> None:
+        """from_state ignores backend_type key - creates class it's called on."""
+        state = {"backend_type": "nodriver", "headless": False, "use_stealth": False}
+        backend = SeleniumBackend.from_state(state)
+
+        # Should create SeleniumBackend regardless of backend_type in state
+        assert isinstance(backend, SeleniumBackend)
+        assert backend._headless is False
+
+    def test_from_state_logs_when_using_defaults(self) -> None:
+        """from_state gracefully handles missing keys with defaults."""
+        state = {}  # Empty state
+        backend = SeleniumBackend.from_state(state)
+
+        assert backend._headless is True  # Default
+        assert backend._use_stealth is True  # Default
+        assert backend._default_timeout == 15  # Default
+
+
+class TestSeleniumBackendMalformedUrls:
+    """Tests for navigate() with malformed URLs."""
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_navigate_with_empty_url(self, mock_create: MagicMock) -> None:
+        """navigate() with empty URL passes to driver (driver handles validation)."""
+        import selenium.common.exceptions
+
+        from graftpunk.exceptions import BrowserError
+
+        mock_driver = MagicMock()
+        mock_driver.get.side_effect = selenium.common.exceptions.WebDriverException("invalid URL")
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+
+        with pytest.raises(BrowserError, match="Navigation failed"):
+            backend.navigate("")
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_navigate_with_malformed_url(self, mock_create: MagicMock) -> None:
+        """navigate() with malformed URL raises BrowserError from driver."""
+        import selenium.common.exceptions
+
+        from graftpunk.exceptions import BrowserError
+
+        mock_driver = MagicMock()
+        mock_driver.get.side_effect = selenium.common.exceptions.WebDriverException(
+            "invalid argument: 'url' must be a valid URL"
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+
+        with pytest.raises(BrowserError, match="Navigation failed"):
+            backend.navigate("not-a-valid-url")

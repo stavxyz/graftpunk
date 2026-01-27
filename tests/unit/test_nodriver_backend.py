@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from graftpunk.backends import BrowserBackend, get_backend, list_backends
+from graftpunk.backends import get_backend, list_backends
 from graftpunk.backends.nodriver import NoDriverBackend
 
 
@@ -13,9 +13,41 @@ class TestNoDriverBackendProtocol:
     """Tests for NoDriverBackend Protocol compliance."""
 
     def test_nodriver_backend_implements_protocol(self) -> None:
-        """NoDriverBackend should satisfy BrowserBackend protocol."""
+        """NoDriverBackend should satisfy BrowserBackend protocol.
+
+        Note: We check the class for protocol methods/properties instead of
+        using isinstance() or hasattr() on instance, because:
+        1. isinstance(backend, BrowserBackend) can trigger nodriver imports
+        2. hasattr(backend, "driver") accesses the property, which calls start()
+        3. The nodriver library may have compatibility issues on some Python versions
+
+        Checking the class directly avoids all these issues while still verifying
+        that the required interface is implemented.
+        """
+        # Verify class has all required protocol methods/properties
+        assert hasattr(NoDriverBackend, "start")
+        assert hasattr(NoDriverBackend, "stop")
+        assert hasattr(NoDriverBackend, "navigate")
+        assert hasattr(NoDriverBackend, "is_running")
+        assert hasattr(NoDriverBackend, "current_url")
+        assert hasattr(NoDriverBackend, "page_title")
+        assert hasattr(NoDriverBackend, "page_source")
+        assert hasattr(NoDriverBackend, "driver")
+        assert hasattr(NoDriverBackend, "get_cookies")
+        assert hasattr(NoDriverBackend, "set_cookies")
+        assert hasattr(NoDriverBackend, "delete_all_cookies")
+        assert hasattr(NoDriverBackend, "get_user_agent")
+        assert hasattr(NoDriverBackend, "get_state")
+        assert hasattr(NoDriverBackend, "from_state")
+        assert hasattr(NoDriverBackend, "BACKEND_TYPE")
+
+        # Verify class attribute value
+        assert NoDriverBackend.BACKEND_TYPE == "nodriver"
+
+        # Verify instance can be created (without starting browser)
         backend = NoDriverBackend(headless=False)
-        assert isinstance(backend, BrowserBackend)
+        assert backend._headless is False
+        assert backend.is_running is False
 
     def test_backend_type_is_nodriver(self) -> None:
         """BACKEND_TYPE should be 'nodriver'."""
@@ -669,3 +701,83 @@ class TestNoDriverBackendMissingCoverage:
 
         # Should not raise - _delete_all_cookies_async checks for None page
         backend.delete_all_cookies()
+
+
+class TestNoDriverBackendFromStateMismatch:
+    """Tests for from_state() with mismatched backend_type."""
+
+    def test_from_state_ignores_backend_type_mismatch(self) -> None:
+        """from_state ignores backend_type key - creates class it's called on."""
+        state = {"backend_type": "selenium", "headless": True}
+        backend = NoDriverBackend.from_state(state)
+
+        # Should create NoDriverBackend regardless of backend_type in state
+        assert isinstance(backend, NoDriverBackend)
+        assert backend._headless is True
+
+    def test_from_state_logs_when_using_defaults(self) -> None:
+        """from_state gracefully handles missing keys with defaults."""
+        state = {}  # Empty state
+        backend = NoDriverBackend.from_state(state)
+
+        assert backend._headless is False  # NoDriver default
+        assert backend._default_timeout == 15  # Default
+
+
+class TestNoDriverBackendMalformedUrls:
+    """Tests for navigate() with malformed URLs."""
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_navigate_with_empty_url(self, mock_run: MagicMock) -> None:
+        """navigate() with empty URL passes to driver (driver handles validation)."""
+        from graftpunk.exceptions import BrowserError
+
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        mock_run.side_effect = RuntimeError("Invalid URL")
+
+        with pytest.raises(BrowserError, match="Navigation failed"):
+            backend.navigate("")
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_navigate_with_malformed_url(self, mock_run: MagicMock) -> None:
+        """navigate() with malformed URL raises BrowserError from driver."""
+        from graftpunk.exceptions import BrowserError
+
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        mock_run.side_effect = RuntimeError("invalid argument: 'url' must be a valid URL")
+
+        with pytest.raises(BrowserError, match="Navigation failed"):
+            backend.navigate("not-a-valid-url")
+
+
+class TestNoDriverBackendAsyncContextLimitation:
+    """Tests documenting NoDriver's async context limitation."""
+
+    def test_nodriver_documents_async_limitation(self) -> None:
+        """NoDriverBackend docstring documents async context limitation."""
+        # This test verifies the documented limitation is present
+        assert "asyncio.run()" in NoDriverBackend.__doc__
+        assert "async" in NoDriverBackend.__doc__.lower()
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_run_async_uses_asyncio_run(self, mock_run: MagicMock) -> None:
+        """_run_async uses asyncio.run() which fails in existing event loop."""
+
+        async def sample_coro():
+            return "result"
+
+        mock_run.return_value = "result"
+
+        backend = NoDriverBackend()
+        backend._run_async(sample_coro())
+
+        # Verify asyncio.run was called
+        mock_run.assert_called_once()
