@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import selenium.common.exceptions
 
 from graftpunk.backends import (
     BrowserBackend,
@@ -35,6 +36,15 @@ class TestBrowserBackendProtocol:
         assert hasattr(mock, "start")
         assert hasattr(mock, "stop")
         assert hasattr(mock, "navigate")
+
+    def test_cookie_type_exported(self) -> None:
+        """Cookie TypedDict is exported from backends module."""
+        from graftpunk.backends import Cookie
+
+        # Verify Cookie can be used as a type hint
+        cookie: Cookie = {"name": "test", "value": "val"}
+        assert cookie["name"] == "test"
+        assert cookie["value"] == "val"
 
 
 class TestGetBackend:
@@ -308,8 +318,6 @@ class TestSeleniumBackendErrorHandling:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_start_webdriver_exception_raises_browser_error(self, mock_create: MagicMock) -> None:
         """WebDriverException during start raises BrowserError."""
-        import selenium.common.exceptions
-
         from graftpunk.exceptions import BrowserError
 
         mock_create.side_effect = selenium.common.exceptions.WebDriverException("fail")
@@ -329,13 +337,26 @@ class TestSeleniumBackendErrorHandling:
         with pytest.raises(BrowserError, match="Failed to start"):
             backend.start()
 
+    def test_start_import_error_raises_browser_error(self) -> None:
+        """ImportError for stealth dependencies raises BrowserError with install hint."""
+        from graftpunk.exceptions import BrowserError
+
+        with patch(
+            "graftpunk.backends.selenium.SeleniumBackend._start_stealth_driver"
+        ) as mock_start:
+            mock_start.side_effect = BrowserError(
+                "Stealth dependencies not installed. Install with: pip install graftpunk[standard]"
+            )
+
+            backend = SeleniumBackend(use_stealth=True)
+            with pytest.raises(BrowserError, match="Stealth dependencies not installed"):
+                backend.start()
+
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_navigate_webdriver_exception_raises_browser_error(
         self, mock_create: MagicMock
     ) -> None:
         """WebDriverException during navigate raises BrowserError."""
-        import selenium.common.exceptions
-
         from graftpunk.exceptions import BrowserError
 
         mock_driver = MagicMock()
@@ -350,8 +371,6 @@ class TestSeleniumBackendErrorHandling:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_stop_handles_quit_exception_gracefully(self, mock_create: MagicMock) -> None:
         """stop() handles WebDriverException from quit gracefully."""
-        import selenium.common.exceptions
-
         mock_driver = MagicMock()
         mock_driver.quit.side_effect = selenium.common.exceptions.WebDriverException(
             "already closed"
@@ -376,6 +395,81 @@ class TestSeleniumBackendErrorHandling:
         # Should not raise
         backend.stop()
         assert backend.is_running is False
+
+    @patch("graftpunk.backends.selenium.LOG")
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_stop_logs_debug_for_expected_webdriver_errors(
+        self, mock_create: MagicMock, mock_log: MagicMock
+    ) -> None:
+        """stop() logs DEBUG for expected cleanup errors like 'session deleted'."""
+        mock_driver = MagicMock()
+        mock_driver.quit.side_effect = selenium.common.exceptions.WebDriverException(
+            "session deleted because of page crash"
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        backend.stop()
+
+        # Should log at debug level for expected error
+        mock_log.debug.assert_called()
+        assert not mock_log.warning.called or all(
+            "stop_unexpected" not in str(call) for call in mock_log.warning.call_args_list
+        )
+
+    @patch("graftpunk.backends.selenium.LOG")
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_stop_logs_warning_for_unexpected_webdriver_errors(
+        self, mock_create: MagicMock, mock_log: MagicMock
+    ) -> None:
+        """stop() logs WARNING for unexpected WebDriverException errors."""
+        mock_driver = MagicMock()
+        mock_driver.quit.side_effect = selenium.common.exceptions.WebDriverException(
+            "some unexpected error that is not in the expected patterns"
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        backend.stop()
+
+        # Should log at warning level for unexpected error
+        mock_log.warning.assert_called()
+
+    @patch("graftpunk.backends.selenium.LOG")
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_stop_logs_debug_for_expected_os_errors(
+        self, mock_create: MagicMock, mock_log: MagicMock
+    ) -> None:
+        """stop() logs DEBUG for expected OS errors like 'no such process'."""
+        mock_driver = MagicMock()
+        mock_driver.quit.side_effect = OSError("No such process")
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        backend.stop()
+
+        # Should log at debug level for expected OS error
+        mock_log.debug.assert_called()
+
+    @patch("graftpunk.backends.selenium.LOG")
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_stop_logs_warning_for_unexpected_os_errors(
+        self, mock_create: MagicMock, mock_log: MagicMock
+    ) -> None:
+        """stop() logs WARNING for unexpected OS errors."""
+        mock_driver = MagicMock()
+        mock_driver.quit.side_effect = OSError("disk full unexpected error")
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        backend.stop()
+
+        # Should log at warning level for unexpected OS error
+        mock_log.warning.assert_called()
 
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_navigate_auto_starts_browser(self, mock_create: MagicMock) -> None:
@@ -408,8 +502,6 @@ class TestSeleniumBackendErrorHandling:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_set_cookies_logs_warning_on_failure(self, mock_create: MagicMock) -> None:
         """set_cookies() logs warning when cookie add fails."""
-        import selenium.common.exceptions
-
         mock_driver = MagicMock()
         mock_driver.add_cookie.side_effect = selenium.common.exceptions.WebDriverException(
             "wrong domain"
@@ -422,10 +514,48 @@ class TestSeleniumBackendErrorHandling:
         backend.set_cookies([{"name": "test", "value": "value"}])
 
     @patch("graftpunk.stealth.create_stealth_driver")
+    def test_set_cookies_returns_success_count(self, mock_create: MagicMock) -> None:
+        """set_cookies() returns number of cookies successfully set."""
+        mock_driver = MagicMock()
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        result = backend.set_cookies(
+            [
+                {"name": "cookie1", "value": "val1"},
+                {"name": "cookie2", "value": "val2"},
+            ]
+        )
+
+        assert result == 2
+        assert mock_driver.add_cookie.call_count == 2
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_set_cookies_returns_partial_count_on_failure(self, mock_create: MagicMock) -> None:
+        """set_cookies() returns count of successfully set cookies when some fail."""
+        mock_driver = MagicMock()
+        # First cookie succeeds, second fails
+        mock_driver.add_cookie.side_effect = [
+            None,  # Success
+            selenium.common.exceptions.WebDriverException("domain mismatch"),
+        ]
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        result = backend.set_cookies(
+            [
+                {"name": "cookie1", "value": "val1"},
+                {"name": "cookie2", "value": "val2"},
+            ]
+        )
+
+        assert result == 1  # Only one succeeded
+
+    @patch("graftpunk.stealth.create_stealth_driver")
     def test_current_url_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
         """current_url returns empty string on WebDriverException."""
-        import selenium.common.exceptions
-
         mock_driver = MagicMock()
         mock_driver.current_url = property(
             lambda self: (_ for _ in ()).throw(
@@ -446,8 +576,6 @@ class TestSeleniumBackendErrorHandling:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_page_title_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
         """page_title returns empty string on WebDriverException."""
-        import selenium.common.exceptions
-
         mock_driver = MagicMock()
         type(mock_driver).title = property(
             MagicMock(side_effect=selenium.common.exceptions.WebDriverException("stale"))
@@ -462,8 +590,6 @@ class TestSeleniumBackendErrorHandling:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_get_cookies_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
         """get_cookies() returns empty list on WebDriverException."""
-        import selenium.common.exceptions
-
         mock_driver = MagicMock()
         mock_driver.get_cookies.side_effect = selenium.common.exceptions.WebDriverException(
             "browser closed"
@@ -478,8 +604,6 @@ class TestSeleniumBackendErrorHandling:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_get_user_agent_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
         """get_user_agent() returns empty string on WebDriverException."""
-        import selenium.common.exceptions
-
         mock_driver = MagicMock()
         mock_driver.execute_script.side_effect = selenium.common.exceptions.WebDriverException(
             "execution failed"
@@ -611,8 +735,6 @@ class TestSeleniumBackendMissingCoverage:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_page_source_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
         """page_source returns empty string on WebDriverException."""
-        import selenium.common.exceptions
-
         mock_driver = MagicMock()
         type(mock_driver).page_source = property(
             MagicMock(side_effect=selenium.common.exceptions.WebDriverException("stale"))
@@ -644,14 +766,41 @@ class TestSeleniumBackendMissingCoverage:
     def test_delete_all_cookies_safe_when_not_running(self) -> None:
         """delete_all_cookies() is safe when not running."""
         backend = SeleniumBackend()
-        # Should not raise
-        backend.delete_all_cookies()
+        # Should not raise and should return True (no-op success)
+        result = backend.delete_all_cookies()
+        assert result is True
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_delete_all_cookies_returns_true_on_success(self, mock_create: MagicMock) -> None:
+        """delete_all_cookies() returns True when successful."""
+        mock_driver = MagicMock()
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        result = backend.delete_all_cookies()
+
+        assert result is True
+        mock_driver.delete_all_cookies.assert_called_once()
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_delete_all_cookies_returns_false_on_failure(self, mock_create: MagicMock) -> None:
+        """delete_all_cookies() returns False when WebDriverException occurs."""
+        mock_driver = MagicMock()
+        mock_driver.delete_all_cookies.side_effect = selenium.common.exceptions.WebDriverException(
+            "fail"
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        result = backend.delete_all_cookies()
+
+        assert result is False
 
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_delete_all_cookies_handles_exception_gracefully(self, mock_create: MagicMock) -> None:
         """delete_all_cookies() handles WebDriverException gracefully."""
-        import selenium.common.exceptions
-
         mock_driver = MagicMock()
         mock_driver.delete_all_cookies.side_effect = selenium.common.exceptions.WebDriverException(
             "fail"
@@ -703,8 +852,6 @@ class TestSeleniumBackendMalformedUrls:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_navigate_with_empty_url(self, mock_create: MagicMock) -> None:
         """navigate() with empty URL passes to driver (driver handles validation)."""
-        import selenium.common.exceptions
-
         from graftpunk.exceptions import BrowserError
 
         mock_driver = MagicMock()
@@ -720,8 +867,6 @@ class TestSeleniumBackendMalformedUrls:
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_navigate_with_malformed_url(self, mock_create: MagicMock) -> None:
         """navigate() with malformed URL raises BrowserError from driver."""
-        import selenium.common.exceptions
-
         from graftpunk.exceptions import BrowserError
 
         mock_driver = MagicMock()

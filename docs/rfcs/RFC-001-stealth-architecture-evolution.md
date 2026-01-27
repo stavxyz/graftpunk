@@ -1,7 +1,8 @@
 # RFC-001: Browser Automation Stealth Architecture Evolution
 
-**Status:** Draft
+**Status:** In Progress (Phases 0-2 complete)
 **Created:** 2026-01-26
+**Updated:** 2026-01-27
 **Authors:** @stavxyz
 
 ---
@@ -1044,35 +1045,40 @@ all = [
 
 ## 10. Migration Strategy
 
-### 10.1 Phase 0: Research & Planning (This RFC)
+### 10.1 Phase 0: Research & Planning (This RFC) ✓
 
 - [x] Document detection landscape
 - [x] Evaluate alternative backends
 - [x] Design abstraction layer
-- [ ] Community feedback
-- [ ] Finalize scope
+- [x] Community feedback
+- [x] Finalize scope
 
-### 10.2 Phase 1: Foundation
+### 10.2 Phase 1: Foundation ✓
 
 **Goal:** Introduce abstraction layer without breaking changes
 
-- [ ] Create `graftpunk.browser` package with base abstractions
-- [ ] Implement `LegacyBackend` wrapping current code
-- [ ] Add `backend` parameter to `BrowserSession` (default: "legacy")
-- [ ] Write comprehensive tests for abstraction layer
+- [x] Create `graftpunk.backends` package with base abstractions (PR #30)
+- [x] Define `BrowserBackend` Protocol with `@runtime_checkable`
+- [x] Define `Cookie` TypedDict with `Required`/`NotRequired` fields
+- [x] Implement `SeleniumBackend` wrapping current stealth stack
+- [x] Add backend registry with `get_backend()` and `list_backends()`
+- [x] Write comprehensive tests (381 tests passing)
 
 **Breaking changes:** None
 
-### 10.3 Phase 2: NoDriver Integration
+### 10.3 Phase 2: NoDriver Integration ✓
 
 **Goal:** Add nodriver as recommended default
 
-- [ ] Implement `NoDriverBackend`
-- [ ] Add `graftpunk[standard]` installation profile
+- [x] Implement `NoDriverBackend` with async-to-sync bridging (PR #30)
+- [x] Add `graftpunk[nodriver]` optional dependency (`nodriver>=0.48`)
+- [x] Add `nodriver` to `graftpunk[standard]` installation profile
+- [x] Register `nodriver` backend in `_BACKEND_REGISTRY`
+- [x] Write NoDriverBackend unit tests
 - [ ] Update documentation with backend selection guide
 - [ ] Change default backend to "nodriver" (with deprecation notice for "legacy")
 
-**Breaking changes:** Default behavior changes (with opt-out)
+**Breaking changes:** Default behavior changes (with opt-out) - *not yet applied*
 
 ### 10.4 Phase 3: HTTP Client Evolution
 
@@ -1171,6 +1177,9 @@ all = [
 | curl_cffi for HTTP | 99.8% JA3 match, drop-in requests replacement | 2026-01-26 |
 | Keep legacy backend | Backward compatibility, simple use cases | 2026-01-26 |
 | Willing to fork Camoufox | Insurance if ecosystem stagnates | 2026-01-26 |
+| Protocol + runtime_checkable for BrowserBackend | Enables structural typing and duck typing compliance checks | 2026-01-27 |
+| Sync-first API with async internals for NoDriver | Matches existing graftpunk patterns; wraps nodriver's async API with asyncio.run() | 2026-01-27 |
+| Return values for success indication | set_cookies() returns int count, delete_all_cookies() returns bool - cleaner than exceptions | 2026-01-27 |
 
 ---
 

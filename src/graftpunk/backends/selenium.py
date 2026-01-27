@@ -14,11 +14,12 @@ Example:
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import selenium.common.exceptions
 import webdriver_manager.chrome
 
+from graftpunk.backends.base import Cookie
 from graftpunk.chrome import get_chrome_version
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
@@ -34,15 +35,51 @@ class SeleniumBackend:
 
     1. Stealth mode (use_stealth=True): Uses undetected-chromedriver with
        selenium-stealth for anti-detection. Recommended for most sites.
+       Default window size: 1920,1080 (for anti-detection).
 
     2. Standard mode (use_stealth=False): Uses regular Selenium with
        webdriver-manager. Faster startup, but more detectable.
+       Default window size: 800,600. Override with ``window_size='1024,768'``.
 
     Attributes:
         BACKEND_TYPE: Identifier for this backend type ("selenium").
+
+    Note:
+        The ``default_timeout`` parameter is stored for serialization but
+        not actively enforced. It's reserved for future implementation of
+        operation timeouts.
     """
 
     BACKEND_TYPE: str = "selenium"
+
+    # Expected error patterns during browser cleanup - these indicate normal
+    # shutdown race conditions and should be logged at DEBUG level
+    _EXPECTED_WEBDRIVER_STOP_PATTERNS: frozenset[str] = frozenset(
+        [
+            "unable to connect",
+            "no such window",
+            "chrome not reachable",
+            "session deleted",
+            "target window already closed",
+        ]
+    )
+
+    _EXPECTED_OS_STOP_PATTERNS: frozenset[str] = frozenset(
+        [
+            "no such process",
+            "broken pipe",
+        ]
+    )
+
+    def _is_expected_webdriver_stop_error(self, error_str: str) -> bool:
+        """Check if WebDriverException message indicates expected cleanup behavior."""
+        error_lower = error_str.lower()
+        return any(pattern in error_lower for pattern in self._EXPECTED_WEBDRIVER_STOP_PATTERNS)
+
+    def _is_expected_os_stop_error(self, error_str: str) -> bool:
+        """Check if OSError message indicates expected cleanup behavior."""
+        error_lower = error_str.lower()
+        return any(pattern in error_lower for pattern in self._EXPECTED_OS_STOP_PATTERNS)
 
     def __init__(
         self,
@@ -126,7 +163,12 @@ class SeleniumBackend:
 
     def _start_stealth_driver(self) -> None:
         """Start browser with stealth mode (undetected-chromedriver)."""
-        from graftpunk.stealth import create_stealth_driver
+        try:
+            from graftpunk.stealth import create_stealth_driver
+        except ImportError as exc:
+            raise BrowserError(
+                "Stealth dependencies not installed. Install with: pip install graftpunk[standard]"
+            ) from exc
 
         self._driver = create_stealth_driver(
             headless=self._headless,
@@ -177,11 +219,15 @@ class SeleniumBackend:
             assert self._driver is not None  # Type narrowing for mypy
             self._driver.quit()
         except selenium.common.exceptions.WebDriverException as exc:
-            # Expected errors during browser cleanup - log and continue
-            LOG.warning("selenium_backend_stop_error", error=str(exc))
+            if self._is_expected_webdriver_stop_error(str(exc)):
+                LOG.debug("selenium_backend_stop_expected", error=str(exc))
+            else:
+                LOG.warning("selenium_backend_stop_unexpected", error=str(exc))
         except OSError as exc:
-            # Process-level errors during cleanup - log and continue
-            LOG.warning("selenium_backend_stop_error_os", error=str(exc))
+            if self._is_expected_os_stop_error(str(exc)):
+                LOG.debug("selenium_backend_stop_expected_os", error=str(exc))
+            else:
+                LOG.warning("selenium_backend_stop_unexpected_os", error=str(exc))
         finally:
             self._driver = None
             self._started = False
@@ -224,7 +270,7 @@ class SeleniumBackend:
             Current URL, or empty string if:
             - Browser is not running
             - No page is loaded
-            - An error occurred retrieving the URL (logged at debug level)
+            - An error occurred retrieving the URL (logged at warning level)
         """
         if not self.is_running:
             return ""
@@ -232,7 +278,7 @@ class SeleniumBackend:
             assert self._driver is not None  # Type narrowing for mypy
             return self._driver.current_url or ""
         except selenium.common.exceptions.WebDriverException as exc:
-            LOG.debug("selenium_get_current_url_failed", error=str(exc))
+            LOG.warning("selenium_get_current_url_failed", error=str(exc))
             return ""
 
     @property
@@ -243,7 +289,7 @@ class SeleniumBackend:
             Page title, or empty string if:
             - Browser is not running
             - No page is loaded
-            - An error occurred retrieving the title (logged at debug level)
+            - An error occurred retrieving the title (logged at warning level)
         """
         if not self.is_running:
             return ""
@@ -251,7 +297,7 @@ class SeleniumBackend:
             assert self._driver is not None  # Type narrowing for mypy
             return self._driver.title or ""
         except selenium.common.exceptions.WebDriverException as exc:
-            LOG.debug("selenium_get_page_title_failed", error=str(exc))
+            LOG.warning("selenium_get_page_title_failed", error=str(exc))
             return ""
 
     @property
@@ -262,7 +308,7 @@ class SeleniumBackend:
             Page HTML source, or empty string if:
             - Browser is not running
             - No page is loaded
-            - An error occurred retrieving the source (logged at debug level)
+            - An error occurred retrieving the source (logged at warning level)
         """
         if not self.is_running:
             return ""
@@ -270,7 +316,7 @@ class SeleniumBackend:
             assert self._driver is not None  # Type narrowing for mypy
             return self._driver.page_source or ""
         except selenium.common.exceptions.WebDriverException as exc:
-            LOG.debug("selenium_get_page_source_failed", error=str(exc))
+            LOG.warning("selenium_get_page_source_failed", error=str(exc))
             return ""
 
     @property
@@ -286,13 +332,17 @@ class SeleniumBackend:
             self.start()
         return self._driver
 
-    def get_cookies(self) -> list[dict[str, Any]]:
+    def get_cookies(self) -> list[Cookie]:
         """Get all cookies from the browser.
+
+        Note:
+            Unlike ``set_cookies()`` and ``navigate()``, this method does NOT
+            auto-start the browser.
 
         Returns:
             List of cookie dicts from Selenium's get_cookies(),
             or empty list if browser is not running or an error occurs
-            (errors logged at debug level).
+            (errors logged at warning level).
         """
         if not self.is_running:
             return []
@@ -300,10 +350,10 @@ class SeleniumBackend:
             assert self._driver is not None  # Type narrowing for mypy
             return self._driver.get_cookies() or []
         except selenium.common.exceptions.WebDriverException as exc:
-            LOG.debug("selenium_get_cookies_failed", error=str(exc))
+            LOG.warning("selenium_get_cookies_failed", error=str(exc))
             return []
 
-    def set_cookies(self, cookies: list[dict[str, Any]]) -> None:
+    def set_cookies(self, cookies: list[Cookie]) -> int:
         """Set cookies in the browser.
 
         This is a best-effort operation. If setting individual cookies fails,
@@ -311,31 +361,56 @@ class SeleniumBackend:
         attempting to set remaining cookies.
 
         Args:
-            cookies: List of cookie dicts to set.
+            cookies: List of Cookie dicts to set. Each must have 'name' and
+                'value'; other fields are optional.
+
+        Returns:
+            Number of cookies successfully set.
         """
         if not self.is_running:
             self.start()
 
         assert self._driver is not None  # Type narrowing for mypy
+        success_count = 0
+        failed_names: list[str] = []
         for cookie in cookies:
             try:
                 self._driver.add_cookie(cookie)
+                success_count += 1
             except selenium.common.exceptions.WebDriverException as exc:
+                failed_names.append(cookie.get("name", "<unknown>"))
                 LOG.warning(
                     "selenium_backend_cookie_set_failed",
                     cookie_name=cookie.get("name"),
                     error=str(exc),
                 )
 
-    def delete_all_cookies(self) -> None:
-        """Delete all cookies from the browser."""
+        if failed_names:
+            LOG.warning(
+                "selenium_backend_cookies_partially_set",
+                total=len(cookies),
+                success_count=success_count,
+                failed_count=len(failed_names),
+            )
+
+        return success_count
+
+    def delete_all_cookies(self) -> bool:
+        """Delete all cookies from the browser.
+
+        Returns:
+            True if cookies were successfully deleted or browser was not running
+            (no-op), False if an error occurred (error is logged at warning level).
+        """
         if not self.is_running:
-            return
+            return True  # No cookies to delete
         try:
             assert self._driver is not None  # Type narrowing for mypy
             self._driver.delete_all_cookies()
+            return True
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.warning("selenium_backend_delete_cookies_failed", error=str(exc))
+            return False
 
     def get_user_agent(self) -> str:
         """Get the browser's User-Agent string.
@@ -343,7 +418,7 @@ class SeleniumBackend:
         Returns:
             User-Agent string from navigator.userAgent,
             or empty string if browser is not running or an error occurs
-            (errors logged at debug level).
+            (errors logged at warning level).
         """
         if not self.is_running:
             return ""
@@ -351,7 +426,7 @@ class SeleniumBackend:
             assert self._driver is not None  # Type narrowing for mypy
             return self._driver.execute_script("return navigator.userAgent") or ""
         except selenium.common.exceptions.WebDriverException as exc:
-            LOG.debug("selenium_get_user_agent_failed", error=str(exc))
+            LOG.warning("selenium_get_user_agent_failed", error=str(exc))
             return ""
 
     def get_state(self) -> dict[str, Any]:
@@ -372,7 +447,7 @@ class SeleniumBackend:
         return state
 
     @classmethod
-    def from_state(cls, state: dict[str, Any]) -> "SeleniumBackend":
+    def from_state(cls, state: dict[str, Any]) -> Self:
         """Recreate backend instance from serialized state.
 
         Args:
@@ -381,6 +456,17 @@ class SeleniumBackend:
         Returns:
             New SeleniumBackend instance (not started).
         """
+        # Warn if backend_type doesn't match
+        saved_backend = state.get("backend_type")
+        if saved_backend and saved_backend != cls.BACKEND_TYPE:
+            LOG.warning(
+                "backend_type_mismatch",
+                expected=cls.BACKEND_TYPE,
+                saved=saved_backend,
+                hint=f"State was saved by {saved_backend} backend but is being "
+                f"restored as {cls.BACKEND_TYPE}. Some settings may not apply.",
+            )
+
         # Extract known parameters
         headless = state.get("headless", True)
         use_stealth = state.get("use_stealth", True)
@@ -408,7 +494,7 @@ class SeleniumBackend:
             **options,
         )
 
-    def __enter__(self) -> "SeleniumBackend":
+    def __enter__(self) -> Self:
         """Context manager entry - start browser.
 
         Returns:

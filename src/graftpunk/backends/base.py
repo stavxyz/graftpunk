@@ -15,7 +15,33 @@ Example:
 """
 
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NotRequired, Protocol, Required, Self, TypedDict, runtime_checkable
+
+
+class Cookie(TypedDict, total=False):
+    """Cookie dictionary type for browser cookies.
+
+    This TypedDict defines the common structure for cookies across backends.
+    The 'name' and 'value' fields are required; other fields are optional and
+    may vary by backend (Selenium vs CDP format).
+
+    Note:
+        The duplicate fields accommodate format differences between backends:
+        Selenium uses ``httpOnly`` (camelCase) and ``expiry`` (Unix timestamp as int).
+        CDP/nodriver uses ``httponly`` (lowercase) and ``expires`` (Unix timestamp).
+        When setting cookies, use the format expected by your backend.
+    """
+
+    name: Required[str]  # Cookie name
+    value: Required[str]  # Cookie value
+    domain: NotRequired[str]
+    path: NotRequired[str]
+    secure: NotRequired[bool]
+    httpOnly: NotRequired[bool]  # Selenium format
+    httponly: NotRequired[bool]  # CDP format (nodriver)
+    sameSite: NotRequired[str]
+    expires: NotRequired[float | int]  # CDP format (nodriver) - Unix timestamp
+    expiry: NotRequired[int]  # Selenium format - Unix timestamp
 
 
 @runtime_checkable
@@ -143,34 +169,48 @@ class BrowserBackend(Protocol):
         """
         ...
 
-    def get_cookies(self) -> list[dict[str, Any]]:
+    def get_cookies(self) -> list[Cookie]:
         """Get all cookies from the browser.
 
+        Note:
+            Unlike ``set_cookies()`` and ``navigate()``, this method does NOT
+            auto-start the browser. Returns empty list if browser is not running.
+
         Returns:
-            List of cookie dicts. Keys vary by backend but typically include
+            List of cookie dicts. Keys vary by backend but always include
             'name' and 'value'. Selenium returns keys like 'domain', 'path',
             'secure', 'httpOnly'. NoDriver returns CDP-format cookies.
-            Returns empty list if browser is not running.
         """
         ...
 
-    def set_cookies(self, cookies: list[dict[str, Any]]) -> None:
+    def set_cookies(self, cookies: list[Cookie]) -> int:
         """Set cookies in the browser.
 
         If the browser is not running, it will be started automatically.
 
-        This is a best-effort operation in implementations. If setting
-        individual cookies fails, a warning is logged but no exception
-        is raised. The method continues attempting to set remaining cookies.
+        This is a best-effort operation. Exact behavior (individual vs batch
+        setting, partial success handling) varies by backend implementation.
+        Failures are logged at warning level but no exception is raised.
+        See backend-specific documentation for details.
 
         Args:
-            cookies: List of cookie dicts to set. Each dict should have
-                at minimum 'name' and 'value' keys.
+            cookies: List of Cookie dicts to set. Each dict must have
+                'name' and 'value' keys; other fields are optional.
+
+        Returns:
+            Number of cookies successfully set. Compare against len(cookies)
+            to determine if any failed.
         """
         ...
 
-    def delete_all_cookies(self) -> None:
-        """Delete all cookies from the browser."""
+    def delete_all_cookies(self) -> bool:
+        """Delete all cookies from the browser.
+
+        Returns:
+            True if cookies were successfully deleted or browser was not running
+            (no-op - there are no cookies to delete), False if an error occurred
+            (error is logged at warning level).
+        """
         ...
 
     def get_user_agent(self) -> str:
@@ -194,7 +234,7 @@ class BrowserBackend(Protocol):
         ...
 
     @classmethod
-    def from_state(cls, state: dict[str, Any]) -> "BrowserBackend":
+    def from_state(cls, state: dict[str, Any]) -> Self:
         """Recreate backend instance from serialized state.
 
         Args:
@@ -211,7 +251,7 @@ class BrowserBackend(Protocol):
         """
         ...
 
-    def __enter__(self) -> "BrowserBackend":
+    def __enter__(self) -> Self:
         """Context manager entry - start browser.
 
         Returns:
