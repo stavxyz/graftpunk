@@ -579,3 +579,156 @@ class TestSeleniumBackendStandardMode:
         backend = SeleniumBackend(use_stealth=False)
         with pytest.raises(BrowserError, match="Failed to detect Chrome"):
             backend.start()
+
+
+class TestSeleniumBackendMissingCoverage:
+    """Additional tests for SeleniumBackend coverage gaps."""
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_page_source_returns_driver_source(self, mock_create: MagicMock) -> None:
+        """page_source returns driver's page_source."""
+        mock_driver = MagicMock()
+        mock_driver.page_source = "<html><body>Test</body></html>"
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+
+        assert backend.page_source == "<html><body>Test</body></html>"
+
+    def test_page_source_empty_when_not_running(self) -> None:
+        """page_source returns empty string when not running."""
+        backend = SeleniumBackend()
+        assert backend.page_source == ""
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_page_source_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
+        """page_source returns empty string on WebDriverException."""
+        import selenium.common.exceptions
+
+        mock_driver = MagicMock()
+        type(mock_driver).page_source = property(
+            MagicMock(side_effect=selenium.common.exceptions.WebDriverException("stale"))
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+
+        assert backend.page_source == ""
+
+    def test_page_title_empty_when_not_running(self) -> None:
+        """page_title returns empty string when not running."""
+        backend = SeleniumBackend()
+        assert backend.page_title == ""
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_delete_all_cookies_calls_driver(self, mock_create: MagicMock) -> None:
+        """delete_all_cookies() calls driver.delete_all_cookies()."""
+        mock_driver = MagicMock()
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        backend.delete_all_cookies()
+
+        mock_driver.delete_all_cookies.assert_called_once()
+
+    def test_delete_all_cookies_safe_when_not_running(self) -> None:
+        """delete_all_cookies() is safe when not running."""
+        backend = SeleniumBackend()
+        # Should not raise
+        backend.delete_all_cookies()
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_delete_all_cookies_handles_exception_gracefully(self, mock_create: MagicMock) -> None:
+        """delete_all_cookies() handles WebDriverException gracefully."""
+        import selenium.common.exceptions
+
+        mock_driver = MagicMock()
+        mock_driver.delete_all_cookies.side_effect = selenium.common.exceptions.WebDriverException(
+            "fail"
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        # Should not raise
+        backend.delete_all_cookies()
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_driver_starts_if_not_running(self, mock_create: MagicMock) -> None:
+        """driver property starts browser if not running."""
+        mock_driver = MagicMock()
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        assert backend.is_running is False
+
+        _ = backend.driver
+
+        assert backend.is_running is True
+        mock_create.assert_called_once()
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_context_manager_propagates_exceptions(self, mock_create: MagicMock) -> None:
+        """Context manager does not suppress exceptions from within the block."""
+        mock_create.return_value = MagicMock()
+
+        with pytest.raises(ValueError, match="test error"), SeleniumBackend(use_stealth=True):
+            raise ValueError("test error")
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_start_overrides_headless(self, mock_create: MagicMock) -> None:
+        """start() can override headless setting."""
+        mock_create.return_value = MagicMock()
+
+        backend = SeleniumBackend(headless=True, use_stealth=True)
+        backend.start(headless=False)
+
+        mock_create.assert_called_once_with(headless=False, profile_dir=None)
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_start_overrides_profile_dir(self, mock_create: MagicMock, tmp_path: Path) -> None:
+        """start() can override profile_dir setting."""
+        mock_create.return_value = MagicMock()
+        profile = tmp_path / "override_profile"
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start(profile_dir=profile)
+
+        mock_create.assert_called_once_with(headless=True, profile_dir=profile)
+
+    def test_from_state_preserves_extra_options(self) -> None:
+        """from_state preserves unknown keys as options."""
+        state = {
+            "backend_type": "selenium",
+            "headless": True,
+            "window_size": "1920,1080",
+            "custom_option": "value",
+        }
+        backend = SeleniumBackend.from_state(state)
+
+        assert backend._options.get("window_size") == "1920,1080"
+        assert backend._options.get("custom_option") == "value"
+
+
+class TestGetBackendImportError:
+    """Tests for get_backend() import error handling."""
+
+    def test_get_backend_import_error_provides_helpful_message(self) -> None:
+        """ImportError during backend loading provides helpful message."""
+        with patch("graftpunk.backends.import_module") as mock_import:
+            mock_import.side_effect = ImportError("No module named 'nodriver'")
+
+            with pytest.raises(ImportError, match="requires additional dependencies"):
+                get_backend("nodriver")
+
+    def test_get_backend_attribute_error_provides_helpful_message(self) -> None:
+        """AttributeError during class lookup provides helpful message."""
+        with patch("graftpunk.backends.import_module") as mock_import:
+            mock_module = MagicMock(spec=[])  # Empty spec, no attributes
+            mock_import.return_value = mock_module
+
+            with pytest.raises(ImportError, match="class.*not found"):
+                get_backend("selenium")
