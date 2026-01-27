@@ -107,6 +107,25 @@ class TestRegisterBackend:
         with pytest.raises(ValueError, match="Expected format"):
             register_backend("invalid", "invalid_path_no_colon")
 
+    def test_register_backend_success_and_retrieval(self) -> None:
+        """Registered backend can be retrieved via get_backend()."""
+        from graftpunk.backends import _BACKEND_REGISTRY
+
+        # Register a custom backend pointing to an existing class
+        test_name = "test_custom_backend_registration"
+        register_backend(test_name, "graftpunk.backends.selenium:SeleniumBackend")
+
+        try:
+            # Verify it's in the registry
+            assert test_name in _BACKEND_REGISTRY
+
+            # Verify we can retrieve it
+            backend = get_backend(test_name)
+            assert isinstance(backend, SeleniumBackend)
+        finally:
+            # Clean up registry to not pollute other tests
+            del _BACKEND_REGISTRY[test_name]
+
 
 class TestSeleniumBackend:
     """Tests for SeleniumBackend implementation."""
@@ -580,9 +599,57 @@ class TestSeleniumBackendStandardMode:
         with pytest.raises(BrowserError, match="Failed to detect Chrome"):
             backend.start()
 
+    @patch("selenium.webdriver.Chrome")
+    @patch("graftpunk.backends.selenium.webdriver_manager.chrome.ChromeDriverManager")
+    @patch("graftpunk.backends.selenium.get_chrome_version")
+    def test_standard_mode_respects_window_size_option(
+        self,
+        mock_version: MagicMock,
+        mock_manager: MagicMock,
+        mock_chrome: MagicMock,
+    ) -> None:
+        """Standard mode applies window_size option."""
+        mock_version.return_value = "120"
+        mock_manager.return_value.install.return_value = "/path/to/chromedriver"
+        mock_chrome.return_value = MagicMock()
+
+        backend = SeleniumBackend(use_stealth=False, window_size="1920,1080")
+        backend.start()
+
+        call_kwargs = mock_chrome.call_args[1]
+        options = call_kwargs["options"]
+        assert any("1920,1080" in str(arg) for arg in options.arguments)
+
 
 class TestSeleniumBackendMissingCoverage:
     """Additional tests for SeleniumBackend coverage gaps."""
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_is_running_false_when_driver_none_but_started_true(
+        self, mock_create: MagicMock
+    ) -> None:
+        """is_running returns False if driver is None even if _started is True."""
+        mock_create.return_value = MagicMock()
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        assert backend.is_running is True
+
+        # Simulate driver becoming None (crash scenario)
+        backend._driver = None
+
+        assert backend.is_running is False
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_start_updates_additional_options(self, mock_create: MagicMock) -> None:
+        """start() merges additional options into _options."""
+        mock_create.return_value = MagicMock()
+
+        backend = SeleniumBackend(use_stealth=True, window_size="800,600")
+        backend.start(custom_arg="custom_value")
+
+        assert backend._options.get("custom_arg") == "custom_value"
+        assert backend._options.get("window_size") == "800,600"  # Original preserved
 
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_page_source_returns_driver_source(self, mock_create: MagicMock) -> None:
