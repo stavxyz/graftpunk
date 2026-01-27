@@ -362,3 +362,220 @@ class TestSeleniumBackendSerialization:
         assert recreated._headless == original._headless
         assert recreated._use_stealth == original._use_stealth
         assert recreated._default_timeout == original._default_timeout
+
+
+class TestSeleniumBackendErrorHandling:
+    """Tests for SeleniumBackend error handling."""
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_start_webdriver_exception_raises_browser_error(self, mock_create: MagicMock) -> None:
+        """WebDriverException during start raises BrowserError."""
+        import selenium.common.exceptions
+
+        from graftpunk.exceptions import BrowserError
+
+        mock_create.side_effect = selenium.common.exceptions.WebDriverException("fail")
+
+        backend = SeleniumBackend(use_stealth=True)
+        with pytest.raises(BrowserError, match="Failed to start"):
+            backend.start()
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_start_os_error_raises_browser_error(self, mock_create: MagicMock) -> None:
+        """OSError during start raises BrowserError."""
+        from graftpunk.exceptions import BrowserError
+
+        mock_create.side_effect = OSError("Chrome not found")
+
+        backend = SeleniumBackend(use_stealth=True)
+        with pytest.raises(BrowserError, match="Failed to start"):
+            backend.start()
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_navigate_webdriver_exception_raises_browser_error(
+        self, mock_create: MagicMock
+    ) -> None:
+        """WebDriverException during navigate raises BrowserError."""
+        import selenium.common.exceptions
+
+        from graftpunk.exceptions import BrowserError
+
+        mock_driver = MagicMock()
+        mock_driver.get.side_effect = selenium.common.exceptions.WebDriverException("timeout")
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        with pytest.raises(BrowserError, match="Navigation failed"):
+            backend.navigate("https://example.com")
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_stop_handles_quit_exception_gracefully(self, mock_create: MagicMock) -> None:
+        """stop() handles WebDriverException from quit gracefully."""
+        import selenium.common.exceptions
+
+        mock_driver = MagicMock()
+        mock_driver.quit.side_effect = selenium.common.exceptions.WebDriverException(
+            "already closed"
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        # Should not raise
+        backend.stop()
+        assert backend.is_running is False
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_stop_handles_os_error_gracefully(self, mock_create: MagicMock) -> None:
+        """stop() handles OSError from quit gracefully."""
+        mock_driver = MagicMock()
+        mock_driver.quit.side_effect = OSError("process died")
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        # Should not raise
+        backend.stop()
+        assert backend.is_running is False
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_navigate_auto_starts_browser(self, mock_create: MagicMock) -> None:
+        """navigate() auto-starts browser if not running."""
+        mock_driver = MagicMock()
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        assert backend.is_running is False
+
+        backend.navigate("https://example.com")
+
+        assert backend.is_running is True
+        mock_driver.get.assert_called_once_with("https://example.com")
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_set_cookies_auto_starts_browser(self, mock_create: MagicMock) -> None:
+        """set_cookies() auto-starts browser if not running."""
+        mock_driver = MagicMock()
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        assert backend.is_running is False
+
+        backend.set_cookies([{"name": "test", "value": "value"}])
+
+        assert backend.is_running is True
+        mock_driver.add_cookie.assert_called_once()
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_set_cookies_logs_warning_on_failure(self, mock_create: MagicMock) -> None:
+        """set_cookies() logs warning when cookie add fails."""
+        import selenium.common.exceptions
+
+        mock_driver = MagicMock()
+        mock_driver.add_cookie.side_effect = selenium.common.exceptions.WebDriverException(
+            "wrong domain"
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+        # Should not raise, but log warning
+        backend.set_cookies([{"name": "test", "value": "value"}])
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_current_url_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
+        """current_url returns empty string on WebDriverException."""
+        import selenium.common.exceptions
+
+        mock_driver = MagicMock()
+        mock_driver.current_url = property(
+            lambda self: (_ for _ in ()).throw(
+                selenium.common.exceptions.WebDriverException("stale")
+            )
+        )
+        # Simpler approach: make it a method that raises
+        type(mock_driver).current_url = property(
+            MagicMock(side_effect=selenium.common.exceptions.WebDriverException("stale"))
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+
+        assert backend.current_url == ""
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_page_title_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
+        """page_title returns empty string on WebDriverException."""
+        import selenium.common.exceptions
+
+        mock_driver = MagicMock()
+        type(mock_driver).title = property(
+            MagicMock(side_effect=selenium.common.exceptions.WebDriverException("stale"))
+        )
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+
+        assert backend.page_title == ""
+
+
+class TestSeleniumBackendStandardMode:
+    """Tests for SeleniumBackend standard (non-stealth) mode."""
+
+    @patch("selenium.webdriver.Chrome")
+    @patch("graftpunk.backends.selenium.webdriver_manager.chrome.ChromeDriverManager")
+    @patch("graftpunk.backends.selenium.get_chrome_version")
+    def test_standard_mode_uses_webdriver_manager(
+        self,
+        mock_version: MagicMock,
+        mock_manager: MagicMock,
+        mock_chrome: MagicMock,
+    ) -> None:
+        """Standard mode uses webdriver-manager for chromedriver."""
+        mock_version.return_value = "120"
+        mock_manager.return_value.install.return_value = "/path/to/chromedriver"
+        mock_chrome.return_value = MagicMock()
+
+        backend = SeleniumBackend(use_stealth=False, headless=True)
+        backend.start()
+
+        mock_version.assert_called_once_with(major=True)
+        mock_manager.assert_called_once_with(driver_version="120")
+        assert backend.is_running is True
+
+    @patch("selenium.webdriver.Chrome")
+    @patch("graftpunk.backends.selenium.webdriver_manager.chrome.ChromeDriverManager")
+    @patch("graftpunk.backends.selenium.get_chrome_version")
+    def test_standard_mode_headless_argument(
+        self,
+        mock_version: MagicMock,
+        mock_manager: MagicMock,
+        mock_chrome: MagicMock,
+    ) -> None:
+        """Standard mode adds headless argument when headless=True."""
+        mock_version.return_value = "120"
+        mock_manager.return_value.install.return_value = "/path/to/chromedriver"
+        mock_chrome.return_value = MagicMock()
+
+        backend = SeleniumBackend(use_stealth=False, headless=True)
+        backend.start()
+
+        # Check that Chrome was called with options containing headless
+        call_kwargs = mock_chrome.call_args[1]
+        options = call_kwargs["options"]
+        # Check arguments were added
+        assert any("headless" in str(arg) for arg in options.arguments)
+
+    @patch("graftpunk.backends.selenium.get_chrome_version")
+    def test_standard_mode_chrome_detection_error(self, mock_version: MagicMock) -> None:
+        """ChromeDriverError during version detection raises BrowserError."""
+        from graftpunk.exceptions import BrowserError, ChromeDriverError
+
+        mock_version.side_effect = ChromeDriverError("Chrome not found")
+
+        backend = SeleniumBackend(use_stealth=False)
+        with pytest.raises(BrowserError, match="Failed to detect Chrome"):
+            backend.start()

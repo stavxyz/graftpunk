@@ -171,8 +171,12 @@ class SeleniumBackend:
         LOG.info("selenium_backend_stopping")
         try:
             self._driver.quit()
-        except Exception as exc:
+        except selenium.common.exceptions.WebDriverException as exc:
             LOG.warning("selenium_backend_stop_error", error=str(exc))
+        except OSError as exc:
+            LOG.warning("selenium_backend_stop_error_os", error=str(exc))
+        except Exception as exc:
+            LOG.warning("selenium_backend_stop_error_unexpected", error=str(exc))
         finally:
             self._driver = None
             self._started = False
@@ -180,10 +184,10 @@ class SeleniumBackend:
 
     @property
     def is_running(self) -> bool:
-        """Whether the browser is currently running.
+        """Whether the browser is currently started.
 
         Returns:
-            True if browser is started and responsive.
+            True if browser is started, False otherwise.
         """
         return self._started and self._driver is not None
 
@@ -211,13 +215,17 @@ class SeleniumBackend:
         """Get the current page URL.
 
         Returns:
-            Current URL, or empty string if no page loaded.
+            Current URL, or empty string if:
+            - Browser is not running
+            - No page is loaded
+            - An error occurred retrieving the URL (logged at debug level)
         """
         if not self.is_running:
             return ""
         try:
             return self._driver.current_url or ""
-        except selenium.common.exceptions.WebDriverException:
+        except selenium.common.exceptions.WebDriverException as exc:
+            LOG.debug("selenium_get_current_url_failed", error=str(exc))
             return ""
 
     @property
@@ -225,13 +233,17 @@ class SeleniumBackend:
         """Get the current page title.
 
         Returns:
-            Page title, or empty string if no page loaded.
+            Page title, or empty string if:
+            - Browser is not running
+            - No page is loaded
+            - An error occurred retrieving the title (logged at debug level)
         """
         if not self.is_running:
             return ""
         try:
             return self._driver.title or ""
-        except selenium.common.exceptions.WebDriverException:
+        except selenium.common.exceptions.WebDriverException as exc:
+            LOG.debug("selenium_get_page_title_failed", error=str(exc))
             return ""
 
     @property
@@ -239,13 +251,17 @@ class SeleniumBackend:
         """Get the current page HTML source.
 
         Returns:
-            Page HTML source, or empty string if no page loaded.
+            Page HTML source, or empty string if:
+            - Browser is not running
+            - No page is loaded
+            - An error occurred retrieving the source (logged at debug level)
         """
         if not self.is_running:
             return ""
         try:
             return self._driver.page_source or ""
-        except selenium.common.exceptions.WebDriverException:
+        except selenium.common.exceptions.WebDriverException as exc:
+            LOG.debug("selenium_get_page_source_failed", error=str(exc))
             return ""
 
     @property
@@ -265,23 +281,27 @@ class SeleniumBackend:
         """Get all cookies from the browser.
 
         Returns:
-            List of cookie dicts from Selenium's get_cookies().
+            List of cookie dicts from Selenium's get_cookies(),
+            or empty list if browser is not running or an error occurs
+            (errors logged at debug level).
         """
         if not self.is_running:
             return []
         try:
             return self._driver.get_cookies() or []
-        except selenium.common.exceptions.WebDriverException:
+        except selenium.common.exceptions.WebDriverException as exc:
+            LOG.debug("selenium_get_cookies_failed", error=str(exc))
             return []
 
     def set_cookies(self, cookies: list[dict[str, Any]]) -> None:
         """Set cookies in the browser.
 
+        This is a best-effort operation. If setting individual cookies fails,
+        a warning is logged but no exception is raised. The method continues
+        attempting to set remaining cookies.
+
         Args:
             cookies: List of cookie dicts to set.
-
-        Raises:
-            BrowserError: If cookies cannot be set.
         """
         if not self.is_running:
             self.start()
@@ -309,13 +329,16 @@ class SeleniumBackend:
         """Get the browser's User-Agent string.
 
         Returns:
-            User-Agent string from navigator.userAgent.
+            User-Agent string from navigator.userAgent,
+            or empty string if browser is not running or an error occurs
+            (errors logged at debug level).
         """
         if not self.is_running:
             return ""
         try:
             return self._driver.execute_script("return navigator.userAgent") or ""
-        except selenium.common.exceptions.WebDriverException:
+        except selenium.common.exceptions.WebDriverException as exc:
+            LOG.debug("selenium_get_user_agent_failed", error=str(exc))
             return ""
 
     def get_state(self) -> dict[str, Any]:
@@ -355,7 +378,13 @@ class SeleniumBackend:
             profile_dir = Path(profile_dir)
 
         # Remaining items are additional options
-        known_keys = ("backend_type", "headless", "use_stealth", "default_timeout", "profile_dir")
+        known_keys = (
+            "backend_type",
+            "headless",
+            "use_stealth",
+            "default_timeout",
+            "profile_dir",
+        )
         options = {k: v for k, v in state.items() if k not in known_keys}
 
         return cls(

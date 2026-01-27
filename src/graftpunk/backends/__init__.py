@@ -29,9 +29,6 @@ _BACKEND_REGISTRY: dict[str, str] = {
     "selenium": "graftpunk.backends.selenium:SeleniumBackend",
     "legacy": "graftpunk.backends.selenium:SeleniumBackend",  # Alias for backward compat
     "nodriver": "graftpunk.backends.nodriver:NoDriverBackend",
-    # Future backends (Phase 4+):
-    # "camoufox": "graftpunk.backends.camoufox:CamoufoxBackend",
-    # "playwright": "graftpunk.backends.playwright:PlaywrightBackend",
 }
 
 
@@ -47,8 +44,8 @@ def get_backend(name: str = "selenium", **kwargs: Any) -> BrowserBackend:
             Default is "selenium".
         **kwargs: Backend-specific initialization options passed to
             the backend constructor. Common options include:
-            - headless: bool (default True)
-            - use_stealth: bool (default True)
+            - headless: bool (selenium default True, nodriver default False)
+            - use_stealth: bool (selenium only, default True)
             - profile_dir: Path | None
             - default_timeout: int (default 15)
 

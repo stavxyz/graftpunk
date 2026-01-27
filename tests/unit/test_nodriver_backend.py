@@ -283,3 +283,237 @@ class TestNoDriverBackendDriver:
         # Should have started
         mock_run.assert_called()
         assert backend._started is True
+
+
+class TestNoDriverBackendErrorHandling:
+    """Tests for NoDriverBackend error handling."""
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_start_runtime_error_raises_browser_error(self, mock_run: MagicMock) -> None:
+        """RuntimeError during start raises BrowserError."""
+        import pytest
+
+        from graftpunk.exceptions import BrowserError
+
+        mock_run.side_effect = RuntimeError("Chrome not found")
+
+        backend = NoDriverBackend()
+        with pytest.raises(BrowserError, match="Failed to start NoDriver"):
+            backend.start()
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_start_connection_error_raises_browser_error(self, mock_run: MagicMock) -> None:
+        """ConnectionError during start raises BrowserError."""
+        import pytest
+
+        from graftpunk.exceptions import BrowserError
+
+        mock_run.side_effect = ConnectionError("CDP connection failed")
+
+        backend = NoDriverBackend()
+        with pytest.raises(BrowserError, match="Failed to start NoDriver"):
+            backend.start()
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_start_timeout_error_raises_browser_error(self, mock_run: MagicMock) -> None:
+        """TimeoutError during start raises BrowserError."""
+        import pytest
+
+        from graftpunk.exceptions import BrowserError
+
+        mock_run.side_effect = TimeoutError("Browser startup timed out")
+
+        backend = NoDriverBackend()
+        with pytest.raises(BrowserError, match="Failed to start NoDriver"):
+            backend.start()
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_start_os_error_raises_browser_error(self, mock_run: MagicMock) -> None:
+        """OSError during start raises BrowserError."""
+        import pytest
+
+        from graftpunk.exceptions import BrowserError
+
+        mock_run.side_effect = OSError("Chrome binary not found")
+
+        backend = NoDriverBackend()
+        with pytest.raises(BrowserError, match="Failed to start NoDriver"):
+            backend.start()
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_navigate_error_raises_browser_error(self, mock_run: MagicMock) -> None:
+        """Errors during navigation raise BrowserError."""
+        import pytest
+
+        from graftpunk.exceptions import BrowserError
+
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+
+        # First call is for navigate, make it raise
+        mock_run.side_effect = RuntimeError("navigation failed")
+
+        with pytest.raises(BrowserError, match="Navigation failed"):
+            backend.navigate("https://example.com")
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_stop_handles_runtime_error_gracefully(self, mock_run: MagicMock) -> None:
+        """stop() handles RuntimeError gracefully."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        # Make stop raise RuntimeError
+        mock_run.side_effect = RuntimeError("already stopped")
+
+        # Should not raise
+        backend.stop()
+        assert backend.is_running is False
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_stop_handles_os_error_gracefully(self, mock_run: MagicMock) -> None:
+        """stop() handles OSError gracefully."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        # Make stop raise OSError
+        mock_run.side_effect = OSError("process died")
+
+        # Should not raise
+        backend.stop()
+        assert backend.is_running is False
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_navigate_auto_starts_browser(self, mock_run: MagicMock) -> None:
+        """navigate() auto-starts browser if not running."""
+        backend = NoDriverBackend()
+        assert backend.is_running is False
+
+        backend.navigate("https://example.com")
+
+        # Should have called start (via asyncio.run)
+        assert mock_run.call_count >= 1
+        assert backend._started is True
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_set_cookies_logs_warning_on_failure(self, mock_run: MagicMock) -> None:
+        """set_cookies() logs warning when operation fails."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        # Make set_cookies fail
+        mock_run.side_effect = RuntimeError("cookies failed")
+
+        # Should not raise, but log warning
+        backend.set_cookies([{"name": "test", "value": "value"}])
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_delete_cookies_logs_warning_on_failure(self, mock_run: MagicMock) -> None:
+        """delete_all_cookies() logs warning when operation fails."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        # Make delete fail
+        mock_run.side_effect = RuntimeError("delete failed")
+
+        # Should not raise, but log warning
+        backend.delete_all_cookies()
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_current_url_returns_empty_on_exception(self, mock_run: MagicMock) -> None:
+        """current_url returns empty string on exception."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        mock_run.side_effect = RuntimeError("page gone")
+
+        assert backend.current_url == ""
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_page_title_returns_empty_on_exception(self, mock_run: MagicMock) -> None:
+        """page_title returns empty string on exception."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        mock_run.side_effect = RuntimeError("page gone")
+
+        assert backend.page_title == ""
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_page_source_returns_empty_on_exception(self, mock_run: MagicMock) -> None:
+        """page_source returns empty string on exception."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        mock_run.side_effect = RuntimeError("page gone")
+
+        assert backend.page_source == ""
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_get_user_agent_returns_empty_on_exception(self, mock_run: MagicMock) -> None:
+        """get_user_agent() returns empty string on exception."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        mock_run.side_effect = RuntimeError("page gone")
+
+        assert backend.get_user_agent() == ""
+
+
+class TestNoDriverBackendOptions:
+    """Tests for NoDriverBackend option passthrough."""
+
+    def test_browser_args_stored_in_options(self) -> None:
+        """browser_args option is stored."""
+        backend = NoDriverBackend(browser_args=["--disable-gpu"])
+        assert backend._options.get("browser_args") == ["--disable-gpu"]
+
+    def test_lang_stored_in_options(self) -> None:
+        """lang option is stored."""
+        backend = NoDriverBackend(lang="en-US")
+        assert backend._options.get("lang") == "en-US"
+
+    def test_browser_executable_path_stored_in_options(self) -> None:
+        """browser_executable_path option is stored."""
+        backend = NoDriverBackend(browser_executable_path="/usr/bin/chrome")
+        assert backend._options.get("browser_executable_path") == "/usr/bin/chrome"
+
+    def test_options_included_in_state(self) -> None:
+        """Additional options are included in get_state()."""
+        backend = NoDriverBackend(
+            browser_args=["--disable-gpu"],
+            lang="en-US",
+        )
+        state = backend.get_state()
+
+        assert state.get("browser_args") == ["--disable-gpu"]
+        assert state.get("lang") == "en-US"
+
+    def test_options_restored_from_state(self) -> None:
+        """Additional options are restored via from_state()."""
+        original = NoDriverBackend(
+            browser_args=["--no-sandbox"],
+            lang="de-DE",
+        )
+        state = original.get_state()
+
+        recreated = NoDriverBackend.from_state(state)
+
+        assert recreated._options.get("browser_args") == ["--no-sandbox"]
+        assert recreated._options.get("lang") == "de-DE"

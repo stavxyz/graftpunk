@@ -65,10 +65,10 @@ class BrowserBackend(Protocol):
 
     @property
     def is_running(self) -> bool:
-        """Whether the browser is currently running.
+        """Whether the browser is currently started.
 
         Returns:
-            True if browser is started and responsive, False otherwise.
+            True if browser is started, False otherwise.
         """
         ...
 

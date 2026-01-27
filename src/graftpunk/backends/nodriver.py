@@ -142,8 +142,12 @@ class NoDriverBackend:
             self._run_async(self._start_async())
             self._started = True
             LOG.info("nodriver_backend_started")
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError, OSError) as exc:
             LOG.error("nodriver_backend_start_failed", error=str(exc))
+            raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
+        except Exception as exc:
+            # Catch any nodriver-specific exceptions we didn't anticipate
+            LOG.error("nodriver_backend_start_failed_unexpected", error=str(exc))
             raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
 
     async def _stop_async(self) -> None:
@@ -151,8 +155,10 @@ class NoDriverBackend:
         if self._browser is not None:
             try:
                 self._browser.stop()
-            except Exception as exc:
+            except (RuntimeError, OSError) as exc:
                 LOG.warning("nodriver_backend_stop_warning", error=str(exc))
+            except Exception as exc:
+                LOG.warning("nodriver_backend_stop_unexpected", error=str(exc))
 
     def stop(self) -> None:
         """Stop the browser and release resources.
@@ -165,8 +171,10 @@ class NoDriverBackend:
         LOG.info("nodriver_backend_stopping")
         try:
             self._run_async(self._stop_async())
-        except Exception as exc:
+        except (RuntimeError, OSError) as exc:
             LOG.warning("nodriver_backend_stop_error", error=str(exc))
+        except Exception as exc:
+            LOG.warning("nodriver_backend_stop_error_unexpected", error=str(exc))
         finally:
             self._browser = None
             self._page = None
@@ -175,10 +183,10 @@ class NoDriverBackend:
 
     @property
     def is_running(self) -> bool:
-        """Whether the browser is currently running.
+        """Whether the browser is currently started.
 
         Returns:
-            True if browser is started.
+            True if browser is started, False otherwise.
         """
         return self._started and self._browser is not None
 
@@ -201,8 +209,11 @@ class NoDriverBackend:
         LOG.debug("nodriver_backend_navigating", url=url)
         try:
             self._run_async(self._navigate_async(url))
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
             LOG.error("nodriver_backend_navigation_failed", url=url, error=str(exc))
+            raise BrowserError(f"Navigation failed: {exc}") from exc
+        except Exception as exc:
+            LOG.error("nodriver_backend_navigation_failed_unexpected", url=url, error=str(exc))
             raise BrowserError(f"Navigation failed: {exc}") from exc
 
     async def _get_current_url_async(self) -> str:
@@ -211,7 +222,8 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("window.location.href") or ""
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_get_current_url_failed", error=str(exc))
             return ""
 
     @property
@@ -219,13 +231,17 @@ class NoDriverBackend:
         """Get the current page URL.
 
         Returns:
-            Current URL, or empty string if no page loaded.
+            Current URL, or empty string if:
+            - Browser is not running
+            - No page is loaded
+            - An error occurred retrieving the URL (logged at debug level)
         """
         if not self.is_running:
             return ""
         try:
             return self._run_async(self._get_current_url_async())
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_current_url_failed", error=str(exc))
             return ""
 
     async def _get_page_title_async(self) -> str:
@@ -234,7 +250,8 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("document.title") or ""
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_get_page_title_failed", error=str(exc))
             return ""
 
     @property
@@ -242,13 +259,17 @@ class NoDriverBackend:
         """Get the current page title.
 
         Returns:
-            Page title, or empty string if no page loaded.
+            Page title, or empty string if:
+            - Browser is not running
+            - No page is loaded
+            - An error occurred retrieving the title (logged at debug level)
         """
         if not self.is_running:
             return ""
         try:
             return self._run_async(self._get_page_title_async())
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_page_title_failed", error=str(exc))
             return ""
 
     async def _get_page_source_async(self) -> str:
@@ -257,7 +278,8 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.get_content() or ""
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_get_page_source_failed", error=str(exc))
             return ""
 
     @property
@@ -265,13 +287,17 @@ class NoDriverBackend:
         """Get the current page HTML source.
 
         Returns:
-            Page HTML source, or empty string if no page loaded.
+            Page HTML source, or empty string if:
+            - Browser is not running
+            - No page is loaded
+            - An error occurred retrieving the source (logged at debug level)
         """
         if not self.is_running:
             return ""
         try:
             return self._run_async(self._get_page_source_async())
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_page_source_failed", error=str(exc))
             return ""
 
     @property
@@ -298,20 +324,24 @@ class NoDriverBackend:
         try:
             cookies = await self._page.get_cookies()
             return cookies or []
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_get_cookies_failed", error=str(exc))
             return []
 
     def get_cookies(self) -> list[dict[str, Any]]:
         """Get all cookies from the browser.
 
         Returns:
-            List of cookie dicts from nodriver's get_cookies().
+            List of cookie dicts from nodriver's get_cookies(),
+            or empty list if browser is not running or an error occurs
+            (errors logged at debug level).
         """
         if not self.is_running:
             return []
         try:
             return self._run_async(self._get_cookies_async())
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_cookies_failed", error=str(exc))
             return []
 
     async def _set_cookies_async(self, cookies: list[dict[str, Any]]) -> None:
@@ -322,11 +352,11 @@ class NoDriverBackend:
     def set_cookies(self, cookies: list[dict[str, Any]]) -> None:
         """Set cookies in the browser.
 
+        This is a best-effort operation. If setting cookies fails, a warning
+        is logged but no exception is raised.
+
         Args:
             cookies: List of cookie dicts to set.
-
-        Raises:
-            BrowserError: If cookies cannot be set.
         """
         if not self.is_running:
             self.start()
@@ -345,7 +375,7 @@ class NoDriverBackend:
                     "Network.clearBrowserCookies",
                 )
             except Exception as exc:
-                LOG.debug("nodriver_clear_cookies_cdp_failed", error=str(exc))
+                LOG.warning("nodriver_clear_cookies_cdp_failed", error=str(exc))
 
     def delete_all_cookies(self) -> None:
         """Delete all cookies from the browser."""
@@ -362,20 +392,24 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("navigator.userAgent") or ""
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_get_user_agent_failed", error=str(exc))
             return ""
 
     def get_user_agent(self) -> str:
         """Get the browser's User-Agent string.
 
         Returns:
-            User-Agent string from navigator.userAgent.
+            User-Agent string from navigator.userAgent,
+            or empty string if browser is not running or an error occurs
+            (errors logged at debug level).
         """
         if not self.is_running:
             return ""
         try:
             return self._run_async(self._get_user_agent_async())
-        except Exception:
+        except Exception as exc:
+            LOG.debug("nodriver_user_agent_failed", error=str(exc))
             return ""
 
     def get_state(self) -> dict[str, Any]:
