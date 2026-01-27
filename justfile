@@ -8,18 +8,15 @@ default:
 # Development Setup
 # --------------------------------------------------------------------------
 
-# Complete development setup
+# Complete development setup (all extras)
 setup:
-    python3 -m venv .venv
-    .venv/bin/pip install -e ".[dev,supabase]"
+    uv sync --all-extras
     @echo "✅ Setup complete!"
-    @echo "📝 Activate: source .venv/bin/activate"
 
-# Install all extras (including s3)
-setup-all:
-    python3 -m venv .venv
-    .venv/bin/pip install -e ".[all]"
-    @echo "✅ Full setup complete!"
+# Minimal dev setup (no optional backends)
+setup-dev:
+    uv sync --group dev
+    @echo "✅ Dev setup complete!"
 
 # --------------------------------------------------------------------------
 # Quality Checks
@@ -31,14 +28,14 @@ check: lint test
 
 # Run linter and type checker
 lint:
-    ruff check .
-    ruff format --check .
-    mypy src/
+    uvx ruff check .
+    uvx ruff format --check .
+    uvx ty check src/
 
 # Auto-format code
 format:
-    ruff format .
-    ruff check --fix .
+    uvx ruff format .
+    uvx ruff check --fix .
 
 # --------------------------------------------------------------------------
 # Testing
@@ -46,15 +43,15 @@ format:
 
 # Run all tests
 test *ARGS:
-    pytest tests/ -v {{ARGS}}
+    uv run pytest tests/ -v {{ARGS}}
 
 # Run tests with coverage report
 test-cov:
-    pytest tests/ --cov=src/graftpunk --cov-report=term-missing --cov-report=html
+    uv run pytest tests/ --cov=src/graftpunk --cov-report=term-missing --cov-report=html
 
 # Run only unit tests (fast)
 test-unit:
-    pytest tests/unit/ -v
+    uv run pytest tests/unit/ -v
 
 # --------------------------------------------------------------------------
 # Building & Publishing
@@ -62,17 +59,17 @@ test-unit:
 
 # Build package (sdist and wheel)
 build: clean
-    python -m build
+    uvx --from build pyproject-build
     @echo "✅ Built dist/"
     @ls -la dist/
 
 # Check package before upload
 check-dist: build
-    twine check dist/*
+    uvx twine check dist/*
 
 # Upload to Test PyPI
 publish-test: check-dist
-    twine upload --repository testpypi dist/*
+    uvx twine upload --repository testpypi dist/*
     @echo "📦 Uploaded to Test PyPI"
     @echo "🔗 https://test.pypi.org/project/graftpunk/"
 
@@ -80,13 +77,9 @@ publish-test: check-dist
 publish: check-dist
     @echo "⚠️  Publishing to PyPI (production)"
     @read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ]
-    twine upload dist/*
+    uvx twine upload dist/*
     @echo "📦 Uploaded to PyPI"
     @echo "🔗 https://pypi.org/project/graftpunk/"
-
-# Install build/publish dependencies
-install-publish-deps:
-    pip install build twine
 
 # --------------------------------------------------------------------------
 # Release (full workflow)
@@ -112,7 +105,7 @@ release: check
     # ----------------------------
 
     # Check required tools
-    for cmd in gh twine python git; do
+    for cmd in gh uv git; do
         if ! command -v "$cmd" &>/dev/null; then
             echo "❌ Required command not found: $cmd"
             exit 1
@@ -212,9 +205,9 @@ release: check
 
     # Build and upload to PyPI
     just clean
-    python -m build
-    twine check dist/*
-    twine upload dist/*
+    uvx --from build pyproject-build
+    uvx twine check dist/*
+    uvx twine upload dist/*
 
     echo ""
     echo "✅ Released ${TAG}"
@@ -227,15 +220,15 @@ release: check
 
 # Clean build artifacts
 clean:
-    rm -rf .mypy_cache .pytest_cache .ruff_cache .coverage htmlcov/
+    rm -rf .pytest_cache .ruff_cache .coverage htmlcov/
     rm -rf dist/ build/ *.egg-info src/*.egg-info
     find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
     @echo "🧹 Cleaned"
 
 # Show current version
 version:
-    @python -c "import graftpunk; print(graftpunk.__version__)"
+    @uv run python -c "import graftpunk; print(graftpunk.__version__)"
 
 # Run the CLI
 cli *ARGS:
-    python -m graftpunk.cli.main {{ARGS}}
+    uv run python -m graftpunk.cli.main {{ARGS}}
