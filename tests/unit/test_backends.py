@@ -794,8 +794,6 @@ class TestGetBackendImportError:
     def test_get_backend_attribute_error_provides_helpful_message(self) -> None:
         """AttributeError during class lookup provides helpful message."""
         with patch("graftpunk.backends.import_module") as mock_import:
-            mock_module = MagicMock(spec=[])  # Empty spec, no attributes
-            mock_import.return_value = mock_module
-
+            mock_import.return_value = MagicMock(spec=[])  # Empty spec, no attributes
             with pytest.raises(ImportError, match="class.*not found"):
                 get_backend("selenium")
