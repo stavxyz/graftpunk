@@ -236,7 +236,8 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("window.location.href") or ""
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
+            # CDP operations can fail in various ways; graceful degradation
             LOG.debug("nodriver_get_current_url_failed", error=str(exc))
             return ""
 
@@ -254,7 +255,8 @@ class NoDriverBackend:
             return ""
         try:
             return self._run_async(self._get_current_url_async())
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # asyncio.run() can fail if browser crashed; graceful degradation
             LOG.debug("nodriver_current_url_failed", error=str(exc))
             return ""
 
@@ -264,7 +266,8 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("document.title") or ""
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
+            # CDP operations can fail in various ways; graceful degradation
             LOG.debug("nodriver_get_page_title_failed", error=str(exc))
             return ""
 
@@ -282,7 +285,8 @@ class NoDriverBackend:
             return ""
         try:
             return self._run_async(self._get_page_title_async())
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # asyncio.run() can fail if browser crashed; graceful degradation
             LOG.debug("nodriver_page_title_failed", error=str(exc))
             return ""
 
@@ -292,7 +296,8 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.get_content() or ""
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
+            # CDP operations can fail in various ways; graceful degradation
             LOG.debug("nodriver_get_page_source_failed", error=str(exc))
             return ""
 
@@ -310,7 +315,8 @@ class NoDriverBackend:
             return ""
         try:
             return self._run_async(self._get_page_source_async())
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # asyncio.run() can fail if browser crashed; graceful degradation
             LOG.debug("nodriver_page_source_failed", error=str(exc))
             return ""
 
@@ -338,7 +344,8 @@ class NoDriverBackend:
         try:
             cookies = await self._page.get_cookies()
             return cookies or []
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
+            # CDP operations can fail in various ways; graceful degradation
             LOG.debug("nodriver_get_cookies_failed", error=str(exc))
             return []
 
@@ -354,7 +361,8 @@ class NoDriverBackend:
             return []
         try:
             return self._run_async(self._get_cookies_async())
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # asyncio.run() can fail if browser crashed; graceful degradation
             LOG.debug("nodriver_cookies_failed", error=str(exc))
             return []
 
@@ -377,7 +385,8 @@ class NoDriverBackend:
 
         try:
             self._run_async(self._set_cookies_async(cookies))
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # asyncio.run() can fail if browser crashed; best-effort operation
             LOG.warning("nodriver_backend_cookie_set_failed", error=str(exc))
 
     async def _delete_all_cookies_async(self) -> None:
@@ -388,7 +397,8 @@ class NoDriverBackend:
                 await self._page.send(
                     "Network.clearBrowserCookies",
                 )
-            except Exception as exc:
+            except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
+                # CDP operations can fail in various ways; best-effort operation
                 LOG.warning("nodriver_clear_cookies_cdp_failed", error=str(exc))
 
     def delete_all_cookies(self) -> None:
@@ -397,7 +407,8 @@ class NoDriverBackend:
             return
         try:
             self._run_async(self._delete_all_cookies_async())
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # asyncio.run() can fail if browser crashed; best-effort operation
             LOG.warning("nodriver_backend_delete_cookies_failed", error=str(exc))
 
     async def _get_user_agent_async(self) -> str:
@@ -406,7 +417,8 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("navigator.userAgent") or ""
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
+            # CDP operations can fail in various ways; graceful degradation
             LOG.debug("nodriver_get_user_agent_failed", error=str(exc))
             return ""
 
@@ -422,7 +434,8 @@ class NoDriverBackend:
             return ""
         try:
             return self._run_async(self._get_user_agent_async())
-        except Exception as exc:
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # asyncio.run() can fail if browser crashed; graceful degradation
             LOG.debug("nodriver_user_agent_failed", error=str(exc))
             return ""
 
