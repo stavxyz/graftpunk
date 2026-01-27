@@ -26,7 +26,7 @@ jobs:
               - '**/*.py'
               - '.github/workflows/python-quality.yml'
               - 'pyproject.toml'
-              - 'requirements*.txt'
+              - 'uv.lock'
 
   quality:
     needs: filter-paths
@@ -37,85 +37,31 @@ jobs:
       contents: read
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: 'pip'
-          cache-dependency-path: |
-            .github/workflows/requirements-quality.txt
-            pyproject.toml
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r .github/workflows/requirements-quality.txt
-          # Only install project if it's a Python package
-          if [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
-            if pip install -e ".[dev]"; then
-              echo "::notice::Installed package with [dev] extras"
-            elif pip install -e .; then
-              echo "::notice::Installed package without [dev] extras"
-            else
-              echo "::warning::Could not install package in editable mode"
-            fi
-          fi
-
-      - name: Detect source directory
-        id: detect-src
-        run: |
-          # Priority: src/ layout > package dir from pyproject.toml > empty (skip)
-          if [ -d "src" ]; then
-            echo "SRC_DIR=src" >> $GITHUB_OUTPUT
-            echo "::notice::Detected src/ layout"
-          elif [ -f "pyproject.toml" ]; then
-            PKG_DIR=$(python3 -c "
-          import tomllib
-          with open('pyproject.toml', 'rb') as f:
-              cfg = tomllib.load(f)
-          name = cfg.get('project', {}).get('name', '')
-          print(name.replace('-', '_'))
-          " 2>/dev/null) || {
-              echo "::warning::Failed to parse pyproject.toml"
-              PKG_DIR=""
-            }
-            if [ -n "$PKG_DIR" ] && [ -d "$PKG_DIR" ]; then
-              echo "SRC_DIR=$PKG_DIR" >> $GITHUB_OUTPUT
-              echo "::notice::Detected package directory: $PKG_DIR/"
-            else
-              echo "SRC_DIR=" >> $GITHUB_OUTPUT
-              echo "::notice::pyproject.toml found but no matching package directory"
-            fi
-          else
-            echo "SRC_DIR=" >> $GITHUB_OUTPUT
-            echo "::notice::No Python package structure detected"
-          fi
+        run: uv sync --all-extras
 
       - name: Lint with ruff
-        run: |
-          ruff check .
+        run: uvx ruff check .
 
       - name: Format check with ruff
-        run: |
-          ruff format --check .
+        run: uvx ruff format --check .
 
-      - name: Type check with mypy
-        run: |
-          SRC_DIR="${{ steps.detect-src.outputs.SRC_DIR }}"
-          if [ -n "$SRC_DIR" ]; then
-            mypy "$SRC_DIR/"
-          elif [ -f "pyproject.toml" ]; then
-            # Fallback: scan current dir excluding common non-source dirs
-            mypy . --exclude '^tests/' --exclude '^\.venv/' --exclude '^build/' --exclude '^dist/'
-          else
-            echo "::notice::No Python package structure detected, skipping mypy"
-          fi
+      - name: Type check with ty
+        run: uvx ty check src/
 
       - name: Security scan
         run: |
@@ -125,32 +71,18 @@ jobs:
           # - bandit: NON-BLOCKING - static analysis for code issues (requires triage for false positives)
           echo "=== pip-audit: checking for known vulnerabilities ==="
           # Ignore PYSEC-2023-242 (httpie vulnerability) - latest version still affected, no fix available
-          pip-audit --skip-editable --ignore-vuln PYSEC-2023-242
+          uvx pip-audit --skip-editable --ignore-vuln PYSEC-2023-242
           echo "=== safety: checking against safety database ==="
-          safety check --full-report || echo "::warning::safety found issues"
+          uvx safety check --full-report || echo "::warning::safety found issues"
           echo "=== bandit: static security analysis ==="
-          SRC_DIR="${{ steps.detect-src.outputs.SRC_DIR }}"
-          if [ -n "$SRC_DIR" ]; then
-            bandit -r "$SRC_DIR/" -ll || echo "::warning::bandit found issues (non-blocking)"
-          elif [ -f "pyproject.toml" ]; then
-            bandit -r . -ll --exclude .venv,.git,tests,build,dist || echo "::warning::bandit found issues (non-blocking)"
-          else
-            echo "::notice::No Python source to scan with bandit"
-          fi
+          uvx bandit -r src/ -ll || echo "::warning::bandit found issues (non-blocking)"
 
       - name: Run tests with pytest
-        if: ${{ hashFiles('tests/**') != '' }}
-        run: |
-          SRC_DIR="${{ steps.detect-src.outputs.SRC_DIR }}"
-          if [ -n "$SRC_DIR" ]; then
-            pytest tests/ -v --cov="$SRC_DIR" --cov-report=xml --cov-report=term-missing
-          else
-            pytest tests/ -v
-          fi
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.11' && hashFiles('tests/**') != ''
+        if: matrix.python-version == '3.11'
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
