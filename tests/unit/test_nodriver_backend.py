@@ -517,3 +517,78 @@ class TestNoDriverBackendOptions:
 
         assert recreated._options.get("browser_args") == ["--no-sandbox"]
         assert recreated._options.get("lang") == "de-DE"
+
+
+class TestNoDriverBackendMissingCoverage:
+    """Additional tests for NoDriverBackend coverage gaps."""
+
+    def test_delete_all_cookies_safe_when_not_running(self) -> None:
+        """delete_all_cookies() is safe when not running."""
+        backend = NoDriverBackend()
+        # Should not raise
+        backend.delete_all_cookies()
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_context_manager_propagates_exceptions(self, mock_run: MagicMock) -> None:
+        """Context manager does not suppress exceptions from within the block."""
+        import pytest
+
+        with pytest.raises(ValueError, match="test error"), NoDriverBackend():
+            raise ValueError("test error")
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_start_overrides_headless(self, mock_run: MagicMock) -> None:
+        """start() can override headless setting."""
+        backend = NoDriverBackend(headless=True)
+        backend.start(headless=False)
+
+        assert backend._headless is False
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_start_overrides_profile_dir(self, mock_run: MagicMock, tmp_path: Path) -> None:
+        """start() can override profile_dir setting."""
+        profile = tmp_path / "override_profile"
+
+        backend = NoDriverBackend()
+        backend.start(profile_dir=profile)
+
+        assert backend._profile_dir == profile
+
+    def test_from_state_preserves_extra_options(self) -> None:
+        """from_state preserves unknown keys as options."""
+        state = {
+            "backend_type": "nodriver",
+            "headless": False,
+            "custom_option": "value",
+            "another_option": 123,
+        }
+        backend = NoDriverBackend.from_state(state)
+
+        assert backend._options.get("custom_option") == "value"
+        assert backend._options.get("another_option") == 123
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_get_cookies_returns_cookies_when_running(self, mock_run: MagicMock) -> None:
+        """get_cookies() returns cookies when running."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        mock_run.return_value = [{"name": "session", "value": "abc123"}]
+
+        cookies = backend.get_cookies()
+        assert len(cookies) == 1
+        assert cookies[0]["name"] == "session"
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_get_cookies_returns_empty_on_exception(self, mock_run: MagicMock) -> None:
+        """get_cookies() returns empty list on exception."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        mock_run.side_effect = RuntimeError("failed")
+
+        assert backend.get_cookies() == []
