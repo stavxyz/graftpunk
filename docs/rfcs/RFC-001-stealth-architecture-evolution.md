@@ -35,7 +35,7 @@ The goal is **"batteries included, but swappable"** - opinionated defaults that 
 10. [Migration Strategy](#10-migration-strategy)
 11. [Testing Strategy](#11-testing-strategy)
 12. [Decision Log](#12-decision-log)
-13. [Open Questions](#13-open-questions)
+13. [Design Decisions](#13-design-decisions)
 14. [References](#14-references)
 
 ---
@@ -1174,19 +1174,71 @@ all = [
 
 ---
 
-## 13. Open Questions
+## 13. Design Decisions
 
-1. **Async vs Sync API:** NoDriver and Playwright are async-first. Should graftpunk's primary API be async, with sync wrappers?
+*Resolved January 2026*
 
-2. **Default backend timing:** When should we switch default from "legacy" to "nodriver"? v2.0? After 6 months deprecation?
+### 13.1 Async vs Sync API
 
-3. **Camoufox maintenance:** Original maintainer hospitalized since March 2025. Should we adopt community fork or wait?
+**Decision:** Sync-first public API with async internals. Expose async interface for power users.
 
-4. **Proxy integration:** Should graftpunk provide proxy management (rotation, health checks) or leave to users?
+**Rationale:** Most graftpunk users write simple automation scripts—async/await adds unnecessary complexity for their use cases. However, nodriver and Camoufox are async-native, so we wrap them internally. Power users who need concurrency can import from `graftpunk.async_api`.
 
-5. **MFA handling:** Current TOTP support works. Should we expand MFA capabilities (magic link, SMS)?
+```python
+# Default (simple scripts)
+from graftpunk import Browser
+with Browser() as browser:
+    browser.goto("https://example.com")
 
-6. **Metrics/telemetry:** Should we add opt-in success rate tracking to inform backend selection?
+# Power user (concurrent sessions)
+from graftpunk.async_api import Browser
+async with Browser() as browser:
+    await browser.goto("https://example.com")
+```
+
+### 13.2 Default Backend Timing
+
+**Decision:** Switch default to nodriver in version 2.0. During 1.x series, nodriver is opt-in.
+
+**Rationale:** Changing the default backend is a breaking change that should respect semantic versioning. The 2.0 release becomes a clear migration milestone ("graftpunk 2.0: modern stealth by default"). During 1.x, documentation will note that nodriver will become default in 2.0.
+
+### 13.3 Camoufox Maintenance
+
+**Decision:** Use community fork initially. Maintain own fork only as fallback if ecosystem fragments.
+
+**Rationale:** graftpunk is an automation framework, not a browser project. Browser engine maintenance (Firefox rebasing, security patches) is substantial work outside our core competency. Before Phase 4, we will research available community forks to identify the most viable option.
+
+**Action item:** Research Camoufox community forks before beginning Phase 4 implementation.
+
+### 13.4 Proxy Integration
+
+**Decision:** Minimal pass-through configuration only. No built-in proxy management.
+
+**Rationale:** Proxy management is a product category unto itself. Most users already have proxy solutions (BrightData, Oxylabs, self-hosted). graftpunk's value is session management and stealth, not proxy orchestration. We provide clean pass-through config that works with any provider:
+
+```python
+Browser(proxy="http://user:pass@proxy.example.com:8080")
+```
+
+A simple rotation helper may be added, but nothing beyond that.
+
+### 13.5 MFA Expansion
+
+**Decision:** Add magic link support. Skip SMS.
+
+**Rationale:** TOTP + magic link covers the majority of automatable MFA scenarios. SMS automation requires carrier APIs that are unreliable, expensive, and often ToS-violating. Push notifications and hardware keys are intentionally non-automatable by design.
+
+### 13.6 Metrics and Telemetry
+
+**Decision:** No phone-home telemetry. Encourage GitHub issue reporting. Explore opt-in auto-reporter feature.
+
+**Rationale:** graftpunk users are privacy-conscious—they're building tools to access their own data precisely because they don't trust third parties. Phone-home telemetry, even opt-in, sends the wrong signal.
+
+Instead, we will:
+- Guide users toward reporting issues via GitHub (prompts in error messages)
+- Monitor GitHub issues for detection pattern changes
+- Maintain test accounts against common protection systems
+- Explore an opt-in feature that auto-creates sanitized GitHub issues on detection failures (reporter visible, target domain anonymized)
 
 ---
 
