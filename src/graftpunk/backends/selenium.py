@@ -172,11 +172,11 @@ class SeleniumBackend:
         try:
             self._driver.quit()
         except selenium.common.exceptions.WebDriverException as exc:
+            # Expected errors during browser cleanup - log and continue
             LOG.warning("selenium_backend_stop_error", error=str(exc))
         except OSError as exc:
+            # Process-level errors during cleanup - log and continue
             LOG.warning("selenium_backend_stop_error_os", error=str(exc))
-        except Exception as exc:
-            LOG.warning("selenium_backend_stop_error_unexpected", error=str(exc))
         finally:
             self._driver = None
             self._started = False

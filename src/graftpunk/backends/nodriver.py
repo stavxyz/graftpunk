@@ -4,6 +4,12 @@ This backend uses nodriver for browser automation, communicating directly
 with Chrome via the Chrome DevTools Protocol (CDP) without the WebDriver
 binary. This eliminates a major detection vector used by anti-bot systems.
 
+Note:
+    This backend uses ``asyncio.run()`` for each operation to bridge nodriver's
+    async API to a synchronous interface. This means it cannot be used from
+    within an already-running async context (e.g., FastAPI, asyncio event loop).
+    If you need async support, use nodriver directly.
+
 Example:
     >>> from graftpunk.backends.nodriver import NoDriverBackend
     >>> backend = NoDriverBackend(headless=False)
@@ -57,6 +63,8 @@ class NoDriverBackend:
             profile_dir: Directory for browser profile persistence. If None,
                 nodriver auto-deletes the profile on exit.
             default_timeout: Default timeout for operations in seconds.
+                Note: Currently stored for serialization but not enforced.
+                Reserved for future use.
             **options: Additional options passed to nodriver.start():
                 - browser_args: List of Chrome arguments
                 - browser_executable_path: Path to Chrome binary
@@ -143,11 +151,12 @@ class NoDriverBackend:
             self._started = True
             LOG.info("nodriver_backend_started")
         except (RuntimeError, ConnectionError, TimeoutError, OSError) as exc:
-            LOG.error("nodriver_backend_start_failed", error=str(exc))
-            raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
-        except Exception as exc:
-            # Catch any nodriver-specific exceptions we didn't anticipate
-            LOG.error("nodriver_backend_start_failed_unexpected", error=str(exc))
+            LOG.error(
+                "nodriver_backend_start_failed",
+                error=str(exc),
+                headless=self._headless,
+                profile_dir=str(self._profile_dir) if self._profile_dir else None,
+            )
             raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
 
     async def _stop_async(self) -> None:
@@ -156,9 +165,8 @@ class NoDriverBackend:
             try:
                 self._browser.stop()
             except (RuntimeError, OSError) as exc:
+                # Expected errors during browser cleanup - log and continue
                 LOG.warning("nodriver_backend_stop_warning", error=str(exc))
-            except Exception as exc:
-                LOG.warning("nodriver_backend_stop_unexpected", error=str(exc))
 
     def stop(self) -> None:
         """Stop the browser and release resources.
@@ -172,9 +180,8 @@ class NoDriverBackend:
         try:
             self._run_async(self._stop_async())
         except (RuntimeError, OSError) as exc:
+            # Expected errors during cleanup - log and continue to ensure state is reset
             LOG.warning("nodriver_backend_stop_error", error=str(exc))
-        except Exception as exc:
-            LOG.warning("nodriver_backend_stop_error_unexpected", error=str(exc))
         finally:
             self._browser = None
             self._page = None
@@ -211,9 +218,6 @@ class NoDriverBackend:
             self._run_async(self._navigate_async(url))
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             LOG.error("nodriver_backend_navigation_failed", url=url, error=str(exc))
-            raise BrowserError(f"Navigation failed: {exc}") from exc
-        except Exception as exc:
-            LOG.error("nodriver_backend_navigation_failed_unexpected", url=url, error=str(exc))
             raise BrowserError(f"Navigation failed: {exc}") from exc
 
     async def _get_current_url_async(self) -> str:
