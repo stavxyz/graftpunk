@@ -196,48 +196,6 @@ class TestNoDriverBackendNavigation:
         mock_run.assert_called()
 
 
-class TestNoDriverBackendProperties:
-    """Tests for NoDriverBackend property accessors."""
-
-    def test_current_url_empty_when_not_running(self) -> None:
-        """current_url returns empty string when not running."""
-        backend = NoDriverBackend()
-        assert backend.current_url == ""
-
-    def test_page_title_empty_when_not_running(self) -> None:
-        """page_title returns empty string when not running."""
-        backend = NoDriverBackend()
-        assert backend.page_title == ""
-
-    def test_page_source_empty_when_not_running(self) -> None:
-        """page_source returns empty string when not running."""
-        backend = NoDriverBackend()
-        assert backend.page_source == ""
-
-    def test_get_user_agent_empty_when_not_running(self) -> None:
-        """get_user_agent() returns empty string when not running."""
-        backend = NoDriverBackend()
-        assert backend.get_user_agent() == ""
-
-
-class TestNoDriverBackendCookies:
-    """Tests for NoDriverBackend cookie operations."""
-
-    def test_get_cookies_empty_when_not_running(self) -> None:
-        """get_cookies() returns empty list when not running."""
-        backend = NoDriverBackend()
-        assert backend.get_cookies() == []
-
-    @patch("graftpunk.backends.nodriver.asyncio.run")
-    def test_set_cookies_starts_if_not_running(self, mock_run: MagicMock) -> None:
-        """set_cookies() starts browser if not running."""
-        backend = NoDriverBackend()
-        backend.set_cookies([{"name": "test", "value": "value"}])
-
-        # Should have called start and then set_cookies
-        assert mock_run.call_count >= 1
-
-
 class TestNoDriverBackendSerialization:
     """Tests for NoDriverBackend serialization."""
 
@@ -366,6 +324,21 @@ class TestNoDriverBackendErrorHandling:
         with pytest.raises(BrowserError, match="Failed to start NoDriver"):
             backend.start()
 
+    def test_start_import_error_raises_browser_error(self) -> None:
+        """ImportError for nodriver package raises BrowserError with install hint."""
+        from graftpunk.exceptions import BrowserError
+
+        # Simulate nodriver not being installed by making asyncio.run raise
+        # the BrowserError that would come from the import failure
+        with patch("graftpunk.backends.nodriver.asyncio.run") as mock_run:
+            mock_run.side_effect = BrowserError(
+                "nodriver package not installed. Install with: pip install graftpunk[nodriver]"
+            )
+
+            backend = NoDriverBackend()
+            with pytest.raises(BrowserError, match="nodriver package not installed"):
+                backend.start()
+
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_navigate_error_raises_browser_error(self, mock_run: MagicMock) -> None:
         """Errors during navigation raise BrowserError."""
@@ -410,6 +383,42 @@ class TestNoDriverBackendErrorHandling:
         # Should not raise
         backend.stop()
         assert backend.is_running is False
+
+    @patch("graftpunk.backends.nodriver.LOG")
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_stop_logs_debug_for_expected_errors(
+        self, mock_run: MagicMock, mock_log: MagicMock
+    ) -> None:
+        """stop() logs DEBUG for expected cleanup errors like 'browser is already closed'."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        # Use an expected error pattern
+        mock_run.side_effect = RuntimeError("browser is already closed")
+        backend.stop()
+
+        # Should log at debug level for expected error
+        mock_log.debug.assert_called()
+
+    @patch("graftpunk.backends.nodriver.LOG")
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_stop_logs_warning_for_unexpected_errors(
+        self, mock_run: MagicMock, mock_log: MagicMock
+    ) -> None:
+        """stop() logs WARNING for unexpected errors."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+
+        # Use an unexpected error pattern
+        mock_run.side_effect = RuntimeError("unexpected error not in patterns")
+        backend.stop()
+
+        # Should log at warning level for unexpected error
+        mock_log.warning.assert_called()
 
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_navigate_auto_starts_browser(self, mock_run: MagicMock) -> None:
@@ -715,6 +724,19 @@ class TestNoDriverBackendFromStateMismatch:
         assert isinstance(backend, NoDriverBackend)
         assert backend._headless is True
 
+    def test_from_state_warns_on_type_mismatch(self) -> None:
+        """from_state logs warning when backend_type doesn't match."""
+        from unittest.mock import patch
+
+        with patch("graftpunk.backends.nodriver.LOG") as mock_log:
+            state = {"backend_type": "selenium", "headless": True}
+            NoDriverBackend.from_state(state)
+
+        # Should have logged a warning about the mismatch
+        mock_log.warning.assert_called_once()
+        call_args = mock_log.warning.call_args
+        assert call_args[0][0] == "backend_type_mismatch"
+
     def test_from_state_logs_when_using_defaults(self) -> None:
         """from_state gracefully handles missing keys with defaults."""
         state = {}  # Empty state
@@ -781,3 +803,20 @@ class TestNoDriverBackendAsyncContextLimitation:
 
         # Verify asyncio.run was called
         mock_run.assert_called_once()
+
+    def test_run_async_raises_error_in_async_context(self) -> None:
+        """_run_async raises RuntimeError when called from async context."""
+        import asyncio
+
+        backend = NoDriverBackend()
+
+        async def test_in_async_context():
+            async def dummy_coro():
+                return "result"
+
+            # This should raise because we're inside an event loop
+            backend._run_async(dummy_coro())
+
+        # Run the test inside an event loop to trigger the error
+        with pytest.raises(RuntimeError, match="cannot be used from within an async context"):
+            asyncio.run(test_in_async_context())

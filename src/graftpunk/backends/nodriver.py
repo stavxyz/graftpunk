@@ -14,11 +14,9 @@ Logging:
     This module uses structured logging with intentional log levels:
 
     - **ERROR**: Operations that fail and raise exceptions (start, navigate)
-    - **WARNING**: Best-effort operations that fail silently (cookie set/delete)
-    - **DEBUG**: Graceful degradation (properties returning empty values)
-
-    If you need to diagnose issues with property getters returning empty
-    values, enable DEBUG-level logging for ``graftpunk.backends.nodriver``.
+    - **WARNING**: Operations that fail silently, including property getters
+      returning empty values due to errors (browser crash, CDP failure)
+    - **DEBUG**: Expected conditions like browser already started/stopped
 
 Example:
     >>> from graftpunk.backends.nodriver import NoDriverBackend
@@ -32,8 +30,9 @@ Example:
 import asyncio
 from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
+from graftpunk.backends.base import Cookie
 from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger
 
@@ -70,6 +69,23 @@ class NoDriverBackend:
     """
 
     BACKEND_TYPE: str = "nodriver"
+
+    # Expected error patterns during browser cleanup - these indicate normal
+    # shutdown race conditions and should be logged at DEBUG level
+    _EXPECTED_STOP_PATTERNS: frozenset[str] = frozenset(
+        [
+            "cannot schedule",
+            "browser is already closed",
+            "no such process",
+            "event loop is closed",
+            "target closed",
+        ]
+    )
+
+    def _is_expected_stop_error(self, error_str: str) -> bool:
+        """Check if error message indicates expected cleanup behavior."""
+        error_lower = error_str.lower()
+        return any(pattern in error_lower for pattern in self._EXPECTED_STOP_PATTERNS)
 
     def __init__(
         self,
@@ -111,12 +127,36 @@ class NoDriverBackend:
 
         Returns:
             Result of the coroutine.
+
+        Raises:
+            RuntimeError: If called from within an existing async event loop.
         """
+        # Check if we're already in an async context
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop - this is what we want, proceed with asyncio.run()
+            pass
+        else:
+            # There IS a running loop - we can't use asyncio.run()
+            # Close the coroutine to avoid "coroutine was never awaited" warning
+            coro.close()
+            raise RuntimeError(
+                "NoDriverBackend cannot be used from within an async context "
+                "(e.g., FastAPI, asyncio tasks). Use nodriver directly for "
+                "async applications, or run this code outside the event loop."
+            )
+
         return asyncio.run(coro)
 
     async def _start_async(self) -> None:
         """Async implementation of browser start."""
-        import nodriver as uc
+        try:
+            import nodriver as uc
+        except ImportError as exc:
+            raise BrowserError(
+                "nodriver package not installed. Install with: pip install graftpunk[nodriver]"
+            ) from exc
 
         start_kwargs: dict[str, Any] = {
             "headless": self._headless,
@@ -189,14 +229,17 @@ class NoDriverBackend:
 
         Note:
             nodriver's Browser.stop() is synchronous, but we wrap it in
-            an async method for consistent _run_async() pattern usage.
+            an async method because _run_async() requires a coroutine to
+            pass to asyncio.run().
         """
         if self._browser is not None:
             try:
                 self._browser.stop()
             except (RuntimeError, OSError) as exc:
-                # Expected errors during browser cleanup - log and continue
-                LOG.warning("nodriver_backend_stop_warning", error=str(exc))
+                if self._is_expected_stop_error(str(exc)):
+                    LOG.debug("nodriver_backend_stop_expected", error=str(exc))
+                else:
+                    LOG.warning("nodriver_backend_stop_unexpected", error=str(exc))
 
     def stop(self) -> None:
         """Stop the browser and release resources.
@@ -210,8 +253,10 @@ class NoDriverBackend:
         try:
             self._run_async(self._stop_async())
         except (RuntimeError, OSError) as exc:
-            # Expected errors during cleanup - log and continue to ensure state is reset
-            LOG.warning("nodriver_backend_stop_error", error=str(exc))
+            if self._is_expected_stop_error(str(exc)):
+                LOG.debug("nodriver_backend_stop_expected", error=str(exc))
+            else:
+                LOG.warning("nodriver_backend_stop_unexpected", error=str(exc))
         finally:
             self._browser = None
             self._page = None
@@ -256,9 +301,9 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("window.location.href") or ""
-        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
-            # CDP operations can fail in various ways; graceful degradation
-            LOG.debug("nodriver_get_current_url_failed", error=str(exc))
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # CDP operations can fail; warn user
+            LOG.warning("nodriver_get_current_url_failed", error=str(exc))
             return ""
 
     @property
@@ -269,15 +314,15 @@ class NoDriverBackend:
             Current URL, or empty string if:
             - Browser is not running
             - No page is loaded
-            - An error occurred retrieving the URL (logged at debug level)
+            - An error occurred retrieving the URL (logged at warning level)
         """
         if not self.is_running:
             return ""
         try:
             return self._run_async(self._get_current_url_async())
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # asyncio.run() can fail if browser crashed; graceful degradation
-            LOG.debug("nodriver_current_url_failed", error=str(exc))
+            # asyncio.run() can fail if browser crashed; warn user
+            LOG.warning("nodriver_current_url_failed", error=str(exc))
             return ""
 
     async def _get_page_title_async(self) -> str:
@@ -286,9 +331,9 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("document.title") or ""
-        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
-            # CDP operations can fail in various ways; graceful degradation
-            LOG.debug("nodriver_get_page_title_failed", error=str(exc))
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # CDP operations can fail; warn user
+            LOG.warning("nodriver_get_page_title_failed", error=str(exc))
             return ""
 
     @property
@@ -299,15 +344,15 @@ class NoDriverBackend:
             Page title, or empty string if:
             - Browser is not running
             - No page is loaded
-            - An error occurred retrieving the title (logged at debug level)
+            - An error occurred retrieving the title (logged at warning level)
         """
         if not self.is_running:
             return ""
         try:
             return self._run_async(self._get_page_title_async())
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # asyncio.run() can fail if browser crashed; graceful degradation
-            LOG.debug("nodriver_page_title_failed", error=str(exc))
+            # asyncio.run() can fail if browser crashed; warn user
+            LOG.warning("nodriver_page_title_failed", error=str(exc))
             return ""
 
     async def _get_page_source_async(self) -> str:
@@ -316,9 +361,9 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.get_content() or ""
-        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
-            # CDP operations can fail in various ways; graceful degradation
-            LOG.debug("nodriver_get_page_source_failed", error=str(exc))
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # CDP operations can fail; warn user
+            LOG.warning("nodriver_get_page_source_failed", error=str(exc))
             return ""
 
     @property
@@ -329,15 +374,15 @@ class NoDriverBackend:
             Page HTML source, or empty string if:
             - Browser is not running
             - No page is loaded
-            - An error occurred retrieving the source (logged at debug level)
+            - An error occurred retrieving the source (logged at warning level)
         """
         if not self.is_running:
             return ""
         try:
             return self._run_async(self._get_page_source_async())
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # asyncio.run() can fail if browser crashed; graceful degradation
-            LOG.debug("nodriver_page_source_failed", error=str(exc))
+            # asyncio.run() can fail if browser crashed; warn user
+            LOG.warning("nodriver_page_source_failed", error=str(exc))
             return ""
 
     @property
@@ -357,79 +402,108 @@ class NoDriverBackend:
             self.start()
         return self._browser
 
-    async def _get_cookies_async(self) -> list[dict[str, Any]]:
+    async def _get_cookies_async(self) -> list[Cookie]:
         """Async implementation of cookie retrieval."""
         if self._page is None:
             return []
         try:
             cookies = await self._page.get_cookies()
             return cookies or []
-        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
-            # CDP operations can fail in various ways; graceful degradation
-            LOG.debug("nodriver_get_cookies_failed", error=str(exc))
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # CDP operations can fail; warn user
+            LOG.warning("nodriver_get_cookies_failed", error=str(exc))
             return []
 
-    def get_cookies(self) -> list[dict[str, Any]]:
+    def get_cookies(self) -> list[Cookie]:
         """Get all cookies from the browser.
 
+        Note:
+            Unlike ``set_cookies()`` and ``navigate()``, this method does NOT
+            auto-start the browser.
+
         Returns:
-            List of cookie dicts from nodriver's get_cookies(),
+            List of cookie dicts from nodriver's get_cookies() (CDP format),
             or empty list if browser is not running or an error occurs
-            (errors logged at debug level).
+            (errors logged at warning level).
         """
         if not self.is_running:
             return []
         try:
             return self._run_async(self._get_cookies_async())
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # asyncio.run() can fail if browser crashed; graceful degradation
-            LOG.debug("nodriver_cookies_failed", error=str(exc))
+            # asyncio.run() can fail if browser crashed; warn user
+            LOG.warning("nodriver_cookies_failed", error=str(exc))
             return []
 
-    async def _set_cookies_async(self, cookies: list[dict[str, Any]]) -> None:
+    async def _set_cookies_async(self, cookies: list[Cookie]) -> None:
         """Async implementation of cookie setting."""
         if self._page is not None:
             await self._page.set_cookies(cookies)
 
-    def set_cookies(self, cookies: list[dict[str, Any]]) -> None:
+    def set_cookies(self, cookies: list[Cookie]) -> int:
         """Set cookies in the browser.
 
         This is a best-effort operation. If setting cookies fails, a warning
         is logged but no exception is raised.
 
         Args:
-            cookies: List of cookie dicts to set.
+            cookies: List of Cookie dicts to set. Each must have 'name' and
+                'value'; other fields are optional.
+
+        Returns:
+            Number of cookies successfully set (all or none for nodriver,
+            since it sets cookies in a single CDP call).
         """
         if not self.is_running:
             self.start()
 
         try:
             self._run_async(self._set_cookies_async(cookies))
+            return len(cookies)
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # asyncio.run() can fail if browser crashed; best-effort operation
-            LOG.warning("nodriver_backend_cookie_set_failed", error=str(exc))
+            LOG.warning(
+                "nodriver_backend_cookie_set_failed",
+                error=str(exc),
+                cookie_count=len(cookies),
+                cookie_names=[c.get("name", "<unknown>") for c in cookies],
+            )
+            return 0
 
-    async def _delete_all_cookies_async(self) -> None:
-        """Async implementation of cookie deletion."""
-        if self._page is not None:
-            # nodriver doesn't have delete_all_cookies, so use CDP directly
-            try:
-                await self._page.send(
-                    "Network.clearBrowserCookies",
-                )
-            except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
-                # CDP operations can fail in various ways; best-effort operation
-                LOG.warning("nodriver_clear_cookies_cdp_failed", error=str(exc))
+    async def _delete_all_cookies_async(self) -> bool:
+        """Async implementation of cookie deletion.
 
-    def delete_all_cookies(self) -> None:
-        """Delete all cookies from the browser."""
-        if not self.is_running:
-            return
+        Returns:
+            True if cookies were successfully deleted, False if an error occurred.
+        """
+        if self._page is None:
+            return True  # No page = no cookies to delete
+        # nodriver doesn't have delete_all_cookies, so use CDP directly
         try:
-            self._run_async(self._delete_all_cookies_async())
+            await self._page.send(
+                "Network.clearBrowserCookies",
+            )
+            return True
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # CDP operations can fail; warn user
+            LOG.warning("nodriver_clear_cookies_cdp_failed", error=str(exc))
+            return False
+
+    def delete_all_cookies(self) -> bool:
+        """Delete all cookies from the browser.
+
+        Returns:
+            True if cookies were successfully deleted or browser was not running
+            (no-op), False if an error occurred (error is logged at warning level).
+        """
+        if not self.is_running:
+            return True  # No cookies to delete
+        try:
+            return self._run_async(self._delete_all_cookies_async())
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # asyncio.run() can fail if browser crashed; best-effort operation
             LOG.warning("nodriver_backend_delete_cookies_failed", error=str(exc))
+            return False
 
     async def _get_user_agent_async(self) -> str:
         """Async implementation of user agent retrieval."""
@@ -437,9 +511,9 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.evaluate("navigator.userAgent") or ""
-        except (RuntimeError, ConnectionError, TimeoutError, AttributeError) as exc:
-            # CDP operations can fail in various ways; graceful degradation
-            LOG.debug("nodriver_get_user_agent_failed", error=str(exc))
+        except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            # CDP operations can fail; warn user
+            LOG.warning("nodriver_get_user_agent_failed", error=str(exc))
             return ""
 
     def get_user_agent(self) -> str:
@@ -448,15 +522,15 @@ class NoDriverBackend:
         Returns:
             User-Agent string from navigator.userAgent,
             or empty string if browser is not running or an error occurs
-            (errors logged at debug level).
+            (errors logged at warning level).
         """
         if not self.is_running:
             return ""
         try:
             return self._run_async(self._get_user_agent_async())
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # asyncio.run() can fail if browser crashed; graceful degradation
-            LOG.debug("nodriver_user_agent_failed", error=str(exc))
+            # asyncio.run() can fail if browser crashed; warn user
+            LOG.warning("nodriver_user_agent_failed", error=str(exc))
             return ""
 
     def get_state(self) -> dict[str, Any]:
@@ -476,7 +550,7 @@ class NoDriverBackend:
         return state
 
     @classmethod
-    def from_state(cls, state: dict[str, Any]) -> "NoDriverBackend":
+    def from_state(cls, state: dict[str, Any]) -> Self:
         """Recreate backend instance from serialized state.
 
         Args:
@@ -485,6 +559,17 @@ class NoDriverBackend:
         Returns:
             New NoDriverBackend instance (not started).
         """
+        # Warn if backend_type doesn't match
+        saved_backend = state.get("backend_type")
+        if saved_backend and saved_backend != cls.BACKEND_TYPE:
+            LOG.warning(
+                "backend_type_mismatch",
+                expected=cls.BACKEND_TYPE,
+                saved=saved_backend,
+                hint=f"State was saved by {saved_backend} backend but is being "
+                f"restored as {cls.BACKEND_TYPE}. Some settings may not apply.",
+            )
+
         # Extract known parameters
         headless = state.get("headless", False)
         default_timeout = state.get("default_timeout", 15)
@@ -504,7 +589,7 @@ class NoDriverBackend:
             **options,
         )
 
-    def __enter__(self) -> "NoDriverBackend":
+    def __enter__(self) -> Self:
         """Context manager entry - start browser.
 
         Returns:

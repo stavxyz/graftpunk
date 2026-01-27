@@ -22,7 +22,7 @@ Example:
 from importlib import import_module
 from typing import Any
 
-from graftpunk.backends.base import BrowserBackend
+from graftpunk.backends.base import BrowserBackend, Cookie
 
 # Backend registry maps names to module:class paths
 # Using strings enables lazy loading - dependencies only imported when used
@@ -142,6 +142,7 @@ def register_backend(name: str, module_class_path: str) -> None:
 
 __all__ = [
     "BrowserBackend",
+    "Cookie",
     "get_backend",
     "list_backends",
     "register_backend",

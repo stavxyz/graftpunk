@@ -94,6 +94,19 @@ class TestSeleniumBackendFromStateMismatch:
         assert isinstance(backend, SeleniumBackend)
         assert backend._headless is False
 
+    def test_from_state_warns_on_type_mismatch(self) -> None:
+        """from_state logs warning when backend_type doesn't match."""
+        from unittest.mock import patch
+
+        with patch("graftpunk.backends.selenium.LOG") as mock_log:
+            state = {"backend_type": "nodriver", "headless": True}
+            SeleniumBackend.from_state(state)
+
+        # Should have logged a warning about the mismatch
+        mock_log.warning.assert_called_once()
+        call_args = mock_log.warning.call_args
+        assert call_args[0][0] == "backend_type_mismatch"
+
     def test_from_state_logs_when_using_defaults(self) -> None:
         """from_state gracefully handles missing keys with defaults."""
         state = {}  # Empty state
