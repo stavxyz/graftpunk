@@ -6,9 +6,11 @@ browser backends through the `backend` parameter.
 
 Available backends:
     - selenium: Selenium + undetected-chromedriver (default)
-    - nodriver: CDP-direct Chrome automation (available)
-    - camoufox: Firefox with C++ fingerprint mods (planned)
-    - playwright: Multi-browser support (planned)
+    - nodriver: CDP-direct Chrome automation
+
+Note:
+    For direct backend usage without requestium, use ``get_backend()``
+    from ``graftpunk.backends`` instead.
 
 Example:
     >>> from graftpunk import BrowserSession
@@ -46,9 +48,13 @@ class BrowserSession(requestium.Session):
 
     Supports multiple browser backends through the `backend` parameter:
         - "selenium": Default. Uses undetected-chromedriver + selenium-stealth.
-        - "nodriver": CDP-direct Chrome automation (available).
-        - "camoufox": Firefox with C++ mods (planned).
-        - "playwright": Multi-browser (planned).
+        - "nodriver": CDP-direct Chrome automation.
+
+    Note:
+        The ``backend`` parameter is validated and stored for serialization,
+        but this class currently uses the selenium/stealth driver directly.
+        For full backend abstraction, use ``get_backend()`` from
+        ``graftpunk.backends`` instead.
 
     Attributes:
         session_name: Identifier for this session (auto-generated or manual).
@@ -77,7 +83,7 @@ class BrowserSession(requestium.Session):
             use_stealth: If True, use undetected-chromedriver with anti-detection.
             backend: Browser backend to use. Default "selenium".
                 Available: "selenium" (default), "nodriver".
-                Planned: "camoufox", "playwright".
+                Note: Currently validated and stored for serialization only.
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
         Raises:

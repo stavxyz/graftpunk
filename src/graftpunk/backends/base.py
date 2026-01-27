@@ -22,14 +22,18 @@ from typing import Any, Protocol, runtime_checkable
 class BrowserBackend(Protocol):
     """Protocol defining the browser automation backend interface.
 
-    All browser backends (selenium, nodriver, camoufox, playwright) must
-    implement this protocol to be usable with graftpunk's BrowserSession.
+    All browser backends must implement this protocol to be usable with
+    graftpunk's BrowserSession. Currently implemented: selenium, nodriver.
 
     The protocol uses sync methods for the public API. Backends that wrap
-    async libraries (nodriver, playwright) handle async internally.
+    async libraries (nodriver) handle async internally.
 
     Attributes:
         BACKEND_TYPE: Class-level identifier for this backend type.
+
+    Note:
+        Backends are NOT thread-safe. Each thread should use its own
+        backend instance.
     """
 
     BACKEND_TYPE: str
@@ -75,11 +79,13 @@ class BrowserBackend(Protocol):
     def navigate(self, url: str) -> None:
         """Navigate to a URL.
 
+        If the browser is not running, it will be started automatically.
+
         Args:
             url: URL to navigate to.
 
         Raises:
-            BrowserError: If navigation fails.
+            BrowserError: If navigation fails or browser cannot be started.
         """
         ...
 
@@ -139,12 +145,15 @@ class BrowserBackend(Protocol):
     def set_cookies(self, cookies: list[dict[str, Any]]) -> None:
         """Set cookies in the browser.
 
+        If the browser is not running, it will be started automatically.
+
+        This is a best-effort operation in implementations. If setting
+        individual cookies fails, a warning is logged but no exception
+        is raised. The method continues attempting to set remaining cookies.
+
         Args:
             cookies: List of cookie dicts to set. Each dict should have
                 at minimum 'name' and 'value' keys.
-
-        Raises:
-            BrowserError: If cookies cannot be set (e.g., wrong domain).
         """
         ...
 
