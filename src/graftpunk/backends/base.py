@@ -123,9 +123,12 @@ class BrowserBackend(Protocol):
         This provides escape-hatch access to the native driver for
         backend-specific operations not covered by the protocol.
 
+        Starts the browser if not already running (lazy initialization).
+
         Returns:
-            Native driver (WebDriver, nodriver.Browser, Page, etc.)
-            Type varies by backend implementation.
+            Native driver object. Type varies by backend:
+            - SeleniumBackend: Selenium WebDriver or undetected_chromedriver.Chrome
+            - NoDriverBackend: nodriver.Browser instance
 
         Note:
             Using this directly couples code to a specific backend.
@@ -137,8 +140,10 @@ class BrowserBackend(Protocol):
         """Get all cookies from the browser.
 
         Returns:
-            List of cookie dicts with keys: name, value, domain, path,
-            secure, httpOnly, expiry (if set), sameSite (if set).
+            List of cookie dicts. Keys vary by backend but typically include
+            'name' and 'value'. Selenium returns keys like 'domain', 'path',
+            'secure', 'httpOnly'. NoDriver returns CDP-format cookies.
+            Returns empty list if browser is not running.
         """
         ...
 
@@ -186,11 +191,16 @@ class BrowserBackend(Protocol):
         """Recreate backend instance from serialized state.
 
         Args:
-            state: Dict from get_state() call.
+            state: Dict from get_state() call. All keys are optional;
+                missing keys use backend defaults.
 
         Returns:
             New backend instance configured from state.
             Note: Browser is NOT started - call start() separately.
+
+        Note:
+            Implementations should be tolerant of missing keys for forward
+            compatibility. Unknown keys are typically stored in options.
         """
         ...
 

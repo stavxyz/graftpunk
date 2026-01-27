@@ -41,6 +41,11 @@ class NoDriverBackend:
     Attributes:
         BACKEND_TYPE: Identifier for this backend type ("nodriver").
 
+    Warning:
+        This backend uses ``asyncio.run()`` for each operation. It cannot be
+        used from within an already-running async event loop (e.g., FastAPI,
+        asyncio tasks). If you need async support, use nodriver directly.
+
     Note:
         Default headless=False because nodriver is more detectable in headless
         mode. For best anti-detection, run in visible (headed) mode.
@@ -160,7 +165,12 @@ class NoDriverBackend:
             raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
 
     async def _stop_async(self) -> None:
-        """Async implementation of browser stop."""
+        """Wrap browser stop for asyncio.run() compatibility.
+
+        Note:
+            nodriver's Browser.stop() is synchronous, but we wrap it in
+            an async method for consistent _run_async() pattern usage.
+        """
         if self._browser is not None:
             try:
                 self._browser.stop()

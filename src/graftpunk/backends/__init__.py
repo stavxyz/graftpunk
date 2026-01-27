@@ -41,11 +41,12 @@ def get_backend(name: str = "selenium", **kwargs: Any) -> BrowserBackend:
     aren't installed.
 
     Args:
-        name: Backend identifier. One of: "selenium", "nodriver".
-            Default is "selenium". ("legacy" is accepted as an alias for "selenium")
+        name: Backend identifier. One of: "selenium", "nodriver", "legacy".
+            Default is "selenium". "legacy" is an alias for "selenium".
         **kwargs: Backend-specific initialization options passed to
             the backend constructor. Common options include:
-            - headless: bool (selenium default True, nodriver default False)
+            - headless: bool (selenium default True, nodriver default False
+              for better anti-detection)
             - use_stealth: bool (selenium only, default True)
             - profile_dir: Path | None
             - default_timeout: int (default 15)
