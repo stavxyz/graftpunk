@@ -10,6 +10,16 @@ Note:
     within an already-running async context (e.g., FastAPI, asyncio event loop).
     If you need async support, use nodriver directly.
 
+Logging:
+    This module uses structured logging with intentional log levels:
+
+    - **ERROR**: Operations that fail and raise exceptions (start, navigate)
+    - **WARNING**: Best-effort operations that fail silently (cookie set/delete)
+    - **DEBUG**: Graceful degradation (properties returning empty values)
+
+    If you need to diagnose issues with property getters returning empty
+    values, enable DEBUG-level logging for ``graftpunk.backends.nodriver``.
+
 Example:
     >>> from graftpunk.backends.nodriver import NoDriverBackend
     >>> backend = NoDriverBackend(headless=False)
@@ -49,6 +59,14 @@ class NoDriverBackend:
     Note:
         Default headless=False because nodriver is more detectable in headless
         mode. For best anti-detection, run in visible (headed) mode.
+
+    Design Note:
+        This class maintains both ``_started`` and ``_browser`` state. While
+        ``_browser is not None`` could theoretically replace ``_started``,
+        we keep both for defensive programming: ``is_running`` checks both
+        to handle edge cases where the browser crashes (``_browser`` becomes
+        invalid but ``_started`` is still True). The ``stop()`` method
+        always resets both in a finally block to ensure consistent state.
     """
 
     BACKEND_TYPE: str = "nodriver"
@@ -66,10 +84,12 @@ class NoDriverBackend:
             headless: Run browser in headless mode. Default False for better
                 anti-detection (nodriver is more detectable when headless).
             profile_dir: Directory for browser profile persistence. If None,
-                nodriver auto-deletes the profile on exit.
+                nodriver uses a temporary profile that is auto-deleted on exit.
+                Note: This differs from SeleniumBackend's stealth mode, which
+                defaults to ~/.config/graftpunk/chrome_profile (persistent).
             default_timeout: Default timeout for operations in seconds.
-                Note: Currently stored for serialization but not enforced.
-                Reserved for future use.
+                Note: Currently stored for serialization but not actively
+                enforced for all operations. Reserved for future use.
             **options: Additional options passed to nodriver.start():
                 - browser_args: List of Chrome arguments
                 - browser_executable_path: Path to Chrome binary

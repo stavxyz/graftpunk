@@ -56,9 +56,13 @@ class SeleniumBackend:
 
         Args:
             headless: Run browser in headless mode.
-            profile_dir: Directory for browser profile persistence.
+            profile_dir: Directory for browser profile persistence. If None,
+                stealth mode uses ~/.config/graftpunk/chrome_profile (persistent),
+                while standard mode uses a temporary profile (auto-deleted).
             use_stealth: Use undetected-chromedriver with stealth measures.
             default_timeout: Default timeout for element waits in seconds.
+                Note: Currently stored for serialization but not actively
+                enforced for all operations.
             **options: Additional options (window_size, etc.).
         """
         self._headless = headless
@@ -165,7 +169,7 @@ class SeleniumBackend:
 
         Idempotent - calling when already stopped is a no-op.
         """
-        if self._driver is None:
+        if not self._started:
             return
 
         LOG.info("selenium_backend_stopping")

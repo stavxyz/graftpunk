@@ -23,10 +23,11 @@ class BrowserBackend(Protocol):
     """Protocol defining the browser automation backend interface.
 
     All browser backends must implement this protocol to be usable with
-    graftpunk's BrowserSession. Currently implemented: selenium, nodriver.
+    graftpunk's BrowserSession. Use ``list_backends()`` to see available
+    implementations.
 
     The protocol uses sync methods for the public API. Backends that wrap
-    async libraries (nodriver) handle async internally.
+    async libraries (like nodriver) handle async internally.
 
     Attributes:
         BACKEND_TYPE: Class-level identifier for this backend type.
@@ -40,7 +41,7 @@ class BrowserBackend(Protocol):
 
     def start(
         self,
-        headless: bool = True,
+        headless: bool | None = None,
         profile_dir: Path | None = None,
         **options: Any,
     ) -> None:
@@ -50,12 +51,15 @@ class BrowserBackend(Protocol):
         should be a no-op.
 
         Args:
-            headless: Run browser without visible window.
+            headless: Override headless setting from __init__. If None, uses
+                the value from construction. Defaults vary by backend:
+                SeleniumBackend defaults to True, NoDriverBackend to False.
             profile_dir: Directory for persistent browser profile.
             **options: Backend-specific options.
 
         Raises:
-            BrowserError: If browser fails to start.
+            BrowserError: If browser fails to start (implementation-specific;
+                the Protocol cannot enforce exception types).
         """
         ...
 
@@ -79,13 +83,16 @@ class BrowserBackend(Protocol):
     def navigate(self, url: str) -> None:
         """Navigate to a URL.
 
-        If the browser is not running, it will be started automatically.
+        If the browser is not running, it will be started automatically
+        using the headless setting from __init__.
 
         Args:
             url: URL to navigate to.
 
         Raises:
-            BrowserError: If navigation fails or browser cannot be started.
+            BrowserError: If navigation fails or browser cannot be started
+                (implementation-specific; the Protocol cannot enforce
+                exception types).
         """
         ...
 
