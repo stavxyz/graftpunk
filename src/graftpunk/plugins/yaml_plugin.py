@@ -7,6 +7,7 @@ can be used by the CLI registration system.
 from __future__ import annotations
 
 import re
+import types
 from typing import Any
 
 import requests
@@ -28,14 +29,15 @@ LOG = get_logger(__name__)
 URL_PARAM_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
 # Try to import jmespath, but it's optional
+_jmespath: types.ModuleType | None = None
+HAS_JMESPATH = False
 try:
-    import jmespath as jmespath_module
+    import jmespath
 
+    _jmespath = jmespath
     HAS_JMESPATH = True
 except ImportError as _jmespath_err:
     LOG.debug("jmespath_import_failed", error=str(_jmespath_err))
-    jmespath_module = None
-    HAS_JMESPATH = False
 
 
 class YAMLSitePlugin:
@@ -217,7 +219,8 @@ class YAMLSitePlugin:
                         "(install with: pip install 'graftpunk[jmespath]')[/yellow]"
                     )
                     return data
-                data = jmespath_module.search(cmd_def.jmespath, data)
+                assert _jmespath is not None  # guarded by HAS_JMESPATH check
+                data = _jmespath.search(cmd_def.jmespath, data)
 
             return data
 

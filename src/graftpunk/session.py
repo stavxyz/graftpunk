@@ -24,7 +24,7 @@ LOG = get_logger(__name__)
 
 
 # requestium.Session has no type stubs, inheritance typing unavailable
-class BrowserSession(requestium.Session):  # type: ignore[misc]
+class BrowserSession(requestium.Session):
     """Extended Requestium session with improved persistence and logging.
 
     This class combines Selenium WebDriver for browser automation with the
@@ -206,8 +206,8 @@ class BrowserSession(requestium.Session):  # type: ignore[misc]
             host=None,
         )
 
-        cookiejar_dict = requests.utils.dict_from_cookiejar(self.cookies)  # type: ignore[no-untyped-call]
-        cookiejar = requests.utils.cookiejar_from_dict(cookiejar_dict)  # type: ignore[no-untyped-call]
+        cookiejar_dict = requests.utils.dict_from_cookiejar(self.cookies)
+        cookiejar = requests.utils.cookiejar_from_dict(cookiejar_dict)
         httpie_session.cookie_jar = cookiejar
         httpie_session.load()
         httpie_session.post_process_data(httpie_session)
