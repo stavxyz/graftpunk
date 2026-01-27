@@ -76,7 +76,7 @@ class BrowserSession(requestium.Session):
             default_timeout: Default timeout for element waits in seconds.
             use_stealth: If True, use undetected-chromedriver with anti-detection.
             backend: Browser backend to use. Default "selenium".
-                Available: "selenium" (default), "nodriver", "legacy".
+                Available: "selenium" (default), "nodriver".
                 Planned: "camoufox", "playwright".
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
