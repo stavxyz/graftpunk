@@ -174,6 +174,7 @@ class SeleniumBackend:
 
         LOG.info("selenium_backend_stopping")
         try:
+            assert self._driver is not None  # Type narrowing for mypy
             self._driver.quit()
         except selenium.common.exceptions.WebDriverException as exc:
             # Expected errors during browser cleanup - log and continue
@@ -209,6 +210,7 @@ class SeleniumBackend:
 
         LOG.debug("selenium_backend_navigating", url=url)
         try:
+            assert self._driver is not None  # Type narrowing for mypy
             self._driver.get(url)
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.error("selenium_backend_navigation_failed", url=url, error=str(exc))
@@ -227,6 +229,7 @@ class SeleniumBackend:
         if not self.is_running:
             return ""
         try:
+            assert self._driver is not None  # Type narrowing for mypy
             return self._driver.current_url or ""
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.debug("selenium_get_current_url_failed", error=str(exc))
@@ -245,6 +248,7 @@ class SeleniumBackend:
         if not self.is_running:
             return ""
         try:
+            assert self._driver is not None  # Type narrowing for mypy
             return self._driver.title or ""
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.debug("selenium_get_page_title_failed", error=str(exc))
@@ -263,6 +267,7 @@ class SeleniumBackend:
         if not self.is_running:
             return ""
         try:
+            assert self._driver is not None  # Type narrowing for mypy
             return self._driver.page_source or ""
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.debug("selenium_get_page_source_failed", error=str(exc))
@@ -292,6 +297,7 @@ class SeleniumBackend:
         if not self.is_running:
             return []
         try:
+            assert self._driver is not None  # Type narrowing for mypy
             return self._driver.get_cookies() or []
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.debug("selenium_get_cookies_failed", error=str(exc))
@@ -310,6 +316,7 @@ class SeleniumBackend:
         if not self.is_running:
             self.start()
 
+        assert self._driver is not None  # Type narrowing for mypy
         for cookie in cookies:
             try:
                 self._driver.add_cookie(cookie)
@@ -325,6 +332,7 @@ class SeleniumBackend:
         if not self.is_running:
             return
         try:
+            assert self._driver is not None  # Type narrowing for mypy
             self._driver.delete_all_cookies()
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.warning("selenium_backend_delete_cookies_failed", error=str(exc))
@@ -340,6 +348,7 @@ class SeleniumBackend:
         if not self.is_running:
             return ""
         try:
+            assert self._driver is not None  # Type narrowing for mypy
             return self._driver.execute_script("return navigator.userAgent") or ""
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.debug("selenium_get_user_agent_failed", error=str(exc))
