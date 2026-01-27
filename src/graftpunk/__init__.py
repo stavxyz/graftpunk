@@ -20,7 +20,7 @@ Example:
     >>> response = api.get("https://mysite.com/api/data")
 """
 
-from graftpunk.backends import BrowserBackend, get_backend, list_backends
+from graftpunk.backends import BrowserBackend, get_backend, list_backends, register_backend
 from graftpunk.cache import (
     cache_session,
     clear_session_cache,
@@ -56,6 +56,7 @@ __all__ = [
     "BrowserBackend",
     "get_backend",
     "list_backends",
+    "register_backend",
     # Cache operations
     "cache_session",
     "load_session",
