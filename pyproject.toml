@@ -55,6 +55,9 @@ s3 = [
 jmespath = [
     "jmespath>=1.0.0",
 ]
+nodriver = [
+    "nodriver>=0.48",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
@@ -63,7 +66,7 @@ dev = [
     "mypy>=1.10.0",
 ]
 all = [
-    "graftpunk[supabase,s3,jmespath,dev]",
+    "graftpunk[supabase,s3,jmespath,nodriver,dev]",
 ]
 
 [project.scripts]
