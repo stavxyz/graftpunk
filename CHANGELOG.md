@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-01-27
+
+### Added
+
+- **Browser Abstraction Layer**: Pluggable browser backend architecture
+  - `BrowserBackend` Protocol defining the browser automation interface
+  - `SeleniumBackend` wrapping existing stealth stack (undetected-chromedriver + selenium-stealth)
+  - `NoDriverBackend` for CDP-direct automation without WebDriver binary detection
+  - Backend factory with `get_backend()`, `list_backends()`, `register_backend()`
+  - `Cookie` TypedDict for type-safe cookie handling across backends
+
+- **NoDriver Integration**: CDP-direct browser automation
+  - Eliminates WebDriver binary detection vector
+  - Async-to-sync bridging for consistent API
+  - Better anti-detection for enterprise-protected sites
+  - Install with `pip install graftpunk[nodriver]` or `pip install graftpunk[standard]`
+
+### Changed
+
+- `BrowserSession` now accepts `backend` parameter ("selenium", "nodriver", or "legacy")
+- Exported `BrowserBackend`, `get_backend`, `list_backends`, `register_backend` from main package
+
 ## [1.1.0] - 2026-01-25
 
 ### Added
