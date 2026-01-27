@@ -90,6 +90,8 @@ pip install graftpunk
 ```bash
 pip install graftpunk[supabase]   # Supabase backend
 pip install graftpunk[s3]         # AWS S3 backend
+pip install graftpunk[nodriver]   # NoDriver backend (better anti-detection)
+pip install graftpunk[standard]   # Recommended: NoDriver + stealth
 pip install graftpunk[all]        # Everything
 ```
 
@@ -101,6 +103,7 @@ pip install graftpunk[all]        # Everything
 from graftpunk import BrowserSession, cache_session
 
 # Create a stealth browser (avoids bot detection)
+# Options: backend="selenium" (default), "nodriver" (better anti-detection)
 session = BrowserSession(headless=False, use_stealth=True)
 
 # Navigate to login page
@@ -145,7 +148,7 @@ Sessions expire. graftpunk can keep them alive in the background:
 
 | | Feature | Why It Matters |
 |:--|:--|:--|
-| 🥷 | **Stealth Mode** | Many sites block automation. graftpunk uses undetected-chromedriver and selenium-stealth to fly under the radar. |
+| 🥷 | **Stealth Mode** | Many sites block automation. graftpunk supports multiple backends: Selenium with undetected-chromedriver, or NoDriver for CDP-direct automation without WebDriver detection. |
 | 🔒 | **Encrypted Storage** | Sessions contain sensitive auth tokens. graftpunk encrypts everything with AES-128 (Fernet). |
 | ☁️ | **Cloud Storage** | Access your sessions from anywhere. Store in Supabase or S3 for multi-machine workflows. |
 | 🔄 | **Keepalive Daemon** | Sessions expire. graftpunk can ping sites in the background to keep you logged in. |
@@ -249,6 +252,34 @@ Options:
 | `GRAFTPUNK_CONFIG_DIR` | `~/.config/graftpunk` | Config and encryption key location |
 | `GRAFTPUNK_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
 | `GRAFTPUNK_LOG_LEVEL` | `INFO` | Logging verbosity |
+
+## Browser Backends
+
+graftpunk supports multiple browser automation backends:
+
+| Backend | Install | Best For |
+|---------|---------|----------|
+| `selenium` | Default | Simple sites, backward compatibility |
+| `nodriver` | `pip install graftpunk[nodriver]` | Enterprise sites, better anti-detection |
+
+```python
+from graftpunk import BrowserSession, get_backend, list_backends
+
+# See available backends
+print(list_backends())  # ['legacy', 'nodriver', 'selenium']
+
+# Use BrowserSession with explicit backend
+session = BrowserSession(backend="nodriver", headless=False)
+
+# Or use backends directly
+from graftpunk import get_backend
+backend = get_backend("nodriver", headless=False)
+with backend:
+    backend.navigate("https://example.com")
+    cookies = backend.get_cookies()
+```
+
+**Why NoDriver?** NoDriver uses Chrome DevTools Protocol (CDP) directly without the WebDriver binary, eliminating a common detection vector used by anti-bot systems.
 
 ## Roadmap
 

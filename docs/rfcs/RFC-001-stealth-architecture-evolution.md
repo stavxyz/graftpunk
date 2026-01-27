@@ -1062,7 +1062,7 @@ all = [
 - [x] Define `Cookie` TypedDict with `Required`/`NotRequired` fields
 - [x] Implement `SeleniumBackend` wrapping current stealth stack
 - [x] Add backend registry with `get_backend()` and `list_backends()`
-- [x] Write comprehensive tests (381 tests passing)
+- [x] Write comprehensive tests (414 tests passing)
 
 **Breaking changes:** None
 
@@ -1278,7 +1278,7 @@ Instead, we will:
 
 ## Appendix A: Current vs Proposed Dependency Comparison
 
-### Current (graftpunk 1.1.0)
+### Current (graftpunk 1.2.0)
 
 ```
 requestium>=0.2.5
