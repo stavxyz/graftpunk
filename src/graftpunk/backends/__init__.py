@@ -86,7 +86,12 @@ def get_backend(name: str = "selenium", **kwargs: Any) -> BrowserBackend:
         ) from exc
 
     # Get the backend class
-    backend_class = getattr(module, class_name)
+    try:
+        backend_class = getattr(module, class_name)
+    except AttributeError as exc:
+        raise ImportError(
+            f"Backend '{name}' class '{class_name}' not found in {module_path}"
+        ) from exc
 
     # Instantiate and return
     return backend_class(**kwargs)
@@ -100,7 +105,7 @@ def list_backends() -> list[str]:
 
     Example:
         >>> list_backends()
-        ['legacy', 'selenium']
+        ['legacy', 'nodriver', 'selenium']
     """
     return sorted(_BACKEND_REGISTRY.keys())
 
