@@ -9,7 +9,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![Typed](https://img.shields.io/badge/typed-mypy-blue.svg)](https://mypy-lang.org/)
+[![Typed](https://img.shields.io/badge/typed-ty-blue.svg)](https://github.com/astral-sh/ty)
 
 [Installation](#installation) • [Quick Start](#quick-start) • [CLI](#cli) • [Roadmap](#roadmap) • [Plugins](#plugins)
 
@@ -372,10 +372,12 @@ graftpunk uses Python's `pickle` for serialization. Only load sessions you creat
 ```bash
 git clone https://github.com/stavxyz/graftpunk.git
 cd graftpunk
-just setup    # Create venv and install deps
+just setup    # Install deps with uv
 just check    # Run lint, typecheck, tests
 just build    # Build for PyPI
 ```
+
+Requires [uv](https://docs.astral.sh/uv/) for development.
 
 ## License
 

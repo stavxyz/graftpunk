@@ -13,6 +13,7 @@ Be respectful, inclusive, and constructive. We're all here to build something us
 - Python 3.11 or later
 - Chrome browser (for running browser-based tests)
 - Git
+- [uv](https://docs.astral.sh/uv/) (fast Python package manager)
 
 ### Development Setup
 
@@ -23,24 +24,27 @@ Be respectful, inclusive, and constructive. We're all here to build something us
    cd graftpunk
    ```
 
-2. **Create a virtual environment**
+2. **Install uv** (if not already installed)
 
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   # macOS/Linux
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+
+   # Or with Homebrew
+   brew install uv
    ```
 
-3. **Install in development mode**
+3. **Install dependencies**
 
    ```bash
-   pip install -e ".[dev]"
+   uv sync --all-extras
    ```
 
 4. **Verify the installation**
 
    ```bash
-   gp --help
-   pytest tests/ -v
+   uv run gp --help
+   uv run pytest tests/ -v
    ```
 
 ## Development Workflow
@@ -70,9 +74,9 @@ Be respectful, inclusive, and constructive. We're all here to build something us
    just check
 
    # Or run individually:
-   ruff check .
-   ruff format .
-   mypy src/
+   uvx ruff check .
+   uvx ruff format .
+   uvx ty check src/
    ```
 
 6. **Commit your changes** with a descriptive message
@@ -106,7 +110,7 @@ git commit -m "docs: improve plugin development guide"
 
 - **Formatter**: Ruff
 - **Linter**: Ruff
-- **Type checker**: mypy with strict mode
+- **Type checker**: ty (Astral's fast type checker)
 - **Line length**: 100 characters
 
 ### Style Guidelines
