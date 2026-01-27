@@ -30,11 +30,14 @@ Example:
 import asyncio
 from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from graftpunk.backends.base import Cookie
 from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger
+
+if TYPE_CHECKING:
+    import nodriver
 
 LOG = get_logger(__name__)
 
@@ -101,8 +104,10 @@ class NoDriverBackend:
                 anti-detection (nodriver is more detectable when headless).
             profile_dir: Directory for browser profile persistence. If None,
                 nodriver uses a temporary profile that is auto-deleted on exit.
-                Note: This differs from SeleniumBackend's stealth mode, which
-                defaults to ~/.config/graftpunk/chrome_profile (persistent).
+                Note: When profile_dir is None, nodriver uses a temporary profile
+                that is deleted on exit. In contrast, SeleniumBackend's stealth
+                mode defaults to a persistent profile at
+                ``~/.config/graftpunk/chrome_profile``.
             default_timeout: Default timeout for operations in seconds.
                 Note: Currently stored for serialization but not actively
                 enforced for all operations. Reserved for future use.
@@ -115,8 +120,8 @@ class NoDriverBackend:
         self._profile_dir = profile_dir
         self._default_timeout = default_timeout
         self._options = options
-        self._browser: Any = None
-        self._page: Any = None
+        self._browser: nodriver.Browser | None = None
+        self._page: nodriver.Tab | None = None
         self._started = False
 
     def _run_async(self, coro: Coroutine[Any, Any, Any]) -> Any:
@@ -398,7 +403,7 @@ class NoDriverBackend:
             Using this directly couples code to nodriver.
             Prefer protocol methods when possible.
         """
-        if not self._started:
+        if not self.is_running:
             self.start()
         return self._browser
 
@@ -435,10 +440,16 @@ class NoDriverBackend:
             LOG.warning("nodriver_cookies_failed", error=str(exc))
             return []
 
-    async def _set_cookies_async(self, cookies: list[Cookie]) -> None:
-        """Async implementation of cookie setting."""
-        if self._page is not None:
-            await self._page.set_cookies(cookies)
+    async def _set_cookies_async(self, cookies: list[Cookie]) -> bool:
+        """Async implementation of cookie setting.
+
+        Returns:
+            True if cookies were set, False if page was not available.
+        """
+        if self._page is None:
+            return False
+        await self._page.set_cookies(cookies)
+        return True
 
     def set_cookies(self, cookies: list[Cookie]) -> int:
         """Set cookies in the browser.
@@ -452,13 +463,22 @@ class NoDriverBackend:
 
         Returns:
             Number of cookies successfully set (all or none for nodriver,
-            since it sets cookies in a single CDP call).
+            since it sets cookies in a single CDP call). Returns 0 if no
+            page is available or an error occurs.
         """
         if not self.is_running:
             self.start()
 
         try:
-            self._run_async(self._set_cookies_async(cookies))
+            success = self._run_async(self._set_cookies_async(cookies))
+            if not success:
+                LOG.warning(
+                    "nodriver_backend_cookie_set_no_page",
+                    cookie_count=len(cookies),
+                    is_running=self.is_running,
+                    browser_present=self._browser is not None,
+                )
+                return 0
             return len(cookies)
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # asyncio.run() can fail if browser crashed; best-effort operation
@@ -467,6 +487,7 @@ class NoDriverBackend:
                 error=str(exc),
                 cookie_count=len(cookies),
                 cookie_names=[c.get("name", "<unknown>") for c in cookies],
+                is_running=self.is_running,
             )
             return 0
 
@@ -477,6 +498,7 @@ class NoDriverBackend:
             True if cookies were successfully deleted, False if an error occurred.
         """
         if self._page is None:
+            LOG.debug("nodriver_delete_cookies_no_page")
             return True  # No page = no cookies to delete
         # nodriver doesn't have delete_all_cookies, so use CDP directly
         try:

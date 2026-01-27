@@ -14,7 +14,7 @@ Example:
 """
 
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import selenium.common.exceptions
 import webdriver_manager.chrome
@@ -23,6 +23,9 @@ from graftpunk.backends.base import Cookie
 from graftpunk.chrome import get_chrome_version
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
+
+if TYPE_CHECKING:
+    from selenium.webdriver.remote.webdriver import WebDriver
 
 LOG = get_logger(__name__)
 
@@ -107,8 +110,21 @@ class SeleniumBackend:
         self._use_stealth = use_stealth
         self._default_timeout = default_timeout
         self._options = options
-        self._driver: Any | None = None
+        self._driver: WebDriver | None = None
         self._started = False
+
+    def _get_driver(self) -> "WebDriver":
+        """Get driver with None-check for type narrowing.
+
+        Returns:
+            The WebDriver instance.
+
+        Raises:
+            AssertionError: If driver is None (indicates bug - should never
+                happen when is_running is True).
+        """
+        assert self._driver is not None, "Driver is None - this is a bug"
+        return self._driver
 
     def start(
         self,
@@ -187,10 +203,14 @@ class SeleniumBackend:
             LOG.error("chrome_version_detection_failed", error=str(exc))
             raise BrowserError(f"Failed to detect Chrome version: {exc}") from exc
 
-        # Get ChromeDriver path
-        driver_path = webdriver_manager.chrome.ChromeDriverManager(
-            driver_version=chrome_version
-        ).install()
+        # Get ChromeDriver path - wrap in try/except for network/permission errors
+        try:
+            driver_path = webdriver_manager.chrome.ChromeDriverManager(
+                driver_version=chrome_version
+            ).install()
+        except Exception as exc:
+            LOG.error("chromedriver_install_failed", error=str(exc))
+            raise BrowserError(f"Failed to install ChromeDriver: {exc}") from exc
 
         # Configure options
         chrome_options = webdriver.ChromeOptions()
@@ -328,7 +348,7 @@ class SeleniumBackend:
         Returns:
             Selenium WebDriver or undetected_chromedriver.Chrome instance.
         """
-        if not self._started:
+        if not self.is_running:
             self.start()
         return self._driver
 

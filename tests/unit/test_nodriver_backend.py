@@ -1,12 +1,36 @@
 """Tests for NoDriver browser backend."""
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from graftpunk.backends import get_backend, list_backends
 from graftpunk.backends.nodriver import NoDriverBackend
+
+
+def close_coro_and_return(return_value: Any = None) -> Any:
+    """Create a side_effect function that closes coroutines to avoid RuntimeWarnings.
+
+    When mocking asyncio.run(), the coroutine passed to it is created but never
+    awaited. This creates RuntimeWarnings about unawaited coroutines. This helper
+    creates a side_effect that properly closes the coroutine before returning.
+
+    Args:
+        return_value: Value to return from the mock.
+
+    Returns:
+        A function suitable for use as side_effect on a Mock.
+    """
+
+    def _side_effect(coro: Any) -> Any:
+        # Close the coroutine to prevent "never awaited" warnings
+        if hasattr(coro, "close"):
+            coro.close()
+        return return_value
+
+    return _side_effect
 
 
 class TestNoDriverBackendProtocol:
@@ -129,6 +153,7 @@ class TestNoDriverBackendStart:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_start_calls_asyncio_run(self, mock_run: MagicMock) -> None:
         """start() uses asyncio.run to execute async code."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend()
         backend.start()
 
@@ -138,6 +163,7 @@ class TestNoDriverBackendStart:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_start_is_idempotent(self, mock_run: MagicMock) -> None:
         """Calling start() twice only starts once."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend()
         backend.start()
         backend.start()  # Second call should be no-op
@@ -147,6 +173,7 @@ class TestNoDriverBackendStart:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_stop_clears_state(self, mock_run: MagicMock) -> None:
         """stop() clears browser and page state."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend()
         backend.start()
         backend._browser = MagicMock()
@@ -161,6 +188,7 @@ class TestNoDriverBackendStart:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_stop_is_idempotent(self, mock_run: MagicMock) -> None:
         """Calling stop() twice is safe."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend()
         backend.start()
         backend.stop()
@@ -172,6 +200,7 @@ class TestNoDriverBackendStart:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_context_manager(self, mock_run: MagicMock) -> None:
         """Backend works as context manager."""
+        mock_run.side_effect = close_coro_and_return(None)
         with NoDriverBackend() as backend:
             assert backend._started is True
 
@@ -185,6 +214,7 @@ class TestNoDriverBackendNavigation:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_navigate_calls_asyncio_run(self, mock_run: MagicMock) -> None:
         """navigate() uses asyncio.run."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = MagicMock()
@@ -269,6 +299,7 @@ class TestNoDriverBackendDriver:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_driver_starts_if_not_running(self, mock_run: MagicMock) -> None:
         """driver property starts browser if not running."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend()
         _ = backend.driver
 
@@ -572,6 +603,7 @@ class TestNoDriverBackendMissingCoverage:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_start_updates_additional_options(self, mock_run: MagicMock) -> None:
         """start() merges additional options into _options."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend(browser_args=["--disable-gpu"])
         backend.start(custom_arg="custom_value")
 
@@ -581,6 +613,7 @@ class TestNoDriverBackendMissingCoverage:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_delete_all_cookies_calls_cdp_command(self, mock_run: MagicMock) -> None:
         """delete_all_cookies() invokes CDP command when running."""
+        mock_run.side_effect = close_coro_and_return(True)
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = MagicMock()
@@ -600,12 +633,14 @@ class TestNoDriverBackendMissingCoverage:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_context_manager_propagates_exceptions(self, mock_run: MagicMock) -> None:
         """Context manager does not suppress exceptions from within the block."""
+        mock_run.side_effect = close_coro_and_return(None)
         with pytest.raises(ValueError, match="test error"), NoDriverBackend():
             raise ValueError("test error")
 
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_start_overrides_headless(self, mock_run: MagicMock) -> None:
         """start() can override headless setting."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend(headless=True)
         backend.start(headless=False)
 
@@ -614,6 +649,7 @@ class TestNoDriverBackendMissingCoverage:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_start_overrides_profile_dir(self, mock_run: MagicMock, tmp_path: Path) -> None:
         """start() can override profile_dir setting."""
+        mock_run.side_effect = close_coro_and_return(None)
         profile = tmp_path / "override_profile"
 
         backend = NoDriverBackend()
@@ -642,7 +678,7 @@ class TestNoDriverBackendMissingCoverage:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        mock_run.return_value = [{"name": "session", "value": "abc123"}]
+        mock_run.side_effect = close_coro_and_return([{"name": "session", "value": "abc123"}])
 
         cookies = backend.get_cookies()
         assert len(cookies) == 1
@@ -663,6 +699,7 @@ class TestNoDriverBackendMissingCoverage:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_properties_return_empty_when_page_none_but_running(self, mock_run: MagicMock) -> None:
         """Properties return empty values if _page is None despite running state."""
+        mock_run.side_effect = close_coro_and_return("")
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = MagicMock()
@@ -670,8 +707,6 @@ class TestNoDriverBackendMissingCoverage:
 
         # These should return empty values via the async methods
         # which check `if self._page is None: return ""`
-        mock_run.return_value = ""
-
         assert backend.current_url == ""
         assert backend.page_title == ""
         assert backend.page_source == ""
@@ -680,36 +715,40 @@ class TestNoDriverBackendMissingCoverage:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_get_cookies_returns_empty_when_page_none(self, mock_run: MagicMock) -> None:
         """get_cookies() returns empty list if _page is None."""
+        mock_run.side_effect = close_coro_and_return([])
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = MagicMock()
         backend._page = None
-
-        mock_run.return_value = []
 
         assert backend.get_cookies() == []
 
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_set_cookies_safe_when_page_none(self, mock_run: MagicMock) -> None:
         """set_cookies() is safe when _page is None."""
+        mock_run.side_effect = close_coro_and_return(False)  # Returns False when page is None
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = MagicMock()
         backend._page = None
 
         # Should not raise - _set_cookies_async checks for None page
-        backend.set_cookies([{"name": "test", "value": "value"}])
+        # Returns 0 because page is None
+        result = backend.set_cookies([{"name": "test", "value": "value"}])
+        assert result == 0
 
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_delete_all_cookies_safe_when_page_none(self, mock_run: MagicMock) -> None:
         """delete_all_cookies() is safe when _page is None."""
+        mock_run.side_effect = close_coro_and_return(True)  # Returns True when page is None
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = MagicMock()
         backend._page = None
 
         # Should not raise - _delete_all_cookies_async checks for None page
-        backend.delete_all_cookies()
+        result = backend.delete_all_cookies()
+        assert result is True
 
 
 class TestNoDriverBackendFromStateMismatch:
@@ -796,7 +835,7 @@ class TestNoDriverBackendAsyncContextLimitation:
         async def sample_coro():
             return "result"
 
-        mock_run.return_value = "result"
+        mock_run.side_effect = close_coro_and_return("result")
 
         backend = NoDriverBackend()
         backend._run_async(sample_coro())
@@ -820,3 +859,107 @@ class TestNoDriverBackendAsyncContextLimitation:
         # Run the test inside an event loop to trigger the error
         with pytest.raises(RuntimeError, match="cannot be used from within an async context"):
             asyncio.run(test_in_async_context())
+
+
+class TestNoDriverNavigateErrorTypes:
+    """Tests for different error types during navigate."""
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_navigate_connection_error_raises_browser_error(self, mock_run: MagicMock) -> None:
+        """ConnectionError during navigation raises BrowserError."""
+        from graftpunk.exceptions import BrowserError
+
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+
+        mock_run.side_effect = ConnectionError("connection refused")
+
+        with pytest.raises(BrowserError, match="Navigation failed"):
+            backend.navigate("https://example.com")
+
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_navigate_timeout_error_raises_browser_error(self, mock_run: MagicMock) -> None:
+        """TimeoutError during navigation raises BrowserError."""
+        from graftpunk.exceptions import BrowserError
+
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+
+        mock_run.side_effect = TimeoutError("operation timed out")
+
+        with pytest.raises(BrowserError, match="Navigation failed"):
+            backend.navigate("https://example.com")
+
+
+class TestNoDriverSetCookiesNoPage:
+    """Tests for set_cookies behavior when page is None."""
+
+    @patch("graftpunk.backends.nodriver.LOG")
+    @patch("graftpunk.backends.nodriver.asyncio.run")
+    def test_set_cookies_returns_zero_when_page_is_none(
+        self, mock_run: MagicMock, mock_log: MagicMock
+    ) -> None:
+        """set_cookies() returns 0 when _page is None."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = None  # Page is None
+
+        # Make _run_async return False (page was None)
+        mock_run.return_value = False
+
+        cookies = [{"name": "test", "value": "value"}]
+        result = backend.set_cookies(cookies)
+
+        assert result == 0
+        mock_log.warning.assert_called()
+        call_args = mock_log.warning.call_args
+        assert call_args[0][0] == "nodriver_backend_cookie_set_no_page"
+
+
+class TestNoDriverExpectedStopPatterns:
+    """Parameterized tests for all _EXPECTED_STOP_PATTERNS."""
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "cannot schedule new futures after shutdown",
+            "browser is already closed",
+            "no such process found",
+            "event loop is closed",
+            "target closed unexpectedly",
+        ],
+    )
+    def test_expected_stop_pattern_detection(self, pattern: str) -> None:
+        """All expected stop patterns are correctly detected."""
+        backend = NoDriverBackend()
+        assert backend._is_expected_stop_error(pattern) is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "Cannot schedule",  # Different case
+            "BROWSER IS ALREADY CLOSED",  # Uppercase
+            "Event Loop Is Closed",  # Mixed case
+        ],
+    )
+    def test_expected_stop_pattern_case_insensitive(self, pattern: str) -> None:
+        """Pattern matching is case-insensitive."""
+        backend = NoDriverBackend()
+        assert backend._is_expected_stop_error(pattern) is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "random error message",
+            "disk full",
+            "permission denied",
+            "something went wrong",
+        ],
+    )
+    def test_unexpected_stop_pattern_detection(self, pattern: str) -> None:
+        """Unexpected patterns are correctly identified."""
+        backend = NoDriverBackend()
+        assert backend._is_expected_stop_error(pattern) is False

@@ -602,6 +602,30 @@ class TestSeleniumBackendErrorHandling:
         assert backend.get_cookies() == []
 
     @patch("graftpunk.stealth.create_stealth_driver")
+    def test_get_cookies_handles_driver_returning_none(self, mock_create: MagicMock) -> None:
+        """get_cookies() returns empty list when driver returns None."""
+        mock_driver = MagicMock()
+        mock_driver.get_cookies.return_value = None
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+
+        assert backend.get_cookies() == []
+
+    @patch("graftpunk.stealth.create_stealth_driver")
+    def test_get_user_agent_handles_script_returning_none(self, mock_create: MagicMock) -> None:
+        """get_user_agent() returns empty string when script returns None."""
+        mock_driver = MagicMock()
+        mock_driver.execute_script.return_value = None
+        mock_create.return_value = mock_driver
+
+        backend = SeleniumBackend(use_stealth=True)
+        backend.start()
+
+        assert backend.get_user_agent() == ""
+
+    @patch("graftpunk.stealth.create_stealth_driver")
     def test_get_user_agent_returns_empty_on_exception(self, mock_create: MagicMock) -> None:
         """get_user_agent() returns empty string on WebDriverException."""
         mock_driver = MagicMock()
@@ -880,3 +904,73 @@ class TestSeleniumBackendMalformedUrls:
 
         with pytest.raises(BrowserError, match="Navigation failed"):
             backend.navigate("not-a-valid-url")
+
+
+class TestSeleniumExpectedStopPatterns:
+    """Parameterized tests for all expected stop patterns."""
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "unable to connect to renderer",
+            "no such window handle",
+            "chrome not reachable",
+            "session deleted because of page crash",
+            "target window already closed",
+        ],
+    )
+    def test_expected_webdriver_pattern_detection(self, pattern: str) -> None:
+        """All expected WebDriver stop patterns are correctly detected."""
+        backend = SeleniumBackend()
+        assert backend._is_expected_webdriver_stop_error(pattern) is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "UNABLE TO CONNECT",  # Uppercase
+            "No Such Window",  # Mixed case
+            "Chrome Not Reachable",  # Title case
+        ],
+    )
+    def test_expected_webdriver_pattern_case_insensitive(self, pattern: str) -> None:
+        """WebDriver pattern matching is case-insensitive."""
+        backend = SeleniumBackend()
+        assert backend._is_expected_webdriver_stop_error(pattern) is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "no such process",
+            "broken pipe error",
+        ],
+    )
+    def test_expected_os_pattern_detection(self, pattern: str) -> None:
+        """All expected OS stop patterns are correctly detected."""
+        backend = SeleniumBackend()
+        assert backend._is_expected_os_stop_error(pattern) is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "random error",
+            "disk full",
+            "permission denied",
+        ],
+    )
+    def test_unexpected_webdriver_pattern_detection(self, pattern: str) -> None:
+        """Unexpected WebDriver patterns are correctly identified."""
+        backend = SeleniumBackend()
+        assert backend._is_expected_webdriver_stop_error(pattern) is False
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "random error",
+            "disk full",
+            "permission denied",
+        ],
+    )
+    def test_unexpected_os_pattern_detection(self, pattern: str) -> None:
+        """Unexpected OS patterns are correctly identified."""
+        backend = SeleniumBackend()
+        assert backend._is_expected_os_stop_error(pattern) is False

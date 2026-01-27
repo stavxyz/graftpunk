@@ -29,7 +29,12 @@ class Cookie(TypedDict, total=False):
         The duplicate fields accommodate format differences between backends:
         Selenium uses ``httpOnly`` (camelCase) and ``expiry`` (Unix timestamp as int).
         CDP/nodriver uses ``httponly`` (lowercase) and ``expires`` (Unix timestamp).
-        When setting cookies, use the format expected by your backend.
+
+    Warning:
+        Backends do NOT convert between cookie formats. Using the wrong field
+        name for your backend will result in that attribute being silently
+        ignored. For example, setting ``httpOnly=True`` for a nodriver backend
+        has no effect - use ``httponly=True`` instead.
     """
 
     name: Required[str]  # Cookie name
@@ -84,8 +89,10 @@ class BrowserBackend(Protocol):
             **options: Backend-specific options.
 
         Raises:
-            BrowserError: If browser fails to start (implementation-specific;
-                the Protocol cannot enforce exception types).
+            BrowserError: If browser fails to start. This includes missing
+                dependencies (e.g., ``pip install graftpunk[nodriver]``) -
+                the original ``ImportError`` is chained. Note: the Protocol
+                cannot enforce exception types; implementations may vary.
         """
         ...
 
