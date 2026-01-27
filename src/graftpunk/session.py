@@ -1,7 +1,21 @@
-"""Browser session management using Requestium (Selenium + requests).
+"""Browser session management with pluggable browser backends.
 
-This module provides an enhanced Requestium session with cookie persistence,
-HTTPie export, and automatic ChromeDriver management.
+This module provides an enhanced browser session with cookie persistence,
+HTTPie export, and automatic ChromeDriver management. It supports multiple
+browser backends through the `backend` parameter.
+
+Available backends:
+    - selenium: Selenium + undetected-chromedriver (default)
+    - nodriver: CDP-direct Chrome automation (Phase 2)
+    - camoufox: Firefox with C++ fingerprint mods (Phase 4)
+    - playwright: Multi-browser support (Phase 6)
+
+Example:
+    >>> from graftpunk import BrowserSession
+    >>> # Default selenium backend
+    >>> session = BrowserSession(headless=False, use_stealth=True)
+    >>> # Explicit backend selection
+    >>> session = BrowserSession(backend="selenium", headless=False)
 """
 
 from pathlib import Path
@@ -25,11 +39,24 @@ LOG = get_logger(__name__)
 
 # requestium.Session has no type stubs, inheritance typing unavailable
 class BrowserSession(requestium.Session):
-    """Extended Requestium session with improved persistence and logging.
+    """Extended Requestium session with pluggable browser backends.
 
-    This class combines Selenium WebDriver for browser automation with the
-    requests library for HTTP calls, providing seamless cookie transfer and
-    session persistence.
+    This class combines browser automation with the requests library for
+    HTTP calls, providing seamless cookie transfer and session persistence.
+
+    Supports multiple browser backends through the `backend` parameter:
+        - "selenium": Default. Uses undetected-chromedriver + selenium-stealth.
+        - "nodriver": CDP-direct (coming in Phase 2)
+        - "camoufox": Firefox with C++ mods (coming in Phase 4)
+        - "playwright": Multi-browser (coming in Phase 6)
+
+    Attributes:
+        session_name: Identifier for this session (auto-generated or manual).
+
+    Example:
+        >>> session = BrowserSession(headless=False, use_stealth=True)
+        >>> session.driver.get("https://example.com")
+        >>> session.transfer_driver_cookies_to_session()
     """
 
     def __init__(
@@ -38,6 +65,7 @@ class BrowserSession(requestium.Session):
         headless: bool = True,
         default_timeout: int = 15,
         use_stealth: bool = True,
+        backend: str = "selenium",
         **kwargs: Any,
     ) -> None:
         """Initialize browser session.
@@ -46,9 +74,24 @@ class BrowserSession(requestium.Session):
             *args: Positional arguments passed to requestium.Session.
             headless: If True, run browser in headless mode.
             default_timeout: Default timeout for element waits in seconds.
-            use_stealth: If True, use undetected-chromedriver with anti-detection measures.
+            use_stealth: If True, use undetected-chromedriver with anti-detection.
+            backend: Browser backend to use. Default "selenium".
+                Currently only "selenium" is supported. Future versions will
+                add "nodriver", "camoufox", and "playwright".
             **kwargs: Additional keyword arguments passed to requestium.Session.
+
+        Raises:
+            BrowserError: If browser session creation fails.
+            ValueError: If unknown backend is specified.
         """
+        # Validate backend
+        from graftpunk.backends import list_backends
+
+        available = list_backends()
+        if backend not in available:
+            raise ValueError(f"Unknown backend '{backend}'. Available: {', '.join(available)}")
+
+        self._backend_type = backend
         self._use_stealth = use_stealth
 
         if use_stealth:
@@ -150,6 +193,9 @@ class BrowserSession(requestium.Session):
         state["verify"] = self.verify
         state["current_url"] = self.driver.current_url
         state["session_name"] = self.session_name
+        # Backend abstraction state
+        state["_backend_type"] = getattr(self, "_backend_type", "selenium")
+        state["_use_stealth"] = getattr(self, "_use_stealth", True)
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -165,6 +211,10 @@ class BrowserSession(requestium.Session):
         self.__dict__.update(state)
         for key, value in state.items():
             setattr(self, key, value)
+
+        # Restore backend type (default to selenium for legacy sessions)
+        self._backend_type = state.get("_backend_type", "selenium")
+        self._use_stealth = state.get("_use_stealth", True)
 
         # Only transfer cookies to driver if we have one
         # (for API-only usage, _driver will be None)
