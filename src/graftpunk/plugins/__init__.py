@@ -71,13 +71,7 @@ def discover_plugins(group: str) -> dict[str, Any]:
         ...     handler = handlers["mysite"]()
     """
     plugins: dict[str, Any] = {}
-
-    try:
-        eps = entry_points(group=group)
-    except TypeError:
-        # Python 3.9 compatibility
-        all_eps = entry_points()
-        eps = all_eps.get(group, all_eps.__class__())
+    eps = entry_points(group=group)
 
     for ep in eps:
         try:
