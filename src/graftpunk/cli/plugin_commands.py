@@ -18,6 +18,7 @@ from graftpunk.logging import get_logger
 from graftpunk.plugins import discover_cli_plugins
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandSpec
 from graftpunk.plugins.formatters import format_output
+from graftpunk.plugins.python_loader import discover_python_plugins
 from graftpunk.plugins.yaml_plugin import YAMLSitePlugin, create_yaml_plugins
 
 LOG = get_logger(__name__)
@@ -251,6 +252,17 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     except Exception as exc:
         LOG.exception("yaml_plugin_discovery_failed", error=str(exc))
         result.add_error("yaml-plugins", str(exc), "discovery")
+
+    # Discover Python plugins from files
+    try:
+        python_file_result = discover_python_plugins()
+        all_plugins.extend(python_file_result.plugins)
+        # Aggregate any Python file load errors
+        for py_error in python_file_result.errors:
+            result.add_error(str(py_error.filepath.name), py_error.error, "discovery")
+    except Exception as exc:
+        LOG.exception("python_file_plugin_discovery_failed", error=str(exc))
+        result.add_error("python-file-plugins", str(exc), "discovery")
 
     # Register each plugin
     for plugin in all_plugins:
