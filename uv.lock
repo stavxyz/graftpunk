@@ -477,12 +477,13 @@ wheels = [
 
 [[package]]
 name = "graftpunk"
-version = "1.2.0"
+version = "1.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "dill" },
     { name = "httpie" },
+    { name = "nodriver" },
     { name = "pydantic-settings" },
     { name = "pyotp" },
     { name = "python-slugify" },
@@ -502,7 +503,6 @@ all = [
     { name = "boto3" },
     { name = "jmespath" },
     { name = "mypy" },
-    { name = "nodriver" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
@@ -518,9 +518,6 @@ dev = [
 ]
 jmespath = [
     { name = "jmespath" },
-]
-nodriver = [
-    { name = "nodriver" },
 ]
 s3 = [
     { name = "boto3" },
@@ -538,7 +535,7 @@ requires-dist = [
     { name = "httpie", specifier = ">=3.0.0" },
     { name = "jmespath", marker = "extra == 'jmespath'", specifier = ">=1.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
-    { name = "nodriver", marker = "extra == 'nodriver'", specifier = ">=0.48" },
+    { name = "nodriver", specifier = ">=0.48" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pyotp", specifier = ">=2.9.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },

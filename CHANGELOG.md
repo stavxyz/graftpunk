@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-01-28
+
+### Changed
+
+- **NoDriver now included by default**: `pip install graftpunk` includes both Selenium and NoDriver backends
+- The `[nodriver]` extra is kept for backwards compatibility but is now a no-op
+
 ## [1.2.0] - 2026-01-27
 
 ### Added
@@ -22,7 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Eliminates WebDriver binary detection vector
   - Async-to-sync bridging for consistent API
   - Better anti-detection for enterprise-protected sites
-  - Install with `pip install graftpunk[nodriver]` or `pip install graftpunk[standard]`
 
 ### Changed
 

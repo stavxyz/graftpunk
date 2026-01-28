@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graftpunk"
-version = "1.2.0"
+version = "1.2.1"
 description = "Turn any website into an API. Graft scriptable access onto authenticated web services."
 readme = "README.md"
 license = "MIT"
@@ -43,6 +43,7 @@ dependencies = [
     "httpie>=3.0.0",
     "pyotp>=2.9.0",
     "pyyaml>=6.0",
+    "nodriver>=0.48",
 ]
 
 [project.optional-dependencies]
@@ -56,7 +57,7 @@ jmespath = [
     "jmespath>=1.0.0",
 ]
 nodriver = [
-    "nodriver>=0.48",
+    # nodriver is now a core dependency; this extra is kept for backwards compatibility
 ]
 dev = [
     "pytest>=8.0.0",

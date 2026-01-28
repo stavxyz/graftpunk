@@ -90,8 +90,6 @@ pip install graftpunk
 ```bash
 pip install graftpunk[supabase]   # Supabase backend
 pip install graftpunk[s3]         # AWS S3 backend
-pip install graftpunk[nodriver]   # NoDriver backend (better anti-detection)
-pip install graftpunk[standard]   # Recommended: NoDriver + stealth
 pip install graftpunk[all]        # Everything
 ```
 
@@ -255,12 +253,12 @@ Options:
 
 ## Browser Backends
 
-graftpunk supports multiple browser automation backends:
+graftpunk supports multiple browser automation backends (both included by default):
 
-| Backend | Install | Best For |
-|---------|---------|----------|
-| `selenium` | Default | Simple sites, backward compatibility |
-| `nodriver` | `pip install graftpunk[nodriver]` | Enterprise sites, better anti-detection |
+| Backend | Best For |
+|---------|----------|
+| `selenium` | Simple sites, backward compatibility |
+| `nodriver` | Enterprise sites, better anti-detection |
 
 ```python
 from graftpunk import BrowserSession, get_backend, list_backends
