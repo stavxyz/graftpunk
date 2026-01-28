@@ -527,3 +527,35 @@ class TestPluginDiscoveryErrors:
         mock_notify.assert_called_once()
         result = mock_notify.call_args[0][0]
         assert any("Unexpected error" in e.error for e in result.errors)
+
+
+class TestPythonPluginDiscovery:
+    """Tests for Python plugin auto-discovery integration."""
+
+    def test_register_python_plugin_from_file(self, isolated_config: Path) -> None:
+        """Test registering a Python plugin discovered from file."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+
+        # Create a plugin file in the config plugins directory
+        plugins_dir = isolated_config / "plugins"
+        plugins_dir.mkdir()
+
+        plugin_code = """
+from graftpunk.plugins import SitePlugin, command
+
+class FilePlugin(SitePlugin):
+    site_name = "fileplugin"
+    session_name = ""
+    help_text = "Plugin from file"
+
+    @command(help="Test command")
+    def test(self, session):
+        return {"test": True}
+"""
+        (plugins_dir / "file_plugin.py").write_text(plugin_code)
+
+        app = typer.Typer()
+        registered = register_plugin_commands(app, notify_errors=False)
+
+        assert "fileplugin" in registered
+        assert registered["fileplugin"] == "Plugin from file"
