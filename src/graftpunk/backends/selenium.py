@@ -368,7 +368,9 @@ class SeleniumBackend:
             return []
         try:
             assert self._driver is not None  # Type narrowing for mypy
-            return self._driver.get_cookies() or []
+            # Selenium returns list[dict], cast to list[Cookie] for type safety
+            cookies: list[Cookie] = self._driver.get_cookies() or []  # type: ignore[assignment]
+            return cookies
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.warning("selenium_get_cookies_failed", error=str(exc))
             return []

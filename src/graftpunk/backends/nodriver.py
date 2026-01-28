@@ -279,6 +279,7 @@ class NoDriverBackend:
 
     async def _navigate_async(self, url: str) -> None:
         """Async implementation of navigation."""
+        assert self._browser is not None  # Type narrowing for ty
         self._page = await self._browser.get(url)
 
     def navigate(self, url: str) -> None:
@@ -305,7 +306,8 @@ class NoDriverBackend:
         if self._page is None:
             return ""
         try:
-            return await self._page.evaluate("window.location.href") or ""
+            result = await self._page.evaluate("window.location.href")
+            return str(result) if result else ""
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # CDP operations can fail; warn user
             LOG.warning("nodriver_get_current_url_failed", error=str(exc))
@@ -335,7 +337,8 @@ class NoDriverBackend:
         if self._page is None:
             return ""
         try:
-            return await self._page.evaluate("document.title") or ""
+            result = await self._page.evaluate("document.title")
+            return str(result) if result else ""
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # CDP operations can fail; warn user
             LOG.warning("nodriver_get_page_title_failed", error=str(exc))
@@ -503,7 +506,7 @@ class NoDriverBackend:
         # nodriver doesn't have delete_all_cookies, so use CDP directly
         try:
             await self._page.send(
-                "Network.clearBrowserCookies",
+                "Network.clearBrowserCookies",  # type: ignore[arg-type]
             )
             return True
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
@@ -532,7 +535,8 @@ class NoDriverBackend:
         if self._page is None:
             return ""
         try:
-            return await self._page.evaluate("navigator.userAgent") or ""
+            result = await self._page.evaluate("navigator.userAgent")
+            return str(result) if result else ""
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # CDP operations can fail; warn user
             LOG.warning("nodriver_get_user_agent_failed", error=str(exc))
