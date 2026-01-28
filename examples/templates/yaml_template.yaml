@@ -1,0 +1,54 @@
+# YAML Plugin Template
+# Copy this file and customize for your site.
+# Save or symlink to: ~/.config/graftpunk/plugins/<name>.yaml
+#
+# Documentation: https://github.com/stavxyz/graftpunk
+
+site_name: mysite                    # CLI command group: gp mysite <cmd>
+session_name: mysite                 # Cached session name (or "" for no session)
+help: "Description of your plugin"
+base_url: "https://example.com"      # Optional: prepended to command URLs
+
+# Optional: Headers applied to all requests
+# Environment variables use ${VAR} syntax
+# headers:
+#   Authorization: "Bearer ${MY_API_TOKEN}"
+#   X-Custom-Header: "value"
+
+commands:
+  # Simple GET command
+  example:
+    help: "Description of this command"
+    method: GET
+    url: "/api/endpoint"
+
+  # Command with URL parameter (positional argument)
+  # get-item:
+  #   help: "Get item by ID"
+  #   method: GET
+  #   url: "/api/items/{id}"
+  #   params:
+  #     - name: id
+  #       type: int
+  #       required: true
+  #       help: "Item ID"
+  #       is_option: false  # Makes it positional: gp mysite get-item 123
+
+  # Command with query parameter (--option flag)
+  # list:
+  #   help: "List items with pagination"
+  #   method: GET
+  #   url: "/api/items"
+  #   params:
+  #     - name: page
+  #       type: int
+  #       required: false
+  #       default: 1
+  #       help: "Page number"
+
+  # Command with jmespath extraction
+  # users:
+  #   help: "Get user names only"
+  #   method: GET
+  #   url: "/api/users"
+  #   jmespath: "data[*].name"  # Extract just names from response
