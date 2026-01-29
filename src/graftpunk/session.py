@@ -305,25 +305,48 @@ class BrowserSession(requestium.Session):
         Raises:
             BrowserError: If session creation fails.
         """
-        super().__setstate__(state)
-        self.__dict__.update(state)
-        for key, value in state.items():
-            setattr(self, key, value)
-
-        # Restore backend type (default to selenium for legacy sessions)
+        # Restore backend type first to determine how to restore
         self._backend_type = state.get("_backend_type", "selenium")
         self._use_stealth = state.get("_use_stealth", True)
 
-        # Only transfer cookies to driver if we have one
-        # (for API-only usage, _driver will be None)
-        if self._driver is not None:
-            try:
-                self.transfer_session_cookies_to_driver()
-            except selenium.common.exceptions.SessionNotCreatedException as exc:
-                LOG.error("failed_to_restore_session", error=str(exc))
-                raise BrowserError(
-                    "Failed to restore session. Try clearing cache with: gp clear"
-                ) from exc
+        if self._backend_type == "nodriver":
+            # For nodriver sessions, just restore as requests.Session
+            # (browser is not serialized, only HTTP client state)
+            import requests
+            import requests.utils
+
+            requests.Session.__init__(self)
+            # Restore headers if present
+            if "headers" in state and state["headers"]:
+                self.headers.update(state["headers"])
+            # Restore cookies if present (convert dict to CookieJar)
+            if "cookies" in state and state["cookies"]:
+                cookie_dict = state["cookies"]
+                if isinstance(cookie_dict, dict):
+                    self.cookies = requests.utils.cookiejar_from_dict(cookie_dict)
+                else:
+                    self.cookies = cookie_dict
+            # Restore session name
+            if "session_name" in state:
+                self._session_name = state["session_name"]
+            self._backend_instance = None  # No browser restored
+        else:
+            # Selenium/requestium path
+            super().__setstate__(state)
+            self.__dict__.update(state)
+            for key, value in state.items():
+                setattr(self, key, value)
+
+            # Only transfer cookies to driver if we have one
+            # (for API-only usage, _driver will be None)
+            if getattr(self, "_driver", None) is not None:
+                try:
+                    self.transfer_session_cookies_to_driver()
+                except selenium.common.exceptions.SessionNotCreatedException as exc:
+                    LOG.error("failed_to_restore_session", error=str(exc))
+                    raise BrowserError(
+                        "Failed to restore session. Try clearing cache with: gp clear"
+                    ) from exc
 
     def save_httpie_session(self, session_name: str | None = None) -> Path:
         """Save session cookies to HTTPie format for CLI HTTP requests.
