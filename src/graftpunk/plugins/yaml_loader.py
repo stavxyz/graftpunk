@@ -39,6 +39,7 @@ class YAMLCommandDef:
     url: str
     params: list[dict[str, Any]] = field(default_factory=list)
     jmespath: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -250,6 +251,7 @@ def parse_yaml_plugin(filepath: Path) -> YAMLPluginDef:
                 url=cmd_def["url"],
                 params=params,
                 jmespath=cmd_def.get("jmespath"),
+                headers=cmd_def.get("headers", {}),
             )
         )
 

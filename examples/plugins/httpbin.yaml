@@ -86,3 +86,19 @@ commands:
     help: "Return robots.txt rules"
     method: GET
     url: "/robots.txt"
+
+  # Authenticated commands (require HTTPBIN_AUTH env var)
+  auth-whoami:
+    help: "Check that auth header is being sent (requires HTTPBIN_AUTH)"
+    method: GET
+    url: "/headers"
+    jmespath: "headers.Authorization"
+    headers:
+      Authorization: "Basic ${HTTPBIN_AUTH}"
+
+  auth-bearer:
+    help: "Test bearer token endpoint (requires HTTPBIN_AUTH as bearer token)"
+    method: GET
+    url: "/bearer"
+    headers:
+      Authorization: "Bearer ${HTTPBIN_AUTH}"
