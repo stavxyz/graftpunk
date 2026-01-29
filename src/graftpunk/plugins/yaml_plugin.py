@@ -167,17 +167,28 @@ class YAMLSitePlugin:
                 raise ValueError(f"Missing required URL parameters: {missing}")
 
             # Expand headers with environment variables
+            # Merge plugin-level and command-level headers (command takes precedence)
             headers = {}
             for key, value in plugin_def.headers.items():
                 headers[key] = expand_env_vars(value)
+            for key, value in cmd_def.headers.items():
+                headers[key] = expand_env_vars(value)
+
+            # Build query params from kwargs that aren't URL params
+            url_params = set(URL_PARAM_PATTERN.findall(cmd_def.url))
+            query_params = {
+                k: v for k, v in kwargs.items()
+                if k not in url_params and v is not None
+            }
 
             # Make request
-            LOG.debug("yaml_plugin_request", method=cmd_def.method, url=url)
+            LOG.debug("yaml_plugin_request", method=cmd_def.method, url=url, params=query_params)
 
             response = session.request(
                 method=cmd_def.method,
                 url=url,
                 headers=headers,
+                params=query_params if query_params else None,
             )
             response.raise_for_status()
 
