@@ -27,11 +27,6 @@ from graftpunk.plugins.cli_plugin import (
     SitePlugin,
     command,
 )
-from graftpunk.plugins.python_loader import (
-    PythonDiscoveryError,
-    PythonDiscoveryResult,
-    discover_python_plugins,
-)
 
 __all__ = [
     # Base classes and decorators
@@ -50,10 +45,6 @@ __all__ = [
     "get_storage_backend",
     "load_handler_from_string",
     "list_available_plugins",
-    # Python plugin discovery
-    "PythonDiscoveryError",
-    "PythonDiscoveryResult",
-    "discover_python_plugins",
 ]
 
 LOG = get_logger(__name__)
