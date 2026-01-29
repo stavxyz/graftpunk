@@ -91,7 +91,7 @@ class BrowserSession(requestium.Session):
             ValueError: If unknown backend is specified.
         """
         # Validate backend
-        from graftpunk.backends import list_backends
+        from graftpunk.backends import get_backend, list_backends
 
         available = list_backends()
         if backend not in available:
@@ -99,8 +99,29 @@ class BrowserSession(requestium.Session):
 
         self._backend_type = backend
         self._use_stealth = use_stealth
+        self._backend_instance = None  # For nodriver backend
 
-        if use_stealth:
+        if backend == "nodriver":
+            # Use nodriver backend directly (CDP-based, no ChromeDriver)
+            # NOTE: We don't start the backend here to avoid async context conflicts.
+            # The backend is started lazily when accessing the driver property,
+            # or the plugin can start it manually in async context.
+            LOG.info("creating_nodriver_browser_session", headless=headless)
+            try:
+                self._backend_instance = get_backend("nodriver", headless=headless)
+                # Don't start here - let it be started in async context by plugin
+                # or lazily on first driver access
+
+                # Initialize minimal session (no driver creation)
+                import requests
+
+                requests.Session.__init__(self)
+
+                LOG.info("nodriver_browser_session_initialized", headless=headless)
+            except Exception as exc:
+                LOG.error("failed_to_create_nodriver_session", error=str(exc))
+                raise BrowserError(f"Failed to create nodriver browser session: {exc}") from exc
+        elif use_stealth:
             # Use stealth driver (undetected-chromedriver + selenium-stealth)
             from graftpunk.stealth import create_stealth_driver
 
@@ -177,12 +198,83 @@ class BrowserSession(requestium.Session):
         """
         self._session_name = value
 
+    @property
+    def driver(self) -> Any:
+        """Get the browser driver.
+
+        For nodriver backend, returns the nodriver Browser instance.
+        For selenium backend, returns the selenium WebDriver.
+
+        Note: For nodriver backend, call `await session.start_async()` first
+        in async context to initialize the browser.
+
+        Returns:
+            Browser driver instance.
+        """
+        backend_instance = getattr(self, "_backend_instance", None)
+        if getattr(self, "_backend_type", "selenium") == "nodriver" and backend_instance is not None:
+            return backend_instance._browser
+        # Fall back to requestium's driver
+        return getattr(self, "_webdriver", None)
+
+    async def start_async(self) -> None:
+        """Start the browser asynchronously (for nodriver backend).
+
+        Call this method in async context before using the driver with nodriver.
+
+        Example:
+            session = BrowserSession(backend="nodriver")
+            await session.start_async()
+            await session.driver.get("https://example.com")
+        """
+        backend_instance = getattr(self, "_backend_instance", None)
+        if backend_instance is not None and hasattr(backend_instance, "_start_async"):
+            LOG.info("starting_nodriver_backend_async")
+            await backend_instance._start_async()
+            backend_instance._started = True
+
+    def quit(self) -> None:
+        """Close the browser and clean up resources.
+
+        For nodriver backend, stops the backend properly.
+        For selenium backend, quits the WebDriver.
+        """
+        backend_instance = getattr(self, "_backend_instance", None)
+        backend_type = getattr(self, "_backend_type", "selenium")
+
+        if backend_type == "nodriver" and backend_instance is not None:
+            LOG.info("stopping_nodriver_session")
+            backend_instance.stop()
+            self._backend_instance = None
+        elif hasattr(self, "_webdriver") and self._webdriver is not None:
+            LOG.info("stopping_selenium_session")
+            try:
+                self._webdriver.quit()
+            except Exception as exc:
+                LOG.warning("error_stopping_selenium_session", error=str(exc))
+            self._webdriver = None
+
     def __getstate__(self) -> dict[str, Any]:
         """Get state for pickling.
 
         Returns:
             State dictionary with serializable data.
         """
+        backend_type = getattr(self, "_backend_type", "selenium")
+
+        if backend_type == "nodriver":
+            # For nodriver, we only need minimal state (cookies from requests.Session)
+            import requests
+
+            state = requests.Session.__getstate__(self) if hasattr(requests.Session, "__getstate__") else {}
+            state["_backend_type"] = backend_type
+            state["_use_stealth"] = getattr(self, "_use_stealth", False)
+            state["cookies"] = dict(self.cookies) if hasattr(self, "cookies") else {}
+            state["headers"] = dict(self.headers) if hasattr(self, "headers") else {}
+            state["session_name"] = getattr(self, "_session_name", "default")
+            return state
+
+        # Selenium/requestium path
         state = super().__getstate__()
         state["_driver"] = None
         state["_driver_initializer"] = self._driver_initializer
@@ -200,7 +292,7 @@ class BrowserSession(requestium.Session):
         state["current_url"] = self.driver.current_url
         state["session_name"] = self.session_name
         # Backend abstraction state
-        state["_backend_type"] = getattr(self, "_backend_type", "selenium")
+        state["_backend_type"] = backend_type
         state["_use_stealth"] = getattr(self, "_use_stealth", True)
         return state
 

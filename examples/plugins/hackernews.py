@@ -56,17 +56,20 @@ class HackerNewsPlugin(SitePlugin):
         """
         session = BrowserSession(backend="nodriver", headless=False)
 
-        # NoDriver is async
-        await session.driver.get(f"{self.base_url}/login")
+        # Start the nodriver backend in async context
+        await session.start_async()
 
-        # Find and fill login form
-        acct_field = await session.driver.select("input[name='acct']")
+        # NoDriver: browser.get() returns a Tab
+        tab = await session.driver.get(f"{self.base_url}/login")
+
+        # Find and fill login form (select is on Tab, not Browser)
+        acct_field = await tab.select("input[name='acct']")
         await acct_field.send_keys(username)
 
-        pw_field = await session.driver.select("input[name='pw']")
+        pw_field = await tab.select("input[name='pw']")
         await pw_field.send_keys(password)
 
-        submit = await session.driver.select("input[value='login']")
+        submit = await tab.select("input[value='login']")
         await submit.click()
 
         # Wait for login to complete (logout link appears)
@@ -75,7 +78,8 @@ class HackerNewsPlugin(SitePlugin):
 
         # Cache the session
         cache_session(session, self.session_name)
-        await session.quit()
+        # Close the browser
+        session.driver.stop()
         return True
 
     @command(help="Get front page stories")
