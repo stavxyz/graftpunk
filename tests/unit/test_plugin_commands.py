@@ -529,6 +529,143 @@ class TestPluginDiscoveryErrors:
         assert any("Unexpected error" in e.error for e in result.errors)
 
 
+class TestAutoLoginCommand:
+    """Tests for auto-generated login command feature."""
+
+    def test_has_login_method_true(self) -> None:
+        """Test detection of plugins with login method."""
+        from graftpunk.cli.plugin_commands import _has_login_method
+
+        class PluginWithLogin(SitePlugin):
+            site_name = "testlogin"
+            session_name = "test"
+            help_text = "Test"
+
+            def login(self, username: str, password: str) -> bool:
+                return True
+
+        plugin = PluginWithLogin()
+        assert _has_login_method(plugin) is True
+
+    def test_has_login_method_false_no_method(self) -> None:
+        """Test plugins without login method return False."""
+        from graftpunk.cli.plugin_commands import _has_login_method
+
+        class PluginWithoutLogin(SitePlugin):
+            site_name = "nologin"
+            session_name = "test"
+            help_text = "Test"
+
+        plugin = PluginWithoutLogin()
+        assert _has_login_method(plugin) is False
+
+    def test_has_login_method_false_decorated_command(self) -> None:
+        """Test that login decorated with @command is not auto-added."""
+        from graftpunk.cli.plugin_commands import _has_login_method
+
+        class PluginWithCommandLogin(SitePlugin):
+            site_name = "cmdlogin"
+            session_name = "test"
+            help_text = "Test"
+
+            @command(help="Login command")
+            def login(self, session: Any) -> dict[str, bool]:
+                return {"success": True}
+
+        plugin = PluginWithCommandLogin()
+        assert _has_login_method(plugin) is False
+
+    def test_create_login_command(self) -> None:
+        """Test creation of login command with correct options."""
+        from graftpunk.cli.plugin_commands import _create_login_command
+
+        class PluginWithLogin(SitePlugin):
+            site_name = "testlogin"
+            session_name = "test"
+            help_text = "Test"
+
+            def login(self, username: str, password: str) -> bool:
+                """Log in to testlogin site."""
+                return True
+
+        plugin = PluginWithLogin()
+        cmd = _create_login_command(plugin)
+
+        assert cmd.name == "login"
+        assert "Log in to testlogin site" in cmd.help
+
+        # Check params
+        param_names = [p.name for p in cmd.params]
+        assert "username" in param_names
+        assert "password" in param_names
+
+    def test_login_command_envvar_names(self) -> None:
+        """Test that environment variable names are correctly generated."""
+        from graftpunk.cli.plugin_commands import _create_login_command
+
+        class PluginWithLogin(SitePlugin):
+            site_name = "my-test-site"
+            session_name = "test"
+            help_text = "Test"
+
+            def login(self, username: str, password: str) -> bool:
+                return True
+
+        plugin = PluginWithLogin()
+        cmd = _create_login_command(plugin)
+
+        # Find username and password options
+        username_opt = next(p for p in cmd.params if p.name == "username")
+        password_opt = next(p for p in cmd.params if p.name == "password")
+
+        # Check envvar names (site_name with - replaced by _ and uppercased)
+        assert username_opt.envvar == "MY_TEST_SITE_USERNAME"
+        assert password_opt.envvar == "MY_TEST_SITE_PASSWORD"
+
+    def test_login_command_registered_for_plugin(self, isolated_config: Path) -> None:
+        """Test that login command is auto-registered for plugins with login method."""
+        import click
+
+        from graftpunk.cli.plugin_commands import (
+            _plugin_groups,
+            inject_plugin_commands,
+            register_plugin_commands,
+        )
+
+        class PluginWithLogin(SitePlugin):
+            site_name = "autologin"
+            session_name = "test"
+            help_text = "Test"
+
+            def login(self, username: str, password: str) -> bool:
+                return True
+
+            @command(help="List items")
+            def items(self, session: Any) -> dict[str, list[int]]:
+                return {"items": []}
+
+        app = typer.Typer()
+        _plugin_groups.clear()
+
+        with (
+            patch("graftpunk.cli.plugin_commands.discover_cli_plugins") as mock_py,
+            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
+        ):
+            mock_py.return_value = {"autologin": PluginWithLogin}
+            mock_yaml.return_value = ([], [])
+            registered = register_plugin_commands(app, notify_errors=False)
+
+        assert "autologin" in registered
+
+        click_group = click.Group(name="test")
+        inject_plugin_commands(click_group)
+
+        plugin_group = click_group.commands["autologin"]
+        assert isinstance(plugin_group, click.Group)
+        assert "login" in plugin_group.commands
+        assert "items" in plugin_group.commands
+
+
 class TestPythonPluginDiscovery:
     """Tests for Python plugin auto-discovery integration."""
 

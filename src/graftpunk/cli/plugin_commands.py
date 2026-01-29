@@ -6,6 +6,8 @@ Both Python plugins (via entry points) and YAML plugins are supported.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -187,6 +189,95 @@ def _create_click_command(
     )
 
 
+def _has_login_method(plugin: CLIPluginProtocol) -> bool:
+    """Check if plugin has a login method that's not a CLI command.
+
+    Returns True if the plugin has a 'login' method that is callable
+    and NOT decorated with @command (i.e., not already exposed as CLI).
+    """
+    if not hasattr(plugin, "login"):
+        return False
+    login_method = plugin.login  # type: ignore[attr-defined]
+    if not callable(login_method):
+        return False
+    # Skip if already decorated as a CLI command
+    return not getattr(login_method, "_is_cli_command", False)
+
+
+def _create_login_command(plugin: CLIPluginProtocol) -> click.Command:
+    """Create an auto-generated login command for plugins with login() method.
+
+    Generates a 'login' CLI command with credential handling supporting:
+    - CLI flags (--username, --password) - highest priority
+    - Environment variables ({SITE_NAME}_USERNAME, {SITE_NAME}_PASSWORD)
+    - Interactive prompts (fallback, password hidden)
+
+    Args:
+        plugin: Plugin instance with a login() method.
+
+    Returns:
+        Click Command for the login operation.
+    """
+    site_name_upper = plugin.site_name.upper().replace("-", "_")
+    username_envvar = f"{site_name_upper}_USERNAME"
+    password_envvar = f"{site_name_upper}_PASSWORD"
+
+    params: list[click.Parameter] = [
+        click.Option(
+            ["--username", "-u"],
+            type=str,
+            envvar=username_envvar,
+            prompt="Username",
+            help=f"Username for login (or set {username_envvar})",
+        ),
+        click.Option(
+            ["--password", "-p"],
+            type=str,
+            envvar=password_envvar,
+            prompt="Password",
+            hide_input=True,
+            help=f"Password for login (or set {password_envvar})",
+        ),
+    ]
+
+    def callback(username: str, password: str) -> None:
+        login_method = plugin.login  # type: ignore[attr-defined]
+
+        try:
+            # Check if login is async
+            if asyncio.iscoroutinefunction(login_method):
+                result = asyncio.run(login_method(username=username, password=password))
+            else:
+                result = login_method(username=username, password=password)
+
+            if result:
+                console.print(f"[green]Login successful for {plugin.site_name}[/green]")
+            else:
+                console.print(f"[yellow]Login returned False for {plugin.site_name}[/yellow]")
+        except Exception as exc:
+            LOG.exception(
+                "plugin_login_failed",
+                plugin=plugin.site_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            console.print(f"[red]Login failed: {exc}[/red]")
+            raise SystemExit(1) from None
+
+    # Get help text from login method docstring if available
+    login_method = plugin.login  # type: ignore[attr-defined]
+    help_text = inspect.getdoc(login_method) or f"Log in to {plugin.site_name}"
+    # Use first line of docstring for help
+    help_text = help_text.split("\n")[0]
+
+    return click.Command(
+        name="login",
+        callback=callback,
+        params=params,
+        help=help_text,
+    )
+
+
 def _notify_plugin_errors(result: PluginDiscoveryResult) -> None:
     """Print plugin discovery errors to stderr for user visibility.
 
@@ -301,6 +392,20 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
                         error=str(exc),
                     )
                     result.add_error(f"{site_name}.{cmd_name}", str(exc), "registration")
+
+            # Auto-generate login command if plugin has login() method
+            if _has_login_method(plugin):
+                try:
+                    login_cmd = _create_login_command(plugin)
+                    plugin_group.add_command(login_cmd, name="login")
+                    LOG.debug("login_command_auto_registered", plugin=site_name)
+                except Exception as exc:
+                    LOG.warning(
+                        "login_command_registration_failed",
+                        plugin=site_name,
+                        error=str(exc),
+                    )
+                    result.add_error(f"{site_name}.login", str(exc), "registration")
 
             # Store for later injection
             _plugin_groups[site_name] = plugin_group
