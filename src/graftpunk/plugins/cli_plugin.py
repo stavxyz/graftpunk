@@ -144,19 +144,72 @@ class SitePlugin:
 
     def get_commands(self) -> dict[str, CommandSpec]:
         """Discover all @command decorated methods."""
+        import inspect
+
         commands: dict[str, CommandSpec] = {}
         for attr_name in dir(self):
             if attr_name.startswith("_"):
                 continue
             attr = getattr(self, attr_name)
             if callable(attr) and getattr(attr, "_is_cli_command", False):
+                # Get explicit params or auto-discover from signature
+                explicit_params = getattr(attr, "_params", [])
+                if explicit_params:
+                    params = explicit_params
+                else:
+                    # Auto-discover params from method signature
+                    params = self._introspect_params(attr)
+
                 commands[attr_name] = CommandSpec(
                     name=attr_name,
                     handler=attr,
                     help_text=getattr(attr, "_help_text", ""),
-                    params=getattr(attr, "_params", []),
+                    params=params,
                 )
         return commands
+
+    def _introspect_params(self, method: Any) -> list[ParamSpec]:
+        """Extract CLI params from method signature and type hints.
+
+        Args:
+            method: The method to introspect.
+
+        Returns:
+            List of ParamSpec from the method's parameters.
+        """
+        import inspect
+
+        params: list[ParamSpec] = []
+        sig = inspect.signature(method)
+
+        for name, param in sig.parameters.items():
+            # Skip self and session (injected by framework)
+            if name in ("self", "session"):
+                continue
+
+            # Determine type (use actual type object, not string)
+            param_type: type = str
+            if param.annotation != inspect.Parameter.empty:
+                if param.annotation in (int, float, bool, str):
+                    param_type = param.annotation
+
+            # Determine if required and default
+            has_default = param.default != inspect.Parameter.empty
+            default = param.default if has_default else None
+            required = not has_default
+
+            params.append(
+                ParamSpec(
+                    name=name,
+                    param_type=param_type,
+                    required=required,
+                    default=default,
+                    help_text=f"Parameter: {name}",
+                    is_option=True,
+                )
+            )
+
+        return params
 
     def get_session(self) -> requests.Session:
         """Load the graftpunk session for API calls."""
