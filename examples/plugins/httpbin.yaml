@@ -32,7 +32,7 @@ commands:
     help: "Get the User-Agent header value"
     method: GET
     url: "/user-agent"
-    jmespath: "user-agent"
+    jmespath: '"user-agent"'
 
   get:
     help: "Test GET request - echoes query parameters"
