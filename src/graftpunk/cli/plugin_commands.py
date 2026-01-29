@@ -197,7 +197,7 @@ def _has_login_method(plugin: CLIPluginProtocol) -> bool:
     """
     if not hasattr(plugin, "login"):
         return False
-    login_method = plugin.login  # type: ignore[attr-defined]
+    login_method = plugin.login
     if not callable(login_method):
         return False
     # Skip if already decorated as a CLI command
@@ -242,7 +242,6 @@ def _create_login_command(plugin: CLIPluginProtocol) -> click.Command:
 
     def callback(username: str, password: str) -> None:
         login_method = plugin.login  # type: ignore[attr-defined]
-
         try:
             # Check if login is async
             if asyncio.iscoroutinefunction(login_method):
