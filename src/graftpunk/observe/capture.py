@@ -559,13 +559,13 @@ class NodriverCaptureBackend:
         import nodriver.cdp.network as network
         import nodriver.cdp.runtime as cdp_runtime
 
-        await tab.send(network.enable())
-        tab.add_handler(network.RequestWillBeSent, self._on_request)
-        tab.add_handler(network.ResponseReceived, self._on_response)
+        await tab.send(network.enable())  # type: ignore[attr-defined]
+        tab.add_handler(network.RequestWillBeSent, self._on_request)  # type: ignore[attr-defined]
+        tab.add_handler(network.ResponseReceived, self._on_response)  # type: ignore[attr-defined]
 
         # Console log capture
-        await tab.send(cdp_runtime.enable())
-        tab.add_handler(cdp_runtime.ConsoleAPICalled, self._on_console)
+        await tab.send(cdp_runtime.enable())  # type: ignore[attr-defined]
+        tab.add_handler(cdp_runtime.ConsoleAPICalled, self._on_console)  # type: ignore[attr-defined]
 
         LOG.debug("nodriver_capture_async_started")
 
@@ -582,7 +582,7 @@ class NodriverCaptureBackend:
             if data.get("has_post_data") and not data.get("post_data"):
                 try:
                     result = await tab.send(
-                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id))
+                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id))  # type: ignore[attr-defined]
                     )
                     data["post_data"] = result
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
@@ -598,7 +598,7 @@ class NodriverCaptureBackend:
             if _is_text_mime(mime) or _is_binary_mime(mime):
                 try:
                     body, base64_encoded = await tab.send(
-                        cdp_net.get_response_body(cdp_net.RequestId(request_id))
+                        cdp_net.get_response_body(cdp_net.RequestId(request_id))  # type: ignore[attr-defined]
                     )
                     _process_response_body(
                         response=response,

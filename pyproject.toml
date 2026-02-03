@@ -108,6 +108,11 @@ ignore = ["S101"]  # Allow assert in tests
 [tool.ruff.format]
 quote-style = "double"
 
+[tool.ty.rules]
+# nodriver CDP stubs resolve on some Python/nodriver versions but not others,
+# so type: ignore[attr-defined] comments may appear unused locally.
+unused-ignore-comment = "ignore"
+
 [tool.ty.environment]
 python-version = "3.11"
 
