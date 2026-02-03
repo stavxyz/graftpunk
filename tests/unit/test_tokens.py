@@ -80,6 +80,36 @@ class TestToken:
         assert token.name == "X-CSRF"
         assert token.cookie_name == "csrftoken"
 
+    def test_extraction_defaults_to_auto(self) -> None:
+        token = Token(name="X-CSRF", source="cookie", cookie_name="csrf")
+        assert token.extraction == "auto"
+
+    def test_extraction_accepts_http(self) -> None:
+        token = Token(name="X-CSRF", source="cookie", cookie_name="csrf", extraction="http")
+        assert token.extraction == "http"
+
+    def test_extraction_accepts_browser(self) -> None:
+        token = Token(name="X-CSRF", source="cookie", cookie_name="csrf", extraction="browser")
+        assert token.extraction == "browser"
+
+    def test_extraction_invalid_value_raises(self) -> None:
+        with pytest.raises(ValueError, match="Token.extraction must be"):
+            Token(name="X-CSRF", source="cookie", cookie_name="csrf", extraction="invalid")
+
+    def test_from_js_variable_with_browser_extraction(self) -> None:
+        token = Token.from_js_variable(
+            r'csrf = "([^"]+)"', "X-CSRF", extraction="browser"
+        )
+        assert token.extraction == "browser"
+
+    def test_from_meta_tag_with_extraction(self) -> None:
+        token = Token.from_meta_tag("csrf-token", "X-CSRF", extraction="browser")
+        assert token.extraction == "browser"
+
+    def test_from_response_header_with_extraction(self) -> None:
+        token = Token.from_response_header("X-Token", "X-Req", extraction="http")
+        assert token.extraction == "http"
+
 
 class TestTokenConfig:
     """Tests for TokenConfig validation."""

@@ -25,6 +25,7 @@ class Token:
     response_header: str | None = None  # Response header (for "response_header" source)
     page_url: str = "/"  # URL to fetch for extraction (for "page" source)
     cache_duration: float = 300  # Cache TTL in seconds
+    extraction: Literal["http", "browser", "auto"] = "auto"  # Extraction strategy
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -39,10 +40,19 @@ class Token:
             raise ValueError("Token with source='cookie' requires cookie_name")
         if self.source == "response_header" and not self.response_header:
             raise ValueError("Token with source='response_header' requires response_header")
+        if self.extraction not in ("http", "browser", "auto"):
+            raise ValueError(
+                f"Token.extraction must be 'http', 'browser', or 'auto', got {self.extraction!r}"
+            )
 
     @classmethod
     def from_meta_tag(
-        cls, name: str, header: str, page_url: str = "/", cache_duration: float = 300
+        cls,
+        name: str,
+        header: str,
+        page_url: str = "/",
+        cache_duration: float = 300,
+        extraction: Literal["http", "browser", "auto"] = "auto",
     ) -> Token:
         """Create token config for HTML <meta name="..." content="..."> extraction."""
         return cls(
@@ -51,6 +61,7 @@ class Token:
             pattern=rf'<meta\s+name=["\']?{re.escape(name)}["\']?\s+content=["\']([^"\']+)',
             page_url=page_url,
             cache_duration=cache_duration,
+            extraction=extraction,
         )
 
     @classmethod
@@ -65,7 +76,12 @@ class Token:
 
     @classmethod
     def from_js_variable(
-        cls, pattern: str, header: str, page_url: str = "/", cache_duration: float = 300
+        cls,
+        pattern: str,
+        header: str,
+        page_url: str = "/",
+        cache_duration: float = 300,
+        extraction: Literal["http", "browser", "auto"] = "auto",
     ) -> Token:
         """Create token config for JavaScript variable extraction."""
         return cls(
@@ -74,6 +90,7 @@ class Token:
             pattern=pattern,
             page_url=page_url,
             cache_duration=cache_duration,
+            extraction=extraction,
         )
 
     @classmethod
@@ -83,6 +100,7 @@ class Token:
         request_header: str,
         page_url: str = "/",
         cache_duration: float = 300,
+        extraction: Literal["http", "browser", "auto"] = "auto",
     ) -> Token:
         """Create token config for response header extraction."""
         return cls(
@@ -91,6 +109,7 @@ class Token:
             response_header=response_header,
             page_url=page_url,
             cache_duration=cache_duration,
+            extraction=extraction,
         )
 
 
