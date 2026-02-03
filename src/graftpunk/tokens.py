@@ -15,6 +15,15 @@ from graftpunk.logging import get_logger
 LOG = get_logger(__name__)
 
 
+class BrowserExtractionNeeded(Exception):  # noqa: N818 — signal, not an error
+    """Raised when a token requires browser-based extraction.
+
+    This is an internal signal used by extract_token() to tell
+    prepare_session() that this token should be batched into the
+    browser extraction pass. Not a user-facing error.
+    """
+
+
 async def nodriver_start(*, headless: bool = True) -> Any:
     """Start a nodriver browser instance.
 
@@ -250,7 +259,9 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
         Extracted token value.
 
     Raises:
-        ValueError: If token cannot be extracted.
+        ValueError: If token cannot be extracted via HTTP.
+        BrowserExtractionNeeded: If token needs browser extraction
+            (extraction="browser", or extraction="auto" after HTTP failure).
     """
     if token.source == "cookie":
         value = session.cookies.get(token.cookie_name)
@@ -258,9 +269,18 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
             raise ValueError(f"Cookie '{token.cookie_name}' not found in session")
         return value
 
+    # Browser-only: skip HTTP entirely
+    if token.extraction == "browser":
+        raise BrowserExtractionNeeded(token.name)
+
     if token.source == "response_header":
         url = f"{base_url.rstrip('/')}{token.page_url}"
-        resp = session.head(url, timeout=10, allow_redirects=True)
+        try:
+            resp = session.head(url, timeout=10, allow_redirects=True)
+        except requests.RequestException:
+            if token.extraction == "auto":
+                raise BrowserExtractionNeeded(token.name) from None
+            raise
         value = resp.headers.get(token.response_header)
         if not value:
             raise ValueError(f"Header '{token.response_header}' not found in response from {url}")
@@ -268,10 +288,17 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
 
     if token.source == "page":
         url = f"{base_url.rstrip('/')}{token.page_url}"
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
+        try:
+            resp = session.get(url, timeout=15)
+            resp.raise_for_status()
+        except requests.RequestException:
+            if token.extraction == "auto":
+                raise BrowserExtractionNeeded(token.name) from None
+            raise
         match = re.search(token.pattern, resp.text)  # type: ignore[arg-type]
         if not match:
+            if token.extraction == "auto":
+                raise BrowserExtractionNeeded(token.name)
             raise ValueError(f"Token pattern not found in {url}: {token.pattern}")
         return match.group(1)
 

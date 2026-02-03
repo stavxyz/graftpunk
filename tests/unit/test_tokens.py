@@ -175,6 +175,7 @@ class TestExtractToken:
             source="page",
             pattern=r'csrf_token = "([^"]+)"',
             page_url="/dashboard",
+            extraction="http",
         )
         mock_resp = MagicMock()
         mock_resp.text = "<html>no token here</html>"
@@ -533,3 +534,146 @@ class TestExtractTokensBrowser:
             await _extract_tokens_browser(session, [token], "https://example.com")
 
         mock_browser.stop.assert_called_once()
+
+
+class TestExtractTokenExtractionField:
+    """Tests for extract_token respecting the extraction field."""
+
+    def test_extraction_http_uses_session_get(self) -> None:
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="http",
+        )
+        mock_resp = MagicMock()
+        mock_resp.text = 'csrf = "abc";'
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch.object(session, "get", return_value=mock_resp):
+            value = extract_token(session, token, "https://example.com")
+        assert value == "abc"
+
+    def test_extraction_browser_raises_needs_browser(self) -> None:
+        from graftpunk.tokens import BrowserExtractionNeeded
+
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="browser",
+        )
+        with pytest.raises(BrowserExtractionNeeded):
+            extract_token(session, token, "https://example.com")
+
+    def test_extraction_auto_tries_http_first(self) -> None:
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="auto",
+        )
+        mock_resp = MagicMock()
+        mock_resp.text = 'csrf = "abc";'
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch.object(session, "get", return_value=mock_resp):
+            value = extract_token(session, token, "https://example.com")
+        assert value == "abc"
+
+    def test_extraction_auto_raises_needs_browser_on_timeout(self) -> None:
+        from graftpunk.tokens import BrowserExtractionNeeded
+
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="auto",
+        )
+
+        with (
+            patch.object(session, "get", side_effect=requests.exceptions.ReadTimeout("timeout")),
+            pytest.raises(BrowserExtractionNeeded),
+        ):
+            extract_token(session, token, "https://example.com")
+
+    def test_extraction_auto_raises_needs_browser_on_403(self) -> None:
+        from graftpunk.tokens import BrowserExtractionNeeded
+
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="auto",
+        )
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.raise_for_status = MagicMock(
+            side_effect=requests.exceptions.HTTPError(response=mock_resp)
+        )
+
+        with (
+            patch.object(session, "get", return_value=mock_resp),
+            pytest.raises(BrowserExtractionNeeded),
+        ):
+            extract_token(session, token, "https://example.com")
+
+    def test_extraction_http_raises_original_on_timeout(self) -> None:
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="http",
+        )
+
+        with (
+            patch.object(session, "get", side_effect=requests.exceptions.ReadTimeout("timeout")),
+            pytest.raises(requests.exceptions.ReadTimeout),
+        ):
+            extract_token(session, token, "https://example.com")
+
+    def test_cookie_source_ignores_extraction_field(self) -> None:
+        session = requests.Session()
+        session.cookies.set("csrf", "val")
+        token = Token(
+            name="X-CSRF",
+            source="cookie",
+            cookie_name="csrf",
+            extraction="browser",
+        )
+        value = extract_token(session, token, "https://example.com")
+        assert value == "val"
+
+    def test_extraction_auto_response_header_falls_back_on_error(self) -> None:
+        from graftpunk.tokens import BrowserExtractionNeeded
+
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="response_header",
+            response_header="X-Token",
+            page_url="/api",
+            extraction="auto",
+        )
+
+        with (
+            patch.object(
+                session,
+                "head",
+                side_effect=requests.exceptions.ConnectionError("refused"),
+            ),
+            pytest.raises(BrowserExtractionNeeded),
+        ):
+            extract_token(session, token, "https://example.com")
