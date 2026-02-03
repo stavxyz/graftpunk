@@ -14,6 +14,13 @@ from graftpunk.tokens import (
 )
 
 
+class _AwaitableMock(MagicMock):
+    """MagicMock subclass that supports ``await`` (simulates nodriver Tab)."""
+
+    def __await__(self):  # type: ignore[override]
+        return iter([])
+
+
 class TestExtractTokensBrowser:
     """Tests for _extract_tokens_browser async function."""
 
@@ -31,7 +38,7 @@ class TestExtractTokensBrowser:
             extraction="browser",
         )
 
-        mock_tab = AsyncMock()
+        mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value='<html>var csrf = "tok123";</html>')
 
         mock_browser = AsyncMock()
@@ -73,7 +80,7 @@ class TestExtractTokensBrowser:
             extraction="browser",
         )
 
-        mock_tab = AsyncMock()
+        mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value='csrf = "aaa"; nonce = "bbb";')
         mock_browser = AsyncMock()
         mock_browser.get = AsyncMock(return_value=mock_tab)
@@ -116,13 +123,13 @@ class TestExtractTokensBrowser:
             extraction="browser",
         )
 
-        mock_tab_good = AsyncMock()
+        mock_tab_good = _AwaitableMock()
         mock_tab_good.get_content = AsyncMock(return_value='csrf = "val1";')
 
         mock_browser = AsyncMock()
         mock_browser.get = AsyncMock(side_effect=[mock_tab_good, RuntimeError("Navigation failed")])
         mock_browser.stop = MagicMock()
-        mock_browser.main_tab = AsyncMock()
+        mock_browser.main_tab = _AwaitableMock()
 
         with (
             patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),
@@ -153,7 +160,7 @@ class TestExtractTokensBrowser:
             extraction="browser",
         )
 
-        mock_tab = AsyncMock()
+        mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value="<html>no token here</html>")
         mock_browser = AsyncMock()
         mock_browser.get = AsyncMock(return_value=mock_tab)
@@ -187,7 +194,7 @@ class TestExtractTokensBrowser:
             extraction="browser",
         )
 
-        mock_tab = AsyncMock()
+        mock_tab = _AwaitableMock()
         mock_tab.get_content = AsyncMock(return_value='csrf = "v1";')
         mock_browser = AsyncMock()
         mock_browser.get = AsyncMock(return_value=mock_tab)
@@ -221,7 +228,7 @@ class TestExtractTokensBrowser:
 
         mock_browser = AsyncMock()
         mock_browser.stop = MagicMock()
-        mock_browser.main_tab = AsyncMock()
+        mock_browser.main_tab = _AwaitableMock()
 
         with (
             patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),

@@ -85,6 +85,7 @@ async def _extract_tokens_browser(
             url = f"{base_url.rstrip('/')}{page_url}"
             try:
                 tab = await browser.get(url)
+                await tab  # wait for page DOM to be ready
                 content = await tab.get_content()
             except Exception as exc:  # noqa: BLE001 — per-URL isolation; nodriver raises varied exception types
                 LOG.warning(
