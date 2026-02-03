@@ -273,6 +273,9 @@ class BrowserSession(requestium.Session):
             )
         cookies = await browser.cookies.get_all()
         for cookie in cookies:
+            if cookie.value is None:
+                LOG.debug("skipping_none_valued_cookie", name=cookie.name, domain=cookie.domain)
+                continue
             self.cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
         LOG.info("transferred_nodriver_cookies", count=len(cookies))
 
@@ -426,6 +429,18 @@ class BrowserSession(requestium.Session):
         await self._stop_observe_async(exc_type)
         await self._quit_async()
 
+    def _quit_selenium(self) -> None:
+        """Stop the selenium WebDriver if present."""
+        if hasattr(self, "_webdriver") and self._webdriver is not None:
+            LOG.info("stopping_selenium_session")
+            try:
+                self._webdriver.quit()
+            except Exception as exc:  # noqa: BLE001 — selenium raises varied exception types
+                LOG.error(
+                    "error_stopping_selenium_session", error=str(exc), exc_type=type(exc).__name__
+                )
+            self._webdriver = None
+
     def quit(self) -> None:
         """Close the browser and clean up resources.
 
@@ -443,20 +458,13 @@ class BrowserSession(requestium.Session):
             LOG.info("stopping_nodriver_session")
             try:
                 backend_instance.stop()
-            except Exception as exc:
+            except (RuntimeError, OSError) as exc:
                 LOG.error(
                     "error_stopping_nodriver_session", error=str(exc), exc_type=type(exc).__name__
                 )
             self._backend_instance = None
-        elif hasattr(self, "_webdriver") and self._webdriver is not None:
-            LOG.info("stopping_selenium_session")
-            try:
-                self._webdriver.quit()
-            except Exception as exc:
-                LOG.error(
-                    "error_stopping_selenium_session", error=str(exc), exc_type=type(exc).__name__
-                )
-            self._webdriver = None
+        else:
+            self._quit_selenium()
 
     async def _quit_async(self) -> None:
         """Async version of quit for use in ``__aexit__``.
@@ -470,24 +478,18 @@ class BrowserSession(requestium.Session):
         if backend_type == "nodriver" and backend_instance is not None:
             LOG.info("stopping_nodriver_session")
             try:
+                # Guard for potential non-NoDriverBackend implementations
                 if hasattr(backend_instance, "stop_async"):
                     await backend_instance.stop_async()
                 else:
                     backend_instance.stop()
-            except Exception as exc:
+            except (RuntimeError, OSError) as exc:
                 LOG.error(
                     "error_stopping_nodriver_session", error=str(exc), exc_type=type(exc).__name__
                 )
             self._backend_instance = None
-        elif hasattr(self, "_webdriver") and self._webdriver is not None:
-            LOG.info("stopping_selenium_session")
-            try:
-                self._webdriver.quit()
-            except Exception as exc:
-                LOG.error(
-                    "error_stopping_selenium_session", error=str(exc), exc_type=type(exc).__name__
-                )
-            self._webdriver = None
+        else:
+            self._quit_selenium()
 
     def __getstate__(self) -> dict[str, Any]:
         """Get state for pickling.

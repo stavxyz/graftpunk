@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
 import os
 from collections.abc import Callable
 from typing import Any
@@ -146,14 +145,13 @@ def create_login_command(
                 if asyncio.iscoroutinefunction(login_method):
                     # Suppress asyncio "Loop ... is closed" warning that fires when
                     # asyncio.run() closes the event loop while nodriver's subprocess
-                    # handlers are still pending. Harmless cleanup noise.
-                    asyncio_logger = logging.getLogger("asyncio")
-                    prev_level = asyncio_logger.level
-                    asyncio_logger.setLevel(logging.CRITICAL)
-                    try:
+                    # handlers are still pending. Suppression covers the entire
+                    # asyncio.run() call because the warning fires during shutdown,
+                    # which is inseparable from the run() call itself.
+                    from graftpunk.logging import suppress_asyncio_noise
+
+                    with suppress_asyncio_noise():
                         result = asyncio.run(login_method(credentials))
-                    finally:
-                        asyncio_logger.setLevel(prev_level)
                 else:
                     result = login_method(credentials)
 
