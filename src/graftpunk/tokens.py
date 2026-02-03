@@ -73,7 +73,7 @@ async def _extract_tokens_browser(
     for token in tokens:
         by_url[token.page_url].append(token)
 
-    browser = await nodriver_start(headless=True)
+    browser = await nodriver_start(headless=False)
     try:
         # Inject session cookies before any navigation
         tab = browser.main_tab
