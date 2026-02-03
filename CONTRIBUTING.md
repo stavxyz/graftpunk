@@ -299,7 +299,6 @@ When reporting bugs, please include:
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/stavxyz/graftpunk/discussions) for questions
-- Open an [Issue](https://github.com/stavxyz/graftpunk/issues) for bugs or feature requests
+- Open an [Issue](https://github.com/stavxyz/graftpunk/issues) for questions, bugs, or feature requests
 
 Thank you for contributing!

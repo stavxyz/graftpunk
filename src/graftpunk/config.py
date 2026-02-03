@@ -163,7 +163,16 @@ _settings: GraftpunkSettings | None = None
 
 
 def get_settings() -> GraftpunkSettings:
-    """Get or create the global settings instance."""
+    """Get or create the global settings instance.
+
+    Returns a singleton instance of GraftpunkSettings, creating it on first call.
+    Subsequent calls return the cached instance. Settings are loaded from
+    environment variables with the GRAFTPUNK_ prefix.
+
+    Returns:
+        The global GraftpunkSettings instance with all configuration loaded
+        from environment variables.
+    """
     global _settings
     if _settings is None:
         _settings = GraftpunkSettings()
@@ -171,6 +180,11 @@ def get_settings() -> GraftpunkSettings:
 
 
 def reset_settings() -> None:
-    """Reset the global settings instance (useful for testing)."""
+    """Reset the global settings instance.
+
+    Clears the cached global settings instance, forcing the next call to
+    get_settings() to create a new instance. Useful for testing or when
+    environment variables have changed and need to be reloaded.
+    """
     global _settings
     _settings = None

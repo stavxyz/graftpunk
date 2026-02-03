@@ -22,7 +22,7 @@ graftpunk supports two browser automation backends, selectable per plugin via th
 
 ### Selenium (`backend = "selenium"`)
 
-Uses [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) with [selenium-stealth](https://github.com/nicedayfor/selenium-stealth) for anti-detection. This is the default backend.
+Uses [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) with [selenium-stealth](https://github.com/diprajpatra/selenium-stealth) for anti-detection. This is the default backend.
 
 - Sync API (`driver.get()`, `driver.find_element()`)
 - Screenshot support via `driver.get_screenshot_as_png()`

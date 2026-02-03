@@ -309,7 +309,19 @@ def build_plugin_config(**raw: Any) -> PluginConfig:
 
 @runtime_checkable
 class CLIPluginProtocol(Protocol):
-    """Protocol defining CLI plugin interface."""
+    """Structural typing contract for CLI plugin implementations.
+
+    This protocol defines the interface that all plugin implementations
+    (both Python subclasses and YAML-based plugins) must satisfy.
+    Use isinstance(obj, CLIPluginProtocol) for runtime type checking.
+
+    Plugins must provide:
+        - Identification properties (site_name, session_name, help_text)
+        - Configuration properties (api_version, backend, login_config, etc.)
+        - Command discovery via get_commands()
+        - Session management via get_session()
+        - Lifecycle hooks (setup, teardown)
+    """
 
     @property
     def site_name(self) -> str:
@@ -389,9 +401,14 @@ def command(
     Args:
         help: Help text for the command or group.
         params: Optional list of parameter specifications (functions only).
+            If omitted, parameters are auto-discovered from function signature.
         parent: Parent command group class for nesting (optional).
         requires_session: Override plugin-level requires_session (functions only).
-            None means inherit from the plugin.
+            None means inherit from the plugin's requires_session attribute.
+        saves_session: If True, mark session dirty after execution to persist cookies.
+
+    Returns:
+        Decorated function or class with _command_meta or _command_group_meta attached.
 
     Example (function):
         @command(help="List all accounts")
@@ -480,14 +497,18 @@ class SitePlugin:
     token_config: TokenConfig | None = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Apply shared defaults and store canonical config.
+        """Apply shared defaults and store canonical config via metaclass behavior.
 
+        Automatically called when a subclass of SitePlugin is defined.
         Calls build_plugin_config() to handle site_name inference,
         session_name defaulting, help_text generation, and validation.
         Writes inferred values back to class attributes.
 
         If configuration is incomplete (no site_name or base_url),
         the error is suppressed -- validation occurs at registration time.
+
+        Args:
+            **kwargs: Keyword arguments passed to super().__init_subclass__().
         """
         super().__init_subclass__(**kwargs)
 
@@ -566,7 +587,15 @@ class SitePlugin:
         )
 
     def get_commands(self) -> list[CommandSpec]:
-        """Discover all @command decorated methods and command groups."""
+        """Discover all @command decorated methods and command groups.
+
+        Scans the plugin instance for:
+        1. Methods decorated with @command (top-level commands)
+        2. Classes decorated with @command in the plugin's module (command groups)
+
+        Returns:
+            List of CommandSpec objects representing all available commands.
+        """
         commands: list[CommandSpec] = []
 
         # 1. Discover @command-decorated methods on self (group=None, no parent)
@@ -698,6 +727,10 @@ class SitePlugin:
         On success (no exception), transfers cookies and caches session.
         On exception, quits browser without caching.
 
+        Yields:
+            tuple[BrowserSession, Tab]: The browser session and active tab.
+                Tab is already navigated to self.base_url/.
+
         Usage:
             async with self.browser_session() as (session, tab):
                 # tab is already at self.base_url/
@@ -736,6 +769,10 @@ class SitePlugin:
         Note: Unlike browser_session(), this does not navigate to base_url
         before yielding. The caller must navigate manually.
 
+        Yields:
+            tuple[BrowserSession, WebDriver]: The browser session and selenium driver.
+                Caller must navigate to the target URL.
+
         Usage:
             with self.browser_session_sync() as (session, driver):
                 driver.get(f"{self.base_url}/login")
@@ -771,6 +808,13 @@ class SitePlugin:
 
 
 def has_declarative_login(plugin: CLIPluginProtocol) -> bool:
-    """Check if a plugin has declarative login configuration."""
+    """Check if a plugin has declarative login configuration.
+
+    Args:
+        plugin: Plugin instance to check.
+
+    Returns:
+        True if the plugin has a valid LoginConfig, False otherwise.
+    """
     login = getattr(plugin, "login_config", None)
     return login is not None and isinstance(login, LoginConfig)

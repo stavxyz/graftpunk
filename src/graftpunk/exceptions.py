@@ -2,35 +2,35 @@
 
 
 class GraftpunkError(Exception):
-    """Base exception for graftpunk package."""
+    """Base exception class for all graftpunk errors."""
 
 
 class BrowserError(GraftpunkError):
-    """Browser automation failed."""
+    """Raised when browser automation or interaction fails."""
 
 
 class ChromeDriverError(BrowserError):
-    """ChromeDriver initialization or version mismatch error."""
+    """Raised when ChromeDriver initialization or version mismatch occurs."""
 
 
 class SessionExpiredError(GraftpunkError):
-    """Saved session has expired or is invalid."""
+    """Raised when a saved session has expired or become invalid."""
 
 
 class SessionNotFoundError(GraftpunkError):
-    """No cached session found."""
+    """Raised when no cached session can be found for the requested key."""
 
 
 class EncryptionError(GraftpunkError):
-    """Encryption or decryption failed."""
+    """Raised when encryption or decryption operations fail."""
 
 
 class StorageError(GraftpunkError):
-    """Storage backend operation failed."""
+    """Raised when a storage backend operation fails."""
 
 
 class PluginError(GraftpunkError):
-    """Plugin loading or execution failed."""
+    """Raised when plugin loading or execution fails."""
 
 
 class CommandError(PluginError):
@@ -50,7 +50,7 @@ class CommandError(PluginError):
 
 
 class KeepaliveError(GraftpunkError):
-    """Keepalive operation failed."""
+    """Raised when a keepalive operation fails."""
 
 
 class MFARequiredError(GraftpunkError):

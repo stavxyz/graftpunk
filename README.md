@@ -32,21 +32,17 @@ You're left with two options: click through the UI manually every time, or give 
 Log in once, script forever.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                                                             │
-│   1. LOG IN                2. CACHE                 3. SCRIPT               │
-│                                                                             │
-│   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐          │
-│   │   Browser    │         │  Encrypted  │         │   Python    │          │
-│   │   Session    │───────▶ │   Storage   │───────▶ │   Script    │          │
-│   │             │         │             │         │             │          │
-│   └─────────────┘         └─────────────┘         └─────────────┘          │
-│                                                                             │
-│   Log in manually         Session cached          Use the session          │
-│   or declaratively        with AES-128            with real browser        │
-│   via plugin config       encryption              headers replayed         │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+  1. LOG IN              2. CACHE               3. SCRIPT
+
+  +-------------+       +-------------+       +-------------+
+  |   Browser   |       |  Encrypted  |       |   Python    |
+  |   Session   |------>|   Storage   |------>|   Script    |
+  |             |       |             |       |             |
+  +-------------+       +-------------+       +-------------+
+
+  Log in manually       Session cached        Use the session
+  or declaratively      with AES-128          with real browser
+  via plugin config     encryption            headers replayed
 ```
 
 Once your session is cached, you can:
@@ -395,7 +391,7 @@ MIT License—see [LICENSE](LICENSE).
 
 - [requestium](https://github.com/tryolabs/requestium) – Selenium + Requests integration
 - [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) – Anti-detection ChromeDriver
-- [nodriver](https://github.com/nicedayfor/nodriver) – CDP-direct browser automation
+- [nodriver](https://github.com/ultrafunkamsterdam/nodriver) – CDP-direct browser automation
 - [cryptography](https://cryptography.io/) – Encryption primitives
 - [rich](https://github.com/Textualize/rich) – Beautiful terminal output
 - [typer](https://typer.tiangolo.com/) – CLI framework
