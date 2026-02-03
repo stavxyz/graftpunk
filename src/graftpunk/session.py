@@ -525,6 +525,7 @@ class BrowserSession(requestium.Session):
                     LOG.debug("url_capture_failed_during_serialization", error=str(exc))
             state["current_url"] = current_url
             state["_gp_header_profiles"] = getattr(self, "_gp_header_profiles", {})
+            state["_gp_cached_tokens"] = getattr(self, "_gp_cached_tokens", {})
             return state
 
         # Selenium/requestium path
@@ -552,6 +553,7 @@ class BrowserSession(requestium.Session):
         state["_backend_type"] = backend_type
         state["_use_stealth"] = getattr(self, "_use_stealth", True)
         state["_gp_header_profiles"] = getattr(self, "_gp_header_profiles", {})
+        state["_gp_cached_tokens"] = getattr(self, "_gp_cached_tokens", {})
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -591,6 +593,7 @@ class BrowserSession(requestium.Session):
                 self._session_name = state["session_name"]
             self._backend_instance = None  # No browser restored
             self._gp_header_profiles = state.get("_gp_header_profiles", {})
+            self._gp_cached_tokens = state.get("_gp_cached_tokens", {})
         else:
             # Selenium/requestium path
             # requestium/requests don't define __setstate__, so this resolves
@@ -601,6 +604,7 @@ class BrowserSession(requestium.Session):
             super().__setstate__(state)
             self.__dict__.update(state)
             self._gp_header_profiles = state.get("_gp_header_profiles", {})
+            self._gp_cached_tokens = state.get("_gp_cached_tokens", {})
 
             # Only transfer cookies to driver if we have one
             # (for API-only usage, _driver will be None)
