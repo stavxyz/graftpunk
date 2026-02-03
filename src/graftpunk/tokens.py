@@ -7,7 +7,7 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import requests
 
@@ -284,7 +284,7 @@ def _run_browser_extraction(
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
-            return future.result()
+            return cast("dict[str, str]", future.result())
 
 
 def extract_token(session: requests.Session, token: Token, base_url: str) -> str:
