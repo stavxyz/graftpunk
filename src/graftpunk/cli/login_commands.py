@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import os
 from collections.abc import Callable
 from typing import Any
@@ -143,7 +144,16 @@ def create_login_command(
         try:
             with Status("Logging in...", console=gp_console.err_console):
                 if asyncio.iscoroutinefunction(login_method):
-                    result = asyncio.run(login_method(credentials))
+                    # Suppress asyncio "Loop ... is closed" warning that fires when
+                    # asyncio.run() closes the event loop while nodriver's subprocess
+                    # handlers are still pending. Harmless cleanup noise.
+                    asyncio_logger = logging.getLogger("asyncio")
+                    prev_level = asyncio_logger.level
+                    asyncio_logger.setLevel(logging.CRITICAL)
+                    try:
+                        result = asyncio.run(login_method(credentials))
+                    finally:
+                        asyncio_logger.setLevel(prev_level)
                 else:
                     result = login_method(credentials)
 

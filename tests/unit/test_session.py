@@ -1116,7 +1116,7 @@ class TestBrowserSessionContextManager:
 
     @pytest.mark.asyncio
     async def test_async_context_manager_starts_and_quits(self):
-        """'async with BrowserSession(...)' calls start_async and quit."""
+        """'async with BrowserSession(...)' calls start_async and _quit_async."""
         from graftpunk.session import BrowserSession
 
         with patch.object(BrowserSession, "__init__", return_value=None):
@@ -1128,7 +1128,7 @@ class TestBrowserSessionContextManager:
             session._observe_storage = None
             with (
                 patch.object(session, "start_async", new_callable=AsyncMock) as mock_start,
-                patch.object(session, "quit") as mock_quit,
+                patch.object(session, "_quit_async", new_callable=AsyncMock) as mock_quit,
             ):
                 async with session as s:
                     assert s is session
@@ -1137,7 +1137,7 @@ class TestBrowserSessionContextManager:
 
     @pytest.mark.asyncio
     async def test_async_context_manager_quits_on_exception(self):
-        """'async with BrowserSession(...)' calls quit() even when exception raised."""
+        """'async with BrowserSession(...)' calls _quit_async() even when exception raised."""
         from graftpunk.session import BrowserSession
 
         with patch.object(BrowserSession, "__init__", return_value=None):
@@ -1149,7 +1149,7 @@ class TestBrowserSessionContextManager:
             session._observe_storage = None
             with (
                 patch.object(session, "start_async", new_callable=AsyncMock),
-                patch.object(session, "quit") as mock_quit,
+                patch.object(session, "_quit_async", new_callable=AsyncMock) as mock_quit,
             ):
                 with pytest.raises(RuntimeError, match="test"):
                     async with session:

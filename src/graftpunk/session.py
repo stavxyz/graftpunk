@@ -423,7 +423,7 @@ class BrowserSession(requestium.Session):
         exc_tb: Any,
     ) -> None:
         await self._stop_observe_async(exc_type)
-        self.quit()
+        await self._quit_async()
 
     def quit(self) -> None:
         """Close the browser and clean up resources.
@@ -442,6 +442,37 @@ class BrowserSession(requestium.Session):
             LOG.info("stopping_nodriver_session")
             try:
                 backend_instance.stop()
+            except Exception as exc:
+                LOG.error(
+                    "error_stopping_nodriver_session", error=str(exc), exc_type=type(exc).__name__
+                )
+            self._backend_instance = None
+        elif hasattr(self, "_webdriver") and self._webdriver is not None:
+            LOG.info("stopping_selenium_session")
+            try:
+                self._webdriver.quit()
+            except Exception as exc:
+                LOG.error(
+                    "error_stopping_selenium_session", error=str(exc), exc_type=type(exc).__name__
+                )
+            self._webdriver = None
+
+    async def _quit_async(self) -> None:
+        """Async version of quit for use in ``__aexit__``.
+
+        Uses the backend's async stop path to avoid nested ``asyncio.run()``
+        errors when shutting down from within an existing event loop.
+        """
+        backend_instance = getattr(self, "_backend_instance", None)
+        backend_type = getattr(self, "_backend_type", "selenium")
+
+        if backend_type == "nodriver" and backend_instance is not None:
+            LOG.info("stopping_nodriver_session")
+            try:
+                if hasattr(backend_instance, "stop_async"):
+                    await backend_instance.stop_async()
+                else:
+                    backend_instance.stop()
             except Exception as exc:
                 LOG.error(
                     "error_stopping_nodriver_session", error=str(exc), exc_type=type(exc).__name__

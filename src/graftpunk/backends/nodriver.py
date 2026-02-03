@@ -28,7 +28,11 @@ Example:
 """
 
 import asyncio
+import io
+import logging
+import sys
 from collections.abc import Coroutine
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
@@ -40,6 +44,31 @@ if TYPE_CHECKING:
     import nodriver
 
 LOG = get_logger(__name__)
+
+
+@contextmanager
+def _suppress_nodriver_cleanup_noise():
+    """Suppress noisy stderr/stdout from nodriver and asyncio during browser cleanup.
+
+    nodriver prints "successfully removed temp profile ..." to stdout via ``print()``,
+    and Python's asyncio logs "Loop ... that handles pid ... is closed" at WARNING
+    level when the event loop closes while subprocess handlers are still pending.
+
+    Both are harmless cleanup messages that confuse users. This context manager
+    temporarily suppresses them.
+    """
+    asyncio_logger = logging.getLogger("asyncio")
+    prev_level = asyncio_logger.level
+    asyncio_logger.setLevel(logging.CRITICAL)
+
+    # Redirect stdout to suppress nodriver's print() calls during deconstruct()
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+        asyncio_logger.setLevel(prev_level)
 
 
 class NoDriverBackend:
@@ -82,6 +111,7 @@ class NoDriverBackend:
             "no such process",
             "event loop is closed",
             "target closed",
+            "cannot be used from within an async context",
         ]
     )
 
@@ -234,6 +264,22 @@ class NoDriverBackend:
             )
             raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
 
+    def _deregister_browser(self) -> None:
+        """Remove browser from nodriver's global instance registry.
+
+        nodriver registers an ``atexit`` handler that iterates all registered
+        browser instances to stop them and clean up temp profiles, printing
+        to stdout in the process. By removing our browser after we've already
+        stopped it, we prevent duplicate stop attempts and noisy output.
+        """
+        try:
+            from nodriver.core.util import get_registered_instances
+
+            instances = get_registered_instances()
+            instances.discard(self._browser)
+        except Exception:  # noqa: BLE001, S110 — best-effort cleanup
+            pass
+
     async def _stop_async(self) -> None:
         """Wrap browser stop for asyncio.run() compatibility.
 
@@ -250,6 +296,9 @@ class NoDriverBackend:
                     LOG.debug("nodriver_backend_stop_expected", error=str(exc))
                 else:
                     LOG.warning("nodriver_backend_stop_unexpected", error=str(exc))
+            # Remove browser from nodriver's global registry so the atexit
+            # handler doesn't re-stop it and print cleanup messages to stdout.
+            self._deregister_browser()
 
     def stop(self) -> None:
         """Stop the browser and release resources.
@@ -261,7 +310,33 @@ class NoDriverBackend:
 
         LOG.info("nodriver_backend_stopping")
         try:
-            self._run_async(self._stop_async())
+            with _suppress_nodriver_cleanup_noise():
+                self._run_async(self._stop_async())
+        except (RuntimeError, OSError) as exc:
+            if self._is_expected_stop_error(str(exc)):
+                LOG.debug("nodriver_backend_stop_expected", error=str(exc))
+            else:
+                LOG.warning("nodriver_backend_stop_unexpected", error=str(exc))
+        finally:
+            self._browser = None
+            self._page = None
+            self._started = False
+            LOG.info("nodriver_backend_stopped")
+
+    async def stop_async(self) -> None:
+        """Stop the browser from within an existing async event loop.
+
+        Use this instead of ``stop()`` when already running inside an event
+        loop (e.g., from ``BrowserSession.__aexit__``). Avoids the nested
+        ``asyncio.run()`` error that ``stop()`` would trigger.
+        """
+        if not self._started:
+            return
+
+        LOG.info("nodriver_backend_stopping")
+        try:
+            with _suppress_nodriver_cleanup_noise():
+                await self._stop_async()
         except (RuntimeError, OSError) as exc:
             if self._is_expected_stop_error(str(exc)):
                 LOG.debug("nodriver_backend_stop_expected", error=str(exc))
