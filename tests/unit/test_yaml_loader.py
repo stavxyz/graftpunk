@@ -53,51 +53,60 @@ class TestExpandEnvVars:
 class TestValidateYamlSchema:
     """Tests for YAML schema validation."""
 
-    def test_missing_site_name(self) -> None:
-        """Test that missing site_name raises error."""
-        data = {"commands": {"test": {"url": "/test"}}}
-        with pytest.raises(PluginError, match="missing required field 'site_name'"):
-            validate_yaml_schema(data, Path("test.yaml"))
+    def test_missing_site_name_passes_validation(self) -> None:
+        """Test that missing site_name passes schema validation.
+
+        site_name inference is handled by build_plugin_config, not validate_yaml_schema.
+        """
+        data: dict[str, object] = {"commands": {"test": {"url": "/test"}}}
+        # Should not raise -- site_name check is deferred to build_plugin_config
+        validate_yaml_schema(data, Path("test.yaml"))
 
     def test_empty_site_name(self) -> None:
         """Test that empty site_name raises error."""
-        data = {"site_name": "", "commands": {"test": {"url": "/test"}}}
+        data: dict[str, object] = {"site_name": "", "commands": {"test": {"url": "/test"}}}
         with pytest.raises(PluginError, match="must be a non-empty string"):
             validate_yaml_schema(data, Path("test.yaml"))
 
     def test_missing_commands(self) -> None:
         """Test that missing commands raises error."""
-        data = {"site_name": "test"}
+        data: dict[str, object] = {"site_name": "test"}
         with pytest.raises(PluginError, match="has no commands defined"):
             validate_yaml_schema(data, Path("test.yaml"))
 
     def test_empty_commands(self) -> None:
         """Test that empty commands dict raises error."""
-        data = {"site_name": "test", "commands": {}}
+        data: dict[str, object] = {"site_name": "test", "commands": {}}
         with pytest.raises(PluginError, match="has no commands defined"):
             validate_yaml_schema(data, Path("test.yaml"))
 
     def test_missing_url_in_command(self) -> None:
         """Test that command without url raises error."""
-        data = {"site_name": "test", "commands": {"test": {"method": "GET"}}}
+        data: dict[str, object] = {
+            "site_name": "test",
+            "commands": {"test": {"method": "GET"}},
+        }
         with pytest.raises(PluginError, match="missing 'url' field"):
             validate_yaml_schema(data, Path("test.yaml"))
 
     def test_invalid_method(self) -> None:
         """Test that invalid HTTP method raises error."""
-        data = {"site_name": "test", "commands": {"test": {"url": "/test", "method": "INVALID"}}}
+        data: dict[str, object] = {
+            "site_name": "test",
+            "commands": {"test": {"url": "/test", "method": "INVALID"}},
+        }
         with pytest.raises(PluginError, match="invalid method"):
             validate_yaml_schema(data, Path("test.yaml"))
 
     def test_valid_schema_minimal(self) -> None:
         """Test that minimal valid schema passes."""
-        data = {"site_name": "test", "commands": {"test": {"url": "/test"}}}
+        data: dict[str, object] = {"site_name": "test", "commands": {"test": {"url": "/test"}}}
         # Should not raise
         validate_yaml_schema(data, Path("test.yaml"))
 
     def test_valid_schema_full(self) -> None:
         """Test that full valid schema passes."""
-        data = {
+        data: dict[str, object] = {
             "site_name": "test",
             "session_name": "test_session",
             "help": "Test plugin",
@@ -123,7 +132,7 @@ class TestValidateYamlSchema:
 
     def test_param_without_name(self) -> None:
         """Test that param without name raises error."""
-        data = {
+        data: dict[str, object] = {
             "site_name": "test",
             "commands": {"test": {"url": "/test", "params": [{"type": "str"}]}},
         }
@@ -132,7 +141,7 @@ class TestValidateYamlSchema:
 
     def test_invalid_param_type(self) -> None:
         """Test that invalid param type raises error."""
-        data = {
+        data: dict[str, object] = {
             "site_name": "test",
             "commands": {"test": {"url": "/test", "params": [{"name": "x", "type": "invalid"}]}},
         }
@@ -154,18 +163,33 @@ commands:
         yaml_file = tmp_path / "httpbin.yaml"
         yaml_file.write_text(yaml_content)
 
-        plugin = parse_yaml_plugin(yaml_file)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
 
-        assert plugin.site_name == "httpbin"
-        assert plugin.session_name == "httpbin"  # defaults to site_name
-        assert plugin.help_text == "Commands for httpbin"
-        assert plugin.base_url == ""
-        assert plugin.headers == {}
-        assert len(plugin.commands) == 1
-        assert plugin.commands[0].name == "ip"
-        assert plugin.commands[0].url == "/ip"
-        assert plugin.commands[0].method == "GET"  # default
-        assert plugin.commands[0].jmespath is None
+        assert config.site_name == "httpbin"
+        assert config.session_name == "httpbin"  # defaults to site_name
+        assert config.help_text == "Commands for httpbin"
+        assert config.base_url == ""
+        assert headers == {}
+        assert len(commands) == 1
+        assert commands[0].name == "ip"
+        assert commands[0].url == "/ip"
+        assert commands[0].method == "GET"  # default
+        assert commands[0].jmespath is None
+
+    def test_parse_plugin_infers_site_name_from_filename(self, tmp_path: Path) -> None:
+        """Test that site_name is inferred from filename when not specified."""
+        yaml_content = """
+commands:
+  ip:
+    url: "/ip"
+"""
+        yaml_file = tmp_path / "httpbin.yaml"
+        yaml_file.write_text(yaml_content)
+
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+
+        assert config.site_name == "httpbin"
+        assert config.session_name == "httpbin"
 
     def test_parse_full_plugin(self, tmp_path: Path) -> None:
         """Test parsing a full YAML plugin with all options."""
@@ -201,31 +225,31 @@ commands:
         yaml_file = tmp_path / "myapi.yaml"
         yaml_file.write_text(yaml_content)
 
-        plugin = parse_yaml_plugin(yaml_file)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
 
-        assert plugin.site_name == "myapi"
-        assert plugin.session_name == "custom_session"
-        assert plugin.help_text == "My API commands"
-        assert plugin.base_url == "https://api.example.com"
-        assert plugin.headers == {"Authorization": "Bearer token", "X-Custom": "value"}
-        assert len(plugin.commands) == 3
+        assert config.site_name == "myapi"
+        assert config.session_name == "custom_session"
+        assert config.help_text == "My API commands"
+        assert config.base_url == "https://api.example.com"
+        assert headers == {"Authorization": "Bearer token", "X-Custom": "value"}
+        assert len(commands) == 3
 
         # Check user command with params
-        user_cmd = next(c for c in plugin.commands if c.name == "user")
+        user_cmd = next(c for c in commands if c.name == "user")
         assert user_cmd.method == "GET"
         assert user_cmd.url == "/users/{id}"
         assert len(user_cmd.params) == 1
-        assert user_cmd.params[0]["name"] == "id"
-        assert user_cmd.params[0]["type"] == "int"
-        assert user_cmd.params[0]["required"] is True
-        assert user_cmd.params[0]["is_option"] is False
+        assert user_cmd.params[0].name == "id"
+        assert user_cmd.params[0].type == "int"
+        assert user_cmd.params[0].required is True
+        assert user_cmd.params[0].is_option is False
 
         # Check create command
-        create_cmd = next(c for c in plugin.commands if c.name == "create")
+        create_cmd = next(c for c in commands if c.name == "create")
         assert create_cmd.method == "POST"
 
-    def test_parse_empty_session_name(self, tmp_path: Path) -> None:
-        """Test parsing plugin with empty session_name."""
+    def test_parse_empty_session_name_defaults_to_site_name(self, tmp_path: Path) -> None:
+        """Test that empty session_name defaults to site_name."""
         yaml_content = """
 site_name: httpbin
 session_name: ""
@@ -236,10 +260,29 @@ commands:
         yaml_file = tmp_path / "httpbin.yaml"
         yaml_file.write_text(yaml_content)
 
-        plugin = parse_yaml_plugin(yaml_file)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
 
-        assert plugin.site_name == "httpbin"
-        assert plugin.session_name == ""  # empty string means no session
+        assert config.site_name == "httpbin"
+        assert config.session_name == "httpbin"  # defaults to site_name
+        assert config.requires_session is True
+
+    def test_parse_requires_session_false(self, tmp_path: Path) -> None:
+        """Test that requires_session: false opts out of session loading."""
+        yaml_content = """
+site_name: httpbin
+requires_session: false
+commands:
+  ip:
+    url: "/ip"
+"""
+        yaml_file = tmp_path / "httpbin.yaml"
+        yaml_file.write_text(yaml_content)
+
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+
+        assert config.site_name == "httpbin"
+        assert config.session_name == "httpbin"  # still defaults
+        assert config.requires_session is False
 
     def test_parse_invalid_yaml(self, tmp_path: Path) -> None:
         """Test that invalid YAML raises PluginError."""
@@ -298,7 +341,7 @@ commands:
 
         result = discover_yaml_plugins()
         assert len(result.plugins) == 1
-        assert result.plugins[0].site_name == "testplugin"
+        assert result.plugins[0][0].site_name == "testplugin"
         assert result.errors == []
 
     def test_discover_multiple_plugins(self, isolated_config: Path) -> None:
@@ -318,7 +361,7 @@ commands:
 
         result = discover_yaml_plugins()
         assert len(result.plugins) == 3
-        site_names = {p.site_name for p in result.plugins}
+        site_names = {p[0].site_name for p in result.plugins}
         assert site_names == {"plugin1", "plugin2", "plugin3"}
         assert result.errors == []
 
@@ -335,8 +378,371 @@ commands:
         result = discover_yaml_plugins()
         # Only valid plugin should be loaded
         assert len(result.plugins) == 1
-        assert result.plugins[0].site_name == "valid"
+        assert result.plugins[0][0].site_name == "valid"
         # Error should be recorded for invalid plugin
         assert result.has_errors
         assert len(result.errors) == 1
         assert "invalid.yaml" in str(result.errors[0].filepath)
+
+
+class TestYAMLLoginBlock:
+    """Tests for YAML login block parsing."""
+
+    def test_parse_login_block(self, isolated_config: Path) -> None:
+        """Test parsing a YAML plugin with login block."""
+        yaml_content = """
+site_name: hn
+session_name: hackernews
+base_url: "https://news.ycombinator.com"
+backend: nodriver
+
+login:
+  url: /login
+  fields:
+    username: "input[name='acct']"
+    password: "input[name='pw']"
+  submit: "input[value='login']"
+  failure: "Bad login."
+
+commands:
+  front:
+    help: "Get front page"
+    url: "/news"
+"""
+        plugins_dir = isolated_config / "plugins"
+        plugins_dir.mkdir(exist_ok=True)
+        yaml_file = plugins_dir / "hn.yaml"
+        yaml_file.write_text(yaml_content)
+
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+
+        assert config.login_config is not None
+        assert config.login_config.url == "/login"
+        assert config.login_config.fields == {
+            "username": "input[name='acct']",
+            "password": "input[name='pw']",
+        }
+        assert config.login_config.submit == "input[value='login']"
+        assert config.login_config.failure == "Bad login."
+        assert config.login_config.success == ""
+        assert config.backend == "nodriver"
+
+    def test_parse_no_login_block(self, isolated_config: Path) -> None:
+        """Test parsing YAML without login block."""
+        yaml_content = """
+site_name: simple
+commands:
+  ping:
+    url: "/ping"
+"""
+        plugins_dir = isolated_config / "plugins"
+        plugins_dir.mkdir(exist_ok=True)
+        yaml_file = plugins_dir / "simple.yaml"
+        yaml_file.write_text(yaml_content)
+
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+        assert config.login_config is None
+        assert config.backend == "selenium"  # default
+
+    def test_parse_nested_login_block(self, tmp_path: Path) -> None:
+        """Nested login: block is flattened to login_url/login_fields/login_submit."""
+        yaml_content = """
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+  fields:
+    username: "#user"
+    password: "#pass"
+  submit: "#submit"
+  failure: "Bad login"
+commands:
+  cmd:
+    url: "/api"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+        assert config.login_config is not None
+        assert config.login_config.url == "/login"
+        assert config.login_config.fields == {"username": "#user", "password": "#pass"}
+        assert config.login_config.submit == "#submit"
+        assert config.login_config.failure == "Bad login"
+
+    def test_login_with_success_selector(self, tmp_path: Path) -> None:
+        """Login block with success selector is parsed correctly."""
+        yaml_content = """
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+  fields:
+    username: "input#email"
+    password: "input#pass"
+  submit: "button[type=submit]"
+  failure: "Invalid credentials"
+  success: ".dashboard"
+commands:
+  search:
+    url: "/api/search"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+        assert config.login_config is not None
+        assert config.login_config.url == "/login"
+        assert config.login_config.fields == {"username": "input#email", "password": "input#pass"}
+        assert config.login_config.submit == "button[type=submit]"
+        assert config.login_config.failure == "Invalid credentials"
+        assert config.login_config.success == ".dashboard"
+
+    def test_parse_flat_login_fields(self, tmp_path: Path) -> None:
+        """Flat login_url/login_fields work directly."""
+        yaml_content = """
+site_name: mysite
+base_url: "https://example.com"
+login_url: "/login"
+login_fields:
+  username: "#user"
+  password: "#pass"
+login_submit: "#submit"
+commands:
+  cmd:
+    url: "/api"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+        assert config.login_config is not None
+        assert config.login_config.url == "/login"
+        assert config.login_config.fields == {"username": "#user", "password": "#pass"}
+        assert config.login_config.submit == "#submit"
+
+
+class TestYAMLResourceLimits:
+    """Tests for resource limit fields on YAML commands."""
+
+    def test_command_with_timeout(self, tmp_path: Path) -> None:
+        """Test that timeout is parsed from YAML command definition."""
+        yaml_content = """
+site_name: test-site
+base_url: "https://example.com"
+commands:
+  slow:
+    url: "/api/slow"
+    timeout: 30
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+        assert commands[0].timeout == 30
+
+    def test_command_with_all_limits(self, tmp_path: Path) -> None:
+        """Test that all resource limit fields are parsed."""
+        yaml_content = """
+site_name: test-site
+base_url: "https://example.com"
+commands:
+  limited:
+    url: "/api/limited"
+    timeout: 60
+    max_retries: 3
+    rate_limit: 2.0
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+        assert commands[0].timeout == 60
+        assert commands[0].max_retries == 3
+        assert commands[0].rate_limit == 2.0
+
+    def test_command_defaults_no_limits(self, tmp_path: Path) -> None:
+        """Test that resource limits default correctly when not specified."""
+        yaml_content = """
+site_name: test-site
+base_url: "https://example.com"
+commands:
+  basic:
+    url: "/api/basic"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+        assert commands[0].timeout is None
+        assert commands[0].max_retries == 0
+        assert commands[0].rate_limit is None
+
+    def test_mixed_commands_some_with_limits(self, tmp_path: Path) -> None:
+        """Test that commands with and without limits coexist correctly."""
+        yaml_content = """
+site_name: test-site
+base_url: "https://example.com"
+commands:
+  fast:
+    url: "/api/fast"
+  slow:
+    url: "/api/slow"
+    timeout: 120
+    max_retries: 5
+    rate_limit: 0.5
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+
+        fast_cmd = next(c for c in commands if c.name == "fast")
+        assert fast_cmd.timeout is None
+        assert fast_cmd.max_retries == 0
+        assert fast_cmd.rate_limit is None
+
+        slow_cmd = next(c for c in commands if c.name == "slow")
+        assert slow_cmd.timeout == 120
+        assert slow_cmd.max_retries == 5
+        assert slow_cmd.rate_limit == 0.5
+
+
+class TestYAMLTokenConfig:
+    """Tests for YAML token config parsing."""
+
+    def test_parse_tokens_from_yaml(self, tmp_path: Path) -> None:
+        """tokens: block in YAML produces TokenConfig on PluginConfig."""
+        yaml_content = """
+site_name: testsite
+base_url: https://example.com
+commands:
+  test:
+    url: /api/test
+    help: "Test command"
+tokens:
+  - name: X-CSRF-Token
+    source: page
+    pattern: 'csrf_token\\s*=\\s*"([^"]+)"'
+    page_url: /
+    cache_duration: 600
+  - name: X-CSRFToken
+    source: cookie
+    cookie_name: csrftoken
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+
+        assert config.token_config is not None
+        assert len(config.token_config.tokens) == 2
+
+        csrf_token = config.token_config.tokens[0]
+        assert csrf_token.name == "X-CSRF-Token"
+        assert csrf_token.source == "page"
+        assert csrf_token.pattern == 'csrf_token\\s*=\\s*"([^"]+)"'
+        assert csrf_token.page_url == "/"
+        assert csrf_token.cache_duration == 600
+
+        cookie_token = config.token_config.tokens[1]
+        assert cookie_token.name == "X-CSRFToken"
+        assert cookie_token.source == "cookie"
+        assert cookie_token.cookie_name == "csrftoken"
+
+    def test_parse_tokens_page_source(self, tmp_path: Path) -> None:
+        """Token with source=page and pattern is parsed correctly."""
+        yaml_content = """
+site_name: testsite
+base_url: https://example.com
+commands:
+  test:
+    url: /api/test
+tokens:
+  - name: X-Token
+    source: page
+    pattern: 'token="([^"]+)"'
+    page_url: /dashboard
+    cache_duration: 120
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+
+        assert config.token_config is not None
+        token = config.token_config.tokens[0]
+        assert token.name == "X-Token"
+        assert token.source == "page"
+        assert token.pattern == 'token="([^"]+)"'
+        assert token.page_url == "/dashboard"
+        assert token.cache_duration == 120
+
+    def test_parse_tokens_cookie_source(self, tmp_path: Path) -> None:
+        """Token with source=cookie and cookie_name is parsed correctly."""
+        yaml_content = """
+site_name: testsite
+base_url: https://example.com
+commands:
+  test:
+    url: /api/test
+tokens:
+  - name: X-CSRFToken
+    source: cookie
+    cookie_name: csrftoken
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+
+        assert config.token_config is not None
+        token = config.token_config.tokens[0]
+        assert token.name == "X-CSRFToken"
+        assert token.source == "cookie"
+        assert token.cookie_name == "csrftoken"
+        assert token.cache_duration == 300  # default
+
+    def test_parse_tokens_invalid_not_list(self, tmp_path: Path) -> None:
+        """tokens: as non-list raises PluginError."""
+        yaml_content = """
+site_name: testsite
+base_url: https://example.com
+commands:
+  test:
+    url: /api/test
+tokens:
+  name: X-Token
+  source: page
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+
+        with pytest.raises(PluginError, match="'tokens' must be a list"):
+            parse_yaml_plugin(yaml_file)
+
+    def test_parse_tokens_missing_name(self, tmp_path: Path) -> None:
+        """Token without name field raises PluginError."""
+        yaml_content = """
+site_name: testsite
+base_url: https://example.com
+commands:
+  test:
+    url: /api/test
+tokens:
+  - source: cookie
+    cookie_name: csrftoken
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+
+        with pytest.raises(PluginError, match="missing required field"):
+            parse_yaml_plugin(yaml_file)
+
+    def test_no_tokens_block_is_none(self, tmp_path: Path) -> None:
+        """No tokens: block means token_config is None."""
+        yaml_content = """
+site_name: testsite
+base_url: https://example.com
+commands:
+  test:
+    url: /api/test
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+
+        config, commands, headers = parse_yaml_plugin(yaml_file)
+        assert config.token_config is None

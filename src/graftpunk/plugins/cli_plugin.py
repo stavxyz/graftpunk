@@ -11,8 +11,8 @@ Example Python plugin:
         session_name = "mybank"
 
         @command(help="List accounts")
-        def accounts(self, session):
-            return session.get("https://mybank.com/api/accounts").json()
+        def accounts(self, ctx: CommandContext):
+            return ctx.session.get("https://mybank.com/api/accounts").json()
 
 Example YAML plugin (in ~/.config/graftpunk/plugins/mybank.yaml):
     site_name: mybank
@@ -23,21 +23,35 @@ Example YAML plugin (in ~/.config/graftpunk/plugins/mybank.yaml):
         url: "https://mybank.com/api/accounts"
 """
 
-from collections.abc import Callable
+from __future__ import annotations
+
+import dataclasses
+import inspect
+import re
+import sys
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from functools import wraps
-from typing import Any, Protocol, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import requests
 
+if TYPE_CHECKING:
+    from graftpunk.tokens import TokenConfig
+
 from graftpunk.cache import load_session_for_api
+from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
+from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
 
 LOG = get_logger(__name__)
 
+SUPPORTED_API_VERSIONS: frozenset[int] = frozenset({1})
 
-@dataclass
-class ParamSpec:
+
+@dataclass(frozen=True)
+class PluginParamSpec:
     """Specification for a command parameter."""
 
     name: str
@@ -47,15 +61,250 @@ class ParamSpec:
     help_text: str = ""
     is_option: bool = True  # True = --flag, False = positional argument
 
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("PluginParamSpec.name must be non-empty")
+        if self.param_type not in (str, int, float, bool):
+            raise ValueError(
+                f"Unsupported param_type: {self.param_type}. Must be str, int, float, or bool"
+            )
+        if self.required and self.default is not None:
+            raise ValueError(
+                f"PluginParamSpec '{self.name}': "
+                f"required=True is incompatible with a non-None default"
+            )
+
+
+@dataclass(frozen=True)
+class CommandGroupMeta:
+    """Metadata stored on @command-decorated classes (command groups)."""
+
+    name: str
+    help_text: str
+    parent: type | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("CommandGroupMeta.name must be non-empty")
+
+
+@dataclass(frozen=True)
+class CommandMetadata:
+    """Metadata stored on @command-decorated methods."""
+
+    name: str
+    help_text: str
+    params: tuple[PluginParamSpec, ...] = ()
+    parent: type | None = None
+    requires_session: bool | None = None
+    saves_session: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("CommandMetadata.name must be non-empty")
+
 
 @dataclass
+class CommandContext:
+    """Execution context passed to command handlers."""
+
+    session: requests.Session
+    plugin_name: str
+    command_name: str
+    api_version: int
+    base_url: str = ""
+    config: PluginConfig | None = None
+    observe: ObservabilityContext = field(default_factory=NoOpObservabilityContext)
+    _session_name: str = field(default="", repr=False)
+    _session_dirty: bool = field(default=False, repr=False, init=False)
+
+    def __post_init__(self) -> None:
+        if self.api_version not in SUPPORTED_API_VERSIONS:
+            raise ValueError(
+                f"api_version {self.api_version} not supported. "
+                f"Supported: {sorted(SUPPORTED_API_VERSIONS)}"
+            )
+        if not self.plugin_name:
+            raise ValueError("plugin_name must be non-empty")
+        if not self.command_name:
+            raise ValueError("command_name must be non-empty")
+
+    def save_session(self) -> None:
+        """Mark the session as dirty so it will be persisted after command execution.
+
+        Raises:
+            ValueError: If no session name is configured on this context.
+        """
+        if not self._session_name:
+            raise ValueError("No session name configured on this CommandContext")
+        self._session_dirty = True
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """Structured return type for command handlers.
+
+    Allows handlers to return data with optional metadata (pagination, status)
+    and format hints. Handlers can still return raw data -- this is not required.
+    """
+
+    data: Any
+    metadata: dict[str, Any] = field(default_factory=dict)
+    format_hint: Literal["json", "table", "raw"] | None = None
+
+
+@dataclass(frozen=True)
 class CommandSpec:
     """Specification for a single CLI command."""
 
     name: str
     handler: Callable[..., Any]
     help_text: str = ""
-    params: list[ParamSpec] = field(default_factory=list)
+    params: tuple[PluginParamSpec, ...] = ()
+    timeout: float | None = None
+    max_retries: int = 0
+    rate_limit: float | None = None
+    requires_session: bool | None = None
+    group: str | None = None
+    saves_session: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("CommandSpec.name must be non-empty")
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
+        if self.timeout is not None and self.timeout <= 0:
+            raise ValueError("timeout must be positive when set")
+        if self.rate_limit is not None and self.rate_limit <= 0:
+            raise ValueError("rate_limit must be positive when set")
+
+
+@dataclass(frozen=True)
+class LoginConfig:
+    """Declarative browser-automated login configuration.
+
+    All three required fields (url, fields, submit) must be non-empty.
+    """
+
+    url: str
+    fields: dict[str, str]
+    submit: str
+    failure: str = ""
+    success: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.url:
+            raise ValueError("LoginConfig.url must be non-empty")
+        if not self.fields:
+            raise ValueError("LoginConfig.fields must be non-empty")
+        if not self.submit:
+            raise ValueError("LoginConfig.submit must be non-empty")
+        # Defensive copy: prevent external mutation of fields dict
+        object.__setattr__(self, "fields", dict(self.fields))
+
+
+@dataclass(frozen=True)
+class PluginConfig:
+    """Canonical plugin configuration produced by both YAML and Python paths.
+
+    Use build_plugin_config() to create instances with proper defaulting
+    and validation instead of constructing directly.
+    """
+
+    site_name: str
+    session_name: str
+    help_text: str
+    base_url: str = ""
+    requires_session: bool = True
+    backend: Literal["selenium", "nodriver"] = "selenium"
+    api_version: int = 1
+    username_envvar: str = ""
+    password_envvar: str = ""
+    login_config: LoginConfig | None = None
+    token_config: TokenConfig | None = None
+    plugin_version: str = ""
+    plugin_author: str = ""
+    plugin_url: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.site_name:
+            raise ValueError("site_name must be non-empty")
+        if not self.session_name:
+            raise ValueError("session_name must be non-empty")
+        if self.api_version not in SUPPORTED_API_VERSIONS:
+            raise ValueError(
+                f"api_version {self.api_version} not supported. "
+                f"Supported: {sorted(SUPPORTED_API_VERSIONS)}"
+            )
+
+
+def build_plugin_config(**raw: Any) -> PluginConfig:
+    """Build a PluginConfig with shared defaulting and validation.
+
+    Accepts arbitrary kwargs, filters to known PluginConfig fields,
+    applies defaults (site_name inference, session_name, help_text),
+    and validates.
+
+    Args:
+        **raw: Plugin configuration values. Unknown keys are ignored.
+
+    Returns:
+        Validated PluginConfig.
+
+    Raises:
+        PluginError: If site_name cannot be determined.
+    """
+    from graftpunk.plugins import infer_site_name
+
+    # Pop flat login fields (no longer PluginConfig fields)
+    login_config = raw.pop("login_config", raw.pop("login", None))
+    login_url = raw.pop("login_url", "")
+    login_fields_val = raw.pop("login_fields", {})
+    login_submit = raw.pop("login_submit", "")
+    login_failure = raw.pop("login_failure", "")
+    login_success = raw.pop("login_success", "")
+
+    # Filter to known fields
+    known_fields = {f.name for f in dataclasses.fields(PluginConfig)}
+    filtered = {k: v for k, v in raw.items() if k in known_fields}
+
+    # Auto-construct LoginConfig from flat fields if not already provided
+    if login_config is None and login_url and login_fields_val and login_submit:
+        login_config = LoginConfig(
+            url=login_url,
+            fields=login_fields_val,
+            submit=login_submit,
+            failure=login_failure,
+            success=login_success,
+        )
+    filtered["login_config"] = login_config
+
+    # Infer site_name: explicit → base_url domain → filename stem
+    source_filepath = raw.pop("source_filepath", None)
+    site_name = filtered.get("site_name")
+    if not site_name:
+        base_url = filtered.get("base_url")
+        if base_url:
+            site_name = infer_site_name(base_url)
+    if not site_name and source_filepath:
+        site_name = Path(source_filepath).stem.strip()
+    if not site_name:
+        raise PluginError(
+            "Plugin missing 'site_name'. Set site_name explicitly, "
+            "provide base_url to auto-infer from domain, "
+            "or name the YAML file after the site."
+        )
+    filtered["site_name"] = site_name
+
+    # Default session_name to site_name
+    if not filtered.get("session_name"):
+        filtered["session_name"] = site_name
+
+    # Default help_text
+    if not filtered.get("help_text"):
+        filtered["help_text"] = f"Commands for {site_name}"
+
+    return PluginConfig(**filtered)
 
 
 @runtime_checkable
@@ -77,7 +326,28 @@ class CLIPluginProtocol(Protocol):
         """Help text for the plugin's command group."""
         ...
 
-    def get_commands(self) -> dict[str, CommandSpec]:
+    @property
+    def api_version(self) -> int: ...
+
+    @property
+    def backend(self) -> Literal["selenium", "nodriver"]: ...
+
+    @property
+    def login_config(self) -> LoginConfig | None: ...
+
+    @property
+    def username_envvar(self) -> str: ...
+
+    @property
+    def password_envvar(self) -> str: ...
+
+    @property
+    def token_config(self) -> TokenConfig | None: ...
+
+    @property
+    def requires_session(self) -> bool: ...
+
+    def get_commands(self) -> list[CommandSpec]:
         """Return all commands defined by this plugin."""
         ...
 
@@ -85,33 +355,90 @@ class CLIPluginProtocol(Protocol):
         """Load the graftpunk session for API calls."""
         ...
 
+    def setup(self) -> None: ...
+
+    def teardown(self) -> None: ...
+
+
+def _to_cli_name(name: str) -> str:
+    """Convert PythonName to cli-name (CamelCase to kebab-case, underscores to hyphens).
+
+    Args:
+        name: Python identifier (e.g. "AccountStatements" or "account_statements").
+
+    Returns:
+        CLI-friendly name (e.g. "account-statements").
+    """
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", name)
+    return s.lower().replace("_", "-")
+
 
 def command(
     help: str = "",  # noqa: A002 - shadows builtin but matches typer convention
-    params: list[ParamSpec] | None = None,
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Decorator to mark a method as a CLI command.
+    params: list[PluginParamSpec] | None = None,
+    parent: type | None = None,
+    requires_session: bool | None = None,
+    saves_session: bool = False,
+) -> Callable[..., Any]:
+    """Decorator to mark a function as a CLI command or a class as a command group.
+
+    When applied to a function, stores CommandMetadata on the function.
+    When applied to a class, stores CommandGroupMeta on the class and
+    auto-discovers non-underscore methods as subcommands.
 
     Args:
-        help: Help text for the command.
-        params: Optional list of parameter specifications.
+        help: Help text for the command or group.
+        params: Optional list of parameter specifications (functions only).
+        parent: Parent command group class for nesting (optional).
+        requires_session: Override plugin-level requires_session (functions only).
+            None means inherit from the plugin.
 
-    Example:
+    Example (function):
         @command(help="List all accounts")
-        def accounts(self, session: requests.Session) -> dict:
-            return session.get("https://api.example.com/accounts").json()
+        def accounts(self, ctx: CommandContext) -> dict:
+            return ctx.session.get("https://api.example.com/accounts").json()
+
+    Example (class / command group):
+        @command(help="Account management")
+        class Accounts:
+            @command(help="List statements")
+            def statements(self, ctx: CommandContext) -> dict:
+                ...
     """
 
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            return func(*args, **kwargs)
-
-        # Store metadata on the function
-        wrapper._is_cli_command = True  # type: ignore[attr-defined]
-        wrapper._help_text = help  # type: ignore[attr-defined]
-        wrapper._params = params or []  # type: ignore[attr-defined]
-        return wrapper
+    def decorator(target: Any) -> Any:
+        if isinstance(target, type):
+            # Class -> command group
+            target._command_group_meta = CommandGroupMeta(
+                name=_to_cli_name(target.__name__),
+                help_text=help,
+                parent=parent,
+            )
+            # Auto-discover methods: attach default metadata to non-underscore callables
+            for attr_name in list(vars(target)):
+                if attr_name.startswith("_"):
+                    continue
+                attr = getattr(target, attr_name, None)
+                if callable(attr) and not hasattr(attr, "_command_meta"):
+                    attr._command_meta = CommandMetadata(
+                        name=attr_name,
+                        help_text="",
+                        params=(),
+                        parent=None,
+                        requires_session=None,
+                    )
+            return target
+        else:
+            # Function -> command (existing behavior + parent)
+            target._command_meta = CommandMetadata(
+                name=target.__name__,
+                help_text=help,
+                params=tuple(params) if params else (),
+                parent=parent,
+                requires_session=requires_session,
+                saves_session=saves_session,
+            )
+            return target
 
     return decorator
 
@@ -120,8 +447,8 @@ class SitePlugin:
     """Base class for Python-based site plugins.
 
     Subclass this and use the @command decorator to define commands.
-    Commands receive a requests.Session with cookies/headers pre-loaded
-    from the cached graftpunk session.
+    Commands receive a CommandContext with a requests.Session (cookies/headers
+    pre-loaded from the cached graftpunk session) plus plugin metadata.
 
     Example:
         class MyBankPlugin(SitePlugin):
@@ -130,34 +457,320 @@ class SitePlugin:
             help_text = "Commands for MyBank API"
 
             @command(help="List accounts")
-            def accounts(self, session: requests.Session) -> dict:
-                return session.get("https://mybank.com/api/accounts").json()
+            def accounts(self, ctx: CommandContext) -> dict:
+                return ctx.session.get("https://mybank.com/api/accounts").json()
 
             @command(help="Get statements")
-            def statements(self, session: requests.Session, month: str) -> dict:
-                return session.get(f"https://mybank.com/api/statements/{month}").json()
+            def statements(self, ctx: CommandContext, month: str) -> dict:
+                return ctx.session.get(f"https://mybank.com/api/statements/{month}").json()
     """
 
     site_name: str = ""
     session_name: str = ""
     help_text: str = ""
+    requires_session: bool = True
+    api_version: int = 1
+    username_envvar: str = ""
+    password_envvar: str = ""
 
-    def get_commands(self) -> dict[str, CommandSpec]:
-        """Discover all @command decorated methods."""
-        commands: dict[str, CommandSpec] = {}
+    # Declarative login configuration
+    base_url: str = ""
+    backend: Literal["selenium", "nodriver"] = "selenium"
+    login_config: LoginConfig | None = None
+    token_config: TokenConfig | None = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Apply shared defaults and store canonical config.
+
+        Calls build_plugin_config() to handle site_name inference,
+        session_name defaulting, help_text generation, and validation.
+        Writes inferred values back to class attributes.
+
+        If configuration is incomplete (no site_name or base_url),
+        the error is suppressed -- validation occurs at registration time.
+        """
+        super().__init_subclass__(**kwargs)
+
+        # Auto-construct LoginConfig from flat attrs if present
+        flat_login_url = cls.__dict__.get("login_url", "")
+        flat_login_fields = getattr(cls, "login_fields", None)
+        flat_login_submit = cls.__dict__.get("login_submit", "")
+        if flat_login_url and flat_login_fields and flat_login_submit:
+            # Copy inherited login_fields to avoid shared mutable state
+            if "login_fields" not in cls.__dict__:
+                flat_login_fields = dict(flat_login_fields)
+            cls.login_config = LoginConfig(
+                url=flat_login_url,
+                fields=dict(flat_login_fields),  # fresh copy
+                submit=flat_login_submit,
+                failure=cls.__dict__.get("login_failure", ""),
+                success=cls.__dict__.get("login_success", ""),
+            )
+
+        # Extract non-private, non-callable class attributes
+        raw = {
+            k: v
+            for k, v in cls.__dict__.items()
+            if not k.startswith("_")
+            and not callable(v)
+            and not isinstance(v, (classmethod, staticmethod, property))
+        }
+
+        # Build config (may fail for incomplete plugins -- that's OK,
+        # they'll be caught at registration time)
+        try:
+            cls._plugin_config = build_plugin_config(**raw)
+            # Write back inferred/defaulted values
+            cls.site_name = cls._plugin_config.site_name
+            cls.session_name = cls._plugin_config.session_name
+            cls.help_text = cls._plugin_config.help_text
+        except PluginError as exc:
+            cls._plugin_config_error = exc
+            LOG.warning("plugin_config_deferred", class_name=cls.__name__, error=str(exc))
+
+    def setup(self) -> None:
+        """Called once after the plugin is registered successfully.
+
+        Override to perform initialization (validate config, open connections,
+        warm caches). Exceptions here are caught and reported as registration
+        errors — the plugin is skipped but other plugins continue.
+        """
+
+    def teardown(self) -> None:
+        """Called during application shutdown.
+
+        Override to clean up resources (close connections, flush buffers).
+        Exceptions here are logged but do not propagate — all plugins
+        get their teardown called regardless of individual failures.
+        """
+
+    def _resolve_params(self, meta: CommandMetadata, handler: Any) -> tuple[PluginParamSpec, ...]:
+        """Return explicit params from metadata, or auto-discover from handler signature."""
+        return meta.params if meta.params else tuple(self._introspect_params(handler))
+
+    def _build_command_spec(
+        self,
+        meta: CommandMetadata,
+        handler: Any,
+        group: str | None = None,
+    ) -> CommandSpec:
+        """Build a CommandSpec from metadata and a handler callable."""
+        return CommandSpec(
+            name=meta.name,
+            handler=handler,
+            help_text=meta.help_text,
+            params=self._resolve_params(meta, handler),
+            requires_session=meta.requires_session,
+            group=group,
+            saves_session=meta.saves_session,
+        )
+
+    def get_commands(self) -> list[CommandSpec]:
+        """Discover all @command decorated methods and command groups."""
+        commands: list[CommandSpec] = []
+
+        # 1. Discover @command-decorated methods on self (group=None, no parent)
         for attr_name in dir(self):
             if attr_name.startswith("_"):
                 continue
             attr = getattr(self, attr_name)
-            if callable(attr) and getattr(attr, "_is_cli_command", False):
-                commands[attr_name] = CommandSpec(
-                    name=attr_name,
-                    handler=attr,
-                    help_text=getattr(attr, "_help_text", ""),
-                    params=getattr(attr, "_params", []),
-                )
+            meta: CommandMetadata | None = getattr(attr, "_command_meta", None)
+            if callable(attr) and meta is not None and meta.parent is None:
+                commands.append(self._build_command_spec(meta, attr))
+
+        # 2. Discover command groups from the module where this plugin is defined
+        commands.extend(self._discover_command_groups())
+
         return commands
 
+    def _discover_command_groups(self) -> list[CommandSpec]:
+        """Walk @command-decorated classes in this plugin's module and produce CommandSpecs."""
+        plugin_module = sys.modules.get(type(self).__module__)
+        if plugin_module is None:
+            return []
+
+        # Find all command group classes in the module
+        group_classes: dict[type, CommandGroupMeta] = {}
+        for _name, obj in inspect.getmembers(plugin_module, inspect.isclass):
+            meta = getattr(obj, "_command_group_meta", None)
+            if meta is not None:
+                group_classes[obj] = meta
+
+        if not group_classes:
+            return []
+
+        # Build group path map: class -> dotted path
+        group_paths: dict[type, str] = {}
+
+        def resolve_path(cls: type) -> str:
+            if cls in group_paths:
+                return group_paths[cls]
+            meta = group_classes[cls]
+            if meta.parent is not None and meta.parent in group_classes:
+                parent_path = resolve_path(meta.parent)
+                group_paths[cls] = f"{parent_path}.{meta.name}"
+            else:
+                group_paths[cls] = meta.name
+            return group_paths[cls]
+
+        for cls in group_classes:
+            resolve_path(cls)
+
+        # Produce CommandSpecs from group methods
+        commands: list[CommandSpec] = []
+        for cls in group_classes:
+            instance = cls()
+            group_path = group_paths[cls]
+            for method_name in vars(cls):
+                if method_name.startswith("_"):
+                    continue
+                method = getattr(instance, method_name, None)
+                if method is None or not callable(method):
+                    continue
+                method_meta: CommandMetadata | None = getattr(method, "_command_meta", None)
+                if method_meta is None:
+                    continue
+                commands.append(self._build_command_spec(method_meta, method, group=group_path))
+
+        # Also handle functions with parent= references
+        for _name, obj in inspect.getmembers(plugin_module, inspect.isfunction):
+            func_meta: CommandMetadata | None = getattr(obj, "_command_meta", None)
+            if (
+                func_meta is not None
+                and func_meta.parent is not None
+                and func_meta.parent in group_classes
+            ):
+                parent_path = group_paths[func_meta.parent]
+                commands.append(self._build_command_spec(func_meta, obj, group=parent_path))
+
+        return commands
+
+    def _introspect_params(self, method: Any) -> list[PluginParamSpec]:
+        """Extract CLI params from method signature and type hints.
+
+        Args:
+            method: The method to introspect.
+
+        Returns:
+            List of PluginParamSpec from the method's parameters.
+        """
+        params: list[PluginParamSpec] = []
+        sig = inspect.signature(method)
+
+        for name, param in sig.parameters.items():
+            # Skip self and ctx (injected by framework)
+            if name in ("self", "ctx"):
+                continue
+
+            # Determine type (use actual type object, not string)
+            param_type: type = str
+            if param.annotation != inspect.Parameter.empty and param.annotation in (
+                int,
+                float,
+                bool,
+                str,
+            ):
+                param_type = param.annotation
+
+            # Determine if required and default
+            has_default = param.default != inspect.Parameter.empty
+            default = param.default if has_default else None
+            required = not has_default
+
+            params.append(
+                PluginParamSpec(
+                    name=name,
+                    param_type=param_type,
+                    required=required,
+                    default=default,
+                    help_text="",
+                    is_option=True,
+                )
+            )
+
+        return params
+
+    @asynccontextmanager
+    async def browser_session(self) -> AsyncIterator[tuple[Any, Any]]:
+        """Async context manager for nodriver browser sessions.
+
+        Handles browser creation, startup, cookie transfer, caching, and cleanup.
+        On success (no exception), transfers cookies and caches session.
+        On exception, quits browser without caching.
+
+        Usage:
+            async with self.browser_session() as (session, tab):
+                # tab is already at self.base_url/
+                await tab.get(f"{self.base_url}/login")
+                # ... custom login logic ...
+        """
+        from graftpunk import BrowserSession, cache_session
+
+        session = BrowserSession(backend="nodriver", headless=False)
+        await session.start_async()
+        tab = await session.driver.get(f"{self.base_url}/")
+        try:
+            yield session, tab
+            # Capture current URL before caching (used for domain display)
+            try:
+                session.current_url = getattr(tab, "url", "") or f"{self.base_url}/"
+            except Exception:  # noqa: BLE001
+                session.current_url = f"{self.base_url}/"
+            # Success path: transfer cookies and cache
+            await session.transfer_nodriver_cookies_to_session()
+            cache_session(session, self.session_name)
+        finally:
+            try:
+                session.driver.stop()
+            except Exception as cleanup_exc:
+                LOG.exception("browser_session_cleanup_failed", error=str(cleanup_exc))
+
+    @contextmanager
+    def browser_session_sync(self) -> Iterator[tuple[Any, Any]]:
+        """Sync context manager for selenium browser sessions.
+
+        Handles browser creation, cookie transfer, caching, and cleanup.
+        On success (no exception), transfers cookies and caches session.
+        On exception, quits browser without caching.
+
+        Note: Unlike browser_session(), this does not navigate to base_url
+        before yielding. The caller must navigate manually.
+
+        Usage:
+            with self.browser_session_sync() as (session, driver):
+                driver.get(f"{self.base_url}/login")
+                # ... custom login logic ...
+        """
+        from graftpunk import BrowserSession, cache_session
+
+        session = BrowserSession(backend="selenium", headless=False)
+        try:
+            yield session, session.driver
+            # Capture current URL before caching (used for domain display)
+            try:
+                session.current_url = session.driver.current_url
+            except Exception:  # noqa: BLE001
+                session.current_url = f"{self.base_url}/"
+            # Success path: transfer cookies and cache
+            session.transfer_driver_cookies_to_session()
+            cache_session(session, self.session_name)
+        finally:
+            try:
+                session.quit()
+            except Exception as cleanup_exc:
+                LOG.exception("browser_session_cleanup_failed", error=str(cleanup_exc))
+
     def get_session(self) -> requests.Session:
-        """Load the graftpunk session for API calls."""
+        """Load the graftpunk session for API calls.
+
+        If requires_session is False, returns a plain requests.Session.
+        """
+        if not self.requires_session:
+            return requests.Session()
         return load_session_for_api(self.session_name)
+
+
+def has_declarative_login(plugin: CLIPluginProtocol) -> bool:
+    """Check if a plugin has declarative login configuration."""
+    login = getattr(plugin, "login_config", None)
+    return login is not None and isinstance(login, LoginConfig)

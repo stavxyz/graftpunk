@@ -44,6 +44,7 @@ dependencies = [
     "pyotp>=2.9.0",
     "pyyaml>=6.0",
     "nodriver>=0.48",
+    "brotli>=1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -81,10 +82,10 @@ local = "graftpunk.storage.local:LocalSessionStorage"
 # Site-specific handlers register themselves via entry points
 
 [project.entry-points."graftpunk.plugins"]
-# Site authentication plugins register themselves via entry points
+# Site plugins (authentication and CLI commands) register themselves via entry points
 
-[project.entry-points."graftpunk.cli_plugins"]
-# CLI command plugins register themselves via entry points
+[project.entry-points."graftpunk.formatters"]
+# Custom output formatters register themselves via entry points
 
 [project.urls]
 Homepage = "https://github.com/stavxyz/graftpunk"
@@ -113,6 +114,7 @@ python-version = "3.11"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-v", "--strict-markers", "--tb=short"]
+asyncio_mode = "auto"
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",
@@ -127,4 +129,9 @@ exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
+]
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=1.3.0",
 ]

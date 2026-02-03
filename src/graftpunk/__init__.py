@@ -30,6 +30,7 @@ from graftpunk.cache import (
     load_session,
     load_session_for_api,
     update_session_status,
+    validate_session_name,
 )
 from graftpunk.config import GraftpunkSettings, get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data, get_encryption_key
@@ -66,6 +67,7 @@ __all__ = [
     "clear_session_cache",
     "get_session_metadata",
     "update_session_status",
+    "validate_session_name",
     # Encryption
     "encrypt_data",
     "decrypt_data",

@@ -7,6 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Plugin Interface v1**: Full command framework for building CLI tools on top of authenticated sessions
+  - `SitePlugin` base class with `@command` decorator for defining CLI commands
+  - `CommandContext` dataclass injected into handlers with session, plugin metadata, and observability
+  - `CommandSpec` with per-command `timeout`, `max_retries`, and `rate_limit` enforcement
+  - `CommandResult` with `format_hint` for plugin-controlled output formatting
+  - `CommandError` exception for user-facing error messages without tracebacks
+  - `CLIPluginProtocol` runtime-checkable structural typing contract
+  - `api_version` field for forward-compatible plugin interface negotiation
+  - Command groups with `parent=` nesting via `@command` decorator on classes
+  - `setup()` / `teardown()` lifecycle hooks
+  - Async handler auto-detection (with deprecation warning for v1)
+
+- **Declarative Login Engine**: Define login flows with CSS selectors instead of writing automation code
+  - `LoginConfig` frozen dataclass: `url`, `fields`, `submit`, `failure`, `success`
+  - Auto-generates `gp <plugin> login` CLI command from declarative config
+  - Generates sync (Selenium) or async (NoDriver) login functions automatically
+  - Supports flat class attributes (`login_url`, `login_fields`, etc.) for ergonomics
+  - YAML `login:` block with the same capabilities
+  - Customizable credential environment variable names per plugin
+  - Interactive prompts with masked input for password fields
+
+- **Browser Header Replay**: Requests look like they came from Chrome, not Python
+  - `GraftpunkSession` subclass of `requests.Session` with browser header profiles
+  - Captures real browser headers during login via CDP network events
+  - Classifies headers into navigation, XHR, and form profiles
+  - `load_session_for_api()` returns `GraftpunkSession` with XHR profile pre-loaded
+  - Brotli support (`Accept-Encoding: gzip, deflate, br`)
+
+- **Token and CSRF Support**: Declarative token extraction and auto-injection
+  - `Token` and `TokenConfig` types for declarative token definitions
+  - Extract tokens from cookies, response headers, or page content (regex)
+  - Auto-inject tokens into request headers before each command
+  - Auto-retry with fresh tokens on 403 responses
+  - YAML `tokens:` block for declarative configuration
+
+- **Ad-hoc HTTP Requests** (`gp http`): Make authenticated requests without writing a plugin
+  - Supports all HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`
+  - Uses `GraftpunkSession` with full browser header replay
+
+- **Observability System**: Capture browser activity for debugging and auditing
+  - `ObservabilityContext` with `mark()`, `screenshot()`, `log()` methods
+  - `gp observe go` — open authenticated browser and capture network traffic
+  - Full network capture with request/response bodies and console logs
+  - HAR file generation with disk-streamed body support
+  - Screenshot capture (Selenium backend)
+  - `NoOpObservabilityContext` for zero-overhead when disabled
+  - `gp observe list/show/clean` for managing captured data
+  - `--observe full` flag on all commands
+
+- **Session Management Redesign**: All session commands under `gp session` subgroup
+  - `gp session list` / `show` / `clear` / `export` (moved from top-level)
+  - `gp session use <name>` / `gp session unset` — active session context
+  - Session name validation (no dots allowed)
+  - Plugin site_name resolution as alias in session commands
+  - Session persistence after commands (`saves_session` flag, `update_session_cookies()`)
+
+- **Plugin Discovery Improvements**
+  - Python file auto-discovery from `~/.config/graftpunk/plugins/*.py`
+  - Plugin collision detection (fail-fast on duplicate `site_name`)
+  - `site_name` auto-inference from `base_url` domain or YAML filename
+  - Partial success: valid plugins load even when others fail
+  - Unified error collection across all discovery sources
+
+- **Example Plugins and Templates**
+  - `httpbin.yaml` — YAML plugin for httpbin.org (no auth, demonstrates all YAML features)
+  - `quotes.py` — Python/Selenium plugin with declarative login (test site)
+  - `hackernews.py` — Python/NoDriver plugin with declarative login (real site)
+  - `yaml_template.yaml` and `python_template.py` starter templates
+
+- **CLI Improvements**
+  - `GraftpunkApp` custom Typer subclass with plugin group registration
+  - Rich help formatting for all plugin commands (`TyperCommand` / `TyperGroup`)
+  - Default log verbosity reduced to WARNING; `-v` (info), `-vv` (debug) flags
+  - `GRAFTPUNK_LOG_FORMAT` env var and `--log-format` CLI flag
+  - Clean error output for unknown commands
+  - `gp_console` module for centralized Rich terminal output with Status spinners
+  - Auto-introspection of Python plugin method parameters for CLI argument generation
+
+### Changed
+
+- `PluginConfig` is now a frozen dataclass constructed via `build_plugin_config()` factory
+- Login configuration extracted into `LoginConfig` frozen dataclass (replaces 5 flat fields)
+- `get_commands()` returns `list[CommandSpec]` instead of `dict`
+- `requires_session` flag replaces `session_name=""` hack for sessionless commands
+- All metadata types are frozen dataclasses (`CommandMetadata`, `PluginParamSpec`, discovery errors)
+- `BrowserSession` supports context manager protocol (sync and async)
+- NoDriver cookie transfer improved with `inject_cookies_to_nodriver()`
+- Chrome sandbox disabled by default for NoDriver; `--no-sandbox` warning suppressed
+- Auto-detect Chrome version for matching ChromeDriver
+
 ## [1.2.1] - 2026-01-28
 
 ### Changed

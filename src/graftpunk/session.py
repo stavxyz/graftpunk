@@ -20,6 +20,7 @@ Example:
     >>> session = BrowserSession(backend="selenium", headless=False)
 """
 
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -32,9 +33,13 @@ import selenium.common.exceptions
 import slugify as slugify_lib
 import webdriver_manager.chrome
 
+from graftpunk import console as gp_console
 from graftpunk.chrome import get_chrome_version
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
+from graftpunk.observe import OBSERVE_BASE_DIR
+from graftpunk.observe.capture import create_capture_backend
+from graftpunk.observe.storage import ObserveStorage
 
 LOG = get_logger(__name__)
 
@@ -51,10 +56,8 @@ class BrowserSession(requestium.Session):
         - "nodriver": CDP-direct Chrome automation.
 
     Note:
-        The ``backend`` parameter is validated and stored for serialization,
-        but this class currently uses the selenium/stealth driver directly.
-        For full backend abstraction, use ``get_backend()`` from
-        ``graftpunk.backends`` instead.
+        For the nodriver backend, the browser is started via
+        ``await session.start_async()`` rather than at construction time.
 
     Attributes:
         session_name: Identifier for this session (auto-generated or manual).
@@ -72,6 +75,7 @@ class BrowserSession(requestium.Session):
         default_timeout: int = 15,
         use_stealth: bool = True,
         backend: str = "selenium",
+        observe_mode: str = "off",
         **kwargs: Any,
     ) -> None:
         """Initialize browser session.
@@ -83,7 +87,8 @@ class BrowserSession(requestium.Session):
             use_stealth: If True, use undetected-chromedriver with anti-detection.
             backend: Browser backend to use. Default "selenium".
                 Available: "selenium" (default), "nodriver".
-                Note: Currently validated and stored for serialization only.
+            observe_mode: Observability capture mode. One of "off", "full".
+                Default "off".
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
         Raises:
@@ -91,7 +96,7 @@ class BrowserSession(requestium.Session):
             ValueError: If unknown backend is specified.
         """
         # Validate backend
-        from graftpunk.backends import list_backends
+        from graftpunk.backends import get_backend, list_backends
 
         available = list_backends()
         if backend not in available:
@@ -99,8 +104,30 @@ class BrowserSession(requestium.Session):
 
         self._backend_type = backend
         self._use_stealth = use_stealth
+        self._backend_instance = None  # For nodriver backend
+        self.current_url: str = ""  # Captured before caching for domain display
+        self._observe_mode = observe_mode
+        self._capture: Any = None
+        self._observe_storage: ObserveStorage | None = None
 
-        if use_stealth:
+        if backend == "nodriver":
+            # Use nodriver backend directly (CDP-based, no ChromeDriver)
+            # NOTE: We don't start the backend here to avoid async context conflicts.
+            # Call await session.start_async() in async context before using the driver.
+            LOG.info("creating_nodriver_browser_session", headless=headless)
+            try:
+                self._backend_instance = get_backend("nodriver", headless=headless)
+
+                # Initialize minimal session (no driver creation)
+                import requests
+
+                requests.Session.__init__(self)
+
+                LOG.info("nodriver_browser_session_initialized", headless=headless)
+            except Exception as exc:
+                LOG.error("failed_to_create_nodriver_session", error=str(exc))
+                raise BrowserError(f"Failed to create nodriver browser session: {exc}") from exc
+        elif use_stealth:
             # Use stealth driver (undetected-chromedriver + selenium-stealth)
             from graftpunk.stealth import create_stealth_driver
 
@@ -166,6 +193,12 @@ class BrowserSession(requestium.Session):
         if not hasattr(self, "_session_name"):
             hostname = urlparse(self.driver.current_url).hostname
             self._session_name = slugify_lib.slugify(self.driver.title) or hostname or "default"
+            if self._session_name == "default":
+                LOG.warning(
+                    "session_name_fallback_to_default",
+                    hint="Could not determine session name from browser state. "
+                    "Set session_name explicitly to avoid collisions.",
+                )
         return self._session_name
 
     @session_name.setter
@@ -177,12 +210,276 @@ class BrowserSession(requestium.Session):
         """
         self._session_name = value
 
+    @property
+    def driver(self) -> Any:
+        """Get the browser driver.
+
+        For nodriver backend, returns the nodriver Browser instance.
+        For selenium backend, returns the selenium WebDriver.
+
+        Note: For nodriver backend, call `await session.start_async()` first
+        in async context to initialize the browser.
+
+        Returns:
+            Browser driver instance.
+
+        Raises:
+            BrowserError: If the browser driver is not available.
+        """
+        backend_type = getattr(self, "_backend_type", "selenium")
+        backend_instance = getattr(self, "_backend_instance", None)
+        if backend_type == "nodriver":
+            if backend_instance is None:
+                raise BrowserError(
+                    "Nodriver backend not initialized. "
+                    "The session may have been closed or not yet created."
+                )
+            browser = backend_instance._browser
+            if browser is None:
+                raise BrowserError(
+                    "Nodriver browser not started. "
+                    "Call 'await session.start_async()' before accessing the driver."
+                )
+            return browser
+        # Selenium backend
+        webdriver = getattr(self, "_webdriver", None)
+        if webdriver is None:
+            raise BrowserError(
+                "Selenium WebDriver not available. "
+                "The browser session may have been closed or not yet initialized."
+            )
+        return webdriver
+
+    async def transfer_nodriver_cookies_to_session(self) -> None:
+        """Transfer cookies from nodriver browser to the requests session.
+
+        Call this after login before caching the session so that browser
+        cookies are available for subsequent API calls.
+        """
+        backend_instance = getattr(self, "_backend_instance", None)
+        if backend_instance is None or not hasattr(backend_instance, "_browser"):
+            raise BrowserError(
+                "Cannot transfer cookies: nodriver backend not initialized. "
+                "Call start_async() before transferring cookies."
+            )
+        browser = backend_instance._browser
+        if browser is None:
+            raise BrowserError(
+                "Cannot transfer cookies: browser is None. Ensure browser was started successfully."
+            )
+        cookies = await browser.cookies.get_all()
+        for cookie in cookies:
+            self.cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
+        LOG.info("transferred_nodriver_cookies", count=len(cookies))
+
+    async def start_async(self) -> None:
+        """Start the browser asynchronously (for nodriver backend).
+
+        Call this method in async context before using the driver with nodriver.
+
+        Raises:
+            BrowserError: If backend is not nodriver or backend instance is missing.
+
+        Example:
+            session = BrowserSession(backend="nodriver")
+            await session.start_async()
+            await session.driver.get("https://example.com")
+        """
+        backend_type = getattr(self, "_backend_type", "selenium")
+        if backend_type != "nodriver":
+            raise BrowserError(
+                "start_async() is only supported for the nodriver backend. "
+                f"Current backend: '{backend_type}'."
+            )
+        backend_instance = getattr(self, "_backend_instance", None)
+        if backend_instance is None:
+            raise BrowserError(
+                "Nodriver backend instance is None. "
+                "The session may have been closed or not properly initialized."
+            )
+        LOG.info("starting_nodriver_backend_async")
+        await backend_instance._start_async()
+        backend_instance._started = True
+
+    def _start_observe(self) -> None:
+        """Initialize observability capture if mode is not 'off' and driver exists."""
+        if self._observe_mode == "off":
+            return
+        try:
+            driver = self.driver
+        except BrowserError:
+            LOG.warning(
+                "observe_start_skipped_no_driver",
+                mode=self._observe_mode,
+            )
+            gp_console.warn(
+                f"Observability capture unavailable: no browser driver. "
+                f"Requested mode '{self._observe_mode}' will have no effect."
+            )
+            return
+        import datetime
+
+        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
+        session_name = getattr(self, "_session_name", "default")
+        self._observe_storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+        self._capture = create_capture_backend(self._backend_type, driver)
+        self._capture.start_capture()
+        LOG.info("observe_capture_started", mode=self._observe_mode, run_id=run_id)
+
+    def _take_error_screenshot(self, exc_type: type[BaseException] | None) -> None:
+        """Take error screenshot if an exception occurred."""
+        if exc_type is None or self._capture is None:
+            return
+        try:
+            png_data = self._capture.take_screenshot_sync()
+            if png_data is not None and self._observe_storage is not None:
+                self._observe_storage.save_screenshot(0, "error-on-exit", png_data)
+            elif png_data is None:
+                LOG.warning("error_screenshot_unavailable")
+        except Exception as exc:
+            LOG.error("observe_screenshot_save_failed", error=str(exc), exc_type=type(exc).__name__)
+
+    def _write_observe_data(self) -> None:
+        """Write HAR and console logs to storage."""
+        if self._observe_storage is None or self._capture is None:
+            return
+        try:
+            self._observe_storage.write_har(self._capture.get_har_entries())
+        except Exception as exc:
+            LOG.error("observe_har_write_failed", error=str(exc), exc_type=type(exc).__name__)
+        try:
+            self._observe_storage.write_console_logs(self._capture.get_console_logs())
+        except Exception as exc:
+            LOG.error(
+                "observe_console_log_write_failed", error=str(exc), exc_type=type(exc).__name__
+            )
+
+    def _stop_observe(
+        self,
+        exc_type: type[BaseException] | None = None,
+    ) -> None:
+        """Stop observability capture and flush data to storage.
+
+        Each step is wrapped individually so one failure does not prevent
+        the others from completing. Errors are logged at error level since
+        the user explicitly opted into observability.
+        """
+        if self._capture is None:
+            return
+        self._take_error_screenshot(exc_type)
+        try:
+            self._capture.stop_capture()
+        except Exception as exc:
+            LOG.error("observe_stop_capture_failed", error=str(exc), exc_type=type(exc).__name__)
+        self._write_observe_data()
+        LOG.info("observe_capture_stopped")
+
+    async def _stop_observe_async(
+        self,
+        exc_type: type[BaseException] | None = None,
+    ) -> None:
+        """Async version of _stop_observe that fetches bodies via CDP.
+
+        Each step is wrapped individually so one failure does not prevent
+        the others from completing. Errors are logged at error level since
+        the user explicitly opted into observability.
+        """
+        if self._capture is None:
+            return
+        self._take_error_screenshot(exc_type)
+        try:
+            await self._capture.stop_capture_async()
+        except Exception as exc:
+            LOG.error("observe_stop_capture_failed", error=str(exc), exc_type=type(exc).__name__)
+        self._write_observe_data()
+        LOG.info("observe_capture_stopped")
+
+    def __enter__(self) -> "BrowserSession":
+        self._start_observe()
+        return self
+
+    def __exit__(  # type: ignore[override]  # requests.Session uses *args
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        self._stop_observe(exc_type)
+        self.quit()
+
+    async def __aenter__(self) -> "BrowserSession":
+        await self.start_async()
+        self._start_observe()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        await self._stop_observe_async(exc_type)
+        self.quit()
+
+    def quit(self) -> None:
+        """Close the browser and clean up resources.
+
+        For nodriver backend, stops the backend properly.
+        For selenium backend, quits the WebDriver.
+        """
+        backend_instance = getattr(self, "_backend_instance", None)
+        backend_type = getattr(self, "_backend_type", "selenium")
+
+        if backend_type == "nodriver" and backend_instance is not None:
+            LOG.info("stopping_nodriver_session")
+            try:
+                backend_instance.stop()
+            except Exception as exc:
+                LOG.error(
+                    "error_stopping_nodriver_session", error=str(exc), exc_type=type(exc).__name__
+                )
+            self._backend_instance = None
+        elif hasattr(self, "_webdriver") and self._webdriver is not None:
+            LOG.info("stopping_selenium_session")
+            try:
+                self._webdriver.quit()
+            except Exception as exc:
+                LOG.error(
+                    "error_stopping_selenium_session", error=str(exc), exc_type=type(exc).__name__
+                )
+            self._webdriver = None
+
     def __getstate__(self) -> dict[str, Any]:
         """Get state for pickling.
 
         Returns:
             State dictionary with serializable data.
         """
+        backend_type = getattr(self, "_backend_type", "selenium")
+
+        if backend_type == "nodriver":
+            # For nodriver, we only need minimal state (cookies from requests.Session).
+            # requests.Session has no custom __getstate__, so we build state manually.
+            state: dict[str, Any] = {}
+            state["_backend_type"] = backend_type
+            state["_use_stealth"] = getattr(self, "_use_stealth", False)
+            state["cookies"] = self.cookies if hasattr(self, "cookies") else {}
+            state["headers"] = dict(self.headers) if hasattr(self, "headers") else {}
+            state["session_name"] = getattr(self, "_session_name", "default")
+            # Capture current_url: prefer explicit attribute, then try browser tab
+            current_url = getattr(self, "current_url", "") or ""
+            if not current_url:
+                try:
+                    browser = self.driver
+                    if browser and hasattr(browser, "targets") and browser.targets:
+                        current_url = getattr(browser.targets[0], "url", "") or ""
+                except Exception as exc:  # noqa: BLE001
+                    LOG.debug("url_capture_failed_during_serialization", error=str(exc))
+            state["current_url"] = current_url
+            state["_gp_header_profiles"] = getattr(self, "_gp_header_profiles", {})
+            return state
+
+        # Selenium/requestium path
         state = super().__getstate__()
         state["_driver"] = None
         state["_driver_initializer"] = self._driver_initializer
@@ -197,11 +494,16 @@ class BrowserSession(requestium.Session):
         state["hooks"] = self.hooks
         state["params"] = self.params
         state["verify"] = self.verify
-        state["current_url"] = self.driver.current_url
+        try:
+            state["current_url"] = self.driver.current_url
+        except (BrowserError, selenium.common.exceptions.WebDriverException) as exc:
+            state["current_url"] = ""
+            LOG.warning("driver_current_url_unavailable_during_serialization", error=str(exc))
         state["session_name"] = self.session_name
         # Backend abstraction state
-        state["_backend_type"] = getattr(self, "_backend_type", "selenium")
+        state["_backend_type"] = backend_type
         state["_use_stealth"] = getattr(self, "_use_stealth", True)
+        state["_gp_header_profiles"] = getattr(self, "_gp_header_profiles", {})
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -213,25 +515,48 @@ class BrowserSession(requestium.Session):
         Raises:
             BrowserError: If session creation fails.
         """
-        super().__setstate__(state)
-        self.__dict__.update(state)
-        for key, value in state.items():
-            setattr(self, key, value)
-
-        # Restore backend type (default to selenium for legacy sessions)
+        # Restore backend type first to determine how to restore
         self._backend_type = state.get("_backend_type", "selenium")
         self._use_stealth = state.get("_use_stealth", True)
 
-        # Only transfer cookies to driver if we have one
-        # (for API-only usage, _driver will be None)
-        if self._driver is not None:
-            try:
-                self.transfer_session_cookies_to_driver()
-            except selenium.common.exceptions.SessionNotCreatedException as exc:
-                LOG.error("failed_to_restore_session", error=str(exc))
-                raise BrowserError(
-                    "Failed to restore session. Try clearing cache with: gp clear"
-                ) from exc
+        if self._backend_type == "nodriver":
+            # For nodriver sessions, just restore as requests.Session
+            # (browser is not serialized, only HTTP client state)
+            import requests
+
+            requests.Session.__init__(self)
+            # Restore headers if present
+            if "headers" in state and state["headers"]:
+                self.headers.update(state["headers"])
+            # Restore cookies if present
+            if "cookies" in state and state["cookies"]:
+                self.cookies = state["cookies"]
+            # Restore session name
+            if "session_name" in state:
+                self._session_name = state["session_name"]
+            self._backend_instance = None  # No browser restored
+            self._gp_header_profiles = state.get("_gp_header_profiles", {})
+        else:
+            # Selenium/requestium path
+            # requestium/requests don't define __setstate__, so this resolves
+            # to object.__setstate__ which does self.__dict__.update(state).
+            # We keep __dict__.update as a safety net to ensure our custom
+            # attributes (_backend_type, _use_stealth, etc.) are restored,
+            # in case a future requestium version overrides __setstate__.
+            super().__setstate__(state)
+            self.__dict__.update(state)
+            self._gp_header_profiles = state.get("_gp_header_profiles", {})
+
+            # Only transfer cookies to driver if we have one
+            # (for API-only usage, _driver will be None)
+            if getattr(self, "_driver", None) is not None:
+                try:
+                    self.transfer_session_cookies_to_driver()
+                except selenium.common.exceptions.SessionNotCreatedException as exc:
+                    LOG.error("failed_to_restore_session", error=str(exc))
+                    raise BrowserError(
+                        "Failed to restore session. Try clearing cache with: gp clear"
+                    ) from exc
 
     def save_httpie_session(self, session_name: str | None = None) -> Path:
         """Save session cookies to HTTPie format for CLI HTTP requests.
@@ -250,7 +575,12 @@ class BrowserSession(requestium.Session):
         env = httpie.context.Environment()
         httpie_session_path = Path(env.config.directory) / "sessions" / f"{session_name}.json"
 
-        current_url = getattr(self, "current_url", getattr(self.driver, "current_url", ""))
+        try:
+            driver_url = self.driver.current_url
+        except (BrowserError, selenium.common.exceptions.WebDriverException) as exc:
+            driver_url = ""
+            LOG.warning("driver_url_unavailable_for_httpie_session", error=str(exc))
+        current_url = getattr(self, "current_url", driver_url)
         parsed = urlparse(current_url)
         current_hostname = f"{parsed.scheme}://{parsed.hostname}" if current_url else ""
 
@@ -276,3 +606,42 @@ class BrowserSession(requestium.Session):
         )
 
         return httpie_session_path
+
+
+async def inject_cookies_to_nodriver(tab: Any, cookies: requests.cookies.RequestsCookieJar) -> int:
+    """Inject cached session cookies into a nodriver browser tab via CDP.
+
+    This is the inverse of transfer_nodriver_cookies_to_session() — it loads
+    cookies FROM a cached RequestsCookieJar INTO a nodriver browser.
+
+    Can be called before any navigation. CookieParam includes the domain
+    field, so CDP can set cookies on any domain without needing to be on
+    that domain first.
+
+    Args:
+        tab: nodriver Tab instance (the active browser tab).
+        cookies: RequestsCookieJar from a cached session.
+
+    Returns:
+        Number of cookies injected.
+    """
+    import nodriver.cdp.network as cdp_net
+    import nodriver.cdp.storage as cdp_storage
+
+    # IMPORTANT: Do NOT use nodriver's browser.cookies.set_all() — it has a bug
+    # where set_all() calls get_all() first, then overwrites the caller's
+    # cookies parameter with existing browser cookies, effectively ignoring input.
+    # Use the low-level CDP approach instead.
+    cookie_params = []
+    for cookie in cookies:
+        cookie_params.append(
+            cdp_net.CookieParam(  # type: ignore[attr-defined]
+                name=cookie.name,
+                value=cookie.value,
+                domain=cookie.domain,
+                path=cookie.path,
+            )
+        )
+    if cookie_params:
+        await tab.send(cdp_storage.set_cookies(cookie_params))
+    return len(cookie_params)

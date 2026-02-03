@@ -11,7 +11,7 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Typed](https://img.shields.io/badge/typed-ty-blue.svg)](https://github.com/astral-sh/ty)
 
-[Installation](#installation) • [Quick Start](#quick-start) • [CLI](#cli) • [Roadmap](#roadmap) • [Plugins](#plugins)
+[Installation](#installation) • [Quick Start](#quick-start) • [Plugins](#plugins) • [CLI Reference](#cli-reference) • [Examples](examples/README.md) • [Architecture](docs/HOW_IT_WORKS.md)
 
 </div>
 
@@ -21,7 +21,7 @@
 
 That service has your data—but no API.
 
-Your bank. Your 401k provider. Your insurance portal. Your HR system. They all have dashboards full of documents and data that belong to *you*, but no way to access them programmatically.
+Your ISP account. Your kid's school portal. Your local library. That niche e-commerce site you order from. Your medical records. They all have data that belongs to *you*, locked behind a login page with no API in sight.
 
 You're left with two options: click through the UI manually every time, or give up.
 
@@ -37,47 +37,49 @@ Log in once, script forever.
 │   1. LOG IN                2. CACHE                 3. SCRIPT               │
 │                                                                             │
 │   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐          │
-│   │   Browser   │         │  Encrypted  │         │   Python    │          │
-│   │   Session   │───────▶ │   Storage   │───────▶ │   Script    │          │
+│   │   Browser    │         │  Encrypted  │         │   Python    │          │
+│   │   Session    │───────▶ │   Storage   │───────▶ │   Script    │          │
 │   │             │         │             │         │             │          │
 │   └─────────────┘         └─────────────┘         └─────────────┘          │
 │                                                                             │
 │   Log in manually         Session cached          Use the session          │
-│   or with a plugin        with AES-128            to make requests         │
-│                           encryption              like a real API          │
+│   or declaratively        with AES-128            with real browser        │
+│   via plugin config       encryption              headers replayed         │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Once your session is cached, you can:
 
-- **Make HTTP requests** with your authenticated cookies
+- **Make HTTP requests** with your authenticated cookies *and* real browser headers
 - **Reverse-engineer XHR calls** from browser dev tools
 - **Build CLI tools** that feel like real APIs
 - **Automate downloads** of documents and data
 - **Keep sessions alive** with background daemons
+- **Capture network traffic** for debugging and auditing
 
 ## What You Can Build
 
 With graftpunk as your foundation, you can turn any authenticated website into a terminal-based interface:
 
 ```bash
-# Download your latest bank statements
-gp mybank statements --month january --output ./statements/
+# Pull your kid's grades and assignments
+gp schoolportal grades --student emma --format table
 
-# Export transactions to CSV
-gp mybank transactions --start 2024-01-01 --format csv > transactions.csv
+# Download your medical lab results
+gp mychart labs --after 2024-06-01 --output ./results/
 
-# Check your 401k balance
-gp my401k balance
-# → Total: $142,857.32 (+2.4% this month)
+# Export your energy usage data
+gp utility usage --months 12 --format csv > energy.csv
 
-# Download insurance documents
-gp insurance documents --type claims --year 2024
-# → Downloaded 12 documents to ./claims/
+# Scrape your property tax history
+gp county assessor --parcel 12345 --format json
+
+# Make ad-hoc requests with cached session cookies + browser headers
+gp http get -s mychart https://mychart.example.com/api/appointments
 ```
 
-These aren't real APIs—they're commands defined in graftpunk plugins that make the same XHR calls the website makes. To anyone watching, it looks like magic. To you, it's just automation.
+These aren't real APIs—they're commands defined in graftpunk plugins that replay the same XHR calls the website makes. To the server, it looks like a browser. To you, it's just automation.
 
 ## Installation
 
@@ -97,32 +99,40 @@ pip install graftpunk[all]        # Everything
 
 ### 1. Cache a Session
 
-```python
-from graftpunk import BrowserSession, cache_session
+The fastest way is with a plugin. Here's the httpbin example (no auth needed):
 
-# Create a stealth browser (avoids bot detection)
-# Options: backend="selenium" (default), "nodriver" (better anti-detection)
-session = BrowserSession(headless=False, use_stealth=True)
+```bash
+# Drop a YAML plugin into your plugins directory
+mkdir -p ~/.config/graftpunk/plugins
+cp examples/plugins/httpbin.yaml ~/.config/graftpunk/plugins/
 
-# Navigate to login page
-session.driver.get("https://app.example.com/login")
-
-# Log in manually in the browser window...
-# (or automate it with a plugin)
-
-# Cache the authenticated session
-cache_session(session, "example")
+# Use it immediately
+gp httpbin ip
+gp httpbin headers
+gp httpbin status --code 418  # I'm a teapot!
 ```
 
-### 2. Use It Like an API
+For sites that require authentication, plugins can define declarative login:
+
+```bash
+# Log in via auto-generated command (opens browser, fills form, caches session)
+gp quotes login
+
+# Use the cached session for API calls
+gp quotes list
+gp quotes random
+```
+
+### 2. Use It Programmatically
 
 ```python
 from graftpunk import load_session_for_api
 
-# Load your cached session (no browser needed)
-api = load_session_for_api("example")
+# Load your cached session — returns a GraftpunkSession with
+# browser headers pre-loaded for realistic request fingerprints
+api = load_session_for_api("mysite")
 
-# Make authenticated requests
+# Make authenticated requests that look like they came from Chrome
 response = api.get("https://app.example.com/api/internal/documents")
 documents = response.json()
 
@@ -135,112 +145,182 @@ for doc in documents:
 
 ### 3. Keep It Alive
 
-Sessions expire. graftpunk can keep them alive in the background:
-
-```python
-# Your keepalive handler pings the site periodically
-# to prevent session timeout
-```
+Sessions expire. graftpunk can keep them alive in the background with the keepalive daemon.
 
 ## Features
 
 | | Feature | Why It Matters |
 |:--|:--|:--|
-| 🥷 | **Stealth Mode** | Many sites block automation. graftpunk supports multiple backends: Selenium with undetected-chromedriver, or NoDriver for CDP-direct automation without WebDriver detection. |
-| 🔒 | **Encrypted Storage** | Sessions contain sensitive auth tokens. graftpunk encrypts everything with AES-128 (Fernet). |
-| ☁️ | **Cloud Storage** | Access your sessions from anywhere. Store in Supabase or S3 for multi-machine workflows. |
-| 🔄 | **Keepalive Daemon** | Sessions expire. graftpunk can ping sites in the background to keep you logged in. |
-| 🔌 | **Plugin System** | Define commands for reverse-engineered APIs. Python for complex logic, YAML for simple calls. |
-| 🛠️ | **Beautiful CLI** | Manage sessions from the terminal with rich, colorful output. |
+| 🥷 | **Stealth Mode** | Multiple backends: Selenium with undetected-chromedriver, or NoDriver for CDP-direct automation without WebDriver detection. |
+| 🔒 | **Encrypted Storage** | Sessions encrypted with AES-128 (Fernet). Local by default, optional cloud storage. |
+| 🔑 | **Declarative Login** | Define login flows with CSS selectors. graftpunk opens the browser, fills the form, and caches the session. Works in both Python and YAML plugins. |
+| 🌐 | **Browser Header Replay** | Captures real browser headers during login and replays them in API calls. Requests look like they came from Chrome, not Python. |
+| 🔌 | **Plugin System** | Full command framework with `CommandContext`, resource limits, output formatting, and auto-generated CLI. Python for complex logic, YAML for simple calls. |
+| 🛡️ | **Token & CSRF Support** | Declarative token extraction from cookies, headers, or page content. Auto-injects tokens into requests and retries on 403. |
+| 📡 | **Observability** | Capture screenshots, HAR files, console logs, and network traffic during browser sessions for debugging. |
+| 🔄 | **Keepalive Daemon** | Background daemon pings sites periodically to prevent session timeout. |
+| 🛠️ | **Ad-hoc HTTP** | `gp http get -s <session> <url>` — make one-off authenticated requests without writing a plugin. |
+| 🎨 | **Beautiful CLI** | Rich terminal output with spinners, tables, and color. `--format json\|table\|raw` on all commands. |
 
-## CLI
+## Plugins
+
+graftpunk is extensible via Python classes or YAML configuration. Both support declarative login, resource limits, and output formatting.
+
+### YAML Plugin (Simple REST Calls)
+
+For straightforward HTTP calls, no Python needed:
+
+```yaml
+# ~/.config/graftpunk/plugins/mybank.yaml
+site_name: mybank
+base_url: "https://secure.mybank.com"
+
+login:
+  url: /login
+  fields:
+    username: "input#email"
+    password: "input#password"
+  submit: "button[type=submit]"
+
+commands:
+  accounts:
+    help: "List all accounts"
+    method: GET
+    url: "/api/accounts"
+    jmespath: "accounts[].{id: id, name: name, balance: balance}"
+
+  statements:
+    help: "Get statements for a month"
+    method: GET
+    url: "/api/statements"
+    params:
+      - name: month
+        required: true
+        help: "Month name"
+      - name: year
+        type: int
+        default: 2024
+    timeout: 30
+    max_retries: 2
+```
+
+### Python Plugin (Complex Logic)
+
+```python
+from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
+
+class MyBankPlugin(SitePlugin):
+    site_name = "mybank"
+    base_url = "https://secure.mybank.com"
+    backend = "nodriver"  # or "selenium"
+    api_version = 1
+
+    login_config = LoginConfig(
+        url="/login",
+        fields={"username": "input#email", "password": "input#password"},
+        submit="button[type=submit]",
+        success=".dashboard",
+    )
+
+    @command(help="List all accounts")
+    def accounts(self, ctx: CommandContext):
+        return ctx.session.get(f"{self.base_url}/api/accounts").json()
+
+    @command(help="Get statements for a month")
+    def statements(self, ctx: CommandContext, month: str, year: int = 2024):
+        url = f"{self.base_url}/api/statements/{year}/{month}"
+        return ctx.session.get(url).json()
+```
+
+### Using Plugins
+
+```bash
+# Login (auto-generated from declarative config)
+gp mybank login
+
+# Run commands
+gp mybank accounts
+gp mybank statements --month january --year 2024 --format table
+
+# List all discovered plugins
+gp plugins
+```
+
+### Plugin Discovery
+
+Plugins are discovered from three sources:
+
+1. **Entry points** — Python packages registered via `pyproject.toml`
+2. **YAML files** — `~/.config/graftpunk/plugins/*.yaml` and `*.yml`
+3. **Python files** — `~/.config/graftpunk/plugins/*.py`
+
+If two plugins share the same `site_name`, registration fails with an error showing both sources. No silent shadowing.
+
+See [examples/](examples/README.md) for working plugins and templates.
+
+## CLI Reference
 
 ```
 $ gp --help
 
  🔌 graftpunk - turn any website into an API
 
- Graft scriptable access onto authenticated web services.
- Log in once, script forever.
-
- Quick start:
-   gp list              Show all cached sessions
-   gp show <name>       View session details
-   gp clear <name>      Remove a session
-   gp config            Show current configuration
-
 Commands:
-  list        List all cached sessions with status and metadata.
-  show        Show detailed information about a cached session.
-  clear       Remove cached session(s).
-  export      Export session cookies to HTTPie format.
-  import-har  Import HAR file and generate a plugin.
-  config      Show current graftpunk configuration.
-  plugins     List discovered plugins.
-  version     Show graftpunk version and installation info.
-  keepalive   Manage the session keepalive daemon.
+  session     Manage encrypted browser sessions
+  http        Make ad-hoc HTTP requests with cached session cookies
+  observe     Capture and view browser observability data
+  plugins     List discovered plugins
+  import-har  Import HAR file and generate a plugin
+  config      Show current configuration
+  keepalive   Manage the session keepalive daemon
+  version     Show version info
 ```
 
-### List Sessions
+### Session Management
 
-```
-$ gp list
-
-              🔐 Cached Sessions
-┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓
-┃ Session     ┃ Domain           ┃   Status   ┃ Cookies ┃ Last Modified    ┃
-┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━┩
-│ mybank      │ secure.mybank.com│  ● active  │      18 │ 2024-01-15 09:30 │
-│ my401k      │ participant.401k │  ● active  │      12 │ 2024-01-14 14:22 │
-│ insurance   │ portal.ins.com   │ ○ expired  │       8 │ 2024-01-01 11:00 │
-└─────────────┴──────────────────┴────────────┴─────────┴──────────────────┘
-
-3 session(s) cached
+```bash
+gp session list              # List all cached sessions
+gp session show <name>       # Session metadata (domain, cookies, expiry)
+gp session clear <name>      # Remove a session (or --all)
+gp session export <name>     # Export cookies to HTTPie session format
+gp session use <name>        # Set active session for subsequent commands
+gp session unset             # Clear active session
 ```
 
-### Export to HTTPie
+### Ad-hoc HTTP Requests
 
-```
-$ gp export mybank
+Make authenticated requests using cached sessions without writing a plugin:
 
-✓ Exported to: ~/.config/httpie/sessions/secure.mybank.com/mybank.json
-
-Usage:
-  http --session=mybank https://secure.mybank.com/api/accounts
+```bash
+gp http get -s mybank https://secure.mybank.com/api/accounts
+gp http post -s mybank https://secure.mybank.com/api/transfer --data '{"amount": 100}'
 ```
 
-### Import from HAR
+Supports all HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
 
-Generate plugins from browser dev tools network captures:
+### Observability
 
-```
-$ gp import-har auth-flow.har --name mybank
+Capture browser activity for debugging:
 
-Parsing HAR file: auth-flow.har
-Found 127 HTTP requests
+```bash
+# Open authenticated browser and capture network traffic
+gp observe -s mybank go https://secure.mybank.com/dashboard
 
-Site: mybank (secure.mybank.com)
-
-Auth Flow Detected (3 steps):
-  1. GET  /login (form page)
-  2. POST /auth/login (credentials submitted)
-  3. GET  /dashboard (authenticated, 2 cookies set)
-
-Session Cookies: sessionId, authToken
-
-API Endpoints (5 discovered):
-  GET  /api/accounts
-  GET  /api/transactions
-  POST /api/transfer
-
-Generated plugin: ~/.config/graftpunk/plugins/mybank.py
+# View captured data
+gp observe list
+gp observe show mybank
+gp observe clean mybank
 ```
 
-Options:
-- `--format python|yaml` - Output format (default: python)
-- `--output PATH` - Custom output path
-- `--dry-run` - Preview without writing
-- `--no-discover-api` - Skip API endpoint discovery
+Pass `--observe full` to any command to capture screenshots, HAR files, and console logs.
+
+### HAR Import
+
+Generate plugins from browser network captures:
+
+```bash
+gp import-har auth-flow.har --name mybank
+```
 
 ## Configuration
 
@@ -249,126 +329,27 @@ Options:
 | `GRAFTPUNK_STORAGE_BACKEND` | `local` | Storage: `local`, `supabase`, or `s3` |
 | `GRAFTPUNK_CONFIG_DIR` | `~/.config/graftpunk` | Config and encryption key location |
 | `GRAFTPUNK_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
-| `GRAFTPUNK_LOG_LEVEL` | `INFO` | Logging verbosity |
+| `GRAFTPUNK_LOG_LEVEL` | `WARNING` | Logging verbosity |
+| `GRAFTPUNK_LOG_FORMAT` | `console` | Log format: `console` or `json` |
+
+CLI flags: `-v` (info), `-vv` (debug), `--log-format json`, `--observe full`.
 
 ## Browser Backends
 
-graftpunk supports multiple browser automation backends (both included by default):
+graftpunk supports two browser automation backends (both included by default):
 
 | Backend | Best For |
 |---------|----------|
 | `selenium` | Simple sites, backward compatibility |
 | `nodriver` | Enterprise sites, better anti-detection |
 
-```python
-from graftpunk import BrowserSession, get_backend, list_backends
+**Why NoDriver?** NoDriver uses Chrome DevTools Protocol (CDP) directly without the WebDriver binary, eliminating a common detection vector used by anti-bot systems.
 
-# See available backends
-print(list_backends())  # ['legacy', 'nodriver', 'selenium']
+```python
+from graftpunk import BrowserSession
 
 # Use BrowserSession with explicit backend
 session = BrowserSession(backend="nodriver", headless=False)
-
-# Or use backends directly
-from graftpunk import get_backend
-backend = get_backend("nodriver", headless=False)
-with backend:
-    backend.navigate("https://example.com")
-    cookies = backend.get_cookies()
-```
-
-**Why NoDriver?** NoDriver uses Chrome DevTools Protocol (CDP) directly without the WebDriver binary, eliminating a common detection vector used by anti-bot systems.
-
-## Roadmap
-
-graftpunk is actively developed. Here's what's coming:
-
-### 🧙 Plugin Auto-Generation Wizard
-
-*Stop writing plugins by hand.*
-
-A built-in tool that watches you log in and generates the plugin code automatically:
-
-```bash
-$ gp wizard mybank
-→ Opening browser to capture auth flow...
-→ Log in normally (use dummy creds if you prefer)
-→ Capturing cookies, headers, session validation...
-→ Generated plugin: ~/.config/graftpunk/plugins/mybank.py
-
-# Next time, login is automated:
-$ gp login mybank
-```
-
-### 📚 Example Plugins
-
-Templates and examples for common auth patterns (form login, OAuth, SSO).
-
-## Plugins
-
-graftpunk is extensible via Python entry points or YAML configuration.
-
-### Python Plugin (Complex Logic)
-
-```python
-# my_plugins/mybank.py
-from graftpunk.plugins import SitePlugin, command
-
-class MyBankPlugin(SitePlugin):
-    site_name = "mybank"
-    session_name = "mybank"
-
-    @command(help="List all accounts")
-    def accounts(self, session):
-        return session.get("https://mybank.com/api/accounts").json()
-
-    @command(help="Get statements for a month")
-    def statements(self, session, month: str, year: int = 2024):
-        url = f"https://mybank.com/api/statements/{year}/{month}"
-        return session.get(url).json()
-```
-
-Register in `pyproject.toml`:
-
-```toml
-[project.entry-points."graftpunk.cli_plugins"]
-mybank = "my_plugins.mybank:MyBankPlugin"
-```
-
-### YAML Plugin (Simple Calls)
-
-For straightforward GET/POST calls, no Python needed:
-
-```yaml
-# ~/.config/graftpunk/plugins/mybank.yaml
-site_name: mybank
-session_name: mybank
-help: "Commands for MyBank"
-
-commands:
-  accounts:
-    help: "List all accounts"
-    method: GET
-    url: "https://mybank.com/api/accounts"
-
-  statements:
-    help: "Get statements for a month"
-    method: GET
-    url: "https://mybank.com/api/statements/{year}/{month}"
-    params:
-      - name: month
-        required: true
-        help: "Month name"
-      - name: year
-        default: 2024
-        help: "Year"
-```
-
-Then use directly:
-
-```bash
-gp mybank accounts
-gp mybank statements --month january --year 2024
 ```
 
 ## Security
@@ -385,16 +366,14 @@ Some services may consider automation a ToS violation. Use your judgment.
 - **Key storage:** `~/.config/graftpunk/.session_key` with `0600` permissions
 - **Integrity:** SHA-256 checksum validated before deserializing
 
-### ⚠️ Pickle Warning
-
-graftpunk uses Python's `pickle` for serialization. Only load sessions you created.
-
 ### Best Practices
 
 - Keep your encryption key secure
 - Don't share session files
 - Run graftpunk on trusted machines
 - Use unique, strong passwords for automated accounts
+
+**Pickle warning:** graftpunk uses Python's `pickle` for serialization. Only load sessions you created.
 
 ## Development
 
@@ -406,7 +385,7 @@ just check    # Run lint, typecheck, tests
 just build    # Build for PyPI
 ```
 
-Requires [uv](https://docs.astral.sh/uv/) for development.
+Requires [uv](https://docs.astral.sh/uv/) for development. See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
 ## License
 
@@ -416,7 +395,7 @@ MIT License—see [LICENSE](LICENSE).
 
 - [requestium](https://github.com/tryolabs/requestium) – Selenium + Requests integration
 - [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) – Anti-detection ChromeDriver
-- [selenium-stealth](https://github.com/diprajpatra/selenium-stealth) – Stealth patches
+- [nodriver](https://github.com/nicedayfor/nodriver) – CDP-direct browser automation
 - [cryptography](https://cryptography.io/) – Encryption primitives
 - [rich](https://github.com/Textualize/rich) – Beautiful terminal output
 - [typer](https://typer.tiangolo.com/) – CLI framework

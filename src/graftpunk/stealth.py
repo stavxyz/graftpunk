@@ -12,7 +12,9 @@ from pathlib import Path
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
 
+from graftpunk.chrome import get_chrome_version
 from graftpunk.config import get_settings
+from graftpunk.exceptions import ChromeDriverError
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -86,9 +88,22 @@ def create_stealth_driver(
     if headless:
         options.add_argument("--headless=new")
 
+    # Detect Chrome version for matching ChromeDriver
+    try:
+        chrome_version = int(get_chrome_version(major=True))
+        LOG.info("detected_chrome_version_for_driver", version=chrome_version)
+    except (ChromeDriverError, ValueError) as exc:
+        LOG.warning("chrome_version_detection_failed", error=str(exc))
+        chrome_version = None
+
     # Create undetected driver
     # Pass user_data_dir directly (recommended by undetected-chromedriver)
-    driver = uc.Chrome(options=options, user_data_dir=str(profile_dir))
+    # Pass version_main to ensure matching ChromeDriver is used
+    driver = uc.Chrome(
+        options=options,
+        user_data_dir=str(profile_dir),
+        version_main=chrome_version,
+    )
 
     # Resize the initial window (decoy tab) to match login window size
     # undetected-chromedriver opens a blank window that goes to google.com

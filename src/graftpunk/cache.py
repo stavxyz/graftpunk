@@ -14,6 +14,7 @@ Thread Safety:
 """
 
 import hashlib
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 from urllib.parse import urlparse
@@ -47,6 +48,32 @@ class SessionLike(Protocol):
 LOG = get_logger(__name__)
 
 T = TypeVar("T")
+
+_SESSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def validate_session_name(name: str) -> None:
+    """Validate a session name.
+
+    Session names must be lowercase alphanumeric with hyphens/underscores,
+    starting with a letter or digit. Dots are not allowed (they indicate domains).
+
+    Raises:
+        ValueError: If name is invalid.
+    """
+    if not name:
+        raise ValueError("Session name must be non-empty")
+    if "." in name:
+        raise ValueError(
+            f"Session name {name!r} cannot contain dots. "
+            "Dots are reserved for domain matching in 'gp session clear'."
+        )
+    if not _SESSION_NAME_RE.match(name):
+        raise ValueError(
+            f"Session name {name!r} must match pattern [a-z0-9][a-z0-9_-]* "
+            "(lowercase alphanumeric, hyphens, underscores)"
+        )
+
 
 # Global session storage backend (lazy-loaded)
 _session_storage_backend: "SessionStorageBackend | None" = None
@@ -125,6 +152,14 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
         metadata["cookie_count"] = 0
         metadata["cookie_domains"] = []
 
+    # Fallback: infer domain from cookie domains when current_url is missing
+    if "domain" not in metadata and metadata.get("cookie_domains"):
+        # Use the first non-empty cookie domain, stripping leading dot
+        for cookie_domain in metadata["cookie_domains"]:
+            if cookie_domain:
+                metadata["domain"] = cookie_domain.lstrip(".")
+                break
+
     return metadata
 
 
@@ -177,6 +212,8 @@ def cache_session(session: T, session_name: str | None = None) -> str:
     if session_name is None:
         # Try to get session_name from the session object
         session_name = getattr(session, "session_name", "default")
+
+    validate_session_name(session_name)
 
     backend = _get_session_storage_backend()
     settings = get_settings()
@@ -307,14 +344,16 @@ def load_session_for_api(name: str) -> requests.Session:
     """Load cached session for API use (no browser required).
 
     This extracts cookies and headers from a cached BrowserSession
-    and creates a plain requests.Session that can be used for API calls
-    without launching a browser.
+    and creates a GraftpunkSession that can be used for API calls
+    without launching a browser. If the cached session has header
+    profiles (captured during login), they are applied automatically.
 
     Args:
         name: Session name (without .session.pickle extension).
 
     Returns:
-        requests.Session with cookies and headers from cached session.
+        GraftpunkSession with cookies, headers, and header profiles
+        from the cached session.
 
     Raises:
         SessionNotFoundError: If session file doesn't exist.
@@ -328,8 +367,13 @@ def load_session_for_api(name: str) -> requests.Session:
             f"No cached session found for '{name}'. Please login first."
         ) from exc
 
-    # Create a plain requests.Session with cookies and headers
-    api_session = requests.Session()
+    # Extract header profiles if present (from sessions created after header capture feature)
+    header_profiles = getattr(browser_session, "_gp_header_profiles", {})
+
+    # Create GraftpunkSession with header profiles for auto-detection
+    from graftpunk.graftpunk_session import GraftpunkSession
+
+    api_session = GraftpunkSession(header_profiles=header_profiles)
 
     # Copy cookies from browser session
     if hasattr(browser_session, "cookies"):
@@ -344,8 +388,46 @@ def load_session_for_api(name: str) -> requests.Session:
         api_session.headers.update(browser_session.headers)
         LOG.debug("copied_headers_from_session")
 
-    LOG.info("created_api_session_from_cached_session", name=name)
+    LOG.info(
+        "created_api_session_from_cached_session",
+        name=name,
+        has_header_profiles=bool(header_profiles),
+        profile_count=len(header_profiles),
+    )
     return api_session
+
+
+def update_session_cookies(api_session: requests.Session, session_name: str) -> None:
+    """Persist an API session's cookies back to the session cache.
+
+    Loads the original cached session (preserving browser metadata),
+    updates its cookies from the API session, and saves it back.
+    This is best-effort — failures are logged but do not raise.
+
+    Args:
+        api_session: The API session with potentially updated cookies.
+        session_name: Name of the cached session to update.
+    """
+    try:
+        original = load_session(session_name)
+    except Exception as exc:  # noqa: BLE001 — best-effort save
+        LOG.warning(
+            "session_save_skipped_load_failed",
+            session_name=session_name,
+            error=str(exc),
+        )
+        return
+
+    try:
+        original.cookies.update(api_session.cookies)
+        cache_session(original, session_name)
+        LOG.info("session_cookies_updated", session_name=session_name)
+    except Exception as exc:  # noqa: BLE001 — best-effort save
+        LOG.warning(
+            "session_save_failed",
+            session_name=session_name,
+            error=str(exc),
+        )
 
 
 def list_sessions() -> list[str]:

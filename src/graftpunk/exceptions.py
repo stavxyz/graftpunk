@@ -33,6 +33,22 @@ class PluginError(GraftpunkError):
     """Plugin loading or execution failed."""
 
 
+class CommandError(PluginError):
+    """Expected command failure with a user-facing message.
+
+    Plugin authors raise this for anticipated errors (validation failures,
+    business rule violations). The framework displays user_message cleanly
+    without traceback.
+
+    Example:
+        raise CommandError("Amount must be positive")
+    """
+
+    def __init__(self, user_message: str) -> None:
+        self.user_message = user_message
+        super().__init__(user_message)
+
+
 class KeepaliveError(GraftpunkError):
     """Keepalive operation failed."""
 
