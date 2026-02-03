@@ -5,55 +5,134 @@ Python entry points. Plugins can provide:
 
 - Storage backends (graftpunk.storage)
 - Keepalive handlers (graftpunk.keepalive_handlers)
-- Site authentication plugins (graftpunk.plugins)
-- CLI command plugins (graftpunk.cli_plugins)
+- Site plugins (graftpunk.plugins)
 
 Example plugin registration in pyproject.toml:
     [project.entry-points."graftpunk.keepalive_handlers"]
     mysite = "mypackage.handler:MySiteHandler"
 
-    [project.entry-points."graftpunk.cli_plugins"]
+    [project.entry-points."graftpunk.plugins"]
     mysite = "mypackage.cli:MySiteCommands"
 """
 
+import warnings
 from importlib.metadata import entry_points
 from typing import Any
+from urllib.parse import urlparse
 
+from graftpunk.exceptions import CommandError
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import (
+    SUPPORTED_API_VERSIONS,
     CLIPluginProtocol,
+    CommandContext,
+    CommandGroupMeta,
+    CommandMetadata,
+    CommandResult,
     CommandSpec,
-    ParamSpec,
+    LoginConfig,
+    PluginConfig,
+    PluginParamSpec,
     SitePlugin,
+    build_plugin_config,
     command,
 )
+from graftpunk.plugins.formatters import (
+    OutputFormatter,
+    discover_formatters,
+)
+from graftpunk.plugins.python_loader import (
+    PythonDiscoveryError,
+    PythonDiscoveryResult,
+    discover_python_plugins,
+)
+from graftpunk.tokens import Token, TokenConfig
 
 __all__ = [
     # Base classes and decorators
     "SitePlugin",
     "command",
     "CLIPluginProtocol",
+    "CommandContext",
+    "CommandGroupMeta",
+    "CommandMetadata",
+    "CommandResult",
     "CommandSpec",
-    "ParamSpec",
+    "PluginParamSpec",
+    # Configuration
+    "LoginConfig",
+    "PluginConfig",
+    "Token",
+    "TokenConfig",
+    "build_plugin_config",
+    # Constants
+    "SUPPORTED_API_VERSIONS",
+    # Formatters
+    "OutputFormatter",
+    "discover_formatters",
+    # Exceptions
+    "CommandError",
+    # Utilities
+    "infer_site_name",
     # Discovery functions
     "discover_plugins",
     "discover_storage_backends",
     "discover_keepalive_handlers",
     "discover_site_plugins",
-    "discover_cli_plugins",
     "get_keepalive_handler",
     "get_storage_backend",
     "load_handler_from_string",
     "list_available_plugins",
+    # Python plugin discovery
+    "PythonDiscoveryError",
+    "PythonDiscoveryResult",
+    "discover_python_plugins",
 ]
 
 LOG = get_logger(__name__)
+
+
+def infer_site_name(url: str) -> str:
+    """Infer a site name from a URL by extracting the base domain name.
+
+    Strips common prefixes (www, api, app, m) and the TLD to produce
+    a short, CLI-friendly name.
+
+    Args:
+        url: Full URL like "https://httpbin.org" or bare domain like "httpbin.org".
+
+    Returns:
+        Simplified site name (e.g. "httpbin"), or empty string if
+        no name can be inferred.
+    """
+    # Parse the URL to extract the hostname
+    parsed = urlparse(url)
+    hostname = parsed.hostname or parsed.path.split("/")[0]
+    if not hostname:
+        return ""
+
+    name = hostname.lower()
+
+    # Strip common subdomain prefixes
+    for prefix in ("www.", "api.", "app.", "m."):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+
+    # Take main domain name (second-to-last part before TLD)
+    parts = name.split(".")
+    if len(parts) >= 2:
+        name = parts[-2]
+
+    # Make CLI-friendly
+    name = name.replace("-", "_")
+    return name
+
 
 # Entry point group names
 STORAGE_GROUP = "graftpunk.storage"
 KEEPALIVE_HANDLERS_GROUP = "graftpunk.keepalive_handlers"
 PLUGINS_GROUP = "graftpunk.plugins"
-CLI_PLUGINS_GROUP = "graftpunk.cli_plugins"
 
 
 def discover_plugins(group: str) -> dict[str, Any]:
@@ -79,11 +158,16 @@ def discover_plugins(group: str) -> dict[str, Any]:
             plugins[ep.name] = plugin
             LOG.debug("plugin_loaded", group=group, name=ep.name)
         except Exception as exc:
-            LOG.warning(
+            LOG.exception(
                 "plugin_load_failed",
                 group=group,
                 name=ep.name,
                 error=str(exc),
+            )
+            warnings.warn(
+                f"Plugin '{ep.name}' failed to load: {exc}",
+                UserWarning,
+                stacklevel=2,
             )
 
     LOG.info("plugins_discovered", group=group, count=len(plugins))
@@ -109,21 +193,12 @@ def discover_keepalive_handlers() -> dict[str, type]:
 
 
 def discover_site_plugins() -> dict[str, type]:
-    """Discover all installed site authentication plugins.
+    """Discover all installed site plugins (authentication and CLI command plugins).
 
     Returns:
         Dictionary mapping plugin name to plugin class.
     """
     return discover_plugins(PLUGINS_GROUP)
-
-
-def discover_cli_plugins() -> dict[str, type]:
-    """Discover all installed CLI command plugins.
-
-    Returns:
-        Dictionary mapping plugin name to plugin class.
-    """
-    return discover_plugins(CLI_PLUGINS_GROUP)
 
 
 def get_keepalive_handler(name: str) -> Any | None:
@@ -204,5 +279,4 @@ def list_available_plugins() -> dict[str, list[str]]:
         "storage": list(discover_storage_backends().keys()),
         "keepalive_handlers": list(discover_keepalive_handlers().keys()),
         "plugins": list(discover_site_plugins().keys()),
-        "cli_plugins": list(discover_cli_plugins().keys()),
     }

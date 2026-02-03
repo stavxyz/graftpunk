@@ -245,7 +245,30 @@ myhandler = "mypackage:MyHandler"
 
 ### 3. Site Plugins
 
-For site-specific authentication logic, implement custom plugins that handle login flows, MFA challenges, etc.
+Subclass `SitePlugin` and use `@command` to define CLI commands. Handlers receive a `CommandContext` with the session, plugin metadata, and observability context:
+
+```python
+from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
+
+class MySitePlugin(SitePlugin):
+    site_name = "mysite"
+    base_url = "https://example.com"
+    backend = "nodriver"  # or "selenium"
+    api_version = 1
+
+    # Declarative login — auto-generates `gp mysite login`
+    login_config = LoginConfig(
+        url="/login",
+        fields={"username": "#email", "password": "#password"},
+        submit="button[type=submit]",
+    )
+
+    @command(help="List items")
+    def items(self, ctx: CommandContext, page: int = 1):
+        return ctx.session.get(f"{self.base_url}/api/items?page={page}").json()
+```
+
+For YAML plugins, see `examples/templates/yaml_template.yaml`. Both support declarative login, resource limits (`timeout`, `max_retries`, `rate_limit`), and output formatting (`--format json|table|raw`).
 
 ## Pull Request Process
 

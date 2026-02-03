@@ -1,7 +1,7 @@
 """Configuration management with pydantic-settings."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,7 +28,14 @@ class GraftpunkSettings(BaseSettings):
     )
 
     # Logging configuration
-    log_level: str = Field(default="INFO", description="Logging level")
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default="WARNING",
+        description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+    )
+    log_format: Literal["console", "json"] = Field(
+        default="console",
+        description="Log output format (console for human-readable, json for structured)",
+    )
 
     # Supabase configuration (for supabase storage backend)
     supabase_url: str | None = Field(

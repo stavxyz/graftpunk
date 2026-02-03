@@ -14,6 +14,7 @@ from graftpunk.har.parser import (
     HARRequest,
     HARResponse,
     ParseError,
+    _parse_response,
     parse_har_file,
     parse_har_string,
     validate_har_schema,
@@ -425,3 +426,151 @@ class TestHARParseResult:
         assert error.index == 5
         assert error.url == "https://x.com/api"
         assert error.error == "missing field"
+
+
+class TestHARParserBodyFile:
+    """Tests for _bodyFile support in HAR parser."""
+
+    def test_parse_response_with_body_file(self, tmp_path: Path) -> None:
+        """_bodyFile reference loads text content from disk."""
+        body_content = "<html><body>Hello</body></html>"
+        body_file = tmp_path / "response_0.html"
+        body_file.write_text(body_content)
+
+        response_data = {
+            "status": 200,
+            "statusText": "OK",
+            "headers": [],
+            "cookies": [],
+            "content": {
+                "size": 0,
+                "mimeType": "text/html",
+                "_bodyFile": "response_0.html",
+            },
+        }
+        result = _parse_response(response_data, base_dir=tmp_path)
+
+        assert result.body == body_content
+        assert result.body_size == body_file.stat().st_size
+        assert result.body_file == "response_0.html"
+
+    def test_parse_response_with_binary_body_file(self, tmp_path: Path) -> None:
+        """_bodyFile for binary content stores path reference string."""
+        body_file = tmp_path / "image.png"
+        body_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+
+        response_data = {
+            "status": 200,
+            "statusText": "OK",
+            "headers": [],
+            "cookies": [],
+            "content": {
+                "size": 0,
+                "mimeType": "image/png",
+                "_bodyFile": "image.png",
+            },
+        }
+        result = _parse_response(response_data, base_dir=tmp_path)
+
+        assert result.body == "[binary file: image.png]"
+        assert result.body_size == body_file.stat().st_size
+        assert result.body_file == "image.png"
+
+    def test_parse_response_with_missing_body_file(self, tmp_path: Path) -> None:
+        """Missing _bodyFile does not crash, body is None."""
+        response_data = {
+            "status": 200,
+            "statusText": "OK",
+            "headers": [],
+            "cookies": [],
+            "content": {
+                "size": 0,
+                "mimeType": "text/html",
+                "_bodyFile": "nonexistent.html",
+            },
+        }
+        result = _parse_response(response_data, base_dir=tmp_path)
+
+        assert result.body is None
+        assert result.body_file == "nonexistent.html"
+
+    def test_parse_har_file_passes_base_dir(self, tmp_path: Path) -> None:
+        """parse_har_file passes its directory as base_dir for body resolution."""
+        body_content = '{"key": "value"}'
+        body_file = tmp_path / "response_body.json"
+        body_file.write_text(body_content)
+
+        har_data = {
+            "log": {
+                "version": "1.2",
+                "entries": [
+                    {
+                        "startedDateTime": "2024-01-15T10:00:00.000Z",
+                        "request": {
+                            "method": "GET",
+                            "url": "https://api.example.com/data",
+                            "headers": [],
+                            "cookies": [],
+                        },
+                        "response": {
+                            "status": 200,
+                            "statusText": "OK",
+                            "headers": [],
+                            "cookies": [],
+                            "content": {
+                                "size": 0,
+                                "mimeType": "application/json",
+                                "_bodyFile": "response_body.json",
+                            },
+                        },
+                    }
+                ],
+            }
+        }
+        har_file = tmp_path / "test.har"
+        har_file.write_text(json.dumps(har_data))
+
+        result = parse_har_file(har_file)
+
+        assert len(result.entries) == 1
+        assert result.entries[0].response.body == body_content
+        assert result.entries[0].response.body_file == "response_body.json"
+
+    def test_parse_response_prefers_inline_text_over_body_file(self) -> None:
+        """If both text and _bodyFile present, text takes precedence."""
+        response_data = {
+            "status": 200,
+            "statusText": "OK",
+            "headers": [],
+            "cookies": [],
+            "content": {
+                "size": 11,
+                "mimeType": "text/plain",
+                "text": "inline body",
+                "_bodyFile": "should_not_load.txt",
+            },
+        }
+        # No base_dir needed since inline text takes precedence
+        result = _parse_response(response_data, base_dir=Path("/nonexistent"))
+
+        assert result.body == "inline body"
+        assert result.body_size == 11
+
+    def test_body_file_field_set_on_response(self, tmp_path: Path) -> None:
+        """body_file field on HARResponse is populated from _bodyFile."""
+        response_data = {
+            "status": 200,
+            "statusText": "OK",
+            "headers": [],
+            "cookies": [],
+            "content": {
+                "size": 0,
+                "mimeType": "text/plain",
+                "_bodyFile": "some_file.txt",
+            },
+        }
+        # No base_dir provided -- body_file should still be set
+        result = _parse_response(response_data)
+
+        assert result.body_file == "some_file.txt"
+        assert result.body is None

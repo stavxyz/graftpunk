@@ -27,35 +27,10 @@ from graftpunk.har import (
 from graftpunk.har.generator import generate_plugin_code, generate_yaml_plugin
 from graftpunk.har.parser import HARParseError
 from graftpunk.logging import get_logger
+from graftpunk.plugins import infer_site_name
 
 LOG = get_logger(__name__)
 console = Console()
-
-
-def _infer_site_name(domain: str) -> str:
-    """Infer a site name from domain.
-
-    Args:
-        domain: Domain string like "api.example.com".
-
-    Returns:
-        Simplified site name like "example".
-    """
-    # Remove common prefixes and suffixes
-    name = domain.lower()
-    for prefix in ["www.", "api.", "app.", "m."]:
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
-
-    # Take first part before TLD
-    parts = name.split(".")
-    if len(parts) >= 2:
-        name = parts[-2]  # Get main domain, not TLD
-
-    # Clean up
-    name = name.replace("-", "_")
-    return name
 
 
 def import_har(
@@ -162,7 +137,7 @@ def import_har(
         raise typer.Exit(1) from None
 
     # Use provided name or infer from domain
-    site_name = name or _infer_site_name(domain)
+    site_name = name or infer_site_name(domain)
     console.print(f"[bold]Site:[/bold] {site_name} ({domain})\n")
 
     # Detect auth flow

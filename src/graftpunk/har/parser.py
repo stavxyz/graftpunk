@@ -46,6 +46,7 @@ class HARResponse:
     content_type: str | None = None
     body: str | None = None
     body_size: int = 0
+    body_file: str | None = None  # relative path to body file on disk
 
 
 @dataclass
@@ -131,6 +132,15 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+_TEXT_CONTENT_KEYWORDS = ("json", "html", "text", "xml", "javascript", "css")
+
+
+def _is_text_content(mime: str) -> bool:
+    """Check if a MIME type represents text content."""
+    mime_lower = mime.lower()
+    return any(kw in mime_lower for kw in _TEXT_CONTENT_KEYWORDS)
+
+
 def _parse_request(request_data: dict[str, Any]) -> HARRequest:
     """Parse request section of HAR entry.
 
@@ -158,11 +168,13 @@ def _parse_request(request_data: dict[str, Any]) -> HARRequest:
     )
 
 
-def _parse_response(response_data: dict[str, Any]) -> HARResponse:
+def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None) -> HARResponse:
     """Parse response section of HAR entry.
 
     Args:
         response_data: Response dict from HAR entry.
+        base_dir: Directory containing the HAR file, used to resolve _bodyFile
+            references to disk-streamed response bodies.
 
     Returns:
         Parsed HARResponse object.
@@ -173,10 +185,26 @@ def _parse_response(response_data: dict[str, Any]) -> HARResponse:
     # Extract body content
     body = None
     body_size = 0
+    body_file = None
     content = response_data.get("content", {})
     if isinstance(content, dict):
         body = content.get("text")
         body_size = content.get("size", 0)
+        body_file_ref = content.get("_bodyFile")
+
+        # If body is stored on disk and not already inline, load it
+        if body_file_ref and base_dir and body is None:
+            body_file = body_file_ref
+            body_path = base_dir / body_file_ref
+            if body_path.exists():
+                mime = content.get("mimeType", "")
+                if _is_text_content(mime):
+                    body = body_path.read_text(encoding="utf-8", errors="replace")
+                else:
+                    body = f"[binary file: {body_file_ref}]"
+                body_size = body_path.stat().st_size
+        elif body_file_ref:
+            body_file = body_file_ref
 
     return HARResponse(
         status=response_data.get("status", 0),
@@ -186,6 +214,7 @@ def _parse_response(response_data: dict[str, Any]) -> HARResponse:
         content_type=content_type,
         body=body,
         body_size=body_size,
+        body_file=body_file,
     )
 
 
@@ -238,11 +267,13 @@ def validate_har_schema(data: dict[str, Any]) -> None:
         raise HARParseError("'entries' must be an array")
 
 
-def _parse_entries(data: dict[str, Any]) -> HARParseResult:
+def _parse_entries(data: dict[str, Any], base_dir: Path | None = None) -> HARParseResult:
     """Parse entries from validated HAR data.
 
     Args:
         data: Validated HAR data with log.entries.
+        base_dir: Directory containing the HAR file, passed through to
+            _parse_response for _bodyFile resolution.
 
     Returns:
         HARParseResult containing successfully parsed entries and any errors.
@@ -253,7 +284,7 @@ def _parse_entries(data: dict[str, Any]) -> HARParseResult:
     for idx, entry_data in enumerate(data["log"]["entries"]):
         try:
             request = _parse_request(entry_data.get("request", {}))
-            response = _parse_response(entry_data.get("response", {}))
+            response = _parse_response(entry_data.get("response", {}), base_dir=base_dir)
             timestamp = _parse_timestamp(entry_data.get("startedDateTime", ""))
             time_ms = entry_data.get("time", 0.0)
 
@@ -302,6 +333,7 @@ def parse_har_file(filepath: Path | str) -> HARParseResult:
         FileNotFoundError: If file does not exist.
     """
     filepath = Path(filepath)
+    base_dir = filepath.parent
 
     if not filepath.exists():
         raise FileNotFoundError(f"HAR file not found: {filepath}")
@@ -313,7 +345,7 @@ def parse_har_file(filepath: Path | str) -> HARParseResult:
         raise HARParseError(f"Invalid JSON in HAR file: {exc}") from exc
 
     validate_har_schema(data)
-    result = _parse_entries(data)
+    result = _parse_entries(data, base_dir=base_dir)
 
     LOG.info(
         "har_file_parsed",

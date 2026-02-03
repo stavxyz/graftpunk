@@ -18,7 +18,7 @@ def add_log_level(logger: WrappedLogger, method_name: str, event_dict: EventDict
 
 
 def configure_logging(
-    level: str = "INFO",
+    level: str = "WARNING",
     json_output: bool = False,
 ) -> None:
     """Configure structlog for graftpunk.
@@ -51,7 +51,7 @@ def configure_logging(
         ),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-        cache_logger_on_first_use=True,
+        cache_logger_on_first_use=False,
     )
 
 

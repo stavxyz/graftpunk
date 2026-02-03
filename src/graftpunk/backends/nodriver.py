@@ -163,16 +163,21 @@ class NoDriverBackend:
                 "nodriver package not installed. Install with: pip install graftpunk[nodriver]"
             ) from exc
 
+        # --test-type suppresses Chrome's "unsupported flag" warning banner
+        browser_args = ["--test-type"]
+        if "browser_args" in self._options:
+            browser_args.extend(self._options["browser_args"])
+
         start_kwargs: dict[str, Any] = {
             "headless": self._headless,
+            "sandbox": self._options.get("sandbox", False),
+            "browser_args": browser_args,
         }
 
         if self._profile_dir is not None:
             start_kwargs["user_data_dir"] = str(self._profile_dir)
 
         # Pass through additional options
-        if "browser_args" in self._options:
-            start_kwargs["browser_args"] = self._options["browser_args"]
         if "browser_executable_path" in self._options:
             start_kwargs["browser_executable_path"] = self._options["browser_executable_path"]
         if "lang" in self._options:

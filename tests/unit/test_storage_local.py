@@ -1,5 +1,6 @@
 """Tests for local storage backend."""
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -138,6 +139,212 @@ class TestLocalSessionStorage:
 
         with pytest.raises(SessionExpiredError):
             storage.load_session("expired")
+
+
+class TestLegacyFlatFile:
+    """Tests for legacy flat file session loading and management."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a LocalSessionStorage instance."""
+        return LocalSessionStorage(base_dir=tmp_path)
+
+    def test_load_legacy_session(self, storage, tmp_path):
+        """Test loading a session from legacy flat file structure."""
+        # Create a legacy flat file
+        legacy_path = tmp_path / "my-provider.session.pickle"
+        legacy_path.write_bytes(b"legacy-encrypted-data")
+
+        data, metadata = storage.load_session("my-provider")
+        assert data == b"legacy-encrypted-data"
+        assert metadata.name == "my-provider"
+        assert metadata.checksum == ""
+        assert metadata.expires_at is None
+        assert metadata.status == "active"
+
+    def test_list_sessions_includes_legacy_files(self, storage, tmp_path):
+        """Test that list_sessions includes legacy flat file sessions."""
+        # Create a legacy flat file
+        legacy_path = tmp_path / "legacy-provider.session.pickle"
+        legacy_path.write_bytes(b"data")
+
+        # Create a modern directory session
+        modern_dir = tmp_path / "modern-provider"
+        modern_dir.mkdir()
+        (modern_dir / "session.pickle").write_bytes(b"data")
+
+        sessions = storage.list_sessions()
+        assert "legacy-provider" in sessions
+        assert "modern-provider" in sessions
+        assert sessions == sorted(sessions)
+
+    def test_delete_legacy_session(self, storage, tmp_path):
+        """Test deleting a legacy flat file session."""
+        legacy_path = tmp_path / "old-session.session.pickle"
+        legacy_path.write_bytes(b"data")
+
+        result = storage.delete_session("old-session")
+        assert result is True
+        assert not legacy_path.exists()
+
+    def test_delete_legacy_session_os_error(self, storage, tmp_path):
+        """Test that OSError during legacy file deletion returns False."""
+        # Session does not exist as directory or legacy file
+        result = storage.delete_session("totally-nonexistent")
+        assert result is False
+
+
+class TestLocalEdgeCases:
+    """Tests for edge cases and error handling in local storage."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a LocalSessionStorage instance."""
+        return LocalSessionStorage(base_dir=tmp_path)
+
+    @pytest.fixture
+    def sample_metadata(self):
+        """Create sample session metadata."""
+        now = datetime.now(UTC)
+        return SessionMetadata(
+            name="test-session",
+            checksum="abc123",
+            created_at=now,
+            modified_at=now,
+            expires_at=now + timedelta(hours=24),
+            domain="example.com",
+            current_url="https://example.com/dashboard",
+            cookie_count=5,
+            cookie_domains=["example.com", ".example.com"],
+            status="active",
+        )
+
+    def test_load_session_missing_metadata_file(self, storage, tmp_path):
+        """Test load raises SessionExpiredError when metadata.json is missing."""
+        session_dir = tmp_path / "no-meta"
+        session_dir.mkdir()
+        (session_dir / "session.pickle").write_bytes(b"data")
+        # No metadata.json
+
+        with pytest.raises(SessionExpiredError, match="missing metadata"):
+            storage.load_session("no-meta")
+
+    def test_load_session_invalid_metadata_json(self, storage, tmp_path):
+        """Test load raises SessionExpiredError when metadata.json is invalid JSON."""
+        session_dir = tmp_path / "bad-meta"
+        session_dir.mkdir()
+        (session_dir / "session.pickle").write_bytes(b"data")
+        (session_dir / "metadata.json").write_text("not valid json {{{")
+
+        with pytest.raises(SessionExpiredError, match="invalid metadata"):
+            storage.load_session("bad-meta")
+
+    def test_load_session_pickle_missing_in_dir(self, storage, tmp_path):
+        """Test load raises SessionNotFoundError when dir exists but pickle is missing."""
+        session_dir = tmp_path / "empty-dir"
+        session_dir.mkdir()
+        # No session.pickle
+
+        with pytest.raises(SessionNotFoundError, match="not found"):
+            storage.load_session("empty-dir")
+
+    def test_load_session_invalid_expires_at_continues(self, storage, tmp_path):
+        """Test load continues when expires_at is an unparseable string."""
+        session_dir = tmp_path / "bad-expiry"
+        session_dir.mkdir()
+        (session_dir / "session.pickle").write_bytes(b"data")
+        metadata_dict = {
+            "name": "bad-expiry",
+            "checksum": "abc",
+            "created_at": datetime.now(UTC).isoformat(),
+            "modified_at": datetime.now(UTC).isoformat(),
+            "expires_at": "not-a-date",
+            "domain": None,
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+        }
+        with (session_dir / "metadata.json").open("w") as f:
+            json.dump(metadata_dict, f)
+
+        data, metadata = storage.load_session("bad-expiry")
+        assert data == b"data"
+        assert metadata.name == "bad-expiry"
+
+    def test_get_session_metadata_json_decode_error(self, storage, tmp_path):
+        """Test get_session_metadata returns None on JSON decode error."""
+        session_dir = tmp_path / "corrupt"
+        session_dir.mkdir()
+        (session_dir / "metadata.json").write_text("{corrupt json")
+
+        result = storage.get_session_metadata("corrupt")
+        assert result is None
+
+    def test_update_session_metadata_nonexistent_returns_false(self, storage):
+        """Test update_session_metadata returns False for nonexistent session."""
+        result = storage.update_session_metadata("nonexistent", status="active")
+        assert result is False
+
+    def test_update_session_metadata_corrupt_json_returns_false(self, storage, tmp_path):
+        """Test update_session_metadata returns False on corrupt metadata.json."""
+        session_dir = tmp_path / "corrupt-update"
+        session_dir.mkdir()
+        (session_dir / "metadata.json").write_text("{not valid json")
+
+        result = storage.update_session_metadata("corrupt-update", status="active")
+        assert result is False
+
+    def test_update_session_metadata_no_status_updates_modified_at(
+        self, storage, sample_metadata, tmp_path
+    ):
+        """Test update_session_metadata with no status still updates modified_at."""
+        storage.save_session("just-touch", b"data", sample_metadata)
+
+        # Read original modified_at
+        metadata_before = storage.get_session_metadata("just-touch")
+        assert metadata_before is not None
+
+        result = storage.update_session_metadata("just-touch")
+        assert result is True
+
+        metadata_after = storage.get_session_metadata("just-touch")
+        assert metadata_after is not None
+        # modified_at should be updated
+        assert metadata_after.modified_at >= metadata_before.modified_at
+
+    def test_list_sessions_base_dir_not_exists(self, tmp_path):
+        """Test list_sessions returns empty when base_dir doesn't exist."""
+        import shutil
+
+        storage = LocalSessionStorage(base_dir=tmp_path / "sessions")
+        # Remove the directory that was created during init
+        shutil.rmtree(tmp_path / "sessions")
+
+        sessions = storage.list_sessions()
+        assert sessions == []
+
+    def test_load_session_no_expiry_succeeds(self, storage, tmp_path):
+        """Test load succeeds when expires_at is None (no TTL)."""
+        now = datetime.now(UTC)
+        no_expiry_metadata = SessionMetadata(
+            name="no-expiry",
+            checksum="abc",
+            created_at=now,
+            modified_at=now,
+            expires_at=None,
+            domain="example.com",
+            current_url=None,
+            cookie_count=0,
+            cookie_domains=[],
+            status="active",
+        )
+
+        storage.save_session("no-expiry", b"session-data", no_expiry_metadata)
+
+        data, metadata = storage.load_session("no-expiry")
+        assert data == b"session-data"
+        assert metadata.expires_at is None
 
 
 class TestSessionMetadata:

@@ -10,8 +10,8 @@
 #
 # No session or authentication is required for httpbin.org.
 
-site_name: httpbin
-session_name: ""  # Empty = no session required (public API)
+# site_name is auto-inferred from base_url → "httpbin"
+requires_session: false  # Public API, no login needed
 help: "Test commands using httpbin.org (no authentication required)"
 base_url: "https://httpbin.org"
 
@@ -32,7 +32,7 @@ commands:
     help: "Get the User-Agent header value"
     method: GET
     url: "/user-agent"
-    jmespath: "user-agent"
+    jmespath: '"user-agent"'
 
   get:
     help: "Test GET request - echoes query parameters"
@@ -48,6 +48,8 @@ commands:
     help: "Return a specific HTTP status code"
     method: GET
     url: "/status/{code}"
+    raise_for_status: false
+    max_retries: 2
     params:
       - name: code
         type: int
@@ -59,6 +61,8 @@ commands:
     help: "Delay the response by N seconds (max 10)"
     method: GET
     url: "/delay/{seconds}"
+    timeout: 60
+    max_retries: 1
     params:
       - name: seconds
         type: int
@@ -86,3 +90,19 @@ commands:
     help: "Return robots.txt rules"
     method: GET
     url: "/robots.txt"
+
+  # Authenticated commands (require HTTPBIN_AUTH env var)
+  auth-whoami:
+    help: "Check that auth header is being sent (requires HTTPBIN_AUTH)"
+    method: GET
+    url: "/headers"
+    jmespath: "headers.Authorization"
+    headers:
+      Authorization: "Basic ${HTTPBIN_AUTH}"
+
+  auth-bearer:
+    help: "Test bearer token endpoint (requires HTTPBIN_AUTH as bearer token)"
+    method: GET
+    url: "/bearer"
+    headers:
+      Authorization: "Bearer ${HTTPBIN_AUTH}"
