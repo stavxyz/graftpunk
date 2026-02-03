@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 import httpie.context
 import httpie.sessions
 import requestium
+import requests.cookies
 import requests.utils
 import selenium.common.exceptions
 import slugify as slugify_lib
@@ -639,7 +640,9 @@ class BrowserSession(requestium.Session):
         return httpie_session_path
 
 
-async def inject_cookies_to_nodriver(tab: Any, cookies: requests.cookies.RequestsCookieJar) -> int:
+async def inject_cookies_to_nodriver(
+    tab: Any, cookies: "requests.cookies.RequestsCookieJar"
+) -> int:
     """Inject cached session cookies into a nodriver browser tab via CDP.
 
     This is the inverse of transfer_nodriver_cookies_to_session() — it loads
@@ -665,8 +668,10 @@ async def inject_cookies_to_nodriver(tab: Any, cookies: requests.cookies.Request
     # Use the low-level CDP approach instead.
     cookie_params = []
     for cookie in cookies:
+        if cookie.value is None:
+            continue
         cookie_params.append(
-            cdp_net.CookieParam(  # type: ignore[attr-defined]
+            cdp_net.CookieParam(
                 name=cookie.name,
                 value=cookie.value,
                 domain=cookie.domain,
