@@ -255,6 +255,9 @@ class BrowserSession(requestium.Session):
 
         Call this after login before caching the session so that browser
         cookies are available for subsequent API calls.
+
+        Raises:
+            BrowserError: If backend is not initialized or browser is not started.
         """
         backend_instance = getattr(self, "_backend_instance", None)
         if backend_instance is None or not hasattr(backend_instance, "_browser"):
@@ -276,14 +279,15 @@ class BrowserSession(requestium.Session):
         """Start the browser asynchronously (for nodriver backend).
 
         Call this method in async context before using the driver with nodriver.
+        Must be awaited before accessing the driver property.
 
         Raises:
             BrowserError: If backend is not nodriver or backend instance is missing.
 
         Example:
-            session = BrowserSession(backend="nodriver")
-            await session.start_async()
-            await session.driver.get("https://example.com")
+            >>> session = BrowserSession(backend="nodriver")
+            >>> await session.start_async()
+            >>> await session.driver.get("https://example.com")
         """
         backend_type = getattr(self, "_backend_type", "selenium")
         if backend_type != "nodriver":
@@ -424,8 +428,12 @@ class BrowserSession(requestium.Session):
     def quit(self) -> None:
         """Close the browser and clean up resources.
 
-        For nodriver backend, stops the backend properly.
-        For selenium backend, quits the WebDriver.
+        Properly closes the browser driver and releases all associated resources.
+        For nodriver backend, stops the backend. For selenium backend, quits the
+        WebDriver. Safe to call multiple times.
+
+        Raises:
+            No exceptions raised; errors are logged internally.
         """
         backend_instance = getattr(self, "_backend_instance", None)
         backend_type = getattr(self, "_backend_type", "selenium")
@@ -452,8 +460,14 @@ class BrowserSession(requestium.Session):
     def __getstate__(self) -> dict[str, Any]:
         """Get state for pickling.
 
+        Serializes the session state, excluding non-picklable browser driver objects.
+        For nodriver backend, only HTTP session state is preserved. For selenium
+        backend, driver handles are cleared and HTTP session state is preserved
+        along with browser configuration.
+
         Returns:
-            State dictionary with serializable data.
+            State dictionary with serializable session data including cookies,
+            headers, current URL, and backend configuration.
         """
         backend_type = getattr(self, "_backend_type", "selenium")
 
@@ -509,11 +523,18 @@ class BrowserSession(requestium.Session):
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore state from pickle.
 
+        Reconstructs the session from a pickled state dictionary. For nodriver
+        backend, only HTTP session state is restored (browser is not available).
+        For selenium backend, WebDriver must be recreated after unpickling.
+
         Args:
-            state: State dictionary to restore from.
+            state: State dictionary containing serialized session data with keys
+                like 'cookies', 'headers', '_backend_type', '_use_stealth',
+                and other session configuration.
 
         Raises:
-            BrowserError: If session creation fails.
+            BrowserError: If session restoration fails (typically for selenium
+                backend when WebDriver creation is needed).
         """
         # Restore backend type first to determine how to restore
         self._backend_type = state.get("_backend_type", "selenium")
