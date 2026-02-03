@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from collections import defaultdict
@@ -247,6 +248,45 @@ class CachedToken:
         return (time.time() - self.extracted_at) > self.ttl
 
 
+def _run_browser_extraction(
+    session: requests.Session,
+    tokens: list[Token],
+    base_url: str,
+) -> dict[str, str]:
+    """Run browser extraction, handling sync/async context detection.
+
+    Args:
+        session: Authenticated session with cookies.
+        tokens: Tokens needing browser extraction.
+        base_url: Plugin's base URL.
+
+    Returns:
+        Mapping of token name to extracted value.
+    """
+    import logging as _logging
+
+    coro = _extract_tokens_browser(session, tokens, base_url)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # Sync context — suppress asyncio cleanup noise
+        asyncio_logger = _logging.getLogger("asyncio")
+        prev_level = asyncio_logger.level
+        asyncio_logger.setLevel(_logging.CRITICAL)
+        try:
+            return asyncio.run(coro)
+        finally:
+            asyncio_logger.setLevel(prev_level)
+    else:
+        # Async context — run in a thread to avoid nested asyncio.run()
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result()
+
+
 def extract_token(session: requests.Session, token: Token, base_url: str) -> str:
     """Extract a token value using the configured strategy.
 
@@ -315,7 +355,10 @@ def prepare_session(
 ) -> requests.Session:
     """Extract all tokens and inject as session headers.
 
-    Uses in-memory cache on the session object. Expired tokens are re-extracted.
+    Uses a three-pass flow:
+    1. Resolve tokens via cookies or HTTP (fast path)
+    2. Catch BrowserExtractionNeeded for tokens that need browser fallback
+    3. Batch browser-needing tokens into a single headless browser session
 
     Args:
         session: Authenticated requests.Session.
@@ -326,7 +369,9 @@ def prepare_session(
         The same session with tokens injected as headers.
     """
     cache: dict[str, CachedToken] = getattr(session, _CACHE_ATTR, {})
+    browser_needed: list[Token] = []
 
+    # Pass 1+2: Try non-browser extraction, collect browser-needed tokens
     for token in token_config.tokens:
         cached = cache.get(token.name)
         if cached and not cached.is_expired:
@@ -343,9 +388,29 @@ def prepare_session(
             )
             session.headers[token.name] = value
             LOG.info("token_extracted", name=token.name, source=token.source)
+        except BrowserExtractionNeeded:
+            LOG.info("token_needs_browser", name=token.name, source=token.source)
+            browser_needed.append(token)
         except ValueError:
             LOG.exception("token_extraction_failed", name=token.name)
             raise
+
+    # Pass 3: Batch browser extraction
+    if browser_needed:
+        LOG.info("browser_extraction_batch", count=len(browser_needed))
+        results = _run_browser_extraction(session, browser_needed, base_url)
+
+        for token in browser_needed:
+            value = results.get(token.name)
+            if value is None:
+                raise ValueError(f"Browser extraction failed for token '{token.name}'")
+            cache[token.name] = CachedToken(
+                name=token.name,
+                value=value,
+                extracted_at=time.time(),
+                ttl=token.cache_duration,
+            )
+            session.headers[token.name] = value
 
     setattr(session, _CACHE_ATTR, cache)
     return session

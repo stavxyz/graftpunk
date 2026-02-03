@@ -536,6 +536,135 @@ class TestExtractTokensBrowser:
         mock_browser.stop.assert_called_once()
 
 
+class TestPrepareSessionBrowserFallback:
+    """Tests for prepare_session with browser extraction fallback."""
+
+    def test_auto_token_falls_back_to_browser(self) -> None:
+        """extraction='auto' token that fails HTTP gets extracted via browser."""
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="auto",
+        )
+        config = TokenConfig(tokens=(token,))
+
+        with (
+            patch.object(session, "get", side_effect=requests.exceptions.ReadTimeout("timeout")),
+            patch(
+                "graftpunk.tokens._run_browser_extraction",
+                return_value={"X-CSRF": "browser_val"},
+            ) as mock_browser,
+        ):
+            prepare_session(session, config, "https://example.com")
+
+        assert session.headers["X-CSRF"] == "browser_val"
+        mock_browser.assert_called_once()
+
+    def test_browser_token_skips_http(self) -> None:
+        """extraction='browser' token goes directly to browser batch."""
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="browser",
+        )
+        config = TokenConfig(tokens=(token,))
+
+        with patch(
+            "graftpunk.tokens._run_browser_extraction",
+            return_value={"X-CSRF": "browser_val"},
+        ) as mock_browser:
+            prepare_session(session, config, "https://example.com")
+
+        assert session.headers["X-CSRF"] == "browser_val"
+        mock_browser.assert_called_once()
+
+    def test_mixed_tokens_cookie_and_browser(self) -> None:
+        """Cookie token resolves immediately; browser token batched."""
+        session = requests.Session()
+        session.cookies.set("sid", "cookie_val")
+        cookie_token = Token(name="X-Session", source="cookie", cookie_name="sid")
+        browser_token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="browser",
+        )
+        config = TokenConfig(tokens=(cookie_token, browser_token))
+
+        with patch(
+            "graftpunk.tokens._run_browser_extraction",
+            return_value={"X-CSRF": "browser_val"},
+        ):
+            prepare_session(session, config, "https://example.com")
+
+        assert session.headers["X-Session"] == "cookie_val"
+        assert session.headers["X-CSRF"] == "browser_val"
+
+    def test_browser_extraction_missing_token_raises(self) -> None:
+        """If browser extraction returns empty dict, raise ValueError."""
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="browser",
+        )
+        config = TokenConfig(tokens=(token,))
+
+        with (
+            patch("graftpunk.tokens._run_browser_extraction", return_value={}),
+            pytest.raises(ValueError, match="Browser extraction failed for token 'X-CSRF'"),
+        ):
+            prepare_session(session, config, "https://example.com")
+
+    def test_no_browser_tokens_skips_browser(self) -> None:
+        """All-cookie config never calls browser extraction."""
+        session = requests.Session()
+        session.cookies.set("csrf", "val")
+        token = Token(name="X-CSRF", source="cookie", cookie_name="csrf")
+        config = TokenConfig(tokens=(token,))
+
+        with patch("graftpunk.tokens._run_browser_extraction") as mock_browser:
+            prepare_session(session, config, "https://example.com")
+
+        mock_browser.assert_not_called()
+        assert session.headers["X-CSRF"] == "val"
+
+    def test_browser_tokens_are_cached(self) -> None:
+        """Browser-extracted tokens are cached in the session."""
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="browser",
+            cache_duration=300,
+        )
+        config = TokenConfig(tokens=(token,))
+
+        with patch(
+            "graftpunk.tokens._run_browser_extraction",
+            return_value={"X-CSRF": "browser_val"},
+        ):
+            prepare_session(session, config, "https://example.com")
+
+        # Second call should use cache, not browser
+        with patch("graftpunk.tokens._run_browser_extraction") as mock_browser:
+            prepare_session(session, config, "https://example.com")
+            mock_browser.assert_not_called()
+
+        assert session.headers["X-CSRF"] == "browser_val"
+
+
 class TestExtractTokenExtractionField:
     """Tests for extract_token respecting the extraction field."""
 
