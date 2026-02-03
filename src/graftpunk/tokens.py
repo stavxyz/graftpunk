@@ -4,14 +4,103 @@ from __future__ import annotations
 
 import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import requests
 
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
+
+
+async def nodriver_start(*, headless: bool = True) -> Any:
+    """Start a nodriver browser instance.
+
+    Thin wrapper to isolate the nodriver import for testability.
+    """
+    import nodriver
+
+    return await nodriver.start(headless=headless)
+
+
+def _deregister_nodriver_browser(browser: Any) -> None:
+    """Remove browser from nodriver's global registry to prevent atexit noise."""
+    try:
+        from nodriver.core.util import get_registered_instances
+
+        get_registered_instances().discard(browser)
+    except Exception:  # noqa: BLE001, S110 — best-effort cleanup
+        pass
+
+
+async def _extract_tokens_browser(
+    session: requests.Session,
+    tokens: list[Token],
+    base_url: str,
+) -> dict[str, str]:
+    """Extract multiple tokens using a single headless browser session.
+
+    Starts one headless nodriver browser, injects session cookies, and navigates
+    to each unique page_url to extract tokens via regex. Tokens sharing a
+    page_url are extracted from a single navigation.
+
+    Args:
+        session: Authenticated requests.Session with cookies to inject.
+        tokens: List of Token configs to extract (all must have source="page").
+        base_url: Plugin's base URL for resolving relative page_url paths.
+
+    Returns:
+        Mapping of token name to extracted value. Missing keys indicate
+        extraction failure for that specific token.
+    """
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    # Group tokens by page_url so we navigate once per unique URL
+    by_url: dict[str, list[Token]] = defaultdict(list)
+    for token in tokens:
+        by_url[token.page_url].append(token)
+
+    browser = await nodriver_start(headless=True)
+    try:
+        # Inject session cookies before any navigation
+        tab = browser.main_tab
+        await inject_cookies_to_nodriver(tab, session.cookies)
+
+        results: dict[str, str] = {}
+
+        for page_url, token_group in by_url.items():
+            url = f"{base_url.rstrip('/')}{page_url}"
+            try:
+                tab = await browser.get(url)
+                content = await tab.get_content()
+            except Exception as exc:  # noqa: BLE001 — per-URL isolation
+                LOG.warning(
+                    "browser_token_navigation_failed",
+                    url=url,
+                    error=str(exc),
+                    token_count=len(token_group),
+                )
+                continue
+
+            for token in token_group:
+                match = re.search(token.pattern, content)  # type: ignore[arg-type]
+                if match:
+                    results[token.name] = match.group(1)
+                    LOG.info("browser_token_extracted", name=token.name, url=url)
+                else:
+                    LOG.warning(
+                        "browser_token_pattern_not_found",
+                        name=token.name,
+                        url=url,
+                        pattern=token.pattern,
+                    )
+
+        return results
+    finally:
+        browser.stop()
+        _deregister_nodriver_browser(browser)
 
 
 @dataclass(frozen=True)
