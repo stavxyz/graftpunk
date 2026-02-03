@@ -28,6 +28,13 @@ class GraftpunkSession(requests.Session):
         header_profiles: dict[str, dict[str, str]] | None = None,
         **kwargs: Any,
     ) -> None:
+        """Initialize a GraftpunkSession.
+
+        Args:
+            header_profiles: Dict mapping profile names to header dicts.
+                Profiles: "navigation", "xhr", "form".
+            **kwargs: Additional arguments passed to requests.Session.
+        """
         super().__init__(**kwargs)
         self._gp_header_profiles: dict[str, dict[str, str]] = header_profiles or {}
         self.gp_default_profile: str | None = None
@@ -82,6 +89,12 @@ class GraftpunkSession(requests.Session):
 
         Compares the current value against the snapshot taken at init time.
         If the value differs or the key is new, the user set it.
+
+        Args:
+            key: Header name to check.
+
+        Returns:
+            True if the header differs from its initial value, False otherwise.
         """
         current_value = self.headers.get(key)
         default_value = self._gp_default_session_headers.get(key)
@@ -90,8 +103,16 @@ class GraftpunkSession(requests.Session):
     def prepare_request(self, request: requests.Request, **kwargs: Any) -> requests.PreparedRequest:
         """Prepare a request with auto-detected profile headers.
 
-        Profile headers are applied as session-level defaults so that
-        any headers explicitly set by the caller take precedence.
+        Overrides the base implementation to inject header profiles based on
+        request characteristics. Profile headers are applied as session-level
+        defaults so that any headers explicitly set by the caller take precedence.
+
+        Args:
+            request: The request to prepare.
+            **kwargs: Additional arguments passed to requests.Session.prepare_request().
+
+        Returns:
+            A PreparedRequest with applied profile headers (if configured).
         """
         if not self._gp_header_profiles:
             return super().prepare_request(request, **kwargs)
