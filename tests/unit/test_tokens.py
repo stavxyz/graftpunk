@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import requests
@@ -97,9 +97,7 @@ class TestToken:
             Token(name="X-CSRF", source="cookie", cookie_name="csrf", extraction="invalid")
 
     def test_from_js_variable_with_browser_extraction(self) -> None:
-        token = Token.from_js_variable(
-            r'csrf = "([^"]+)"', "X-CSRF", extraction="browser"
-        )
+        token = Token.from_js_variable(r'csrf = "([^"]+)"', "X-CSRF", extraction="browser")
         assert token.extraction == "browser"
 
     def test_from_meta_tag_with_extraction(self) -> None:
@@ -311,3 +309,227 @@ class TestClearCachedTokens:
         session = requests.Session()
         # Should not raise
         clear_cached_tokens(session)
+
+
+class TestExtractTokensBrowser:
+    """Tests for _extract_tokens_browser async function."""
+
+    @pytest.mark.asyncio
+    async def test_extracts_single_token_from_page(self) -> None:
+        from graftpunk.tokens import _extract_tokens_browser
+
+        session = requests.Session()
+        session.cookies.set("sid", "abc", domain="example.com")
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/dashboard",
+            extraction="browser",
+        )
+
+        mock_tab = AsyncMock()
+        mock_tab.get_content = AsyncMock(return_value='<html>var csrf = "tok123";</html>')
+
+        mock_browser = AsyncMock()
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_browser.stop = MagicMock()
+        mock_browser.main_tab = mock_tab
+
+        with (
+            patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),
+            patch(
+                "graftpunk.session.inject_cookies_to_nodriver",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch("graftpunk.tokens._deregister_nodriver_browser"),
+        ):
+            results = await _extract_tokens_browser(session, [token], "https://example.com")
+
+        assert results == {"X-CSRF": "tok123"}
+
+    @pytest.mark.asyncio
+    async def test_groups_tokens_by_url(self) -> None:
+        """Two tokens from same page_url should share one navigation."""
+        from graftpunk.tokens import _extract_tokens_browser
+
+        session = requests.Session()
+        token1 = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/app",
+            extraction="browser",
+        )
+        token2 = Token(
+            name="X-Nonce",
+            source="page",
+            pattern=r'nonce = "([^"]+)"',
+            page_url="/app",
+            extraction="browser",
+        )
+
+        mock_tab = AsyncMock()
+        mock_tab.get_content = AsyncMock(return_value='csrf = "aaa"; nonce = "bbb";')
+        mock_browser = AsyncMock()
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_browser.stop = MagicMock()
+        mock_browser.main_tab = mock_tab
+
+        with (
+            patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),
+            patch(
+                "graftpunk.session.inject_cookies_to_nodriver",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch("graftpunk.tokens._deregister_nodriver_browser"),
+        ):
+            results = await _extract_tokens_browser(
+                session, [token1, token2], "https://example.com"
+            )
+
+        assert results == {"X-CSRF": "aaa", "X-Nonce": "bbb"}
+        mock_browser.get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_url_a_succeeds_url_b_fails(self) -> None:
+        from graftpunk.tokens import _extract_tokens_browser
+
+        session = requests.Session()
+        token_a = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/good",
+            extraction="browser",
+        )
+        token_b = Token(
+            name="X-Nonce",
+            source="page",
+            pattern=r'nonce = "([^"]+)"',
+            page_url="/bad",
+            extraction="browser",
+        )
+
+        mock_tab_good = AsyncMock()
+        mock_tab_good.get_content = AsyncMock(return_value='csrf = "val1";')
+
+        mock_browser = AsyncMock()
+        mock_browser.get = AsyncMock(side_effect=[mock_tab_good, RuntimeError("Navigation failed")])
+        mock_browser.stop = MagicMock()
+        mock_browser.main_tab = AsyncMock()
+
+        with (
+            patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),
+            patch(
+                "graftpunk.session.inject_cookies_to_nodriver",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch("graftpunk.tokens._deregister_nodriver_browser"),
+        ):
+            results = await _extract_tokens_browser(
+                session, [token_a, token_b], "https://example.com"
+            )
+
+        assert results == {"X-CSRF": "val1"}
+        assert "X-Nonce" not in results
+
+    @pytest.mark.asyncio
+    async def test_pattern_not_found_excluded_from_results(self) -> None:
+        from graftpunk.tokens import _extract_tokens_browser
+
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/page",
+            extraction="browser",
+        )
+
+        mock_tab = AsyncMock()
+        mock_tab.get_content = AsyncMock(return_value="<html>no token here</html>")
+        mock_browser = AsyncMock()
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_browser.stop = MagicMock()
+        mock_browser.main_tab = mock_tab
+
+        with (
+            patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),
+            patch(
+                "graftpunk.session.inject_cookies_to_nodriver",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch("graftpunk.tokens._deregister_nodriver_browser"),
+        ):
+            results = await _extract_tokens_browser(session, [token], "https://example.com")
+
+        assert results == {}
+
+    @pytest.mark.asyncio
+    async def test_injects_session_cookies(self) -> None:
+        from graftpunk.tokens import _extract_tokens_browser
+
+        session = requests.Session()
+        session.cookies.set("sid", "abc", domain="example.com")
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/",
+            extraction="browser",
+        )
+
+        mock_tab = AsyncMock()
+        mock_tab.get_content = AsyncMock(return_value='csrf = "v1";')
+        mock_browser = AsyncMock()
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+        mock_browser.stop = MagicMock()
+        mock_browser.main_tab = mock_tab
+
+        mock_inject = AsyncMock(return_value=1)
+
+        with (
+            patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),
+            patch("graftpunk.session.inject_cookies_to_nodriver", mock_inject),
+            patch("graftpunk.tokens._deregister_nodriver_browser"),
+        ):
+            await _extract_tokens_browser(session, [token], "https://example.com")
+
+        mock_inject.assert_called_once_with(mock_tab, session.cookies)
+
+    @pytest.mark.asyncio
+    async def test_browser_always_stopped_on_error(self) -> None:
+        """Browser must be stopped even if cookie injection fails."""
+        from graftpunk.tokens import _extract_tokens_browser
+
+        session = requests.Session()
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/",
+            extraction="browser",
+        )
+
+        mock_browser = AsyncMock()
+        mock_browser.stop = MagicMock()
+        mock_browser.main_tab = AsyncMock()
+
+        with (
+            patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),
+            patch(
+                "graftpunk.session.inject_cookies_to_nodriver",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("CDP fail"),
+            ),
+            patch("graftpunk.tokens._deregister_nodriver_browser"),
+            pytest.raises(RuntimeError, match="CDP fail"),
+        ):
+            await _extract_tokens_browser(session, [token], "https://example.com")
+
+        mock_browser.stop.assert_called_once()
