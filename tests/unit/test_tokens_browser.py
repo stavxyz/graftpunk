@@ -15,7 +15,11 @@ from graftpunk.tokens import (
 
 
 class _AwaitableMock(MagicMock):
-    """MagicMock subclass that supports ``await`` (simulates nodriver Tab)."""
+    """MagicMock subclass that simulates nodriver Tab (awaitable + async sleep)."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.sleep = AsyncMock()  # nodriver tab.sleep() is async
 
     def __await__(self):  # type: ignore[override]
         return iter([])

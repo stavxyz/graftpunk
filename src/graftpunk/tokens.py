@@ -85,8 +85,24 @@ async def _extract_tokens_browser(
             url = f"{base_url.rstrip('/')}{page_url}"
             try:
                 tab = await browser.get(url)
-                await tab  # wait for page DOM to be ready
-                content = await tab.get_content()
+                # Poll for token patterns with retries — handles bot challenges
+                # and slow-rendering pages without wasting time on fast ones.
+                content = ""
+                unmatched = list(token_group)
+                for _attempt in range(6):  # up to 3 seconds (6 × 0.5s)
+                    await tab.sleep(0.5)
+                    content = await tab.get_content()
+                    still_unmatched = []
+                    for token in unmatched:
+                        match = re.search(token.pattern, content)  # type: ignore[arg-type]
+                        if match:
+                            results[token.name] = match.group(1)
+                            LOG.info("browser_token_extracted", name=token.name, url=url)
+                        else:
+                            still_unmatched.append(token)
+                    unmatched = still_unmatched
+                    if not unmatched:
+                        break
             except Exception as exc:  # noqa: BLE001 — per-URL isolation; nodriver raises varied exception types
                 LOG.warning(
                     "browser_token_navigation_failed",
@@ -97,18 +113,13 @@ async def _extract_tokens_browser(
                 )
                 continue
 
-            for token in token_group:
-                match = re.search(token.pattern, content)  # type: ignore[arg-type]
-                if match:
-                    results[token.name] = match.group(1)
-                    LOG.info("browser_token_extracted", name=token.name, url=url)
-                else:
-                    LOG.warning(
-                        "browser_token_pattern_not_found",
-                        name=token.name,
-                        url=url,
-                        pattern=token.pattern,
-                    )
+            for token in unmatched:
+                LOG.warning(
+                    "browser_token_pattern_not_found",
+                    name=token.name,
+                    url=url,
+                    pattern=token.pattern,
+                )
 
         return results
     finally:
