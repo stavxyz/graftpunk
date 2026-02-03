@@ -16,11 +16,11 @@ from graftpunk.logging import get_logger
 LOG = get_logger(__name__)
 
 
-class BrowserExtractionNeeded(Exception):  # noqa: N818 — signal, not an error
+class _BrowserExtractionNeeded(Exception):  # noqa: N818 — internal control flow signal, not an error
     """Raised when a token requires browser-based extraction.
 
-    This is an internal signal used by extract_token() to tell
-    prepare_session() that this token should be batched into the
+    This is an internal signal used by ``extract_token()`` to tell
+    ``prepare_session()`` that this token should be batched into the
     browser extraction pass. Not a user-facing error.
     """
 
@@ -41,8 +41,8 @@ def _deregister_nodriver_browser(browser: Any) -> None:
         from nodriver.core.util import get_registered_instances
 
         get_registered_instances().discard(browser)
-    except Exception:  # noqa: BLE001, S110 — best-effort cleanup
-        pass
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        LOG.debug("deregister_nodriver_browser_failed", exc_info=True)
 
 
 async def _extract_tokens_browser(
@@ -58,7 +58,8 @@ async def _extract_tokens_browser(
 
     Args:
         session: Authenticated requests.Session with cookies to inject.
-        tokens: List of Token configs to extract (all must have source="page").
+        tokens: List of Token configs to extract (typically source="page";
+            other sources may not produce meaningful results with regex).
         base_url: Plugin's base URL for resolving relative page_url paths.
 
     Returns:
@@ -85,11 +86,12 @@ async def _extract_tokens_browser(
             try:
                 tab = await browser.get(url)
                 content = await tab.get_content()
-            except Exception as exc:  # noqa: BLE001 — per-URL isolation
+            except Exception as exc:  # noqa: BLE001 — per-URL isolation; nodriver raises varied exception types
                 LOG.warning(
                     "browser_token_navigation_failed",
                     url=url,
                     error=str(exc),
+                    exc_type=type(exc).__name__,
                     token_count=len(token_group),
                 )
                 continue
@@ -124,7 +126,12 @@ class Token:
     response_header: str | None = None  # Response header (for "response_header" source)
     page_url: str = "/"  # URL to fetch for extraction (for "page" source)
     cache_duration: float = 300  # Cache TTL in seconds
-    extraction: Literal["http", "browser", "auto"] = "auto"  # Extraction strategy
+    extraction: Literal["http", "browser", "auto"] = "auto"
+    # Extraction strategy (only applies to page and response_header sources):
+    #   source="cookie"           -> extraction is ignored (always direct lookup)
+    #   source="page"             -> "http": requests only, "browser": nodriver only,
+    #                                "auto": try HTTP then fall back to browser
+    #   source="response_header"  -> same as "page"
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -143,6 +150,8 @@ class Token:
             raise ValueError(
                 f"Token.extraction must be 'http', 'browser', or 'auto', got {self.extraction!r}"
             )
+        if self.cache_duration <= 0:
+            raise ValueError("Token.cache_duration must be positive")
 
     @classmethod
     def from_meta_tag(
@@ -263,25 +272,21 @@ def _run_browser_extraction(
     Returns:
         Mapping of token name to extracted value.
     """
-    import logging as _logging
-
     coro = _extract_tokens_browser(session, tokens, base_url)
 
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         # Sync context — suppress asyncio cleanup noise
-        asyncio_logger = _logging.getLogger("asyncio")
-        prev_level = asyncio_logger.level
-        asyncio_logger.setLevel(_logging.CRITICAL)
-        try:
+        from graftpunk.logging import suppress_asyncio_noise
+
+        with suppress_asyncio_noise():
             return asyncio.run(coro)
-        finally:
-            asyncio_logger.setLevel(prev_level)
     else:
         # Async context — run in a thread to avoid nested asyncio.run()
         import concurrent.futures
 
+        LOG.debug("browser_extraction_using_thread_pool", reason="running_event_loop_detected")
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return cast("dict[str, str]", future.result())
@@ -300,8 +305,10 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
 
     Raises:
         ValueError: If token cannot be extracted via HTTP.
-        BrowserExtractionNeeded: If token needs browser extraction
+        _BrowserExtractionNeeded: If token needs browser extraction
             (extraction="browser", or extraction="auto" after HTTP failure).
+        requests.RequestException: If HTTP extraction fails and
+            extraction="http" (no browser fallback).
     """
     if token.source == "cookie":
         value = session.cookies.get(token.cookie_name)
@@ -311,7 +318,7 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
 
     # Browser-only: skip HTTP entirely
     if token.extraction == "browser":
-        raise BrowserExtractionNeeded(token.name)
+        raise _BrowserExtractionNeeded(token.name)
 
     if token.source == "response_header":
         url = f"{base_url.rstrip('/')}{token.page_url}"
@@ -319,7 +326,7 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
             resp = session.head(url, timeout=10, allow_redirects=True)
         except requests.RequestException:
             if token.extraction == "auto":
-                raise BrowserExtractionNeeded(token.name) from None
+                raise _BrowserExtractionNeeded(token.name) from None
             raise
         value = resp.headers.get(token.response_header)
         if not value:
@@ -333,12 +340,12 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
             resp.raise_for_status()
         except requests.RequestException:
             if token.extraction == "auto":
-                raise BrowserExtractionNeeded(token.name) from None
+                raise _BrowserExtractionNeeded(token.name) from None
             raise
         match = re.search(token.pattern, resp.text)  # type: ignore[arg-type]
         if not match:
             if token.extraction == "auto":
-                raise BrowserExtractionNeeded(token.name)
+                raise _BrowserExtractionNeeded(token.name)
             raise ValueError(f"Token pattern not found in {url}: {token.pattern}")
         return match.group(1)
 
@@ -355,10 +362,10 @@ def prepare_session(
 ) -> requests.Session:
     """Extract all tokens and inject as session headers.
 
-    Uses a three-pass flow:
-    1. Resolve tokens via cookies or HTTP (fast path)
-    2. Catch BrowserExtractionNeeded for tokens that need browser fallback
-    3. Batch browser-needing tokens into a single headless browser session
+    Uses a two-phase flow:
+    1. Try cookie/HTTP extraction for each token; collect tokens that raise
+       _BrowserExtractionNeeded into a deferred batch
+    2. Extract all deferred tokens in a single headless browser session
 
     Args:
         session: Authenticated requests.Session.
@@ -371,7 +378,7 @@ def prepare_session(
     cache: dict[str, CachedToken] = getattr(session, _CACHE_ATTR, {})
     browser_needed: list[Token] = []
 
-    # Pass 1+2: Try non-browser extraction, collect browser-needed tokens
+    # Phase 1: Try non-browser extraction, collect browser-needed tokens
     for token in token_config.tokens:
         cached = cache.get(token.name)
         if cached and not cached.is_expired:
@@ -388,14 +395,14 @@ def prepare_session(
             )
             session.headers[token.name] = value
             LOG.info("token_extracted", name=token.name, source=token.source)
-        except BrowserExtractionNeeded:
+        except _BrowserExtractionNeeded:
             LOG.info("token_needs_browser", name=token.name, source=token.source)
             browser_needed.append(token)
         except ValueError:
             LOG.exception("token_extraction_failed", name=token.name)
             raise
 
-    # Pass 3: Batch browser extraction
+    # Phase 2: Batch browser extraction
     if browser_needed:
         LOG.info("browser_extraction_batch", count=len(browser_needed))
         results = _run_browser_extraction(session, browser_needed, base_url)

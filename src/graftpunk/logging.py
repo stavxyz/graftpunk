@@ -1,6 +1,7 @@
 """Structured logging configuration using structlog."""
 
 import sys
+from contextlib import contextmanager
 from typing import Any
 
 import structlog
@@ -53,6 +54,29 @@ def configure_logging(
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
         cache_logger_on_first_use=False,
     )
+
+
+@contextmanager
+def suppress_asyncio_noise():
+    """Suppress asyncio 'Loop is closed' warnings during event loop shutdown.
+
+    nodriver's subprocess handlers fire asyncio WARNING/ERROR messages when
+    the event loop closes. This context manager temporarily raises the asyncio
+    logger level to CRITICAL to suppress this harmless cleanup noise.
+
+    Note: This suppresses ALL asyncio log messages below CRITICAL for the
+    duration of the context. The suppression window should be kept as small
+    as possible (just the asyncio.run() call).
+    """
+    import logging
+
+    asyncio_logger = logging.getLogger("asyncio")
+    prev_level = asyncio_logger.level
+    asyncio_logger.setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        asyncio_logger.setLevel(prev_level)
 
 
 def get_logger(name: str | None = None) -> structlog.BoundLogger:
