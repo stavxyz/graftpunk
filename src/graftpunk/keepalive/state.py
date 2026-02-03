@@ -8,21 +8,19 @@ import json
 import os
 import tempfile
 from dataclasses import asdict, dataclass, replace
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from graftpunk.config import get_settings
 
 
-class DaemonStatus(str, Enum):
+class DaemonStatus(StrEnum):
     """Status of the keepalive daemon.
 
     The daemon can be in one of two states:
     - WATCHING: No active session, periodically searching for new sessions
     - KEEPING_ALIVE: Actively maintaining a session
-
-    Inherits from str to allow direct serialization to JSON.
     """
 
     WATCHING = "watching"
