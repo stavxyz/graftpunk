@@ -702,7 +702,12 @@ class NodriverCaptureBackend:
             )
             self._bodies_fetched.add(rid)
         except Exception:  # noqa: BLE001 — best-effort eager fetch; stop_capture_async retries
-            LOG.debug("nodriver_eager_body_fetch_failed", request_id=str(event.request_id))
+            url = data.get("url", "unknown") if data is not None else "unknown"
+            LOG.warning(
+                "nodriver_eager_body_fetch_failed",
+                request_id=str(event.request_id),
+                url=url,
+            )
 
     def _on_console(self, event: Any) -> None:
         """Handle a CDP ConsoleAPICalled event."""

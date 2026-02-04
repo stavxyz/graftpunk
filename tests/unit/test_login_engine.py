@@ -959,3 +959,118 @@ class TestSeleniumLoginValidationPaths:
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
 
         assert result is True
+
+
+class TestLoginTimeTokenExtraction:
+    """Tests for token extraction during login (nodriver path)."""
+
+    @pytest.mark.asyncio
+    async def test_nodriver_login_calls_extract_tokens_from_tab(self) -> None:
+        """Nodriver login calls extract_tokens_from_tab when plugin has token_config."""
+        from graftpunk.plugins.login_engine import generate_login_method
+        from graftpunk.tokens import _CACHE_ATTR, Token, TokenConfig
+
+        class TokenPlugin(SitePlugin):
+            site_name = "tokensite"
+            session_name = "tokensite"
+            help_text = "Token Site"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                url="/login",
+                fields={"username": "#user", "password": "#pass"},
+                submit="#submit",
+                success=".dashboard",
+            )
+            token_config = TokenConfig(
+                tokens=(
+                    Token.from_meta_tag("csrf-token", "X-CSRF"),
+                    Token.from_cookie("sid", "X-Session"),
+                )
+            )
+
+        plugin = TokenPlugin()
+        login_method = generate_login_method(plugin)
+
+        mock_element = AsyncMock()
+        mock_tab = MagicMock()
+        mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.get_content = AsyncMock(return_value="Welcome to dashboard")
+        mock_tab.url = "https://example.com/dashboard"
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+        instance.transfer_nodriver_cookies_to_session = AsyncMock()
+        instance.cookies = MagicMock()
+        instance.cookies.get = MagicMock(return_value="session123")
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch(
+                "graftpunk.tokens.extract_tokens_from_tab",
+                new_callable=AsyncMock,
+                return_value={"X-CSRF": "abc123"},
+            ) as mock_extract,
+        ):
+            result = await login_method({"username": "user", "password": "test"})  # noqa: S106
+
+        assert result is True
+        mock_extract.assert_called_once()
+        # Verify token cache was set on session
+        token_cache = getattr(instance, _CACHE_ATTR, None)
+        assert token_cache is not None
+        assert "X-CSRF" in token_cache
+        assert token_cache["X-CSRF"].value == "abc123"
+        # Cookie-source token should also be cached
+        assert "X-Session" in token_cache
+        assert token_cache["X-Session"].value == "session123"
+
+    @pytest.mark.asyncio
+    async def test_nodriver_login_no_token_config_skips_extraction(self) -> None:
+        """Nodriver login without token_config does not call extract_tokens_from_tab."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeHN()
+        login_method = generate_login_method(plugin)
+
+        mock_element = AsyncMock()
+        mock_tab = MagicMock()
+        mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.get_content = AsyncMock(return_value="<html>Welcome back!</html>")
+        mock_tab.url = "https://news.ycombinator.com/news"
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+        instance.transfer_nodriver_cookies_to_session = AsyncMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch(
+                "graftpunk.tokens.extract_tokens_from_tab",
+                new_callable=AsyncMock,
+            ) as mock_extract,
+        ):
+            result = await login_method({"username": "user", "password": "test"})  # noqa: S106
+
+        assert result is True
+        mock_extract.assert_not_called()

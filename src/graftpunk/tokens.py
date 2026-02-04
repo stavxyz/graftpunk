@@ -15,6 +15,11 @@ from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
+# Polling constants for browser-based token extraction.
+# Tokens may not appear immediately (e.g. anti-bot challenges, lazy-rendered pages).
+_TOKEN_POLL_ATTEMPTS = 6
+_TOKEN_POLL_INTERVAL = 0.5  # seconds between attempts (total max: 3s)
+
 
 class _BrowserExtractionNeeded(Exception):  # noqa: N818 — internal control flow signal, not an error
     """Raised when a token requires browser-based extraction.
@@ -65,8 +70,8 @@ async def _poll_for_tokens(
     results: dict[str, str] = {}
     unmatched = list(tokens)
 
-    for _attempt in range(6):  # up to 3 seconds (6 × 0.5s)
-        await tab.sleep(0.5)
+    for _attempt in range(_TOKEN_POLL_ATTEMPTS):
+        await tab.sleep(_TOKEN_POLL_INTERVAL)
         content = await tab.get_content()
         still_unmatched = []
 
@@ -115,7 +120,7 @@ async def _extract_tokens_browser(
     for token in tokens:
         by_url[token.page_url].append(token)
 
-    browser = await nodriver_start(headless=False)
+    browser = await nodriver_start(headless=True)
     try:
         tab = browser.main_tab
         await inject_cookies_to_nodriver(tab, session.cookies)
@@ -451,7 +456,7 @@ def prepare_session(
             # EAFP: inject even if expired — 403 retry handles actual rejection
             session.headers[token.name] = cached.value
             if cached.is_expired:
-                LOG.info("token_injecting_expired", name=token.name)
+                LOG.debug("token_injecting_expired", name=token.name)
             continue
 
         try:

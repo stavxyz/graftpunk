@@ -631,6 +631,44 @@ class TestLoadSessionForApiGraftpunkSession:
         assert isinstance(api_session, GraftpunkSession)
         assert api_session._gp_header_profiles == {}
 
+    def test_load_session_for_api_copies_token_cache(self, monkeypatch):
+        """Token cache is transferred from browser session to API session."""
+        import requests
+
+        from graftpunk.tokens import _CACHE_ATTR, CachedToken
+
+        mock_session = MagicMock()
+        mock_session.cookies = requests.cookies.RequestsCookieJar()
+        mock_session.headers = {"User-Agent": "test"}
+        mock_session._gp_header_profiles = {}
+
+        token_cache = {
+            "X-CSRF": CachedToken(name="X-CSRF", value="tok123", extracted_at=1000, ttl=300)
+        }
+        setattr(mock_session, _CACHE_ATTR, token_cache)
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+
+        api_session = load_session_for_api("cached-session")
+        assert hasattr(api_session, _CACHE_ATTR)
+        assert getattr(api_session, _CACHE_ATTR) == token_cache
+
+    def test_load_session_for_api_no_token_cache(self, monkeypatch):
+        """API session works fine when browser session has no token cache."""
+        import requests
+
+        mock_session = MagicMock()
+        mock_session.cookies = requests.cookies.RequestsCookieJar()
+        mock_session.headers = {"User-Agent": "test"}
+        mock_session._gp_header_profiles = {}
+        # No _gp_cached_tokens attribute
+        del mock_session._gp_cached_tokens
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+
+        api_session = load_session_for_api("no-cache-session")
+        from graftpunk.tokens import _CACHE_ATTR
+
+        assert not hasattr(api_session, _CACHE_ATTR)
+
 
 class TestListSessionsWithMetadata:
     """Tests for list_sessions_with_metadata function."""

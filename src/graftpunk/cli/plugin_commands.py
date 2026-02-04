@@ -388,6 +388,8 @@ def _create_plugin_command(
 
                     clear_cached_tokens(session)
                     _prep(session, token_config, getattr(plugin, "base_url", ""))
+                    # Mark session dirty so update_session_cookies() is called on exit,
+                    # persisting the freshly re-extracted token cache for future commands.
                     ctx._session_dirty = True
                     result = _execute_with_limits(cmd_spec.handler, ctx, cmd_spec, **kwargs)
                 else:

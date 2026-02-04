@@ -356,13 +356,26 @@ async def _setup_observe_session(
     import nodriver
 
     from graftpunk import load_session
+    from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
     from graftpunk.observe.capture import NodriverCaptureBackend
     from graftpunk.observe.storage import ObserveStorage
     from graftpunk.session import inject_cookies_to_nodriver
 
     try:
         session = load_session(session_name)
-    except Exception as exc:
+    except SessionNotFoundError:
+        console.print(
+            f"[red]Session '{session_name}' not found.[/red]\n"
+            f"[dim]Run 'gp session list' to see available sessions, "
+            f"or log in first with your plugin's login command.[/dim]"
+        )
+        return None
+    except SessionExpiredError as exc:
+        console.print(
+            f"[red]Session '{session_name}' is expired or corrupted.[/red]\n[dim]{exc}[/dim]"
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 — CLI boundary: user-friendly error
         console.print(f"[red]Failed to load session '{session_name}': {exc}[/red]")
         return None
 

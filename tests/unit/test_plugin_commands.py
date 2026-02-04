@@ -3215,6 +3215,48 @@ class TestTokenRefreshOn403:
             # Should exit with error (caught by generic exception handler)
             assert result.exit_code == 1
 
+    def test_403_retry_marks_session_dirty(self, isolated_config: Path) -> None:
+        """403 retry sets ctx._session_dirty, triggering update_session_cookies."""
+        from click.testing import CliRunner
+
+        from graftpunk.cli.plugin_commands import _create_plugin_command
+
+        mock_session = MagicMock()
+        mock_session.driver = MagicMock()
+        mock_plugin = MockPlugin()
+        mock_plugin.get_session = MagicMock(return_value=mock_session)  # type: ignore[method-assign]
+        mock_plugin.token_config = MagicMock()  # type: ignore[attr-defined]
+        mock_plugin.base_url = "https://example.com"  # type: ignore[attr-defined]
+
+        call_count = 0
+
+        def handler(ctx: Any, **kwargs: Any) -> dict[str, str]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise self._make_403_error()
+            return {"ok": True}
+
+        cmd_spec = CommandSpec(
+            name="test",
+            handler=handler,
+            help_text="Test",
+            params=(),
+        )
+        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+
+        with (
+            patch("graftpunk.tokens.prepare_session"),
+            patch("graftpunk.tokens.clear_cached_tokens"),
+            patch("graftpunk.cli.plugin_commands.update_session_cookies") as mock_update,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(click_cmd, [])
+
+            assert result.exit_code == 0, result.output
+            # Dirty flag should trigger session persistence
+            mock_update.assert_called_once_with(mock_session, mock_plugin.session_name)
+
     def test_second_403_propagates(self, isolated_config: Path) -> None:
         """If retry also returns 403, error propagates."""
         from click.testing import CliRunner

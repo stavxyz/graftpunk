@@ -157,6 +157,12 @@ def _extract_and_cache_tokens_selenium(
                         extracted_at=time.time(),
                         ttl=t.cache_duration,
                     )
+                else:
+                    LOG.warning(
+                        "login_token_pattern_not_found",
+                        token=t.name,
+                        url=f"{base_url}{t.page_url}",
+                    )
             except Exception as exc:  # noqa: BLE001 — best-effort token extraction
                 LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
 
