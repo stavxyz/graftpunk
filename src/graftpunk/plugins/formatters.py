@@ -108,16 +108,28 @@ class CsvFormatter:
 
     def format(self, data: Any, console: Console) -> None:
         if isinstance(data, str):
+            LOG.debug("csv_format_string_passthrough", length=len(data))
             console.print(data)
             return
         if isinstance(data, dict):
             data = [data]
         if not isinstance(data, list):
+            LOG.warning(
+                "csv_format_unsupported_type",
+                data_type=type(data).__name__,
+                fallback="raw",
+            )
             RawFormatter().format(data, console)
             return
         if not data:
+            LOG.debug("csv_format_empty_list")
             return
         if not all(isinstance(item, dict) for item in data):
+            LOG.warning(
+                "csv_format_unsupported_type",
+                data_type="list[mixed]",
+                fallback="raw",
+            )
             RawFormatter().format(data, console)
             return
         # Collect headers as union of all row keys, preserving insertion order
