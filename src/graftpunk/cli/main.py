@@ -8,7 +8,7 @@ import os
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import click
 import typer
@@ -340,8 +340,17 @@ def observe_go(
     asyncio.run(_run_observe_go(session_name, url, wait, max_body_size))
 
 
-async def _run_observe_go(session_name: str, url: str, wait: float, max_body_size: int) -> None:
-    """Async implementation of observe go."""
+async def _setup_observe_session(
+    session_name: str,
+    url: str,
+    max_body_size: int,
+    headless: bool,
+) -> tuple[Any, Any, Any, Any] | None:
+    """Set up browser session, inject cookies, and initialize capture backend.
+
+    Returns:
+        Tuple of (browser, tab, storage, backend) or None on failure.
+    """
     import datetime
 
     import nodriver
@@ -351,121 +360,91 @@ async def _run_observe_go(session_name: str, url: str, wait: float, max_body_siz
     from graftpunk.observe.storage import ObserveStorage
     from graftpunk.session import inject_cookies_to_nodriver
 
-    # 1. Load session
     try:
         session = load_session(session_name)
     except Exception as exc:
         console.print(f"[red]Failed to load session '{session_name}': {exc}[/red]")
-        return
+        return None
 
-    # 2. Start browser
-    browser = await nodriver.start()
+    browser = await nodriver.start(headless=headless)
     tab = browser.main_tab
 
+    count = await inject_cookies_to_nodriver(tab, session.cookies)
+    console.print(f"[dim]Injected {count} cookie(s)[/dim]")
+
+    run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
+    storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+    bodies_dir = storage.run_dir / "bodies"
+    backend = NodriverCaptureBackend(
+        browser,
+        get_tab=lambda: tab,
+        bodies_dir=bodies_dir,
+        max_body_size=max_body_size,
+    )
+    await backend.start_capture_async()
+
+    tab = await browser.get(url)
+    return browser, tab, storage, backend
+
+
+async def _save_observe_results(
+    storage: Any,
+    backend: Any,
+    screenshot_label: str,
+) -> None:
+    """Save screenshot, page source, HAR, and console logs."""
+    screenshot_data = await backend.take_screenshot()
+    if screenshot_data:
+        path = storage.save_screenshot(1, screenshot_label, screenshot_data)
+        console.print(f"[green]Screenshot saved:[/green] {path}")
+
+    page_source = await backend.get_page_source()
+    if page_source:
+        source_path = storage.run_dir / "page-source.html"
+        source_path.write_text(page_source, encoding="utf-8")
+        console.print(f"[green]Page source saved:[/green] {source_path}")
+
+    await backend.stop_capture_async()
+
+    har_entries = backend.get_har_entries()
+    if har_entries:
+        storage.write_har(har_entries)
+        console.print(f"[green]HAR data saved:[/green] {len(har_entries)} entries")
+
+    console_logs = backend.get_console_logs()
+    if console_logs:
+        storage.write_console_logs(console_logs)
+        console.print(f"[green]Console logs saved:[/green] {len(console_logs)} entries")
+
+    console.print(f"\n[bold]Observe run:[/bold] {storage.run_dir}")
+
+
+async def _run_observe_go(session_name: str, url: str, wait: float, max_body_size: int) -> None:
+    """Async implementation of observe go."""
+    result = await _setup_observe_session(session_name, url, max_body_size, headless=True)
+    if result is None:
+        return
+
+    browser, tab, storage, backend = result
+
     try:
-        # 3. Inject cookies BEFORE navigation.
-        # CookieParam includes the domain field, so CDP can set cookies
-        # on any domain without needing to be on that domain first.
-        count = await inject_cookies_to_nodriver(tab, session.cookies)
-        console.print(f"[dim]Injected {count} cookie(s)[/dim]")
-
-        # 4. Set up capture backend and enable HAR (network monitoring)
-        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-        storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
-        bodies_dir = storage.run_dir / "bodies"
-        backend = NodriverCaptureBackend(
-            browser,
-            get_tab=lambda: tab,
-            bodies_dir=bodies_dir,
-            max_body_size=max_body_size,
-        )
-        await backend.start_capture_async()
-
-        # 5. Navigate to target URL (cookies already set, HAR recording)
-        tab = await browser.get(url)
-
-        # 6. Wait for page load
         await tab.sleep(wait)
-
-        # 7. Capture screenshot and page source
-        screenshot_data = await backend.take_screenshot()
-        if screenshot_data:
-            path = storage.save_screenshot(1, "observe-go", screenshot_data)
-            console.print(f"[green]Screenshot saved:[/green] {path}")
-        else:
-            console.print("[yellow]Screenshot capture failed[/yellow]")
-
-        page_source = await backend.get_page_source()
-        if page_source:
-            source_path = storage.run_dir / "page-source.html"
-            source_path.write_text(page_source, encoding="utf-8")
-            console.print(f"[green]Page source saved:[/green] {source_path}")
-
-        # 8. Fetch request/response bodies before collecting HAR entries
-        await backend.stop_capture_async()
-
-        # 9. Write HAR and summary
-        har_entries = backend.get_har_entries()
-        if har_entries:
-            storage.write_har(har_entries)
-            console.print(f"[green]HAR data saved:[/green] {len(har_entries)} entries")
-
-        # 10. Write console logs
-        console_logs = backend.get_console_logs()
-        if console_logs:
-            storage.write_console_logs(console_logs)
-            console.print(f"[green]Console logs saved:[/green] {len(console_logs)} entries")
-
-        console.print(f"\n[bold]Observe run:[/bold] {storage.run_dir}")
-
+        await _save_observe_results(storage, backend, "observe-go")
     finally:
         browser.stop()
 
 
 async def _run_observe_interactive(session_name: str, url: str, max_body_size: int) -> None:
     """Async implementation of observe interactive."""
-    import datetime
     import signal
 
-    import nodriver
-
-    from graftpunk import load_session
-    from graftpunk.observe.capture import NodriverCaptureBackend
-    from graftpunk.observe.storage import ObserveStorage
-    from graftpunk.session import inject_cookies_to_nodriver
-
-    # 1. Load session
-    try:
-        session = load_session(session_name)
-    except Exception as exc:  # noqa: BLE001 — CLI boundary
-        console.print(f"[red]Failed to load session '{session_name}': {exc}[/red]")
+    result = await _setup_observe_session(session_name, url, max_body_size, headless=False)
+    if result is None:
         return
 
-    # 2. Start browser (visible — interactive mode)
-    browser = await nodriver.start(headless=False)
-    tab = browser.main_tab
+    browser, tab, storage, backend = result
 
     try:
-        # 3. Inject cookies
-        count = await inject_cookies_to_nodriver(tab, session.cookies)
-        console.print(f"[dim]Injected {count} cookie(s)[/dim]")
-
-        # 4. Set up capture backend
-        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-        storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
-        bodies_dir = storage.run_dir / "bodies"
-        backend = NodriverCaptureBackend(
-            browser,
-            get_tab=lambda: tab,
-            bodies_dir=bodies_dir,
-            max_body_size=max_body_size,
-        )
-        await backend.start_capture_async()
-
-        # 5. Navigate to starting URL
-        tab = await browser.get(url)
-
-        # 6. Wait for Ctrl+C
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGINT, stop_event.set)
@@ -478,34 +457,7 @@ async def _run_observe_interactive(session_name: str, url: str, max_body_size: i
             loop.remove_signal_handler(signal.SIGINT)
 
         console.print("\n[dim]Recording stopped. Saving capture...[/dim]")
-
-        # 7. Capture final screenshot and page source
-        screenshot_data = await backend.take_screenshot()
-        if screenshot_data:
-            path = storage.save_screenshot(1, "interactive-final", screenshot_data)
-            console.print(f"[green]Screenshot saved:[/green] {path}")
-
-        page_source = await backend.get_page_source()
-        if page_source:
-            source_path = storage.run_dir / "page-source.html"
-            source_path.write_text(page_source, encoding="utf-8")
-            console.print(f"[green]Page source saved:[/green] {source_path}")
-
-        # 8. Stop capture, fetch bodies, write HAR
-        await backend.stop_capture_async()
-
-        har_entries = backend.get_har_entries()
-        if har_entries:
-            storage.write_har(har_entries)
-            console.print(f"[green]HAR data saved:[/green] {len(har_entries)} entries")
-
-        console_logs = backend.get_console_logs()
-        if console_logs:
-            storage.write_console_logs(console_logs)
-            console.print(f"[green]Console logs saved:[/green] {len(console_logs)} entries")
-
-        console.print(f"\n[bold]Observe run:[/bold] {storage.run_dir}")
-
+        await _save_observe_results(storage, backend, "interactive-final")
     finally:
         browser.stop()
 

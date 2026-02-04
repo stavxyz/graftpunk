@@ -45,6 +45,49 @@ def _deregister_nodriver_browser(browser: Any) -> None:
         LOG.debug("deregister_nodriver_browser_failed", exc_info=True)
 
 
+async def _poll_for_tokens(
+    tab: Any,
+    tokens: list[Token],
+    url: str,
+    log_prefix: str,
+) -> dict[str, str]:
+    """Poll tab content for token patterns with retry logic.
+
+    Args:
+        tab: Nodriver tab to extract content from.
+        tokens: List of tokens to extract from this page.
+        url: Full URL (for logging).
+        log_prefix: Log event prefix ("browser_token" or "login_token").
+
+    Returns:
+        Mapping of successfully extracted token names to values.
+    """
+    results: dict[str, str] = {}
+    unmatched = list(tokens)
+
+    for _attempt in range(6):  # up to 3 seconds (6 × 0.5s)
+        await tab.sleep(0.5)
+        content = await tab.get_content()
+        still_unmatched = []
+
+        for token in unmatched:
+            match = re.search(token.pattern, content)  # type: ignore[arg-type]
+            if match:
+                results[token.name] = match.group(1)
+                LOG.info(f"{log_prefix}_extracted", name=token.name, url=url)
+            else:
+                still_unmatched.append(token)
+
+        unmatched = still_unmatched
+        if not unmatched:
+            break
+
+    for token in unmatched:
+        LOG.warning(f"{log_prefix}_pattern_not_found", name=token.name, url=url)
+
+    return results
+
+
 async def _extract_tokens_browser(
     session: requests.Session,
     tokens: list[Token],
@@ -68,14 +111,12 @@ async def _extract_tokens_browser(
     """
     from graftpunk.session import inject_cookies_to_nodriver
 
-    # Group tokens by page_url so we navigate once per unique URL
     by_url: dict[str, list[Token]] = defaultdict(list)
     for token in tokens:
         by_url[token.page_url].append(token)
 
     browser = await nodriver_start(headless=False)
     try:
-        # Inject session cookies before any navigation
         tab = browser.main_tab
         await inject_cookies_to_nodriver(tab, session.cookies)
 
@@ -85,24 +126,8 @@ async def _extract_tokens_browser(
             url = f"{base_url.rstrip('/')}{page_url}"
             try:
                 tab = await browser.get(url)
-                # Poll for token patterns with retries — handles bot challenges
-                # and slow-rendering pages without wasting time on fast ones.
-                content = ""
-                unmatched = list(token_group)
-                for _attempt in range(6):  # up to 3 seconds (6 × 0.5s)
-                    await tab.sleep(0.5)
-                    content = await tab.get_content()
-                    still_unmatched = []
-                    for token in unmatched:
-                        match = re.search(token.pattern, content)  # type: ignore[arg-type]
-                        if match:
-                            results[token.name] = match.group(1)
-                            LOG.info("browser_token_extracted", name=token.name, url=url)
-                        else:
-                            still_unmatched.append(token)
-                    unmatched = still_unmatched
-                    if not unmatched:
-                        break
+                extracted = await _poll_for_tokens(tab, token_group, url, "browser_token")
+                results.update(extracted)
             except Exception as exc:  # noqa: BLE001 — per-URL isolation; nodriver raises varied exception types
                 LOG.warning(
                     "browser_token_navigation_failed",
@@ -112,14 +137,6 @@ async def _extract_tokens_browser(
                     token_count=len(token_group),
                 )
                 continue
-
-            for token in unmatched:
-                LOG.warning(
-                    "browser_token_pattern_not_found",
-                    name=token.name,
-                    url=url,
-                    pattern=token.pattern,
-                )
 
         return results
     finally:
@@ -155,27 +172,11 @@ async def extract_tokens_from_tab(
         url = f"{base_url.rstrip('/')}{page_url}"
         try:
             tab = await tab.browser.get(url)
-            unmatched = list(token_group)
-            for _attempt in range(6):  # up to 3 seconds (6 × 0.5s)
-                await tab.sleep(0.5)
-                content = await tab.get_content()
-                still_unmatched = []
-                for token in unmatched:
-                    match = re.search(token.pattern, content)  # type: ignore[arg-type]
-                    if match:
-                        results[token.name] = match.group(1)
-                        LOG.info("login_token_extracted", name=token.name, url=url)
-                    else:
-                        still_unmatched.append(token)
-                unmatched = still_unmatched
-                if not unmatched:
-                    break
+            extracted = await _poll_for_tokens(tab, token_group, url, "login_token")
+            results.update(extracted)
         except Exception as exc:  # noqa: BLE001 — per-URL isolation; best-effort during login
             LOG.warning("login_token_extraction_failed", url=url, error=str(exc))
             continue
-
-        for token in unmatched:
-            LOG.warning("login_token_pattern_not_found", name=token.name, url=url)
 
     return results
 

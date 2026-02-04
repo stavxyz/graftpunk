@@ -666,22 +666,28 @@ class NodriverCaptureBackend:
             import nodriver.cdp.network as cdp_net
 
             rid = str(event.request_id)
+
+            # Guard: check request exists
             data = self._request_map.get(rid)
             if data is None:
                 return
 
+            # Guard: check response metadata exists
             response = data.get("response")
             if response is None:
                 return
 
+            # Guard: check MIME type is worth capturing
             mime = response.get("mimeType", "")
             if not (_is_text_mime(mime) or _is_binary_mime(mime)):
                 return
 
+            # Guard: check tab is available
             tab = self._tab
             if tab is None:
                 return
 
+            # Fetch and process body
             body, base64_encoded = await tab.send(
                 cdp_net.get_response_body(cdp_net.RequestId(rid))  # type: ignore[attr-defined]
             )
