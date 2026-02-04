@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Bodies fetched immediately via `Network.getResponseBody` and streamed to disk
   - Async capture with `start_capture_async()` / `stop_capture_async()` for interactive mode
 
+- **Bot-Detection Cookie Filtering**: Skip WAF tracking cookies when injecting into browsers
+  - Akamai cookies (`bm_*`, `ak_bmsc`, `_abck`) filtered by default in `inject_cookies_to_nodriver()`
+  - Prevents `ERR_HTTP2_PROTOCOL_ERROR` caused by stale bot-classification state
+  - Opt-out via `skip_bot_cookies=False` parameter
+  - Commented-out patterns for Cloudflare, Imperva, PerimeterX, DataDome (ready to enable)
+
 - **Plugin Interface v1**: Full command framework for building CLI tools on top of authenticated sessions
   - `SitePlugin` base class with `@command` decorator for defining CLI commands
   - `CommandContext` dataclass injected into handlers with session, plugin metadata, and observability
