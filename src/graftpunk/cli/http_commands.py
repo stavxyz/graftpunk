@@ -89,6 +89,7 @@ def _make_request(
         typer.Exit: If session cannot be resolved or loaded.
     """
     session: requests.Session
+    resolved: str | None = None
     if no_session:
         gp_console.info("No session — making unauthenticated request")
         session = requests.Session()
@@ -103,6 +104,7 @@ def _make_request(
         try:
             session = load_session_for_api(resolved)
         except Exception as exc:  # noqa: BLE001 — CLI boundary
+            LOG.error("session_load_failed", session_name=resolved, error=str(exc))
             gp_console.error(f"Failed to load session '{resolved}': {exc}")
             raise typer.Exit(1) from exc
 
@@ -128,7 +130,6 @@ def _make_request(
         session.headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
 
     # Token injection from plugin session map (skip for bare sessions)
-    resolved = None if no_session else (session_name or resolve_session(None))
     from graftpunk.cli.plugin_commands import get_plugin_for_session
 
     plugin = get_plugin_for_session(resolved) if resolved else None
