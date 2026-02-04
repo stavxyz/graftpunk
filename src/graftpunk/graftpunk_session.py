@@ -326,6 +326,11 @@ class GraftpunkSession(requests.Session):
         if headers:
             profile_headers.update(headers)
 
+        # Note: self.request() calls prepare_request(), which runs
+        # _detect_profile() again. The auto-detected profile may differ
+        # from the explicit one here, but request-level headers (ours)
+        # take precedence over profile headers in the merge logic,
+        # so the correct headers always win.
         return self.request(method.upper(), url, headers=profile_headers, **kwargs)
 
     def _detect_profile(self, request: requests.Request) -> str:
