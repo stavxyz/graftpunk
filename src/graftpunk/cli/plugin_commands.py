@@ -497,7 +497,12 @@ def _ensure_group_hierarchy(parent_group: click.Group, dotted_path: str) -> clic
     for part in dotted_path.split("."):
         existing = current.commands.get(part)
         if existing is None:
-            new_group = click.Group(name=part)
+            new_group = typer.core.TyperGroup(
+                name=part,
+                no_args_is_help=True,
+                rich_markup_mode="rich",
+                context_settings={"help_option_names": ["-h", "--help"]},
+            )
             current.add_command(new_group, name=part)
             current = new_group
         elif isinstance(existing, click.Group):
