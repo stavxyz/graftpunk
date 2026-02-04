@@ -310,6 +310,10 @@ def observe_go(
         int,
         typer.Option("--max-body-size", help="Max response body size in bytes (default 5MB)"),
     ] = 5 * 1024 * 1024,
+    interactive: Annotated[
+        bool,
+        typer.Option("--interactive", "-i", help="Keep browser open for manual exploration"),
+    ] = False,
 ) -> None:
     """Open a URL in an authenticated browser and capture observability data.
 
@@ -325,6 +329,13 @@ def observe_go(
             "[red]No session specified. Use --session, GRAFTPUNK_SESSION, or gp session use.[/red]"
         )
         raise typer.Exit(1)
+
+    if interactive:
+        from graftpunk.logging import suppress_asyncio_noise
+
+        with suppress_asyncio_noise():
+            asyncio.run(_run_observe_interactive(session_name, url, max_body_size))
+        return
 
     asyncio.run(_run_observe_go(session_name, url, wait, max_body_size))
 
@@ -409,6 +420,126 @@ async def _run_observe_go(session_name: str, url: str, wait: float, max_body_siz
 
     finally:
         browser.stop()
+
+
+async def _run_observe_interactive(session_name: str, url: str, max_body_size: int) -> None:
+    """Async implementation of observe interactive."""
+    import datetime
+    import signal
+
+    import nodriver
+
+    from graftpunk import load_session
+    from graftpunk.observe.capture import NodriverCaptureBackend
+    from graftpunk.observe.storage import ObserveStorage
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    # 1. Load session
+    try:
+        session = load_session(session_name)
+    except Exception as exc:  # noqa: BLE001 — CLI boundary
+        console.print(f"[red]Failed to load session '{session_name}': {exc}[/red]")
+        return
+
+    # 2. Start browser (visible — interactive mode)
+    browser = await nodriver.start(headless=False)
+    tab = browser.main_tab
+
+    try:
+        # 3. Inject cookies
+        count = await inject_cookies_to_nodriver(tab, session.cookies)
+        console.print(f"[dim]Injected {count} cookie(s)[/dim]")
+
+        # 4. Set up capture backend
+        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
+        storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+        bodies_dir = storage.run_dir / "bodies"
+        backend = NodriverCaptureBackend(
+            browser,
+            get_tab=lambda: tab,
+            bodies_dir=bodies_dir,
+            max_body_size=max_body_size,
+        )
+        await backend.start_capture_async()
+
+        # 5. Navigate to starting URL
+        tab = await browser.get(url)
+
+        # 6. Wait for Ctrl+C
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGINT, stop_event.set)
+
+        console.print("\n[bold]Recording... press Ctrl+C to stop and save[/bold]\n")
+
+        try:
+            await stop_event.wait()
+        finally:
+            loop.remove_signal_handler(signal.SIGINT)
+
+        console.print("\n[dim]Recording stopped. Saving capture...[/dim]")
+
+        # 7. Capture final screenshot and page source
+        screenshot_data = await backend.take_screenshot()
+        if screenshot_data:
+            path = storage.save_screenshot(1, "interactive-final", screenshot_data)
+            console.print(f"[green]Screenshot saved:[/green] {path}")
+
+        page_source = await backend.get_page_source()
+        if page_source:
+            source_path = storage.run_dir / "page-source.html"
+            source_path.write_text(page_source, encoding="utf-8")
+            console.print(f"[green]Page source saved:[/green] {source_path}")
+
+        # 8. Stop capture, fetch bodies, write HAR
+        await backend.stop_capture_async()
+
+        har_entries = backend.get_har_entries()
+        if har_entries:
+            storage.write_har(har_entries)
+            console.print(f"[green]HAR data saved:[/green] {len(har_entries)} entries")
+
+        console_logs = backend.get_console_logs()
+        if console_logs:
+            storage.write_console_logs(console_logs)
+            console.print(f"[green]Console logs saved:[/green] {len(console_logs)} entries")
+
+        console.print(f"\n[bold]Observe run:[/bold] {storage.run_dir}")
+
+    finally:
+        browser.stop()
+
+
+@observe_app.command("interactive")
+def observe_interactive(
+    ctx: typer.Context,
+    url: Annotated[
+        str,
+        typer.Argument(help="The starting URL to navigate to"),
+    ],
+    max_body_size: Annotated[
+        int,
+        typer.Option("--max-body-size", help="Max response body size in bytes (default 5MB)"),
+    ] = 5 * 1024 * 1024,
+) -> None:
+    """Record an interactive browser session into a HAR file.
+
+    Opens an authenticated browser, navigates to the URL, and records all
+    network traffic while you click around. Press Ctrl+C to stop and save.
+
+    Requires an active session (via --session, GRAFTPUNK_SESSION, or gp session use).
+    """
+    session_name = ctx.ensure_object(dict).get("observe_session")
+    if not session_name:
+        console.print(
+            "[red]No session specified. Use --session, GRAFTPUNK_SESSION, or gp session use.[/red]"
+        )
+        raise typer.Exit(1)
+
+    from graftpunk.logging import suppress_asyncio_noise
+
+    with suppress_asyncio_noise():
+        asyncio.run(_run_observe_interactive(session_name, url, max_body_size))
 
 
 app.add_typer(observe_app)
