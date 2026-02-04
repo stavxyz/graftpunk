@@ -943,8 +943,8 @@ class TestNodriverCaptureBackend:
         await backend.start_capture_async()
         # network.enable() and runtime.enable()
         assert tab.send.call_count == 2
-        # RequestWillBeSent, ResponseReceived, ConsoleAPICalled
-        assert tab.add_handler.call_count == 3
+        # RequestWillBeSent, ResponseReceived, LoadingFinished, ConsoleAPICalled
+        assert tab.add_handler.call_count == 4
 
     def test_on_response_correlates_with_request_map(self) -> None:
         browser = MagicMock()
@@ -1561,6 +1561,97 @@ class TestNodriverHARCapture:
 
         # Should not raise
         backend._on_request(event)
+
+    @pytest.mark.asyncio
+    async def test_on_loading_finished_eagerly_fetches_body(self) -> None:
+        """LoadingFinished handler fetches response body immediately."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(return_value=('{"result": "ok"}', False))
+        backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+
+        # Seed request + response metadata
+        backend._request_map["req-eager"] = {
+            "url": "https://example.com/api",
+            "method": "GET",
+            "headers": {},
+            "post_data": None,
+            "has_post_data": False,
+            "timestamp": None,
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "headers": {},
+                "mimeType": "application/json",
+            },
+        }
+
+        event = MagicMock()
+        event.request_id = "req-eager"
+        await backend._on_loading_finished(event)
+
+        assert "req-eager" in backend._bodies_fetched
+        assert backend._request_map["req-eager"]["response"]["body"] == '{"result": "ok"}'
+
+    @pytest.mark.asyncio
+    async def test_stop_capture_skips_eagerly_fetched_bodies(self) -> None:
+        """stop_capture_async skips bodies already fetched by LoadingFinished."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(return_value=("unused", False))
+        backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+
+        # Seed a request that was already eagerly fetched
+        backend._request_map["req-done"] = {
+            "url": "https://example.com/api",
+            "method": "GET",
+            "headers": {},
+            "post_data": None,
+            "has_post_data": False,
+            "timestamp": None,
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "headers": {},
+                "mimeType": "application/json",
+                "content": {"text": "already fetched"},
+            },
+        }
+        backend._bodies_fetched.add("req-done")
+
+        await backend.stop_capture_async()
+
+        # tab.send should NOT have been called (no post_data to fetch, body already done)
+        tab.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_loading_finished_handles_failure_gracefully(self) -> None:
+        """Eager fetch failure is logged but does not raise."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(side_effect=RuntimeError("CDP -32000"))
+        backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+
+        backend._request_map["req-fail"] = {
+            "url": "https://example.com/api",
+            "method": "GET",
+            "headers": {},
+            "post_data": None,
+            "has_post_data": False,
+            "timestamp": None,
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "headers": {},
+                "mimeType": "application/json",
+            },
+        }
+
+        event = MagicMock()
+        event.request_id = "req-fail"
+        # Should not raise
+        await backend._on_loading_finished(event)
+        assert "req-fail" not in backend._bodies_fetched
 
 
 # ---------------------------------------------------------------------------

@@ -464,6 +464,7 @@ class NodriverCaptureBackend:
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
         self._warned_no_screenshots: bool = False
+        self._bodies_fetched: set[str] = set()  # request IDs with eagerly-fetched bodies
 
     @property
     def _tab(self) -> Any | None:
@@ -562,6 +563,7 @@ class NodriverCaptureBackend:
         await tab.send(network.enable())  # type: ignore[attr-defined]
         tab.add_handler(network.RequestWillBeSent, self._on_request)  # type: ignore[attr-defined]
         tab.add_handler(network.ResponseReceived, self._on_response)  # type: ignore[attr-defined]
+        tab.add_handler(network.LoadingFinished, self._on_loading_finished)  # type: ignore[attr-defined]
 
         # Console log capture
         await tab.send(cdp_runtime.enable())  # type: ignore[attr-defined]
@@ -592,7 +594,11 @@ class NodriverCaptureBackend:
                         error=str(exc),
                     )
 
-            # Fetch response body
+            # Skip response body if already eagerly fetched by _on_loading_finished
+            if request_id in self._bodies_fetched:
+                continue
+
+            # Fetch response body (fallback for any missed by eager fetch)
             response = data.get("response", {})
             mime = response.get("mimeType", "")
             if _is_text_mime(mime) or _is_binary_mime(mime):
@@ -653,6 +659,44 @@ class NodriverCaptureBackend:
             }
         except Exception:
             LOG.exception("nodriver_on_response_failed")
+
+    async def _on_loading_finished(self, event: Any) -> None:
+        """Handle CDP LoadingFinished — eagerly fetch response body while still in buffer."""
+        try:
+            import nodriver.cdp.network as cdp_net
+
+            rid = str(event.request_id)
+            data = self._request_map.get(rid)
+            if data is None:
+                return
+
+            response = data.get("response")
+            if response is None:
+                return
+
+            mime = response.get("mimeType", "")
+            if not (_is_text_mime(mime) or _is_binary_mime(mime)):
+                return
+
+            tab = self._tab
+            if tab is None:
+                return
+
+            body, base64_encoded = await tab.send(
+                cdp_net.get_response_body(cdp_net.RequestId(rid))  # type: ignore[attr-defined]
+            )
+            _process_response_body(
+                response=response,
+                body=body,
+                base64_encoded=base64_encoded,
+                request_id=rid,
+                mime=mime,
+                max_body_size=self._max_body_size,
+                bodies_dir=self._bodies_dir,
+            )
+            self._bodies_fetched.add(rid)
+        except Exception:  # noqa: BLE001 — best-effort eager fetch; stop_capture_async retries
+            LOG.debug("nodriver_eager_body_fetch_failed", request_id=str(event.request_id))
 
     def _on_console(self, event: Any) -> None:
         """Handle a CDP ConsoleAPICalled event."""
