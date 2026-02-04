@@ -449,3 +449,77 @@ class TestCaseInsensitiveGet:
 
     def test_empty_mapping(self):
         assert _case_insensitive_get({}, "User-Agent") is None
+
+
+class TestResolveReferer:
+    """Test Referer URL resolution from path or full URL."""
+
+    def test_path_joined_with_base_url(self):
+        session = GraftpunkSession(
+            header_profiles=SAMPLE_PROFILES, base_url="https://www.example.com"
+        )
+        assert session._resolve_referer("/invoice/list") == "https://www.example.com/invoice/list"
+
+    def test_full_url_used_as_is(self):
+        session = GraftpunkSession(
+            header_profiles=SAMPLE_PROFILES, base_url="https://www.example.com"
+        )
+        assert (
+            session._resolve_referer("https://other.example.com/page")
+            == "https://other.example.com/page"
+        )
+
+    def test_path_without_base_url_warns(self, capsys):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        result = session._resolve_referer("/some/path")
+        captured = capsys.readouterr()
+        assert "referer_path_without_base_url" in captured.out
+        assert result == "/some/path"
+
+    def test_base_url_trailing_slash_handled(self):
+        session = GraftpunkSession(
+            header_profiles=SAMPLE_PROFILES, base_url="https://www.example.com/"
+        )
+        assert session._resolve_referer("/invoice/list") == "https://www.example.com/invoice/list"
+
+
+class TestProfileHeadersFor:
+    """Test _profile_headers_for composition of captured + canonical headers."""
+
+    def test_captured_profile_returned(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        headers = session._profile_headers_for("xhr")
+        assert headers["X-Requested-With"] == "XMLHttpRequest"
+        assert headers["Accept"] == "application/json"
+
+    def test_missing_profile_falls_back_to_canonical(self):
+        profiles = {
+            "xhr": {
+                "User-Agent": "Mozilla/5.0 Test",
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        }
+        session = GraftpunkSession(header_profiles=profiles)
+        headers = session._profile_headers_for("navigation")
+        assert "text/html" in headers["Accept"]
+        assert headers["Sec-Fetch-Mode"] == "navigate"
+
+    def test_returns_copy_not_reference(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        headers = session._profile_headers_for("xhr")
+        headers["New-Header"] = "value"
+        assert "New-Header" not in session._gp_header_profiles.get("xhr", {})
+
+    def test_unknown_profile_returns_empty(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        headers = session._profile_headers_for("nonexistent")
+        assert headers == {}
+
+    def test_excludes_identity_headers(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        headers = session._profile_headers_for("navigation")
+        assert "User-Agent" not in headers
+        assert "sec-ch-ua" not in headers
+        assert "Accept-Language" not in headers
+        assert "Accept-Encoding" not in headers
