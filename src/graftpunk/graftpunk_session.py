@@ -89,6 +89,8 @@ class GraftpunkSession(requests.Session):
     def __init__(
         self,
         header_profiles: dict[str, dict[str, str]] | None = None,
+        *,
+        base_url: str = "",
         **kwargs: Any,
     ) -> None:
         """Initialize a GraftpunkSession.
@@ -96,11 +98,13 @@ class GraftpunkSession(requests.Session):
         Args:
             header_profiles: Dict mapping profile names to header dicts.
                 Profiles: "navigation", "xhr", "form".
+            base_url: Base URL for constructing Referer headers from paths.
             **kwargs: Additional arguments passed to requests.Session.
         """
         super().__init__(**kwargs)
         self._gp_header_profiles: dict[str, dict[str, str]] = header_profiles or {}
         self.gp_default_profile: str | None = None
+        self.gp_base_url: str = base_url
         # Apply browser identity headers (User-Agent, sec-ch-ua, etc.)
         # BEFORE taking the snapshot so _is_user_set_header treats them
         # as defaults rather than user-set overrides.
@@ -119,6 +123,60 @@ class GraftpunkSession(requests.Session):
             Header dict for the profile, or empty dict if not found.
         """
         return dict(self._gp_header_profiles.get(profile, {}))
+
+    def _resolve_referer(self, referer: str) -> str:
+        """Resolve a Referer value from a path or full URL.
+
+        Args:
+            referer: A URL path ("/invoice/list") or full URL.
+                Paths are joined with gp_base_url. Full URLs (starting
+                with "http") are returned as-is.
+
+        Returns:
+            The resolved Referer URL string.
+        """
+        if referer.startswith(("http://", "https://")):
+            return referer
+
+        if not self.gp_base_url:
+            LOG.warning("referer_path_without_base_url", referer=referer)
+            return referer
+
+        base = self.gp_base_url.rstrip("/")
+        path = referer if referer.startswith("/") else f"/{referer}"
+        return f"{base}{path}"
+
+    def _profile_headers_for(self, profile_name: str) -> dict[str, str]:
+        """Get request-type headers for a profile, excluding identity headers.
+
+        Returns captured profile headers if available, falling back to
+        canonical Fetch-spec headers. Browser identity headers (User-Agent,
+        sec-ch-ua, etc.) are excluded -- they're already on self.headers.
+
+        Args:
+            profile_name: Profile name ("navigation", "xhr", or "form").
+
+        Returns:
+            Dict of request-type headers, or empty dict if profile unknown.
+        """
+        captured = self._gp_header_profiles.get(profile_name)
+        if captured:
+            headers = dict(captured)
+        else:
+            canonical = _CANONICAL_REQUEST_HEADERS.get(profile_name)
+            if canonical is None:
+                return {}
+            headers = dict(canonical)
+
+        # Remove identity headers -- they're session-level defaults
+        for key in _BROWSER_IDENTITY_HEADERS:
+            headers.pop(key, None)
+            # Also check case-insensitive (CDP headers may have mixed case)
+            to_remove = [k for k in headers if k.lower() == key.lower()]
+            for k in to_remove:
+                headers.pop(k, None)
+
+        return headers
 
     def _apply_browser_identity(self) -> None:
         """Copy browser identity headers from profiles onto the session.
