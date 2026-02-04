@@ -330,7 +330,7 @@ def _create_plugin_command(
         # can resolve relative Referer paths.
         base_url = getattr(plugin, "base_url", "")
         if base_url and hasattr(session, "gp_base_url"):
-            session.gp_base_url = base_url
+            setattr(session, "gp_base_url", base_url)
 
         # Build observability context from CLI --observe flag
         click_ctx = click.get_current_context(silent=True)
