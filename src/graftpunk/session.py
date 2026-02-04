@@ -671,8 +671,38 @@ class BrowserSession(requestium.Session):
         return httpie_session_path
 
 
+# Known bot-detection / WAF tracking cookies that should NOT be injected
+# into fresh browser sessions. These cookies carry stale bot-classification
+# state from previous sessions — injecting them causes WAFs to immediately
+# flag the browser, resulting in connection-level rejection (e.g., HTTP/2
+# RST_STREAM / ERR_HTTP2_PROTOCOL_ERROR).
+# See: https://github.com/stavxyz/graftpunk/issues/46
+BOT_DETECTION_COOKIE_PREFIXES: tuple[str, ...] = (
+    # Akamai Bot Manager — confirmed to cause ERR_HTTP2_PROTOCOL_ERROR
+    # when stale cookies carry a "flagged" bot classification into a new
+    # browser session.
+    "bm_",
+    "ak_bmsc",
+    "_abck",
+    # Uncomment as needed when plugins encounter these WAFs:
+    # Cloudflare Bot Management
+    # "__cf_bm",
+    # "cf_clearance",
+    # Imperva / Incapsula
+    # "visid_incap",
+    # "incap_ses_",
+    # PerimeterX (now HUMAN Security)
+    # "_px",
+    # DataDome
+    # "datadome",
+)
+
+
 async def inject_cookies_to_nodriver(
-    tab: Any, cookies: "requests.cookies.RequestsCookieJar"
+    tab: Any,
+    cookies: "requests.cookies.RequestsCookieJar",
+    *,
+    skip_bot_cookies: bool = True,
 ) -> int:
     """Inject cached session cookies into a nodriver browser tab via CDP.
 
@@ -683,12 +713,18 @@ async def inject_cookies_to_nodriver(
     field, so CDP can set cookies on any domain without needing to be on
     that domain first.
 
+    Bot-detection cookies (Akamai bm_*, ak_bmsc, _abck) are skipped by
+    default to prevent WAFs from flagging the browser based on stale
+    classification state from a previous session.
+
     Args:
         tab: nodriver Tab instance (the active browser tab).
         cookies: RequestsCookieJar from a cached session.
+        skip_bot_cookies: If True (default), skip cookies matching
+            BOT_DETECTION_COOKIE_PREFIXES.
 
     Returns:
-        Number of cookies injected.
+        Number of cookies actually injected.
     """
     import nodriver.cdp.network as cdp_net
     import nodriver.cdp.storage as cdp_storage
@@ -698,8 +734,19 @@ async def inject_cookies_to_nodriver(
     # cookies parameter with existing browser cookies, effectively ignoring input.
     # Use the low-level CDP approach instead.
     cookie_params = []
+    skipped = 0
     for cookie in cookies:
         if cookie.value is None:
+            continue
+        if skip_bot_cookies and any(
+            cookie.name.startswith(prefix) for prefix in BOT_DETECTION_COOKIE_PREFIXES
+        ):
+            LOG.debug(
+                "inject_skipping_bot_cookie",
+                name=cookie.name,
+                domain=cookie.domain,
+            )
+            skipped += 1
             continue
         cookie_params.append(
             cdp_net.CookieParam(  # type: ignore[attr-defined]
@@ -709,6 +756,8 @@ async def inject_cookies_to_nodriver(
                 path=cookie.path,
             )
         )
+    if skipped:
+        LOG.info("inject_bot_cookies_skipped", count=skipped)
     if cookie_params:
         await tab.send(cdp_storage.set_cookies(cookie_params))
     return len(cookie_params)

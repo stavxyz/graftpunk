@@ -1756,3 +1756,102 @@ class TestInjectCookiesToNodriver:
         result = await inject_cookies_to_nodriver(mock_tab, jar)
         assert result == 0
         mock_tab.send.assert_not_called()
+
+
+class TestBotCookieFiltering:
+    """Tests for bot-detection cookie filtering in inject_cookies_to_nodriver."""
+
+    @pytest.mark.asyncio
+    async def test_skips_akamai_cookies_by_default(self) -> None:
+        """Akamai bot-detection cookies are filtered out by default."""
+        from unittest.mock import AsyncMock
+
+        from requests.cookies import RequestsCookieJar
+
+        from graftpunk.session import inject_cookies_to_nodriver
+
+        jar = RequestsCookieJar()
+        jar.set("session_id", "abc123", domain=".example.com", path="/")
+        jar.set("bm_sv", "akamai_track", domain=".example.com", path="/")
+        jar.set("ak_bmsc", "akamai_session", domain=".example.com", path="/")
+        jar.set("_abck", "akamai_bot", domain=".example.com", path="/")
+        jar.set("csrf", "xyz", domain=".example.com", path="/")
+
+        mock_tab = AsyncMock()
+        result = await inject_cookies_to_nodriver(mock_tab, jar)
+
+        # Only session_id and csrf should be injected (3 Akamai cookies skipped)
+        assert result == 2
+        mock_tab.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skip_bot_cookies_false_injects_all(self) -> None:
+        """Setting skip_bot_cookies=False injects everything including bot cookies."""
+        from unittest.mock import AsyncMock
+
+        from requests.cookies import RequestsCookieJar
+
+        from graftpunk.session import inject_cookies_to_nodriver
+
+        jar = RequestsCookieJar()
+        jar.set("session_id", "abc123", domain=".example.com", path="/")
+        jar.set("bm_sv", "akamai_track", domain=".example.com", path="/")
+        jar.set("_abck", "akamai_bot", domain=".example.com", path="/")
+
+        mock_tab = AsyncMock()
+        result = await inject_cookies_to_nodriver(mock_tab, jar, skip_bot_cookies=False)
+
+        assert result == 3
+        mock_tab.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_bm_prefix_matches_all_variants(self) -> None:
+        """The bm_ prefix matches bm_sv, bm_so, bm_s, bm_sz, etc."""
+        from unittest.mock import AsyncMock
+
+        from requests.cookies import RequestsCookieJar
+
+        from graftpunk.session import inject_cookies_to_nodriver
+
+        jar = RequestsCookieJar()
+        jar.set("bm_sv", "val1", domain=".example.com", path="/")
+        jar.set("bm_so", "val2", domain=".example.com", path="/")
+        jar.set("bm_s", "val3", domain=".example.com", path="/")
+        jar.set("bm_sz", "val4", domain=".example.com", path="/")
+
+        mock_tab = AsyncMock()
+        result = await inject_cookies_to_nodriver(mock_tab, jar)
+
+        assert result == 0
+        mock_tab.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_bot_cookies_with_similar_names_not_filtered(self) -> None:
+        """Cookies that don't match bot prefixes are not filtered."""
+        from unittest.mock import AsyncMock
+
+        from requests.cookies import RequestsCookieJar
+
+        from graftpunk.session import inject_cookies_to_nodriver
+
+        jar = RequestsCookieJar()
+        jar.set("bookmark", "page5", domain=".example.com", path="/")
+        jar.set("abcdef", "val", domain=".example.com", path="/")
+
+        mock_tab = AsyncMock()
+        result = await inject_cookies_to_nodriver(mock_tab, jar)
+
+        # "bookmark" does NOT start with "bm_", "abcdef" does NOT start with "_abck"
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_constant_is_importable(self) -> None:
+        """BOT_DETECTION_COOKIE_PREFIXES is a public constant."""
+        from graftpunk.session import BOT_DETECTION_COOKIE_PREFIXES
+
+        assert isinstance(BOT_DETECTION_COOKIE_PREFIXES, tuple)
+        assert len(BOT_DETECTION_COOKIE_PREFIXES) > 0
+        # Confirmed Akamai patterns present
+        assert "bm_" in BOT_DETECTION_COOKIE_PREFIXES
+        assert "ak_bmsc" in BOT_DETECTION_COOKIE_PREFIXES
+        assert "_abck" in BOT_DETECTION_COOKIE_PREFIXES
