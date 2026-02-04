@@ -207,6 +207,35 @@ class TestRunObserveInteractiveSavesOnStop:
         mock_nodriver.start.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_session_expired_exits_with_error(self) -> None:
+        """Session expired raises typer.Exit(1) with --no-session hint."""
+        import typer
+
+        from graftpunk.cli.main import _run_observe_interactive
+        from graftpunk.exceptions import SessionExpiredError
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = AsyncMock()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.load_session",
+                side_effect=SessionExpiredError("Session expired"),
+            ),
+            pytest.raises(typer.Exit) as exc_info,
+        ):
+            await _run_observe_interactive(
+                "expired-session",
+                "https://example.com",
+                5 * 1024 * 1024,
+                session_name="expired-session",
+            )
+
+        assert exc_info.value.exit_code == 1
+        mock_nodriver.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_session_name_opens_browser_without_cookies(self) -> None:
         """When session_name=None, browser opens without cookies."""
         from graftpunk.cli.main import _run_observe_interactive

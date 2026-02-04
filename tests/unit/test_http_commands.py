@@ -200,6 +200,19 @@ class TestMakeRequestErrorPaths:
         assert response == mock_response
         mock_req.assert_called_once()
 
+    def test_no_session_flag_skips_token_injection(self) -> None:
+        """With no_session=True, token injection is skipped entirely."""
+        mock_response = MagicMock(spec=requests.Response)
+        mock_response.status_code = 200
+
+        with (
+            patch.object(requests.Session, "request", return_value=mock_response),
+            patch("graftpunk.cli.plugin_commands.get_plugin_for_session") as mock_get_plugin,
+        ):
+            _make_request("GET", "https://example.com", no_session=True)
+
+        mock_get_plugin.assert_not_called()
+
     @patch("graftpunk.cli.http_commands.load_session_for_api")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
@@ -335,6 +348,69 @@ class TestPrintResponse:
 
         captured = capsys.readouterr()
         assert "hello" in captured.out
+
+
+class TestHttpCommandCLI:
+    """CLI-level tests for gp http commands with --no-session flag."""
+
+    def test_http_get_no_session_flag_proceeds(self) -> None:
+        """gp http get --no-session URL should make an unauthenticated request."""
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.main import app
+
+        runner = CliRunner()
+        mock_response = MagicMock(spec=requests.Response)
+        mock_response.status_code = 200
+        mock_response.reason = "OK"
+        mock_response.ok = True
+        mock_response.text = "ok"
+        mock_response.elapsed = MagicMock()
+        mock_response.elapsed.total_seconds.return_value = 0.1
+        mock_response.request = MagicMock()
+        mock_response.request.headers = {}
+        mock_response.headers = {}
+        mock_response.content = b"ok"
+
+        with (
+            patch.object(requests.Session, "request", return_value=mock_response),
+            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", "/tmp/test-observe"),  # noqa: S108
+            patch("graftpunk.cli.http_commands._save_observe_data"),
+        ):
+            result = runner.invoke(app, ["http", "get", "--no-session", "https://example.com"])
+
+        assert result.exit_code == 0
+
+    def test_http_get_session_and_no_session_conflict(self) -> None:
+        """gp http get --session X --no-session URL should fail with conflict error."""
+        import re
+
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.main import app
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            ["http", "get", "--session", "mysite", "--no-session", "https://example.com"],
+        )
+        assert result.exit_code == 1
+        output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "Cannot use --session and --no-session" in output
+
+    def test_http_get_no_session_flag_in_help(self) -> None:
+        """--no-session flag should appear in gp http get --help."""
+        import re
+
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.main import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["http", "get", "--help"])
+        assert result.exit_code == 0
+        output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--no-session" in output
 
 
 def test_default_browser_headers_removed() -> None:

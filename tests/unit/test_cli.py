@@ -3,6 +3,7 @@
 import re
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from graftpunk.cli.main import app
@@ -1374,6 +1375,92 @@ class TestObserveGoCommand:
             )
         mock_asyncio.run.assert_called_once()
         assert result.exit_code == 0
+
+    def test_observe_go_no_session_interactive_flag(self):
+        """observe go --no-session --interactive should proceed without cookies."""
+        with (
+            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch("graftpunk.logging.suppress_asyncio_noise"),
+        ):
+            result = runner.invoke(
+                app,
+                ["observe", "--no-session", "go", "--interactive", "https://example.com"],
+            )
+        assert result.exit_code == 0
+        mock_asyncio.run.assert_called_once()
+
+
+class TestResolveObserveContext:
+    """Direct unit tests for _resolve_observe_context."""
+
+    def test_returns_session_name_when_set(self):
+        """When observe_session is set, returns it as both namespace and session_name."""
+        from graftpunk.cli.main import _resolve_observe_context
+
+        ctx = MagicMock()
+        ctx.ensure_object.return_value = {
+            "observe_session": "mysite",
+            "observe_no_session": False,
+        }
+        namespace, session_name = _resolve_observe_context(ctx, "https://example.com")
+        assert namespace == "mysite"
+        assert session_name == "mysite"
+
+    def test_no_session_infers_from_url(self):
+        """When --no-session, infers namespace from URL and returns session_name=None."""
+        from graftpunk.cli.main import _resolve_observe_context
+
+        ctx = MagicMock()
+        ctx.ensure_object.return_value = {
+            "observe_session": None,
+            "observe_no_session": True,
+        }
+        namespace, session_name = _resolve_observe_context(ctx, "https://www.example.com/path")
+        assert namespace == "example"
+        assert session_name is None
+
+    def test_no_session_unparseable_url_returns_unknown(self):
+        """When --no-session with unparseable URL, falls back to 'unknown'."""
+        from graftpunk.cli.main import _resolve_observe_context
+
+        ctx = MagicMock()
+        ctx.ensure_object.return_value = {
+            "observe_session": None,
+            "observe_no_session": True,
+        }
+        namespace, session_name = _resolve_observe_context(ctx, "")
+        assert namespace == "unknown"
+        assert session_name is None
+
+    def test_no_session_no_flag_raises_exit(self):
+        """When no session and no --no-session, raises typer.Exit(1)."""
+        import typer
+
+        from graftpunk.cli.main import _resolve_observe_context
+
+        ctx = MagicMock()
+        ctx.ensure_object.return_value = {
+            "observe_session": None,
+            "observe_no_session": False,
+        }
+        with pytest.raises(typer.Exit) as exc_info:
+            _resolve_observe_context(ctx, "https://example.com")
+        assert exc_info.value.exit_code == 1
+
+    def test_no_session_flag_ignores_active_session(self):
+        """When --no-session is set, observe_session should be None (not from env)."""
+        from graftpunk.cli.main import _resolve_observe_context
+
+        ctx = MagicMock()
+        # Simulate the bug scenario: observe_session was populated from env
+        # but --no-session flag should make it None
+        ctx.ensure_object.return_value = {
+            "observe_session": None,  # After fix: observe_callback sets this to None
+            "observe_no_session": True,
+        }
+        namespace, session_name = _resolve_observe_context(ctx, "https://www.myunfi.com/")
+        assert namespace == "myunfi"
+        assert session_name is None
 
 
 class TestResolveSessionNameIntegration:
