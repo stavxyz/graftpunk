@@ -157,21 +157,27 @@ class GraftpunkSession(requests.Session):
 
         method = (request.method or "GET").upper()
 
+        # Non-GET/POST methods are always XHR — browsers have no mechanism
+        # to issue DELETE/PUT/PATCH/HEAD/OPTIONS as navigation requests.
+        # HTML forms only support GET and POST (HTML spec §4.10.18.6).
+        if method not in ("GET", "POST"):
+            return "xhr"
+
         # Check for explicit Accept: application/json in caller headers
         caller_headers = request.headers or {}
         caller_accept = caller_headers.get("Accept", "")
         if "application/json" in caller_accept:
             return "xhr"
 
-        # POST/PUT/PATCH with json= → xhr
-        if method in ("POST", "PUT", "PATCH") and request.json is not None:
+        # POST with json= → xhr
+        if method == "POST" and request.json is not None:
             return "xhr"
 
         # POST with data= (string or dict) → form
         if method == "POST" and request.data:
             return "form"
 
-        # Default: navigation
+        # Default: navigation (GET without Accept: application/json)
         return "navigation"
 
     def _is_user_set_header(self, key: str) -> bool:
