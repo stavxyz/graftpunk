@@ -168,10 +168,9 @@ class GraftpunkSession(requests.Session):
                 return {}
             headers = dict(canonical)
 
-        # Remove identity headers -- they're session-level defaults
+        # Remove identity headers -- they're session-level defaults.
+        # Case-insensitive removal handles mixed-case CDP headers.
         for key in _BROWSER_IDENTITY_HEADERS:
-            headers.pop(key, None)
-            # Also check case-insensitive (CDP headers may have mixed case)
             to_remove = [k for k in headers if k.lower() == key.lower()]
             for k in to_remove:
                 headers.pop(k, None)

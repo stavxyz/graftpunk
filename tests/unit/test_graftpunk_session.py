@@ -482,6 +482,12 @@ class TestResolveReferer:
         )
         assert session._resolve_referer("/invoice/list") == "https://www.example.com/invoice/list"
 
+    def test_path_without_leading_slash_normalized(self):
+        session = GraftpunkSession(
+            header_profiles=SAMPLE_PROFILES, base_url="https://www.example.com"
+        )
+        assert session._resolve_referer("invoice/list") == "https://www.example.com/invoice/list"
+
 
 class TestProfileHeadersFor:
     """Test _profile_headers_for composition of captured + canonical headers."""
@@ -590,6 +596,24 @@ class TestNavigate:
         headers = mock_request.call_args.kwargs.get("headers", {})
         assert headers["Referer"] == "https://example.com/page1"
 
+    def test_navigate_caller_headers_override_profile(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.navigate(
+                "GET", "https://example.com/page", headers={"Accept": "text/plain"}
+            )
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["Accept"] == "text/plain"
+
+    def test_navigate_passes_kwargs_through(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.navigate(
+                "GET", "https://example.com/page", params={"q": "test"}, timeout=10
+            )
+        assert mock_request.call_args.kwargs["params"] == {"q": "test"}
+        assert mock_request.call_args.kwargs["timeout"] == 10
+
     def test_navigate_uses_canonical_when_profile_missing(self):
         profiles = {
             "xhr": {
@@ -633,3 +657,23 @@ class TestFormSubmit:
         with patch.object(session, "request") as mock_request:
             session.form_submit("POST", "https://example.com/submit", data="key=val")
         assert mock_request.call_args.kwargs["data"] == "key=val"
+
+    def test_form_submit_caller_headers_override_profile(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.form_submit(
+                "POST",
+                "https://example.com/submit",
+                headers={"Accept": "text/plain"},
+                data="key=val",
+            )
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["Accept"] == "text/plain"
+
+    def test_form_submit_passes_kwargs_through(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.form_submit(
+                "POST", "https://example.com/submit", data="key=val", timeout=10
+            )
+        assert mock_request.call_args.kwargs["timeout"] == 10
