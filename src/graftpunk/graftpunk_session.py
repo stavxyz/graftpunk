@@ -135,7 +135,13 @@ class GraftpunkSession(requests.Session):
                 value = _case_insensitive_get(profile_headers, header_name)
                 if value is not None:
                     self.headers[header_name] = value
-            break
+            return
+
+        if self._gp_header_profiles:
+            LOG.warning(
+                "no_browser_identity_in_profiles",
+                available=list(self._gp_header_profiles.keys()),
+            )
 
     def _detect_profile(self, request: requests.Request) -> str:
         """Auto-detect the appropriate header profile for a request.
@@ -205,12 +211,21 @@ class GraftpunkSession(requests.Session):
         profile_headers = self._gp_header_profiles.get(profile_name)
 
         if not profile_headers:
-            LOG.debug(
-                "profile_not_captured_using_canonical",
-                detected=profile_name,
-                available=list(self._gp_header_profiles.keys()),
-            )
-            profile_headers = dict(_CANONICAL_REQUEST_HEADERS.get(profile_name, {}))
+            canonical = _CANONICAL_REQUEST_HEADERS.get(profile_name)
+            if canonical is not None:
+                LOG.debug(
+                    "profile_not_captured_using_canonical",
+                    detected=profile_name,
+                    available=list(self._gp_header_profiles.keys()),
+                )
+                profile_headers = dict(canonical)
+            else:
+                LOG.warning(
+                    "unknown_profile_no_headers_applied",
+                    profile=profile_name,
+                    available_profiles=list(self._gp_header_profiles.keys()),
+                    available_canonical=list(_CANONICAL_REQUEST_HEADERS.keys()),
+                )
 
         if profile_headers:
             # Apply profile headers as session defaults (lowest priority).
