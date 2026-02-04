@@ -102,6 +102,10 @@ class GraftpunkSession(requests.Session):
         super().__init__(**kwargs)
         self._gp_header_profiles: dict[str, dict[str, str]] = header_profiles or {}
         self.gp_default_profile: str | None = None
+        # Apply browser identity headers (User-Agent, sec-ch-ua, etc.)
+        # BEFORE taking the snapshot so _is_user_set_header treats them
+        # as defaults rather than user-set overrides.
+        self._apply_browser_identity()
         # Snapshot the default session headers so we can distinguish
         # user-modified headers from requests library defaults.
         self._gp_default_session_headers: dict[str, str] = dict(self.headers)
@@ -116,6 +120,24 @@ class GraftpunkSession(requests.Session):
             Header dict for the profile, or empty dict if not found.
         """
         return dict(self._gp_header_profiles.get(profile, {}))
+
+    def _apply_browser_identity(self) -> None:
+        """Copy browser identity headers from profiles onto the session.
+
+        Iterates over stored header profiles and extracts identity headers
+        (User-Agent, sec-ch-ua, etc.) into ``self.headers``.  Since every
+        profile originates from the same browser, we stop as soon as we
+        find a User-Agent value.
+        """
+        for profile_headers in self._gp_header_profiles.values():
+            for header_name in _BROWSER_IDENTITY_HEADERS:
+                value = _case_insensitive_get(profile_headers, header_name)
+                if value is not None:
+                    self.headers[header_name] = value
+            # All profiles share the same browser — stop after the first
+            # profile that provides a User-Agent.
+            if _case_insensitive_get(profile_headers, "User-Agent") is not None:
+                break
 
     def _detect_profile(self, request: requests.Request) -> str:
         """Auto-detect the appropriate header profile for a request.
