@@ -120,12 +120,13 @@ This extracts cookies and headers from the cached `BrowserSession` into a `Graft
 
 When `load_session_for_api()` loads a session, it returns a `GraftpunkSession` that automatically detects and applies the appropriate header profile (navigation, xhr, or form) for each request based on its characteristics. This means API calls look like they came from the same Chrome browser that logged in, not from Python's default `requests` User-Agent.
 
-**Browser identity separation:** `GraftpunkSession` separates headers into two axes: *browser identity* (User-Agent, sec-ch-ua, sec-ch-ua-mobile, sec-ch-ua-platform) and *request type* (Accept, Sec-Fetch-*, X-Requested-With). Browser identity headers are extracted at init and set as session defaults — they can never leak, even when the detected request-type profile wasn't captured during login. When a detected profile is missing (e.g., login was an SPA that only produced xhr/form requests, but the plugin later makes a navigation-style request), canonical Chrome request-type headers are used as fallback.
+**Browser identity separation:** `GraftpunkSession` separates headers into two axes: *browser identity* (User-Agent, sec-ch-ua, sec-ch-ua-mobile, sec-ch-ua-platform, Accept-Language, Accept-Encoding) and *request type* (Accept, Sec-Fetch-*, X-Requested-With). Browser identity headers are extracted at init and set as session defaults — they can never leak, even when the detected request-type profile wasn't captured during login. When a detected profile is missing (e.g., login was an SPA that only produced xhr/form requests, but the plugin later makes a navigation-style request), canonical Chrome request-type headers are used as fallback.
 
 ```python
 api = load_session_for_api("mysite")
-# api.headers already contains real Chrome headers:
-# User-Agent, Accept, Accept-Language, Accept-Encoding (including br), etc.
+# api.headers contains browser identity headers:
+# User-Agent, sec-ch-ua, Accept-Language, Accept-Encoding (including br), etc.
+# Request-type headers (Accept, Sec-Fetch-*, etc.) are applied per-request.
 response = api.get("https://example.com/api/data")
 ```
 
