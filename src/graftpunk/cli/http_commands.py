@@ -66,12 +66,16 @@ def _make_request(
     extra_headers: list[str] | None = None,
     timeout: float = 30.0,
 ) -> requests.Response:
-    """Make an HTTP request using a cached graftpunk session.
+    """Make an HTTP request, optionally using a cached graftpunk session.
+
+    When no session can be resolved, falls back to a bare ``requests.Session``
+    for unauthenticated requests.
 
     Args:
         method: HTTP method (GET, POST, etc.).
         url: Target URL.
         session_name: Session name to load. Falls back to ``resolve_session()``.
+            When ``None`` and no active session exists, uses a bare session.
         browser_headers: Whether to keep auto-detected browser header profiles.
             When False, clears ``_gp_header_profiles`` so the session sends
             only its base headers.
@@ -84,20 +88,20 @@ def _make_request(
         The HTTP response.
 
     Raises:
-        typer.Exit: If session cannot be resolved or loaded.
+        typer.Exit: If an explicit session name is given but cannot be loaded.
     """
     resolved = session_name or resolve_session(None)
-    if not resolved:
-        gp_console.error(
-            "No session specified. Use --session, GRAFTPUNK_SESSION, or gp session use."
-        )
-        raise typer.Exit(1)
 
-    try:
-        session = load_session_for_api(resolved)
-    except Exception as exc:  # noqa: BLE001 — CLI boundary
-        gp_console.error(f"Failed to load session '{resolved}': {exc}")
-        raise typer.Exit(1) from exc
+    session: requests.Session
+    if not resolved:
+        gp_console.info("No session loaded — making unauthenticated request")
+        session = requests.Session()
+    else:
+        try:
+            session = load_session_for_api(resolved)
+        except Exception as exc:  # noqa: BLE001 — CLI boundary
+            gp_console.error(f"Failed to load session '{resolved}': {exc}")
+            raise typer.Exit(1) from exc
 
     if not browser_headers and hasattr(session, "_gp_header_profiles"):
         session._gp_header_profiles = {}  # type: ignore[assignment]
@@ -123,7 +127,7 @@ def _make_request(
     # Token injection from plugin session map
     from graftpunk.cli.plugin_commands import get_plugin_for_session
 
-    plugin = get_plugin_for_session(resolved)
+    plugin = get_plugin_for_session(resolved) if resolved else None
 
     token_config = getattr(plugin, "token_config", None) if plugin else None
     if token_config is not None:
