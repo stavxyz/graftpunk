@@ -10,6 +10,70 @@ from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
+# Headers that identify the browser itself (shared across all request types).
+_BROWSER_IDENTITY_HEADERS: frozenset[str] = frozenset(
+    {
+        "User-Agent",
+        "sec-ch-ua",
+        "sec-ch-ua-mobile",
+        "sec-ch-ua-platform",
+    }
+)
+
+# Canonical Chrome request-type headers used as a fallback when a captured
+# profile for the detected request type is not available.
+_CANONICAL_REQUEST_HEADERS: dict[str, dict[str, str]] = {
+    "navigation": {
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;"
+            "q=0.9,image/avif,image/webp,image/apng,*/*;"
+            "q=0.8,application/signed-exchange;v=b3;q=0.7"
+        ),
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    },
+    "xhr": {
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "X-Requested-With": "XMLHttpRequest",
+    },
+    "form": {
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;"
+            "q=0.9,image/avif,image/webp,image/apng,*/*;"
+            "q=0.8,application/signed-exchange;v=b3;q=0.7"
+        ),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    },
+}
+
+
+def _case_insensitive_get(mapping: dict[str, str], key: str) -> str | None:
+    """Look up *key* in *mapping* using case-insensitive comparison.
+
+    Args:
+        mapping: Header dict to search.
+        key: Header name to find (case-insensitive).
+
+    Returns:
+        The value if found, otherwise ``None``.
+    """
+    lower_key = key.lower()
+    for k, v in mapping.items():
+        if k.lower() == lower_key:
+            return v
+    return None
+
 
 class GraftpunkSession(requests.Session):
     """A requests.Session that auto-applies captured browser header profiles.
