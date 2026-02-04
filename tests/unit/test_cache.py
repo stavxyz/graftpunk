@@ -652,6 +652,57 @@ class TestLoadSessionForApiGraftpunkSession:
         assert hasattr(api_session, _CACHE_ATTR)
         assert getattr(api_session, _CACHE_ATTR) == token_cache
 
+    def test_load_session_for_api_browser_identity_not_clobbered(self, monkeypatch):
+        """Browser identity headers from profiles must survive browser_session.headers copy.
+
+        Regression test for #52: load_session_for_api copied browser_session.headers
+        (which contains python-requests defaults) on top of the Chrome UA that
+        _apply_browser_identity() set during GraftpunkSession init.
+        """
+        import requests
+
+        mock_session = MagicMock()
+        mock_session.cookies = requests.cookies.RequestsCookieJar()
+        # Simulate a real pickled BrowserSession: its headers dict contains
+        # the requests library default User-Agent.
+        mock_session.headers = requests.utils.default_headers()
+        mock_session._gp_header_profiles = {
+            "navigation": {
+                "User-Agent": "Mozilla/5.0 Chrome/144.0.0.0",
+                "Accept": "text/html",
+                "sec-ch-ua": '"Chromium";v="144"',
+            }
+        }
+        del mock_session._gp_cached_tokens
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+
+        api_session = load_session_for_api("test")
+
+        # The Chrome UA from profiles must win, not python-requests default
+        assert api_session.headers["User-Agent"] == "Mozilla/5.0 Chrome/144.0.0.0"
+        assert api_session.headers["sec-ch-ua"] == '"Chromium";v="144"'
+
+    def test_load_session_for_api_custom_browser_session_headers_preserved(self, monkeypatch):
+        """Non-default headers from browser_session.headers should still be copied."""
+        import requests
+
+        mock_session = MagicMock()
+        mock_session.cookies = requests.cookies.RequestsCookieJar()
+        mock_session.headers = {
+            **requests.utils.default_headers(),
+            "X-Custom-Header": "custom-value",
+            "User-Agent": "CustomBot/1.0",  # explicitly set, not requests default
+        }
+        mock_session._gp_header_profiles = {}
+        del mock_session._gp_cached_tokens
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+
+        api_session = load_session_for_api("test")
+
+        assert api_session.headers["X-Custom-Header"] == "custom-value"
+        # Non-default UA should be copied through
+        assert api_session.headers["User-Agent"] == "CustomBot/1.0"
+
     def test_load_session_for_api_no_token_cache(self, monkeypatch):
         """API session works fine when browser session has no token cache."""
         import requests
