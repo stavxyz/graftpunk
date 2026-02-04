@@ -38,10 +38,19 @@ class TestObserveInteractiveCommandRegistered:
         output = strip_ansi(result.output)
         assert "interactive" in output
 
-    def test_observe_interactive_without_session_proceeds(self) -> None:
-        """observe interactive without session should infer namespace from URL and proceed."""
+    def test_observe_interactive_without_session_requires_session(self) -> None:
+        """observe interactive without session or --no-session should fail."""
+        result = runner.invoke(app, ["observe", "interactive", "https://example.com"])
+        assert result.exit_code == 1
+        output = strip_ansi(result.output)
+        assert "no session" in output.lower() or "--no-session" in output
+
+    def test_observe_interactive_with_no_session_flag_proceeds(self) -> None:
+        """observe interactive --no-session should infer namespace and proceed."""
         with patch("graftpunk.cli.main.asyncio") as mock_asyncio:
-            result = runner.invoke(app, ["observe", "interactive", "https://example.com"])
+            result = runner.invoke(
+                app, ["observe", "--no-session", "interactive", "https://example.com"]
+            )
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
 
@@ -166,10 +175,37 @@ class TestRunObserveInteractiveSavesOnStop:
         mock_browser.stop.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_handles_load_session_failure_non_fatal(self) -> None:
-        """Session load failure is non-fatal — browser opens without cookies."""
+    async def test_session_not_found_returns_early(self) -> None:
+        """Session not found causes early return — browser is never started."""
         from graftpunk.cli.main import _run_observe_interactive
         from graftpunk.exceptions import SessionNotFoundError
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = AsyncMock()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.load_session",
+                side_effect=SessionNotFoundError("Session not found"),
+            ) as mock_load,
+        ):
+            await _run_observe_interactive(
+                "nonexistent-session",
+                "https://example.com",
+                5 * 1024 * 1024,
+                session_name="nonexistent-session",
+            )
+
+        # Session was attempted
+        mock_load.assert_called_once_with("nonexistent-session")
+        # Browser was never started (early return from _setup_observe_session)
+        mock_nodriver.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_session_name_opens_browser_without_cookies(self) -> None:
+        """When session_name=None, browser opens without cookies."""
+        from graftpunk.cli.main import _run_observe_interactive
 
         mock_tab = MagicMock()
         mock_browser = MagicMock()
@@ -196,10 +232,6 @@ class TestRunObserveInteractiveSavesOnStop:
         with (
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             patch(
-                "graftpunk.load_session",
-                side_effect=SessionNotFoundError("Session not found"),
-            ) as mock_load,
-            patch(
                 "graftpunk.session.inject_cookies_to_nodriver",
                 new_callable=AsyncMock,
             ) as mock_inject,
@@ -212,17 +244,15 @@ class TestRunObserveInteractiveSavesOnStop:
             patch("asyncio.Event", return_value=already_set_event),
         ):
             await _run_observe_interactive(
-                "nonexistent-session",
+                "example",
                 "https://example.com",
                 5 * 1024 * 1024,
-                session_name="nonexistent-session",
+                session_name=None,
             )
 
-        # Session was attempted
-        mock_load.assert_called_once_with("nonexistent-session")
-        # But cookies were NOT injected (session didn't load)
+        # Cookies were NOT injected (no session)
         mock_inject.assert_not_called()
-        # Browser was still started and stopped
+        # Browser was started and stopped
         mock_nodriver.start.assert_awaited_once()
         mock_browser.stop.assert_called_once()
 
