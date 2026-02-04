@@ -188,7 +188,7 @@ def discover_formatters() -> dict[str, OutputFormatter]:
                 continue
             formatters[instance.name] = instance
         except Exception:  # noqa: BLE001
-            LOG.warning("formatter_load_failed", entry_point=ep.name)
+            LOG.warning("formatter_load_failed", entry_point=ep.name, exc_info=True)
     return formatters
 
 
