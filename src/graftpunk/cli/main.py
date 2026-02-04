@@ -305,15 +305,24 @@ def observe_clean(
         console.print("[green]Removed all observe data[/green]")
 
 
-def _require_observe_session(ctx: typer.Context) -> str:
-    """Extract and validate the observe session from context, or exit."""
+def _resolve_observe_namespace(ctx: typer.Context, url: str) -> str:
+    """Resolve the observe storage namespace from context or URL.
+
+    Checks for an explicit --session flag or active session first.
+    Falls back to inferring a name from the URL (e.g., https://www.myunfi.com/ → myunfi).
+    """
     session_name = ctx.ensure_object(dict).get("observe_session")
-    if not session_name:
-        console.print(
-            "[red]No session specified. Use --session, GRAFTPUNK_SESSION, or gp session use.[/red]"
-        )
-        raise typer.Exit(1)
-    return session_name
+    if session_name:
+        return session_name
+
+    from graftpunk.plugins import infer_site_name
+
+    inferred = infer_site_name(url)
+    if inferred:
+        return inferred
+
+    # Last resort: use "unknown" so ObserveStorage has a valid directory name
+    return "unknown"
 
 
 @observe_app.command("go")
@@ -336,33 +345,50 @@ def observe_go(
         typer.Option("--interactive", "-i", help="Keep browser open for manual exploration"),
     ] = False,
 ) -> None:
-    """Open a URL in an authenticated browser and capture observability data.
+    """Open a URL in a browser and capture observability data.
 
-    Loads the cached session cookies, opens a nodriver browser, injects
-    cookies, navigates to the URL, and captures screenshots, page source,
-    and HAR data.
+    Opens a nodriver browser, optionally injects cached session cookies,
+    navigates to the URL, and captures screenshots, page source, and HAR data.
 
-    Requires an active session (via --session, GRAFTPUNK_SESSION, or gp session use).
+    When no session is available, opens the browser without cookies.
+    Use --session to specify a cookie jar, or set one via gp session use.
     """
-    session_name = _require_observe_session(ctx)
+    namespace = _resolve_observe_namespace(ctx, url)
+    session_name = ctx.ensure_object(dict).get("observe_session")
 
     if interactive:
         from graftpunk.logging import suppress_asyncio_noise
 
         with suppress_asyncio_noise():
-            asyncio.run(_run_observe_interactive(session_name, url, max_body_size))
+            asyncio.run(
+                _run_observe_interactive(namespace, url, max_body_size, session_name=session_name)
+            )
         return
 
-    asyncio.run(_run_observe_go(session_name, url, wait, max_body_size))
+    asyncio.run(_run_observe_go(namespace, url, wait, max_body_size, session_name=session_name))
 
 
 async def _setup_observe_session(
-    session_name: str,
+    namespace: str,
     url: str,
     max_body_size: int,
     headless: bool,
+    *,
+    session_name: str | None = None,
 ) -> tuple[Any, Any, Any, Any] | None:
-    """Set up browser session, inject cookies, initialize capture, and navigate to URL.
+    """Set up browser, optionally inject cookies, initialize capture, and navigate to URL.
+
+    Cookie injection is opportunistic: when a cached session exists, cookies are
+    injected into the browser. When no session is found or the session is expired,
+    the browser opens without cookies and capture proceeds normally.
+
+    Args:
+        namespace: Storage namespace for ObserveStorage (e.g., site name).
+        url: URL to navigate to.
+        max_body_size: Max response body size for capture.
+        headless: Whether to run browser headless.
+        session_name: Optional session name for cookie injection. When None,
+            or when the session doesn't exist, cookies are skipped.
 
     Returns:
         Tuple of (browser, tab, storage, backend) or None on failure.
@@ -378,38 +404,38 @@ async def _setup_observe_session(
     from graftpunk.observe.storage import ObserveStorage
     from graftpunk.session import inject_cookies_to_nodriver
 
-    try:
-        session = load_session(session_name)
-    except SessionNotFoundError:
-        console.print(
-            f"[red]Session '{session_name}' not found.[/red]\n"
-            f"[dim]Run 'gp session list' to see available sessions, "
-            f"or log in first with your plugin's login command.[/dim]"
-        )
-        return None
-    except SessionExpiredError as exc:
-        console.print(
-            f"[red]Session '{session_name}' is expired or corrupted.[/red]\n[dim]{exc}[/dim]"
-        )
-        return None
-    except Exception as exc:  # noqa: BLE001 — CLI boundary: user-friendly error
-        LOG.error("session_load_failed", session_name=session_name, error=str(exc))
-        console.print(f"[red]Failed to load session '{session_name}': {exc}[/red]")
-        return None
+    # Opportunistic session loading: inject cookies when available, skip when not.
+    session = None
+    if session_name:
+        try:
+            session = load_session(session_name)
+        except SessionNotFoundError:
+            console.print(
+                f"[dim]No cached session '{session_name}' — opening browser without cookies[/dim]"
+            )
+        except SessionExpiredError:
+            console.print(
+                f"[dim]Session '{session_name}' expired — opening browser without cookies[/dim]"
+            )
+        except Exception as exc:  # noqa: BLE001 — CLI boundary: user-friendly error
+            LOG.error("session_load_failed", session_name=session_name, error=str(exc))
+            console.print(f"[red]Failed to load session '{session_name}': {exc}[/red]")
+            return None
 
     browser = await nodriver.start(headless=headless)
     try:
         tab = browser.main_tab
 
-        injected, filtered = await inject_cookies_to_nodriver(tab, session.cookies)
-        msg = f"[dim]Injected {injected} cookie(s)"
-        if filtered:
-            msg += f" ({filtered} bot-detection cookie(s) filtered)"
-        msg += "[/dim]"
-        console.print(msg)
+        if session is not None:
+            injected, filtered = await inject_cookies_to_nodriver(tab, session.cookies)
+            msg = f"[dim]Injected {injected} cookie(s)"
+            if filtered:
+                msg += f" ({filtered} bot-detection cookie(s) filtered)"
+            msg += "[/dim]"
+            console.print(msg)
 
         run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-        storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+        storage = ObserveStorage(OBSERVE_BASE_DIR, namespace, run_id)
         bodies_dir = storage.run_dir / "bodies"
         backend = NodriverCaptureBackend(
             browser,
@@ -462,9 +488,13 @@ async def _save_observe_results(
     console.print(f"\n[bold]Observe run:[/bold] {storage.run_dir}")
 
 
-async def _run_observe_go(session_name: str, url: str, wait: float, max_body_size: int) -> None:
+async def _run_observe_go(
+    namespace: str, url: str, wait: float, max_body_size: int, *, session_name: str | None = None
+) -> None:
     """Async implementation of observe go."""
-    result = await _setup_observe_session(session_name, url, max_body_size, headless=True)
+    result = await _setup_observe_session(
+        namespace, url, max_body_size, headless=True, session_name=session_name
+    )
     if result is None:
         return
 
@@ -477,11 +507,15 @@ async def _run_observe_go(session_name: str, url: str, wait: float, max_body_siz
         browser.stop()
 
 
-async def _run_observe_interactive(session_name: str, url: str, max_body_size: int) -> None:
+async def _run_observe_interactive(
+    namespace: str, url: str, max_body_size: int, *, session_name: str | None = None
+) -> None:
     """Async implementation of observe interactive."""
     import signal
 
-    result = await _setup_observe_session(session_name, url, max_body_size, headless=False)
+    result = await _setup_observe_session(
+        namespace, url, max_body_size, headless=False, session_name=session_name
+    )
     if result is None:
         return
 
@@ -525,17 +559,21 @@ def observe_interactive(
 ) -> None:
     """Record an interactive browser session into a HAR file.
 
-    Opens an authenticated browser, navigates to the URL, and records all
-    network traffic while you click around. Press Ctrl+C to stop and save.
+    Opens a browser, navigates to the URL, and records all network traffic
+    while you click around. Press Ctrl+C to stop and save.
 
-    Requires an active session (via --session, GRAFTPUNK_SESSION, or gp session use).
+    When no session is available, opens the browser without cookies.
+    Use --session to specify a cookie jar, or set one via gp session use.
     """
-    session_name = _require_observe_session(ctx)
+    namespace = _resolve_observe_namespace(ctx, url)
+    session_name = ctx.ensure_object(dict).get("observe_session")
 
     from graftpunk.logging import suppress_asyncio_noise
 
     with suppress_asyncio_noise():
-        asyncio.run(_run_observe_interactive(session_name, url, max_body_size))
+        asyncio.run(
+            _run_observe_interactive(namespace, url, max_body_size, session_name=session_name)
+        )
 
 
 app.add_typer(observe_app)
