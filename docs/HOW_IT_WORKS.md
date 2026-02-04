@@ -143,6 +143,15 @@ def refresh(self, ctx: CommandContext):
 
 The `update_session_cookies()` function merges new cookies from the API session back into the cached `BrowserSession`.
 
+### Bot-Detection Cookie Filtering
+
+When injecting cookies into a nodriver browser (for observe mode, token extraction, etc.), graftpunk automatically skips known WAF bot-detection cookies. These cookies — set by services like Akamai Bot Manager — carry bot-classification state from previous sessions. Injecting stale copies causes WAFs to immediately flag the new browser, resulting in connection-level rejection (`ERR_HTTP2_PROTOCOL_ERROR`).
+
+Filtered by default:
+- `bm_*`, `ak_bmsc`, `_abck` (Akamai Bot Manager)
+
+The filter can be disabled per-call with `skip_bot_cookies=False`. Additional WAF patterns (Cloudflare, Imperva, PerimeterX, DataDome) are included as commented-out entries in `BOT_DETECTION_COOKIE_PREFIXES` for easy activation.
+
 ### Storage Backends
 
 Controlled by `GRAFTPUNK_STORAGE_BACKEND`:
