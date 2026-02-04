@@ -134,8 +134,10 @@ class GraftpunkSession(requests.Session):
                 value = _case_insensitive_get(profile_headers, header_name)
                 if value is not None:
                     self.headers[header_name] = value
-            # All profiles share the same browser — stop after the first
-            # profile that provides a User-Agent.
+            # All profiles share the same browser, so identity values are
+            # identical across profiles. We use User-Agent as the sentinel
+            # to stop iteration — if earlier profiles provided other identity
+            # headers (sec-ch-ua, etc.) they'll be the same values anyway.
             if _case_insensitive_get(profile_headers, "User-Agent") is not None:
                 break
 
@@ -207,8 +209,12 @@ class GraftpunkSession(requests.Session):
         profile_headers = self._gp_header_profiles.get(profile_name)
 
         if not profile_headers:
-            # Fall back to navigation if requested profile not available
-            profile_headers = self._gp_header_profiles.get("navigation", {})
+            LOG.debug(
+                "profile_not_captured_using_canonical",
+                detected=profile_name,
+                available=list(self._gp_header_profiles.keys()),
+            )
+            profile_headers = dict(_CANONICAL_REQUEST_HEADERS.get(profile_name, {}))
 
         if profile_headers:
             # Apply profile headers as session defaults (lowest priority).
