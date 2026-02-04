@@ -231,18 +231,12 @@ class TestCanonicalFallback:
                 "Accept": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
             },
-            "form": {
-                "User-Agent": "Mozilla/5.0 Test",
-                "Accept": "text/html",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
         }
         session = GraftpunkSession(header_profiles=profiles)
         req = requests.Request("GET", "https://example.com/page")
         prepared = session.prepare_request(req)
-        # Canonical navigation Accept header
         assert "text/html" in prepared.headers["Accept"]
-        assert prepared.headers.get("Sec-Fetch-Mode") == "navigate"
+        assert prepared.headers["Sec-Fetch-Mode"] == "navigate"
 
     def test_missing_xhr_uses_canonical(self):
         profiles = {
@@ -250,17 +244,12 @@ class TestCanonicalFallback:
                 "User-Agent": "Mozilla/5.0 Test",
                 "Accept": "text/html,application/xhtml+xml",
             },
-            "form": {
-                "User-Agent": "Mozilla/5.0 Test",
-                "Accept": "text/html",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
         }
         session = GraftpunkSession(header_profiles=profiles)
         req = requests.Request("POST", "https://example.com/api", json={"key": "val"})
         prepared = session.prepare_request(req)
-        assert prepared.headers.get("X-Requested-With") == "XMLHttpRequest"
-        assert prepared.headers.get("Sec-Fetch-Mode") == "cors"
+        assert prepared.headers["X-Requested-With"] == "XMLHttpRequest"
+        assert prepared.headers["Sec-Fetch-Mode"] == "cors"
 
     def test_canonical_navigation_has_correct_headers(self):
         canonical = _CANONICAL_REQUEST_HEADERS["navigation"]

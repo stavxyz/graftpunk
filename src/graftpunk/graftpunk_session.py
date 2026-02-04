@@ -26,13 +26,15 @@ _BROWSER_IDENTITY_HEADERS: Final[frozenset[str]] = frozenset(
 
 # Canonical Chrome request-type headers used as a fallback when a captured
 # profile for the detected request type is not available.
+_CANONICAL_HTML_ACCEPT: Final[str] = (
+    "text/html,application/xhtml+xml,application/xml;"
+    "q=0.9,image/avif,image/webp,image/apng,*/*;"
+    "q=0.8,application/signed-exchange;v=b3;q=0.7"
+)
+
 _CANONICAL_REQUEST_HEADERS: Final[dict[str, dict[str, str]]] = {
     "navigation": {
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;"
-            "q=0.9,image/avif,image/webp,image/apng,*/*;"
-            "q=0.8,application/signed-exchange;v=b3;q=0.7"
-        ),
+        "Accept": _CANONICAL_HTML_ACCEPT,
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Site": "same-origin",
@@ -47,11 +49,7 @@ _CANONICAL_REQUEST_HEADERS: Final[dict[str, dict[str, str]]] = {
         "X-Requested-With": "XMLHttpRequest",
     },
     "form": {
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;"
-            "q=0.9,image/avif,image/webp,image/apng,*/*;"
-            "q=0.8,application/signed-exchange;v=b3;q=0.7"
-        ),
+        "Accept": _CANONICAL_HTML_ACCEPT,
         "Content-Type": "application/x-www-form-urlencoded",
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
@@ -73,10 +71,7 @@ def _case_insensitive_get(mapping: dict[str, str], key: str) -> str | None:
         The value if found, otherwise ``None``.
     """
     lower_key = key.lower()
-    for k, v in mapping.items():
-        if k.lower() == lower_key:
-            return v
-    return None
+    return next((v for k, v in mapping.items() if k.lower() == lower_key), None)
 
 
 class GraftpunkSession(requests.Session):
@@ -128,22 +123,19 @@ class GraftpunkSession(requests.Session):
     def _apply_browser_identity(self) -> None:
         """Copy browser identity headers from profiles onto the session.
 
-        Iterates over stored header profiles and extracts identity headers
-        (User-Agent, sec-ch-ua, etc.) into ``self.headers``.  Since every
-        profile originates from the same browser, we stop as soon as we
-        find a User-Agent value.
+        Extracts identity headers (User-Agent, sec-ch-ua, etc.) from the first
+        profile that contains a User-Agent. All profiles originate from the same
+        browser, so we only need to check the first profile with identity data.
         """
         for profile_headers in self._gp_header_profiles.values():
+            if _case_insensitive_get(profile_headers, "User-Agent") is None:
+                continue
+
             for header_name in _BROWSER_IDENTITY_HEADERS:
                 value = _case_insensitive_get(profile_headers, header_name)
                 if value is not None:
                     self.headers[header_name] = value
-            # All profiles share the same browser, so identity values are
-            # identical across profiles. We use User-Agent as the sentinel
-            # to stop iteration — if earlier profiles provided other identity
-            # headers (sec-ch-ua, etc.) they'll be the same values anyway.
-            if _case_insensitive_get(profile_headers, "User-Agent") is not None:
-                break
+            break
 
     def _detect_profile(self, request: requests.Request) -> str:
         """Auto-detect the appropriate header profile for a request.
