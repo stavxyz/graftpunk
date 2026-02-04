@@ -22,7 +22,7 @@ from graftpunk.cli.keepalive_commands import keepalive_app
 from graftpunk.cli.plugin_commands import GraftpunkApp, resolve_session_name
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
-from graftpunk.logging import configure_logging, get_logger
+from graftpunk.logging import configure_logging, enable_network_debug, get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.plugins import (
     discover_keepalive_handlers,
@@ -87,6 +87,13 @@ def main_callback(
             help="Log output format: console (human-readable) or json (structured)",
         ),
     ] = None,
+    network_debug: Annotated[
+        bool,
+        typer.Option(
+            "--network-debug",
+            help="Enable deep HTTP/network debug logging (urllib3, httpx, http.client)",
+        ),
+    ] = False,
     observe: Annotated[
         str,
         typer.Option(
@@ -107,6 +114,9 @@ def main_callback(
         configure_logging(level="INFO", json_output=json_output)
     elif log_format is not None:
         configure_logging(level=settings.log_level, json_output=json_output)
+
+    if network_debug:
+        enable_network_debug()
 
     ctx.ensure_object(dict)["observe_mode"] = observe
 

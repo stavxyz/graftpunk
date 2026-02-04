@@ -79,6 +79,35 @@ def suppress_asyncio_noise():
         asyncio_logger.setLevel(prev_level)
 
 
+def enable_network_debug() -> None:
+    """Enable deep network-level debug logging.
+
+    Turns on wire-level HTTP tracing for debugging request/response cycles:
+    - http.client: HTTPConnection.debuglevel = 1 (prints raw HTTP traffic)
+    - urllib3: DEBUG level (connection pool lifecycle, retries)
+    - httpx: DEBUG level (request/response flow)
+    - httpcore: DEBUG level (low-level HTTP transport)
+    """
+    import http.client
+    import logging
+
+    http.client.HTTPConnection.debuglevel = 1
+
+    # Ensure the root stdlib logger can emit DEBUG messages from these
+    # network libraries. Without a handler, propagated messages are dropped.
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(name)s %(levelname)s: %(message)s"))
+        root.addHandler(handler)
+    root.setLevel(min(root.level or logging.DEBUG, logging.DEBUG))
+
+    for logger_name in ("urllib3", "httpx", "httpcore"):
+        log = logging.getLogger(logger_name)
+        log.setLevel(logging.DEBUG)
+        log.propagate = True
+
+
 def get_logger(name: str | None = None) -> structlog.BoundLogger:
     """Get a configured logger instance.
 
