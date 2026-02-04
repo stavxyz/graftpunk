@@ -112,24 +112,31 @@ class CsvFormatter:
             return
         if isinstance(data, dict):
             data = [data]
-        if isinstance(data, list) and data and isinstance(data[0], dict):
-            buf = io.StringIO()
-            writer = csv.writer(buf)
-            headers = list(data[0].keys())
-            writer.writerow(headers)
-            for row in data:
-                writer.writerow(
-                    [
-                        json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
-                        for v in (row.get(h, "") for h in headers)
-                    ]
-                )
-            console.print(buf.getvalue(), end="")
-        elif isinstance(data, list) and not data:
-            # Empty list: no output
-            return
-        else:
+        if not isinstance(data, list):
             RawFormatter().format(data, console)
+            return
+        if not data:
+            return
+        if not all(isinstance(item, dict) for item in data):
+            RawFormatter().format(data, console)
+            return
+        # Collect headers as union of all row keys, preserving insertion order
+        all_keys: dict[str, None] = {}
+        for row in data:
+            for k in row:
+                all_keys.setdefault(k, None)
+        headers = list(all_keys)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(headers)
+        for row in data:
+            writer.writerow(
+                [
+                    json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
+                    for v in (row.get(h, "") for h in headers)
+                ]
+            )
+        console.print(buf.getvalue(), end="")
 
 
 BUILTIN_FORMATTERS: dict[str, OutputFormatter] = {
