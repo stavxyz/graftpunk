@@ -131,6 +131,31 @@ response = api.get("https://example.com/api/data")
 
 Brotli (`br`) is included as a core dependency so `Accept-Encoding: gzip, deflate, br` is properly supported.
 
+#### Request-Type Methods
+
+For explicit control over which header profile is used, `GraftpunkSession` provides three methods:
+
+```python
+# XHR-style request (Accept: application/json, X-Requested-With, etc.)
+resp = session.xhr("GET", "https://example.com/api/data", referer="/dashboard")
+
+# Navigation-style request (Accept: text/html, Sec-Fetch-Mode: navigate, etc.)
+resp = session.navigate("GET", "https://example.com/page")
+
+# Form submission (Content-Type: application/x-www-form-urlencoded, etc.)
+resp = session.form_submit("POST", "https://example.com/login", referer="/login", data={"user": "me"})
+```
+
+Each method:
+1. Starts from the captured profile headers for that request type (if available)
+2. Falls back to canonical Chrome request-type headers (if the profile wasn't captured during login)
+3. Browser identity headers are already on `self.headers` from session init
+4. The `referer` kwarg resolves paths against `gp_base_url` (paths like `"/invoice/list"` become full URLs)
+5. Caller-supplied `headers=` override profile headers
+6. All other `**kwargs` pass through to `requests.Session.request()`
+
+This eliminates the need for plugins to maintain their own header-building infrastructure. A plugin that previously needed 150 lines of request helpers can reduce to one-line calls.
+
 ### Session Persistence After Commands
 
 Commands can opt into saving session changes back to the cache. This is useful when API responses set new cookies (e.g., refreshed auth tokens):

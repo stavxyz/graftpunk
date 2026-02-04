@@ -599,18 +599,14 @@ class TestNavigate:
     def test_navigate_caller_headers_override_profile(self):
         session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
         with patch.object(session, "request") as mock_request:
-            session.navigate(
-                "GET", "https://example.com/page", headers={"Accept": "text/plain"}
-            )
+            session.navigate("GET", "https://example.com/page", headers={"Accept": "text/plain"})
         headers = mock_request.call_args.kwargs.get("headers", {})
         assert headers["Accept"] == "text/plain"
 
     def test_navigate_passes_kwargs_through(self):
         session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
         with patch.object(session, "request") as mock_request:
-            session.navigate(
-                "GET", "https://example.com/page", params={"q": "test"}, timeout=10
-            )
+            session.navigate("GET", "https://example.com/page", params={"q": "test"}, timeout=10)
         assert mock_request.call_args.kwargs["params"] == {"q": "test"}
         assert mock_request.call_args.kwargs["timeout"] == 10
 
@@ -673,7 +669,5 @@ class TestFormSubmit:
     def test_form_submit_passes_kwargs_through(self):
         session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
         with patch.object(session, "request") as mock_request:
-            session.form_submit(
-                "POST", "https://example.com/submit", data="key=val", timeout=10
-            )
+            session.form_submit("POST", "https://example.com/submit", data="key=val", timeout=10)
         assert mock_request.call_args.kwargs["timeout"] == 10

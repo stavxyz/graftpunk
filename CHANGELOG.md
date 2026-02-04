@@ -73,6 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Classifies headers into navigation, XHR, and form profiles
   - `load_session_for_api()` returns `GraftpunkSession` with XHR profile pre-loaded
   - Brotli support (`Accept-Encoding: gzip, deflate, br`)
+  - **Request-type methods** (#50): `xhr()`, `navigate()`, `form_submit()` for explicit profile control
+    - Each method applies the correct captured (or canonical fallback) headers for that request type
+    - `referer` kwarg resolves paths against `gp_base_url` (e.g., `referer="/invoice/list"`)
+    - Caller-supplied headers override profile headers
+    - Eliminates boilerplate: plugins no longer need to build request headers manually
 
 - **Token and CSRF Support**: Declarative token extraction and auto-injection
   - `Token` and `TokenConfig` types for declarative token definitions
@@ -139,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Browser identity header leak** (#49): `GraftpunkSession` now separates browser identity headers (User-Agent, sec-ch-ua) from request-type headers (Accept, Sec-Fetch-*). Identity headers are set as session defaults at init, preventing `python-requests` User-Agent from ever reaching the wire when profiles exist. When a detected profile wasn't captured during login, canonical Chrome request-type headers are used as fallback instead of silently applying no headers.
+- **Browser identity header leak** (#49): `GraftpunkSession` now separates browser identity headers (User-Agent, sec-ch-ua) from request-type headers (Accept, Sec-Fetch-*). Identity headers are set as session defaults at init, preventing `python-requests` User-Agent from ever reaching the wire when profiles exist. When a detected profile wasn't captured during login, canonical Chrome request-type headers are used as fallback instead of silently applying no headers. `_detect_profile()` now correctly classifies DELETE/PUT/PATCH/HEAD/OPTIONS as XHR per HTML spec §4.10.18.6 (forms only support GET and POST).
 - Nested plugin subcommand groups (e.g. `gp bek invoice`) now use `TyperGroup` instead of plain `click.Group`, so `--help` output gets the same rich formatting as top-level commands
 
 ## [1.2.1] - 2026-01-28
