@@ -150,7 +150,7 @@ class CommandResult:
 
     data: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    format_hint: Literal["json", "table", "raw"] | None = None
+    format_hint: Literal["json", "table", "raw", "csv"] | None = None
 
 
 @dataclass(frozen=True)

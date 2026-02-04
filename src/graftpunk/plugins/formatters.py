@@ -5,7 +5,9 @@ allowing third-party packages to register custom output formatters via
 the ``graftpunk.formatters`` entry-point group.
 """
 
+import csv
 import importlib.metadata
+import io
 import json
 from typing import Any, Protocol, runtime_checkable
 
@@ -99,10 +101,42 @@ class RawFormatter:
             console.print(json.dumps(data, default=str))
 
 
+class CsvFormatter:
+    """Output as CSV (comma-separated values)."""
+
+    name = "csv"
+
+    def format(self, data: Any, console: Console) -> None:
+        if isinstance(data, str):
+            console.print(data)
+            return
+        if isinstance(data, dict):
+            data = [data]
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            headers = list(data[0].keys())
+            writer.writerow(headers)
+            for row in data:
+                writer.writerow(
+                    [
+                        json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
+                        for v in (row.get(h, "") for h in headers)
+                    ]
+                )
+            console.print(buf.getvalue(), end="")
+        elif isinstance(data, list) and not data:
+            # Empty list: no output
+            return
+        else:
+            RawFormatter().format(data, console)
+
+
 BUILTIN_FORMATTERS: dict[str, OutputFormatter] = {
     "json": JsonFormatter(),
     "table": TableFormatter(),
     "raw": RawFormatter(),
+    "csv": CsvFormatter(),
 }
 
 
