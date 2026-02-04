@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Bodies fetched immediately via `Network.getResponseBody` and streamed to disk
   - Async capture with `start_capture_async()` / `stop_capture_async()` for interactive mode
 
+- **Network Debug Flag**: `--network-debug` CLI flag for wire-level HTTP tracing
+  - Enables `HTTPConnection.debuglevel = 1` for raw HTTP traffic on stderr
+  - Sets `urllib3`, `httpx`, and `httpcore` loggers to DEBUG level
+  - Independent of `-v`/`-vv` verbosity — can be combined with any log level
+
 - **Bot-Detection Cookie Filtering**: Skip WAF tracking cookies when injecting into browsers
   - Akamai cookies (`bm_*`, `ak_bmsc`, `_abck`) filtered by default in `inject_cookies_to_nodriver()`
   - Prevents `ERR_HTTP2_PROTOCOL_ERROR` caused by stale bot-classification state
@@ -131,6 +136,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `inject_cookies_to_nodriver()` logs a warning when all cookies are filtered (indicates the session may not work)
 - Chrome sandbox disabled by default for NoDriver; `--no-sandbox` warning suppressed
 - Auto-detect Chrome version for matching ChromeDriver
+
+### Fixed
+
+- Nested plugin subcommand groups (e.g. `gp bek invoice`) now use `TyperGroup` instead of plain `click.Group`, so `--help` output gets the same rich formatting as top-level commands
 
 ## [1.2.1] - 2026-01-28
 

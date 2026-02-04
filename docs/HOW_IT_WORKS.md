@@ -629,7 +629,7 @@ Saved artifacts:
 
 The CLI is built on Typer/Click. `GraftpunkApp` is a custom `typer.Typer` subclass that manages plugin group registration and provides a custom `__call__` that handles error output for unknown commands.
 
-Plugin command groups are registered as Click subgroups via `add_plugin_group()`, which rejects duplicate names to prevent silent overwriting. Plugin subcommands use `TyperCommand` / `TyperGroup` for consistent rich help formatting across core and plugin commands.
+Plugin command groups are registered as Click subgroups via `add_plugin_group()`, which rejects duplicate names to prevent silent overwriting. Plugin subcommands use `TyperCommand` / `TyperGroup` for consistent rich help formatting across core and plugin commands. Nested subcommand groups created by `_ensure_group_hierarchy()` also use `TyperGroup` (not plain `click.Group`) to maintain rich help formatting at every nesting level.
 
 ### Logging
 
@@ -639,8 +639,9 @@ Structured logging via `structlog`. Quiet by default (`WARNING` level). Controll
 - `-v` flag (sets `INFO`)
 - `-vv` flag (sets `DEBUG`)
 - `GRAFTPUNK_LOG_FORMAT` environment variable (`json` or `console`)
+- `--network-debug` flag (enables wire-level HTTP tracing via `http.client`, `urllib3`, `httpx`, `httpcore`)
 
-Logging is configured early (before plugin registration) so that plugin load messages respect the configured level.
+Logging is configured early (before plugin registration) so that plugin load messages respect the configured level. The `--network-debug` flag is independent of verbosity level — it enables stdlib DEBUG logging on network libraries and sets `HTTPConnection.debuglevel = 1` for raw HTTP traffic output.
 
 ---
 

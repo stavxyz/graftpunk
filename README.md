@@ -336,7 +336,7 @@ gp import-har auth-flow.har --name mybank
 | `GRAFTPUNK_LOG_LEVEL` | `WARNING` | Logging verbosity |
 | `GRAFTPUNK_LOG_FORMAT` | `console` | Log format: `console` or `json` |
 
-CLI flags: `-v` (info), `-vv` (debug), `--log-format json`, `--observe full`.
+CLI flags: `-v` (info), `-vv` (debug), `--log-format json`, `--observe full`, `--network-debug` (wire-level HTTP tracing).
 
 ## Browser Backends
 
