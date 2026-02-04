@@ -1327,12 +1327,28 @@ class TestSessionUnsetCommand:
 class TestObserveGoCommand:
     """Tests for observe go command."""
 
-    def test_without_session_proceeds(self):
-        """observe go without session should infer namespace from URL and proceed."""
+    def test_without_session_requires_session(self):
+        """observe go without session or --no-session should fail."""
+        result = runner.invoke(app, ["observe", "go", "https://example.com"])
+        assert result.exit_code == 1
+        output = strip_ansi(result.output)
+        assert "no session" in output.lower() or "--no-session" in output
+
+    def test_with_no_session_flag_proceeds(self):
+        """observe go --no-session should infer namespace from URL and proceed."""
         with patch("graftpunk.cli.main.asyncio") as mock_asyncio:
-            result = runner.invoke(app, ["observe", "go", "https://example.com"])
+            result = runner.invoke(app, ["observe", "--no-session", "go", "https://example.com"])
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+
+    def test_session_and_no_session_conflict(self):
+        """observe --session X --no-session should fail."""
+        result = runner.invoke(
+            app, ["observe", "--session", "mysite", "--no-session", "go", "https://example.com"]
+        )
+        assert result.exit_code == 1
+        output = strip_ansi(result.output)
+        assert "Cannot use --session and --no-session" in output
 
     def test_observe_go_with_session_flag(self):
         """observe go --session should run the capture flow."""

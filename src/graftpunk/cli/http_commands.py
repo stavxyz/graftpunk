@@ -60,6 +60,7 @@ def _make_request(
     url: str,
     *,
     session_name: str | None = None,
+    no_session: bool = False,
     browser_headers: bool = True,
     json_body: str | None = None,
     form_data: str | None = None,
@@ -68,14 +69,11 @@ def _make_request(
 ) -> requests.Response:
     """Make an HTTP request, optionally using a cached graftpunk session.
 
-    When no session can be resolved, falls back to a bare ``requests.Session``
-    for unauthenticated requests.
-
     Args:
         method: HTTP method (GET, POST, etc.).
         url: Target URL.
         session_name: Session name to load. Falls back to ``resolve_session()``.
-            When ``None`` and no active session exists, uses a bare session.
+        no_session: When True, use a bare ``requests.Session`` without cookies.
         browser_headers: Whether to keep auto-detected browser header profiles.
             When False, clears ``_gp_header_profiles`` so the session sends
             only its base headers.
@@ -88,15 +86,20 @@ def _make_request(
         The HTTP response.
 
     Raises:
-        typer.Exit: If an explicit session name is given but cannot be loaded.
+        typer.Exit: If session cannot be resolved or loaded.
     """
-    resolved = session_name or resolve_session(None)
-
     session: requests.Session
-    if not resolved:
-        gp_console.info("No session loaded — making unauthenticated request")
+    if no_session:
+        gp_console.info("No session — making unauthenticated request")
         session = requests.Session()
     else:
+        resolved = session_name or resolve_session(None)
+        if not resolved:
+            gp_console.error(
+                "No session specified. Use --session, GRAFTPUNK_SESSION, "
+                "gp session use, or --no-session."
+            )
+            raise typer.Exit(1)
         try:
             session = load_session_for_api(resolved)
         except Exception as exc:  # noqa: BLE001 — CLI boundary
@@ -124,7 +127,8 @@ def _make_request(
         kwargs["data"] = form_data
         session.headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
 
-    # Token injection from plugin session map
+    # Token injection from plugin session map (skip for bare sessions)
+    resolved = None if no_session else (session_name or resolve_session(None))
     from graftpunk.cli.plugin_commands import get_plugin_for_session
 
     plugin = get_plugin_for_session(resolved) if resolved else None
@@ -289,6 +293,10 @@ def _http_command(method: str) -> typer.models.CommandFunctionType:
             str | None,
             typer.Option("--session", "-s", help="Session name"),
         ] = None,
+        no_session: Annotated[
+            bool,
+            typer.Option("--no-session", help="Make request without a cached session"),
+        ] = False,
         json_body: Annotated[
             str | None,
             typer.Option("--json", "-j", help="JSON body (inline, @file, @- for stdin)"),
@@ -322,6 +330,10 @@ def _http_command(method: str) -> typer.models.CommandFunctionType:
             typer.Option("--timeout", help="Request timeout in seconds"),
         ] = 30.0,
     ) -> None:
+        if no_session and session:
+            gp_console.error("Cannot use --session and --no-session together.")
+            raise typer.Exit(1)
+
         resolved_json: str | None = None
         if json_body is not None:
             resolved_json = _resolve_json_body(json_body)
@@ -330,6 +342,7 @@ def _http_command(method: str) -> typer.models.CommandFunctionType:
             method,
             url,
             session_name=session,
+            no_session=no_session,
             browser_headers=not no_browser_headers,
             json_body=resolved_json,
             form_data=data,
@@ -339,9 +352,14 @@ def _http_command(method: str) -> typer.models.CommandFunctionType:
 
         # Observe: save HAR data by default
         if not no_observe:
-            resolved_session = session or resolve_session(None) or "unknown"
+            if no_session:
+                from graftpunk.plugins import infer_site_name
+
+                resolved_namespace = infer_site_name(url) or "unknown"
+            else:
+                resolved_namespace = session or resolve_session(None) or "unknown"
             request_body = resolved_json or data
-            _save_observe_data(resolved_session, method, url, response, request_body)
+            _save_observe_data(resolved_namespace, method, url, response, request_body)
 
         _print_response(response, body_only=body_only, verbose=verbose)
 

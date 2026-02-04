@@ -177,18 +177,28 @@ class TestMakeRequest:
 class TestMakeRequestErrorPaths:
     """Tests for _make_request error/guard paths."""
 
+    @patch("graftpunk.cli.http_commands.resolve_session", return_value=None)
+    def test_no_session_without_flag_exits(self, mock_resolve: MagicMock) -> None:
+        """Exits with error when no session can be resolved and --no-session not set."""
+        import typer
+
+        with pytest.raises(typer.Exit) as exc_info:
+            _make_request("GET", "https://example.com")
+
+        assert exc_info.value.exit_code == 1
+
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
-    @patch("graftpunk.cli.http_commands.resolve_session", return_value=None)
-    def test_no_session_falls_back_to_bare_session(self, mock_resolve: MagicMock) -> None:
-        """Uses a bare requests.Session when no session can be resolved."""
+    def test_no_session_flag_uses_bare_session(self) -> None:
+        """With no_session=True, uses a bare requests.Session."""
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
 
-        with patch.object(requests.Session, "request", return_value=mock_response):
-            response = _make_request("GET", "https://example.com")
+        with patch.object(requests.Session, "request", return_value=mock_response) as mock_req:
+            response = _make_request("GET", "https://example.com", no_session=True)
 
         assert response == mock_response
+        mock_req.assert_called_once()
 
     @patch("graftpunk.cli.http_commands.load_session_for_api")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
@@ -223,32 +233,6 @@ class TestMakeRequestErrorPaths:
 
         assert exc_info.value.exit_code == 1
         mock_load.assert_called_once_with("nonexistent")
-
-    @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
-    @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
-    def test_no_session_uses_bare_requests_session(self) -> None:
-        """Falls back to bare requests.Session when no session is resolved."""
-        with patch("graftpunk.cli.http_commands.resolve_session", return_value=None):
-            response = _make_request("GET", "https://httpbin.org/get")
-        # Should succeed with a real HTTP request (no mock needed — httpbin is public)
-        # But to avoid network in unit tests, let's just verify it doesn't raise typer.Exit
-        assert response is not None
-
-    @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
-    @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
-    def test_no_session_makes_request_with_bare_session(self) -> None:
-        """When no session exists, uses a bare requests.Session and makes the request."""
-        mock_response = MagicMock(spec=requests.Response)
-        mock_response.status_code = 200
-
-        with (
-            patch("graftpunk.cli.http_commands.resolve_session", return_value=None),
-            patch.object(requests.Session, "request", return_value=mock_response) as mock_req,
-        ):
-            response = _make_request("GET", "https://example.com")
-
-        assert response == mock_response
-        mock_req.assert_called_once()
 
 
 class TestSaveObserveData:
