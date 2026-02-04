@@ -166,7 +166,11 @@ def _make_request(
         except ValueError as exc:
             gp_console.error(f"Token refresh failed: {exc}")
             return response  # Return the original 403 response
-        response = session.request(method, url, **kwargs)
+        try:
+            response = session.request(method, url, **kwargs)
+        except requests.exceptions.RequestException as exc:
+            gp_console.error(f"Retry request failed: {exc}")
+            raise typer.Exit(1) from exc
 
     return response
 
