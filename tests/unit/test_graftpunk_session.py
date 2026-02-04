@@ -1,7 +1,7 @@
 """Tests for GraftpunkSession browser header replay."""
 
 import contextlib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import requests
 
@@ -523,3 +523,113 @@ class TestProfileHeadersFor:
         assert "sec-ch-ua" not in headers
         assert "Accept-Language" not in headers
         assert "Accept-Encoding" not in headers
+
+
+class TestXhr:
+    """Test xhr() method for XHR-style requests."""
+
+    def test_xhr_get_applies_xhr_headers(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.xhr("GET", "https://example.com/api/data")
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["X-Requested-With"] == "XMLHttpRequest"
+        assert "application/json" in headers["Accept"]
+
+    def test_xhr_post_with_json(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.xhr("POST", "https://example.com/api", json={"key": "val"})
+        assert mock_request.call_args[0] == ("POST", "https://example.com/api")
+        assert mock_request.call_args.kwargs["json"] == {"key": "val"}
+
+    def test_xhr_with_referer_path(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES, base_url="https://example.com")
+        with patch.object(session, "request") as mock_request:
+            session.xhr("GET", "https://example.com/api", referer="/invoice/list")
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["Referer"] == "https://example.com/invoice/list"
+
+    def test_xhr_without_referer(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.xhr("GET", "https://example.com/api")
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert "Referer" not in headers
+
+    def test_xhr_caller_headers_override_profile(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.xhr("GET", "https://example.com/api", headers={"Accept": "text/plain"})
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["Accept"] == "text/plain"
+        assert headers["X-Requested-With"] == "XMLHttpRequest"
+
+    def test_xhr_passes_kwargs_through(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.xhr("GET", "https://example.com/api", params={"q": "test"}, timeout=10)
+        assert mock_request.call_args.kwargs["params"] == {"q": "test"}
+        assert mock_request.call_args.kwargs["timeout"] == 10
+
+
+class TestNavigate:
+    """Test navigate() method for navigation-style requests."""
+
+    def test_navigate_applies_navigation_headers(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.navigate("GET", "https://example.com/page")
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert "text/html" in headers["Accept"]
+
+    def test_navigate_with_referer(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES, base_url="https://example.com")
+        with patch.object(session, "request") as mock_request:
+            session.navigate("GET", "https://example.com/page2", referer="/page1")
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["Referer"] == "https://example.com/page1"
+
+    def test_navigate_uses_canonical_when_profile_missing(self):
+        profiles = {
+            "xhr": {
+                "User-Agent": "Mozilla/5.0 Test",
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        }
+        session = GraftpunkSession(header_profiles=profiles)
+        with patch.object(session, "request") as mock_request:
+            session.navigate("GET", "https://example.com/page")
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert "text/html" in headers["Accept"]
+        assert headers["Sec-Fetch-Mode"] == "navigate"
+
+
+class TestFormSubmit:
+    """Test form_submit() method for form submission requests."""
+
+    def test_form_submit_applies_form_headers(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.form_submit("POST", "https://example.com/login", data={"user": "me"})
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert "text/html" in headers["Accept"]
+
+    def test_form_submit_with_referer(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES, base_url="https://example.com")
+        with patch.object(session, "request") as mock_request:
+            session.form_submit(
+                "POST",
+                "https://example.com/login",
+                referer="/login",
+                data={"u": "me"},
+            )
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["Referer"] == "https://example.com/login"
+
+    def test_form_submit_passes_data_through(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        with patch.object(session, "request") as mock_request:
+            session.form_submit("POST", "https://example.com/submit", data="key=val")
+        assert mock_request.call_args.kwargs["data"] == "key=val"

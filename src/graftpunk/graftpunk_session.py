@@ -201,6 +201,134 @@ class GraftpunkSession(requests.Session):
                 available=list(self._gp_header_profiles.keys()),
             )
 
+    def xhr(
+        self,
+        method: str,
+        url: str,
+        *,
+        referer: str | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Make a request with XHR profile headers.
+
+        Applies captured XHR headers (or canonical Fetch-spec defaults),
+        plus browser identity headers from the session. Caller-supplied
+        headers override profile headers.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, PATCH, DELETE, etc.).
+            url: Request URL.
+            referer: Referer path ("/page") or full URL. Paths are joined
+                with gp_base_url. Omit to send no Referer.
+            headers: Additional headers that override profile headers.
+            **kwargs: Passed through to requests.Session.request().
+
+        Returns:
+            The response object.
+        """
+        return self._request_with_profile(
+            "xhr", method, url, referer=referer, headers=headers, **kwargs
+        )
+
+    def navigate(
+        self,
+        method: str,
+        url: str,
+        *,
+        referer: str | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Make a request with navigation profile headers.
+
+        Applies captured navigation headers (or canonical Fetch-spec defaults),
+        plus browser identity headers from the session. Simulates a browser
+        page navigation (clicking a link, entering a URL).
+
+        Args:
+            method: HTTP method (typically GET).
+            url: Request URL.
+            referer: Referer path ("/page") or full URL. Paths are joined
+                with gp_base_url. Omit to send no Referer.
+            headers: Additional headers that override profile headers.
+            **kwargs: Passed through to requests.Session.request().
+
+        Returns:
+            The response object.
+        """
+        return self._request_with_profile(
+            "navigation", method, url, referer=referer, headers=headers, **kwargs
+        )
+
+    def form_submit(
+        self,
+        method: str,
+        url: str,
+        *,
+        referer: str | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Make a request with form submission profile headers.
+
+        Applies captured form headers (or canonical Fetch-spec defaults),
+        plus browser identity headers from the session. Simulates a browser
+        form submission.
+
+        Args:
+            method: HTTP method (typically POST).
+            url: Request URL.
+            referer: Referer path ("/page") or full URL. Paths are joined
+                with gp_base_url. Omit to send no Referer.
+            headers: Additional headers that override profile headers.
+            **kwargs: Passed through to requests.Session.request().
+
+        Returns:
+            The response object.
+        """
+        return self._request_with_profile(
+            "form", method, url, referer=referer, headers=headers, **kwargs
+        )
+
+    def _request_with_profile(
+        self,
+        profile_name: str,
+        method: str,
+        url: str,
+        *,
+        referer: str | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Make a request with explicit profile headers.
+
+        Internal implementation for xhr(), navigate(), and form_submit().
+        Composes profile headers, Referer, and caller overrides, then
+        delegates to self.request().
+
+        Args:
+            profile_name: Profile to apply ("xhr", "navigation", or "form").
+            method: HTTP method.
+            url: Request URL.
+            referer: Optional Referer path or URL.
+            headers: Optional caller headers (override profile headers).
+            **kwargs: Passed through to requests.Session.request().
+
+        Returns:
+            The response object.
+        """
+        profile_headers = self._profile_headers_for(profile_name)
+
+        if referer is not None:
+            profile_headers["Referer"] = self._resolve_referer(referer)
+
+        # Caller headers override profile headers
+        if headers:
+            profile_headers.update(headers)
+
+        return self.request(method.upper(), url, headers=profile_headers, **kwargs)
+
     def _detect_profile(self, request: requests.Request) -> str:
         """Auto-detect the appropriate header profile for a request.
 
