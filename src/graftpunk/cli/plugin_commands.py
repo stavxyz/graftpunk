@@ -326,6 +326,12 @@ def _create_plugin_command(
             LOG.exception("session_load_failed", plugin=plugin.site_name)
             raise SystemExit(1) from exc
 
+        # Set gp_base_url on the session so xhr()/navigate()/form_submit()
+        # can resolve relative Referer paths.
+        base_url = getattr(plugin, "base_url", "")
+        if base_url and hasattr(session, "gp_base_url"):
+            session.gp_base_url = base_url
+
         # Build observability context from CLI --observe flag
         click_ctx = click.get_current_context(silent=True)
         observe_mode: Literal["off", "full"] = "off"
