@@ -72,6 +72,33 @@ def _check_login_result(
     return True
 
 
+def _build_token_cache(
+    token_config: Any,
+    token_results: dict[str, str],
+) -> dict[str, Any]:
+    """Build CachedToken dict from extracted token values.
+
+    Args:
+        token_config: Token extraction configuration with .tokens list.
+        token_results: Mapping of token names to extracted values.
+
+    Returns:
+        Dict mapping token names to CachedToken instances.
+    """
+    from graftpunk.tokens import CachedToken
+
+    tcache: dict[str, CachedToken] = {}
+    for t in token_config.tokens:
+        if t.name in token_results:
+            tcache[t.name] = CachedToken(
+                name=t.name,
+                value=token_results[t.name],
+                extracted_at=time.time(),
+                ttl=t.cache_duration,
+            )
+    return tcache
+
+
 async def _extract_and_cache_tokens_nodriver(
     plugin: SitePlugin,
     session: Any,
@@ -90,27 +117,19 @@ async def _extract_and_cache_tokens_nodriver(
     if token_config is None:
         return
 
-    from graftpunk.tokens import _CACHE_ATTR, CachedToken, extract_tokens_from_tab
+    from graftpunk.tokens import _CACHE_ATTR, extract_tokens_from_tab
 
     page_tokens = [t for t in token_config.tokens if t.source == "page" and t.pattern]
     token_results = await extract_tokens_from_tab(tab, page_tokens, base_url) if page_tokens else {}
 
-    # Add cookie-source tokens
-    tcache: dict[str, CachedToken] = {}
+    # Build token cache from page extraction results and cookie lookups
     for t in token_config.tokens:
         if t.source == "cookie" and t.cookie_name:
             val = session.cookies.get(t.cookie_name)
             if val:
                 token_results[t.name] = val
 
-        if t.name in token_results:
-            tcache[t.name] = CachedToken(
-                name=t.name,
-                value=token_results[t.name],
-                extracted_at=time.time(),
-                ttl=t.cache_duration,
-            )
-
+    tcache = _build_token_cache(token_config, token_results)
     if tcache:
         setattr(session, _CACHE_ATTR, tcache)
         LOG.info("login_tokens_extracted", count=len(tcache))
@@ -132,31 +151,21 @@ def _extract_and_cache_tokens_selenium(
     if token_config is None:
         return
 
-    from graftpunk.tokens import _CACHE_ATTR, CachedToken
+    from graftpunk.tokens import _CACHE_ATTR
 
-    tcache: dict[str, CachedToken] = {}
+    token_results: dict[str, str] = {}
     for t in token_config.tokens:
         if t.source == "cookie" and t.cookie_name:
             val = session.cookies.get(t.cookie_name)
             if val:
-                tcache[t.name] = CachedToken(
-                    name=t.name,
-                    value=val,
-                    extracted_at=time.time(),
-                    ttl=t.cache_duration,
-                )
+                token_results[t.name] = val
         elif t.source == "page" and t.pattern:
             try:
                 session.driver.get(f"{base_url}{t.page_url}")
                 time.sleep(2)
                 match = re.search(t.pattern, session.driver.page_source)
                 if match:
-                    tcache[t.name] = CachedToken(
-                        name=t.name,
-                        value=match.group(1),
-                        extracted_at=time.time(),
-                        ttl=t.cache_duration,
-                    )
+                    token_results[t.name] = match.group(1)
                 else:
                     LOG.warning(
                         "login_token_pattern_not_found",
@@ -166,6 +175,7 @@ def _extract_and_cache_tokens_selenium(
             except Exception as exc:  # noqa: BLE001 — best-effort token extraction
                 LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
 
+    tcache = _build_token_cache(token_config, token_results)
     if tcache:
         setattr(session, _CACHE_ATTR, tcache)
         LOG.info("login_tokens_extracted", count=len(tcache))
@@ -287,7 +297,14 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             await session.transfer_nodriver_cookies_to_session()
 
             # Extract tokens using the already-open browser (avoids separate launch)
-            await _extract_and_cache_tokens_nodriver(plugin, session, tab, base_url)
+            try:
+                await _extract_and_cache_tokens_nodriver(plugin, session, tab, base_url)
+            except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
+                LOG.warning(
+                    "login_token_extraction_failed",
+                    plugin=plugin.site_name,
+                    error=str(exc),
+                )
 
             cache_session(session, plugin.session_name)
             return True
@@ -380,7 +397,14 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             session.transfer_driver_cookies_to_session()
 
             # Extract tokens using the already-open browser (avoids separate launch)
-            _extract_and_cache_tokens_selenium(plugin, session, base_url)
+            try:
+                _extract_and_cache_tokens_selenium(plugin, session, base_url)
+            except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
+                LOG.warning(
+                    "login_token_extraction_failed",
+                    plugin=plugin.site_name,
+                    error=str(exc),
+                )
 
             cache_session(session, plugin.session_name)
             return True

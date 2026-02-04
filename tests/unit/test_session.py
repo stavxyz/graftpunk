@@ -1638,6 +1638,89 @@ class TestHeaderProfilesSerialization:
             assert session._gp_header_profiles == {}
 
 
+class TestTokenCacheSerialization:
+    """Tests for _gp_cached_tokens roundtrip through __getstate__/__setstate__."""
+
+    def test_getstate_includes_token_cache_nodriver(self):
+        """__getstate__ should include _gp_cached_tokens for nodriver sessions."""
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+            session._backend_type = "nodriver"
+            session._use_stealth = False
+            session._session_name = "test"
+            session.current_url = ""
+
+            import requests
+
+            requests.Session.__init__(session)
+
+            cache = {"X-CSRF": {"name": "X-CSRF", "value": "abc"}}
+            session._gp_cached_tokens = cache
+            state = session.__getstate__()
+            assert state.get("_gp_cached_tokens") == cache
+
+    def test_setstate_restores_token_cache_nodriver(self):
+        """__setstate__ should restore _gp_cached_tokens for nodriver."""
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+            session._backend_type = "nodriver"
+            session._use_stealth = False
+            session._session_name = "test"
+            session.current_url = ""
+
+            import requests
+
+            requests.Session.__init__(session)
+
+            cache = {"X-CSRF": {"name": "X-CSRF", "value": "abc"}}
+            session._gp_cached_tokens = cache
+            state = session.__getstate__()
+
+            new_session = requests.Session.__new__(type(session))
+            new_session.__setstate__(state)
+            assert getattr(new_session, "_gp_cached_tokens", None) == cache
+
+    def test_setstate_restores_token_cache_selenium(self):
+        """__setstate__ should restore _gp_cached_tokens for selenium."""
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+
+            cache = {"X-Token": {"name": "X-Token", "value": "xyz"}}
+            state = {
+                "_backend_type": "selenium",
+                "_use_stealth": True,
+                "_driver": None,
+                "_gp_cached_tokens": cache,
+            }
+
+            with patch("requestium.Session.__setstate__"):
+                session.__setstate__(state)
+
+            assert session._gp_cached_tokens == cache
+
+    def test_setstate_defaults_empty_cache_when_missing(self):
+        """__setstate__ defaults to empty dict when _gp_cached_tokens not in state."""
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+
+            state = {
+                "_backend_type": "nodriver",
+                "_use_stealth": False,
+            }
+
+            session.__setstate__(state)
+
+            assert session._gp_cached_tokens == {}
+
+
 class TestInjectCookiesToNodriver:
     """Tests for inject_cookies_to_nodriver function."""
 

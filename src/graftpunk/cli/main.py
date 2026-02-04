@@ -295,6 +295,17 @@ def observe_clean(
         console.print("[green]Removed all observe data[/green]")
 
 
+def _require_observe_session(ctx: typer.Context) -> str:
+    """Extract and validate the observe session from context, or exit."""
+    session_name = ctx.ensure_object(dict).get("observe_session")
+    if not session_name:
+        console.print(
+            "[red]No session specified. Use --session, GRAFTPUNK_SESSION, or gp session use.[/red]"
+        )
+        raise typer.Exit(1)
+    return session_name
+
+
 @observe_app.command("go")
 def observe_go(
     ctx: typer.Context,
@@ -323,12 +334,7 @@ def observe_go(
 
     Requires an active session (via --session, GRAFTPUNK_SESSION, or gp session use).
     """
-    session_name = ctx.ensure_object(dict).get("observe_session")
-    if not session_name:
-        console.print(
-            "[red]No session specified. Use --session, GRAFTPUNK_SESSION, or gp session use.[/red]"
-        )
-        raise typer.Exit(1)
+    session_name = _require_observe_session(ctx)
 
     if interactive:
         from graftpunk.logging import suppress_asyncio_noise
@@ -346,10 +352,11 @@ async def _setup_observe_session(
     max_body_size: int,
     headless: bool,
 ) -> tuple[Any, Any, Any, Any] | None:
-    """Set up browser session, inject cookies, and initialize capture backend.
+    """Set up browser session, inject cookies, initialize capture, and navigate to URL.
 
     Returns:
         Tuple of (browser, tab, storage, backend) or None on failure.
+        The returned tab is the post-navigation tab.
     """
     import datetime
 
@@ -376,28 +383,33 @@ async def _setup_observe_session(
         )
         return None
     except Exception as exc:  # noqa: BLE001 — CLI boundary: user-friendly error
+        LOG.error("session_load_failed", session_name=session_name, error=str(exc))
         console.print(f"[red]Failed to load session '{session_name}': {exc}[/red]")
         return None
 
     browser = await nodriver.start(headless=headless)
-    tab = browser.main_tab
+    try:
+        tab = browser.main_tab
 
-    count = await inject_cookies_to_nodriver(tab, session.cookies)
-    console.print(f"[dim]Injected {count} cookie(s)[/dim]")
+        count = await inject_cookies_to_nodriver(tab, session.cookies)
+        console.print(f"[dim]Injected {count} cookie(s)[/dim]")
 
-    run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-    storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
-    bodies_dir = storage.run_dir / "bodies"
-    backend = NodriverCaptureBackend(
-        browser,
-        get_tab=lambda: tab,
-        bodies_dir=bodies_dir,
-        max_body_size=max_body_size,
-    )
-    await backend.start_capture_async()
+        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
+        storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+        bodies_dir = storage.run_dir / "bodies"
+        backend = NodriverCaptureBackend(
+            browser,
+            get_tab=lambda: tab,
+            bodies_dir=bodies_dir,
+            max_body_size=max_body_size,
+        )
+        await backend.start_capture_async()
 
-    tab = await browser.get(url)
-    return browser, tab, storage, backend
+        tab = await browser.get(url)
+        return browser, tab, storage, backend
+    except Exception:
+        browser.stop()
+        raise
 
 
 async def _save_observe_results(
@@ -410,12 +422,16 @@ async def _save_observe_results(
     if screenshot_data:
         path = storage.save_screenshot(1, screenshot_label, screenshot_data)
         console.print(f"[green]Screenshot saved:[/green] {path}")
+    else:
+        console.print("[yellow]Screenshot capture failed[/yellow]")
 
     page_source = await backend.get_page_source()
     if page_source:
         source_path = storage.run_dir / "page-source.html"
         source_path.write_text(page_source, encoding="utf-8")
         console.print(f"[green]Page source saved:[/green] {source_path}")
+    else:
+        console.print("[yellow]Page source capture failed[/yellow]")
 
     await backend.stop_capture_async()
 
@@ -460,7 +476,13 @@ async def _run_observe_interactive(session_name: str, url: str, max_body_size: i
     try:
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, stop_event.set)
+        try:
+            loop.add_signal_handler(signal.SIGINT, stop_event.set)
+        except NotImplementedError:
+            console.print(
+                "[red]Interactive mode requires Unix/macOS (signal handlers unavailable).[/red]"
+            )
+            return
 
         console.print("\n[bold]Recording... press Ctrl+C to stop and save[/bold]\n")
 
@@ -494,12 +516,7 @@ def observe_interactive(
 
     Requires an active session (via --session, GRAFTPUNK_SESSION, or gp session use).
     """
-    session_name = ctx.ensure_object(dict).get("observe_session")
-    if not session_name:
-        console.print(
-            "[red]No session specified. Use --session, GRAFTPUNK_SESSION, or gp session use.[/red]"
-        )
-        raise typer.Exit(1)
+    session_name = _require_observe_session(ctx)
 
     from graftpunk.logging import suppress_asyncio_noise
 

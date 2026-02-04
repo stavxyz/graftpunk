@@ -406,14 +406,14 @@ def load_session_for_api(name: str) -> requests.Session:
 
 
 def update_session_cookies(api_session: requests.Session, session_name: str) -> None:
-    """Persist an API session's cookies back to the session cache.
+    """Persist an API session's cookies and token cache back to the session cache.
 
     Loads the original cached session (preserving browser metadata),
-    updates its cookies from the API session, and saves it back.
+    updates its cookies and token cache from the API session, and saves it back.
     This is best-effort — failures are logged but do not raise.
 
     Args:
-        api_session: The API session with potentially updated cookies.
+        api_session: The API session with potentially updated cookies and token cache.
         session_name: Name of the cached session to update.
     """
     try:

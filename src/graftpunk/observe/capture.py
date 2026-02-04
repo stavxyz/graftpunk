@@ -661,33 +661,34 @@ class NodriverCaptureBackend:
             LOG.exception("nodriver_on_response_failed")
 
     async def _on_loading_finished(self, event: Any) -> None:
-        """Handle CDP LoadingFinished — eagerly fetch response body while still in buffer."""
+        """Handle CDP LoadingFinished — eagerly fetch response body while still in buffer.
+
+        CDP may evict response bodies from its internal buffer after LoadingFinished.
+        Fetching eagerly ensures bodies are captured before eviction, with
+        stop_capture_async as a fallback for missed bodies.
+        """
+        data: dict[str, Any] | None = None
         try:
             import nodriver.cdp.network as cdp_net
 
             rid = str(event.request_id)
 
-            # Guard: check request exists
             data = self._request_map.get(rid)
             if data is None:
                 return
 
-            # Guard: check response metadata exists
             response = data.get("response")
             if response is None:
                 return
 
-            # Guard: check MIME type is worth capturing
             mime = response.get("mimeType", "")
             if not (_is_text_mime(mime) or _is_binary_mime(mime)):
                 return
 
-            # Guard: check tab is available
             tab = self._tab
             if tab is None:
                 return
 
-            # Fetch and process body
             body, base64_encoded = await tab.send(
                 cdp_net.get_response_body(cdp_net.RequestId(rid))  # type: ignore[attr-defined]
             )
@@ -701,11 +702,11 @@ class NodriverCaptureBackend:
                 bodies_dir=self._bodies_dir,
             )
             self._bodies_fetched.add(rid)
-        except Exception:  # noqa: BLE001 — best-effort eager fetch; stop_capture_async retries
+        except Exception:  # noqa: BLE001 — best-effort eager fetch; stop_capture_async is fallback
             url = data.get("url", "unknown") if data is not None else "unknown"
             LOG.warning(
                 "nodriver_eager_body_fetch_failed",
-                request_id=str(event.request_id),
+                request_id=str(getattr(event, "request_id", "unknown")),
                 url=url,
             )
 

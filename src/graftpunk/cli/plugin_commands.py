@@ -386,6 +386,11 @@ def _create_plugin_command(
                     from graftpunk.tokens import clear_cached_tokens
                     from graftpunk.tokens import prepare_session as _prep
 
+                    LOG.info(
+                        "token_403_retry",
+                        command=cmd_spec.name,
+                        url=exc.response.url if exc.response else "unknown",
+                    )
                     clear_cached_tokens(session)
                     _prep(session, token_config, getattr(plugin, "base_url", ""))
                     # Mark session dirty so update_session_cookies() is called on exit,

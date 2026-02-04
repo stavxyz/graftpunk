@@ -1074,3 +1074,100 @@ class TestLoginTimeTokenExtraction:
 
         assert result is True
         mock_extract.assert_not_called()
+
+
+class TestSeleniumTokenExtraction:
+    """Tests for _extract_and_cache_tokens_selenium."""
+
+    def test_selenium_login_extracts_cookie_token(self) -> None:
+        """Selenium login caches cookie-source tokens."""
+        from graftpunk.plugins.login_engine import generate_login_method
+        from graftpunk.tokens import _CACHE_ATTR, Token, TokenConfig
+
+        class SeleniumTokenPlugin(SitePlugin):
+            site_name = "seltoken"
+            session_name = "seltoken"
+            help_text = "Selenium Token"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                url="/login",
+                fields={"username": "#user", "password": "#pass"},
+                submit="#submit",
+                success=".dashboard",
+            )
+            token_config = TokenConfig(tokens=(Token.from_cookie("sid", "X-Session"),))
+
+        plugin = SeleniumTokenPlugin()
+        login_method = generate_login_method(plugin)
+
+        mock_element = MagicMock()
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = MagicMock()
+        instance.driver.find_element = MagicMock(return_value=mock_element)
+        instance.driver.page_source = "<html>Welcome to dashboard</html>"
+        instance.transfer_driver_cookies_to_session = MagicMock()
+        instance.cookies = MagicMock()
+        instance.cookies.get = MagicMock(return_value="session-abc")
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture = MagicMock()
+        mock_capture.stop_capture = MagicMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.login_engine.time"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+        ):
+            result = login_method({"username": "user", "password": "test"})  # noqa: S106
+
+        assert result is True
+        token_cache = getattr(instance, _CACHE_ATTR, None)
+        assert token_cache is not None
+        assert "X-Session" in token_cache
+        assert token_cache["X-Session"].value == "session-abc"
+
+    def test_selenium_login_no_token_config_skips(self) -> None:
+        """Selenium login without token_config does not attempt extraction."""
+        from graftpunk.plugins.login_engine import generate_login_method
+        from graftpunk.tokens import _CACHE_ATTR
+
+        plugin = DeclarativeQuotes()
+        login_method = generate_login_method(plugin)
+
+        mock_element = MagicMock()
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = MagicMock()
+        instance.driver.find_element = MagicMock(return_value=mock_element)
+        instance.driver.page_source = "<html>Welcome back!</html>"
+        instance.transfer_driver_cookies_to_session = MagicMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture = MagicMock()
+        mock_capture.stop_capture = MagicMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.login_engine.time"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+        ):
+            result = login_method({"username": "user", "password": "test"})  # noqa: S106
+
+        assert result is True
+        # _build_token_cache should not have been called — no setattr on session
+        token_cache = getattr(instance, _CACHE_ATTR, None)
+        # MagicMock auto-creates attributes, so check it's either None or a MagicMock
+        # (not a real dict). The key assertion is that _build_token_cache was never called.
+        assert not isinstance(token_cache, dict)

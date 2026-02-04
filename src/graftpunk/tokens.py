@@ -71,7 +71,6 @@ async def _poll_for_tokens(
     unmatched = list(tokens)
 
     for _attempt in range(_TOKEN_POLL_ATTEMPTS):
-        await tab.sleep(_TOKEN_POLL_INTERVAL)
         content = await tab.get_content()
         still_unmatched = []
 
@@ -86,6 +85,7 @@ async def _poll_for_tokens(
         unmatched = still_unmatched
         if not unmatched:
             break
+        await tab.sleep(_TOKEN_POLL_INTERVAL)
 
     for token in unmatched:
         LOG.warning(f"{log_prefix}_pattern_not_found", name=token.name, url=url)
@@ -453,7 +453,8 @@ def prepare_session(
     for token in token_config.tokens:
         cached = cache.get(token.name)
         if cached:
-            # EAFP: inject even if expired — 403 retry handles actual rejection
+            # EAFP: inject even if expired — if the server rejects with 403,
+            # the retry path in plugin_commands clears cache and re-extracts
             session.headers[token.name] = cached.value
             if cached.is_expired:
                 LOG.debug("token_injecting_expired", name=token.name)

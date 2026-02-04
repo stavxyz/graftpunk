@@ -10,6 +10,7 @@ import requests
 from graftpunk.tokens import (
     Token,
     TokenConfig,
+    _poll_for_tokens,
     prepare_session,
 )
 
@@ -439,3 +440,71 @@ class TestExtractTokensFromTab:
 
         results = await extract_tokens_from_tab(mock_tab, [token], "https://example.com")
         assert results == {}
+
+
+class TestPollForTokens:
+    """Direct tests for _poll_for_tokens retry logic."""
+
+    @pytest.mark.asyncio
+    async def test_found_on_first_attempt_no_sleep(self) -> None:
+        """Token present immediately — no retry sleep needed."""
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf="([^"]+)"',
+            page_url="/dash",
+        )
+        mock_tab = _AwaitableMock()
+        mock_tab.get_content = AsyncMock(return_value='<meta csrf="abc123">')
+
+        results = await _poll_for_tokens(mock_tab, [token], "https://x.com/dash", "test")
+
+        assert results == {"X-CSRF": "abc123"}
+        mock_tab.sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_found_on_retry(self) -> None:
+        """Token not found on first attempt but found on second."""
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf="([^"]+)"',
+            page_url="/dash",
+        )
+        mock_tab = _AwaitableMock()
+        mock_tab.get_content = AsyncMock(
+            side_effect=["<html>loading...</html>", '<meta csrf="abc123">']
+        )
+
+        results = await _poll_for_tokens(mock_tab, [token], "https://x.com/dash", "test")
+
+        assert results == {"X-CSRF": "abc123"}
+        mock_tab.sleep.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_all_attempts_exhausted(self) -> None:
+        """All polling attempts fail — returns empty and logs warning."""
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf="([^"]+)"',
+            page_url="/dash",
+        )
+        mock_tab = _AwaitableMock()
+        mock_tab.get_content = AsyncMock(return_value="<html>no token here</html>")
+
+        results = await _poll_for_tokens(mock_tab, [token], "https://x.com/dash", "test")
+
+        assert results == {}
+
+    @pytest.mark.asyncio
+    async def test_multiple_tokens_partial_match(self) -> None:
+        """One token found on first attempt, second found on retry."""
+        t1 = Token(name="X-A", source="page", pattern=r'a="([^"]+)"', page_url="/p")
+        t2 = Token(name="X-B", source="page", pattern=r'b="([^"]+)"', page_url="/p")
+        mock_tab = _AwaitableMock()
+        mock_tab.get_content = AsyncMock(side_effect=['<meta a="1">', '<meta a="1" b="2">'])
+
+        results = await _poll_for_tokens(mock_tab, [t1, t2], "https://x.com/p", "test")
+
+        assert results == {"X-A": "1", "X-B": "2"}
