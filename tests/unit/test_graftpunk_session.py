@@ -89,6 +89,24 @@ class TestProfileDetection:
         prepared = session.prepare_request(req)
         assert prepared.headers.get("X-Requested-With") == "XMLHttpRequest"
 
+    def test_delete_uses_xhr(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        req = requests.Request("DELETE", "https://example.com/api/1")
+        prepared = session.prepare_request(req)
+        assert prepared.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+    def test_head_uses_xhr(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        req = requests.Request("HEAD", "https://example.com/api/1")
+        prepared = session.prepare_request(req)
+        assert "application/json" in prepared.headers["Accept"]
+
+    def test_options_uses_xhr(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        req = requests.Request("OPTIONS", "https://example.com/api/1")
+        prepared = session.prepare_request(req)
+        assert "application/json" in prepared.headers["Accept"]
+
 
 class TestExplicitOverride:
     """Test explicit profile override mechanisms."""
