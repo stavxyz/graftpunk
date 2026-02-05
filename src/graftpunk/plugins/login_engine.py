@@ -90,8 +90,6 @@ async def _select_with_retry(
                 error=str(exc),
                 remaining=f"{remaining:.1f}s",
             )
-        if loop.time() >= deadline:
-            break
         await asyncio.sleep(interval)
 
     if last_exc is not None:
@@ -305,11 +303,11 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             # that appears after a redirect completes)
             wait_for_selector = plugin.login_config.wait_for
             if wait_for_selector:
-                from nodriver.core.connection import ProtocolException as _WaitPE
+                from nodriver.core.connection import ProtocolException
 
                 try:
                     wait_el = await _select_with_retry(tab, wait_for_selector)
-                except _WaitPE as exc:
+                except ProtocolException as exc:
                     raise PluginError(
                         f"Timed out waiting for '{wait_for_selector}' to appear. "
                         "The page may not have loaded or redirected as expected."
