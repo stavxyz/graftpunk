@@ -26,6 +26,11 @@ _ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transition
 _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
 
 
+# TODO: Replace Any type annotations with proper nodriver.Tab / nodriver.Element
+# types once the upstream SyntaxError in nodriver's CDP codegen is fixed for
+# Python 3.14. The bug is in auto-generated CDP domain modules that use invalid
+# syntax. Track: https://github.com/niceno/nodriver — when fixed, add
+# nodriver.Tab and nodriver.Element to the TYPE_CHECKING import block above.
 async def _select_with_retry(
     tab: Any,  # nodriver.Tab — can't import due to upstream SyntaxError in CDP codegen
     selector: str,
@@ -276,6 +281,11 @@ def generate_login_method(plugin: SitePlugin) -> Any:
     Returns:
         Callable login method (async or sync depending on backend).
     """
+    # TODO: Both _generate_nodriver_login and _generate_selenium_login contain
+    # identical "no login configuration" guards (checking plugin.login_config is
+    # None). Extract this check here in generate_login_method() so the guard
+    # runs once at generation time rather than at every login() call. This also
+    # removes duplication between the two generators.
     backend = getattr(plugin, "backend", "selenium")
 
     if backend == "nodriver":

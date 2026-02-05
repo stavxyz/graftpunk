@@ -23,6 +23,10 @@ Example YAML plugin (in ~/.config/graftpunk/plugins/mybank.yaml):
         url: "https://mybank.com/api/accounts"
 """
 
+# TODO: This file exceeds the 800-line project limit (~840 lines).
+# Split into separate modules: move LoginConfig and related validation
+# into a dedicated login_config.py module, or extract the command
+# discovery/introspection logic into a discovery.py module.
 from __future__ import annotations
 
 import dataclasses
@@ -201,6 +205,11 @@ class LoginConfig:
     url: str
     fields: dict[str, str]
     submit: str
+    # TODO: Validate failure and success for whitespace-only content, same as
+    # wait_for. Currently empty string means "not configured" and any non-empty
+    # value is accepted, but " " (whitespace-only) would silently pass validation
+    # and never match anything at runtime. Needs coordination with YAML plugin
+    # loader which also constructs LoginConfig from user input.
     failure: str = ""
     success: str = ""
     wait_for: str = ""
