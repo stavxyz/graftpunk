@@ -64,6 +64,8 @@ async def _select_with_retry(
     while loop.time() < deadline:
         remaining = deadline - loop.time()
         try:
+            # Cap each attempt to avoid blocking the full remaining time
+            # inside nodriver's own internal retry loop.
             per_attempt = min(5.0, remaining)
             element = await tab.select(selector, timeout=per_attempt)
             if element is not None:
@@ -267,7 +269,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
         if plugin.login_config is None:
             raise PluginError(
                 f"Plugin '{plugin.site_name}' has no login configuration. "
-                f"Add a LoginConfig to your plugin definition."
+                "Add a LoginConfig to your plugin definition."
             )
         base_url = plugin.base_url.rstrip("/")
         login_url = plugin.login_config.url
@@ -313,7 +315,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                     if element is None:
                         raise PluginError(
                             f"Login field '{field_name}' not found using selector '{selector}'. "
-                            f"Check your plugin's login.fields configuration."
+                            "Check your plugin's login.fields configuration."
                         )
                     await element.click()
                     await element.send_keys(value)
@@ -330,7 +332,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                 if submit is None:
                     raise PluginError(
                         f"Submit button not found using selector '{submit_selector}'. "
-                        f"Check your plugin's login.submit configuration."
+                        "Check your plugin's login.submit configuration."
                     )
                 await submit.click()
             except PluginError:
@@ -348,6 +350,8 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             success_selector = plugin.login_config.success
             success_found: bool | None = None
             if success_selector:
+                # Bare select (no retry): page has settled after submit delay;
+                # retrying here would mask genuine login failures.
                 success_element = await tab.select(success_selector)
                 success_found = success_element is not None
 
@@ -401,7 +405,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         if plugin.login_config is None:
             raise PluginError(
                 f"Plugin '{plugin.site_name}' has no login configuration. "
-                f"Add a LoginConfig to your plugin definition."
+                "Add a LoginConfig to your plugin definition."
             )
         base_url = plugin.base_url.rstrip("/")
         login_url = plugin.login_config.url
