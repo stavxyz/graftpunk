@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -24,6 +26,65 @@ from graftpunk.observe.capture import (
     create_capture_backend,
 )
 from graftpunk.observe.storage import ObserveStorage
+
+# ---------------------------------------------------------------------------
+# Test helpers for NodriverCaptureBackend tests
+# ---------------------------------------------------------------------------
+
+
+def _make_request_entry(
+    url: str = "https://example.com/api",
+    method: str = "GET",
+    has_post_data: bool = False,
+    post_data: str | None = None,
+    status: int = 200,
+    mime_type: str = "application/json",
+) -> dict[str, Any]:
+    """Build a request-map entry for NodriverCaptureBackend tests."""
+    return {
+        "url": url,
+        "method": method,
+        "headers": {},
+        "post_data": post_data,
+        "has_post_data": has_post_data,
+        "timestamp": None,
+        "response": {
+            "status": status,
+            "statusText": "OK",
+            "headers": {},
+            "mimeType": mime_type,
+        },
+    }
+
+
+@contextmanager
+def _patch_cdp_modules(
+    *,
+    include_runtime: bool = False,
+) -> Generator[MagicMock, None, None]:
+    """Patch sys.modules to provide mock CDP network (and optionally runtime) modules.
+
+    Yields the mock network module so tests can assert on network.enable() etc.
+    """
+    mock_network = MagicMock()
+    mock_cdp = MagicMock()
+    mock_cdp.network = mock_network
+    mock_nodriver = MagicMock()
+    mock_nodriver.cdp = mock_cdp
+
+    modules: dict[str, Any] = {
+        "nodriver": mock_nodriver,
+        "nodriver.cdp": mock_cdp,
+        "nodriver.cdp.network": mock_network,
+    }
+    if include_runtime:
+        mock_runtime = MagicMock()
+        mock_cdp.runtime = mock_runtime
+        modules["nodriver.cdp.runtime"] = mock_runtime
+
+    with patch.dict("sys.modules", modules):
+        yield mock_network
+
 
 # ---------------------------------------------------------------------------
 # ObserveStorage tests
@@ -949,23 +1010,7 @@ class TestNodriverCaptureBackend:
     @pytest.mark.asyncio
     async def test_start_capture_async_passes_buffer_params(self) -> None:
         """network.enable() is called with large buffer sizes to prevent body eviction."""
-        mock_network = MagicMock()
-        mock_runtime = MagicMock()
-        mock_cdp = MagicMock()
-        mock_cdp.network = mock_network
-        mock_cdp.runtime = mock_runtime
-        mock_nodriver = MagicMock()
-        mock_nodriver.cdp = mock_cdp
-
-        with patch.dict(
-            "sys.modules",
-            {
-                "nodriver": mock_nodriver,
-                "nodriver.cdp": mock_cdp,
-                "nodriver.cdp.network": mock_network,
-                "nodriver.cdp.runtime": mock_runtime,
-            },
-        ):
+        with _patch_cdp_modules(include_runtime=True) as mock_network:
             browser = MagicMock()
             tab = MagicMock()
             tab.send = AsyncMock()
@@ -1585,44 +1630,29 @@ class TestNodriverHARCapture:
         await backend.stop_capture_async()
 
     @pytest.mark.asyncio
-    async def test_stop_capture_async_bails_on_connection_death(self) -> None:
-        """stop_capture_async returns immediately on ConnectionRefusedError."""
-        mock_network = MagicMock()
-        mock_cdp = MagicMock()
-        mock_cdp.network = mock_network
-        mock_nodriver = MagicMock()
-        mock_nodriver.cdp = mock_cdp
-
+    @pytest.mark.parametrize(
+        "exc_cls,exc_msg",
+        [
+            (ConnectionRefusedError, "[Errno 61] Connection refused"),
+            (ConnectionError, "browser died"),
+            (ConnectionResetError, "[Errno 54] Connection reset by peer"),
+            (BrokenPipeError, "[Errno 32] Broken pipe"),
+        ],
+    )
+    async def test_stop_capture_async_bails_on_connection_death(
+        self, exc_cls: type, exc_msg: str
+    ) -> None:
+        """stop_capture_async returns immediately on connection errors."""
         browser = MagicMock()
         tab = MagicMock()
-        tab.send = AsyncMock(side_effect=ConnectionRefusedError("[Errno 61] Connection refused"))
+        tab.send = AsyncMock(side_effect=exc_cls(exc_msg))
 
-        with patch.dict(
-            "sys.modules",
-            {
-                "nodriver": mock_nodriver,
-                "nodriver.cdp": mock_cdp,
-                "nodriver.cdp.network": mock_network,
-            },
-        ):
+        with _patch_cdp_modules():
             backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
-            # Seed 3 requests — only the first should be attempted
             for i in range(3):
-                backend._request_map[f"req-{i}"] = {
-                    "url": f"https://example.com/page{i}",
-                    "method": "GET",
-                    "headers": {},
-                    "post_data": None,
-                    "has_post_data": False,
-                    "timestamp": None,
-                    "response": {
-                        "status": 200,
-                        "statusText": "OK",
-                        "headers": {},
-                        "mimeType": "application/json",
-                    },
-                }
-
+                backend._request_map[f"req-{i}"] = _make_request_entry(
+                    url=f"https://example.com/page{i}",
+                )
             await backend.stop_capture_async()
 
         # Should bail after first connection error, not try all 3
@@ -1631,58 +1661,66 @@ class TestNodriverHARCapture:
     @pytest.mark.asyncio
     async def test_stop_capture_async_bails_on_post_data_connection_death(self) -> None:
         """stop_capture_async returns immediately on ConnectionError during post data fetch."""
-        mock_network = MagicMock()
-        mock_cdp = MagicMock()
-        mock_cdp.network = mock_network
-        mock_nodriver = MagicMock()
-        mock_nodriver.cdp = mock_cdp
-
         browser = MagicMock()
         tab = MagicMock()
         tab.send = AsyncMock(side_effect=ConnectionError("browser died"))
 
-        with patch.dict(
-            "sys.modules",
-            {
-                "nodriver": mock_nodriver,
-                "nodriver.cdp": mock_cdp,
-                "nodriver.cdp.network": mock_network,
-            },
-        ):
+        with _patch_cdp_modules():
             backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
-            backend._request_map["req-post"] = {
-                "url": "https://example.com/login",
-                "method": "POST",
-                "headers": {},
-                "post_data": None,
-                "has_post_data": True,
-                "timestamp": None,
-                "response": {
-                    "status": 200,
-                    "statusText": "OK",
-                    "headers": {},
-                    "mimeType": "application/json",
-                },
-            }
-            backend._request_map["req-get"] = {
-                "url": "https://example.com/api",
-                "method": "GET",
-                "headers": {},
-                "post_data": None,
-                "has_post_data": False,
-                "timestamp": None,
-                "response": {
-                    "status": 200,
-                    "statusText": "OK",
-                    "headers": {},
-                    "mimeType": "application/json",
-                },
-            }
-
+            backend._request_map["req-post"] = _make_request_entry(
+                url="https://example.com/login",
+                method="POST",
+                has_post_data=True,
+            )
+            backend._request_map["req-get"] = _make_request_entry()
             await backend.stop_capture_async()
 
         # Should bail after first post_data connection error
         assert tab.send.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stop_capture_async_logs_phase_on_disconnect(self) -> None:
+        """Disconnect warning includes phase kwarg for diagnostic context."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(side_effect=ConnectionRefusedError("[Errno 61] Connection refused"))
+
+        with _patch_cdp_modules(), patch("graftpunk.observe.capture.LOG") as mock_log:
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            backend._request_map["req-0"] = _make_request_entry()
+            await backend.stop_capture_async()
+
+        mock_log.warning.assert_called_once()
+        call_kwargs = mock_log.warning.call_args[1]
+        assert call_kwargs["phase"] == "response_body"
+        assert call_kwargs["request_id"] == "req-0"
+        assert "Connection refused" in call_kwargs["error"]
+        assert call_kwargs["exc_type"] == "ConnectionRefusedError"
+
+    @pytest.mark.asyncio
+    async def test_stop_capture_async_does_not_bail_on_non_connection_oserror(self) -> None:
+        """OSError subclasses like PermissionError don't trigger early bail-out."""
+        browser = MagicMock()
+        tab = MagicMock()
+        # First call raises PermissionError (an OSError but not ConnectionError),
+        # second call succeeds with a body
+        tab.send = AsyncMock(
+            side_effect=[
+                PermissionError("Permission denied"),
+                ('{"ok": true}', False),
+            ]
+        )
+
+        with _patch_cdp_modules():
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            backend._request_map["req-0"] = _make_request_entry()
+            backend._request_map["req-1"] = _make_request_entry(
+                url="https://example.com/other",
+            )
+            await backend.stop_capture_async()
+
+        # Both requests attempted — PermissionError doesn't trigger bail-out
+        assert tab.send.call_count == 2
 
     def test_on_request_handles_exception_gracefully(self) -> None:
         browser = MagicMock()
@@ -1789,42 +1827,13 @@ class TestNodriverHARCapture:
     @pytest.mark.asyncio
     async def test_on_loading_finished_logs_exception_details(self) -> None:
         """Eager fetch failure warning includes error message and exception type."""
-        mock_network = MagicMock()
-        mock_cdp = MagicMock()
-        mock_cdp.network = mock_network
-        mock_nodriver = MagicMock()
-        mock_nodriver.cdp = mock_cdp
-
         browser = MagicMock()
         tab = MagicMock()
         tab.send = AsyncMock(side_effect=RuntimeError("CDP -32000: no body available"))
 
-        with (
-            patch.dict(
-                "sys.modules",
-                {
-                    "nodriver": mock_nodriver,
-                    "nodriver.cdp": mock_cdp,
-                    "nodriver.cdp.network": mock_network,
-                },
-            ),
-            patch("graftpunk.observe.capture.LOG") as mock_log,
-        ):
+        with _patch_cdp_modules(), patch("graftpunk.observe.capture.LOG") as mock_log:
             backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
-            backend._request_map["req-err"] = {
-                "url": "https://example.com/api",
-                "method": "GET",
-                "headers": {},
-                "post_data": None,
-                "has_post_data": False,
-                "timestamp": None,
-                "response": {
-                    "status": 200,
-                    "statusText": "OK",
-                    "headers": {},
-                    "mimeType": "application/json",
-                },
-            }
+            backend._request_map["req-err"] = _make_request_entry()
 
             event = MagicMock()
             event.request_id = "req-err"
@@ -1841,39 +1850,13 @@ class TestNodriverHARCapture:
     @pytest.mark.asyncio
     async def test_on_loading_finished_passes_is_update_true(self) -> None:
         """Eager fetch uses _is_update=True to skip _register_handlers() overhead."""
-        mock_network = MagicMock()
-        mock_cdp = MagicMock()
-        mock_cdp.network = mock_network
-        mock_nodriver = MagicMock()
-        mock_nodriver.cdp = mock_cdp
-
         browser = MagicMock()
         tab = MagicMock()
         tab.send = AsyncMock(return_value=('{"ok": true}', False))
 
-        with patch.dict(
-            "sys.modules",
-            {
-                "nodriver": mock_nodriver,
-                "nodriver.cdp": mock_cdp,
-                "nodriver.cdp.network": mock_network,
-            },
-        ):
+        with _patch_cdp_modules():
             backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
-            backend._request_map["req-fast"] = {
-                "url": "https://example.com/api",
-                "method": "GET",
-                "headers": {},
-                "post_data": None,
-                "has_post_data": False,
-                "timestamp": None,
-                "response": {
-                    "status": 200,
-                    "statusText": "OK",
-                    "headers": {},
-                    "mimeType": "application/json",
-                },
-            }
+            backend._request_map["req-fast"] = _make_request_entry()
 
             event = MagicMock()
             event.request_id = "req-fast"
