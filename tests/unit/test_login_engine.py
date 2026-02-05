@@ -1171,3 +1171,36 @@ class TestSeleniumTokenExtraction:
         # MagicMock auto-creates attributes, so check it's either None or a MagicMock
         # (not a real dict). The key assertion is that _build_token_cache was never called.
         assert not isinstance(token_cache, dict)
+
+
+class TestSeleniumWaitForRaises:
+    """Tests that selenium backend raises on wait_for usage."""
+
+    def test_selenium_wait_for_raises_plugin_error(self) -> None:
+        """Selenium backend raises PluginError when wait_for is configured."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class SeleniumWaitFor(SitePlugin):
+            site_name = "swf"
+            session_name = "swf"
+            help_text = "SWF"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                url="/login",
+                fields={"username": "#user"},
+                submit="#btn",
+                wait_for="#form",
+            )
+
+        plugin = SeleniumWaitFor()
+        login_method = generate_login_method(plugin)
+
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            pytest.raises(PluginError, match="wait_for.*requires.*nodriver"),
+        ):
+            login_method({"username": "user"})
