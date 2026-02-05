@@ -433,11 +433,9 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             session.driver.get(f"{base_url}{login_url}")
 
             if plugin.login_config.wait_for:
-                LOG.warning(
-                    "login_wait_for_not_supported",
-                    backend="selenium",
-                    plugin=plugin.site_name,
-                    hint="wait_for is only supported with the nodriver backend",
+                raise PluginError(
+                    f"Plugin '{plugin.site_name}' uses wait_for, which requires "
+                    "the nodriver backend. Set backend='nodriver' or remove wait_for."
                 )
 
             # Fill fields (click before send_keys to prevent keystroke loss)
