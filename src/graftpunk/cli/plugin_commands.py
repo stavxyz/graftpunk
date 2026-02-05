@@ -239,14 +239,19 @@ def _create_plugin_command(
     plugin: CLIPluginProtocol,
     cmd_spec: CommandSpec,
 ) -> typer.core.TyperCommand:
-    """Create a Typer command from a CommandSpec.
+    """Create a TyperCommand from a CommandSpec.
+
+    Builds Click parameters from the spec's ``PluginParamSpec`` list
+    (splatting each param's ``click_kwargs`` into ``click.Option()`` or
+    ``click.Argument()``), wires up the execution callback, and returns
+    a ``TyperCommand`` ready for group registration.
 
     Args:
         plugin: Plugin instance that owns the command.
         cmd_spec: Command specification with handler and params.
 
     Returns:
-        Click Command ready for registration.
+        TyperCommand ready for registration in a plugin group.
     """
     params: list[click.Parameter] = []
 

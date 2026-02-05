@@ -59,8 +59,8 @@ class PluginParamSpec:
     """Specification for a command parameter.
 
     Holds the parameter name, whether it is a Click option or argument,
-    and a ``click_kwargs`` dict that is passed directly to
-    ``click.option()`` or ``click.argument()`` at registration time.
+    and a ``click_kwargs`` dict that is splatted directly into
+    ``click.Option()`` or ``click.Argument()`` at registration time.
 
     Use the convenience constructors :meth:`option` and :meth:`argument`
     for ergonomic creation with sensible defaults.
@@ -88,13 +88,23 @@ class PluginParamSpec:
     ) -> PluginParamSpec:
         """Create an option (``--flag``) parameter spec with sensible defaults.
 
+        Builds a ``click_kwargs`` dict from the explicit parameters,
+        then merges any extra *click_kwargs* on top (overriding explicit
+        values on conflict).  The final dict is splatted into
+        ``click.Option()`` at command registration time.
+
+        When *type* is ``bool`` and *default* is ``False``, ``is_flag``
+        is automatically set to ``True``.  Pass ``click_kwargs={"is_flag": False}``
+        to override this auto-detection.
+
         Args:
             name: Parameter name.
             type: Click type for the parameter (e.g. ``str``, ``int``, ``bool``).
             required: Whether the option is required.
             default: Default value when not provided.
             help: Help text for ``--help`` output.
-            click_kwargs: Extra kwargs forwarded to ``click.option()``.
+            click_kwargs: Extra kwargs merged into the dict passed to
+                ``click.Option()``.  These override the explicit parameters.
 
         Returns:
             A new PluginParamSpec configured as a Click option.
@@ -125,7 +135,8 @@ class PluginParamSpec:
             type: Click type for the parameter (e.g. ``str``, ``int``).
             required: Whether the argument is required (default ``True``).
             default: Default value when not provided.
-            click_kwargs: Extra kwargs forwarded to ``click.argument()``.
+            click_kwargs: Extra kwargs merged into the dict passed to
+                ``click.Argument()``.  These override the explicit parameters.
 
         Returns:
             A new PluginParamSpec configured as a Click argument.
