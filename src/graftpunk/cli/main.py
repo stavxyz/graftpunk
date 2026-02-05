@@ -549,7 +549,6 @@ async def _run_observe_interactive(
     namespace: str, url: str, max_body_size: int, *, session_name: str | None = None
 ) -> None:
     """Async implementation of observe interactive."""
-    import signal
 
     result = await _setup_observe_session(
         namespace, url, max_body_size, headless=False, session_name=session_name
