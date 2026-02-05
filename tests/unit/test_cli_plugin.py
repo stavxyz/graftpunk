@@ -1227,6 +1227,14 @@ class TestPluginParamSpecClickKwargs:
         spec = PluginParamSpec.option("flag", type=bool, required=True)
         assert "is_flag" not in spec.click_kwargs
 
+    def test_is_flag_override_via_click_kwargs(self) -> None:
+        """click_kwargs can override the auto-detected is_flag=True."""
+        spec = PluginParamSpec.option(
+            "verbose", type=bool, default=False, click_kwargs={"is_flag": False}
+        )
+        # Auto-detection would set is_flag=True, but click_kwargs override wins
+        assert spec.click_kwargs["is_flag"] is False
+
     def test_option_required_with_default_raises(self) -> None:
         """option() raises ValueError when required=True and default is not None."""
         with pytest.raises(ValueError, match="required=True conflicts with default="):
