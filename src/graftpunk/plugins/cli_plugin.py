@@ -288,6 +288,51 @@ class CommandSpec:
 
 
 @dataclass(frozen=True)
+class LoginStep:
+    """A single step in a multi-step login flow.
+
+    Each step can fill form fields, click a submit button, wait for elements,
+    and pause after submission. Steps are executed in sequence by the login
+    engine.
+
+    Attributes:
+        fields: Maps credential names to CSS selectors for form inputs.
+            Empty dict means no fields to fill in this step.
+        submit: CSS selector for the button to click after filling fields.
+            Empty string means no click action.
+        wait_for: CSS selector to wait for before this step executes.
+            Empty string (default) means no explicit wait.
+        delay: Seconds to pause after clicking submit.
+            Zero (default) means no pause.
+    """
+
+    fields: dict[str, str] = field(default_factory=dict)
+    submit: str = ""
+    wait_for: str = ""
+    delay: float = 0.0
+
+    def __post_init__(self) -> None:
+        # At least one of fields or submit must be non-empty
+        if not self.fields and not self.submit:
+            raise ValueError("LoginStep must have non-empty fields or submit")
+        # Validate submit if non-empty
+        if self.submit and not self.submit.strip():
+            raise ValueError("LoginStep.submit must not be whitespace")
+        # Validate wait_for if non-empty
+        if self.wait_for and not self.wait_for.strip():
+            raise ValueError("LoginStep.wait_for must not be whitespace")
+        # Validate each field selector
+        for name, selector in self.fields.items():
+            if not selector or not selector.strip():
+                raise ValueError(f"LoginStep.fields['{name}'] selector must be non-empty")
+        # Validate delay is non-negative
+        if self.delay < 0:
+            raise ValueError("LoginStep.delay must be non-negative")
+        # Defensive copy: prevent external mutation of fields dict
+        object.__setattr__(self, "fields", dict(self.fields))
+
+
+@dataclass(frozen=True)
 class LoginConfig:
     """Declarative browser-automated login configuration.
 

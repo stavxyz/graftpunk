@@ -15,6 +15,7 @@ from graftpunk.plugins.cli_plugin import (
     CommandResult,
     CommandSpec,
     LoginConfig,
+    LoginStep,
     PluginConfig,
     PluginParamSpec,
     SitePlugin,
@@ -103,6 +104,85 @@ class TestLoginConfig:
         cfg = LoginConfig(url="/l", fields={"u": "#u"}, submit="#b", failure="Bad", success=".ok")
         assert cfg.failure == "Bad"
         assert cfg.success == ".ok"
+
+
+class TestLoginStep:
+    """Tests for the LoginStep frozen dataclass."""
+
+    def test_create_with_fields_only(self) -> None:
+        """LoginStep can be created with only fields (no submit)."""
+        step = LoginStep(fields={"username": "#user"})
+        assert step.fields == {"username": "#user"}
+        assert step.submit == ""
+        assert step.wait_for == ""
+        assert step.delay == 0.0
+
+    def test_create_with_submit_only(self) -> None:
+        """LoginStep can be created with only submit (no fields)."""
+        step = LoginStep(submit="#next-button")
+        assert step.fields == {}
+        assert step.submit == "#next-button"
+        assert step.wait_for == ""
+        assert step.delay == 0.0
+
+    def test_create_with_all_fields(self) -> None:
+        """LoginStep can be created with all fields populated."""
+        step = LoginStep(
+            fields={"username": "#user", "password": "#pass"},
+            submit="#login-btn",
+            wait_for="#form-loaded",
+            delay=1.5,
+        )
+        assert step.fields == {"username": "#user", "password": "#pass"}
+        assert step.submit == "#login-btn"
+        assert step.wait_for == "#form-loaded"
+        assert step.delay == 1.5
+
+    def test_frozen(self) -> None:
+        """LoginStep is frozen (immutable)."""
+        from dataclasses import FrozenInstanceError
+
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(FrozenInstanceError):
+            step.submit = "#btn"  # type: ignore[misc]
+
+    def test_empty_fields_and_submit_raises(self) -> None:
+        """LoginStep rejects both empty fields and empty submit."""
+        with pytest.raises(ValueError, match="must have non-empty fields or submit"):
+            LoginStep()
+
+    def test_whitespace_submit_raises(self) -> None:
+        """LoginStep rejects whitespace-only submit."""
+        with pytest.raises(ValueError, match="submit must not be whitespace"):
+            LoginStep(submit="   \t  ")
+
+    def test_whitespace_wait_for_raises(self) -> None:
+        """LoginStep rejects whitespace-only wait_for."""
+        with pytest.raises(ValueError, match="wait_for must not be whitespace"):
+            LoginStep(fields={"u": "#u"}, wait_for="   ")
+
+    def test_whitespace_field_selector_raises(self) -> None:
+        """LoginStep rejects whitespace-only field selectors."""
+        with pytest.raises(ValueError, match="selector must be non-empty"):
+            LoginStep(fields={"username": "   "})
+
+    def test_empty_field_selector_raises(self) -> None:
+        """LoginStep rejects empty string field selectors."""
+        with pytest.raises(ValueError, match="selector must be non-empty"):
+            LoginStep(fields={"username": ""})
+
+    def test_negative_delay_raises(self) -> None:
+        """LoginStep rejects negative delay."""
+        with pytest.raises(ValueError, match="delay must be non-negative"):
+            LoginStep(fields={"u": "#u"}, delay=-1.0)
+
+    def test_fields_defensive_copy(self) -> None:
+        """LoginStep makes a defensive copy of the fields dict."""
+        original = {"username": "#user"}
+        step = LoginStep(fields=original)
+        # Mutating the original should not affect the step
+        original["email"] = "#email"
+        assert "email" not in step.fields
 
 
 class TestCommandMetadata:
