@@ -529,6 +529,22 @@ class DeclarativeSeleniumBoth(SitePlugin):
     )
 
 
+class DeclarativeWaitFor(SitePlugin):
+    """Nodriver plugin with wait_for configured."""
+
+    site_name = "waitfor"
+    session_name = "waitfor"
+    help_text = "WF"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        url="/login",
+        fields={"username": "#user"},
+        submit="#btn",
+        wait_for="#login-form",
+    )
+
+
 class TestNodriverLoginValidationPaths:
     """Tests for nodriver login validation paths."""
 
@@ -1291,20 +1307,7 @@ class TestLoginWaitFor:
         """When wait_for is set, the selector is awaited before filling fields."""
         from graftpunk.plugins.login_engine import generate_login_method
 
-        class WaitForPlugin(SitePlugin):
-            site_name = "waitfor"
-            session_name = "waitfor"
-            help_text = "WF"
-            base_url = "https://example.com"
-            backend = "nodriver"
-            login_config = LoginConfig(
-                url="/login",
-                fields={"username": "#user"},
-                submit="#btn",
-                wait_for="#login-form",
-            )
-
-        plugin = WaitForPlugin()
+        plugin = DeclarativeWaitFor()
         login_method = generate_login_method(plugin)
 
         mock_tab = AsyncMock()
@@ -1342,20 +1345,7 @@ class TestLoginWaitFor:
         """When wait_for times out, raises PluginError."""
         from graftpunk.plugins.login_engine import generate_login_method
 
-        class WaitForPlugin(SitePlugin):
-            site_name = "waitfor"
-            session_name = "waitfor"
-            help_text = "WF"
-            base_url = "https://example.com"
-            backend = "nodriver"
-            login_config = LoginConfig(
-                url="/login",
-                fields={"username": "#user"},
-                submit="#btn",
-                wait_for="#login-form",
-            )
-
-        plugin = WaitForPlugin()
+        plugin = DeclarativeWaitFor()
         login_method = generate_login_method(plugin)
 
         mock_tab = AsyncMock()
@@ -1380,20 +1370,7 @@ class TestLoginWaitFor:
 
         from graftpunk.plugins.login_engine import generate_login_method
 
-        class WaitForPlugin(SitePlugin):
-            site_name = "waitfor"
-            session_name = "waitfor"
-            help_text = "WF"
-            base_url = "https://example.com"
-            backend = "nodriver"
-            login_config = LoginConfig(
-                url="/login",
-                fields={"username": "#user"},
-                submit="#btn",
-                wait_for="#login-form",
-            )
-
-        plugin = WaitForPlugin()
+        plugin = DeclarativeWaitFor()
         login_method = generate_login_method(plugin)
 
         mock_tab = AsyncMock()
