@@ -84,6 +84,28 @@ def test_excluded_headers_contains_content_length():
     assert "content-length" in EXCLUDED_HEADERS
 
 
+def test_excluded_headers_contains_content_type():
+    assert "content-type" in EXCLUDED_HEADERS
+
+
+def test_extract_header_profiles_excludes_content_type():
+    """Content-Type from POST XHR should not be captured in profile."""
+    request_map = {
+        "1": {
+            "headers": {
+                "sec-fetch-mode": "cors",
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        },
+    }
+    profiles = extract_header_profiles(request_map)
+    assert "xhr" in profiles
+    assert "Content-Type" not in profiles["xhr"]
+    assert profiles["xhr"]["Accept"] == "application/json"
+
+
 def test_excluded_headers_contains_referer_and_origin():
     assert "referer" in EXCLUDED_HEADERS
     assert "origin" in EXCLUDED_HEADERS

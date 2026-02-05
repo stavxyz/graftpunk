@@ -10,6 +10,7 @@ EXCLUDED_HEADERS: frozenset[str] = frozenset(
         "cookie",
         "host",
         "content-length",
+        "content-type",
         "referer",
         "origin",
         ":authority",
