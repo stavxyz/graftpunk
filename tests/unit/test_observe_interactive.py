@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -369,3 +370,95 @@ class TestObserveGoInteractiveFlag:
         assert result.exit_code == 0
         output = strip_ansi(result.output)
         assert "--interactive" in output
+
+
+class TestSetupObserveSessionSigintIsolation:
+    """Verify that Chrome is isolated from SIGINT during nodriver.start()."""
+
+    @pytest.mark.asyncio
+    async def test_sigint_ignored_during_nodriver_start(self, tmp_path: Path) -> None:
+        """SIGINT handler is set to SIG_IGN while nodriver.start() executes,
+        then restored to the original handler afterward."""
+        from graftpunk.cli.main import _setup_observe_session
+
+        captured_handler: list[signal.Handlers] = []
+
+        mock_tab = MagicMock()
+        mock_browser = MagicMock()
+        mock_browser.main_tab = mock_tab
+        mock_browser.get = AsyncMock(return_value=mock_tab)
+
+        mock_backend = MagicMock()
+        mock_backend.start_capture_async = AsyncMock()
+
+        async def fake_nodriver_start(**kwargs: object) -> MagicMock:
+            """Capture the SIGINT handler that is active when nodriver.start runs."""
+            captured_handler.append(signal.getsignal(signal.SIGINT))
+            return mock_browser
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_nodriver_start
+
+        mock_storage = MagicMock()
+        mock_storage.run_dir = tmp_path / "fake-run-dir"
+
+        original_handler = signal.getsignal(signal.SIGINT)
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend",
+                return_value=mock_backend,
+            ),
+            patch(
+                "graftpunk.observe.storage.ObserveStorage",
+                return_value=mock_storage,
+            ),
+        ):
+            result = await _setup_observe_session(
+                "test-ns",
+                "https://example.com",
+                5 * 1024 * 1024,
+                headless=False,
+                session_name=None,
+            )
+
+        # nodriver.start was called (captured_handler is non-empty)
+        assert len(captured_handler) == 1, "nodriver.start should have been called exactly once"
+        # During nodriver.start(), SIGINT should have been SIG_IGN
+        assert captured_handler[0] is signal.SIG_IGN, (
+            f"Expected SIG_IGN during nodriver.start(), got {captured_handler[0]}"
+        )
+        # After _setup_observe_session returns, the original handler is restored
+        assert signal.getsignal(signal.SIGINT) == original_handler
+
+        # Verify the session actually returned successfully
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_sigint_restored_even_if_nodriver_start_raises(self) -> None:
+        """If nodriver.start() raises, the original SIGINT handler is still restored."""
+        from graftpunk.cli.main import _setup_observe_session
+
+        async def failing_nodriver_start(**kwargs: object) -> None:
+            raise RuntimeError("browser launch failed")
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = failing_nodriver_start
+
+        original_handler = signal.getsignal(signal.SIGINT)
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            pytest.raises(RuntimeError, match="browser launch failed"),
+        ):
+            await _setup_observe_session(
+                "test-ns",
+                "https://example.com",
+                5 * 1024 * 1024,
+                headless=False,
+                session_name=None,
+            )
+
+        # Original handler must be restored even after an exception
+        assert signal.getsignal(signal.SIGINT) == original_handler

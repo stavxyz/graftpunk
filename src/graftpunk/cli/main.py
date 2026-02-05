@@ -6,6 +6,7 @@ Manage encrypted browser sessions from the terminal.
 import asyncio
 import os
 import shutil
+import signal
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any
@@ -453,7 +454,13 @@ async def _setup_observe_session(
     else:
         console.print("[dim]No session — opening browser without cookies[/dim]")
 
-    browser = await nodriver.start(headless=headless)
+    # Isolate Chrome from SIGINT: child process inherits SIG_IGN disposition,
+    # so Ctrl+C only reaches Python. We save data, then explicitly stop Chrome.
+    old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        browser = await nodriver.start(headless=headless)
+    finally:
+        signal.signal(signal.SIGINT, old_sigint)
     try:
         tab = browser.main_tab
 
