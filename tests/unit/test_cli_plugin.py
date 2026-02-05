@@ -25,85 +25,94 @@ from graftpunk.plugins.cli_plugin import (
 
 
 class TestLoginConfig:
-    """Tests for the LoginConfig frozen dataclass."""
+    """Tests for the LoginConfig frozen dataclass (step-based structure)."""
 
-    def test_create_valid(self) -> None:
-        """LoginConfig can be created with required fields and defaults."""
-        cfg = LoginConfig(url="/login", fields={"user": "#u"}, submit="#btn")
-        assert cfg.url == "/login"
-        assert cfg.fields == {"user": "#u"}
-        assert cfg.submit == "#btn"
+    def test_create_minimal(self) -> None:
+        """LoginConfig can be created with just steps, all defaults."""
+        step = LoginStep(fields={"username": "#user"}, submit="#btn")
+        cfg = LoginConfig(steps=[step])
+        assert cfg.steps == (step,)
+        assert cfg.url == ""
         assert cfg.failure == ""
         assert cfg.success == ""
+        assert cfg.wait_for == ""
+
+    def test_create_with_all_fields(self) -> None:
+        """LoginConfig can be created with all optional fields set."""
+        step = LoginStep(fields={"username": "#user"}, submit="#btn")
+        cfg = LoginConfig(
+            steps=[step],
+            url="/login",
+            failure="Invalid credentials",
+            success=".dashboard",
+            wait_for="#page-loaded",
+        )
+        assert cfg.steps == (step,)
+        assert cfg.url == "/login"
+        assert cfg.failure == "Invalid credentials"
+        assert cfg.success == ".dashboard"
+        assert cfg.wait_for == "#page-loaded"
+
+    def test_steps_converted_to_tuple(self) -> None:
+        """LoginConfig converts list of steps to tuple."""
+        step1 = LoginStep(fields={"username": "#user"})
+        step2 = LoginStep(submit="#next")
+        cfg = LoginConfig(steps=[step1, step2])
+        assert isinstance(cfg.steps, tuple)
+        assert cfg.steps == (step1, step2)
+
+    def test_multiple_steps(self) -> None:
+        """LoginConfig supports multiple steps."""
+        step1 = LoginStep(fields={"username": "#user"}, submit="#next")
+        step2 = LoginStep(wait_for="#password-field", fields={"password": "#pass"}, submit="#login")
+        cfg = LoginConfig(steps=[step1, step2])
+        assert len(cfg.steps) == 2
+        assert cfg.steps[0].fields == {"username": "#user"}
+        assert cfg.steps[1].fields == {"password": "#pass"}
 
     def test_frozen(self) -> None:
         """LoginConfig is frozen (immutable)."""
         from dataclasses import FrozenInstanceError
 
-        cfg = LoginConfig(url="/login", fields={"u": "#u"}, submit="#b")
+        step = LoginStep(fields={"u": "#u"})
+        cfg = LoginConfig(steps=[step])
         with pytest.raises(FrozenInstanceError):
             cfg.url = "/other"  # type: ignore[misc]
 
-    def test_empty_url_raises(self) -> None:
-        """LoginConfig rejects empty url."""
-        with pytest.raises(ValueError, match="url must be non-empty"):
-            LoginConfig(url="", fields={"u": "#u"}, submit="#b")
-
-    def test_empty_fields_raises(self) -> None:
-        """LoginConfig rejects empty fields."""
-        with pytest.raises(ValueError, match="fields must be non-empty"):
-            LoginConfig(url="/login", fields={}, submit="#b")
-
-    def test_empty_submit_raises(self) -> None:
-        """LoginConfig rejects empty submit."""
-        with pytest.raises(ValueError, match="submit must be non-empty"):
-            LoginConfig(url="/login", fields={"u": "#u"}, submit="")
+    def test_empty_steps_raises(self) -> None:
+        """LoginConfig rejects empty steps."""
+        with pytest.raises(ValueError, match="steps must be non-empty"):
+            LoginConfig(steps=[])
 
     def test_whitespace_url_raises(self) -> None:
         """LoginConfig rejects whitespace-only url."""
-        with pytest.raises(ValueError, match="url must be non-empty"):
-            LoginConfig(url="   ", fields={"u": "#u"}, submit="#b")
-
-    def test_whitespace_submit_raises(self) -> None:
-        """LoginConfig rejects whitespace-only submit."""
-        with pytest.raises(ValueError, match="submit must be non-empty"):
-            LoginConfig(url="/login", fields={"u": "#u"}, submit="  \t  ")
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(ValueError, match="url must not be whitespace"):
+            LoginConfig(steps=[step], url="   ")
 
     def test_whitespace_wait_for_raises(self) -> None:
         """LoginConfig rejects whitespace-only wait_for."""
-        with pytest.raises(ValueError, match="wait_for must not be whitespace-only"):
-            LoginConfig(url="/login", fields={"u": "#u"}, submit="#b", wait_for="   ")
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(ValueError, match="wait_for must not be whitespace"):
+            LoginConfig(steps=[step], wait_for="   ")
 
-    def test_whitespace_field_selector_raises(self) -> None:
-        """LoginConfig rejects whitespace-only field selectors."""
-        with pytest.raises(ValueError, match="fields\\['u'\\] selector must be non-empty"):
-            LoginConfig(url="/login", fields={"u": "  "}, submit="#b")
+    def test_whitespace_failure_raises(self) -> None:
+        """LoginConfig rejects whitespace-only failure."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(ValueError, match="failure must not be whitespace"):
+            LoginConfig(steps=[step], failure="   ")
 
-    def test_empty_field_selector_raises(self) -> None:
-        """LoginConfig rejects empty string field selectors."""
-        with pytest.raises(ValueError, match="fields\\['u'\\] selector must be non-empty"):
-            LoginConfig(url="/login", fields={"u": ""}, submit="#b")
+    def test_whitespace_success_raises(self) -> None:
+        """LoginConfig rejects whitespace-only success."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(ValueError, match="success must not be whitespace"):
+            LoginConfig(steps=[step], success="   ")
 
-    def test_wait_for_default_empty(self) -> None:
-        """LoginConfig.wait_for defaults to empty string."""
-        cfg = LoginConfig(url="/login", fields={"u": "#u"}, submit="#b")
-        assert cfg.wait_for == ""
-
-    def test_wait_for_stores_value(self) -> None:
-        """LoginConfig stores wait_for selector."""
-        cfg = LoginConfig(
-            url="/login",
-            fields={"u": "#u"},
-            submit="#b",
-            wait_for="input#signInName",
-        )
-        assert cfg.wait_for == "input#signInName"
-
-    def test_with_optional_fields(self) -> None:
-        """LoginConfig stores optional failure and success fields."""
-        cfg = LoginConfig(url="/l", fields={"u": "#u"}, submit="#b", failure="Bad", success=".ok")
-        assert cfg.failure == "Bad"
-        assert cfg.success == ".ok"
+    def test_url_empty_is_valid(self) -> None:
+        """LoginConfig accepts empty string url (uses base_url)."""
+        step = LoginStep(fields={"u": "#u"})
+        cfg = LoginConfig(steps=[step], url="")
+        assert cfg.url == ""
 
 
 class TestLoginStep:

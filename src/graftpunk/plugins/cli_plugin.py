@@ -334,49 +334,47 @@ class LoginStep:
 
 @dataclass(frozen=True)
 class LoginConfig:
-    """Declarative browser-automated login configuration.
+    """Declarative browser-automated login configuration using steps.
 
-    Required fields (url, fields, submit) must be non-empty and non-whitespace.
-    Optional fields (failure, success, wait_for) default to empty string,
-    meaning "not configured".
+    A login configuration consists of one or more LoginStep objects that are
+    executed in sequence. Each step can fill form fields, click buttons, and
+    wait for elements.
 
     Attributes:
-        url: Login page path (appended to base_url).
-        fields: Maps credential names to CSS selectors for form inputs.
-        submit: CSS selector for the submit button.
+        steps: Sequence of LoginStep objects to execute. Required and non-empty.
+            Lists are converted to tuples for immutability.
+        url: Login page path (appended to base_url). Empty string (default)
+            means use base_url directly.
         failure: Text on the page indicating login failure.
         success: CSS selector for an element indicating login success.
-        wait_for: CSS selector to wait for before interacting with the page.
-            Useful when the login URL triggers a redirect or the form renders
-            asynchronously. Empty string (default) means no explicit wait.
+        wait_for: CSS selector to wait for before any steps execute.
+            Empty string (default) means no explicit wait.
     """
 
-    url: str
-    fields: dict[str, str]
-    submit: str
-    # TODO: Validate failure and success for whitespace-only content, same as
-    # wait_for. Currently empty string means "not configured" and any non-empty
-    # value is accepted, but " " (whitespace-only) would silently pass validation
-    # and never match anything at runtime. Needs coordination with YAML plugin
-    # loader which also constructs LoginConfig from user input.
+    steps: tuple[LoginStep, ...] | list[LoginStep]
+    url: str = ""
     failure: str = ""
     success: str = ""
     wait_for: str = ""
 
     def __post_init__(self) -> None:
-        if not self.url.strip():
-            raise ValueError("LoginConfig.url must be non-empty")
-        if not self.fields:
-            raise ValueError("LoginConfig.fields must be non-empty")
-        if not self.submit.strip():
-            raise ValueError("LoginConfig.submit must be non-empty")
+        # Convert list to tuple for immutability
+        object.__setattr__(self, "steps", tuple(self.steps))
+        # Validate steps is non-empty
+        if not self.steps:
+            raise ValueError("LoginConfig.steps must be non-empty")
+        # Validate url non-whitespace when non-empty
+        if self.url and not self.url.strip():
+            raise ValueError("LoginConfig.url must not be whitespace")
+        # Validate wait_for non-whitespace when non-empty
         if self.wait_for and not self.wait_for.strip():
-            raise ValueError("LoginConfig.wait_for must not be whitespace-only")
-        for name, selector in self.fields.items():
-            if not selector.strip():
-                raise ValueError(f"LoginConfig.fields['{name}'] selector must be non-empty")
-        # Defensive copy: prevent external mutation of fields dict
-        object.__setattr__(self, "fields", dict(self.fields))
+            raise ValueError("LoginConfig.wait_for must not be whitespace")
+        # Validate failure non-whitespace when non-empty
+        if self.failure and not self.failure.strip():
+            raise ValueError("LoginConfig.failure must not be whitespace")
+        # Validate success non-whitespace when non-empty
+        if self.success and not self.success.strip():
+            raise ValueError("LoginConfig.success must not be whitespace")
 
 
 @dataclass(frozen=True)
