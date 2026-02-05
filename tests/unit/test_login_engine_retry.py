@@ -1,11 +1,14 @@
 """Tests for _select_with_retry and wait_for login engine features."""
 
+from __future__ import annotations
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from graftpunk.exceptions import PluginError
 from graftpunk.plugins.cli_plugin import LoginConfig, SitePlugin
+from graftpunk.plugins.login_engine import _select_with_retry
 
 
 class DeclarativeHN(SitePlugin):
@@ -40,7 +43,7 @@ class DeclarativeWaitFor(SitePlugin):
     )
 
 
-def _make_nodriver_mock_bs():
+def _make_nodriver_mock_bs() -> tuple[MagicMock, MagicMock]:
     """Create a mock BrowserSession that works as an async context manager."""
     mock_bs = MagicMock()
     instance = MagicMock()
@@ -59,8 +62,6 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_returns_element_on_first_try(self) -> None:
         """Returns element immediately when select succeeds."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         mock_tab = AsyncMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
@@ -73,8 +74,6 @@ class TestSelectWithRetry:
     async def test_retries_on_protocol_exception(self) -> None:
         """Retries when ProtocolException is raised, succeeds on later attempt."""
         from nodriver.core.connection import ProtocolException
-
-        from graftpunk.plugins.login_engine import _select_with_retry
 
         mock_tab = AsyncMock()
         mock_element = AsyncMock()
@@ -92,8 +91,6 @@ class TestSelectWithRetry:
         """Raises last ProtocolException when timeout expires."""
         from nodriver.core.connection import ProtocolException
 
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         mock_tab = AsyncMock()
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=exc)
@@ -104,8 +101,6 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_returns_none_when_select_returns_none(self) -> None:
         """Returns None when select returns None and timeout expires (no exception)."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         mock_tab = AsyncMock()
         mock_tab.select = AsyncMock(return_value=None)
 
@@ -115,8 +110,6 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_non_protocol_exception_propagates(self) -> None:
         """Non-ProtocolException errors propagate immediately (no retry)."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         mock_tab = AsyncMock()
         mock_tab.select = AsyncMock(side_effect=RuntimeError("unexpected"))
 
@@ -129,40 +122,30 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_zero_timeout_raises(self) -> None:
         """Raises ValueError when timeout is zero."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         with pytest.raises(ValueError, match="timeout must be positive"):
             await _select_with_retry(AsyncMock(), "input", timeout=0)
 
     @pytest.mark.asyncio
     async def test_negative_timeout_raises(self) -> None:
         """Raises ValueError when timeout is negative."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         with pytest.raises(ValueError, match="timeout must be positive"):
             await _select_with_retry(AsyncMock(), "input", timeout=-1)
 
     @pytest.mark.asyncio
     async def test_zero_interval_raises(self) -> None:
         """Raises ValueError when interval is zero."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         with pytest.raises(ValueError, match="interval must be positive"):
             await _select_with_retry(AsyncMock(), "input", interval=0)
 
     @pytest.mark.asyncio
     async def test_negative_interval_raises(self) -> None:
         """Raises ValueError when interval is negative."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         with pytest.raises(ValueError, match="interval must be positive"):
             await _select_with_retry(AsyncMock(), "input", interval=-1)
 
     @pytest.mark.asyncio
     async def test_per_attempt_timeout_capped(self) -> None:
         """Each select() attempt uses min(5.0, remaining) as timeout."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         mock_tab = AsyncMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
@@ -177,8 +160,6 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_none_then_element_on_retry(self) -> None:
         """Returns element when select returns None first, then succeeds."""
-        from graftpunk.plugins.login_engine import _select_with_retry
-
         mock_tab = AsyncMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(side_effect=[None, None, mock_element])
@@ -186,6 +167,21 @@ class TestSelectWithRetry:
         result = await _select_with_retry(mock_tab, "input#name", timeout=10, interval=0.01)
         assert result is mock_element
         assert mock_tab.select.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_interleaved_none_and_protocol_exception(self) -> None:
+        """Returns element when select alternates between None and ProtocolException."""
+        from nodriver.core.connection import ProtocolException
+
+        mock_tab = AsyncMock()
+        mock_element = AsyncMock()
+
+        exc = ProtocolException({"code": -32000, "message": "Could not find node"})
+        mock_tab.select = AsyncMock(side_effect=[None, exc, None, mock_element])
+
+        result = await _select_with_retry(mock_tab, "input#name", timeout=10, interval=0.01)
+        assert result is mock_element
+        assert mock_tab.select.call_count == 4
 
 
 class TestLoginRetryIntegration:

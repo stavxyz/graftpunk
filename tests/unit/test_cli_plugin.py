@@ -78,6 +78,11 @@ class TestLoginConfig:
         with pytest.raises(ValueError, match="fields\\['u'\\] selector must be non-empty"):
             LoginConfig(url="/login", fields={"u": "  "}, submit="#b")
 
+    def test_empty_field_selector_raises(self) -> None:
+        """LoginConfig rejects empty string field selectors."""
+        with pytest.raises(ValueError, match="fields\\['u'\\] selector must be non-empty"):
+            LoginConfig(url="/login", fields={"u": ""}, submit="#b")
+
     def test_wait_for_default_empty(self) -> None:
         """LoginConfig.wait_for defaults to empty string."""
         cfg = LoginConfig(url="/login", fields={"u": "#u"}, submit="#b")
