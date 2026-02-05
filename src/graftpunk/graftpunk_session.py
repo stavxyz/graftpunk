@@ -26,6 +26,13 @@ _BROWSER_IDENTITY_HEADERS: Final[frozenset[str]] = frozenset(
 
 # Canonical Chrome request-type headers used as a fallback when a captured
 # profile for the detected request type is not available.
+# HTTP methods that trigger CSRF token injection.  Browsers only enforce
+# CSRF protection for state-changing operations; read-only methods (GET,
+# HEAD, OPTIONS) never carry tokens.
+_MUTATION_METHODS: Final[frozenset[str]] = frozenset(
+    {"POST", "PUT", "PATCH", "DELETE"}
+)
+
 _CANONICAL_HTML_ACCEPT: Final[str] = (
     "text/html,application/xhtml+xml,application/xml;"
     "q=0.9,image/avif,image/webp,image/apng,*/*;"
@@ -432,7 +439,7 @@ class GraftpunkSession(requests.Session):
         csrf_tokens: dict[str, str] = getattr(self, "_gp_csrf_tokens", {})
         if not csrf_tokens:
             return
-        if (prepared.method or "GET").upper() not in ("POST", "PUT", "PATCH", "DELETE"):
+        if (prepared.method or "GET").upper() not in _MUTATION_METHODS:
             return
         for name, value in csrf_tokens.items():
             prepared.headers.setdefault(name, value)
@@ -459,13 +466,7 @@ class GraftpunkSession(requests.Session):
         """
         if not self._gp_header_profiles:
             prepared = super().prepare_request(request, **kwargs)
-            self._inject_csrf_tokens(prepared)
-            return prepared
-
-        profile_name = self._detect_profile(request)
-        profile_headers = self._resolve_profile(profile_name)
-
-        if profile_headers:
+        elif profile_headers := self._resolve_profile(self._detect_profile(request)):
             # Apply profile headers as session defaults (lowest priority).
             # Priority: request headers (caller-supplied) >
             # user-modified session headers > profile > session defaults.
@@ -490,10 +491,8 @@ class GraftpunkSession(requests.Session):
                 # Restore original session headers
                 self.headers.clear()
                 self.headers.update(original_session_headers)
+        else:
+            prepared = super().prepare_request(request, **kwargs)
 
-            self._inject_csrf_tokens(prepared)
-            return prepared
-
-        prepared = super().prepare_request(request, **kwargs)
         self._inject_csrf_tokens(prepared)
         return prepared
