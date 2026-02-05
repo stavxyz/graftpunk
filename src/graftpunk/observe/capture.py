@@ -715,12 +715,14 @@ class NodriverCaptureBackend:
                 bodies_dir=self._bodies_dir,
             )
             self._bodies_fetched.add(rid)
-        except Exception:  # noqa: BLE001 — best-effort eager fetch; stop_capture_async is fallback
+        except Exception as exc:  # noqa: BLE001 — best-effort eager fetch; stop_capture_async is fallback
             url = data.get("url", "unknown") if data is not None else "unknown"
             LOG.warning(
                 "nodriver_eager_body_fetch_failed",
                 request_id=str(getattr(event, "request_id", "unknown")),
                 url=url,
+                error=str(exc),
+                exc_type=type(exc).__name__,
             )
 
     def _on_console(self, event: Any) -> None:
