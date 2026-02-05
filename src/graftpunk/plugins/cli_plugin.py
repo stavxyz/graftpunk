@@ -159,7 +159,13 @@ class PluginParamSpec:
 
 @dataclass(frozen=True)
 class CommandGroupMeta:
-    """Metadata stored on @command-decorated classes (command groups)."""
+    """Metadata stored on @command-decorated classes (command groups).
+
+    Unlike :class:`CommandMetadata` and :class:`CommandSpec`, this class
+    stores ``help_text`` as a plain field rather than in ``click_kwargs``,
+    because command *groups* don't accept arbitrary Click kwargs — only
+    individual commands do.
+    """
 
     name: str
     help_text: str
@@ -564,7 +570,7 @@ def command(
                     )
             return target
         else:
-            # Function -> command (existing behavior + parent)
+            # Function -> command
             click_kw: dict[str, Any] = {}
             if help:
                 click_kw["help"] = help
@@ -796,7 +802,11 @@ class SitePlugin:
         return commands
 
     def _introspect_params(self, method: Any) -> list[PluginParamSpec]:
-        """Extract CLI params from method signature and type hints.
+        """Extract CLI options from method signature and type hints.
+
+        All introspected parameters become **options** (``--flag`` style).
+        Use explicit ``params=`` on the ``@command`` decorator to declare
+        positional arguments.
 
         Uses :meth:`PluginParamSpec.option` so that bool-flag detection
         and other defaults are defined in exactly one place.
