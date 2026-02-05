@@ -426,9 +426,7 @@ class TestSetupObserveSessionSigintIsolation:
         # nodriver.start was called (captured_handler is non-empty)
         assert len(captured_handler) == 1, "nodriver.start should have been called exactly once"
         # During nodriver.start(), SIGINT should have been SIG_IGN
-        assert captured_handler[0] is signal.SIG_IGN, (
-            f"Expected SIG_IGN during nodriver.start(), got {captured_handler[0]}"
-        )
+        assert captured_handler[0] is signal.SIG_IGN
         # After _setup_observe_session returns, the original handler is restored
         assert signal.getsignal(signal.SIGINT) == original_handler
 

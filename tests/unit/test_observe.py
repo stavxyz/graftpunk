@@ -1078,36 +1078,28 @@ class TestNodriverCaptureBackend:
         # because MagicMock returns MagicMock for attribute access
 
     @pytest.mark.asyncio
-    async def test_take_screenshot_warns_on_connection_error(self) -> None:
+    @pytest.mark.parametrize(
+        ("method", "tab_attr", "operation"),
+        [
+            ("take_screenshot", "save_screenshot", "screenshot"),
+            ("get_page_source", "get_content", "page_source"),
+        ],
+    )
+    async def test_browser_disconnect_warns_not_traces(
+        self, method: str, tab_attr: str, operation: str
+    ) -> None:
         """ConnectionError produces warning, not exception traceback."""
         browser = MagicMock()
         tab = MagicMock()
-        tab.save_screenshot = AsyncMock(side_effect=ConnectionRefusedError("[Errno 61]"))
+        setattr(tab, tab_attr, AsyncMock(side_effect=ConnectionRefusedError("[Errno 61]")))
         backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
 
         with patch("graftpunk.observe.capture.LOG") as mock_log:
-            result = await backend.take_screenshot()
+            result = await getattr(backend, method)()
 
         assert result is None
         mock_log.warning.assert_called_once_with(
-            "nodriver_browser_disconnected", operation="screenshot"
-        )
-        mock_log.exception.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_get_page_source_warns_on_connection_error(self) -> None:
-        """ConnectionError produces warning, not exception traceback."""
-        browser = MagicMock()
-        tab = MagicMock()
-        tab.get_content = AsyncMock(side_effect=ConnectionRefusedError("[Errno 61]"))
-        backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
-
-        with patch("graftpunk.observe.capture.LOG") as mock_log:
-            result = await backend.get_page_source()
-
-        assert result is None
-        mock_log.warning.assert_called_once_with(
-            "nodriver_browser_disconnected", operation="page_source"
+            "nodriver_browser_disconnected", operation=operation
         )
         mock_log.exception.assert_not_called()
 
