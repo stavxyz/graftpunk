@@ -593,8 +593,14 @@ class NodriverCaptureBackend:
                         cdp_net.get_request_post_data(cdp_net.RequestId(request_id))  # type: ignore[attr-defined]
                     )
                     data["post_data"] = result
-                except (ConnectionRefusedError, ConnectionError, OSError):
-                    LOG.warning("nodriver_browser_disconnected_during_stop", phase="post_data")
+                except ConnectionError as exc:
+                    LOG.warning(
+                        "nodriver_browser_disconnected_during_stop",
+                        phase="post_data",
+                        request_id=request_id,
+                        error=str(exc),
+                        exc_type=type(exc).__name__,
+                    )
                     return
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
                     LOG.warning(
@@ -624,8 +630,14 @@ class NodriverCaptureBackend:
                         max_body_size=self._max_body_size,
                         bodies_dir=self._bodies_dir,
                     )
-                except (ConnectionRefusedError, ConnectionError, OSError):
-                    LOG.warning("nodriver_browser_disconnected_during_stop", phase="response_body")
+                except ConnectionError as exc:
+                    LOG.warning(
+                        "nodriver_browser_disconnected_during_stop",
+                        phase="response_body",
+                        request_id=request_id,
+                        error=str(exc),
+                        exc_type=type(exc).__name__,
+                    )
                     return
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
                     LOG.warning(
