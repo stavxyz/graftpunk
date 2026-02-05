@@ -274,7 +274,8 @@ class TestPrepareSessionBrowserFallback:
         ):
             prepare_session(session, config, "https://example.com")
 
-        assert session.headers["X-CSRF"] == "browser_val"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "browser_val"
         mock_browser.assert_called_once()
 
     def test_browser_token_skips_http(self) -> None:
@@ -295,7 +296,8 @@ class TestPrepareSessionBrowserFallback:
         ) as mock_browser:
             prepare_session(session, config, "https://example.com")
 
-        assert session.headers["X-CSRF"] == "browser_val"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "browser_val"
         mock_browser.assert_called_once()
 
     def test_mixed_tokens_cookie_and_browser(self) -> None:
@@ -318,8 +320,9 @@ class TestPrepareSessionBrowserFallback:
         ):
             prepare_session(session, config, "https://example.com")
 
-        assert session.headers["X-Session"] == "cookie_val"
-        assert session.headers["X-CSRF"] == "browser_val"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-Session"] == "cookie_val"
+        assert csrf_tokens["X-CSRF"] == "browser_val"
 
     def test_browser_extraction_missing_token_raises(self) -> None:
         """If browser extraction returns empty dict, raise ValueError."""
@@ -350,7 +353,8 @@ class TestPrepareSessionBrowserFallback:
             prepare_session(session, config, "https://example.com")
 
         mock_browser.assert_not_called()
-        assert session.headers["X-CSRF"] == "val"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "val"
 
     def test_browser_tokens_are_cached(self) -> None:
         """Browser-extracted tokens are cached in the session."""
@@ -376,7 +380,8 @@ class TestPrepareSessionBrowserFallback:
             prepare_session(session, config, "https://example.com")
             mock_browser.assert_not_called()
 
-        assert session.headers["X-CSRF"] == "browser_val"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "browser_val"
 
 
 class TestExtractTokensFromTab:
