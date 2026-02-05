@@ -595,3 +595,36 @@ class TestConvertParamsClickKwargs:
         )
         params = _convert_params(cmd_def)
         assert "help" not in params[0].click_kwargs
+
+    def test_unknown_type_defaults_to_str(self) -> None:
+        """Unknown type strings in YAML params default to str."""
+        cmd_def = YAMLCommandDef(
+            name="test",
+            help_text="",
+            method="GET",
+            url="/test",
+            params=(YAMLParamDef(name="x", type="custom_type"),),
+        )
+        params = _convert_params(cmd_def)
+        assert params[0].click_kwargs["type"] is str
+
+    def test_yaml_help_text_in_command_spec_click_kwargs(self) -> None:
+        """YAML command help_text appears in CommandSpec.click_kwargs."""
+        cmd = YAMLCommandDef(name="get", help_text="Get items", method="GET", url="/items")
+        config = PluginConfig(
+            site_name="test-help", session_name="test-help", help_text="Test"
+        )
+        plugin = create_yaml_site_plugin(config, [cmd])
+        spec = plugin.get_commands()[0]
+        assert spec.click_kwargs["help"] == "Get items"
+        assert spec.help_text == "Get items"
+
+    def test_yaml_empty_help_text_empty_click_kwargs(self) -> None:
+        """YAML command with empty help_text has empty click_kwargs."""
+        cmd = YAMLCommandDef(name="t", help_text="", method="GET", url="/t")
+        config = PluginConfig(
+            site_name="test-empty", session_name="test-empty", help_text="Test"
+        )
+        plugin = create_yaml_site_plugin(config, [cmd])
+        spec = plugin.get_commands()[0]
+        assert spec.click_kwargs == {}

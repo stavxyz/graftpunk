@@ -1212,6 +1212,21 @@ class TestPluginParamSpecClickKwargs:
         assert spec.click_kwargs["type"] is str
         assert spec.click_kwargs["required"] is True
 
+    def test_click_kwargs_overrides_explicit_params(self) -> None:
+        """When click_kwargs conflicts with explicit params, click_kwargs wins."""
+        spec = PluginParamSpec.option("port", type=str, click_kwargs={"type": int})
+        assert spec.click_kwargs["type"] is int
+
+    def test_option_empty_help_omitted(self) -> None:
+        """option() with empty help string does not include 'help' in click_kwargs."""
+        spec = PluginParamSpec.option("x", help="")
+        assert "help" not in spec.click_kwargs
+
+    def test_option_bool_default_none_no_flag(self) -> None:
+        """option() with type=bool and default=None does not auto-set is_flag."""
+        spec = PluginParamSpec.option("flag", type=bool, required=True)
+        assert "is_flag" not in spec.click_kwargs
+
 
 class TestCommandMetadataClickKwargs:
     """Tests for CommandMetadata with click_kwargs passthrough."""
@@ -1268,3 +1283,18 @@ class TestCommandSpecClickKwargs:
         spec = CommandSpec(name="test", handler=lambda ctx: None, click_kwargs=original)
         original["help"] = "mutated"
         assert spec.click_kwargs["help"] == "test"
+
+    def test_build_command_spec_propagates_click_kwargs(self) -> None:
+        """_build_command_spec copies click_kwargs from CommandMetadata to CommandSpec."""
+
+        class _TestPlugin(SitePlugin):
+            site_name = "test-propagate"
+
+            @command(help="My help text")
+            def my_cmd(self, ctx: CommandContext) -> None: ...
+
+        plugin = _TestPlugin()
+        cmds = plugin.get_commands()
+        assert len(cmds) == 1
+        assert cmds[0].click_kwargs.get("help") == "My help text"
+        assert cmds[0].help_text == "My help text"
