@@ -7,6 +7,7 @@ from typing import Any, Final
 import requests
 
 from graftpunk.logging import get_logger
+from graftpunk.tokens import _CSRF_TOKENS_ATTR
 
 LOG = get_logger(__name__)
 
@@ -108,6 +109,7 @@ class GraftpunkSession(requests.Session):
         """
         super().__init__(**kwargs)
         self._gp_header_profiles: dict[str, dict[str, str]] = header_profiles or {}
+        self._gp_csrf_tokens: dict[str, str] = {}
         self.gp_default_profile: str | None = None
         self.gp_base_url: str = base_url
         # Apply browser identity headers (User-Agent, sec-ch-ua, etc.)
@@ -434,7 +436,7 @@ class GraftpunkSession(requests.Session):
         Args:
             prepared: The prepared request to conditionally add tokens to.
         """
-        csrf_tokens: dict[str, str] = getattr(self, "_gp_csrf_tokens", {})
+        csrf_tokens: dict[str, str] = getattr(self, _CSRF_TOKENS_ATTR, {})
         if not csrf_tokens:
             return
         if (prepared.method or "GET").upper() not in _MUTATION_METHODS:
