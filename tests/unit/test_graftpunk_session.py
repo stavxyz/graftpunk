@@ -763,3 +763,88 @@ class TestExplicitMethodIntegration:
         req = requests.Request("GET", "https://example.com/page", headers=profile_headers)
         prepared = session.prepare_request(req)
         assert prepared.headers.get("Content-Type") == "application/x-www-form-urlencoded"
+
+
+class TestCsrfTokenInjection:
+    """Test that CSRF tokens are only injected on mutation methods."""
+
+    def _session_with_csrf(self):
+        """Create a GraftpunkSession with CSRF tokens stored."""
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        session._gp_csrf_tokens = {"X-CSRF-Token": "secret123"}
+        return session
+
+    def test_csrf_injected_on_post(self):
+        session = self._session_with_csrf()
+        req = requests.Request("POST", "https://example.com/api", json={"key": "val"})
+        prepared = session.prepare_request(req)
+        assert prepared.headers["X-CSRF-Token"] == "secret123"
+
+    def test_csrf_injected_on_put(self):
+        session = self._session_with_csrf()
+        req = requests.Request("PUT", "https://example.com/api/1", json={"key": "val"})
+        prepared = session.prepare_request(req)
+        assert prepared.headers["X-CSRF-Token"] == "secret123"
+
+    def test_csrf_injected_on_patch(self):
+        session = self._session_with_csrf()
+        req = requests.Request("PATCH", "https://example.com/api/1", json={"key": "val"})
+        prepared = session.prepare_request(req)
+        assert prepared.headers["X-CSRF-Token"] == "secret123"
+
+    def test_csrf_injected_on_delete(self):
+        session = self._session_with_csrf()
+        req = requests.Request("DELETE", "https://example.com/api/1")
+        prepared = session.prepare_request(req)
+        assert prepared.headers["X-CSRF-Token"] == "secret123"
+
+    def test_csrf_not_injected_on_get(self):
+        session = self._session_with_csrf()
+        req = requests.Request("GET", "https://example.com/page")
+        prepared = session.prepare_request(req)
+        assert "X-CSRF-Token" not in prepared.headers
+
+    def test_csrf_not_injected_on_head(self):
+        session = self._session_with_csrf()
+        req = requests.Request("HEAD", "https://example.com/page")
+        prepared = session.prepare_request(req)
+        assert "X-CSRF-Token" not in prepared.headers
+
+    def test_csrf_not_injected_on_options(self):
+        session = self._session_with_csrf()
+        req = requests.Request("OPTIONS", "https://example.com/page")
+        prepared = session.prepare_request(req)
+        assert "X-CSRF-Token" not in prepared.headers
+
+    def test_no_csrf_tokens_no_error(self):
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        req = requests.Request("POST", "https://example.com/api", json={"key": "val"})
+        prepared = session.prepare_request(req)
+        assert "X-CSRF-Token" not in prepared.headers
+
+    def test_csrf_does_not_override_caller_header(self):
+        session = self._session_with_csrf()
+        req = requests.Request(
+            "POST",
+            "https://example.com/api",
+            json={"key": "val"},
+            headers={"X-CSRF-Token": "caller_value"},
+        )
+        prepared = session.prepare_request(req)
+        assert prepared.headers["X-CSRF-Token"] == "caller_value"
+
+    def test_csrf_injected_without_profiles(self):
+        """CSRF injection works even with no header profiles."""
+        session = GraftpunkSession(header_profiles={})
+        session._gp_csrf_tokens = {"X-CSRF-Token": "secret123"}
+        req = requests.Request("POST", "https://example.com/api", json={"key": "val"})
+        prepared = session.prepare_request(req)
+        assert prepared.headers["X-CSRF-Token"] == "secret123"
+
+    def test_csrf_not_injected_on_get_without_profiles(self):
+        """CSRF skipped on GET even with no header profiles."""
+        session = GraftpunkSession(header_profiles={})
+        session._gp_csrf_tokens = {"X-CSRF-Token": "secret123"}
+        req = requests.Request("GET", "https://example.com/page")
+        prepared = session.prepare_request(req)
+        assert "X-CSRF-Token" not in prepared.headers

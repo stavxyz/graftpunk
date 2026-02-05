@@ -418,6 +418,25 @@ class GraftpunkSession(requests.Session):
         default_value = self._gp_default_session_headers.get(key)
         return current_value != default_value
 
+    def _inject_csrf_tokens(self, prepared: requests.PreparedRequest) -> None:
+        """Inject CSRF tokens into a prepared request, mutation methods only.
+
+        CSRF tokens stored in ``_gp_csrf_tokens`` (set by ``tokens.prepare_session``)
+        are added to the request headers only for POST, PUT, PATCH, and DELETE.
+        This matches browser behavior: CSRF protection is for state-changing
+        operations, not read-only GETs.
+
+        Args:
+            prepared: The prepared request to conditionally add tokens to.
+        """
+        csrf_tokens: dict[str, str] = getattr(self, "_gp_csrf_tokens", {})
+        if not csrf_tokens:
+            return
+        if (prepared.method or "GET").upper() not in ("POST", "PUT", "PATCH", "DELETE"):
+            return
+        for name, value in csrf_tokens.items():
+            prepared.headers.setdefault(name, value)
+
     def prepare_request(self, request: requests.Request, **kwargs: Any) -> requests.PreparedRequest:
         """Prepare a request with auto-detected profile headers.
 
@@ -428,6 +447,9 @@ class GraftpunkSession(requests.Session):
         Session headers are temporarily modified during preparation and restored
         afterward (even on exception) to avoid permanently altering session state.
 
+        CSRF tokens (stored separately by ``tokens.prepare_session``) are injected
+        only on mutation methods (POST/PUT/PATCH/DELETE).
+
         Args:
             request: The request to prepare.
             **kwargs: Additional arguments passed to requests.Session.prepare_request().
@@ -436,7 +458,9 @@ class GraftpunkSession(requests.Session):
             A PreparedRequest with applied profile headers (if configured).
         """
         if not self._gp_header_profiles:
-            return super().prepare_request(request, **kwargs)
+            prepared = super().prepare_request(request, **kwargs)
+            self._inject_csrf_tokens(prepared)
+            return prepared
 
         profile_name = self._detect_profile(request)
         profile_headers = self._resolve_profile(profile_name)
@@ -467,6 +491,9 @@ class GraftpunkSession(requests.Session):
                 self.headers.clear()
                 self.headers.update(original_session_headers)
 
+            self._inject_csrf_tokens(prepared)
             return prepared
 
-        return super().prepare_request(request, **kwargs)
+        prepared = super().prepare_request(request, **kwargs)
+        self._inject_csrf_tokens(prepared)
+        return prepared

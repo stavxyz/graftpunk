@@ -425,6 +425,24 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
 
 
 _CACHE_ATTR = "_gp_cached_tokens"
+_CSRF_TOKENS_ATTR = "_gp_csrf_tokens"
+
+
+def _inject_csrf_token(session: requests.Session, name: str, value: str) -> None:
+    """Store a CSRF token for method-scoped injection in prepare_request().
+
+    Tokens are stored on a separate session attribute rather than
+    session.headers so they are only sent on mutation methods
+    (POST/PUT/PATCH/DELETE), matching browser CSRF behavior.
+
+    Args:
+        session: The requests session to store the token on.
+        name: Header name (e.g. "CSRFToken").
+        value: Token value.
+    """
+    csrf_tokens: dict[str, str] = getattr(session, _CSRF_TOKENS_ATTR, {})
+    csrf_tokens[name] = value
+    setattr(session, _CSRF_TOKENS_ATTR, csrf_tokens)
 
 
 def prepare_session(
@@ -432,12 +450,16 @@ def prepare_session(
     token_config: TokenConfig,
     base_url: str,
 ) -> requests.Session:
-    """Extract all tokens and inject as session headers.
+    """Extract all tokens and store for method-scoped injection.
 
     Uses a two-phase flow:
     1. Try cookie/HTTP extraction for each token; collect tokens that raise
        _BrowserExtractionNeeded into a deferred batch
     2. Extract all deferred tokens in a single headless browser session
+
+    Tokens are stored in a separate attribute (not session.headers) so that
+    GraftpunkSession.prepare_request() can inject them only on mutation
+    methods (POST/PUT/PATCH/DELETE).
 
     Args:
         session: Authenticated requests.Session.
@@ -445,7 +467,7 @@ def prepare_session(
         base_url: Plugin's base URL.
 
     Returns:
-        The same session with tokens injected as headers.
+        The same session with tokens ready for method-scoped injection.
     """
     cache: dict[str, CachedToken] = getattr(session, _CACHE_ATTR, {})
     browser_needed: list[Token] = []
@@ -456,7 +478,7 @@ def prepare_session(
         if cached:
             # EAFP: inject even if expired — if the server rejects with 403,
             # the retry path in plugin_commands clears cache and re-extracts
-            session.headers[token.name] = cached.value
+            _inject_csrf_token(session, token.name, cached.value)
             if cached.is_expired:
                 LOG.debug("token_injecting_expired", name=token.name)
             continue
@@ -469,7 +491,7 @@ def prepare_session(
                 extracted_at=time.time(),
                 ttl=token.cache_duration,
             )
-            session.headers[token.name] = value
+            _inject_csrf_token(session, token.name, value)
             LOG.info("token_extracted", name=token.name, source=token.source)
         except _BrowserExtractionNeeded:
             LOG.info("token_needs_browser", name=token.name, source=token.source)
@@ -493,7 +515,7 @@ def prepare_session(
                 extracted_at=time.time(),
                 ttl=token.cache_duration,
             )
-            session.headers[token.name] = value
+            _inject_csrf_token(session, token.name, value)
 
     setattr(session, _CACHE_ATTR, cache)
     return session

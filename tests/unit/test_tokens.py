@@ -257,7 +257,7 @@ class TestExtractToken:
 class TestPrepareSession:
     """Tests for prepare_session function."""
 
-    def test_extracts_and_injects_token(self) -> None:
+    def test_extracts_and_stores_token(self) -> None:
         session = requests.Session()
         session.cookies.set("csrftoken", "injected_value")
         token = Token(name="X-CSRF", source="cookie", cookie_name="csrftoken")
@@ -265,7 +265,10 @@ class TestPrepareSession:
 
         result = prepare_session(session, config, "https://example.com")
         assert result is session
-        assert session.headers["X-CSRF"] == "injected_value"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "injected_value"
+        # Token should NOT be in session.headers (method-scoped injection only)
+        assert "X-CSRF" not in session.headers
 
     def test_uses_cached_token(self) -> None:
         session = requests.Session()
@@ -278,7 +281,8 @@ class TestPrepareSession:
 
         # Should use cache, not try to extract (no cookie set, would fail otherwise)
         prepare_session(session, config, "https://example.com")
-        assert session.headers["X-CSRF"] == "cached_value"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "cached_value"
 
     def test_injects_expired_cached_token_without_extraction(self) -> None:
         """Expired cached token is injected without triggering extraction (EAFP)."""
@@ -299,7 +303,8 @@ class TestPrepareSession:
             prepare_session(session, config, "https://example.com")
 
         mock_extract.assert_not_called()
-        assert session.headers["X-CSRF"] == "old_value"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "old_value"
 
     def test_no_cache_still_extracts(self) -> None:
         """Token with no cache at all still triggers extraction."""
@@ -309,7 +314,8 @@ class TestPrepareSession:
         config = TokenConfig(tokens=(token,))
 
         prepare_session(session, config, "https://example.com")
-        assert session.headers["X-CSRF"] == "fresh_value"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "fresh_value"
 
     def test_multiple_tokens(self) -> None:
         session = requests.Session()
@@ -321,8 +327,9 @@ class TestPrepareSession:
         config = TokenConfig(tokens=(token1, token2))
 
         prepare_session(session, config, "https://example.com")
-        assert session.headers["X-CSRF"] == "csrf_val"
-        assert session.headers["X-Session"] == "sess_val"
+        csrf_tokens = getattr(session, "_gp_csrf_tokens", {})
+        assert csrf_tokens["X-CSRF"] == "csrf_val"
+        assert csrf_tokens["X-Session"] == "sess_val"
 
 
 class TestClearCachedTokens:
