@@ -1686,6 +1686,52 @@ class TestNodriverHARCapture:
         await backend._on_loading_finished(event)
         assert "req-fail" not in backend._bodies_fetched
 
+    @pytest.mark.asyncio
+    async def test_on_loading_finished_passes_is_update_true(self) -> None:
+        """Eager fetch uses _is_update=True to skip _register_handlers() overhead."""
+        mock_network = MagicMock()
+        mock_cdp = MagicMock()
+        mock_cdp.network = mock_network
+        mock_nodriver = MagicMock()
+        mock_nodriver.cdp = mock_cdp
+
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(return_value=('{"ok": true}', False))
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "nodriver": mock_nodriver,
+                "nodriver.cdp": mock_cdp,
+                "nodriver.cdp.network": mock_network,
+            },
+        ):
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            backend._request_map["req-fast"] = {
+                "url": "https://example.com/api",
+                "method": "GET",
+                "headers": {},
+                "post_data": None,
+                "has_post_data": False,
+                "timestamp": None,
+                "response": {
+                    "status": 200,
+                    "statusText": "OK",
+                    "headers": {},
+                    "mimeType": "application/json",
+                },
+            }
+
+            event = MagicMock()
+            event.request_id = "req-fast"
+            await backend._on_loading_finished(event)
+
+        # Verify _is_update=True was passed to tab.send()
+        tab.send.assert_called_once()
+        _, kwargs = tab.send.call_args
+        assert kwargs.get("_is_update") is True
+
 
 # ---------------------------------------------------------------------------
 # Nodriver console capture tests

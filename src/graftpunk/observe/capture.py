@@ -696,7 +696,8 @@ class NodriverCaptureBackend:
                 return
 
             body, base64_encoded = await tab.send(
-                cdp_net.get_response_body(cdp_net.RequestId(rid))  # type: ignore[attr-defined]
+                cdp_net.get_response_body(cdp_net.RequestId(rid)),  # type: ignore[attr-defined]
+                _is_update=True,  # skip _register_handlers() — network domain already enabled
             )
             _process_response_body(
                 response=response,
