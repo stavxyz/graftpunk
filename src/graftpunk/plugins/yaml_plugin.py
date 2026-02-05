@@ -61,7 +61,15 @@ def _convert_params(cmd_def: YAMLCommandDef) -> list[PluginParamSpec]:
     }
     params = []
     for param in cmd_def.params:
-        param_type = type_map.get(str(param.type).lower(), str)
+        raw_type = str(param.type).lower()
+        param_type = type_map.get(raw_type, str)
+        if raw_type not in type_map:
+            LOG.warning(
+                "unknown_yaml_param_type",
+                param=param.name,
+                type=param.type,
+                fallback="str",
+            )
         if param.is_option:
             params.append(
                 PluginParamSpec.option(

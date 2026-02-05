@@ -597,7 +597,7 @@ class TestConvertParamsClickKwargs:
         assert "help" not in params[0].click_kwargs
 
     def test_unknown_type_defaults_to_str(self) -> None:
-        """Unknown type strings in YAML params default to str."""
+        """Unknown type strings in YAML params default to str and log a warning."""
         cmd_def = YAMLCommandDef(
             name="test",
             help_text="",
@@ -605,8 +605,15 @@ class TestConvertParamsClickKwargs:
             url="/test",
             params=(YAMLParamDef(name="x", type="custom_type"),),
         )
-        params = _convert_params(cmd_def)
+        with patch("graftpunk.plugins.yaml_plugin.LOG") as mock_log:
+            params = _convert_params(cmd_def)
         assert params[0].click_kwargs["type"] is str
+        mock_log.warning.assert_called_once_with(
+            "unknown_yaml_param_type",
+            param="x",
+            type="custom_type",
+            fallback="str",
+        )
 
     def test_yaml_help_text_in_command_spec_click_kwargs(self) -> None:
         """YAML command help_text appears in CommandSpec.click_kwargs."""
