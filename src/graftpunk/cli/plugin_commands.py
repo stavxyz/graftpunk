@@ -259,11 +259,23 @@ def _create_plugin_command(
     option_params = [p for p in cmd_spec.params if p.is_option]
 
     for param in positional_params:
-        params.append(click.Argument([param.name], **param.click_kwargs))
+        try:
+            params.append(click.Argument([param.name], **param.click_kwargs))
+        except TypeError as exc:
+            raise PluginError(
+                f"Invalid click_kwargs for argument '{param.name}': {exc}. "
+                f"Received kwargs: {param.click_kwargs}"
+            ) from exc
 
     for param in option_params:
         option_name = f"--{param.name.replace('_', '-')}"
-        params.append(click.Option([option_name], **param.click_kwargs))
+        try:
+            params.append(click.Option([option_name], **param.click_kwargs))
+        except TypeError as exc:
+            raise PluginError(
+                f"Invalid click_kwargs for option '{param.name}': {exc}. "
+                f"Received kwargs: {param.click_kwargs}"
+            ) from exc
 
     available_formats = list(discover_formatters().keys())
     params.append(

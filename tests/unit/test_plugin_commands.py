@@ -3581,3 +3581,39 @@ class TestClickKwargsPassthrough:
         plugin = _make_minimal_plugin()
         cmd = _create_plugin_command(plugin, spec)
         assert cmd.help == "Run test-cmd command"
+
+    def test_invalid_option_click_kwargs_raises_plugin_error(self) -> None:
+        """Invalid click_kwargs for an option produce a PluginError."""
+        from graftpunk.cli.plugin_commands import _create_plugin_command
+
+        param = PluginParamSpec(
+            name="bad",
+            is_option=True,
+            click_kwargs={"not_a_real_kwarg": True},
+        )
+        spec = CommandSpec(
+            name="test-cmd",
+            handler=lambda ctx: None,
+            params=(param,),
+        )
+        plugin = _make_minimal_plugin()
+        with pytest.raises(PluginError, match="Invalid click_kwargs for option 'bad'"):
+            _create_plugin_command(plugin, spec)
+
+    def test_invalid_argument_click_kwargs_raises_plugin_error(self) -> None:
+        """Invalid click_kwargs for an argument produce a PluginError."""
+        from graftpunk.cli.plugin_commands import _create_plugin_command
+
+        param = PluginParamSpec(
+            name="bad",
+            is_option=False,
+            click_kwargs={"not_a_real_kwarg": True},
+        )
+        spec = CommandSpec(
+            name="test-cmd",
+            handler=lambda ctx: None,
+            params=(param,),
+        )
+        plugin = _make_minimal_plugin()
+        with pytest.raises(PluginError, match="Invalid click_kwargs for argument 'bad'"):
+            _create_plugin_command(plugin, spec)
