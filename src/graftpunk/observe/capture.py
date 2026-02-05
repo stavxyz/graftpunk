@@ -593,7 +593,7 @@ class NodriverCaptureBackend:
                         cdp_net.get_request_post_data(cdp_net.RequestId(request_id))  # type: ignore[attr-defined]
                     )
                     data["post_data"] = result
-                except ConnectionError as exc:
+                except OSError as exc:
                     LOG.warning(
                         "nodriver_browser_disconnected_during_stop",
                         phase="post_data",
@@ -630,7 +630,7 @@ class NodriverCaptureBackend:
                         max_body_size=self._max_body_size,
                         bodies_dir=self._bodies_dir,
                     )
-                except ConnectionError as exc:
+                except OSError as exc:
                     LOG.warning(
                         "nodriver_browser_disconnected_during_stop",
                         phase="response_body",
