@@ -1374,6 +1374,44 @@ class TestLoginWaitFor:
             await login_method({"username": "user"})
 
     @pytest.mark.asyncio
+    async def test_wait_for_protocol_exception_raises_plugin_error(self) -> None:
+        """When wait_for encounters persistent ProtocolException, raises PluginError."""
+        from nodriver.core.connection import ProtocolException
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class WaitForPlugin(SitePlugin):
+            site_name = "waitfor"
+            session_name = "waitfor"
+            help_text = "WF"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                url="/login",
+                fields={"username": "#user"},
+                submit="#btn",
+                wait_for="#login-form",
+            )
+
+        plugin = WaitForPlugin()
+        login_method = generate_login_method(plugin)
+
+        mock_tab = AsyncMock()
+        exc = ProtocolException({"code": -32000, "message": "Could not find node"})
+        mock_tab.select = AsyncMock(side_effect=exc)
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(PluginError, match="Timed out waiting for"),
+        ):
+            await login_method({"username": "user"})
+
+    @pytest.mark.asyncio
     async def test_no_wait_for_skips_wait(self) -> None:
         """When wait_for is empty, no extra select call is made."""
         from graftpunk.plugins.login_engine import generate_login_method

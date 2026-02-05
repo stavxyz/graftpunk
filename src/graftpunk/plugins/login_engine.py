@@ -286,14 +286,23 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             )
             await _header_capture.start_capture_async()
 
-            # Wait for a specific element before interacting (e.g., redirect targets)
+            # Wait for a specific element before interacting (e.g., a form
+            # that appears after a redirect completes)
             wait_for_selector = plugin.login_config.wait_for
             if wait_for_selector:
-                wait_el = await _select_with_retry(tab, wait_for_selector)
+                from nodriver.core.connection import ProtocolException as _WaitPE
+
+                try:
+                    wait_el = await _select_with_retry(tab, wait_for_selector)
+                except _WaitPE as exc:
+                    raise PluginError(
+                        f"Timed out waiting for '{wait_for_selector}' to appear. "
+                        "The page may not have loaded or redirected as expected."
+                    ) from exc
                 if wait_el is None:
                     raise PluginError(
                         f"Timed out waiting for '{wait_for_selector}' to appear. "
-                        f"The page may not have loaded or redirected as expected."
+                        "The page may not have loaded or redirected as expected."
                     )
 
             # Fill fields (click before send_keys to prevent keystroke loss)
