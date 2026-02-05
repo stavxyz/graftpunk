@@ -527,6 +527,9 @@ class NodriverCaptureBackend:
             os.close(fd)
             await tab.save_screenshot(tmp_path)
             return Path(tmp_path).read_bytes()
+        except ConnectionError:
+            LOG.warning("nodriver_screenshot_browser_disconnected")
+            return None
         except Exception:
             LOG.exception("nodriver_screenshot_async_failed")
             return None
@@ -546,6 +549,9 @@ class NodriverCaptureBackend:
             return None
         try:
             return await tab.get_content()
+        except ConnectionError:
+            LOG.warning("nodriver_page_source_browser_disconnected")
+            return None
         except Exception:
             LOG.exception("nodriver_get_page_source_failed")
             return None

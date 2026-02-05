@@ -1077,6 +1077,36 @@ class TestNodriverCaptureBackend:
         # The entry is still added (with defaults) even if response is None
         # because MagicMock returns MagicMock for attribute access
 
+    @pytest.mark.asyncio
+    async def test_take_screenshot_warns_on_connection_error(self) -> None:
+        """ConnectionError produces warning, not exception traceback."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.save_screenshot = AsyncMock(side_effect=ConnectionRefusedError("[Errno 61]"))
+        backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+
+        with patch("graftpunk.observe.capture.LOG") as mock_log:
+            result = await backend.take_screenshot()
+
+        assert result is None
+        mock_log.warning.assert_called_once_with("nodriver_screenshot_browser_disconnected")
+        mock_log.exception.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_page_source_warns_on_connection_error(self) -> None:
+        """ConnectionError produces warning, not exception traceback."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.get_content = AsyncMock(side_effect=ConnectionRefusedError("[Errno 61]"))
+        backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+
+        with patch("graftpunk.observe.capture.LOG") as mock_log:
+            result = await backend.get_page_source()
+
+        assert result is None
+        mock_log.warning.assert_called_once_with("nodriver_page_source_browser_disconnected")
+        mock_log.exception.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Factory tests
