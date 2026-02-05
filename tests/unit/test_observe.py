@@ -394,6 +394,25 @@ class TestSeleniumCaptureBackend:
         # Console logs should be empty (perf log had nothing, browser log failed)
         assert backend.get_console_logs() == []
 
+    def test_stop_capture_warns_on_perf_log_failure(self) -> None:
+        """Performance log failure triggers gp_console.warn to notify the user."""
+        driver = MagicMock()
+
+        def get_log_side_effect(log_type: str) -> list:
+            if log_type == "performance":
+                raise selenium.common.exceptions.WebDriverException("unavailable")
+            return []
+
+        driver.get_log.side_effect = get_log_side_effect
+        backend = SeleniumCaptureBackend(driver)
+
+        with patch("graftpunk.console.warn") as mock_warn:
+            backend.stop_capture()
+
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        assert "Performance log collection failed" in msg
+
     def test_get_har_entries_empty_initially(self) -> None:
         driver = MagicMock()
         backend = SeleniumCaptureBackend(driver)
