@@ -1259,3 +1259,60 @@ class TestPluginParamSpecClickKwargs:
         spec = PluginParamSpec.argument("arg")
         assert spec.click_kwargs["type"] is str
         assert spec.click_kwargs["required"] is True
+
+
+class TestCommandMetadataClickKwargs:
+    """Tests for CommandMetadata with click_kwargs passthrough."""
+
+    def test_help_in_click_kwargs(self) -> None:
+        meta = CommandMetadata(name="test", click_kwargs={"help": "Test command"})
+        assert meta.click_kwargs["help"] == "Test command"
+        assert meta.help_text == "Test command"  # backward-compat property
+
+    def test_minimal_construction(self) -> None:
+        meta = CommandMetadata(name="test")
+        assert meta.name == "test"
+        assert meta.click_kwargs == {}
+        assert meta.help_text == ""
+
+    def test_frozen(self) -> None:
+        from dataclasses import FrozenInstanceError
+
+        meta = CommandMetadata(name="test")
+        with pytest.raises(FrozenInstanceError):
+            meta.name = "other"  # type: ignore[misc]
+
+    def test_defensive_copy(self) -> None:
+        original = {"help": "test"}
+        meta = CommandMetadata(name="test", click_kwargs=original)
+        original["help"] = "mutated"
+        assert meta.click_kwargs["help"] == "test"
+
+
+class TestCommandSpecClickKwargs:
+    """Tests for CommandSpec with click_kwargs passthrough."""
+
+    def test_help_in_click_kwargs(self) -> None:
+        spec = CommandSpec(
+            name="test", handler=lambda ctx: None, click_kwargs={"help": "Do things"}
+        )
+        assert spec.click_kwargs["help"] == "Do things"
+        assert spec.help_text == "Do things"  # backward-compat property
+
+    def test_minimal_construction(self) -> None:
+        spec = CommandSpec(name="test", handler=lambda ctx: None)
+        assert spec.click_kwargs == {}
+        assert spec.help_text == ""
+
+    def test_frozen(self) -> None:
+        from dataclasses import FrozenInstanceError
+
+        spec = CommandSpec(name="test", handler=lambda ctx: None)
+        with pytest.raises(FrozenInstanceError):
+            spec.name = "other"  # type: ignore[misc]
+
+    def test_defensive_copy(self) -> None:
+        original = {"help": "test"}
+        spec = CommandSpec(name="test", handler=lambda ctx: None, click_kwargs=original)
+        original["help"] = "mutated"
+        assert spec.click_kwargs["help"] == "test"

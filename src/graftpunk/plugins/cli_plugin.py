@@ -154,15 +154,22 @@ class CommandMetadata:
     """Metadata stored on @command-decorated methods."""
 
     name: str
-    help_text: str
     params: tuple[PluginParamSpec, ...] = ()
     parent: type | None = None
     requires_session: bool | None = None
     saves_session: bool = False
+    click_kwargs: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("CommandMetadata.name must be non-empty")
+        # Defensive copy to prevent external mutation of the kwargs dict
+        object.__setattr__(self, "click_kwargs", dict(self.click_kwargs))
+
+    @property
+    def help_text(self) -> str:
+        """Backward-compatible access to help text via click_kwargs."""
+        return self.click_kwargs.get("help", "")
 
 
 @dataclass
@@ -220,7 +227,6 @@ class CommandSpec:
 
     name: str
     handler: Callable[..., Any]
-    help_text: str = ""
     params: tuple[PluginParamSpec, ...] = ()
     timeout: float | None = None
     max_retries: int = 0
@@ -228,6 +234,7 @@ class CommandSpec:
     requires_session: bool | None = None
     group: str | None = None
     saves_session: bool = False
+    click_kwargs: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -238,6 +245,13 @@ class CommandSpec:
             raise ValueError("timeout must be positive when set")
         if self.rate_limit is not None and self.rate_limit <= 0:
             raise ValueError("rate_limit must be positive when set")
+        # Defensive copy to prevent external mutation of the kwargs dict
+        object.__setattr__(self, "click_kwargs", dict(self.click_kwargs))
+
+    @property
+    def help_text(self) -> str:
+        """Backward-compatible access to help text via click_kwargs."""
+        return self.click_kwargs.get("help", "")
 
 
 @dataclass(frozen=True)
@@ -523,7 +537,6 @@ def command(
                 if callable(attr) and not hasattr(attr, "_command_meta"):
                     attr._command_meta = CommandMetadata(
                         name=attr_name,
-                        help_text="",
                         params=(),
                         parent=None,
                         requires_session=None,
@@ -531,13 +544,16 @@ def command(
             return target
         else:
             # Function -> command (existing behavior + parent)
+            click_kw: dict[str, Any] = {}
+            if help:  # noqa: A002
+                click_kw["help"] = help
             target._command_meta = CommandMetadata(
                 name=target.__name__,
-                help_text=help,
                 params=tuple(params) if params else (),
                 parent=parent,
                 requires_session=requires_session,
                 saves_session=saves_session,
+                click_kwargs=click_kw,
             )
             return target
 
@@ -663,11 +679,11 @@ class SitePlugin:
         return CommandSpec(
             name=meta.name,
             handler=handler,
-            help_text=meta.help_text,
             params=self._resolve_params(meta, handler),
             requires_session=meta.requires_session,
             group=group,
             saves_session=meta.saves_session,
+            click_kwargs=dict(meta.click_kwargs),
         )
 
     def get_commands(self) -> list[CommandSpec]:
