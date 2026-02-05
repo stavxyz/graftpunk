@@ -1294,6 +1294,35 @@ class TestSelectWithRetry:
         with pytest.raises(ValueError, match="interval must be positive"):
             await _select_with_retry(AsyncMock(), "input", interval=-1)
 
+    @pytest.mark.asyncio
+    async def test_per_attempt_timeout_capped(self) -> None:
+        """Each select() attempt uses min(5.0, remaining) as timeout."""
+        from graftpunk.plugins.login_engine import _select_with_retry
+
+        mock_tab = AsyncMock()
+        mock_element = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=mock_element)
+
+        # With a 30s total timeout, the first per-attempt cap should be 5.0
+        await _select_with_retry(mock_tab, "input#name", timeout=30, interval=1)
+
+        # Verify select was called with timeout capped at 5.0, not 30
+        call_kwargs = mock_tab.select.call_args
+        assert call_kwargs[1]["timeout"] == pytest.approx(5.0, abs=0.5)
+
+    @pytest.mark.asyncio
+    async def test_none_then_element_on_retry(self) -> None:
+        """Returns element when select returns None first, then succeeds."""
+        from graftpunk.plugins.login_engine import _select_with_retry
+
+        mock_tab = AsyncMock()
+        mock_element = AsyncMock()
+        mock_tab.select = AsyncMock(side_effect=[None, None, mock_element])
+
+        result = await _select_with_retry(mock_tab, "input#name", timeout=10, interval=0.01)
+        assert result is mock_element
+        assert mock_tab.select.call_count == 3
+
 
 class TestLoginRetryIntegration:
     """Tests for _select_with_retry integration in the login flow."""
