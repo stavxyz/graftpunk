@@ -36,7 +36,6 @@ from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
     CommandContext,
     CommandSpec,
-    PluginParamSpec,
 )
 from graftpunk.plugins.formatters import discover_formatters, format_output
 from graftpunk.plugins.python_loader import discover_python_plugins
