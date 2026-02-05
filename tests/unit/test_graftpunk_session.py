@@ -830,3 +830,23 @@ class TestCsrfTokenInjection:
         assert prepared.headers["X-CSRF-Token"] == "secret123"
         # XHR profile headers also present (POST+json → xhr profile)
         assert prepared.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+    @pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
+    def test_csrf_injected_on_lowercase_mutation_methods(self, method):
+        """CSRF injection works when PreparedRequest.method is lowercase."""
+        session = self._session_with_csrf()
+        req = requests.Request(method, "https://example.com/api", json={"key": "val"})
+        prepared = session.prepare_request(req)
+        assert prepared.headers["X-CSRF-Token"] == "secret123"
+
+    def test_multiple_csrf_tokens_injected(self):
+        """Multiple CSRF tokens are all injected on mutation requests."""
+        session = GraftpunkSession(header_profiles=SAMPLE_PROFILES)
+        session._gp_csrf_tokens = {
+            "X-CSRF-Token": "csrf123",
+            "X-Custom-Auth": "auth456",
+        }
+        req = requests.Request("POST", "https://example.com/api", json={"key": "val"})
+        prepared = session.prepare_request(req)
+        assert prepared.headers["X-CSRF-Token"] == "csrf123"
+        assert prepared.headers["X-Custom-Auth"] == "auth456"
