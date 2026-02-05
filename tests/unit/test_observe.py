@@ -1089,7 +1089,9 @@ class TestNodriverCaptureBackend:
             result = await backend.take_screenshot()
 
         assert result is None
-        mock_log.warning.assert_called_once_with("nodriver_screenshot_browser_disconnected")
+        mock_log.warning.assert_called_once_with(
+            "nodriver_browser_disconnected", operation="screenshot"
+        )
         mock_log.exception.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1104,7 +1106,9 @@ class TestNodriverCaptureBackend:
             result = await backend.get_page_source()
 
         assert result is None
-        mock_log.warning.assert_called_once_with("nodriver_page_source_browser_disconnected")
+        mock_log.warning.assert_called_once_with(
+            "nodriver_browser_disconnected", operation="page_source"
+        )
         mock_log.exception.assert_not_called()
 
 

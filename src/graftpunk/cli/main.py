@@ -497,19 +497,25 @@ async def _save_observe_results(
 ) -> None:
     """Save screenshot, page source, HAR, and console logs."""
     screenshot_data = await backend.take_screenshot()
-    if screenshot_data:
-        path = storage.save_screenshot(1, screenshot_label, screenshot_data)
-        console.print(f"[green]Screenshot saved:[/green] {path}")
-    else:
-        console.print("[yellow]Screenshot capture failed[/yellow]")
-
     page_source = await backend.get_page_source()
-    if page_source:
-        source_path = storage.run_dir / "page-source.html"
-        source_path.write_text(page_source, encoding="utf-8")
-        console.print(f"[green]Page source saved:[/green] {source_path}")
+
+    if screenshot_data is None and page_source is None:
+        console.print(
+            "[yellow]Browser disconnected — screenshot and page source unavailable[/yellow]"
+        )
     else:
-        console.print("[yellow]Page source capture failed[/yellow]")
+        if screenshot_data:
+            path = storage.save_screenshot(1, screenshot_label, screenshot_data)
+            console.print(f"[green]Screenshot saved:[/green] {path}")
+        else:
+            console.print("[yellow]Screenshot capture failed[/yellow]")
+
+        if page_source:
+            source_path = storage.run_dir / "page-source.html"
+            source_path.write_text(page_source, encoding="utf-8")
+            console.print(f"[green]Page source saved:[/green] {source_path}")
+        else:
+            console.print("[yellow]Page source capture failed[/yellow]")
 
     await backend.stop_capture_async()
 
