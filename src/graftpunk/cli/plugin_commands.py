@@ -399,7 +399,7 @@ def _create_plugin_command(
             gp_console.error(f"Command failed: {exc}")
             raise SystemExit(1) from exc
 
-    help_text = cmd_spec.click_kwargs.get("help", "") or f"Run {cmd_spec.name} command"
+    help_text = cmd_spec.help_text or f"Run {cmd_spec.name} command"
     return typer.core.TyperCommand(
         name=cmd_spec.name,
         callback=callback,
