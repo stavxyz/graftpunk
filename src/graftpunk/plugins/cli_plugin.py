@@ -56,27 +56,84 @@ SUPPORTED_API_VERSIONS: frozenset[int] = frozenset({1})
 
 @dataclass(frozen=True)
 class PluginParamSpec:
-    """Specification for a command parameter."""
+    """Specification for a command parameter.
+
+    Holds the parameter name, whether it is a Click option or argument,
+    and a ``click_kwargs`` dict that is passed directly to
+    ``click.option()`` or ``click.argument()`` at registration time.
+
+    Use the convenience constructors :meth:`option` and :meth:`argument`
+    for ergonomic creation with sensible defaults.
+    """
 
     name: str
-    param_type: type = str
-    required: bool = False
-    default: Any = None
-    help_text: str = ""
     is_option: bool = True  # True = --flag, False = positional argument
+    click_kwargs: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("PluginParamSpec.name must be non-empty")
-        if self.param_type not in (str, int, float, bool):
-            raise ValueError(
-                f"Unsupported param_type: {self.param_type}. Must be str, int, float, or bool"
-            )
-        if self.required and self.default is not None:
-            raise ValueError(
-                f"PluginParamSpec '{self.name}': "
-                f"required=True is incompatible with a non-None default"
-            )
+        # Defensive copy to prevent external mutation of the kwargs dict
+        object.__setattr__(self, "click_kwargs", dict(self.click_kwargs))
+
+    @staticmethod
+    def option(
+        name: str,
+        *,
+        type: type = str,  # noqa: A002
+        required: bool = False,
+        default: Any = None,
+        help: str = "",  # noqa: A002
+        click_kwargs: dict[str, Any] | None = None,
+    ) -> PluginParamSpec:
+        """Create an option (``--flag``) parameter spec with sensible defaults.
+
+        Args:
+            name: Parameter name.
+            type: Click type for the parameter (e.g. ``str``, ``int``, ``bool``).
+            required: Whether the option is required.
+            default: Default value when not provided.
+            help: Help text for ``--help`` output.
+            click_kwargs: Extra kwargs forwarded to ``click.option()``.
+
+        Returns:
+            A new PluginParamSpec configured as a Click option.
+        """
+        kw: dict[str, Any] = {"type": type, "required": required, "default": default}
+        if help:
+            kw["help"] = help
+        # Smart default: bool with default=False -> is_flag=True
+        if type is bool and default is False:
+            kw["is_flag"] = True
+        if click_kwargs:
+            kw.update(click_kwargs)
+        return PluginParamSpec(name=name, is_option=True, click_kwargs=kw)
+
+    @staticmethod
+    def argument(
+        name: str,
+        *,
+        type: type = str,  # noqa: A002
+        required: bool = True,
+        default: Any = None,
+        click_kwargs: dict[str, Any] | None = None,
+    ) -> PluginParamSpec:
+        """Create a positional argument parameter spec.
+
+        Args:
+            name: Parameter name.
+            type: Click type for the parameter (e.g. ``str``, ``int``).
+            required: Whether the argument is required (default ``True``).
+            default: Default value when not provided.
+            click_kwargs: Extra kwargs forwarded to ``click.argument()``.
+
+        Returns:
+            A new PluginParamSpec configured as a Click argument.
+        """
+        kw: dict[str, Any] = {"type": type, "required": required, "default": default}
+        if click_kwargs:
+            kw.update(click_kwargs)
+        return PluginParamSpec(name=name, is_option=False, click_kwargs=kw)
 
 
 @dataclass(frozen=True)

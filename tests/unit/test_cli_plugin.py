@@ -1159,3 +1159,103 @@ class TestCommandContextSaveSession:
             api_version=1,
         )
         assert ctx._session_name == ""
+
+
+class TestPluginParamSpecClickKwargs:
+    """Tests for PluginParamSpec with click_kwargs passthrough design."""
+
+    def test_option_constructor_basic(self) -> None:
+        """option() creates an option with help, type, default, and auto-detects is_flag."""
+        # Bool option with default=False should auto-set is_flag=True
+        spec = PluginParamSpec.option("verbose", type=bool, default=False, help="Enable verbose")
+        assert spec.name == "verbose"
+        assert spec.is_option is True
+        assert spec.click_kwargs["type"] is bool
+        assert spec.click_kwargs["default"] is False
+        assert spec.click_kwargs["help"] == "Enable verbose"
+        assert spec.click_kwargs["is_flag"] is True
+
+    def test_option_constructor_string(self) -> None:
+        """option() creates a string option with required=True."""
+        spec = PluginParamSpec.option("username", type=str, required=True, help="User name")
+        assert spec.name == "username"
+        assert spec.is_option is True
+        assert spec.click_kwargs["type"] is str
+        assert spec.click_kwargs["required"] is True
+        assert spec.click_kwargs["help"] == "User name"
+        # No is_flag for string types
+        assert "is_flag" not in spec.click_kwargs
+
+    def test_argument_constructor(self) -> None:
+        """argument() creates a positional argument with is_option=False."""
+        spec = PluginParamSpec.argument("filename", type=str)
+        assert spec.name == "filename"
+        assert spec.is_option is False
+        assert spec.click_kwargs["type"] is str
+        assert spec.click_kwargs["required"] is True  # arguments default to required
+
+    def test_raw_click_kwargs_passthrough(self) -> None:
+        """Extra kwargs like show_default, envvar pass through to click_kwargs."""
+        spec = PluginParamSpec.option(
+            "port",
+            type=int,
+            default=8080,
+            help="Port number",
+            click_kwargs={"show_default": True, "envvar": "APP_PORT"},
+        )
+        assert spec.click_kwargs["show_default"] is True
+        assert spec.click_kwargs["envvar"] == "APP_PORT"
+        assert spec.click_kwargs["type"] is int
+        assert spec.click_kwargs["default"] == 8080
+
+    def test_direct_construction_with_click_kwargs(self) -> None:
+        """Direct PluginParamSpec(...) construction with click_kwargs dict."""
+        spec = PluginParamSpec(
+            name="output",
+            is_option=True,
+            click_kwargs={"type": str, "default": "json", "help": "Output format"},
+        )
+        assert spec.name == "output"
+        assert spec.is_option is True
+        assert spec.click_kwargs["type"] is str
+        assert spec.click_kwargs["default"] == "json"
+        assert spec.click_kwargs["help"] == "Output format"
+
+    def test_empty_name_raises(self) -> None:
+        """PluginParamSpec still rejects empty name."""
+        with pytest.raises(ValueError, match="PluginParamSpec.name must be non-empty"):
+            PluginParamSpec(name="")
+
+    def test_frozen(self) -> None:
+        """PluginParamSpec is frozen (immutable)."""
+        import dataclasses
+
+        spec = PluginParamSpec.option("test", type=str, help="Test")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            spec.name = "changed"  # type: ignore[misc]
+
+    def test_defensive_copy_click_kwargs(self) -> None:
+        """click_kwargs dict is defensively copied to prevent external mutation."""
+        original = {"type": str, "default": "hello"}
+        spec = PluginParamSpec(name="test", click_kwargs=original)
+        # Mutating the original should not affect the spec
+        original["type"] = int
+        assert spec.click_kwargs["type"] is str
+
+    def test_option_bool_non_false_default_no_flag(self) -> None:
+        """option() with type=bool but default=True should NOT auto-set is_flag."""
+        spec = PluginParamSpec.option("flag", type=bool, default=True)
+        assert "is_flag" not in spec.click_kwargs
+
+    def test_option_default_values(self) -> None:
+        """option() defaults: type=str, required=False, default=None, help=empty."""
+        spec = PluginParamSpec.option("simple")
+        assert spec.click_kwargs["type"] is str
+        assert spec.click_kwargs["required"] is False
+        assert spec.click_kwargs["default"] is None
+
+    def test_argument_default_values(self) -> None:
+        """argument() defaults: type=str, required=True, default=None."""
+        spec = PluginParamSpec.argument("arg")
+        assert spec.click_kwargs["type"] is str
+        assert spec.click_kwargs["required"] is True
