@@ -1671,6 +1671,70 @@ class TestIntrospectParams:
         assert len(params) == 0
 
 
+class TestIntrospectParamsClickKwargs:
+    """Tests for _introspect_params producing click_kwargs."""
+
+    def test_typed_param_produces_click_kwargs(self) -> None:
+        """Typed param introspection produces click_kwargs with type."""
+
+        class FakePlugin(SitePlugin):
+            site_name = "test-introspect-1"
+
+            @command(help="test")
+            def my_cmd(self, ctx: CommandContext, count: int) -> None: ...
+
+        plugin = FakePlugin()
+        cmds = plugin.get_commands()
+        param = cmds[0].params[0]
+        assert param.name == "count"
+        assert param.is_option is True
+        assert param.click_kwargs["type"] is int
+        assert param.click_kwargs["required"] is True
+
+    def test_default_value_in_click_kwargs(self) -> None:
+        """Params with defaults populate click_kwargs."""
+
+        class FakePlugin(SitePlugin):
+            site_name = "test-introspect-2"
+
+            @command(help="test")
+            def my_cmd(self, ctx: CommandContext, limit: int = 10) -> None: ...
+
+        plugin = FakePlugin()
+        cmds = plugin.get_commands()
+        param = cmds[0].params[0]
+        assert param.click_kwargs["default"] == 10
+        assert param.click_kwargs["required"] is False
+
+    def test_bool_with_false_default_is_flag(self) -> None:
+        """Bool param with default=False becomes a flag."""
+
+        class FakePlugin(SitePlugin):
+            site_name = "test-introspect-3"
+
+            @command(help="test")
+            def my_cmd(self, ctx: CommandContext, verbose: bool = False) -> None: ...
+
+        plugin = FakePlugin()
+        cmds = plugin.get_commands()
+        param = cmds[0].params[0]
+        assert param.click_kwargs.get("is_flag") is True
+
+    def test_unannotated_defaults_to_str(self) -> None:
+        """Params without type annotations default to str."""
+
+        class FakePlugin(SitePlugin):
+            site_name = "test-introspect-4"
+
+            @command(help="test")
+            def my_cmd(self, ctx: CommandContext, query="") -> None: ...  # noqa: ANN001
+
+        plugin = FakePlugin()
+        cmds = plugin.get_commands()
+        param = cmds[0].params[0]
+        assert param.click_kwargs["type"] is str
+
+
 class TestBrowserSessionErrorPaths:
     """Tests for browser_session context managers on exception paths."""
 

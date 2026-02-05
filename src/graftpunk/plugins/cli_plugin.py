@@ -750,6 +750,10 @@ class SitePlugin:
     def _introspect_params(self, method: Any) -> list[PluginParamSpec]:
         """Extract CLI params from method signature and type hints.
 
+        Builds a ``click_kwargs`` dict for each parameter so that
+        ``click.option()`` / ``click.argument()`` can be called with
+        ``**param.click_kwargs`` at registration time.
+
         Args:
             method: The method to introspect.
 
@@ -779,14 +783,19 @@ class SitePlugin:
             default = param.default if has_default else None
             required = not has_default
 
+            click_kwargs: dict[str, Any] = {
+                "type": param_type,
+                "required": required,
+                "default": default,
+            }
+            if param_type is bool and default is False:
+                click_kwargs["is_flag"] = True
+
             params.append(
                 PluginParamSpec(
                     name=name,
-                    param_type=param_type,
-                    required=required,
-                    default=default,
-                    help_text="",
                     is_option=True,
+                    click_kwargs=click_kwargs,
                 )
             )
 
