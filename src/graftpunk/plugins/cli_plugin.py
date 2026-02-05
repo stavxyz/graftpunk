@@ -246,7 +246,14 @@ class CommandResult:
 
 @dataclass(frozen=True)
 class CommandSpec:
-    """Specification for a single CLI command."""
+    """Specification for a single CLI command.
+
+    ``click_kwargs`` is used to forward command-level Click metadata
+    (currently only ``help``).  Per-parameter Click kwargs are stored
+    on each :class:`PluginParamSpec` in the ``params`` tuple and are
+    splatted directly into ``click.Option()`` / ``click.Argument()``
+    at registration time.
+    """
 
     name: str
     handler: Callable[..., Any]
