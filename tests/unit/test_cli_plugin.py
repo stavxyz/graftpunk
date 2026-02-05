@@ -1267,6 +1267,28 @@ class TestPluginParamSpecClickKwargs:
         spec = PluginParamSpec.option("flag", type=bool, required=True)
         assert "is_flag" not in spec.click_kwargs
 
+    def test_option_required_with_default_raises(self) -> None:
+        """option() raises ValueError when required=True and default is not None."""
+        with pytest.raises(ValueError, match="required=True conflicts with default="):
+            PluginParamSpec.option("port", type=int, required=True, default=8080)
+
+    def test_argument_required_with_default_raises(self) -> None:
+        """argument() raises ValueError when required=True and default is not None."""
+        with pytest.raises(ValueError, match="required=True conflicts with default="):
+            PluginParamSpec.argument("file", type=str, required=True, default="out.txt")
+
+    def test_option_required_with_none_default_ok(self) -> None:
+        """option() allows required=True when default is None (the sentinel)."""
+        spec = PluginParamSpec.option("name", type=str, required=True)
+        assert spec.click_kwargs["required"] is True
+        assert spec.click_kwargs["default"] is None
+
+    def test_argument_not_required_with_default_ok(self) -> None:
+        """argument() allows required=False with a default value."""
+        spec = PluginParamSpec.argument("output", type=str, required=False, default="out.txt")
+        assert spec.click_kwargs["required"] is False
+        assert spec.click_kwargs["default"] == "out.txt"
+
 
 class TestCommandMetadataClickKwargs:
     """Tests for CommandMetadata with click_kwargs passthrough."""
