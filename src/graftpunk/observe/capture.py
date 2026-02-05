@@ -688,8 +688,10 @@ class NodriverCaptureBackend:
         """Handle CDP LoadingFinished — eagerly fetch response body while still in buffer.
 
         CDP may evict response bodies from its internal buffer after LoadingFinished.
-        Fetching eagerly ensures bodies are captured before eviction, with
-        stop_capture_async as a fallback for missed bodies.
+        Fetching eagerly ensures bodies are captured before eviction.
+        ``stop_capture_async`` retries any bodies not eagerly fetched, but will
+        bail immediately on connection errors (browser dead), so eager fetch
+        is the primary mechanism for capturing bodies.
         """
         data: dict[str, Any] | None = None
         try:
@@ -727,7 +729,7 @@ class NodriverCaptureBackend:
                 bodies_dir=self._bodies_dir,
             )
             self._bodies_fetched.add(rid)
-        except Exception as exc:  # noqa: BLE001 — best-effort eager fetch; stop_capture_async is fallback
+        except Exception as exc:  # noqa: BLE001 — best-effort; stop_capture_async retries non-connection errors
             url = data.get("url", "unknown") if data is not None else "unknown"
             LOG.warning(
                 "nodriver_eager_body_fetch_failed",
