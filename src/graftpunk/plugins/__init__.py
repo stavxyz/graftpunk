@@ -31,6 +31,7 @@ from graftpunk.plugins.cli_plugin import (
     CommandResult,
     CommandSpec,
     LoginConfig,
+    LoginStep,
     PluginConfig,
     PluginParamSpec,
     SitePlugin,
@@ -61,6 +62,7 @@ __all__ = [
     "PluginParamSpec",
     # Configuration
     "LoginConfig",
+    "LoginStep",
     "PluginConfig",
     "Token",
     "TokenConfig",
