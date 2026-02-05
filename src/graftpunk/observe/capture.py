@@ -564,7 +564,7 @@ class NodriverCaptureBackend:
             network.enable(  # type: ignore[attr-defined]
                 max_total_buffer_size=100 * 1024 * 1024,  # 100 MB total buffer
                 max_resource_buffer_size=10 * 1024 * 1024,  # 10 MB per resource
-                enable_durable_messages=True,  # persist bodies outside renderer
+                enable_durable_messages=True,  # hint to keep bodies longer (best-effort)
             )
         )
         tab.add_handler(network.RequestWillBeSent, self._on_request)  # type: ignore[attr-defined]
@@ -717,7 +717,7 @@ class NodriverCaptureBackend:
 
             body, base64_encoded = await tab.send(
                 cdp_net.get_response_body(cdp_net.RequestId(rid)),  # type: ignore[attr-defined]
-                _is_update=True,  # skip _register_handlers() — network domain already enabled
+                _is_update=True,  # nodriver internal: skip _register_handlers() re-registration
             )
             _process_response_body(
                 response=response,

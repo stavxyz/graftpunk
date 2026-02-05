@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-# Headers excluded from profiles — managed by requests or request-specific
+# Headers excluded from profiles: request-specific (cookie, host, referer, origin,
+# content-length, content-type) or HTTP/2 pseudo-headers (managed by transport layer)
 EXCLUDED_HEADERS: frozenset[str] = frozenset(
     {
         "cookie",
