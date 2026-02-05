@@ -1171,3 +1171,77 @@ class TestSeleniumTokenExtraction:
         # MagicMock auto-creates attributes, so check it's either None or a MagicMock
         # (not a real dict). The key assertion is that _build_token_cache was never called.
         assert not isinstance(token_cache, dict)
+
+
+class TestSelectWithRetry:
+    """Tests for _select_with_retry helper."""
+
+    @pytest.mark.asyncio
+    async def test_returns_element_on_first_try(self) -> None:
+        """Returns element immediately when select succeeds."""
+        from graftpunk.plugins.login_engine import _select_with_retry
+
+        mock_tab = AsyncMock()
+        mock_element = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=mock_element)
+
+        result = await _select_with_retry(mock_tab, "input#name")
+        assert result is mock_element
+        mock_tab.select.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_retries_on_protocol_exception(self) -> None:
+        """Retries when ProtocolException is raised, succeeds on later attempt."""
+        from nodriver.core.connection import ProtocolException
+
+        from graftpunk.plugins.login_engine import _select_with_retry
+
+        mock_tab = AsyncMock()
+        mock_element = AsyncMock()
+
+        # Fail twice with ProtocolException, succeed on third
+        exc = ProtocolException({"code": -32000, "message": "Could not find node"})
+        mock_tab.select = AsyncMock(side_effect=[exc, exc, mock_element])
+
+        result = await _select_with_retry(mock_tab, "input#name", timeout=10, interval=0.01)
+        assert result is mock_element
+        assert mock_tab.select.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_raises_after_timeout(self) -> None:
+        """Raises last ProtocolException when timeout expires."""
+        from nodriver.core.connection import ProtocolException
+
+        from graftpunk.plugins.login_engine import _select_with_retry
+
+        mock_tab = AsyncMock()
+        exc = ProtocolException({"code": -32000, "message": "Could not find node"})
+        mock_tab.select = AsyncMock(side_effect=exc)
+
+        with pytest.raises(ProtocolException):
+            await _select_with_retry(mock_tab, "input#name", timeout=0.1, interval=0.01)
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_select_returns_none(self) -> None:
+        """Returns None when select returns None and timeout expires (no exception)."""
+        from graftpunk.plugins.login_engine import _select_with_retry
+
+        mock_tab = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=None)
+
+        result = await _select_with_retry(mock_tab, "input#gone", timeout=0.1, interval=0.01)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_non_protocol_exception_propagates(self) -> None:
+        """Non-ProtocolException errors propagate immediately (no retry)."""
+        from graftpunk.plugins.login_engine import _select_with_retry
+
+        mock_tab = AsyncMock()
+        mock_tab.select = AsyncMock(side_effect=RuntimeError("unexpected"))
+
+        with pytest.raises(RuntimeError, match="unexpected"):
+            await _select_with_retry(mock_tab, "input#name")
+
+        # Only called once — no retry for non-protocol errors
+        mock_tab.select.assert_called_once()

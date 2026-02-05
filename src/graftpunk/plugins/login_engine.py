@@ -22,6 +22,67 @@ if TYPE_CHECKING:
 LOG = get_logger(__name__)
 
 _POST_SUBMIT_DELAY = 3  # seconds to wait after form submission for page to settle
+_ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transitions
+_ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
+
+
+async def _select_with_retry(
+    tab: Any,
+    selector: str,
+    *,
+    timeout: float = _ELEMENT_WAIT_TIMEOUT,
+    interval: float = _ELEMENT_RETRY_INTERVAL,
+) -> Any:
+    """Wait for a CSS selector, retrying through page transitions.
+
+    nodriver's tab.select() handles the case where an element doesn't exist
+    yet (returns None, retries internally). But during cross-origin redirects
+    or page transitions, the document node itself becomes invalid, causing a
+    ProtocolException that bypasses select()'s retry loop.
+
+    This wrapper catches ProtocolException and retries the entire select()
+    call, giving the browser time to complete redirects and render the form.
+
+    Args:
+        tab: nodriver tab instance.
+        selector: CSS selector string.
+        timeout: Total seconds to wait before giving up.
+        interval: Seconds between retry attempts.
+
+    Returns:
+        The matched element, or None if not found within timeout.
+
+    Raises:
+        ProtocolException: If timeout expires and last failure was a protocol error.
+    """
+    from nodriver.core.connection import ProtocolException
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_exc: ProtocolException | None = None
+
+    while loop.time() < deadline:
+        remaining = deadline - loop.time()
+        try:
+            per_attempt = min(5.0, remaining)
+            element = await tab.select(selector, timeout=per_attempt)
+            if element is not None:
+                return element
+        except ProtocolException as exc:
+            last_exc = exc
+            LOG.debug(
+                "login_element_retry",
+                selector=selector,
+                error=str(exc),
+                remaining=f"{remaining:.1f}s",
+            )
+        if loop.time() >= deadline:
+            break
+        await asyncio.sleep(interval)
+
+    if last_exc is not None:
+        raise last_exc
+    return None
 
 
 def _warn_no_login_validation(site_name: str) -> None:
