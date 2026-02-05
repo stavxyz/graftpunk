@@ -946,6 +946,39 @@ class TestNodriverCaptureBackend:
         # RequestWillBeSent, ResponseReceived, LoadingFinished, ConsoleAPICalled
         assert tab.add_handler.call_count == 4
 
+    @pytest.mark.asyncio
+    async def test_start_capture_async_passes_buffer_params(self) -> None:
+        """network.enable() is called with large buffer sizes to prevent body eviction."""
+        mock_network = MagicMock()
+        mock_runtime = MagicMock()
+        mock_cdp = MagicMock()
+        mock_cdp.network = mock_network
+        mock_cdp.runtime = mock_runtime
+        mock_nodriver = MagicMock()
+        mock_nodriver.cdp = mock_cdp
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "nodriver": mock_nodriver,
+                "nodriver.cdp": mock_cdp,
+                "nodriver.cdp.network": mock_network,
+                "nodriver.cdp.runtime": mock_runtime,
+            },
+        ):
+            browser = MagicMock()
+            tab = MagicMock()
+            tab.send = AsyncMock()
+            tab.add_handler = MagicMock()
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            await backend.start_capture_async()
+
+        mock_network.enable.assert_called_once_with(
+            max_total_buffer_size=100 * 1024 * 1024,
+            max_resource_buffer_size=10 * 1024 * 1024,
+            enable_durable_messages=True,
+        )
+
     def test_on_response_correlates_with_request_map(self) -> None:
         browser = MagicMock()
         backend = NodriverCaptureBackend(browser)

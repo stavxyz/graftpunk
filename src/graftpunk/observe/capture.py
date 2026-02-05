@@ -560,7 +560,13 @@ class NodriverCaptureBackend:
         import nodriver.cdp.network as network
         import nodriver.cdp.runtime as cdp_runtime
 
-        await tab.send(network.enable())  # type: ignore[attr-defined]
+        await tab.send(
+            network.enable(  # type: ignore[attr-defined]
+                max_total_buffer_size=100 * 1024 * 1024,  # 100 MB total buffer
+                max_resource_buffer_size=10 * 1024 * 1024,  # 10 MB per resource
+                enable_durable_messages=True,  # persist bodies outside renderer
+            )
+        )
         tab.add_handler(network.RequestWillBeSent, self._on_request)  # type: ignore[attr-defined]
         tab.add_handler(network.ResponseReceived, self._on_response)  # type: ignore[attr-defined]
         tab.add_handler(network.LoadingFinished, self._on_loading_finished)  # type: ignore[attr-defined]
