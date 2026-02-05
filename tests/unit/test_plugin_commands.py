@@ -111,7 +111,7 @@ class TestYAMLPluginFactory:
         assert get_cmd.help_text == "Get thing"
         assert len(get_cmd.params) == 1
         assert get_cmd.params[0].name == "id"
-        assert get_cmd.params[0].param_type is int
+        assert get_cmd.params[0].click_kwargs["type"] is int
 
 
 class TestPluginRegistration:
@@ -294,7 +294,7 @@ class TestCommandExecution:
         cmd_spec = CommandSpec(
             name="test",
             handler=lambda ctx: {"result": "success"},
-            help_text="Test command",
+            click_kwargs={"help": "Test command"},
             params=(),
         )
 
@@ -312,10 +312,8 @@ class TestCommandExecution:
         cmd_spec = CommandSpec(
             name="get",
             handler=lambda ctx, item_id: {"id": item_id},
-            help_text="Get item",
-            params=(
-                PluginParamSpec(name="item_id", param_type=int, required=True, is_option=False),
-            ),
+            click_kwargs={"help": "Get item"},
+            params=(PluginParamSpec.argument("item_id", type=int),),
         )
 
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -904,7 +902,7 @@ class TestCommandOutputConsole:
         cmd_spec = CommandSpec(
             name="test",
             handler=lambda ctx: {"ok": True},
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -1605,11 +1603,11 @@ class TestIntrospectParams:
         params = plugin._introspect_params(plugin.my_command)
         assert len(params) == 2
         assert params[0].name == "count"
-        assert params[0].param_type is int
-        assert params[0].required is True
+        assert params[0].click_kwargs["type"] is int
+        assert params[0].click_kwargs["required"] is True
         assert params[1].name == "name"
-        assert params[1].param_type is str
-        assert params[1].required is True
+        assert params[1].click_kwargs["type"] is str
+        assert params[1].click_kwargs["required"] is True
 
     def test_params_with_defaults(self) -> None:
         """Method with defaults sets required=False and correct default."""
@@ -1628,11 +1626,11 @@ class TestIntrospectParams:
         params = plugin._introspect_params(plugin.my_command)
         assert len(params) == 2
         assert params[0].name == "limit"
-        assert params[0].param_type is int
-        assert params[0].required is False
-        assert params[0].default == 10
+        assert params[0].click_kwargs["type"] is int
+        assert params[0].click_kwargs["required"] is False
+        assert params[0].click_kwargs["default"] == 10
         assert params[1].name == "tag"
-        assert params[1].default == "latest"
+        assert params[1].click_kwargs["default"] == "latest"
 
     def test_no_annotations_defaults_to_str(self) -> None:
         """Method without type annotations uses str as default type."""
@@ -1651,7 +1649,7 @@ class TestIntrospectParams:
         params = plugin._introspect_params(plugin.my_command)
         assert len(params) == 1
         assert params[0].name == "query"
-        assert params[0].param_type is str
+        assert params[0].click_kwargs["type"] is str
 
     def test_only_self_and_ctx_returns_empty(self) -> None:
         """Method with only self and ctx returns empty params list."""
@@ -2071,7 +2069,7 @@ class TestCreatePluginCommandCallback:
         cmd_spec = CommandSpec(
             name="test",
             handler=lambda ctx: {"ok": True},
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -2100,7 +2098,7 @@ class TestCreatePluginCommandCallback:
         cmd_spec = CommandSpec(
             name="test",
             handler=lambda ctx: {"ok": True},
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -2132,7 +2130,7 @@ class TestCreatePluginCommandCallback:
         cmd_spec = CommandSpec(
             name="test",
             handler=lambda ctx, **kwargs: {"ok": True},
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -2170,7 +2168,7 @@ class TestCreatePluginCommandCallback:
         cmd_spec = CommandSpec(
             name="test",
             handler=failing_handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -2195,7 +2193,7 @@ class TestCreatePluginCommandCallback:
         return CommandSpec(
             name="test",
             handler=lambda ctx: None,
-            help_text="test",
+            click_kwargs={"help": "test"},
             params=(),
             max_retries=max_retries,
             rate_limit=rate_limit,
@@ -2716,7 +2714,7 @@ class TestAsyncHandlerDetection:
         spec = CommandSpec(
             name="asynccmd",
             handler=async_handler,
-            help_text="test",
+            click_kwargs={"help": "test"},
             params=(),
         )
         ctx = self._make_ctx()
@@ -2739,7 +2737,7 @@ class TestAsyncHandlerDetection:
         spec = CommandSpec(
             name="asynccmd2",
             handler=async_handler,
-            help_text="test",
+            click_kwargs={"help": "test"},
             params=(),
         )
         ctx = self._make_ctx()
@@ -2757,7 +2755,7 @@ class TestAsyncHandlerDetection:
         spec = CommandSpec(
             name="synccmd",
             handler=sync_handler,
-            help_text="test",
+            click_kwargs={"help": "test"},
             params=(),
         )
         ctx = self._make_ctx()
@@ -2784,7 +2782,7 @@ class TestAsyncHandlerDetection:
         spec = CommandSpec(
             name="flakyasync",
             handler=flaky_async_handler,
-            help_text="test",
+            click_kwargs={"help": "test"},
             params=(),
             max_retries=1,
         )
@@ -2852,7 +2850,7 @@ class TestCommandContextPopulation:
         cmd_spec = CommandSpec(
             name="test",
             handler=capturing_handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -2886,7 +2884,7 @@ class TestCommandErrorCatch:
         cmd_spec = CommandSpec(
             name="test",
             handler=failing_handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -2915,7 +2913,7 @@ class TestCommandErrorCatch:
         cmd_spec = CommandSpec(
             name="test",
             handler=failing_handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -2949,7 +2947,7 @@ class TestPerCommandRequiresSession:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
             requires_session=False,
         )
@@ -2989,7 +2987,7 @@ class TestPerCommandRequiresSession:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
             requires_session=None,
         )
@@ -3113,7 +3111,7 @@ class TestTokenAutoInjection:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3147,7 +3145,7 @@ class TestTokenAutoInjection:
         cmd_spec = CommandSpec(
             name="test",
             handler=lambda ctx, **kwargs: {"ok": True},
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3176,7 +3174,7 @@ class TestTokenAutoInjection:
         cmd_spec = CommandSpec(
             name="test",
             handler=lambda ctx, **kwargs: {"ok": True},
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3231,7 +3229,7 @@ class TestTokenRefreshOn403:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3267,7 +3265,7 @@ class TestTokenRefreshOn403:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3304,7 +3302,7 @@ class TestTokenRefreshOn403:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3340,7 +3338,7 @@ class TestTokenRefreshOn403:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3378,7 +3376,7 @@ class TestSessionPersistence:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
             saves_session=True,
         )
@@ -3410,7 +3408,7 @@ class TestSessionPersistence:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3440,7 +3438,7 @@ class TestSessionPersistence:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
         )
         click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
@@ -3470,7 +3468,7 @@ class TestSessionPersistence:
         cmd_spec = CommandSpec(
             name="test",
             handler=handler,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             params=(),
             saves_session=True,
         )

@@ -69,39 +69,39 @@ class TestCommandMetadata:
     """Tests for the CommandMetadata frozen dataclass."""
 
     def test_create_minimal(self) -> None:
-        """CommandMetadata can be created with just name and help_text."""
-        meta = CommandMetadata(name="accounts", help_text="List accounts")
+        """CommandMetadata can be created with just name and click_kwargs."""
+        meta = CommandMetadata(name="accounts", click_kwargs={"help": "List accounts"})
         assert meta.name == "accounts"
         assert meta.help_text == "List accounts"
         assert meta.params == ()
 
     def test_create_with_params(self) -> None:
         """CommandMetadata stores params tuple."""
-        params = (PluginParamSpec(name="id", param_type=int, required=True),)
-        meta = CommandMetadata(name="get", help_text="Get item", params=params)
+        params = (PluginParamSpec.argument("id", type=int),)
+        meta = CommandMetadata(name="get", click_kwargs={"help": "Get item"}, params=params)
         assert len(meta.params) == 1
         assert meta.params[0].name == "id"
-        assert meta.params[0].param_type is int
+        assert meta.params[0].click_kwargs["type"] is int
 
     def test_frozen(self) -> None:
         """CommandMetadata is frozen (immutable)."""
         import dataclasses
 
-        meta = CommandMetadata(name="test", help_text="Test")
+        meta = CommandMetadata(name="test", click_kwargs={"help": "Test"})
         with pytest.raises(dataclasses.FrozenInstanceError):
             meta.name = "changed"  # type: ignore[misc]
 
     def test_default_params_is_empty_tuple(self) -> None:
         """Each CommandMetadata instance defaults to empty tuple."""
-        meta1 = CommandMetadata(name="a", help_text="A")
-        meta2 = CommandMetadata(name="b", help_text="B")
+        meta1 = CommandMetadata(name="a", click_kwargs={"help": "A"})
+        meta2 = CommandMetadata(name="b", click_kwargs={"help": "B"})
         assert meta1.params == ()
         assert meta2.params == ()
 
     def test_empty_name_raises(self) -> None:
         """CommandMetadata rejects empty name."""
         with pytest.raises(ValueError, match="CommandMetadata.name must be non-empty"):
-            CommandMetadata(name="", help_text="Test")
+            CommandMetadata(name="", click_kwargs={"help": "Test"})
 
 
 class TestCommandDecorator:
@@ -123,7 +123,7 @@ class TestCommandDecorator:
 
     def test_decorator_with_params(self) -> None:
         """@command stores explicit params in CommandMetadata."""
-        params = [PluginParamSpec(name="item_id", param_type=int, required=True)]
+        params = [PluginParamSpec.option("item_id", type=int, required=True)]
 
         @command(help="Get item", params=params)
         def get_item(self: Any, ctx: Any, item_id: int) -> dict[str, int]:
@@ -224,9 +224,7 @@ class TestGetCommandsWithMetadata:
 
     def test_explicit_params_used_over_introspection(self) -> None:
         """get_commands() uses explicit params from CommandMetadata."""
-        explicit_params = [
-            PluginParamSpec(name="item_id", param_type=int, required=True, is_option=False)
-        ]
+        explicit_params = [PluginParamSpec.argument("item_id", type=int)]
 
         class MyPlugin(SitePlugin):
             site_name = "test_explicit"
@@ -260,10 +258,10 @@ class TestGetCommandsWithMetadata:
 
         assert len(params) == 2
         assert params[0].name == "query"
-        assert params[0].required is True
+        assert params[0].click_kwargs["required"] is True
         assert params[1].name == "limit"
-        assert params[1].required is False
-        assert params[1].default == 10
+        assert params[1].click_kwargs["required"] is False
+        assert params[1].click_kwargs["default"] == 10
 
 
 class TestCommandMetadataExport:
@@ -469,7 +467,7 @@ class TestCommandSpecResourceLimits:
 
     def test_default_no_limits(self) -> None:
         """CommandSpec defaults to no resource limits."""
-        spec = CommandSpec(name="test", handler=lambda: None, help_text="Test")
+        spec = CommandSpec(name="test", handler=lambda: None, click_kwargs={"help": "Test"})
         assert spec.timeout is None
         assert spec.max_retries == 0
         assert spec.rate_limit is None
@@ -479,7 +477,7 @@ class TestCommandSpecResourceLimits:
         spec = CommandSpec(
             name="test",
             handler=lambda: None,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             timeout=30.0,
             max_retries=3,
             rate_limit=1.0,
@@ -493,7 +491,7 @@ class TestCommandSpecResourceLimits:
         spec = CommandSpec(
             name="test",
             handler=lambda: None,
-            help_text="Test",
+            click_kwargs={"help": "Test"},
             timeout=60.0,
         )
         assert spec.timeout == 60.0
@@ -553,21 +551,15 @@ class TestPluginParamSpecValidation:
         with pytest.raises(ValueError, match="PluginParamSpec.name must be non-empty"):
             PluginParamSpec(name="")
 
-    def test_unsupported_param_type_raises(self) -> None:
-        """PluginParamSpec rejects unsupported param_type."""
-        with pytest.raises(ValueError, match="Unsupported param_type"):
-            PluginParamSpec(name="x", param_type=list)
+    def test_any_type_accepted_in_click_kwargs(self) -> None:
+        """PluginParamSpec accepts any type via click_kwargs (no validation)."""
+        spec = PluginParamSpec(name="x", click_kwargs={"type": list})
+        assert spec.click_kwargs["type"] is list
 
-    def test_valid_param_types(self) -> None:
-        """PluginParamSpec accepts str, int, float, and bool."""
-        for t in (str, int, float, bool):
-            spec = PluginParamSpec(name="x", param_type=t)
-            assert spec.param_type is t
-
-    def test_default_param_type_is_str(self) -> None:
-        """PluginParamSpec defaults param_type to str."""
+    def test_default_click_kwargs_empty(self) -> None:
+        """PluginParamSpec defaults click_kwargs to empty dict."""
         spec = PluginParamSpec(name="x")
-        assert spec.param_type is str
+        assert spec.click_kwargs == {}
 
 
 class TestCommandDecoratorSimplified:
@@ -719,17 +711,17 @@ class TestCommandMetadataRequiresSession:
 
     def test_default_none(self) -> None:
         """CommandMetadata defaults requires_session to None."""
-        meta = CommandMetadata(name="test", help_text="Test")
+        meta = CommandMetadata(name="test", click_kwargs={"help": "Test"})
         assert meta.requires_session is None
 
     def test_set_true(self) -> None:
         """CommandMetadata accepts requires_session=True."""
-        meta = CommandMetadata(name="test", help_text="Test", requires_session=True)
+        meta = CommandMetadata(name="test", click_kwargs={"help": "Test"}, requires_session=True)
         assert meta.requires_session is True
 
     def test_set_false(self) -> None:
         """CommandMetadata accepts requires_session=False."""
-        meta = CommandMetadata(name="test", help_text="Test", requires_session=False)
+        meta = CommandMetadata(name="test", click_kwargs={"help": "Test"}, requires_session=False)
         assert meta.requires_session is False
 
 
@@ -981,7 +973,7 @@ class TestCommandMetadataParentField:
 
     def test_default_none(self) -> None:
         """CommandMetadata defaults parent to None."""
-        meta = CommandMetadata(name="test", help_text="Test")
+        meta = CommandMetadata(name="test", click_kwargs={"help": "Test"})
         assert meta.parent is None
 
     def test_set_parent(self) -> None:
@@ -990,7 +982,7 @@ class TestCommandMetadataParentField:
         class MyGroup:
             pass
 
-        meta = CommandMetadata(name="test", help_text="Test", parent=MyGroup)
+        meta = CommandMetadata(name="test", click_kwargs={"help": "Test"}, parent=MyGroup)
         assert meta.parent is MyGroup
 
 
@@ -1028,11 +1020,11 @@ class TestSavesSessionField:
     """Tests for saves_session field on CommandMetadata and CommandSpec."""
 
     def test_command_metadata_default_false(self) -> None:
-        meta = CommandMetadata(name="test", help_text="help")
+        meta = CommandMetadata(name="test", click_kwargs={"help": "help"})
         assert meta.saves_session is False
 
     def test_command_metadata_explicit_true(self) -> None:
-        meta = CommandMetadata(name="test", help_text="help", saves_session=True)
+        meta = CommandMetadata(name="test", click_kwargs={"help": "help"}, saves_session=True)
         assert meta.saves_session is True
 
     def test_command_spec_default_false(self) -> None:
