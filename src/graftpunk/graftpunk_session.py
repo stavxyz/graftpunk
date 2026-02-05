@@ -24,13 +24,13 @@ _BROWSER_IDENTITY_HEADERS: Final[frozenset[str]] = frozenset(
     }
 )
 
-# Canonical Chrome request-type headers used as a fallback when a captured
-# profile for the detected request type is not available.
 # HTTP methods that trigger CSRF token injection.  Browsers only enforce
 # CSRF protection for state-changing operations; read-only methods (GET,
 # HEAD, OPTIONS) never carry tokens.
 _MUTATION_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+# Canonical Chrome request-type headers used as a fallback when a captured
+# profile for the detected request type is not available.
 _CANONICAL_HTML_ACCEPT: Final[str] = (
     "text/html,application/xhtml+xml,application/xml;"
     "q=0.9,image/avif,image/webp,image/apng,*/*;"
