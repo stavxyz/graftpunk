@@ -184,6 +184,16 @@ class LoginConfig:
     """Declarative browser-automated login configuration.
 
     All three required fields (url, fields, submit) must be non-empty.
+
+    Attributes:
+        url: Login page path (appended to base_url).
+        fields: Maps credential names to CSS selectors for form inputs.
+        submit: CSS selector for the submit button.
+        failure: Text on the page indicating login failure.
+        success: CSS selector for an element indicating login success.
+        wait_for: CSS selector to wait for before interacting with the page.
+            Useful when the login URL triggers a redirect or the form renders
+            asynchronously. Empty string (default) means no explicit wait.
     """
 
     url: str
@@ -191,6 +201,7 @@ class LoginConfig:
     submit: str
     failure: str = ""
     success: str = ""
+    wait_for: str = ""
 
     def __post_init__(self) -> None:
         if not self.url:
