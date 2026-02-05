@@ -305,18 +305,16 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             if wait_for_selector:
                 from nodriver.core.connection import ProtocolException
 
+                _wait_err = (
+                    f"Timed out waiting for '{wait_for_selector}' to appear. "
+                    "The page may not have loaded or redirected as expected."
+                )
                 try:
                     wait_el = await _select_with_retry(tab, wait_for_selector)
                 except ProtocolException as exc:
-                    raise PluginError(
-                        f"Timed out waiting for '{wait_for_selector}' to appear. "
-                        "The page may not have loaded or redirected as expected."
-                    ) from exc
+                    raise PluginError(_wait_err) from exc
                 if wait_el is None:
-                    raise PluginError(
-                        f"Timed out waiting for '{wait_for_selector}' to appear. "
-                        "The page may not have loaded or redirected as expected."
-                    )
+                    raise PluginError(_wait_err)
 
             # Fill fields (click before send_keys to prevent keystroke loss)
             for field_name, selector in fields.items():
