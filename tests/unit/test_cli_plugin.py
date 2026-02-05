@@ -944,7 +944,7 @@ class TestCommandDecoratorOnClass:
         assert Child._command_group_meta.parent is Parent
 
     def test_function_still_works(self) -> None:
-        """@command on a function still stores _command_meta (backward compat)."""
+        """@command on a function still stores _command_meta (not _command_group_meta)."""
 
         @command(help="Test function")
         def my_func(self: Any, ctx: Any) -> None:
@@ -1264,7 +1264,7 @@ class TestCommandMetadataClickKwargs:
     def test_help_in_click_kwargs(self) -> None:
         meta = CommandMetadata(name="test", click_kwargs={"help": "Test command"})
         assert meta.click_kwargs["help"] == "Test command"
-        assert meta.help_text == "Test command"  # backward-compat property
+        assert meta.help_text == "Test command"  # convenience property
 
     def test_minimal_construction(self) -> None:
         meta = CommandMetadata(name="test")
@@ -1294,7 +1294,7 @@ class TestCommandSpecClickKwargs:
             name="test", handler=lambda ctx: None, click_kwargs={"help": "Do things"}
         )
         assert spec.click_kwargs["help"] == "Do things"
-        assert spec.help_text == "Do things"  # backward-compat property
+        assert spec.help_text == "Do things"  # convenience property
 
     def test_minimal_construction(self) -> None:
         spec = CommandSpec(name="test", handler=lambda ctx: None)
