@@ -14,8 +14,8 @@ from graftpunk.plugins.cli_plugin import (
     SitePlugin,
     build_plugin_config,
 )
-from graftpunk.plugins.yaml_loader import YAMLCommandDef
-from graftpunk.plugins.yaml_plugin import create_yaml_site_plugin
+from graftpunk.plugins.yaml_loader import YAMLCommandDef, YAMLParamDef
+from graftpunk.plugins.yaml_plugin import _convert_params, create_yaml_site_plugin
 
 
 def _make_config(
@@ -520,3 +520,78 @@ class TestResourceLimitsPassthrough:
         assert commands["slow"].timeout == 60.0
         assert commands["slow"].max_retries == 5
         assert commands["slow"].rate_limit == 0.5
+
+
+class TestConvertParamsClickKwargs:
+    """Tests for _convert_params producing click_kwargs."""
+
+    def test_string_param_converts(self) -> None:
+        cmd_def = YAMLCommandDef(
+            name="test",
+            help_text="",
+            method="GET",
+            url="/test",
+            params=(YAMLParamDef(name="query", type="str", required=True),),
+        )
+        params = _convert_params(cmd_def)
+        assert len(params) == 1
+        assert params[0].name == "query"
+        assert params[0].is_option is True
+        assert params[0].click_kwargs["type"] is str
+        assert params[0].click_kwargs["required"] is True
+
+    def test_int_param_converts(self) -> None:
+        cmd_def = YAMLCommandDef(
+            name="test",
+            help_text="",
+            method="GET",
+            url="/test",
+            params=(YAMLParamDef(name="limit", type="int", default=10),),
+        )
+        params = _convert_params(cmd_def)
+        assert params[0].click_kwargs["type"] is int
+        assert params[0].click_kwargs["default"] == 10
+
+    def test_bool_param_flag_detection(self) -> None:
+        cmd_def = YAMLCommandDef(
+            name="test",
+            help_text="",
+            method="GET",
+            url="/test",
+            params=(YAMLParamDef(name="verbose", type="bool", default=False),),
+        )
+        params = _convert_params(cmd_def)
+        assert params[0].click_kwargs.get("is_flag") is True
+
+    def test_help_in_click_kwargs(self) -> None:
+        cmd_def = YAMLCommandDef(
+            name="test",
+            help_text="",
+            method="GET",
+            url="/test",
+            params=(YAMLParamDef(name="q", help="Search query"),),
+        )
+        params = _convert_params(cmd_def)
+        assert params[0].click_kwargs["help"] == "Search query"
+
+    def test_positional_argument(self) -> None:
+        cmd_def = YAMLCommandDef(
+            name="test",
+            help_text="",
+            method="GET",
+            url="/test/{id}",
+            params=(YAMLParamDef(name="id", is_option=False, required=True),),
+        )
+        params = _convert_params(cmd_def)
+        assert params[0].is_option is False
+
+    def test_help_not_in_click_kwargs_when_empty(self) -> None:
+        cmd_def = YAMLCommandDef(
+            name="test",
+            help_text="",
+            method="GET",
+            url="/test",
+            params=(YAMLParamDef(name="q"),),
+        )
+        params = _convert_params(cmd_def)
+        assert "help" not in params[0].click_kwargs

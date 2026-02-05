@@ -58,14 +58,20 @@ def _convert_params(cmd_def: YAMLCommandDef) -> list[PluginParamSpec]:
     params = []
     for param in cmd_def.params:
         param_type = type_map.get(str(param.type).lower(), str)
+        click_kwargs: dict[str, Any] = {
+            "type": param_type,
+            "required": param.required,
+            "default": param.default,
+        }
+        if param.help:
+            click_kwargs["help"] = param.help
+        if param_type is bool and param.default is False:
+            click_kwargs["is_flag"] = True
         params.append(
             PluginParamSpec(
                 name=param.name,
-                param_type=param_type,
-                required=param.required,
-                default=param.default,
-                help_text=param.help,
                 is_option=param.is_option,
+                click_kwargs=click_kwargs,
             )
         )
     return params
@@ -188,11 +194,11 @@ def create_yaml_site_plugin(
             CommandSpec(
                 name=cmd_def.name,
                 handler=handler,
-                help_text=cmd_def.help_text,
                 params=tuple(params),
                 timeout=cmd_def.timeout,
                 max_retries=cmd_def.max_retries,
                 rate_limit=cmd_def.rate_limit,
+                click_kwargs={"help": cmd_def.help_text} if cmd_def.help_text else {},
             )
         )
 
