@@ -58,6 +58,21 @@ class TestLoginConfig:
         with pytest.raises(ValueError, match="submit must be non-empty"):
             LoginConfig(url="/login", fields={"u": "#u"}, submit="")
 
+    def test_wait_for_default_empty(self) -> None:
+        """LoginConfig.wait_for defaults to empty string."""
+        cfg = LoginConfig(url="/login", fields={"u": "#u"}, submit="#b")
+        assert cfg.wait_for == ""
+
+    def test_wait_for_stores_value(self) -> None:
+        """LoginConfig stores wait_for selector."""
+        cfg = LoginConfig(
+            url="/login",
+            fields={"u": "#u"},
+            submit="#b",
+            wait_for="input#signInName",
+        )
+        assert cfg.wait_for == "input#signInName"
+
     def test_with_optional_fields(self) -> None:
         """LoginConfig stores optional failure and success fields."""
         cfg = LoginConfig(url="/l", fields={"u": "#u"}, submit="#b", failure="Bad", success=".ok")
