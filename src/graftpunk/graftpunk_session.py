@@ -433,6 +433,8 @@ class GraftpunkSession(requests.Session):
         This matches browser behavior: CSRF protection is for state-changing
         operations, not read-only GETs.
 
+        Uses ``setdefault`` so that caller-supplied headers are never overwritten.
+
         Args:
             prepared: The prepared request to conditionally add tokens to.
         """
