@@ -45,7 +45,11 @@ except ImportError as _jmespath_err:
 
 
 def _convert_params(cmd_def: YAMLCommandDef) -> list[PluginParamSpec]:
-    """Convert YAML param definitions to PluginParamSpec objects."""
+    """Convert YAML param definitions to PluginParamSpec objects.
+
+    Uses :meth:`PluginParamSpec.option` and :meth:`PluginParamSpec.argument`
+    so that bool-flag detection and other defaults are defined in one place.
+    """
     type_map: dict[str, type] = {
         "str": str,
         "string": str,
@@ -58,22 +62,25 @@ def _convert_params(cmd_def: YAMLCommandDef) -> list[PluginParamSpec]:
     params = []
     for param in cmd_def.params:
         param_type = type_map.get(str(param.type).lower(), str)
-        click_kwargs: dict[str, Any] = {
-            "type": param_type,
-            "required": param.required,
-            "default": param.default,
-        }
-        if param.help:
-            click_kwargs["help"] = param.help
-        if param_type is bool and param.default is False:
-            click_kwargs["is_flag"] = True
-        params.append(
-            PluginParamSpec(
-                name=param.name,
-                is_option=param.is_option,
-                click_kwargs=click_kwargs,
+        if param.is_option:
+            params.append(
+                PluginParamSpec.option(
+                    param.name,
+                    type=param_type,
+                    required=param.required,
+                    default=param.default,
+                    help=param.help,
+                )
             )
-        )
+        else:
+            params.append(
+                PluginParamSpec.argument(
+                    param.name,
+                    type=param_type,
+                    required=param.required,
+                    default=param.default,
+                )
+            )
     return params
 
 
