@@ -183,7 +183,9 @@ class CommandSpec:
 class LoginConfig:
     """Declarative browser-automated login configuration.
 
-    All three required fields (url, fields, submit) must be non-empty.
+    Required fields (url, fields, submit) must be non-empty and non-whitespace.
+    Optional fields (failure, success, wait_for) default to empty string,
+    meaning "not configured".
 
     Attributes:
         url: Login page path (appended to base_url).
@@ -204,16 +206,16 @@ class LoginConfig:
     wait_for: str = ""
 
     def __post_init__(self) -> None:
-        if not self.url or not self.url.strip():
+        if not self.url.strip():
             raise ValueError("LoginConfig.url must be non-empty")
         if not self.fields:
             raise ValueError("LoginConfig.fields must be non-empty")
-        if not self.submit or not self.submit.strip():
+        if not self.submit.strip():
             raise ValueError("LoginConfig.submit must be non-empty")
         if self.wait_for and not self.wait_for.strip():
             raise ValueError("LoginConfig.wait_for must not be whitespace-only")
         for name, selector in self.fields.items():
-            if not selector or not selector.strip():
+            if not selector.strip():
                 raise ValueError(f"LoginConfig.fields['{name}'] selector must be non-empty")
         # Defensive copy: prevent external mutation of fields dict
         object.__setattr__(self, "fields", dict(self.fields))
