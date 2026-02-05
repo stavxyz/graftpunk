@@ -42,7 +42,7 @@ from graftpunk.plugins.python_loader import discover_python_plugins
 from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 
 LOG = get_logger(__name__)
-_format_console = Console(stderr=True)
+_format_console = Console()
 
 _registered_plugins_for_teardown: list[CLIPluginProtocol] = []
 
