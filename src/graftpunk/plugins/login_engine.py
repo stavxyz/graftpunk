@@ -27,12 +27,12 @@ _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
 
 
 async def _select_with_retry(
-    tab: Any,
+    tab: Any,  # nodriver.Tab — can't import due to upstream SyntaxError in CDP codegen
     selector: str,
     *,
     timeout: float = _ELEMENT_WAIT_TIMEOUT,
     interval: float = _ELEMENT_RETRY_INTERVAL,
-) -> Any:
+) -> Any:  # nodriver.Element | None
     """Wait for a CSS selector, retrying through page transitions.
 
     nodriver's tab.select() handles the case where an element doesn't exist
@@ -69,8 +69,8 @@ async def _select_with_retry(
     while loop.time() < deadline:
         remaining = deadline - loop.time()
         try:
-            # Cap each attempt to avoid blocking the full remaining time
-            # inside nodriver's own internal retry loop.
+            # Cap each attempt at 5s so a single tab.select() call doesn't
+            # consume the full remaining budget inside nodriver's own retry loop.
             per_attempt = min(5.0, remaining)
             element = await tab.select(selector, timeout=per_attempt)
             if element is not None:
