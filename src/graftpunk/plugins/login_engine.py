@@ -304,8 +304,6 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             )
         base_url = plugin.base_url.rstrip("/")
         login_url = plugin.login_config.url
-        fields = plugin.login_config.fields
-        submit_selector = plugin.login_config.submit
         failure_text = plugin.login_config.failure
 
         async with BrowserSession(backend="nodriver", headless=False) as session:
@@ -319,8 +317,8 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             )
             await _header_capture.start_capture_async()
 
-            # Wait for a specific element before interacting (e.g., a form
-            # that appears after a redirect completes)
+            # Top-level wait_for: wait for a specific element before any steps
+            # (e.g., a form that appears after a redirect completes)
             wait_for_selector = plugin.login_config.wait_for
             if wait_for_selector:
                 from nodriver.core.connection import ProtocolException
@@ -336,42 +334,68 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                 if wait_el is None:
                     raise PluginError(_wait_err)
 
-            # Fill fields (click before send_keys to prevent keystroke loss)
-            for field_name, selector in fields.items():
-                value = credentials.get(field_name, "")
-                try:
-                    element = await _select_with_retry(tab, selector)
-                    if element is None:
-                        raise PluginError(
-                            f"Login field '{field_name}' not found using selector '{selector}'. "
-                            "Check your plugin's login.fields configuration."
-                        )
-                    await element.click()
-                    await element.send_keys(value)
-                except PluginError:
-                    raise
-                except Exception as exc:
-                    raise PluginError(
-                        f"Failed to fill login field '{field_name}' (selector: '{selector}'): {exc}"
-                    ) from exc
+            # Execute each step in sequence
+            for step_idx, step in enumerate(plugin.login_config.steps, start=1):
+                # Step-level wait_for: wait for element before this step
+                if step.wait_for:
+                    from nodriver.core.connection import ProtocolException
 
-            # Click submit
-            try:
-                submit = await _select_with_retry(tab, submit_selector)
-                if submit is None:
-                    raise PluginError(
-                        f"Submit button not found using selector '{submit_selector}'. "
-                        "Check your plugin's login.submit configuration."
+                    _step_wait_err = (
+                        f"Step {step_idx}: Timed out waiting for '{step.wait_for}' to appear. "
+                        "The page may not have loaded or redirected as expected."
                     )
-                await submit.click()
-            except PluginError:
-                raise
-            except Exception as exc:
-                raise PluginError(
-                    f"Failed to click submit button (selector: '{submit_selector}'): {exc}"
-                ) from exc
+                    try:
+                        step_wait_el = await _select_with_retry(tab, step.wait_for)
+                    except ProtocolException as exc:
+                        raise PluginError(_step_wait_err) from exc
+                    if step_wait_el is None:
+                        raise PluginError(_step_wait_err)
 
-            # Fixed delay to allow page to settle after form submission
+                # Fill fields (click before send_keys to prevent keystroke loss)
+                for field_name, selector in step.fields.items():
+                    value = credentials.get(field_name, "")
+                    try:
+                        element = await _select_with_retry(tab, selector)
+                        if element is None:
+                            raise PluginError(
+                                f"Step {step_idx}: Login field '{field_name}' not found "
+                                f"using selector '{selector}'. "
+                                "Check your plugin's login step configuration."
+                            )
+                        await element.click()
+                        await element.send_keys(value)
+                    except PluginError:
+                        raise
+                    except Exception as exc:
+                        raise PluginError(
+                            f"Step {step_idx}: Failed to fill login field '{field_name}' "
+                            f"(selector: '{selector}'): {exc}"
+                        ) from exc
+
+                # Click submit if specified for this step
+                if step.submit:
+                    try:
+                        submit = await _select_with_retry(tab, step.submit)
+                        if submit is None:
+                            raise PluginError(
+                                f"Step {step_idx}: Submit button not found "
+                                f"using selector '{step.submit}'. "
+                                "Check your plugin's login step configuration."
+                            )
+                        await submit.click()
+                    except PluginError:
+                        raise
+                    except Exception as exc:
+                        raise PluginError(
+                            f"Step {step_idx}: Failed to click submit button "
+                            f"(selector: '{step.submit}'): {exc}"
+                        ) from exc
+
+                # Step-level delay after submit
+                if step.delay > 0:
+                    await asyncio.sleep(step.delay)
+
+            # Fixed delay to allow page to settle after all steps complete
             await asyncio.sleep(_POST_SUBMIT_DELAY)
 
             # Check success/failure

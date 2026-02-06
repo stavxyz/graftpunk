@@ -1248,3 +1248,371 @@ class TestSeleniumWaitForRaises:
             pytest.raises(PluginError, match="wait_for.*requires.*nodriver"),
         ):
             login_method({"username": "user"})
+
+
+class DeclarativeMultiStep(SitePlugin):
+    """Test plugin with multi-step login (nodriver)."""
+
+    site_name = "multistep"
+    session_name = "multistep"
+    help_text = "Multi-Step Login"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "input#email"},
+                submit="button#next",
+            ),
+            LoginStep(
+                wait_for="#password-section",
+                fields={"password": "input#password"},
+                submit="button#submit",
+            ),
+        ],
+        url="/login",
+        success=".dashboard",
+    )
+
+
+class DeclarativeStepWithDelay(SitePlugin):
+    """Test plugin with step delay (nodriver)."""
+
+    site_name = "stepdelay"
+    session_name = "stepdelay"
+    help_text = "Step With Delay"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "input#user", "password": "input#pass"},
+                submit="button#login",
+                delay=0.5,
+            ),
+        ],
+        url="/login",
+        success=".dashboard",
+    )
+
+
+class TestNodriverMultiStepLogin:
+    """Tests for multi-step login with nodriver backend."""
+
+    @pytest.mark.asyncio
+    async def test_multi_step_login_executes_both_steps(self) -> None:
+        """Multi-step login fills fields and clicks submit for each step."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeMultiStep()
+        login_method = generate_login_method(plugin)
+
+        mock_tab = AsyncMock()
+        mock_element = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+        instance.transfer_nodriver_cookies_to_session = AsyncMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+        ):
+            result = await login_method({"username": "user", "password": "pass123"})  # noqa: S106
+
+        assert result is True
+
+        # Verify element interactions happened for both steps:
+        # Step 1: select email field, click, send_keys, select next button, click
+        # Step 2: select wait_for element, select password field, click, send_keys,
+        #         select submit button, click
+        # Plus success selector check
+        # _select_with_retry is called for: email, next, wait_for, password, submit
+        # tab.select is called for success selector
+        assert mock_element.click.await_count >= 4  # 2 fields + 2 submits
+        assert mock_element.send_keys.await_count == 2  # username and password
+
+    @pytest.mark.asyncio
+    async def test_multi_step_login_with_step_wait_for(self) -> None:
+        """Step-level wait_for waits before filling that step's fields."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeMultiStep()
+        login_method = generate_login_method(plugin)
+
+        select_calls: list[str] = []
+
+        async def track_select(tab: object, selector: str, **kwargs: object) -> AsyncMock:
+            select_calls.append(selector)
+            return AsyncMock()
+
+        mock_tab = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=AsyncMock())
+        mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+        instance.transfer_nodriver_cookies_to_session = AsyncMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch("graftpunk.plugins.login_engine._select_with_retry", side_effect=track_select),
+        ):
+            result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+        assert result is True
+        # Verify step 2's wait_for was called before password field
+        password_section_idx = select_calls.index("#password-section")
+        password_field_idx = select_calls.index("input#password")
+        assert password_section_idx < password_field_idx
+
+    @pytest.mark.asyncio
+    async def test_step_wait_for_timeout_raises_plugin_error(self) -> None:
+        """Step wait_for timeout raises PluginError with step index."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeMultiStep()
+        login_method = generate_login_method(plugin)
+
+        async def select_side_effect(
+            tab: object, selector: str, **kwargs: object
+        ) -> AsyncMock | None:
+            # Return element for step 1 (email, next button), None for step 2 wait_for
+            if selector == "#password-section":
+                return None
+            return AsyncMock()
+
+        mock_tab = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=AsyncMock())
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch(
+                "graftpunk.plugins.login_engine._select_with_retry",
+                side_effect=select_side_effect,
+            ),
+            pytest.raises(PluginError, match="Step 2.*Timed out waiting for '#password-section'"),
+        ):
+            await login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+    @pytest.mark.asyncio
+    async def test_step_field_not_found_raises_with_step_index(self) -> None:
+        """Field not found raises PluginError with step index."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeMultiStep()
+        login_method = generate_login_method(plugin)
+
+        async def select_side_effect(
+            tab: object, selector: str, **kwargs: object
+        ) -> AsyncMock | None:
+            # Return None for email field to trigger field not found error
+            if selector == "input#email":
+                return None
+            return AsyncMock()
+
+        mock_tab = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=AsyncMock())
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch(
+                "graftpunk.plugins.login_engine._select_with_retry",
+                side_effect=select_side_effect,
+            ),
+            pytest.raises(PluginError, match="Step 1.*Login field 'username' not found"),
+        ):
+            await login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+    @pytest.mark.asyncio
+    async def test_step_submit_not_found_raises_with_step_index(self) -> None:
+        """Submit button not found raises PluginError with step index."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeMultiStep()
+        login_method = generate_login_method(plugin)
+
+        async def select_side_effect(
+            tab: object, selector: str, **kwargs: object
+        ) -> AsyncMock | None:
+            # Return None for next button to trigger submit not found error
+            if selector == "button#next":
+                return None
+            return AsyncMock()
+
+        mock_tab = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=AsyncMock())
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch(
+                "graftpunk.plugins.login_engine._select_with_retry",
+                side_effect=select_side_effect,
+            ),
+            pytest.raises(PluginError, match="Step 1.*Submit button not found"),
+        ):
+            await login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+    @pytest.mark.asyncio
+    async def test_step_delay_pauses_after_submit(self) -> None:
+        """Step delay pauses after clicking submit."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeStepWithDelay()
+        login_method = generate_login_method(plugin)
+
+        mock_tab = AsyncMock()
+        mock_element = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+        instance.transfer_nodriver_cookies_to_session = AsyncMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch(
+                "graftpunk.plugins.login_engine.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as mock_sleep,
+        ):
+            result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+        assert result is True
+        # Should have two sleep calls: step delay (0.5) and post-submit delay (3)
+        sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
+        assert 0.5 in sleep_calls
+        assert 3 in sleep_calls  # _POST_SUBMIT_DELAY
+
+    @pytest.mark.asyncio
+    async def test_step_without_submit_skips_click(self) -> None:
+        """Step without submit selector skips the click action."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class NoSubmitStep(SitePlugin):
+            site_name = "nosubmit"
+            session_name = "nosubmit"
+            help_text = "No Submit Step"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "input#user"},
+                        # No submit - field entry triggers auto-advance
+                    ),
+                    LoginStep(
+                        fields={"password": "input#pass"},
+                        submit="button#login",
+                    ),
+                ],
+                url="/login",
+            )
+
+        plugin = NoSubmitStep()
+        login_method = generate_login_method(plugin)
+
+        click_count = 0
+
+        async def mock_click() -> None:
+            nonlocal click_count
+            click_count += 1
+
+        mock_element = AsyncMock()
+        mock_element.click = mock_click
+
+        mock_tab = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+        instance.transfer_nodriver_cookies_to_session = AsyncMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+        ):
+            result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+        assert result is True
+        # Clicks: 2 field clicks + 1 submit click = 3
+        # (Step 1 has no submit, Step 2 has submit)
+        assert click_count == 3
