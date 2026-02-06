@@ -176,3 +176,24 @@ class TestResolveLoginFields:
         plugin = PluginWithMultiStepLogin()
         result = resolve_login_fields(plugin)
         assert result == {"username": "#user", "password": "#pass", "otp": "#otp-input"}
+
+    def test_overlapping_field_names_later_step_wins(self) -> None:
+        """When steps have overlapping field names, later steps take precedence."""
+
+        class OverlappingFields(SitePlugin):
+            site_name = "overlap"
+            session_name = "overlap"
+            help_text = "Overlap test"
+            base_url = "https://example.com"
+            login_config = LoginConfig(
+                steps=[
+                    LoginStep(fields={"password": "#pass-step1"}, submit="#next"),
+                    LoginStep(fields={"password": "#pass-step2"}, submit="#login"),
+                ],
+                url="/login",
+            )
+
+        plugin = OverlappingFields()
+        result = resolve_login_fields(plugin)
+        # Later step wins
+        assert result == {"password": "#pass-step2"}
