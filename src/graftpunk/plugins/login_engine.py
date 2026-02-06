@@ -349,9 +349,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             # Top-level wait_for: wait for a specific element before any steps
             # (e.g., a form that appears after a redirect completes)
             if plugin.login_config.wait_for:
-                await _wait_for_element(
-                    tab, plugin.login_config.wait_for, "Login page"
-                )
+                await _wait_for_element(tab, plugin.login_config.wait_for, "Login page")
 
             # Execute each step in sequence: wait_for -> fill fields -> submit -> delay
             for step_idx, step in enumerate(plugin.login_config.steps, start=1):

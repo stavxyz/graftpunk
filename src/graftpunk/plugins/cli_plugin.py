@@ -363,8 +363,7 @@ class LoginConfig:
         for i, step in enumerate(steps_list):
             if not isinstance(step, LoginStep):
                 raise TypeError(
-                    f"LoginConfig.steps[{i}] must be LoginStep, "
-                    f"got {type(step).__name__}"
+                    f"LoginConfig.steps[{i}] must be LoginStep, got {type(step).__name__}"
                 )
         object.__setattr__(self, "steps", tuple(steps_list))
         # Validate steps is non-empty

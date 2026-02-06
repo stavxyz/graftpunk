@@ -1417,9 +1417,7 @@ class TestNodriverMultiStepLogin:
                 "graftpunk.plugins.login_engine._select_with_retry",
                 return_value=None,  # Element never found
             ),
-            pytest.raises(
-                PluginError, match="Login page.*Timed out waiting for '#login-form'"
-            ),
+            pytest.raises(PluginError, match="Login page.*Timed out waiting for '#login-form'"),
         ):
             await login_method({"username": "user"})
 
@@ -1752,9 +1750,7 @@ class TestNodriverMultiStepLogin:
         # Track selectors called to verify order
         selectors_called: list[str] = []
 
-        async def select_side_effect(
-            tab: object, selector: str, **kwargs: object
-        ) -> AsyncMock:
+        async def select_side_effect(tab: object, selector: str, **kwargs: object) -> AsyncMock:
             selectors_called.append(selector)
             return AsyncMock()
 
