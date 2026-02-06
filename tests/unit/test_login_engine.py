@@ -1336,8 +1336,61 @@ class DeclarativeStepWithDelay(SitePlugin):
     )
 
 
+class DeclarativeTopLevelWaitFor(SitePlugin):
+    """Test plugin with top-level wait_for (nodriver)."""
+
+    site_name = "topwait"
+    session_name = "topwait"
+    help_text = "Top-Level Wait For"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "input#user"},
+                submit="button#login",
+            ),
+        ],
+        url="/login",
+        wait_for="#login-form",
+        success=".dashboard",
+    )
+
+
 class TestNodriverMultiStepLogin:
     """Tests for multi-step login with nodriver backend."""
+
+    @pytest.mark.asyncio
+    async def test_top_level_wait_for_timeout_raises_plugin_error(self) -> None:
+        """Top-level wait_for timeout raises PluginError before steps execute."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeTopLevelWaitFor()
+        login_method = generate_login_method(plugin)
+
+        mock_tab = AsyncMock()
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch(
+                "graftpunk.plugins.login_engine._select_with_retry",
+                return_value=None,  # Element never found
+            ),
+            pytest.raises(
+                PluginError, match="Login page.*Timed out waiting for '#login-form'"
+            ),
+        ):
+            await login_method({"username": "user"})
 
     @pytest.mark.asyncio
     async def test_multi_step_login_executes_both_steps(self) -> None:

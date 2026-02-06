@@ -113,6 +113,35 @@ async def _select_with_retry(
     return None
 
 
+async def _wait_for_element(
+    tab: Any,
+    selector: str,
+    error_context: str,
+) -> None:
+    """Wait for an element to appear or raise PluginError with context.
+
+    Args:
+        tab: nodriver tab instance.
+        selector: CSS selector to wait for.
+        error_context: Prefix for error message (e.g., "Step 1" or "Login page").
+
+    Raises:
+        PluginError: If element not found or protocol error during wait.
+    """
+    from nodriver.core.connection import ProtocolException
+
+    error_msg = (
+        f"{error_context}: Timed out waiting for '{selector}' to appear. "
+        "The page may not have loaded or redirected as expected."
+    )
+    try:
+        element = await _select_with_retry(tab, selector)
+    except ProtocolException as exc:
+        raise PluginError(error_msg) from exc
+    if element is None:
+        raise PluginError(error_msg)
+
+
 def _warn_no_login_validation(site_name: str) -> None:
     """Log a warning when no login validation is configured."""
     LOG.warning(
@@ -319,37 +348,16 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
 
             # Top-level wait_for: wait for a specific element before any steps
             # (e.g., a form that appears after a redirect completes)
-            wait_for_selector = plugin.login_config.wait_for
-            if wait_for_selector:
-                from nodriver.core.connection import ProtocolException
-
-                _wait_err = (
-                    f"Timed out waiting for '{wait_for_selector}' to appear. "
-                    "The page may not have loaded or redirected as expected."
+            if plugin.login_config.wait_for:
+                await _wait_for_element(
+                    tab, plugin.login_config.wait_for, "Login page"
                 )
-                try:
-                    wait_el = await _select_with_retry(tab, wait_for_selector)
-                except ProtocolException as exc:
-                    raise PluginError(_wait_err) from exc
-                if wait_el is None:
-                    raise PluginError(_wait_err)
 
-            # Execute each step in sequence
+            # Execute each step in sequence: wait_for -> fill fields -> submit -> delay
             for step_idx, step in enumerate(plugin.login_config.steps, start=1):
                 # Step-level wait_for: wait for element before this step
                 if step.wait_for:
-                    from nodriver.core.connection import ProtocolException
-
-                    _step_wait_err = (
-                        f"Step {step_idx}: Timed out waiting for '{step.wait_for}' to appear. "
-                        "The page may not have loaded or redirected as expected."
-                    )
-                    try:
-                        step_wait_el = await _select_with_retry(tab, step.wait_for)
-                    except ProtocolException as exc:
-                        raise PluginError(_step_wait_err) from exc
-                    if step_wait_el is None:
-                        raise PluginError(_step_wait_err)
+                    await _wait_for_element(tab, step.wait_for, f"Step {step_idx}")
 
                 # Fill fields (click before send_keys to prevent keystroke loss)
                 for field_name, selector in step.fields.items():
