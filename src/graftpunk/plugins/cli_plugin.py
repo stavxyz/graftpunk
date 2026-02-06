@@ -23,10 +23,17 @@ Example YAML plugin (in ~/.config/graftpunk/plugins/mybank.yaml):
         url: "https://mybank.com/api/accounts"
 """
 
-# TODO: This file exceeds the 800-line project limit (~840 lines).
-# Split into separate modules: move LoginConfig and related validation
-# into a dedicated login_config.py module, or extract the command
-# discovery/introspection logic into a discovery.py module.
+# TODO(refactor): This file is ~977 lines, exceeding the 800-line project limit.
+# Recommended split:
+#   1. Extract LoginStep and LoginConfig into src/graftpunk/plugins/login_types.py
+#      These are standalone frozen dataclasses with no dependencies on other
+#      cli_plugin types. Update imports in login_engine.py, yaml_loader.py,
+#      login_commands.py, and __init__.py accordingly.
+#   2. Alternatively, extract CommandMeta, command decorator, and introspection
+#      utilities into src/graftpunk/plugins/command_meta.py
+# The LoginStep/LoginConfig extraction is preferred as it creates a cleaner
+# separation between login configuration and plugin infrastructure.
+# See: .claude/standards/ENGINEERING_STANDARDS.md (800-line limit)
 from __future__ import annotations
 
 import dataclasses
