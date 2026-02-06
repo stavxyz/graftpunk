@@ -350,7 +350,6 @@ class MyPlugin(SitePlugin):
 
     login_config = LoginConfig(
         url="/login",
-        wait_for="#login-form",
         failure="Invalid credentials",
         success=".dashboard",
         steps=[
@@ -367,7 +366,6 @@ Or in YAML:
 ```yaml
 login:
   url: /login
-  wait_for: "#login-form"
   failure: "Invalid credentials"
   steps:
     - fields:
@@ -422,6 +420,21 @@ login:
         password: "input#password"
       submit: "button#submit"
       delay: 0.5
+```
+
+#### Click-Only Steps
+
+A step with only `submit` (no `fields`) is useful for dismissing modals, accepting terms, or clicking through interstitials:
+
+```yaml
+login:
+  url: /login
+  steps:
+    - submit: "button#accept-cookies"   # Dismiss cookie banner
+    - fields:
+        username: "input#user"
+        password: "input#pass"
+      submit: "button#login"
 ```
 
 #### How It Works
