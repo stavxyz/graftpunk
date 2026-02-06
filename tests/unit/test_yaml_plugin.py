@@ -10,6 +10,7 @@ import requests
 from graftpunk.plugins.cli_plugin import (
     CommandContext,
     LoginConfig,
+    LoginStep,
     PluginConfig,
     SitePlugin,
     build_plugin_config,
@@ -102,9 +103,13 @@ class TestLoginProperties:
         """When login is set, LoginConfig appears as attribute on the plugin."""
         config = _make_config(
             login_config=LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user", "password": "#pass"},
+                        submit="#submit",
+                    )
+                ],
                 url="/login",
-                fields={"username": "#user", "password": "#pass"},
-                submit="#submit",
                 failure="Bad login",
                 success="Welcome",
             ),
@@ -113,8 +118,9 @@ class TestLoginProperties:
 
         assert plugin.login_config is not None
         assert plugin.login_config.url == "/login"
-        assert plugin.login_config.fields == {"username": "#user", "password": "#pass"}
-        assert plugin.login_config.submit == "#submit"
+        assert len(plugin.login_config.steps) == 1
+        assert plugin.login_config.steps[0].fields == {"username": "#user", "password": "#pass"}
+        assert plugin.login_config.steps[0].submit == "#submit"
         assert plugin.login_config.failure == "Bad login"
         assert plugin.login_config.success == "Welcome"
 

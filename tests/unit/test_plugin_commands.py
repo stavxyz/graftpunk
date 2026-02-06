@@ -13,6 +13,7 @@ from graftpunk.plugins.cli_plugin import (
     CommandContext,
     CommandSpec,
     LoginConfig,
+    LoginStep,
     PluginParamSpec,
     SitePlugin,
     command,
@@ -605,9 +606,13 @@ class TestDeclarativeLogin:
             base_url = "https://example.com"
             backend = "nodriver"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user", "password": "#pass"},
+                        submit="#submit",
+                    )
+                ],
                 url="/login",
-                fields={"username": "#user", "password": "#pass"},
-                submit="#submit",
                 failure="Bad login.",
             )
 
@@ -931,9 +936,13 @@ class TestDeclarativeLoginRegistration:
             base_url = "https://example.com"
             backend = "selenium"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user", "password": "#pass"},
+                        submit="#submit",
+                    )
+                ],
                 url="/login",
-                fields={"username": "#user", "password": "#pass"},
-                submit="#submit",
                 failure="Bad login.",
             )
 
@@ -970,9 +979,13 @@ class TestDeclarativeLoginRegistration:
             help_text = "Test"
             base_url = "https://example.com"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user", "password": "#pass"},
+                        submit="#submit",
+                    )
+                ],
                 url="/login",
-                fields={"username": "#user", "password": "#pass"},
-                submit="#submit",
             )
 
             def login(self, credentials: dict[str, str]) -> bool:
@@ -1119,40 +1132,38 @@ class TestAsyncLoginCommand:
 
 
 class TestYAMLLoginValidation:
-    """Tests for YAML login block validation."""
+    """Tests for YAML login block validation with steps."""
 
-    def test_login_block_missing_url_raises(self, isolated_config: Path) -> None:
-        """Test that login block without url raises PluginError."""
+    def test_login_block_missing_steps_raises(self, isolated_config: Path) -> None:
+        """Test that login block without steps raises PluginError."""
         from graftpunk.plugins.yaml_loader import parse_yaml_plugin
 
         plugins_dir = isolated_config / "plugins"
         plugins_dir.mkdir()
         yaml_file = plugins_dir / "bad_login.yaml"
         yaml_file.write_text(
-            "site_name: test\ncommands:\n  cmd:\n    url: /a\n"
-            "login:\n  fields:\n    username: '#u'\n    password: '#p'\n  submit: '#s'\n"
+            "site_name: test\ncommands:\n  cmd:\n    url: /a\nlogin:\n  url: /login\n"
         )
 
-        with pytest.raises(Exception, match="missing required field.*url"):
+        with pytest.raises(Exception, match="missing required 'steps' field"):
             parse_yaml_plugin(yaml_file)
 
-    def test_login_block_missing_fields_raises(self, isolated_config: Path) -> None:
-        """Test that login block without fields raises PluginError."""
+    def test_login_block_empty_steps_raises(self, isolated_config: Path) -> None:
+        """Test that login block with empty steps raises PluginError."""
         from graftpunk.plugins.yaml_loader import parse_yaml_plugin
 
         plugins_dir = isolated_config / "plugins"
         plugins_dir.mkdir()
         yaml_file = plugins_dir / "bad_login.yaml"
         yaml_file.write_text(
-            "site_name: test\ncommands:\n  cmd:\n    url: /a\n"
-            "login:\n  url: /login\n  submit: '#s'\n"
+            "site_name: test\ncommands:\n  cmd:\n    url: /a\nlogin:\n  url: /login\n  steps: []\n"
         )
 
-        with pytest.raises(Exception, match="missing required field.*fields"):
+        with pytest.raises(Exception, match="must contain at least one step"):
             parse_yaml_plugin(yaml_file)
 
-    def test_login_block_missing_submit_raises(self, isolated_config: Path) -> None:
-        """Test that login block without submit raises PluginError."""
+    def test_login_step_invalid_raises(self, isolated_config: Path) -> None:
+        """Test that invalid step (no fields and no submit) raises PluginError."""
         from graftpunk.plugins.yaml_loader import parse_yaml_plugin
 
         plugins_dir = isolated_config / "plugins"
@@ -1160,10 +1171,10 @@ class TestYAMLLoginValidation:
         yaml_file = plugins_dir / "bad_login.yaml"
         yaml_file.write_text(
             "site_name: test\ncommands:\n  cmd:\n    url: /a\n"
-            "login:\n  url: /login\n  fields:\n    username: '#u'\n    password: '#p'\n"
+            "login:\n  url: /login\n  steps:\n    - wait_for: '#form'\n"
         )
 
-        with pytest.raises(Exception, match="missing required field.*submit"):
+        with pytest.raises(Exception, match="step #1 is invalid"):
             parse_yaml_plugin(yaml_file)
 
     def test_valid_login_block_parses(self, isolated_config: Path) -> None:
@@ -1176,16 +1187,17 @@ class TestYAMLLoginValidation:
         yaml_file.write_text(
             "site_name: test\nsession_name: test\nbase_url: https://example.com\n"
             "commands:\n  cmd:\n    url: /a\n"
-            "login:\n  url: /login\n"
-            "  fields:\n    username: '#u'\n    password: '#p'\n"
-            "  submit: '#s'\n  failure: 'Bad login'\n"
+            "login:\n  url: /login\n  failure: 'Bad login'\n"
+            "  steps:\n    - fields:\n        username: '#u'\n        password: '#p'\n"
+            "      submit: '#s'\n"
         )
 
         config, commands, headers = parse_yaml_plugin(yaml_file)
         assert config.login_config is not None
         assert config.login_config.url == "/login"
-        assert config.login_config.fields == {"username": "#u", "password": "#p"}
-        assert config.login_config.submit == "#s"
+        assert len(config.login_config.steps) == 1
+        assert config.login_config.steps[0].fields == {"username": "#u", "password": "#p"}
+        assert config.login_config.steps[0].submit == "#s"
         assert config.login_config.failure == "Bad login"
 
     def test_non_dict_login_block_raises(self, isolated_config: Path) -> None:
@@ -1222,13 +1234,17 @@ class TestMutableLoginFieldsProtection:
         class PluginC(SitePlugin):
             site_name = "c"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#u", "password": "#p"},
+                        submit="#btn",
+                    )
+                ],
                 url="/login",
-                fields={"username": "#u", "password": "#p"},
-                submit="#btn",
             )
 
         assert PluginC.login_config is not None
-        assert PluginC.login_config.fields == {"username": "#u", "password": "#p"}
+        assert PluginC.login_config.steps[0].fields == {"username": "#u", "password": "#p"}
 
 
 class TestResolveSessionName:
@@ -1564,16 +1580,23 @@ class TestBuildPluginConfig:
         """Login fields are stored on PluginConfig via LoginConfig."""
         from graftpunk.plugins.cli_plugin import build_plugin_config
 
+        login = LoginConfig(
+            steps=[
+                LoginStep(
+                    fields={"username": "#user", "password": "#pass"},
+                    submit="#submit",
+                )
+            ],
+            url="/login",
+        )
         config = build_plugin_config(
             site_name="mysite",
-            login_url="/login",
-            login_fields={"username": "#user", "password": "#pass"},
-            login_submit="#submit",
+            login_config=login,
         )
         assert config.login_config is not None
         assert config.login_config.url == "/login"
-        assert config.login_config.fields == {"username": "#user", "password": "#pass"}
-        assert config.login_config.submit == "#submit"
+        assert config.login_config.steps[0].fields == {"username": "#user", "password": "#pass"}
+        assert config.login_config.steps[0].submit == "#submit"
 
     def test_empty_site_name_string_raises(self) -> None:
         """Empty string site_name raises after inference attempt."""
@@ -2438,9 +2461,13 @@ class TestLoginRegistrationFailure:
             base_url = "https://example.com"
             backend = "selenium"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user", "password": "#pass"},
+                        submit="#submit",
+                    )
+                ],
                 url="/login",
-                fields={"username": "#user", "password": "#pass"},
-                submit="#submit",
                 failure="Bad login.",
             )
 
