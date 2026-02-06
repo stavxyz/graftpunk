@@ -1357,6 +1357,37 @@ class DeclarativeTopLevelWaitFor(SitePlugin):
     )
 
 
+class DeclarativeThreeStepLogin(SitePlugin):
+    """Test plugin with 3-step login including MFA (nodriver)."""
+
+    site_name = "threestep"
+    session_name = "threestep"
+    help_text = "Three-Step Login"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "input#email"},
+                submit="button#next",
+            ),
+            LoginStep(
+                wait_for="#password-section",
+                fields={"password": "input#password"},
+                submit="button#continue",
+            ),
+            LoginStep(
+                wait_for="#mfa-section",
+                fields={"otp": "input#otp"},
+                submit="button#verify",
+                delay=0.1,
+            ),
+        ],
+        url="/login",
+        success=".dashboard",
+    )
+
+
 class TestNodriverMultiStepLogin:
     """Tests for multi-step login with nodriver backend."""
 
@@ -1709,6 +1740,67 @@ class TestNodriverMultiStepLogin:
         # Clicks: 2 field clicks + 1 submit click = 3
         # (Step 1 has no submit, Step 2 has submit)
         assert click_count == 3
+
+    @pytest.mark.asyncio
+    async def test_three_step_login_executes_all_steps(self) -> None:
+        """Three-step login with MFA completes all steps successfully."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeThreeStepLogin()
+        login_method = generate_login_method(plugin)
+
+        # Track selectors called to verify order
+        selectors_called: list[str] = []
+
+        async def select_side_effect(
+            tab: object, selector: str, **kwargs: object
+        ) -> AsyncMock:
+            selectors_called.append(selector)
+            return AsyncMock()
+
+        mock_tab = AsyncMock()
+        mock_tab.select = AsyncMock(return_value=AsyncMock())
+        mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = AsyncMock(return_value=mock_tab)
+        instance.transfer_nodriver_cookies_to_session = AsyncMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture_async = AsyncMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            patch(
+                "graftpunk.plugins.login_engine._select_with_retry",
+                side_effect=select_side_effect,
+            ),
+        ):
+            result = await login_method(
+                {"username": "user", "password": "pass", "otp": "123456"}  # noqa: S106
+            )
+
+        assert result is True
+
+        # Verify all 3 steps were processed by checking key selectors
+        # Step 1: email, next button
+        assert "input#email" in selectors_called
+        assert "button#next" in selectors_called
+        # Step 2: password-section wait, password, continue button
+        assert "#password-section" in selectors_called
+        assert "input#password" in selectors_called
+        assert "button#continue" in selectors_called
+        # Step 3: mfa-section wait, otp, verify button
+        assert "#mfa-section" in selectors_called
+        assert "input#otp" in selectors_called
+        assert "button#verify" in selectors_called
 
 
 class DeclarativeSeleniumMultiStep(SitePlugin):
