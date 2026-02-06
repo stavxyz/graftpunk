@@ -17,6 +17,7 @@ from rich.table import Table
 
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
+from graftpunk.plugins.output_config import OutputConfig, apply_column_filter, extract_view_data
 
 LOG = get_logger(__name__)
 
@@ -34,7 +35,12 @@ class OutputFormatter(Protocol):
         """Formatter name used in --format flag."""
         ...
 
-    def format(self, data: Any, console: Console) -> None:
+    def format(
+        self,
+        data: Any,
+        console: Console,
+        output_config: OutputConfig | None = None,
+    ) -> None:
         """Format and print data to the console."""
         ...
 
@@ -49,7 +55,13 @@ class JsonFormatter:
 
     name = "json"
 
-    def format(self, data: Any, console: Console) -> None:
+    def format(
+        self,
+        data: Any,
+        console: Console,
+        output_config: OutputConfig | None = None,
+    ) -> None:
+        # JSON formatter ignores output_config - shows full data
         json_str = json.dumps(data, indent=2, default=str)
         console.print(JSON(json_str))
 
@@ -59,7 +71,20 @@ class TableFormatter:
 
     name = "table"
 
-    def format(self, data: Any, console: Console) -> None:
+    def format(
+        self,
+        data: Any,
+        console: Console,
+        output_config: OutputConfig | None = None,
+    ) -> None:
+        # Apply output config if provided
+        if output_config and output_config.views:
+            view = output_config.views[0]  # Use first/default view
+            if view.path:
+                data = extract_view_data(data, view.path)
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                data = apply_column_filter(data, view.columns)
+
         if isinstance(data, list) and data and isinstance(data[0], dict):
             # List of dicts - display as table with columns
             headers = list(data[0].keys())
@@ -94,7 +119,13 @@ class RawFormatter:
 
     name = "raw"
 
-    def format(self, data: Any, console: Console) -> None:
+    def format(
+        self,
+        data: Any,
+        console: Console,
+        output_config: OutputConfig | None = None,
+    ) -> None:
+        # Raw formatter ignores output_config
         if isinstance(data, str):
             console.print(data)
         else:
@@ -106,7 +137,12 @@ class CsvFormatter:
 
     name = "csv"
 
-    def format(self, data: Any, console: Console) -> None:
+    def format(
+        self,
+        data: Any,
+        console: Console,
+        output_config: OutputConfig | None = None,
+    ) -> None:
         if isinstance(data, str):
             LOG.debug("csv_format_string_passthrough", length=len(data))
             console.print(data)
@@ -132,6 +168,22 @@ class CsvFormatter:
             )
             RawFormatter().format(data, console)
             return
+
+        # Apply output config if provided
+        if output_config and output_config.views:
+            view = output_config.views[0]
+            if view.path:
+                extracted = extract_view_data(data, view.path)
+                if isinstance(extracted, list):
+                    data = extracted
+                elif extracted is not None:
+                    data = [extracted]
+            if data and all(isinstance(item, dict) for item in data):
+                data = apply_column_filter(data, view.columns)
+
+        if not data:
+            return
+
         # Collect headers as union of all row keys, preserving insertion order
         all_keys: dict[str, None] = {}
         for row in data:
@@ -212,8 +264,11 @@ def format_output(data: Any, format_type: str, console: Console) -> None:
         LOG.warning("unknown_format", format=format_type)
         formatter = formatters["json"]  # fallback
 
+    output_config = None
+
     # Unwrap CommandResult
     if isinstance(data, CommandResult):
+        output_config = data.output_config  # Extract config
         if data.format_hint and data.format_hint in formatters and format_type == "json":
             # When format_type is the default ("json"), the plugin's format_hint
             # overrides it. Note: we cannot distinguish "user explicitly passed
@@ -221,4 +276,4 @@ def format_output(data: Any, format_type: str, console: Console) -> None:
             formatter = formatters[data.format_hint]
         data = data.data
 
-    formatter.format(data, console)
+    formatter.format(data, console, output_config=output_config)

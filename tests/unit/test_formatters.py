@@ -501,3 +501,93 @@ class TestFormatPrecedence:
         console.print.assert_called_once()
         arg = console.print.call_args[0][0]
         assert isinstance(arg, JSON)
+
+
+class TestTableFormatterWithOutputConfig:
+    """Tests for TableFormatter with OutputConfig column filtering."""
+
+    def test_applies_column_filter(self) -> None:
+        from graftpunk.plugins import ColumnFilter, OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo", "desc": "long"}]
+        cfg = OutputConfig(
+            views=[ViewConfig(name="default", columns=ColumnFilter("include", ["id", "name"]))],
+        )
+        TableFormatter().format(data, console, output_config=cfg)
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert isinstance(table, Table)
+        assert len(table.columns) == 2
+
+    def test_no_config_uses_all_columns(self) -> None:
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo", "desc": "long"}]
+        TableFormatter().format(data, console, output_config=None)
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert len(table.columns) == 3
+
+    def test_applies_path_extraction(self) -> None:
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {"results": [{"id": 1, "name": "foo"}]}
+        cfg = OutputConfig(
+            views=[ViewConfig(name="default", path="results")],
+        )
+        TableFormatter().format(data, console, output_config=cfg)
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert isinstance(table, Table)
+        assert len(table.columns) == 2  # id, name
+
+
+class TestCsvFormatterWithOutputConfig:
+    """Tests for CsvFormatter with OutputConfig column filtering."""
+
+    def test_applies_column_filter(self) -> None:
+        from graftpunk.plugins import ColumnFilter, OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo", "desc": "long"}]
+        cfg = OutputConfig(
+            views=[ViewConfig(name="default", columns=ColumnFilter("include", ["id", "name"]))],
+        )
+        CsvFormatter().format(data, console, output_config=cfg)
+        rows = _parse_csv_output(console)
+        assert rows[0] == ["id", "name"]
+
+    def test_no_config_uses_all_columns(self) -> None:
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo", "desc": "long"}]
+        CsvFormatter().format(data, console, output_config=None)
+        rows = _parse_csv_output(console)
+        assert rows[0] == ["id", "name", "desc"]
+
+
+class TestFormatOutputWithOutputConfig:
+    """Tests for format_output extracting and passing OutputConfig."""
+
+    def test_extracts_output_config_from_command_result(self) -> None:
+        from graftpunk.plugins import ColumnFilter, OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        cfg = OutputConfig(
+            views=[ViewConfig(name="default", columns=ColumnFilter("include", ["id"]))],
+        )
+        result = CommandResult(
+            data=[{"id": 1, "name": "foo"}],
+            output_config=cfg,
+        )
+        format_output(result, "table", console)
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert len(table.columns) == 1  # Only "id"
+
+    def test_raw_data_without_config_works(self) -> None:
+        console = MagicMock(spec=Console)
+        format_output([{"id": 1, "name": "foo"}], "table", console)
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert len(table.columns) == 2
