@@ -341,8 +341,8 @@ class LoginConfig:
     wait for elements.
 
     Attributes:
-        steps: Sequence of LoginStep objects to execute. Required and non-empty.
-            Lists are converted to tuples for immutability.
+        steps: Sequence of LoginStep objects to execute (list or tuple accepted).
+            Required and non-empty. Input is converted to tuple for immutability.
         url: Login page path (appended to base_url). Empty string (default)
             means use base_url directly.
         failure: Text on the page indicating login failure.
@@ -351,15 +351,22 @@ class LoginConfig:
             Empty string (default) means no explicit wait.
     """
 
-    steps: tuple[LoginStep, ...] | list[LoginStep]
+    steps: tuple[LoginStep, ...] | list[LoginStep]  # Always tuple after __post_init__
     url: str = ""
     failure: str = ""
     success: str = ""
     wait_for: str = ""
 
     def __post_init__(self) -> None:
-        # Convert list to tuple for immutability
-        object.__setattr__(self, "steps", tuple(self.steps))
+        # Convert list to tuple for immutability and validate each element
+        steps_list = list(self.steps)
+        for i, step in enumerate(steps_list):
+            if not isinstance(step, LoginStep):
+                raise TypeError(
+                    f"LoginConfig.steps[{i}] must be LoginStep, "
+                    f"got {type(step).__name__}"
+                )
+        object.__setattr__(self, "steps", tuple(steps_list))
         # Validate steps is non-empty
         if not self.steps:
             raise ValueError("LoginConfig.steps must be non-empty")

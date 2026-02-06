@@ -114,6 +114,17 @@ class TestLoginConfig:
         cfg = LoginConfig(steps=[step], url="")
         assert cfg.url == ""
 
+    def test_steps_with_non_loginstep_raises_typeerror(self) -> None:
+        """LoginConfig rejects steps that are not LoginStep instances."""
+        with pytest.raises(TypeError, match=r"steps\[0\] must be LoginStep, got dict"):
+            LoginConfig(steps=[{"fields": {"u": "#u"}}])  # type: ignore[list-item]
+
+    def test_steps_with_mixed_types_raises_typeerror(self) -> None:
+        """LoginConfig rejects mixed types in steps list."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(TypeError, match=r"steps\[1\] must be LoginStep, got str"):
+            LoginConfig(steps=[step, "invalid"])  # type: ignore[list-item]
+
 
 class TestLoginStep:
     """Tests for the LoginStep frozen dataclass."""
