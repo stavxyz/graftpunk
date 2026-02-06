@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 from graftpunk.config import get_settings
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
-from graftpunk.plugins.cli_plugin import LoginConfig
+from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep
 from graftpunk.tokens import Token, TokenConfig
 
 LOG = get_logger(__name__)
@@ -291,7 +291,7 @@ def parse_yaml_plugin(
             )
         )
 
-    # Build LoginConfig from nested login: block or flat login fields
+    # Build LoginConfig from nested login: block with steps
     login_block = data.get("login")
     login_config: LoginConfig | None = None
     if login_block is not None:
@@ -299,36 +299,50 @@ def parse_yaml_plugin(
             raise PluginError(
                 f"Plugin '{filepath}': 'login' must be a mapping, not {type(login_block).__name__}."
             )
-        missing_login_fields = [f for f in ("url", "fields", "submit") if not login_block.get(f)]
-        if missing_login_fields:
+
+        # Parse steps (required)
+        steps_data = login_block.get("steps")
+        if steps_data is None:
             raise PluginError(
-                f"Plugin '{filepath}': login block missing required field(s): "
-                f"{', '.join(missing_login_fields)}. "
-                f"A login block requires 'url', 'fields', and 'submit'."
+                f"Plugin '{filepath}': login block missing required 'steps' field. "
+                f"A login block requires 'steps' as a list of step definitions."
             )
+        if not isinstance(steps_data, list):
+            raise PluginError(
+                f"Plugin '{filepath}': login 'steps' must be a list, "
+                f"not {type(steps_data).__name__}."
+            )
+        if len(steps_data) == 0:
+            raise PluginError(f"Plugin '{filepath}': login 'steps' must contain at least one step.")
+
+        # Convert each step dict to LoginStep
+        steps: list[LoginStep] = []
+        for i, step_dict in enumerate(steps_data):
+            if not isinstance(step_dict, dict):
+                raise PluginError(
+                    f"Plugin '{filepath}': login step #{i + 1} must be a mapping, "
+                    f"not {type(step_dict).__name__}."
+                )
+            try:
+                step = LoginStep(
+                    fields=step_dict.get("fields", {}),
+                    submit=step_dict.get("submit", ""),
+                    wait_for=step_dict.get("wait_for", ""),
+                    delay=step_dict.get("delay", 0.0),
+                )
+                steps.append(step)
+            except ValueError as exc:
+                raise PluginError(
+                    f"Plugin '{filepath}': login step #{i + 1} is invalid: {exc}"
+                ) from exc
+
         login_config = LoginConfig(
-            url=login_block["url"],
-            fields=login_block["fields"],
-            submit=login_block["submit"],
+            steps=steps,
+            url=login_block.get("url", ""),
+            wait_for=login_block.get("wait_for", ""),
             failure=login_block.get("failure", ""),
             success=login_block.get("success", ""),
         )
-
-    # Also handle flat login fields in YAML
-    if login_config is None:
-        flat_url = data.get("login_url", "")
-        flat_fields = data.get("login_fields", {})
-        flat_submit = data.get("login_submit", "")
-        flat_failure = data.get("login_failure", "")
-        flat_success = data.get("login_success", "")
-        if flat_url and flat_fields and flat_submit:
-            login_config = LoginConfig(
-                url=flat_url,
-                fields=flat_fields,
-                submit=flat_submit,
-                failure=flat_failure,
-                success=flat_success,
-            )
 
     # Parse token config
     tokens_block = data.get("tokens")

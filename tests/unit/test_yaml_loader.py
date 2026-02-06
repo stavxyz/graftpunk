@@ -386,10 +386,10 @@ commands:
 
 
 class TestYAMLLoginBlock:
-    """Tests for YAML login block parsing."""
+    """Tests for YAML login block parsing with steps."""
 
-    def test_parse_login_block(self, isolated_config: Path) -> None:
-        """Test parsing a YAML plugin with login block."""
+    def test_parse_login_block_with_single_step(self, isolated_config: Path) -> None:
+        """Test parsing a YAML plugin with login block containing one step."""
         yaml_content = """
 site_name: hn
 session_name: hackernews
@@ -398,11 +398,12 @@ backend: nodriver
 
 login:
   url: /login
-  fields:
-    username: "input[name='acct']"
-    password: "input[name='pw']"
-  submit: "input[value='login']"
   failure: "Bad login."
+  steps:
+    - fields:
+        username: "input[name='acct']"
+        password: "input[name='pw']"
+      submit: "input[value='login']"
 
 commands:
   front:
@@ -418,11 +419,13 @@ commands:
 
         assert config.login_config is not None
         assert config.login_config.url == "/login"
-        assert config.login_config.fields == {
+        assert len(config.login_config.steps) == 1
+        step = config.login_config.steps[0]
+        assert step.fields == {
             "username": "input[name='acct']",
             "password": "input[name='pw']",
         }
-        assert config.login_config.submit == "input[value='login']"
+        assert step.submit == "input[value='login']"
         assert config.login_config.failure == "Bad login."
         assert config.login_config.success == ""
         assert config.backend == "nodriver"
@@ -444,18 +447,25 @@ commands:
         assert config.login_config is None
         assert config.backend == "selenium"  # default
 
-    def test_parse_nested_login_block(self, tmp_path: Path) -> None:
-        """Nested login: block is flattened to login_url/login_fields/login_submit."""
+    def test_parse_multi_step_login(self, tmp_path: Path) -> None:
+        """Test parsing a multi-step login configuration."""
         yaml_content = """
 site_name: mysite
 base_url: "https://example.com"
 login:
   url: "/login"
-  fields:
-    username: "#user"
-    password: "#pass"
-  submit: "#submit"
-  failure: "Bad login"
+  wait_for: "#login-form"
+  failure: "Invalid credentials"
+  success: "Welcome"
+  steps:
+    - fields:
+        username: "input#signInName"
+      submit: "button#next"
+    - wait_for: "#password-section"
+      fields:
+        password: "input#password"
+      submit: "button#next"
+      delay: 0.5
 commands:
   cmd:
     url: "/api"
@@ -463,11 +473,27 @@ commands:
         yaml_file = tmp_path / "test.yaml"
         yaml_file.write_text(yaml_content)
         config, commands, headers = parse_yaml_plugin(yaml_file)
+
         assert config.login_config is not None
         assert config.login_config.url == "/login"
-        assert config.login_config.fields == {"username": "#user", "password": "#pass"}
-        assert config.login_config.submit == "#submit"
-        assert config.login_config.failure == "Bad login"
+        assert config.login_config.wait_for == "#login-form"
+        assert config.login_config.failure == "Invalid credentials"
+        assert config.login_config.success == "Welcome"
+        assert len(config.login_config.steps) == 2
+
+        # First step: username only
+        step1 = config.login_config.steps[0]
+        assert step1.fields == {"username": "input#signInName"}
+        assert step1.submit == "button#next"
+        assert step1.wait_for == ""
+        assert step1.delay == 0.0
+
+        # Second step: password with wait_for and delay
+        step2 = config.login_config.steps[1]
+        assert step2.fields == {"password": "input#password"}
+        assert step2.submit == "button#next"
+        assert step2.wait_for == "#password-section"
+        assert step2.delay == 0.5
 
     def test_login_with_success_selector(self, tmp_path: Path) -> None:
         """Login block with success selector is parsed correctly."""
@@ -476,12 +502,13 @@ site_name: mysite
 base_url: "https://example.com"
 login:
   url: "/login"
-  fields:
-    username: "input#email"
-    password: "input#pass"
-  submit: "button[type=submit]"
   failure: "Invalid credentials"
   success: ".dashboard"
+  steps:
+    - fields:
+        username: "input#email"
+        password: "input#pass"
+      submit: "button[type=submit]"
 commands:
   search:
     url: "/api/search"
@@ -491,21 +518,59 @@ commands:
         config, commands, headers = parse_yaml_plugin(yaml_file)
         assert config.login_config is not None
         assert config.login_config.url == "/login"
-        assert config.login_config.fields == {"username": "input#email", "password": "input#pass"}
-        assert config.login_config.submit == "button[type=submit]"
         assert config.login_config.failure == "Invalid credentials"
         assert config.login_config.success == ".dashboard"
+        assert len(config.login_config.steps) == 1
+        step = config.login_config.steps[0]
+        assert step.fields == {"username": "input#email", "password": "input#pass"}
+        assert step.submit == "button[type=submit]"
 
-    def test_parse_flat_login_fields(self, tmp_path: Path) -> None:
-        """Flat login_url/login_fields work directly."""
+    def test_login_missing_steps_raises_error(self, tmp_path: Path) -> None:
+        """Login block without steps raises PluginError."""
         yaml_content = """
 site_name: mysite
 base_url: "https://example.com"
-login_url: "/login"
-login_fields:
-  username: "#user"
-  password: "#pass"
-login_submit: "#submit"
+login:
+  url: "/login"
+commands:
+  cmd:
+    url: "/api"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        with pytest.raises(PluginError, match="missing required 'steps' field"):
+            parse_yaml_plugin(yaml_file)
+
+    def test_login_empty_steps_raises_error(self, tmp_path: Path) -> None:
+        """Login block with empty steps list raises PluginError."""
+        yaml_content = """
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+  steps: []
+commands:
+  cmd:
+    url: "/api"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        with pytest.raises(PluginError, match="must contain at least one step"):
+            parse_yaml_plugin(yaml_file)
+
+    def test_login_step_with_only_submit(self, tmp_path: Path) -> None:
+        """Login step with only submit action (no fields) is valid."""
+        yaml_content = """
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+  steps:
+    - submit: "button#accept-terms"
+    - fields:
+        username: "#user"
+        password: "#pass"
+      submit: "#login"
 commands:
   cmd:
     url: "/api"
@@ -514,9 +579,27 @@ commands:
         yaml_file.write_text(yaml_content)
         config, commands, headers = parse_yaml_plugin(yaml_file)
         assert config.login_config is not None
-        assert config.login_config.url == "/login"
-        assert config.login_config.fields == {"username": "#user", "password": "#pass"}
-        assert config.login_config.submit == "#submit"
+        assert len(config.login_config.steps) == 2
+        assert config.login_config.steps[0].submit == "button#accept-terms"
+        assert config.login_config.steps[0].fields == {}
+
+    def test_login_step_invalid_raises_error(self, tmp_path: Path) -> None:
+        """Invalid login step (no fields and no submit) raises PluginError."""
+        yaml_content = """
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+  steps:
+    - wait_for: "#form"
+commands:
+  cmd:
+    url: "/api"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        with pytest.raises(PluginError, match="step #1 is invalid"):
+            parse_yaml_plugin(yaml_file)
 
 
 class TestYAMLResourceLimits:
