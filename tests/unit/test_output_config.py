@@ -33,6 +33,10 @@ class TestColumnFilter:
         cf = ColumnFilter(mode="include", columns=[])
         assert cf.columns == []
 
+    def test_accepts_tuple_input(self) -> None:
+        cf = ColumnFilter(mode="include", columns=("id", "name"))
+        assert cf.columns == ["id", "name"]
+
 
 class TestColumnDisplayConfig:
     def test_minimal_config(self) -> None:
@@ -61,6 +65,10 @@ class TestColumnDisplayConfig:
     def test_empty_name_rejected(self) -> None:
         with pytest.raises(ValueError, match="name must be non-empty"):
             ColumnDisplayConfig(name="")
+
+    def test_negative_max_width_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max_width must be >= 0"):
+            ColumnDisplayConfig(name="id", max_width=-1)
 
 
 class TestViewConfig:
@@ -116,6 +124,64 @@ class TestOutputConfig:
         )
         assert len(cfg.views) == 2
 
+    def test_duplicate_view_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Duplicate view names"):
+            OutputConfig(
+                views=[
+                    ViewConfig(name="items"),
+                    ViewConfig(name="items"),
+                ],
+            )
+
+    def test_invalid_default_view_rejected(self) -> None:
+        with pytest.raises(ValueError, match="default_view 'missing' not found"):
+            OutputConfig(
+                views=[ViewConfig(name="items")],
+                default_view="missing",
+            )
+
+    def test_get_view_by_name(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="results.items"),
+                ViewConfig(name="facets", path="results.facets"),
+            ],
+        )
+        view = cfg.get_view("facets")
+        assert view is not None
+        assert view.path == "results.facets"
+
+    def test_get_view_not_found(self) -> None:
+        cfg = OutputConfig(views=[ViewConfig(name="items")])
+        assert cfg.get_view("missing") is None
+
+    def test_get_default_view_explicit(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items"),
+                ViewConfig(name="facets"),
+            ],
+            default_view="facets",
+        )
+        view = cfg.get_default_view()
+        assert view is not None
+        assert view.name == "facets"
+
+    def test_get_default_view_implicit(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="first"),
+                ViewConfig(name="second"),
+            ],
+        )
+        view = cfg.get_default_view()
+        assert view is not None
+        assert view.name == "first"
+
+    def test_get_default_view_empty(self) -> None:
+        cfg = OutputConfig()
+        assert cfg.get_default_view() is None
+
 
 class TestParseViewArg:
     def test_name_and_columns(self) -> None:
@@ -164,6 +230,12 @@ class TestAutoDetectColumns:
         cols = auto_detect_columns(data)
         assert "common" in cols
         assert "rare" in cols
+
+    def test_ignores_non_dict_items(self) -> None:
+        data = [{"id": 1}, "not a dict", {"name": "foo"}]  # type: ignore[list-item]
+        cols = auto_detect_columns(data)
+        assert "id" in cols
+        assert "name" in cols
 
 
 class TestApplyColumnFilter:
@@ -217,3 +289,17 @@ class TestExtractViewData:
         data = {"items": [1, 2, 3]}
         result = extract_view_data(data, "missing.path")
         assert result is None
+
+    def test_jmespath_array_access(self) -> None:
+        """Test JMESPath-style array access when jmespath is installed."""
+        pytest.importorskip("jmespath")
+        data = {"results": [{"name": "first"}, {"name": "second"}]}
+        result = extract_view_data(data, "results[0].name")
+        assert result == "first"
+
+    def test_jmespath_filter_expression(self) -> None:
+        """Test JMESPath filter expressions when jmespath is installed."""
+        pytest.importorskip("jmespath")
+        data = {"items": [{"id": 1, "active": True}, {"id": 2, "active": False}]}
+        result = extract_view_data(data, "items[?active]")
+        assert result == [{"id": 1, "active": True}]
