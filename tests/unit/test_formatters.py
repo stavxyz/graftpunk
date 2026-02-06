@@ -565,6 +565,36 @@ class TestCsvFormatterWithOutputConfig:
         rows = _parse_csv_output(console)
         assert rows[0] == ["id", "name", "desc"]
 
+    def test_applies_path_extraction(self) -> None:
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {"results": {"items": [{"id": 1, "name": "foo"}]}}
+        cfg = OutputConfig(
+            views=[ViewConfig(name="default", path="results.items")],
+        )
+        CsvFormatter().format(data, console, output_config=cfg)
+        rows = _parse_csv_output(console)
+        assert rows[0] == ["id", "name"]
+        assert rows[1] == ["1", "foo"]
+
+    def test_uses_default_view(self) -> None:
+        from graftpunk.plugins import ColumnFilter, OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo", "type": "bar"}]
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="first", columns=ColumnFilter("include", ["id"])),
+                ViewConfig(name="second", columns=ColumnFilter("include", ["name"])),
+            ],
+            default_view="second",
+        )
+        CsvFormatter().format(data, console, output_config=cfg)
+        rows = _parse_csv_output(console)
+        assert rows[0] == ["name"]
+        assert rows[1] == ["foo"]
+
 
 class TestFormatOutputWithOutputConfig:
     """Tests for format_output extracting and passing OutputConfig."""

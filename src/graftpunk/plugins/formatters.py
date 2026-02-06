@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.json import JSON
 from rich.table import Table
 
+from graftpunk import console as gp_console
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.output_config import OutputConfig, apply_column_filter, extract_view_data
@@ -78,12 +79,13 @@ class TableFormatter:
         output_config: OutputConfig | None = None,
     ) -> None:
         # Apply output config if provided
-        if output_config and output_config.views:
-            view = output_config.views[0]  # Use first/default view
-            if view.path:
-                data = extract_view_data(data, view.path)
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                data = apply_column_filter(data, view.columns)
+        if output_config:
+            view = output_config.get_default_view()
+            if view:
+                if view.path:
+                    data = extract_view_data(data, view.path)
+                if isinstance(data, list) and data and isinstance(data[0], dict):
+                    data = apply_column_filter(data, view.columns)
 
         if isinstance(data, list) and data and isinstance(data[0], dict):
             # List of dicts - display as table with columns
@@ -147,6 +149,15 @@ class CsvFormatter:
             LOG.debug("csv_format_string_passthrough", length=len(data))
             console.print(data)
             return
+
+        # Apply output config path extraction BEFORE type conversion
+        if output_config:
+            view = output_config.get_default_view()
+            if view and view.path:
+                extracted = extract_view_data(data, view.path)
+                if extracted is not None:
+                    data = extracted
+
         if isinstance(data, dict):
             data = [data]
         if not isinstance(data, list):
@@ -169,19 +180,14 @@ class CsvFormatter:
             RawFormatter().format(data, console)
             return
 
-        # Apply output config if provided
-        if output_config and output_config.views:
-            view = output_config.views[0]
-            if view.path:
-                extracted = extract_view_data(data, view.path)
-                if isinstance(extracted, list):
-                    data = extracted
-                elif extracted is not None:
-                    data = [extracted]
-            if data and all(isinstance(item, dict) for item in data):
+        # Apply column filter from output config
+        if output_config:
+            view = output_config.get_default_view()
+            if view and view.columns:
                 data = apply_column_filter(data, view.columns)
 
         if not data:
+            LOG.debug("csv_format_empty_after_config")
             return
 
         # Collect headers as union of all row keys, preserving insertion order
@@ -262,6 +268,10 @@ def format_output(data: Any, format_type: str, console: Console) -> None:
     formatter = formatters.get(format_type)
     if formatter is None:
         LOG.warning("unknown_format", format=format_type)
+        gp_console.warn(
+            f"Unknown format '{format_type}'. Falling back to JSON. "
+            f"Available formats: {', '.join(sorted(formatters.keys()))}"
+        )
         formatter = formatters["json"]  # fallback
 
     output_config = None
