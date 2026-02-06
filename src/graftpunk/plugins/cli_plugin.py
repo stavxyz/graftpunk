@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import requests
 
 if TYPE_CHECKING:
+    from graftpunk.plugins.output_config import OutputConfig
     from graftpunk.tokens import TokenConfig
 
 from graftpunk.cache import load_session_for_api
@@ -253,6 +254,7 @@ class CommandResult:
     data: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     format_hint: Literal["json", "table", "raw", "csv"] | None = None
+    output_config: OutputConfig | None = None
 
 
 @dataclass(frozen=True)

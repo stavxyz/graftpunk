@@ -1468,3 +1468,24 @@ class TestCommandSpecClickKwargs:
         assert len(cmds) == 1
         assert cmds[0].click_kwargs.get("help") == "My help text"
         assert cmds[0].help_text == "My help text"
+
+
+class TestCommandResultOutputConfig:
+    """Tests for output_config field on CommandResult."""
+
+    def test_command_result_accepts_output_config(self) -> None:
+        from graftpunk.plugins import OutputConfig, ViewConfig, ColumnFilter
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        cfg = OutputConfig(
+            views=[ViewConfig(name="items", columns=ColumnFilter("include", ["id"]))],
+        )
+        result = CommandResult(data={"items": []}, output_config=cfg)
+        assert result.output_config is not None
+        assert len(result.output_config.views) == 1
+
+    def test_command_result_output_config_defaults_none(self) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        result = CommandResult(data={"items": []})
+        assert result.output_config is None
