@@ -316,10 +316,33 @@ graftpunk supports three login approaches, from simplest to most flexible.
 
 ### 1. Declarative Login (YAML or Python)
 
-Define login configuration with CSS selectors. The login engine generates the browser automation:
+Define login configuration with CSS selectors. The login engine generates the browser automation. Login flows are defined as a sequence of **steps**, where each step can fill fields, click a submit button, and optionally wait for elements or add delays.
+
+#### LoginStep Fields
+
+Each step in a login flow can include:
+
+- **`fields`** — Dict mapping credential names to CSS selectors. Can be empty for click-only steps.
+- **`submit`** — CSS selector for the submit button (optional).
+- **`wait_for`** — CSS selector to wait for before this step executes (nodriver only).
+- **`delay`** — Seconds to pause after submit (optional).
+
+#### LoginConfig Fields
+
+The top-level login configuration includes:
+
+- **`steps`** — Required list of `LoginStep` objects defining the login flow.
+- **`url`** — Optional login page path (appended to `base_url`).
+- **`wait_for`** — Optional top-level wait for element before any steps begin.
+- **`failure`** — Optional text that indicates login failure.
+- **`success`** — Optional CSS selector that indicates login success.
+
+#### Single-Step Login (Traditional Form)
+
+For simple login forms where username and password are on the same page:
 
 ```python
-from graftpunk.plugins import LoginConfig
+from graftpunk.plugins import LoginConfig, LoginStep
 
 class MyPlugin(SitePlugin):
     base_url = "https://example.com"
@@ -327,46 +350,100 @@ class MyPlugin(SitePlugin):
 
     login_config = LoginConfig(
         url="/login",
-        fields={"username": "#email", "password": "#password"},
-        submit="button[type=submit]",
-        failure="Invalid credentials",  # Text that appears on failure
-        success=".dashboard",           # CSS selector present on success
-        wait_for="#login-form",         # Wait for this element before filling fields
+        wait_for="#login-form",
+        failure="Invalid credentials",
+        success=".dashboard",
+        steps=[
+            LoginStep(
+                fields={"username": "#email", "password": "#password"},
+                submit="button[type=submit]",
+            ),
+        ],
     )
 ```
-
-`LoginConfig` is a frozen dataclass that enforces the all-or-nothing invariant: `url`, `fields`, and `submit` are all required and validated for non-empty/non-whitespace content. `failure` and `success` are optional validation hints. `wait_for` is an optional CSS selector for pre-interaction waits.
-
-For ergonomics, flat class attributes (`login_url`, `login_fields`, `login_submit`) are also supported — `SitePlugin.__init_subclass__` auto-constructs a `LoginConfig` and assigns it to `login_config`:
 
 Or in YAML:
 
 ```yaml
 login:
   url: /login
-  fields:
-    username: "input#email"
-    password: "input#password"
-  submit: "button[type=submit]"
+  wait_for: "#login-form"
   failure: "Invalid credentials"
-  success: ".dashboard"
+  steps:
+    - fields:
+        username: "input#username"
+        password: "input#password"
+      submit: "button#login"
 ```
 
-The declarative engine:
+#### Multi-Step Login (Identifier-First)
+
+For modern login flows where username and password are on separate screens (common with Azure AD B2C, Okta, Google, etc.):
+
+```python
+from graftpunk.plugins import LoginConfig, LoginStep
+
+class MyPlugin(SitePlugin):
+    base_url = "https://example.com"
+    backend = "nodriver"  # nodriver recommended for multi-step flows
+
+    login_config = LoginConfig(
+        url="/login",
+        wait_for="#login-form",
+        failure="Invalid credentials",
+        steps=[
+            LoginStep(
+                fields={"username": "input#signInName"},
+                submit="button#next",
+            ),
+            LoginStep(
+                wait_for="#password-section",  # Wait for password field to appear
+                fields={"password": "input#password"},
+                submit="button#submit",
+                delay=0.5,  # Brief pause after submit
+            ),
+        ],
+    )
+```
+
+Or in YAML:
+
+```yaml
+login:
+  url: /login
+  wait_for: "#login-form"
+  failure: "Invalid credentials"
+  steps:
+    - fields:
+        username: "input#signInName"
+      submit: "button#next"
+    - wait_for: "#password-section"
+      fields:
+        password: "input#password"
+      submit: "button#submit"
+      delay: 0.5
+```
+
+#### How It Works
+
+The declarative engine executes each step in sequence:
+
 1. Opens the browser to `{base_url}{login.url}`
-2. **(If `wait_for` is set)** Waits for the specified CSS selector to appear before proceeding. This is useful when the login URL triggers a redirect (e.g., Azure AD B2C, Okta) or the form renders asynchronously (SPAs). Raises `PluginError` if the element doesn't appear within the timeout.
-3. Clicks each field element, then types the credential value
-4. Clicks the submit button
-5. Waits for the page to settle
-6. Checks for failure text in page content
-7. Checks for success element via CSS selector
-8. Transfers cookies and caches the session
+2. **(If top-level `wait_for` is set)** Waits for the specified CSS selector before proceeding
+3. **For each step:**
+   a. **(If step `wait_for` is set)** Waits for the step's selector to appear
+   b. Clicks each field element and types the credential value
+   c. **(If `submit` is set)** Clicks the submit button
+   d. **(If `delay` is set)** Pauses for the specified duration
+4. Checks for failure text in page content
+5. Checks for success element via CSS selector
+6. Transfers cookies and caches the session
 
 Both `failure` and `success` checks run independently — you can use either or both. If neither is configured, a warning is logged advising you to add validation.
 
-**Resilient element selection (nodriver):** During page transitions (cross-origin redirects, SPA navigation), the DOM document node itself can become invalid, causing nodriver's `tab.select()` to throw a `ProtocolException` instead of returning `None`. The login engine wraps all pre-submit element selection calls with a retry helper (`_select_with_retry`) that catches `ProtocolException` and retries with a 30-second deadline and 1-second intervals. This gives the browser time to complete redirects and render the form. The success selector check post-submit does *not* retry — by that point the page has settled, and retrying would mask genuine login failures.
+**Per-step `wait_for` is nodriver-only.** Setting `wait_for` on individual steps requires `backend = "nodriver"`. The top-level `wait_for` is also nodriver-only. Setting `wait_for` on a plugin with `backend = "selenium"` raises a `PluginError` at login time with guidance to switch to the nodriver backend.
 
-**`wait_for` is nodriver-only.** Setting `wait_for` on a plugin with `backend = "selenium"` raises a `PluginError` at login time with guidance to switch to the nodriver backend.
+**Resilient element selection (nodriver):** During page transitions (cross-origin redirects, SPA navigation), the DOM document node itself can become invalid, causing nodriver's `tab.select()` to throw a `ProtocolException` instead of returning `None`. The login engine wraps all pre-submit element selection calls with a retry helper (`_select_with_retry`) that catches `ProtocolException` and retries with a 30-second deadline and 1-second intervals. This gives the browser time to complete redirects and render the form. The success selector check post-submit does *not* retry — by that point the page has settled, and retrying would mask genuine login failures.
 
 **Backend differences in success detection:**
 - **Selenium:** Uses `driver.find_element()` with a try/except for `NoSuchElementException`
@@ -718,7 +795,7 @@ YAML plugins are ideal for simple REST API wrappers but have inherent limitation
 - **No custom transforms** — Only JMESPath extraction is supported. Complex data reshaping needs Python.
 - **No pagination** — Automatic page iteration requires Python loop logic.
 - **No token refresh** — OAuth refresh flows or session renewal logic require Python.
-- **No custom login flows** — YAML supports declarative `LoginConfig` only. Multi-step or CAPTCHA-handling login needs a Python `login()` method.
+- **No custom login flows** — YAML supports declarative `LoginConfig` with multi-step support. CAPTCHA-handling or complex conditional login flows need a Python `login()` method.
 
 The Python template at `~/.config/graftpunk/plugins/` provides a starting point for migration.
 
@@ -876,7 +953,8 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `CommandSpec` | `plugins.cli_plugin` | Yes | Command spec: `name`, `handler`, `help_text`, `params`, `timeout`, `max_retries`, `rate_limit`, `requires_session`, `group` |
 | `CommandMetadata` | `plugins.cli_plugin` | Yes | Metadata stored by `@command` decorator on methods |
 | `CommandGroupMeta` | `plugins.cli_plugin` | Yes | Metadata stored by `@command` decorator on classes (command groups) |
-| `LoginConfig` | `plugins.cli_plugin` | Yes | Declarative browser login configuration |
+| `LoginConfig` | `plugins.cli_plugin` | Yes | Declarative browser login configuration: `steps`, `url`, `wait_for`, `failure`, `success` |
+| `LoginStep` | `plugins.cli_plugin` | Yes | Single step in a login flow: `fields`, `submit`, `wait_for`, `delay` |
 | `PluginConfig` | `plugins.cli_plugin` | Yes | Canonical config: `site_name`, `session_name`, `help_text`, `base_url`, `requires_session`, `backend`, `api_version`, `username_envvar`, `password_envvar`, `login_config`, `plugin_version`, `plugin_author`, `plugin_url` |
 | `PluginParamSpec` | `plugins.cli_plugin` | Yes | CLI parameter specification |
 | `CLIPluginProtocol` | `plugins.cli_plugin` | N/A (Protocol) | Structural typing contract for all plugins |
@@ -904,7 +982,7 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 - **TTL expiration** — Sessions expire after a configurable time (`GRAFTPUNK_SESSION_TTL_HOURS`).
 - **Path validation** — Observability storage validates session names and run IDs against a strict allowlist pattern to prevent path traversal. Screenshot labels are sanitized.
 - **Narrow exception handling** — Selenium operations catch `WebDriverException` specifically, not bare `Exception`. This prevents masking programming errors.
-- **Frozen value types** — Configuration and metadata types (`PluginConfig`, `LoginConfig`, `CommandMetadata`, `PluginParamSpec`, discovery error types) are frozen dataclasses, preventing accidental mutation after construction.
+- **Frozen value types** — Configuration and metadata types (`PluginConfig`, `LoginConfig`, `LoginStep`, `CommandMetadata`, `PluginParamSpec`, discovery error types) are frozen dataclasses, preventing accidental mutation after construction.
 - **Local-only by default** — Sessions are stored on the local filesystem. The Supabase backend is opt-in.
 
 **Note:** Session deserialization uses `dill` (pickle). Only load sessions from trusted sources — this is by design for local-machine use.
