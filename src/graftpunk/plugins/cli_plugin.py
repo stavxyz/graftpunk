@@ -430,27 +430,13 @@ def build_plugin_config(**raw: Any) -> PluginConfig:
     """
     from graftpunk.plugins import infer_site_name
 
-    # Pop flat login fields (no longer PluginConfig fields)
+    # Extract login_config (supports both "login_config" and "login" keys for YAML)
     login_config = raw.pop("login_config", raw.pop("login", None))
-    login_url = raw.pop("login_url", "")
-    login_fields_val = raw.pop("login_fields", {})
-    login_submit = raw.pop("login_submit", "")
-    login_failure = raw.pop("login_failure", "")
-    login_success = raw.pop("login_success", "")
 
     # Filter to known fields
     known_fields = {f.name for f in dataclasses.fields(PluginConfig)}
     filtered = {k: v for k, v in raw.items() if k in known_fields}
 
-    # Auto-construct LoginConfig from flat fields if not already provided
-    if login_config is None and login_url and login_fields_val and login_submit:
-        login_config = LoginConfig(
-            url=login_url,
-            fields=login_fields_val,
-            submit=login_submit,
-            failure=login_failure,
-            success=login_success,
-        )
     filtered["login_config"] = login_config
 
     # Infer site_name: explicit → base_url domain → filename stem
@@ -687,22 +673,6 @@ class SitePlugin:
             **kwargs: Keyword arguments passed to super().__init_subclass__().
         """
         super().__init_subclass__(**kwargs)
-
-        # Auto-construct LoginConfig from flat attrs if present
-        flat_login_url = cls.__dict__.get("login_url", "")
-        flat_login_fields = getattr(cls, "login_fields", None)
-        flat_login_submit = cls.__dict__.get("login_submit", "")
-        if flat_login_url and flat_login_fields and flat_login_submit:
-            # Copy inherited login_fields to avoid shared mutable state
-            if "login_fields" not in cls.__dict__:
-                flat_login_fields = dict(flat_login_fields)
-            cls.login_config = LoginConfig(
-                url=flat_login_url,
-                fields=dict(flat_login_fields),  # fresh copy
-                submit=flat_login_submit,
-                failure=cls.__dict__.get("login_failure", ""),
-                success=cls.__dict__.get("login_success", ""),
-            )
 
         # Extract non-private, non-callable class attributes
         raw = {
