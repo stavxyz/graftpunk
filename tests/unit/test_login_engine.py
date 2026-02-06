@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graftpunk.exceptions import PluginError
-from graftpunk.plugins.cli_plugin import LoginConfig, SitePlugin
+from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 
 
 class DeclarativeHN(SitePlugin):
@@ -17,9 +17,13 @@ class DeclarativeHN(SitePlugin):
     base_url = "https://news.ycombinator.com"
     backend = "nodriver"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "input[name='acct']", "password": "input[name='pw']"},
+                submit="input[value='login']",
+            ),
+        ],
         url="/login",
-        fields={"username": "input[name='acct']", "password": "input[name='pw']"},
-        submit="input[value='login']",
         failure="Bad login.",
     )
 
@@ -33,9 +37,13 @@ class DeclarativeQuotes(SitePlugin):
     base_url = "https://quotes.toscrape.com"
     backend = "selenium"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "#username", "password": "#password"},
+                submit="input[type='submit']",
+            ),
+        ],
         url="/login",
-        fields={"username": "#username", "password": "#password"},
-        submit="input[type='submit']",
         success="a[href='/logout']",
     )
 
@@ -207,9 +215,13 @@ class DeclarativeFailureText(SitePlugin):
     base_url = "https://example.com"
     backend = "selenium"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "#user", "password": "#pass"},
+                submit="#submit",
+            ),
+        ],
         url="/login",
-        fields={"username": "#user", "password": "#pass"},
-        submit="#submit",
         failure="Invalid credentials",
     )
 
@@ -397,9 +409,13 @@ class TestLoginFieldMapping:
             base_url = "https://example.com"
             backend = "selenium"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"email": "#email", "password": "#pass"},
+                        submit="#submit",
+                    ),
+                ],
                 url="/login",
-                fields={"email": "#email", "password": "#pass"},
-                submit="#submit",
                 failure="Invalid",
             )
 
@@ -444,9 +460,13 @@ class TestLoginFieldMapping:
             base_url = "https://example.com"
             backend = "selenium"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"email": "#email", "password": "#pass"},
+                        submit="#submit",
+                    ),
+                ],
                 url="/login",
-                fields={"email": "#email", "password": "#pass"},
-                submit="#submit",
                 failure="Invalid",
             )
 
@@ -490,9 +510,13 @@ class DeclarativeNodriverSuccess(SitePlugin):
     base_url = "https://example.com"
     backend = "nodriver"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "#user", "password": "#pass"},
+                submit="#submit",
+            ),
+        ],
         url="/login",
-        fields={"username": "#user", "password": "#pass"},
-        submit="#submit",
         success=".dashboard",
     )
 
@@ -506,9 +530,13 @@ class DeclarativeNodriverNoValidation(SitePlugin):
     base_url = "https://example.com"
     backend = "nodriver"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "#user", "password": "#pass"},
+                submit="#submit",
+            ),
+        ],
         url="/login",
-        fields={"username": "#user", "password": "#pass"},
-        submit="#submit",
     )
 
 
@@ -521,9 +549,13 @@ class DeclarativeSeleniumBoth(SitePlugin):
     base_url = "https://example.com"
     backend = "selenium"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "#user", "password": "#pass"},
+                submit="#submit",
+            ),
+        ],
         url="/login",
-        fields={"username": "#user", "password": "#pass"},
-        submit="#submit",
         failure="Invalid credentials",
         success=".dashboard",
     )
@@ -977,9 +1009,13 @@ class TestLoginTimeTokenExtraction:
             base_url = "https://example.com"
             backend = "nodriver"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user", "password": "#pass"},
+                        submit="#submit",
+                    ),
+                ],
                 url="/login",
-                fields={"username": "#user", "password": "#pass"},
-                submit="#submit",
                 success=".dashboard",
             )
             token_config = TokenConfig(
@@ -1091,9 +1127,13 @@ class TestSeleniumTokenExtraction:
             base_url = "https://example.com"
             backend = "selenium"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user", "password": "#pass"},
+                        submit="#submit",
+                    ),
+                ],
                 url="/login",
-                fields={"username": "#user", "password": "#pass"},
-                submit="#submit",
                 success=".dashboard",
             )
             token_config = TokenConfig(tokens=(Token.from_cookie("sid", "X-Session"),))
@@ -1187,9 +1227,13 @@ class TestSeleniumWaitForRaises:
             base_url = "https://example.com"
             backend = "selenium"
             login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user"},
+                        submit="#btn",
+                    ),
+                ],
                 url="/login",
-                fields={"username": "#user"},
-                submit="#btn",
                 wait_for="#form",
             )
 
