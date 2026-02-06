@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graftpunk.exceptions import PluginError
-from graftpunk.plugins.cli_plugin import LoginConfig, SitePlugin
+from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 from graftpunk.plugins.login_engine import _select_with_retry
 
 
@@ -20,9 +20,13 @@ class DeclarativeHN(SitePlugin):
     base_url = "https://news.ycombinator.com"
     backend = "nodriver"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "input[name='acct']", "password": "input[name='pw']"},
+                submit="input[value='login']",
+            ),
+        ],
         url="/login",
-        fields={"username": "input[name='acct']", "password": "input[name='pw']"},
-        submit="input[value='login']",
         failure="Bad login.",
     )
 
@@ -36,9 +40,13 @@ class DeclarativeWaitFor(SitePlugin):
     base_url = "https://example.com"
     backend = "nodriver"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "#user"},
+                submit="#btn",
+            ),
+        ],
         url="/login",
-        fields={"username": "#user"},
-        submit="#btn",
         wait_for="#login-form",
     )
 

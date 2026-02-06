@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from graftpunk.cli.login_commands import resolve_login_callable, resolve_login_fields
-from graftpunk.plugins.cli_plugin import LoginConfig, SitePlugin
+from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 
 
 class PluginWithLoginMethod(SitePlugin):
@@ -29,9 +29,13 @@ class PluginWithDeclarativeLogin(SitePlugin):
     help_text = "Declarative Login"
     base_url = "https://example.com"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "#user", "password": "#pass"},
+                submit="#submit",
+            ),
+        ],
         url="/login",
-        fields={"username": "#user", "password": "#pass"},
-        submit="#submit",
         failure="Bad login.",
     )
 
@@ -53,9 +57,39 @@ class PluginWithCustomFields(SitePlugin):
     help_text = "Custom Fields"
     base_url = "https://example.com"
     login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"email": "#email", "token": "#token"},
+                submit="#go",
+            ),
+        ],
         url="/login",
-        fields={"email": "#email", "token": "#token"},
-        submit="#go",
+    )
+
+
+class PluginWithMultiStepLogin(SitePlugin):
+    """Plugin with multi-step login (fields across multiple steps)."""
+
+    site_name = "multistep"
+    session_name = "multistep"
+    help_text = "Multi-Step Login"
+    base_url = "https://example.com"
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "#user"},
+                submit="#next",
+            ),
+            LoginStep(
+                fields={"password": "#pass"},
+                submit="#login",
+            ),
+            LoginStep(
+                fields={"otp": "#otp-input"},
+                submit="#verify",
+            ),
+        ],
+        url="/login",
     )
 
 
@@ -136,3 +170,9 @@ class TestResolveLoginFields:
         plugin = PluginWithDeclarativeLogin()
         result = resolve_login_fields(plugin)
         assert result == {"username": "#user", "password": "#pass"}
+
+    def test_multi_step_login_aggregates_fields(self) -> None:
+        """Plugin with multi-step login returns aggregated fields from all steps."""
+        plugin = PluginWithMultiStepLogin()
+        result = resolve_login_fields(plugin)
+        assert result == {"username": "#user", "password": "#pass", "otp": "#otp-input"}

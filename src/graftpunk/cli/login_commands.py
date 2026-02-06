@@ -67,18 +67,22 @@ def resolve_login_callable(plugin: CLIPluginProtocol) -> Callable[..., Any] | No
 def resolve_login_fields(plugin: CLIPluginProtocol) -> dict[str, str]:
     """Return the login credential fields for a plugin.
 
-    Uses ``login_config.fields`` if available, otherwise defaults
-    to ``{"username": "", "password": ""}``.
+    Aggregates fields from all steps in the ``login_config``, otherwise
+    defaults to ``{"username": "", "password": ""}``.
 
     Args:
         plugin: Plugin instance to inspect.
 
     Returns:
-        Dictionary of field names to default values.
+        Dictionary of field names to default values (CSS selectors).
     """
     login_cfg = getattr(plugin, "login_config", None)
-    if isinstance(login_cfg, LoginConfig) and login_cfg.fields:
-        return login_cfg.fields
+    if isinstance(login_cfg, LoginConfig) and login_cfg.steps:
+        all_fields: dict[str, str] = {}
+        for step in login_cfg.steps:
+            all_fields.update(step.fields)
+        if all_fields:
+            return all_fields
     LOG.info(
         "login_fields_default_assumed",
         plugin=plugin.site_name,
