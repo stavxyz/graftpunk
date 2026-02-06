@@ -601,6 +601,24 @@ commands:
         with pytest.raises(PluginError, match="step #1 is invalid"):
             parse_yaml_plugin(yaml_file)
 
+    def test_login_step_non_dict_raises_error(self, tmp_path: Path) -> None:
+        """Login step that is not a dict raises PluginError."""
+        yaml_content = """
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+  steps:
+    - "click #btn"
+commands:
+  cmd:
+    url: "/api"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        with pytest.raises(PluginError, match="step #1 must be a mapping"):
+            parse_yaml_plugin(yaml_file)
+
 
 class TestYAMLResourceLimits:
     """Tests for resource limit fields on YAML commands."""
