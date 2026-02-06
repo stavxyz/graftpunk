@@ -1,7 +1,7 @@
 # Structured Output System Design
 
 **Date:** 2026-02-06
-**Status:** Draft
+**Status:** Implemented (PR #78)
 **Authors:** stavxyz, Claude
 
 ## 1. Problem Statement & Goals
@@ -35,45 +35,64 @@ When commands return complex nested JSON data, the table formatter produces unus
 
 ## 2. Data Model
 
+All dataclasses are frozen (immutable) with comprehensive validation in `__post_init__`.
+
 ```python
 from dataclasses import dataclass, field
 from typing import Literal
 
-@dataclass
+@dataclass(frozen=True)
 class ColumnFilter:
-    """Filter columns by include or exclude patterns."""
+    """Filter columns by exact name matching.
+
+    Args:
+        mode: Either "include" (keep only listed columns) or "exclude" (remove listed).
+        columns: List of exact column names to include or exclude.
+    """
     mode: Literal["include", "exclude"]
     columns: list[str]
+    # Validation: mode must be "include" or "exclude"
 
-@dataclass
+@dataclass(frozen=True)
 class ColumnDisplayConfig:
     """Display configuration for a specific column."""
-    name: str
-    header: str = ""  # Display header (defaults to name)
-    max_width: int = 0  # 0 = no limit
+    name: str           # Required, must be non-empty
+    header: str = ""    # Display header (defaults to name)
+    max_width: int = 0  # 0 = no limit, must be >= 0
     align: Literal["left", "right", "center"] = "left"
 
-@dataclass
+@dataclass(frozen=True)
 class ViewConfig:
     """Configuration for a single view/table."""
-    name: str
-    path: str = ""  # JMESPath to extract data (empty = root)
-    title: str = ""  # Display title (optional)
+    name: str                    # Required, must be non-empty
+    path: str = ""               # JMESPath to extract data (empty = root)
+    title: str = ""              # Display title (optional)
     columns: ColumnFilter | None = None
     display: list[ColumnDisplayConfig] = field(default_factory=list)
 
-@dataclass
+@dataclass(frozen=True)
 class OutputConfig:
     """Complete output configuration for a command."""
     views: list[ViewConfig] = field(default_factory=list)
-    default_view: str = ""  # Which view to show when none specified
+    default_view: str = ""  # Must reference existing view name if set
+
+    def get_view(self, name: str) -> ViewConfig | None:
+        """Get a view by name, or None if not found."""
+        ...
+
+    def get_default_view(self) -> ViewConfig | None:
+        """Get the default view (by default_view name or first view)."""
+        ...
+    # Validation: view names must be unique, default_view must exist
 ```
 
 ### Key Design Decisions
 
+- **Frozen dataclasses** - All types are immutable for safety and caching
 - **ColumnFilter** uses explicit `mode` to avoid ambiguity between include/exclude
-- **ViewConfig.path** uses JMESPath for extracting nested data
-- **OutputConfig** supports multiple views but always has a sensible default
+- **ViewConfig.path** uses JMESPath for extracting nested data (with dot-notation fallback)
+- **OutputConfig** supports multiple views with `get_default_view()` helper
+- **Validation** catches configuration errors early with clear error messages
 - **display** configs are optional - columns auto-detect width/alignment if not specified
 
 ---
@@ -227,26 +246,49 @@ When no OutputConfig is provided and no CLI flags given:
 
 ```python
 def auto_detect_columns(data: list[dict], max_cols: int = 8) -> list[str]:
-    """Select best columns for display."""
+    """Select best columns for display using heuristics.
+
+    Prioritizes columns in this order:
+    1. Identity columns: id, name, title (exact matches, id highest)
+    2. ID/name-related columns containing "id" or "name"
+    3. Date columns: created_at, updated_at, date
+    4. Other columns (alphabetically)
+    5. Content columns (deprioritized): description, content, body, text
+
+    Args:
+        data: List of dictionaries to analyze (samples first 100 items).
+        max_cols: Maximum number of columns to return (default: 8).
+
+    Returns:
+        List of column names ordered by priority, up to max_cols.
+    """
     if not data:
         return []
 
-    all_keys = set()
+    all_keys: set[str] = set()
     for item in data[:100]:  # Sample first 100
-        all_keys.update(item.keys())
+        if isinstance(item, dict):
+            all_keys.update(item.keys())
 
-    def score(key: str) -> tuple[int, str]:
-        """Higher score = show first."""
+    # Priority order for exact matches: id > name > title
+    priority_order = ["title", "name", "id"]
+
+    def score(key: str) -> tuple[int, int, str]:
         key_lower = key.lower()
+        exact_priority = priority_order.index(key_lower) if key_lower in priority_order else -1
+
         if key_lower in ("id", "name", "title"):
-            return (3, key)
-        if "id" in key_lower or "name" in key_lower:
-            return (2, key)
-        if key_lower in ("created_at", "updated_at", "date"):
-            return (1, key)
-        if key_lower in ("description", "content", "body", "text"):
-            return (-1, key)
-        return (0, key)
+            category = 3
+        elif "id" in key_lower or "name" in key_lower:
+            category = 2
+        elif key_lower in ("created_at", "updated_at", "date"):
+            category = 1
+        elif key_lower in ("description", "content", "body", "text"):
+            category = -1
+        else:
+            category = 0
+
+        return (category, exact_priority, key)
 
     sorted_keys = sorted(all_keys, key=score, reverse=True)
     return sorted_keys[:max_cols]
@@ -439,3 +481,36 @@ id       name
 523802   Organic Olive Oil
 ...
 ```
+
+---
+
+## Implementation Status
+
+### Phase 1: Core OutputConfig (✅ Implemented in PR #78)
+
+- [x] `ColumnFilter`, `ColumnDisplayConfig`, `ViewConfig`, `OutputConfig` dataclasses
+- [x] Frozen/immutable with comprehensive `__post_init__` validation
+- [x] `default_view` validation (must reference existing view)
+- [x] View name uniqueness validation
+- [x] `get_view()` and `get_default_view()` helper methods
+- [x] `parse_view_arg()`, `auto_detect_columns()`, `apply_column_filter()`, `extract_view_data()`
+- [x] JMESPath support with dot-notation fallback
+- [x] Logging for debugging path extraction failures
+- [x] `CommandResult.output_config` field
+- [x] `TableFormatter` and `CsvFormatter` apply OutputConfig
+- [x] YAML plugin `output_config` block support
+- [x] 55+ tests with comprehensive edge case coverage
+
+### Phase 2: CLI Flags (🔜 Future)
+
+- [ ] `--view NAME:COL1,COL2,...` flag
+- [ ] `--columns COL1,COL2,...` flag
+- [ ] `--exclude COL1,COL2,...` flag
+- [ ] `--raw` flag to bypass all filtering
+- [ ] CLI override merge logic
+
+### Phase 3: Auto-Detection Integration (🔜 Future)
+
+- [ ] `auto_detect_columns()` fallback when no OutputConfig provided
+- [ ] ColumnDisplayConfig width/alignment applied in formatters
+- [ ] Multi-view rendering with section headers
