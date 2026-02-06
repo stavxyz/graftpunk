@@ -462,8 +462,6 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             )
         base_url = plugin.base_url.rstrip("/")
         login_url = plugin.login_config.url
-        fields = plugin.login_config.fields
-        submit_selector = plugin.login_config.submit
         failure_text = plugin.login_config.failure
         success_selector = plugin.login_config.success
 
@@ -476,34 +474,57 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
 
             session.driver.get(f"{base_url}{login_url}")
 
+            # Top-level wait_for is not supported for selenium
             if plugin.login_config.wait_for:
                 raise PluginError(
                     f"Plugin '{plugin.site_name}' uses wait_for, which requires "
                     "the nodriver backend. Set backend='nodriver' or remove wait_for."
                 )
 
-            # Fill fields (click before send_keys to prevent keystroke loss)
-            for field_name, selector in fields.items():
-                value = credentials.get(field_name, "")
-                try:
-                    element = session.driver.find_element("css selector", selector)
-                    element.click()
-                    element.send_keys(value)
-                except (selenium.common.exceptions.WebDriverException, PluginError) as exc:
+            # Execute each step in sequence
+            for step_idx, step in enumerate(plugin.login_config.steps, start=1):
+                # Step-level wait_for is not supported for selenium
+                if step.wait_for:
                     raise PluginError(
-                        f"Failed to fill login field '{field_name}' (selector: '{selector}'): {exc}"
-                    ) from exc
+                        f"Step {step_idx}: step.wait_for is not supported for selenium. "
+                        "Use nodriver for per-step wait_for."
+                    )
 
-            # Click submit
-            try:
-                submit_el = session.driver.find_element("css selector", submit_selector)
-                submit_el.click()
-            except (selenium.common.exceptions.WebDriverException, PluginError) as exc:
-                raise PluginError(
-                    f"Failed to click submit button (selector: '{submit_selector}'): {exc}"
-                ) from exc
+                # Fill fields (click before send_keys to prevent keystroke loss)
+                for field_name, selector in step.fields.items():
+                    value = credentials.get(field_name, "")
+                    try:
+                        element = session.driver.find_element("css selector", selector)
+                        element.click()
+                        element.send_keys(value)
+                    except (
+                        selenium.common.exceptions.WebDriverException,
+                        PluginError,
+                    ) as exc:
+                        raise PluginError(
+                            f"Step {step_idx}: Failed to fill login field '{field_name}' "
+                            f"(selector: '{selector}'): {exc}"
+                        ) from exc
 
-            # Fixed delay to allow page to settle after form submission
+                # Click submit if specified for this step
+                if step.submit:
+                    try:
+                        submit_el = session.driver.find_element("css selector", step.submit)
+                        submit_el.click()
+                    except (
+                        selenium.common.exceptions.WebDriverException,
+                        PluginError,
+                    ) as exc:
+                        raise PluginError(
+                            f"Step {step_idx}: Failed to click submit button "
+                            f"(selector: '{step.submit}'): {exc}"
+                        ) from exc
+
+                # Step-level delay after submit
+                if step.delay > 0:
+                    time.sleep(step.delay)
+
+            # Fixed delay to allow page to settle after all steps complete
             time.sleep(_POST_SUBMIT_DELAY)
 
             # Check success/failure

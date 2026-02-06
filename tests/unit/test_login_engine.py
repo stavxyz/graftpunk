@@ -1249,6 +1249,46 @@ class TestSeleniumWaitForRaises:
         ):
             login_method({"username": "user"})
 
+    def test_selenium_step_wait_for_raises_plugin_error(self) -> None:
+        """Selenium backend raises PluginError when step.wait_for is configured."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class SeleniumStepWaitFor(SitePlugin):
+            site_name = "sswf"
+            session_name = "sswf"
+            help_text = "SSWF"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "#user"},
+                        submit="#next",
+                    ),
+                    LoginStep(
+                        wait_for="#password-section",  # Per-step wait_for
+                        fields={"password": "#pass"},
+                        submit="#login",
+                    ),
+                ],
+                url="/login",
+            )
+
+        plugin = SeleniumStepWaitFor()
+        login_method = generate_login_method(plugin)
+
+        mock_element = MagicMock()
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.find_element = MagicMock(return_value=mock_element)
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.time"),
+            pytest.raises(PluginError, match="Step 2.*step.wait_for is not supported for selenium"),
+        ):
+            login_method({"username": "user", "password": "pass"})  # noqa: S106
+
 
 class DeclarativeMultiStep(SitePlugin):
     """Test plugin with multi-step login (nodriver)."""
@@ -1611,6 +1651,282 @@ class TestNodriverMultiStepLogin:
             ),
         ):
             result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+        assert result is True
+        # Clicks: 2 field clicks + 1 submit click = 3
+        # (Step 1 has no submit, Step 2 has submit)
+        assert click_count == 3
+
+
+class DeclarativeSeleniumMultiStep(SitePlugin):
+    """Test plugin with multi-step login (selenium)."""
+
+    site_name = "selmultistep"
+    session_name = "selmultistep"
+    help_text = "Selenium Multi-Step Login"
+    base_url = "https://example.com"
+    backend = "selenium"
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "input#email"},
+                submit="button#next",
+            ),
+            LoginStep(
+                fields={"password": "input#password"},
+                submit="button#submit",
+            ),
+        ],
+        url="/login",
+        success=".dashboard",
+    )
+
+
+class DeclarativeSeleniumStepWithDelay(SitePlugin):
+    """Test plugin with step delay (selenium)."""
+
+    site_name = "selstepdelay"
+    session_name = "selstepdelay"
+    help_text = "Selenium Step With Delay"
+    base_url = "https://example.com"
+    backend = "selenium"
+    login_config = LoginConfig(
+        steps=[
+            LoginStep(
+                fields={"username": "input#user", "password": "input#pass"},
+                submit="button#login",
+                delay=0.5,
+            ),
+        ],
+        url="/login",
+        success=".dashboard",
+    )
+
+
+class TestSeleniumMultiStepLogin:
+    """Tests for multi-step login with selenium backend."""
+
+    def test_multi_step_login_executes_both_steps(self) -> None:
+        """Multi-step login fills fields and clicks submit for each step."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeSeleniumMultiStep()
+        login_method = generate_login_method(plugin)
+
+        find_element_calls: list[str] = []
+
+        def mock_find_element(by: str, value: str) -> MagicMock:
+            find_element_calls.append(value)
+            return MagicMock()
+
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = MagicMock()
+        instance.driver.find_element = mock_find_element
+        instance.driver.page_source = "<html><div class='dashboard'>Welcome</div></html>"
+        instance.transfer_driver_cookies_to_session = MagicMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture = MagicMock()
+        mock_capture.stop_capture = MagicMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.login_engine.time"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+        ):
+            result = login_method({"username": "user", "password": "pass123"})  # noqa: S106
+
+        assert result is True
+
+        # Verify element interactions for both steps:
+        # Step 1: email field, next button
+        # Step 2: password field, submit button
+        # Plus success selector check
+        assert "input#email" in find_element_calls
+        assert "button#next" in find_element_calls
+        assert "input#password" in find_element_calls
+        assert "button#submit" in find_element_calls
+        assert ".dashboard" in find_element_calls
+
+    def test_step_field_not_found_raises_with_step_index(self) -> None:
+        """Field not found raises PluginError with step index."""
+        from selenium.common.exceptions import NoSuchElementException
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeSeleniumMultiStep()
+        login_method = generate_login_method(plugin)
+
+        def mock_find_element(by: str, value: str) -> MagicMock:
+            if value == "input#email":
+                raise NoSuchElementException("Element not found")
+            return MagicMock()
+
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = MagicMock()
+        instance.driver.find_element = mock_find_element
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture = MagicMock()
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.time"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            pytest.raises(PluginError, match="Step 1.*Failed to fill login field 'username'"),
+        ):
+            login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+    def test_step_submit_not_found_raises_with_step_index(self) -> None:
+        """Submit button not found raises PluginError with step index."""
+        from selenium.common.exceptions import NoSuchElementException
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeSeleniumMultiStep()
+        login_method = generate_login_method(plugin)
+
+        call_count = 0
+
+        def mock_find_element(by: str, value: str) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            # First call: email field (ok)
+            # Second call: next button (fail)
+            if call_count == 2:
+                raise NoSuchElementException("Button not found")
+            return MagicMock()
+
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = MagicMock()
+        instance.driver.find_element = mock_find_element
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture = MagicMock()
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.time"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+            pytest.raises(PluginError, match="Step 1.*Failed to click submit button"),
+        ):
+            login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+    def test_step_delay_pauses_after_submit(self) -> None:
+        """Step delay pauses after clicking submit."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeSeleniumStepWithDelay()
+        login_method = generate_login_method(plugin)
+
+        mock_element = MagicMock()
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = MagicMock()
+        instance.driver.find_element = MagicMock(return_value=mock_element)
+        instance.driver.page_source = "<html><div class='dashboard'>Welcome</div></html>"
+        instance.transfer_driver_cookies_to_session = MagicMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture = MagicMock()
+        mock_capture.stop_capture = MagicMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.login_engine.time.sleep") as mock_sleep,
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+        ):
+            result = login_method({"username": "user", "password": "pass"})  # noqa: S106
+
+        assert result is True
+        # Should have two sleep calls: step delay (0.5) and post-submit delay (3)
+        sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
+        assert 0.5 in sleep_calls
+        assert 3 in sleep_calls  # _POST_SUBMIT_DELAY
+
+    def test_step_without_submit_skips_click(self) -> None:
+        """Step without submit selector skips the click action."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class SeleniumNoSubmitStep(SitePlugin):
+            site_name = "selnosubmit"
+            session_name = "selnosubmit"
+            help_text = "Selenium No Submit Step"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[
+                    LoginStep(
+                        fields={"username": "input#user"},
+                        # No submit - field entry triggers auto-advance
+                    ),
+                    LoginStep(
+                        fields={"password": "input#pass"},
+                        submit="button#login",
+                    ),
+                ],
+                url="/login",
+            )
+
+        plugin = SeleniumNoSubmitStep()
+        login_method = generate_login_method(plugin)
+
+        click_count = 0
+
+        def make_element() -> MagicMock:
+            nonlocal click_count
+            elem = MagicMock()
+            original_click = elem.click
+
+            def counted_click() -> None:
+                nonlocal click_count
+                click_count += 1
+                original_click()
+
+            elem.click = counted_click
+            return elem
+
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = MagicMock()
+        instance.driver.find_element = MagicMock(side_effect=lambda *a, **kw: make_element())
+        instance.driver.page_source = "<html>Welcome</html>"
+        instance.transfer_driver_cookies_to_session = MagicMock()
+
+        mock_capture = MagicMock()
+        mock_capture.start_capture = MagicMock()
+        mock_capture.stop_capture = MagicMock()
+        mock_capture.get_header_profiles = MagicMock(return_value={})
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.login_engine.time"),
+            patch(
+                "graftpunk.observe.capture.create_capture_backend",
+                return_value=mock_capture,
+            ),
+        ):
+            result = login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
         # Clicks: 2 field clicks + 1 submit click = 3
