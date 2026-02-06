@@ -18,12 +18,21 @@ base_url: "https://example.com"      # Optional: prepended to command URLs
 # Uncomment to enable declarative login:
 # login:
 #   url: /login
-#   fields:
-#     username: "input#email"
-#     password: "input#password"
-#   submit: "button[type=submit]"
 #   failure: "Invalid credentials"
 #   success: ".dashboard"
+#   steps:
+#     - fields:
+#         username: "input#email"
+#         password: "input#password"
+#       submit: "button[type=submit]"
+#     # Multi-step login example (e.g., identifier-first flows):
+#     # - fields:
+#     #     username: "input#email"
+#     #   submit: "button#next"
+#     #   wait_for: "input#password"  # nodriver only
+#     # - fields:
+#     #     password: "input#password"
+#     #   submit: "button#signin"
 
 # Optional: Token extraction for CSRF or dynamic headers
 # tokens:

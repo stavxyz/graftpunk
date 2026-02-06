@@ -9,7 +9,7 @@ Usage:
     3. Use: gp hn front
 """
 
-from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
+from graftpunk.plugins import CommandContext, LoginConfig, LoginStep, SitePlugin, command
 
 
 class HackerNewsPlugin(SitePlugin):
@@ -24,9 +24,16 @@ class HackerNewsPlugin(SitePlugin):
 
     login_config = LoginConfig(
         url="/login",
-        fields={"username": "input[name='acct']", "password": "input[name='pw']"},
-        submit="input[value='login']",
         failure="Bad login.",
+        steps=[
+            LoginStep(
+                fields={
+                    "username": "input[name='acct']",
+                    "password": "input[name='pw']",
+                },
+                submit="input[value='login']",
+            ),
+        ],
     )
 
     # token_config: No CSRF tokens needed for Hacker News.

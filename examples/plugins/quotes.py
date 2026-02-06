@@ -9,7 +9,7 @@ Usage:
     3. Use: gp quotes list
 """
 
-from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
+from graftpunk.plugins import CommandContext, LoginConfig, LoginStep, SitePlugin, command
 
 
 class QuotesPlugin(SitePlugin):
@@ -24,9 +24,13 @@ class QuotesPlugin(SitePlugin):
 
     login_config = LoginConfig(
         url="/login",
-        fields={"username": "#username", "password": "#password"},
-        submit="input[type='submit']",
         success="a[href='/logout']",
+        steps=[
+            LoginStep(
+                fields={"username": "#username", "password": "#password"},
+                submit="input[type='submit']",
+            ),
+        ],
     )
 
     # token_config: No CSRF tokens needed for this test site.
