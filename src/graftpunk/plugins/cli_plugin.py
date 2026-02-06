@@ -247,8 +247,15 @@ class CommandContext:
 class CommandResult:
     """Structured return type for command handlers.
 
-    Allows handlers to return data with optional metadata (pagination, status)
-    and format hints. Handlers can still return raw data -- this is not required.
+    Allows handlers to return data with optional metadata (pagination, status),
+    format hints, and output configuration for structured display.
+    Handlers can still return raw data -- this is not required.
+
+    Attributes:
+        data: The command response data.
+        metadata: Optional metadata dict (pagination, status info, etc.).
+        format_hint: Preferred output format ("json", "table", "raw", "csv").
+        output_config: Configuration for column filtering and view extraction.
     """
 
     data: Any

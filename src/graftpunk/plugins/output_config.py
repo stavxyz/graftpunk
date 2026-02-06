@@ -14,7 +14,12 @@ LOG = get_logger(__name__)
 
 @dataclass(frozen=True)
 class ColumnFilter:
-    """Filter columns by include or exclude patterns."""
+    """Filter columns by exact name matching.
+
+    Args:
+        mode: Either "include" (keep only listed columns) or "exclude" (remove listed).
+        columns: List of exact column names to include or exclude.
+    """
 
     mode: Literal["include", "exclude"]
     columns: list[str]
@@ -93,7 +98,17 @@ class OutputConfig:
 
 
 def parse_view_arg(arg: str) -> tuple[str, list[str]]:
-    """Parse 'name:col1,col2' into (name, [col1, col2])."""
+    """Parse view argument string into name and column list.
+
+    Parses 'name:col1,col2' format used in CLI --view arguments.
+
+    Args:
+        arg: View argument string (e.g., "items:id,name" or just "items").
+
+    Returns:
+        Tuple of (view_name, column_list). Column list is empty if no
+        columns specified or if only view name is provided.
+    """
     if ":" in arg:
         name, cols_str = arg.split(":", 1)
         cols = [c.strip() for c in cols_str.split(",") if c.strip()] if cols_str.strip() else []
@@ -102,7 +117,22 @@ def parse_view_arg(arg: str) -> tuple[str, list[str]]:
 
 
 def auto_detect_columns(data: list[dict], max_cols: int = 8) -> list[str]:
-    """Select best columns for display using heuristics."""
+    """Select best columns for display using heuristics.
+
+    Prioritizes columns in this order:
+    1. Identity columns: id, name, title (exact matches, id highest)
+    2. ID/name-related columns containing "id" or "name"
+    3. Date columns: created_at, updated_at, date
+    4. Other columns (alphabetically)
+    5. Content columns (deprioritized): description, content, body, text
+
+    Args:
+        data: List of dictionaries to analyze (samples first 100 items).
+        max_cols: Maximum number of columns to return (default: 8).
+
+    Returns:
+        List of column names ordered by priority, up to max_cols.
+    """
     if not data:
         return []
 
@@ -157,10 +187,18 @@ def apply_column_filter(
 
 
 def extract_view_data(data: Any, path: str) -> Any:
-    """Extract data from nested dict using dot-notation path.
+    """Extract data from nested structure using path expression.
 
-    Uses jmespath if installed for advanced queries, otherwise falls back
-    to simple dot-notation parsing. Logs warnings when extraction fails.
+    When jmespath is installed, supports full JMESPath query syntax including
+    array indexing and projections (e.g., "results[0].items", "data[?active]").
+    Falls back to simple dot-notation path traversal if jmespath is unavailable.
+
+    Args:
+        data: The nested data structure to extract from.
+        path: JMESPath expression or dot-notation path (e.g., "results.items").
+
+    Returns:
+        The extracted data, or None if path traversal fails.
     """
     if not path:
         return data
