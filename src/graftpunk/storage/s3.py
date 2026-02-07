@@ -22,8 +22,8 @@ Storage Structure:
 import json
 import random
 import time
-from datetime import UTC, datetime
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
@@ -143,7 +143,9 @@ class S3SessionStorage:
         """
         return f"sessions/{name}/metadata.json"
 
-    def _with_retry(self, operation: str, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    def _with_retry(
+        self, operation: str, func: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> Any:
         """Execute function with exponential backoff retry.
 
         Args:

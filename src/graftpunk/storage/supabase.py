@@ -351,7 +351,8 @@ class SupabaseSessionStorage:
                 LOG.debug("session_file_deleted", name=name, path=path)
             except (HTTPStatusError, StorageApiError) as e:
                 # 404/NotFound is acceptable - file didn't exist
-                status = getattr(e, "status", None) or getattr(getattr(e, "response", None), "status_code", None)
+                response = getattr(e, "response", None)
+                status = getattr(e, "status", None) or getattr(response, "status_code", None)
                 if status not in (404, "404"):
                     LOG.error("session_file_delete_failed", name=name, path=path, error=str(e))
                     raise StorageError(f"Failed to delete '{path}': {e}") from e
@@ -382,7 +383,8 @@ class SupabaseSessionStorage:
             return dict_to_metadata(json.loads(metadata_json))
         except (HTTPStatusError, StorageApiError) as e:
             # 404/NotFound means session doesn't exist - return None
-            status = getattr(e, "status", None) or getattr(getattr(e, "response", None), "status_code", None)
+            response = getattr(e, "response", None)
+            status = getattr(e, "status", None) or getattr(response, "status_code", None)
             if status in (404, "404"):
                 return None
             LOG.error("get_session_metadata_failed", name=name, error=str(e))
