@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-02-07
+
 ### Added
+
+- **S3-Compatible Storage Backend**: Session persistence on S3-compatible object storage
+  - Supports Cloudflare R2 (zero egress fees), AWS S3, MinIO, and any S3-compatible service
+  - Retry logic with exponential backoff and jitter for transient failures
+  - Region='auto' handling for Cloudflare R2
+  - Install with: `pip install graftpunk[s3]`
+
+- **Structured Output System**: OutputConfig for declarative table/CSV formatting
+  - `OutputConfig` dataclass with named views, column definitions, and default view selection
+  - OutputConfig support in YAML plugins via `output:` block
+  - `output_config` field on `CommandResult` for plugin-controlled formatting
+
+- **Multi-Step Login Support**: Identifier-first authentication flows (#77)
+  - `LoginStep` dataclass for defining individual steps in a login flow
+  - `LoginConfig.steps` list replaces flat fields for multi-step scenarios
+  - Nodriver and Selenium engines both support multi-step flows
+  - YAML `login.steps:` block with the same capabilities
+
+- **Resilient Element Selection**: Retry and wait_for in login engine (#67)
+  - `wait_for` field on `LoginConfig` for post-login element waiting
+  - `_select_with_retry` deadline-based retry helper for nodriver's `tab.select()`
+  - Handles `ProtocolException` during page transitions
+
+- **`--no-session` Flag**: Run `observe` and `http` commands without a pre-existing session (#54, #56)
+
+- **First-Class CSV Output Formatter**: Dedicated `CsvFormatter` with fallback handling (#57)
+
+- **Click Kwargs Passthrough**: Fine-grained plugin parameter control via `click_kwargs` on `CommandSpec` (#72)
 
 - **Interactive Observe Mode**: Record browser sessions interactively with `gp observe interactive`
   - Opens authenticated browser at a URL, records all network traffic while you click around
@@ -131,6 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Supabase storage backend** refactored to pure file-based storage. No longer uses `session_cache` database table. Users with existing Supabase sessions will need to re-login.
+- All storage backends now use the same file-pair pattern: `{session_name}/session.pickle` + `metadata.json`
+- `LoginConfig` restructured to use `steps` list for multi-step login flows
+- `format_output` writes to stdout instead of stderr (#60)
+- Example plugins updated for steps-based LoginConfig API
 - `PluginConfig` is now a frozen dataclass constructed via `build_plugin_config()` factory
 - Login configuration extracted into `LoginConfig` frozen dataclass (replaces 5 flat fields)
 - `get_commands()` returns `list[CommandSpec]` instead of `dict`
@@ -146,6 +181,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Graceful observe shutdown on Ctrl+C and browser close (#69)
+- CDP eager body fetch failures (#64)
+- Session headers contaminating GET requests (#65)
+- `load_session_for_api` overwrites browser UA with python-requests default (#52)
+- Silent failures in S3 storage replaced with explicit `StorageError` exceptions
 - **Browser identity header leak** (#49): `GraftpunkSession` now separates browser identity headers (User-Agent, sec-ch-ua, Accept-Language, Accept-Encoding, etc.) from request-type headers (Accept, Sec-Fetch-*). Identity headers are set as session defaults at init, preventing `python-requests` User-Agent from ever reaching the wire when profiles exist. When a detected profile wasn't captured during login, canonical Chrome request-type headers are used as fallback instead of silently applying no headers. `_detect_profile()` now correctly classifies DELETE/PUT/PATCH/HEAD/OPTIONS as XHR per HTML spec §4.10.18.6 (forms only support GET and POST).
 - Nested plugin subcommand groups (e.g. `gp bek invoice`) now use `TyperGroup` instead of plain `click.Group`, so `--help` output gets the same rich formatting as top-level commands
 
