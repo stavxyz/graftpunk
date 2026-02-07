@@ -284,15 +284,30 @@ class S3SessionStorage:
         )
 
     def list_sessions(self) -> list[str]:
-        """List all session names.
+        """List all session names in the bucket.
 
         Returns:
             Sorted list of session names
         """
-        raise NotImplementedError("list_sessions not yet implemented")
+        sessions: set[str] = set()
+        paginator = self._client.get_paginator("list_objects_v2")
+
+        try:
+            for page in paginator.paginate(Bucket=self.bucket):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    # Extract session name from path: sessions/{name}/session.pickle
+                    if key.startswith("sessions/") and "/" in key[9:]:
+                        session_name = key.split("/")[1]
+                        sessions.add(session_name)
+        except Exception as e:
+            LOG.warning("list_sessions_failed", error=str(e))
+            return []
+
+        return sorted(sessions)
 
     def delete_session(self, name: str) -> bool:
-        """Delete a session.
+        """Delete session data and metadata from S3.
 
         Args:
             name: Session identifier
@@ -300,10 +315,23 @@ class S3SessionStorage:
         Returns:
             True if deleted, False if not found
         """
-        raise NotImplementedError("delete_session not yet implemented")
+        session_key = self._session_key(name)
+        metadata_key = self._metadata_key(name)
+
+        deleted = False
+        for key in (session_key, metadata_key):
+            try:
+                self._client.delete_object(Bucket=self.bucket, Key=key)
+                deleted = True
+            except Exception as e:
+                LOG.debug("delete_object_failed", key=key, error=str(e))
+
+        if deleted:
+            LOG.info("session_deleted", name=name)
+        return deleted
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
-        """Get session metadata without loading the full session.
+        """Get session metadata without loading session data.
 
         Args:
             name: Session identifier
@@ -311,14 +339,26 @@ class S3SessionStorage:
         Returns:
             SessionMetadata if session exists, None otherwise
         """
-        raise NotImplementedError("get_session_metadata not yet implemented")
+        from botocore.exceptions import ClientError
+
+        metadata_key = self._metadata_key(name)
+
+        try:
+            response = self._client.get_object(Bucket=self.bucket, Key=metadata_key)
+            metadata_json = response["Body"].read().decode("utf-8")
+            return self._dict_to_metadata(json.loads(metadata_json))
+        except ClientError:
+            return None
+        except Exception as e:
+            LOG.warning("get_session_metadata_failed", name=name, error=str(e))
+            return None
 
     def update_session_metadata(
         self,
         name: str,
         status: str | None = None,
     ) -> bool:
-        """Update session metadata fields.
+        """Update session metadata (currently only status field).
 
         Args:
             name: Session identifier
@@ -330,4 +370,32 @@ class S3SessionStorage:
         Raises:
             ValueError: If status is not a valid value
         """
-        raise NotImplementedError("update_session_metadata not yet implemented")
+        if status is not None and status not in ("active", "logged_out"):
+            raise ValueError(f"Invalid status: {status}. Must be 'active' or 'logged_out'")
+
+        metadata = self.get_session_metadata(name)
+        if metadata is None:
+            return False
+
+        from dataclasses import replace
+
+        updates: dict[str, Any] = {"modified_at": datetime.now(UTC)}
+        if status is not None:
+            updates["status"] = status
+
+        new_metadata = replace(metadata, **updates)
+        metadata_key = self._metadata_key(name)
+        metadata_json = json.dumps(self._metadata_to_dict(new_metadata), indent=2)
+
+        try:
+            self._client.put_object(
+                Bucket=self.bucket,
+                Key=metadata_key,
+                Body=metadata_json.encode("utf-8"),
+                ContentType="application/json",
+            )
+            LOG.info("metadata_updated", name=name, status=status)
+            return True
+        except Exception as e:
+            LOG.error("metadata_update_failed", name=name, error=str(e))
+            return False
