@@ -201,3 +201,131 @@ class TestLoadSession:
 
         with pytest.raises(SessionExpiredError, match="expired"):
             storage.load_session("expired-session")
+
+
+class TestListSessions:
+    """Tests for list_sessions method."""
+
+    def test_list_sessions_empty(self, storage, mock_s3_client):
+        """Test listing sessions when none exist."""
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{"Contents": []}]
+        mock_s3_client.get_paginator.return_value = mock_paginator
+
+        sessions = storage.list_sessions()
+        assert sessions == []
+
+    def test_list_sessions_with_results(self, storage, mock_s3_client):
+        """Test listing sessions with results."""
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [
+            {
+                "Contents": [
+                    {"Key": "sessions/session-b/session.pickle"},
+                    {"Key": "sessions/session-b/metadata.json"},
+                    {"Key": "sessions/session-a/session.pickle"},
+                    {"Key": "sessions/session-a/metadata.json"},
+                ]
+            }
+        ]
+        mock_s3_client.get_paginator.return_value = mock_paginator
+
+        sessions = storage.list_sessions()
+        assert sessions == ["session-a", "session-b"]
+
+
+class TestDeleteSession:
+    """Tests for delete_session method."""
+
+    def test_delete_session_success(self, storage, mock_s3_client):
+        """Test successful session deletion."""
+        mock_s3_client.delete_object.return_value = {}
+
+        result = storage.delete_session("test-session")
+
+        assert result is True
+        assert mock_s3_client.delete_object.call_count == 2
+
+
+class TestGetSessionMetadata:
+    """Tests for get_session_metadata method."""
+
+    def test_get_session_metadata_not_found(self, storage, mock_s3_client):
+        """Test getting metadata for non-existent session."""
+        from botocore.exceptions import ClientError
+
+        error_response = {
+            "Error": {"Code": "NoSuchKey"},
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+        }
+        mock_s3_client.get_object.side_effect = ClientError(error_response, "GetObject")
+
+        metadata = storage.get_session_metadata("non-existent")
+        assert metadata is None
+
+    def test_get_session_metadata_success(self, storage, mock_s3_client, sample_metadata):
+        """Test getting metadata for existing session."""
+        metadata_dict = {
+            "name": "my-session",
+            "checksum": "sha256abc",
+            "created_at": sample_metadata.created_at.isoformat(),
+            "modified_at": sample_metadata.modified_at.isoformat(),
+            "expires_at": None,
+            "domain": "example.com",
+            "current_url": "https://example.com",
+            "cookie_count": 3,
+            "cookie_domains": ["example.com"],
+            "status": "active",
+        }
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(metadata_dict).encode()
+        mock_s3_client.get_object.return_value = {"Body": mock_body}
+
+        metadata = storage.get_session_metadata("my-session")
+        assert metadata is not None
+        assert metadata.name == "my-session"
+        assert metadata.domain == "example.com"
+
+
+class TestUpdateSessionMetadata:
+    """Tests for update_session_metadata method."""
+
+    def test_update_session_metadata_invalid_status(self, storage):
+        """Test that invalid status raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid status"):
+            storage.update_session_metadata("test", status="invalid-status")
+
+    def test_update_session_metadata_success(self, storage, mock_s3_client, sample_metadata):
+        """Test successful metadata update."""
+        metadata_dict = {
+            "name": "test",
+            "checksum": "abc",
+            "created_at": sample_metadata.created_at.isoformat(),
+            "modified_at": sample_metadata.modified_at.isoformat(),
+            "expires_at": None,
+            "domain": None,
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+        }
+        mock_body = MagicMock()
+        mock_body.read.return_value = json.dumps(metadata_dict).encode()
+        mock_s3_client.get_object.return_value = {"Body": mock_body}
+
+        result = storage.update_session_metadata("test", status="logged_out")
+        assert result is True
+        mock_s3_client.put_object.assert_called_once()
+
+    def test_update_session_metadata_not_found(self, storage, mock_s3_client):
+        """Test update returns False when session not found."""
+        from botocore.exceptions import ClientError
+
+        error_response = {
+            "Error": {"Code": "NoSuchKey"},
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+        }
+        mock_s3_client.get_object.side_effect = ClientError(error_response, "GetObject")
+
+        result = storage.update_session_metadata("nonexistent", status="active")
+        assert result is False
