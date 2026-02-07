@@ -27,7 +27,11 @@ from typing import Any
 
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
 from graftpunk.logging import get_logger
-from graftpunk.storage.base import SessionMetadata, parse_datetime_iso
+from graftpunk.storage.base import (
+    SessionMetadata,
+    dict_to_metadata,
+    metadata_to_dict,
+)
 
 LOG = get_logger(__name__)
 
@@ -236,7 +240,7 @@ class S3SessionStorage:
         )
 
         # Save metadata as JSON with retry
-        metadata_json = json.dumps(self._metadata_to_dict(metadata), indent=2)
+        metadata_json = json.dumps(metadata_to_dict(metadata), indent=2)
         self._with_retry(
             "save_session_metadata",
             self._client.put_object,
@@ -279,7 +283,7 @@ class S3SessionStorage:
                 Key=metadata_key,
             )
             metadata_json = metadata_response["Body"].read().decode("utf-8")
-            metadata = self._dict_to_metadata(json.loads(metadata_json))
+            metadata = dict_to_metadata(json.loads(metadata_json))
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code in ("NoSuchKey", "404"):
@@ -309,50 +313,6 @@ class S3SessionStorage:
 
         LOG.info("session_loaded", name=name, size=len(encrypted_data))
         return encrypted_data, metadata
-
-    def _metadata_to_dict(self, metadata: SessionMetadata) -> dict[str, Any]:
-        """Convert SessionMetadata to JSON-serializable dict.
-
-        Args:
-            metadata: Session metadata object
-
-        Returns:
-            Dictionary suitable for JSON serialization
-        """
-        return {
-            "name": metadata.name,
-            "checksum": metadata.checksum,
-            "created_at": metadata.created_at.isoformat(),
-            "modified_at": metadata.modified_at.isoformat(),
-            "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
-            "domain": metadata.domain,
-            "current_url": metadata.current_url,
-            "cookie_count": metadata.cookie_count,
-            "cookie_domains": metadata.cookie_domains,
-            "status": metadata.status,
-        }
-
-    def _dict_to_metadata(self, data: dict[str, Any]) -> SessionMetadata:
-        """Convert dict to SessionMetadata.
-
-        Args:
-            data: Dictionary from JSON deserialization
-
-        Returns:
-            SessionMetadata object
-        """
-        return SessionMetadata(
-            name=data.get("name", ""),
-            checksum=data.get("checksum", ""),
-            created_at=parse_datetime_iso(data.get("created_at")) or datetime.now(UTC),
-            modified_at=parse_datetime_iso(data.get("modified_at")) or datetime.now(UTC),
-            expires_at=parse_datetime_iso(data.get("expires_at")),
-            domain=data.get("domain"),
-            current_url=data.get("current_url"),
-            cookie_count=data.get("cookie_count", 0),
-            cookie_domains=data.get("cookie_domains", []),
-            status=data.get("status", "active"),
-        )
 
     def list_sessions(self) -> list[str]:
         """List all session names in the bucket.
@@ -417,7 +377,7 @@ class S3SessionStorage:
         try:
             response = self._client.get_object(Bucket=self.bucket, Key=metadata_key)
             metadata_json = response["Body"].read().decode("utf-8")
-            return self._dict_to_metadata(json.loads(metadata_json))
+            return dict_to_metadata(json.loads(metadata_json))
         except ClientError:
             return None
         except Exception as e:
@@ -456,7 +416,7 @@ class S3SessionStorage:
 
         new_metadata = replace(metadata, **updates)
         metadata_key = self._metadata_key(name)
-        metadata_json = json.dumps(self._metadata_to_dict(new_metadata), indent=2)
+        metadata_json = json.dumps(metadata_to_dict(new_metadata), indent=2)
 
         try:
             self._client.put_object(

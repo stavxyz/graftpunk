@@ -327,12 +327,15 @@ class TestSupabaseSessionStorage:
 
 
 class TestMetadataConversion:
-    """Tests for _metadata_to_dict and _dict_to_metadata conversion."""
+    """Tests for dict_to_metadata and metadata_to_dict conversion.
 
-    @patch("supabase.create_client")
-    def test_dict_to_metadata_full_data(self, mock_create_client):
+    Note: These functions have been extracted to graftpunk.storage.base module.
+    """
+
+    def test_dict_to_metadata_full_data(self):
         """Test conversion of a complete dict to SessionMetadata."""
-        storage, _mock_client = _make_storage(mock_create_client)
+        from graftpunk.storage.base import dict_to_metadata
+
         now = datetime.now(UTC)
 
         data = {
@@ -348,7 +351,7 @@ class TestMetadataConversion:
             "status": "active",
         }
 
-        metadata = storage._dict_to_metadata(data)
+        metadata = dict_to_metadata(data)
         assert metadata.name == "my-session"
         assert metadata.checksum == "abc123"
         assert metadata.domain == "example.com"
@@ -358,14 +361,13 @@ class TestMetadataConversion:
         assert metadata.status == "active"
         assert metadata.expires_at is not None
 
-    @patch("supabase.create_client")
-    def test_dict_to_metadata_minimal_data(self, mock_create_client):
+    def test_dict_to_metadata_minimal_data(self):
         """Test conversion with minimal/missing fields uses defaults."""
-        storage, _mock_client = _make_storage(mock_create_client)
+        from graftpunk.storage.base import dict_to_metadata
 
         data = {}
 
-        metadata = storage._dict_to_metadata(data)
+        metadata = dict_to_metadata(data)
         assert metadata.name == ""
         assert metadata.checksum == ""
         assert metadata.domain is None
@@ -378,10 +380,9 @@ class TestMetadataConversion:
         assert metadata.created_at is not None
         assert metadata.modified_at is not None
 
-    @patch("supabase.create_client")
-    def test_dict_to_metadata_with_z_suffix_datetime(self, mock_create_client):
+    def test_dict_to_metadata_with_z_suffix_datetime(self):
         """Test conversion handles Supabase Z-suffix datetime strings."""
-        storage, _mock_client = _make_storage(mock_create_client)
+        from graftpunk.storage.base import dict_to_metadata
 
         data = {
             "name": "test",
@@ -391,21 +392,20 @@ class TestMetadataConversion:
             "expires_at": "2024-06-16T12:00:00Z",
         }
 
-        metadata = storage._dict_to_metadata(data)
+        metadata = dict_to_metadata(data)
         assert metadata.created_at.year == 2024
         assert metadata.created_at.month == 6
         assert metadata.expires_at is not None
 
-    @patch("supabase.create_client")
-    def test_metadata_to_dict_roundtrip(self, mock_create_client, sample_metadata):
+    def test_metadata_to_dict_roundtrip(self, sample_metadata):
         """Test that metadata can be converted to dict and back."""
-        storage, _mock_client = _make_storage(mock_create_client)
+        from graftpunk.storage.base import dict_to_metadata, metadata_to_dict
 
         # Convert to dict
-        data = storage._metadata_to_dict(sample_metadata)
+        data = metadata_to_dict(sample_metadata)
 
         # Convert back to metadata
-        restored = storage._dict_to_metadata(data)
+        restored = dict_to_metadata(data)
 
         assert restored.name == sample_metadata.name
         assert restored.checksum == sample_metadata.checksum

@@ -2,7 +2,10 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from typing import Any
 
 
 def parse_datetime_iso(value: str | None) -> datetime | None:
@@ -73,6 +76,52 @@ class SessionMetadata:
     cookie_count: int
     cookie_domains: list[str]
     status: str = "active"
+
+
+def metadata_to_dict(metadata: SessionMetadata) -> dict[str, "Any"]:
+    """Convert SessionMetadata to JSON-serializable dict.
+
+    Args:
+        metadata: Session metadata object
+
+    Returns:
+        Dictionary suitable for JSON serialization
+    """
+    return {
+        "name": metadata.name,
+        "checksum": metadata.checksum,
+        "created_at": metadata.created_at.isoformat(),
+        "modified_at": metadata.modified_at.isoformat(),
+        "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
+        "domain": metadata.domain,
+        "current_url": metadata.current_url,
+        "cookie_count": metadata.cookie_count,
+        "cookie_domains": metadata.cookie_domains,
+        "status": metadata.status,
+    }
+
+
+def dict_to_metadata(data: dict[str, "Any"]) -> SessionMetadata:
+    """Convert dict to SessionMetadata.
+
+    Args:
+        data: Dictionary from JSON deserialization
+
+    Returns:
+        SessionMetadata object
+    """
+    return SessionMetadata(
+        name=data.get("name", ""),
+        checksum=data.get("checksum", ""),
+        created_at=parse_datetime_iso(data.get("created_at")) or datetime.now(UTC),
+        modified_at=parse_datetime_iso(data.get("modified_at")) or datetime.now(UTC),
+        expires_at=parse_datetime_iso(data.get("expires_at")),
+        domain=data.get("domain"),
+        current_url=data.get("current_url"),
+        cookie_count=data.get("cookie_count", 0),
+        cookie_domains=data.get("cookie_domains", []),
+        status=data.get("status", "active"),
+    )
 
 
 class SessionStorageBackend(Protocol):
