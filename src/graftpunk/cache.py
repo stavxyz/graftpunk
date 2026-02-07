@@ -213,7 +213,8 @@ def cache_session(session: T, session_name: str | None = None) -> str:
 
     Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
     - "local" (default): sessions/{session_name}/session.pickle + metadata.json
-    - "supabase": Supabase Storage bucket + session_cache database table
+    - "supabase": Supabase Storage bucket (file-pair pattern)
+    - "s3": S3-compatible storage bucket (file-pair pattern)
 
     Args:
         session: Session object to cache (must be picklable).
@@ -271,7 +272,8 @@ def load_session(name: str) -> SessionLike:
 
     Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
     - "local" (default): Local filesystem
-    - "supabase": Supabase Storage + database
+    - "supabase": Supabase Storage (file-pair pattern)
+    - "s3": S3-compatible storage (file-pair pattern)
 
     Security Notes:
         This function deserializes pickle data. Pickle can execute arbitrary
