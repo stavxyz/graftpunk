@@ -23,6 +23,7 @@ import json
 import random
 import time
 from datetime import UTC, datetime
+from collections.abc import Callable
 from typing import Any
 
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
@@ -142,7 +143,7 @@ class S3SessionStorage:
         """
         return f"sessions/{name}/metadata.json"
 
-    def _with_retry(self, operation: str, func, *args, **kwargs):
+    def _with_retry(self, operation: str, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Execute function with exponential backoff retry.
 
         Args:
@@ -319,7 +320,12 @@ class S3SessionStorage:
 
         Returns:
             Sorted list of session names
+
+        Raises:
+            StorageError: If listing fails due to S3 errors
         """
+        from botocore.exceptions import BotoCoreError, ClientError
+
         sessions: set[str] = set()
         paginator = self._client.get_paginator("list_objects_v2")
 
@@ -331,9 +337,9 @@ class S3SessionStorage:
                     if key.startswith("sessions/") and "/" in key[9:]:
                         session_name = key.split("/")[1]
                         sessions.add(session_name)
-        except Exception as e:
-            LOG.warning("list_sessions_failed", error=str(e))
-            return []
+        except (ClientError, BotoCoreError) as e:
+            LOG.error("list_sessions_failed", error=str(e))
+            raise StorageError(f"Failed to list sessions: {e}") from e
 
         return sorted(sessions)
 
@@ -344,22 +350,31 @@ class S3SessionStorage:
             name: Session identifier
 
         Returns:
-            True if deleted, False if not found
+            True if deleted successfully
+
+        Raises:
+            StorageError: If delete fails due to S3 errors (except NotFound)
         """
+        from botocore.exceptions import BotoCoreError, ClientError
+
         session_key = self._session_key(name)
         metadata_key = self._metadata_key(name)
 
-        deleted = False
         for key in (session_key, metadata_key):
             try:
                 self._client.delete_object(Bucket=self.bucket, Key=key)
-                deleted = True
-            except Exception as e:
-                LOG.debug("delete_object_failed", key=key, error=str(e))
+            except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code", "")
+                # NoSuchKey is fine - the object didn't exist
+                if error_code not in ("NoSuchKey", "404"):
+                    LOG.error("delete_object_failed", key=key, error=str(e))
+                    raise StorageError(f"Failed to delete '{key}': {e}") from e
+            except BotoCoreError as e:
+                LOG.error("delete_object_failed", key=key, error=str(e))
+                raise StorageError(f"Failed to delete '{key}': {e}") from e
 
-        if deleted:
-            LOG.info("session_deleted", name=name)
-        return deleted
+        LOG.info("session_deleted", name=name)
+        return True
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
         """Get session metadata without loading session data.
@@ -369,8 +384,11 @@ class S3SessionStorage:
 
         Returns:
             SessionMetadata if session exists, None otherwise
+
+        Raises:
+            StorageError: If fetch fails due to S3 errors (except NotFound)
         """
-        from botocore.exceptions import ClientError
+        from botocore.exceptions import BotoCoreError, ClientError
 
         metadata_key = self._metadata_key(name)
 
@@ -378,11 +396,15 @@ class S3SessionStorage:
             response = self._client.get_object(Bucket=self.bucket, Key=metadata_key)
             metadata_json = response["Body"].read().decode("utf-8")
             return dict_to_metadata(json.loads(metadata_json))
-        except ClientError:
-            return None
-        except Exception as e:
-            LOG.warning("get_session_metadata_failed", name=name, error=str(e))
-            return None
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code in ("NoSuchKey", "404"):
+                return None
+            LOG.error("get_session_metadata_failed", name=name, error=str(e))
+            raise StorageError(f"Failed to get metadata for '{name}': {e}") from e
+        except BotoCoreError as e:
+            LOG.error("get_session_metadata_failed", name=name, error=str(e))
+            raise StorageError(f"Failed to get metadata for '{name}': {e}") from e
 
     def update_session_metadata(
         self,
@@ -400,6 +422,7 @@ class S3SessionStorage:
 
         Raises:
             ValueError: If status is not a valid value
+            StorageError: If update fails due to S3 errors
         """
         if status is not None and status not in ("active", "logged_out"):
             raise ValueError(f"Invalid status: {status}. Must be 'active' or 'logged_out'")
@@ -418,6 +441,8 @@ class S3SessionStorage:
         metadata_key = self._metadata_key(name)
         metadata_json = json.dumps(metadata_to_dict(new_metadata), indent=2)
 
+        from botocore.exceptions import BotoCoreError, ClientError
+
         try:
             self._client.put_object(
                 Bucket=self.bucket,
@@ -427,6 +452,6 @@ class S3SessionStorage:
             )
             LOG.info("metadata_updated", name=name, status=status)
             return True
-        except Exception as e:
+        except (ClientError, BotoCoreError) as e:
             LOG.error("metadata_update_failed", name=name, error=str(e))
-            return False
+            raise StorageError(f"Failed to update metadata for '{name}': {e}") from e

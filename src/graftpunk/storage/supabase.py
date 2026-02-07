@@ -291,6 +291,9 @@ class SupabaseSessionStorage:
 
         Returns:
             Sorted list of session names
+
+        Raises:
+            StorageError: If listing fails due to Supabase errors
         """
         from httpx import HTTPStatusError
         from storage3.exceptions import StorageApiError
@@ -319,7 +322,7 @@ class SupabaseSessionStorage:
             return sorted(sessions)
         except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_list_sessions", error=str(e), backend="supabase")
-            return []
+            raise StorageError(f"Failed to list sessions: {e}") from e
 
     def delete_session(self, name: str) -> bool:
         """Delete a session.
@@ -328,7 +331,10 @@ class SupabaseSessionStorage:
             name: Session identifier
 
         Returns:
-            True if deleted, False if not found
+            True if deleted successfully
+
+        Raises:
+            StorageError: If delete fails due to Supabase errors (except NotFound)
         """
         from httpx import HTTPStatusError
         from storage3.exceptions import StorageApiError
@@ -337,21 +343,21 @@ class SupabaseSessionStorage:
         metadata_path = self._metadata_path(name)
 
         storage = self.client.storage.from_(self.bucket_name)
-        deleted = False
 
         # Delete both files from storage
         for path in (session_path, metadata_path):
             try:
                 storage.remove([path])
-                deleted = True
                 LOG.debug("session_file_deleted", name=name, path=path)
             except (HTTPStatusError, StorageApiError) as e:
-                LOG.warning("session_file_delete_failed", name=name, path=path, error=str(e))
+                # 404/NotFound is acceptable - file didn't exist
+                status = getattr(e, "status", None) or getattr(getattr(e, "response", None), "status_code", None)
+                if status not in (404, "404"):
+                    LOG.error("session_file_delete_failed", name=name, path=path, error=str(e))
+                    raise StorageError(f"Failed to delete '{path}': {e}") from e
 
-        if deleted:
-            LOG.info("session_delete_completed", name=name, backend="supabase")
-
-        return deleted
+        LOG.info("session_delete_completed", name=name, backend="supabase")
+        return True
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
         """Get session metadata without loading the full session.
@@ -361,6 +367,9 @@ class SupabaseSessionStorage:
 
         Returns:
             SessionMetadata if session exists, None otherwise
+
+        Raises:
+            StorageError: If fetch fails due to Supabase errors (except NotFound)
         """
         from httpx import HTTPStatusError
         from storage3.exceptions import StorageApiError
@@ -371,11 +380,13 @@ class SupabaseSessionStorage:
             metadata_bytes = storage.download(metadata_path)
             metadata_json = metadata_bytes.decode("utf-8")
             return dict_to_metadata(json.loads(metadata_json))
-        except (HTTPStatusError, StorageApiError):
-            return None
-        except Exception as e:
-            LOG.warning("get_session_metadata_failed", name=name, error=str(e))
-            return None
+        except (HTTPStatusError, StorageApiError) as e:
+            # 404/NotFound means session doesn't exist - return None
+            status = getattr(e, "status", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status in (404, "404"):
+                return None
+            LOG.error("get_session_metadata_failed", name=name, error=str(e))
+            raise StorageError(f"Failed to get metadata for '{name}': {e}") from e
 
     def update_session_metadata(
         self,
@@ -393,7 +404,9 @@ class SupabaseSessionStorage:
 
         Raises:
             ValueError: If status is not a valid value
+            StorageError: If update fails due to Supabase errors
         """
+        from httpx import HTTPStatusError
         from storage3.exceptions import StorageApiError
         from storage3.types import FileOptions
 
@@ -440,9 +453,9 @@ class SupabaseSessionStorage:
 
             LOG.info("session_metadata_updated", name=name, status=status, backend="supabase")
             return True
-        except Exception as e:
+        except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_update_session_metadata", name=name, error=str(e))
-            return False
+            raise StorageError(f"Failed to update metadata for '{name}': {e}") from e
 
     def _ensure_bucket_exists(self) -> None:
         """Create sessions bucket if it doesn't exist."""

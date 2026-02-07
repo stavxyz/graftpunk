@@ -113,14 +113,16 @@ class TestSupabaseSessionStorage:
         """Test that Storage errors in list_sessions return empty list."""
         from storage3.exceptions import StorageApiError
 
+        from graftpunk.exceptions import StorageError
+
         storage, mock_client = _make_storage(mock_create_client)
 
         mock_client.storage.from_.return_value.list.side_effect = StorageApiError(
             "error", code="500", status=500
         )
 
-        sessions = storage.list_sessions()
-        assert sessions == []
+        with pytest.raises(StorageError, match="Failed to list sessions"):
+            storage.list_sessions()
 
     @patch("supabase.create_client")
     def test_list_sessions_filters_hidden_files(self, mock_create_client):
@@ -180,9 +182,11 @@ class TestSupabaseSessionStorage:
         assert metadata.cookie_count == 3
 
     @patch("supabase.create_client")
-    def test_get_session_metadata_http_error_returns_none(self, mock_create_client):
-        """Test that HTTP errors in get_session_metadata return None."""
+    def test_get_session_metadata_http_error_raises(self, mock_create_client):
+        """Test that non-404 HTTP errors in get_session_metadata raise StorageError."""
         from httpx import HTTPStatusError, Request, Response
+
+        from graftpunk.exceptions import StorageError
 
         storage, mock_client = _make_storage(mock_create_client)
 
@@ -193,8 +197,8 @@ class TestSupabaseSessionStorage:
             "Server error", request=mock_request, response=mock_response
         )
 
-        metadata = storage.get_session_metadata("test")
-        assert metadata is None
+        with pytest.raises(StorageError, match="Failed to get metadata"):
+            storage.get_session_metadata("test")
 
     @patch("supabase.create_client")
     def test_delete_session(self, mock_create_client):
@@ -231,8 +235,8 @@ class TestSupabaseSessionStorage:
         assert result is True
 
     @patch("supabase.create_client")
-    def test_delete_session_both_files_fail(self, mock_create_client):
-        """Test delete when both file removals fail."""
+    def test_delete_session_not_found_still_succeeds(self, mock_create_client):
+        """Test delete returns True even when files don't exist (404s are ignored)."""
         from storage3.exceptions import StorageApiError
 
         storage, mock_client = _make_storage(mock_create_client)
@@ -244,7 +248,26 @@ class TestSupabaseSessionStorage:
         )
 
         result = storage.delete_session("test-session")
-        assert result is False
+        # Returns True because 404 means the files don't exist (desired end state)
+        assert result is True
+
+    @patch("supabase.create_client")
+    def test_delete_session_server_error_raises(self, mock_create_client):
+        """Test delete raises StorageError on non-404 errors."""
+        from storage3.exceptions import StorageApiError
+
+        from graftpunk.exceptions import StorageError
+
+        storage, mock_client = _make_storage(mock_create_client)
+
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+        mock_storage_bucket.remove.side_effect = StorageApiError(
+            "Server error", code="500", status=500
+        )
+
+        with pytest.raises(StorageError, match="Failed to delete"):
+            storage.delete_session("test-session")
 
     @patch("supabase.create_client")
     def test_update_session_metadata_invalid_status(self, mock_create_client):
