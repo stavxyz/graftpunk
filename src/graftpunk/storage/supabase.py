@@ -1,9 +1,21 @@
-"""Supabase session storage backend for Lambda/stateless environments."""
+"""Supabase session storage backend for Lambda/stateless environments.
 
+Uses Supabase Storage bucket for both session data and metadata.
+Follows the same file-pair pattern as local and S3 backends:
+- {session_name}/session.pickle - Encrypted session data
+- {session_name}/metadata.json - Session metadata (JSON)
+
+This is a BREAKING CHANGE from the previous implementation that used
+Supabase database table for metadata. Users with existing sessions
+will need to re-login.
+"""
+
+import json
 import random
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
 from graftpunk.logging import get_logger
@@ -21,12 +33,12 @@ CACHE_CONTROL_SECONDS = 3600  # 1 hour
 class SupabaseSessionStorage:
     """Supabase session storage for Lambda/stateless environments.
 
-    Storage architecture:
-    - Encrypted session pickle → Supabase Storage bucket
-    - Metadata → session_cache database table (queryable, TTL)
+    Storage architecture (file-pair pattern):
+    - {session_name}/session.pickle - Encrypted session bytes
+    - {session_name}/metadata.json - Session metadata (JSON)
 
-    The encryption key is stored in Supabase Vault and retrieved
-    by the encryption module when GRAFTPUNK_STORAGE_BACKEND=supabase.
+    This matches the local and S3 storage patterns, storing both
+    session data and metadata in the same Supabase Storage bucket.
     """
 
     def __init__(
@@ -66,6 +78,72 @@ class SupabaseSessionStorage:
             "supabase_session_storage_initialized",
             url=normalized_url,
             bucket=bucket_name,
+        )
+
+    def _session_path(self, name: str) -> str:
+        """Generate storage path for session pickle data.
+
+        Args:
+            name: Session identifier
+
+        Returns:
+            Storage path
+        """
+        return f"{name}/session.pickle"
+
+    def _metadata_path(self, name: str) -> str:
+        """Generate storage path for session metadata.
+
+        Args:
+            name: Session identifier
+
+        Returns:
+            Storage path
+        """
+        return f"{name}/metadata.json"
+
+    def _metadata_to_dict(self, metadata: SessionMetadata) -> dict[str, Any]:
+        """Convert SessionMetadata to JSON-serializable dict.
+
+        Args:
+            metadata: Session metadata object
+
+        Returns:
+            Dictionary suitable for JSON serialization
+        """
+        return {
+            "name": metadata.name,
+            "checksum": metadata.checksum,
+            "created_at": metadata.created_at.isoformat(),
+            "modified_at": metadata.modified_at.isoformat(),
+            "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
+            "domain": metadata.domain,
+            "current_url": metadata.current_url,
+            "cookie_count": metadata.cookie_count,
+            "cookie_domains": metadata.cookie_domains,
+            "status": metadata.status,
+        }
+
+    def _dict_to_metadata(self, data: dict[str, Any]) -> SessionMetadata:
+        """Convert dict to SessionMetadata.
+
+        Args:
+            data: Dictionary from JSON deserialization
+
+        Returns:
+            SessionMetadata object
+        """
+        return SessionMetadata(
+            name=data.get("name", ""),
+            checksum=data.get("checksum", ""),
+            created_at=parse_datetime_iso(data.get("created_at")) or datetime.now(UTC),
+            modified_at=parse_datetime_iso(data.get("modified_at")) or datetime.now(UTC),
+            expires_at=parse_datetime_iso(data.get("expires_at")),
+            domain=data.get("domain"),
+            current_url=data.get("current_url"),
+            cookie_count=data.get("cookie_count", 0),
+            cookie_domains=data.get("cookie_domains", []),
+            status=data.get("status", "active"),
         )
 
     def save_session(
@@ -151,29 +229,51 @@ class SupabaseSessionStorage:
         # Ensure bucket exists
         self._ensure_bucket_exists()
 
-        # Build storage path
-        storage_path = f"{name}/session.pickle"
+        storage = self.client.storage.from_(self.bucket_name)
 
-        # Upload to Storage with upsert fallback
-        file_options: FileOptions = {
+        # Build storage paths
+        session_path = self._session_path(name)
+        metadata_path = self._metadata_path(name)
+
+        # Upload session pickle with upsert fallback
+        session_options: FileOptions = {
             "cache-control": str(CACHE_CONTROL_SECONDS),
             "content-type": "application/octet-stream",
         }
-        storage = self.client.storage.from_(self.bucket_name)
 
         try:
-            storage.upload(file=encrypted_data, path=storage_path, file_options=file_options)
+            storage.upload(file=encrypted_data, path=session_path, file_options=session_options)
         except StorageApiError as e:
             if e.status == 409 or e.status == "409":
                 # File exists, use update to replace it
-                storage.update(file=encrypted_data, path=storage_path, file_options=file_options)
+                storage.update(file=encrypted_data, path=session_path, file_options=session_options)
             else:
                 raise
 
-        # Upsert metadata to database
-        location = f"{self.bucket_name}/{storage_path}"
-        self._upsert_metadata(metadata, storage_path)
+        # Upload metadata JSON
+        metadata_json = json.dumps(self._metadata_to_dict(metadata), indent=2)
+        metadata_options: FileOptions = {
+            "cache-control": str(CACHE_CONTROL_SECONDS),
+            "content-type": "application/json",
+        }
 
+        try:
+            storage.upload(
+                file=metadata_json.encode("utf-8"),
+                path=metadata_path,
+                file_options=metadata_options,
+            )
+        except StorageApiError as e:
+            if e.status == 409 or e.status == "409":
+                storage.update(
+                    file=metadata_json.encode("utf-8"),
+                    path=metadata_path,
+                    file_options=metadata_options,
+                )
+            else:
+                raise
+
+        location = f"{self.bucket_name}/{session_path}"
         LOG.info("session_save_completed", name=name, location=location, backend="supabase")
         return location
 
@@ -194,75 +294,37 @@ class SupabaseSessionStorage:
             SessionExpiredError: If session TTL exceeded
         """
         from httpx import HTTPStatusError
-        from postgrest.exceptions import APIError
         from storage3.exceptions import StorageApiError
 
         LOG.info("session_load_started", name=name, backend="supabase")
 
-        # Query metadata from database first (faster than Storage listing)
+        storage = self.client.storage.from_(self.bucket_name)
+        metadata_path = self._metadata_path(name)
+        session_path = self._session_path(name)
+
+        # Load metadata first (to check TTL before downloading large pickle)
         try:
-            result = (
-                self.client.table("session_cache")
-                .select("*")
-                .eq("provider", name)
-                .maybe_single()
-                .execute()
-            )
-        except HTTPStatusError as e:
-            LOG.error("session_metadata_query_failed", name=name, error=str(e))
-            # Only raise SessionNotFoundError for actual 404 responses
-            if e.response.status_code == 404:
-                raise SessionNotFoundError(f"Session '{name}' not found") from e
-            raise StorageError(f"Failed to query session '{name}': {e}") from e
-        except APIError as e:
-            LOG.error("session_metadata_query_failed", name=name, error=str(e))
-            raise StorageError(f"Failed to query session '{name}': {e}") from e
-
-        if result is None or not result.data:
-            LOG.warning("session_not_found", name=name)
-            raise SessionNotFoundError(f"Session '{name}' not found")
-
-        # Cast to dict since maybe_single() returns a single row
-        data = cast(dict[str, Any], result.data)
+            metadata_bytes = storage.download(metadata_path)
+            metadata_json = metadata_bytes.decode("utf-8")
+            metadata = self._dict_to_metadata(json.loads(metadata_json))
+        except (HTTPStatusError, StorageApiError) as e:
+            LOG.warning("session_metadata_not_found", name=name, error=str(e))
+            raise SessionNotFoundError(f"Session '{name}' not found") from e
 
         # Check TTL
-        expires_at_raw = data.get("expires_at")
-        if expires_at_raw and isinstance(expires_at_raw, str):
-            expires_at_str = expires_at_raw
-            try:
-                # Handle different datetime formats from Supabase
-                expires_at_str = expires_at_str.replace("Z", "+00:00")
-                expires_at = datetime.fromisoformat(expires_at_str)
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=UTC)
-                if datetime.now(UTC) > expires_at:
-                    LOG.warning("session_expired_ttl", name=name, expires_at=expires_at_str)
-                    raise SessionExpiredError(
-                        f"Session '{name}' has expired (TTL). Run 'gp clear' and re-login."
-                    )
-            except (ValueError, TypeError) as exc:
-                LOG.warning(
-                    "invalid_expires_at",
-                    name=name,
-                    expires_at=expires_at_str,
-                    error=str(exc),
-                )
+        if metadata.expires_at and datetime.now(UTC) > metadata.expires_at:
+            expires_at_str = metadata.expires_at.isoformat()
+            LOG.warning("session_expired_ttl", name=name, expires_at=expires_at_str)
+            raise SessionExpiredError(
+                f"Session '{name}' has expired (TTL). Run 'gp clear' and re-login."
+            )
 
-        # Download encrypted session from Storage
-        storage_path_val = data.get("storage_path")
-        if not storage_path_val or not isinstance(storage_path_val, str):
-            LOG.error("session_storage_path_missing", name=name)
-            raise SessionExpiredError(f"Session '{name}' has missing storage path")
-        storage_path: str = storage_path_val
-
+        # Download encrypted session data
         try:
-            encrypted_data = self.client.storage.from_(self.bucket_name).download(storage_path)
+            encrypted_data = storage.download(session_path)
         except (HTTPStatusError, StorageApiError) as e:
-            LOG.error("session_download_failed", name=name, path=storage_path, error=str(e))
+            LOG.error("session_download_failed", name=name, path=session_path, error=str(e))
             raise SessionNotFoundError(f"Session '{name}' not found in storage") from e
-
-        # Convert database row to SessionMetadata
-        metadata = self._row_to_metadata(data)
 
         LOG.info("session_load_completed", name=name, backend="supabase")
         return encrypted_data, metadata
@@ -274,22 +336,31 @@ class SupabaseSessionStorage:
             Sorted list of session names
         """
         from httpx import HTTPStatusError
-        from postgrest.exceptions import APIError
+        from storage3.exceptions import StorageApiError
 
         try:
-            result = self.client.table("session_cache").select("provider").execute()
+            storage = self.client.storage.from_(self.bucket_name)
+            # List top-level folders in the bucket
+            result = storage.list()
 
-            if result is None or not result.data:
+            if not result:
                 return []
 
-            # Cast to list of dicts since we're selecting rows
-            rows = cast(list[dict[str, Any]], result.data)
-            names = [
-                str(row["provider"]) for row in rows if isinstance(row, dict) and "provider" in row
-            ]
-            LOG.debug("session_list_completed", count=len(names), backend="supabase")
-            return sorted(names)
-        except (HTTPStatusError, APIError) as e:
+            # Each session is a folder containing session.pickle and metadata.json
+            # The list() call returns folder/file entries at root level
+            sessions: set[str] = set()
+            for item in result:
+                # Supabase Storage returns objects with 'name' field
+                # Folders appear as entries; we extract session names from paths
+                name = item.get("name", "")
+                if name and not name.startswith("."):
+                    # This could be a folder name directly, or we may need to
+                    # parse paths if list returns full paths
+                    sessions.add(name)
+
+            LOG.debug("session_list_completed", count=len(sessions), backend="supabase")
+            return sorted(sessions)
+        except (HTTPStatusError, StorageApiError) as e:
             LOG.error("failed_to_list_sessions", error=str(e), backend="supabase")
             return []
 
@@ -303,37 +374,27 @@ class SupabaseSessionStorage:
             True if deleted, False if not found
         """
         from httpx import HTTPStatusError
-        from postgrest.exceptions import APIError
         from storage3.exceptions import StorageApiError
 
-        storage_path = f"{name}/session.pickle"
-        deleted_storage = False
-        deleted_db = False
+        session_path = self._session_path(name)
+        metadata_path = self._metadata_path(name)
 
-        # Delete from Storage
-        try:
-            self.client.storage.from_(self.bucket_name).remove([storage_path])
-            deleted_storage = True
-            LOG.debug("session_storage_deleted", name=name, path=storage_path)
-        except (HTTPStatusError, StorageApiError) as e:
-            # Storage file might not exist, continue to delete DB entry
-            LOG.warning("session_storage_delete_failed", name=name, error=str(e))
+        storage = self.client.storage.from_(self.bucket_name)
+        deleted = False
 
-        # Delete from database
-        try:
-            result = self.client.table("session_cache").delete().eq("provider", name).execute()
-            # Check if any rows were deleted
-            if result and result.data:
-                deleted_db = True
-            LOG.debug("session_db_deleted", name=name)
-        except (HTTPStatusError, APIError) as e:
-            LOG.warning("session_db_delete_failed", name=name, error=str(e))
+        # Delete both files from storage
+        for path in (session_path, metadata_path):
+            try:
+                storage.remove([path])
+                deleted = True
+                LOG.debug("session_file_deleted", name=name, path=path)
+            except (HTTPStatusError, StorageApiError) as e:
+                LOG.warning("session_file_delete_failed", name=name, path=path, error=str(e))
 
-        if deleted_storage or deleted_db:
+        if deleted:
             LOG.info("session_delete_completed", name=name, backend="supabase")
-            return True
 
-        return False
+        return deleted
 
     def get_session_metadata(self, name: str) -> SessionMetadata | None:
         """Get session metadata without loading the full session.
@@ -345,25 +406,18 @@ class SupabaseSessionStorage:
             SessionMetadata if session exists, None otherwise
         """
         from httpx import HTTPStatusError
-        from postgrest.exceptions import APIError
+        from storage3.exceptions import StorageApiError
 
         try:
-            result = (
-                self.client.table("session_cache")
-                .select("*")
-                .eq("provider", name)
-                .maybe_single()
-                .execute()
-            )
-
-            if result is None or not result.data:
-                return None
-
-            # Cast to dict since maybe_single() returns a single row
-            row = cast(dict[str, Any], result.data)
-            return self._row_to_metadata(row)
-        except (HTTPStatusError, APIError) as e:
-            LOG.warning("failed_to_get_session_metadata", name=name, error=str(e))
+            storage = self.client.storage.from_(self.bucket_name)
+            metadata_path = self._metadata_path(name)
+            metadata_bytes = storage.download(metadata_path)
+            metadata_json = metadata_bytes.decode("utf-8")
+            return self._dict_to_metadata(json.loads(metadata_json))
+        except (HTTPStatusError, StorageApiError):
+            return None
+        except Exception as e:
+            LOG.warning("get_session_metadata_failed", name=name, error=str(e))
             return None
 
     def update_session_metadata(
@@ -383,29 +437,53 @@ class SupabaseSessionStorage:
         Raises:
             ValueError: If status is not a valid value
         """
-        from httpx import HTTPStatusError
-        from postgrest.exceptions import APIError
+        from storage3.exceptions import StorageApiError
+        from storage3.types import FileOptions
 
         if status is not None and status not in ("active", "logged_out"):
             raise ValueError(f"Invalid status '{status}'. Must be 'active' or 'logged_out'")
 
-        try:
-            update_data: dict[str, Any] = {"modified_at": datetime.now(UTC).isoformat()}
-            if status is not None:
-                update_data["status"] = status
-
-            result = (
-                self.client.table("session_cache")
-                .update(update_data)
-                .eq("provider", name)
-                .execute()
-            )
-
-            if result and result.data:
-                LOG.info("session_metadata_updated", name=name, status=status, backend="supabase")
-                return True
+        # Fetch current metadata
+        metadata = self.get_session_metadata(name)
+        if metadata is None:
             return False
-        except (HTTPStatusError, APIError) as e:
+
+        # Create updated metadata
+        updates: dict[str, Any] = {"modified_at": datetime.now(UTC)}
+        if status is not None:
+            updates["status"] = status
+
+        new_metadata = replace(metadata, **updates)
+
+        # Re-upload metadata JSON
+        try:
+            storage = self.client.storage.from_(self.bucket_name)
+            metadata_path = self._metadata_path(name)
+            metadata_json = json.dumps(self._metadata_to_dict(new_metadata), indent=2)
+            metadata_options: FileOptions = {
+                "cache-control": str(CACHE_CONTROL_SECONDS),
+                "content-type": "application/json",
+            }
+
+            try:
+                storage.upload(
+                    file=metadata_json.encode("utf-8"),
+                    path=metadata_path,
+                    file_options=metadata_options,
+                )
+            except StorageApiError as e:
+                if e.status == 409 or e.status == "409":
+                    storage.update(
+                        file=metadata_json.encode("utf-8"),
+                        path=metadata_path,
+                        file_options=metadata_options,
+                    )
+                else:
+                    raise
+
+            LOG.info("session_metadata_updated", name=name, status=status, backend="supabase")
+            return True
+        except Exception as e:
             LOG.error("failed_to_update_session_metadata", name=name, error=str(e))
             return False
 
@@ -430,57 +508,3 @@ class SupabaseSessionStorage:
                 LOG.debug("session_bucket_already_exists", bucket=self.bucket_name)
                 return
             raise
-
-    def _upsert_metadata(self, metadata: SessionMetadata, storage_path: str) -> None:
-        """Upsert session metadata to database.
-
-        Args:
-            metadata: Session metadata
-            storage_path: Path in storage bucket
-
-        Raises:
-            StorageError: If metadata upsert fails
-        """
-        from httpx import HTTPStatusError
-        from postgrest.exceptions import APIError
-
-        try:
-            self.client.table("session_cache").upsert(
-                {
-                    "provider": metadata.name,
-                    "storage_path": storage_path,
-                    "checksum": metadata.checksum,
-                    "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
-                    "domain": metadata.domain,
-                    "current_url": metadata.current_url,
-                    "cookie_count": metadata.cookie_count,
-                    "cookie_domains": metadata.cookie_domains,
-                    "created_at": metadata.created_at.isoformat(),
-                    "modified_at": metadata.modified_at.isoformat(),
-                    "status": metadata.status,
-                },
-                on_conflict="provider",
-            ).execute()
-
-            LOG.debug("session_metadata_upserted", name=metadata.name)
-        except (HTTPStatusError, APIError) as e:
-            LOG.error("failed_to_upsert_session_metadata", name=metadata.name, error=str(e))
-            raise StorageError(
-                f"Failed to save session metadata for '{metadata.name}'. "
-                "Storage data was uploaded but metadata is missing - please retry."
-            ) from e
-
-    def _row_to_metadata(self, data: dict[str, Any]) -> SessionMetadata:
-        """Convert database row to SessionMetadata."""
-        return SessionMetadata(
-            name=data.get("provider", ""),
-            checksum=data.get("checksum", ""),
-            created_at=parse_datetime_iso(data.get("created_at")) or datetime.now(UTC),
-            modified_at=parse_datetime_iso(data.get("modified_at")) or datetime.now(UTC),
-            expires_at=parse_datetime_iso(data.get("expires_at")),
-            domain=data.get("domain"),
-            current_url=data.get("current_url"),
-            cookie_count=data.get("cookie_count", 0),
-            cookie_domains=data.get("cookie_domains", []),
-            status=data.get("status", "active"),
-        )

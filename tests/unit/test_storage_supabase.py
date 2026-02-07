@@ -2,8 +2,13 @@
 
 Note: These tests mock the Supabase client to avoid requiring actual
 Supabase credentials in unit tests.
+
+The Supabase storage backend uses pure file-based storage:
+- {session_name}/session.pickle - Encrypted session data
+- {session_name}/metadata.json - Session metadata (JSON)
 """
 
+import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -51,19 +56,6 @@ def _make_storage(mock_create_client):
     return storage, mock_client
 
 
-def _make_table_chain(mock_client):
-    """Helper to build a mock table chain for Supabase builder pattern."""
-    mock_table = MagicMock()
-    mock_table.select.return_value = mock_table
-    mock_table.eq.return_value = mock_table
-    mock_table.maybe_single.return_value = mock_table
-    mock_table.delete.return_value = mock_table
-    mock_table.update.return_value = mock_table
-    mock_table.upsert.return_value = mock_table
-    mock_client.table.return_value = mock_table
-    return mock_table
-
-
 class TestSupabaseSessionStorage:
     """Tests for SupabaseSessionStorage (mocked)."""
 
@@ -88,8 +80,7 @@ class TestSupabaseSessionStorage:
         """Test listing sessions when none exist."""
         storage, mock_client = _make_storage(mock_create_client)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[])
+        mock_client.storage.from_.return_value.list.return_value = []
 
         sessions = storage.list_sessions()
         assert sessions == []
@@ -99,48 +90,62 @@ class TestSupabaseSessionStorage:
         """Test listing sessions with results."""
         storage, mock_client = _make_storage(mock_create_client)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(
-            data=[
-                {"provider": "session-b"},
-                {"provider": "session-a"},
-            ]
-        )
+        mock_client.storage.from_.return_value.list.return_value = [
+            {"name": "session-b"},
+            {"name": "session-a"},
+        ]
 
         sessions = storage.list_sessions()
         assert sessions == ["session-a", "session-b"]
 
     @patch("supabase.create_client")
     def test_list_sessions_none_result(self, mock_create_client):
-        """Test listing sessions when result.data is None."""
+        """Test listing sessions when result is None."""
         storage, mock_client = _make_storage(mock_create_client)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=None)
+        mock_client.storage.from_.return_value.list.return_value = None
 
         sessions = storage.list_sessions()
         assert sessions == []
 
     @patch("supabase.create_client")
-    def test_list_sessions_api_error_returns_empty(self, mock_create_client):
-        """Test that API errors in list_sessions return empty list."""
-        from postgrest.exceptions import APIError
+    def test_list_sessions_storage_error_returns_empty(self, mock_create_client):
+        """Test that Storage errors in list_sessions return empty list."""
+        from storage3.exceptions import StorageApiError
 
         storage, mock_client = _make_storage(mock_create_client)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.side_effect = APIError({"message": "error"})
+        mock_client.storage.from_.return_value.list.side_effect = StorageApiError(
+            "error", code="500", status=500
+        )
 
         sessions = storage.list_sessions()
         assert sessions == []
+
+    @patch("supabase.create_client")
+    def test_list_sessions_filters_hidden_files(self, mock_create_client):
+        """Test that hidden files/folders are filtered out."""
+        storage, mock_client = _make_storage(mock_create_client)
+
+        mock_client.storage.from_.return_value.list.return_value = [
+            {"name": "session-a"},
+            {"name": ".emptyFolderPlaceholder"},
+            {"name": "session-b"},
+        ]
+
+        sessions = storage.list_sessions()
+        assert sessions == ["session-a", "session-b"]
 
     @patch("supabase.create_client")
     def test_get_session_metadata_not_found(self, mock_create_client):
         """Test getting metadata for non-existent session."""
+        from storage3.exceptions import StorageApiError
+
         storage, mock_client = _make_storage(mock_create_client)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=None)
+        mock_client.storage.from_.return_value.download.side_effect = StorageApiError(
+            "Not found", code="404", status=404
+        )
 
         metadata = storage.get_session_metadata("non-existent")
         assert metadata is None
@@ -151,21 +156,21 @@ class TestSupabaseSessionStorage:
         storage, mock_client = _make_storage(mock_create_client)
         now = datetime.now(UTC)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(
-            data={
-                "provider": "my-session",
-                "checksum": "sha256abc",
-                "created_at": now.isoformat(),
-                "modified_at": now.isoformat(),
-                "expires_at": None,
-                "domain": "example.com",
-                "current_url": "https://example.com",
-                "cookie_count": 3,
-                "cookie_domains": ["example.com"],
-                "status": "active",
-            }
-        )
+        metadata_dict = {
+            "name": "my-session",
+            "checksum": "sha256abc",
+            "created_at": now.isoformat(),
+            "modified_at": now.isoformat(),
+            "expires_at": None,
+            "domain": "example.com",
+            "current_url": "https://example.com",
+            "cookie_count": 3,
+            "cookie_domains": ["example.com"],
+            "status": "active",
+        }
+        mock_client.storage.from_.return_value.download.return_value = json.dumps(
+            metadata_dict
+        ).encode("utf-8")
 
         metadata = storage.get_session_metadata("my-session")
         assert metadata is not None
@@ -175,14 +180,18 @@ class TestSupabaseSessionStorage:
         assert metadata.cookie_count == 3
 
     @patch("supabase.create_client")
-    def test_get_session_metadata_api_error_returns_none(self, mock_create_client):
-        """Test that API errors in get_session_metadata return None."""
-        from postgrest.exceptions import APIError
+    def test_get_session_metadata_http_error_returns_none(self, mock_create_client):
+        """Test that HTTP errors in get_session_metadata return None."""
+        from httpx import HTTPStatusError, Request, Response
 
         storage, mock_client = _make_storage(mock_create_client)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.side_effect = APIError({"message": "db error"})
+        mock_request = MagicMock(spec=Request)
+        mock_response = MagicMock(spec=Response)
+        mock_response.status_code = 500
+        mock_client.storage.from_.return_value.download.side_effect = HTTPStatusError(
+            "Server error", request=mock_request, response=mock_response
+        )
 
         metadata = storage.get_session_metadata("test")
         assert metadata is None
@@ -192,76 +201,50 @@ class TestSupabaseSessionStorage:
         """Test deleting a session."""
         storage, mock_client = _make_storage(mock_create_client)
 
-        # Set up storage mock
         mock_storage_bucket = MagicMock()
         mock_client.storage.from_.return_value = mock_storage_bucket
         mock_storage_bucket.remove.return_value = None
 
-        # Set up table mock
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[{"id": 1}])
-
         result = storage.delete_session("test-session")
         assert result is True
 
+        # Should have called remove for both session.pickle and metadata.json
+        assert mock_storage_bucket.remove.call_count == 2
+
     @patch("supabase.create_client")
-    def test_delete_session_storage_fails_db_succeeds(self, mock_create_client):
-        """Test delete when storage removal fails but DB delete succeeds."""
-        from httpx import HTTPStatusError, Request, Response
+    def test_delete_session_one_file_fails(self, mock_create_client):
+        """Test delete when one file removal fails but other succeeds."""
+        from storage3.exceptions import StorageApiError
 
         storage, mock_client = _make_storage(mock_create_client)
 
-        # Storage raises error
-        mock_request = MagicMock(spec=Request)
-        mock_response = MagicMock(spec=Response)
-        mock_response.status_code = 404
-        mock_client.storage.from_.return_value.remove.side_effect = HTTPStatusError(
-            "Not found", request=mock_request, response=mock_response
-        )
-
-        # DB delete succeeds
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[{"id": 1}])
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+        # First call succeeds, second fails
+        mock_storage_bucket.remove.side_effect = [
+            None,
+            StorageApiError("Not found", code="404", status=404),
+        ]
 
         result = storage.delete_session("test-session")
+        # Still returns True because at least one file was deleted
         assert result is True
 
     @patch("supabase.create_client")
-    def test_delete_session_both_fail(self, mock_create_client):
-        """Test delete when both storage and DB deletion fail."""
-        from httpx import HTTPStatusError, Request, Response
-        from postgrest.exceptions import APIError
+    def test_delete_session_both_files_fail(self, mock_create_client):
+        """Test delete when both file removals fail."""
+        from storage3.exceptions import StorageApiError
 
         storage, mock_client = _make_storage(mock_create_client)
 
-        # Storage raises error
-        mock_request = MagicMock(spec=Request)
-        mock_response = MagicMock(spec=Response)
-        mock_response.status_code = 500
-        mock_client.storage.from_.return_value.remove.side_effect = HTTPStatusError(
-            "Server error", request=mock_request, response=mock_response
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+        mock_storage_bucket.remove.side_effect = StorageApiError(
+            "Not found", code="404", status=404
         )
-
-        # DB also raises error
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.side_effect = APIError({"message": "db error"})
 
         result = storage.delete_session("test-session")
         assert result is False
-
-    @patch("supabase.create_client")
-    def test_delete_session_db_no_rows_deleted(self, mock_create_client):
-        """Test delete when DB returns no matching rows."""
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_client.storage.from_.return_value.remove.return_value = None
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[])
-
-        # Storage succeeded, so still returns True
-        result = storage.delete_session("test-session")
-        assert result is True
 
     @patch("supabase.create_client")
     def test_update_session_metadata_invalid_status(self, mock_create_client):
@@ -275,9 +258,25 @@ class TestSupabaseSessionStorage:
     def test_update_session_metadata_success(self, mock_create_client):
         """Test successful metadata update."""
         storage, mock_client = _make_storage(mock_create_client)
+        now = datetime.now(UTC)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[{"provider": "test"}])
+        # Mock get_session_metadata (called internally)
+        metadata_dict = {
+            "name": "test",
+            "checksum": "abc",
+            "created_at": now.isoformat(),
+            "modified_at": now.isoformat(),
+            "expires_at": None,
+            "domain": None,
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+        }
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+        mock_storage_bucket.download.return_value = json.dumps(metadata_dict).encode("utf-8")
+        mock_storage_bucket.upload.return_value = {"Key": "test/metadata.json"}
 
         result = storage.update_session_metadata("test", status="logged_out")
         assert result is True
@@ -285,39 +284,59 @@ class TestSupabaseSessionStorage:
     @patch("supabase.create_client")
     def test_update_session_metadata_not_found(self, mock_create_client):
         """Test update returns False when session not found."""
+        from storage3.exceptions import StorageApiError
+
         storage, mock_client = _make_storage(mock_create_client)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[])
+        mock_client.storage.from_.return_value.download.side_effect = StorageApiError(
+            "Not found", code="404", status=404
+        )
 
         result = storage.update_session_metadata("nonexistent", status="active")
         assert result is False
 
     @patch("supabase.create_client")
-    def test_update_session_metadata_api_error(self, mock_create_client):
-        """Test update returns False on API error."""
-        from postgrest.exceptions import APIError
+    def test_update_session_metadata_upload_conflict_uses_update(self, mock_create_client):
+        """Test that 409 conflict on upload falls back to update."""
+        from storage3.exceptions import StorageApiError
 
         storage, mock_client = _make_storage(mock_create_client)
+        now = datetime.now(UTC)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.side_effect = APIError({"message": "db error"})
+        metadata_dict = {
+            "name": "test",
+            "checksum": "abc",
+            "created_at": now.isoformat(),
+            "modified_at": now.isoformat(),
+            "expires_at": None,
+            "domain": None,
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+        }
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+        mock_storage_bucket.download.return_value = json.dumps(metadata_dict).encode("utf-8")
+        mock_storage_bucket.upload.side_effect = StorageApiError("Conflict", code="409", status=409)
+        mock_storage_bucket.update.return_value = {"Key": "test/metadata.json"}
 
-        result = storage.update_session_metadata("test", status="active")
-        assert result is False
+        result = storage.update_session_metadata("test", status="logged_out")
+        assert result is True
+        mock_storage_bucket.update.assert_called_once()
 
 
-class TestRowToMetadata:
-    """Tests for _row_to_metadata conversion."""
+class TestMetadataConversion:
+    """Tests for _metadata_to_dict and _dict_to_metadata conversion."""
 
     @patch("supabase.create_client")
-    def test_row_to_metadata_full_data(self, mock_create_client):
-        """Test conversion of a complete database row to SessionMetadata."""
+    def test_dict_to_metadata_full_data(self, mock_create_client):
+        """Test conversion of a complete dict to SessionMetadata."""
         storage, _mock_client = _make_storage(mock_create_client)
         now = datetime.now(UTC)
 
-        row = {
-            "provider": "my-session",
+        data = {
+            "name": "my-session",
             "checksum": "abc123",
             "created_at": now.isoformat(),
             "modified_at": now.isoformat(),
@@ -329,7 +348,7 @@ class TestRowToMetadata:
             "status": "active",
         }
 
-        metadata = storage._row_to_metadata(row)
+        metadata = storage._dict_to_metadata(data)
         assert metadata.name == "my-session"
         assert metadata.checksum == "abc123"
         assert metadata.domain == "example.com"
@@ -340,13 +359,13 @@ class TestRowToMetadata:
         assert metadata.expires_at is not None
 
     @patch("supabase.create_client")
-    def test_row_to_metadata_minimal_data(self, mock_create_client):
+    def test_dict_to_metadata_minimal_data(self, mock_create_client):
         """Test conversion with minimal/missing fields uses defaults."""
         storage, _mock_client = _make_storage(mock_create_client)
 
-        row = {}
+        data = {}
 
-        metadata = storage._row_to_metadata(row)
+        metadata = storage._dict_to_metadata(data)
         assert metadata.name == ""
         assert metadata.checksum == ""
         assert metadata.domain is None
@@ -360,22 +379,39 @@ class TestRowToMetadata:
         assert metadata.modified_at is not None
 
     @patch("supabase.create_client")
-    def test_row_to_metadata_with_z_suffix_datetime(self, mock_create_client):
+    def test_dict_to_metadata_with_z_suffix_datetime(self, mock_create_client):
         """Test conversion handles Supabase Z-suffix datetime strings."""
         storage, _mock_client = _make_storage(mock_create_client)
 
-        row = {
-            "provider": "test",
+        data = {
+            "name": "test",
             "checksum": "x",
             "created_at": "2024-06-15T12:00:00Z",
             "modified_at": "2024-06-15T13:00:00Z",
             "expires_at": "2024-06-16T12:00:00Z",
         }
 
-        metadata = storage._row_to_metadata(row)
+        metadata = storage._dict_to_metadata(data)
         assert metadata.created_at.year == 2024
         assert metadata.created_at.month == 6
         assert metadata.expires_at is not None
+
+    @patch("supabase.create_client")
+    def test_metadata_to_dict_roundtrip(self, mock_create_client, sample_metadata):
+        """Test that metadata can be converted to dict and back."""
+        storage, _mock_client = _make_storage(mock_create_client)
+
+        # Convert to dict
+        data = storage._metadata_to_dict(sample_metadata)
+
+        # Convert back to metadata
+        restored = storage._dict_to_metadata(data)
+
+        assert restored.name == sample_metadata.name
+        assert restored.checksum == sample_metadata.checksum
+        assert restored.domain == sample_metadata.domain
+        assert restored.cookie_count == sample_metadata.cookie_count
+        assert restored.status == sample_metadata.status
 
 
 class TestDoSave:
@@ -383,7 +419,7 @@ class TestDoSave:
 
     @patch("supabase.create_client")
     def test_do_save_success(self, mock_create_client, sample_metadata):
-        """Test successful save uploads data and upserts metadata."""
+        """Test successful save uploads both session data and metadata."""
         storage, mock_client = _make_storage(mock_create_client)
 
         # Mock bucket creation (already exists, no-op)
@@ -394,14 +430,11 @@ class TestDoSave:
         mock_client.storage.from_.return_value = mock_storage_bucket
         mock_storage_bucket.upload.return_value = {"Key": "test-session/session.pickle"}
 
-        # Mock metadata upsert
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[{"id": 1}])
-
         location = storage._do_save("test-session", b"encrypted-data", sample_metadata)
 
         assert location == "sessions/test-session/session.pickle"
-        mock_storage_bucket.upload.assert_called_once()
+        # Should have uploaded both session.pickle and metadata.json
+        assert mock_storage_bucket.upload.call_count == 2
 
     @patch("supabase.create_client")
     def test_do_save_upload_conflict_uses_update(self, mock_create_client, sample_metadata):
@@ -420,14 +453,11 @@ class TestDoSave:
         mock_storage_bucket.upload.side_effect = conflict_error
         mock_storage_bucket.update.return_value = {"Key": "test-session/session.pickle"}
 
-        # Mock metadata upsert
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[{"id": 1}])
-
         location = storage._do_save("test-session", b"encrypted-data", sample_metadata)
 
         assert location == "sessions/test-session/session.pickle"
-        mock_storage_bucket.update.assert_called_once()
+        # Should have called update for both files after upload failed
+        assert mock_storage_bucket.update.call_count == 2
 
     @patch("supabase.create_client")
     def test_do_save_upload_non_409_error_raises(self, mock_create_client, sample_metadata):
@@ -536,64 +566,6 @@ class TestEnsureBucketExists:
             storage._ensure_bucket_exists()
 
 
-class TestUpsertMetadata:
-    """Tests for _upsert_metadata method."""
-
-    @patch("supabase.create_client")
-    def test_upsert_metadata_success(self, mock_create_client, sample_metadata):
-        """Test successful metadata upsert."""
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[{"id": 1}])
-
-        storage._upsert_metadata(sample_metadata, "test-session/session.pickle")
-
-        mock_client.table.assert_called_with("session_cache")
-
-    @patch("supabase.create_client")
-    def test_upsert_metadata_api_error_raises_storage_error(
-        self, mock_create_client, sample_metadata
-    ):
-        """Test that API errors in upsert raise StorageError."""
-        from postgrest.exceptions import APIError
-
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.side_effect = APIError({"message": "db error"})
-
-        with pytest.raises(StorageError, match="Failed to save session metadata"):
-            storage._upsert_metadata(sample_metadata, "test-session/session.pickle")
-
-    @patch("supabase.create_client")
-    def test_upsert_metadata_with_no_expires_at(self, mock_create_client):
-        """Test upsert metadata when expires_at is None."""
-        now = datetime.now(UTC)
-        metadata = SessionMetadata(
-            name="no-expiry",
-            checksum="abc",
-            created_at=now,
-            modified_at=now,
-            expires_at=None,
-            domain=None,
-            current_url=None,
-            cookie_count=0,
-            cookie_domains=[],
-            status="active",
-        )
-
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=[{"id": 1}])
-
-        storage._upsert_metadata(metadata, "no-expiry/session.pickle")
-
-        # Verify the upsert call was made
-        mock_client.table.assert_called_with("session_cache")
-
-
 class TestLoadSession:
     """Tests for load_session method."""
 
@@ -604,26 +576,27 @@ class TestLoadSession:
         now = datetime.now(UTC)
         future = now + timedelta(hours=24)
 
-        # Mock metadata query
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(
-            data={
-                "provider": "test-session",
-                "checksum": "abc123",
-                "created_at": now.isoformat(),
-                "modified_at": now.isoformat(),
-                "expires_at": future.isoformat(),
-                "domain": "example.com",
-                "current_url": "https://example.com",
-                "cookie_count": 5,
-                "cookie_domains": ["example.com"],
-                "status": "active",
-                "storage_path": "test-session/session.pickle",
-            }
-        )
+        metadata_dict = {
+            "name": "test-session",
+            "checksum": "abc123",
+            "created_at": now.isoformat(),
+            "modified_at": now.isoformat(),
+            "expires_at": future.isoformat(),
+            "domain": "example.com",
+            "current_url": "https://example.com",
+            "cookie_count": 5,
+            "cookie_domains": ["example.com"],
+            "status": "active",
+        }
 
-        # Mock storage download
-        mock_client.storage.from_.return_value.download.return_value = b"encrypted-data"
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+
+        # First download is metadata, second is session data
+        mock_storage_bucket.download.side_effect = [
+            json.dumps(metadata_dict).encode("utf-8"),
+            b"encrypted-data",
+        ]
 
         data, metadata = storage.load_session("test-session")
 
@@ -632,12 +605,15 @@ class TestLoadSession:
         assert metadata.domain == "example.com"
 
     @patch("supabase.create_client")
-    def test_load_session_not_found_empty_result(self, mock_create_client):
-        """Test load raises SessionNotFoundError when result.data is empty."""
+    def test_load_session_not_found_metadata_missing(self, mock_create_client):
+        """Test load raises SessionNotFoundError when metadata doesn't exist."""
+        from storage3.exceptions import StorageApiError
+
         storage, mock_client = _make_storage(mock_create_client)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(data=None)
+        mock_client.storage.from_.return_value.download.side_effect = StorageApiError(
+            "Not found", code="404", status=404
+        )
 
         with pytest.raises(SessionNotFoundError, match="not found"):
             storage.load_session("nonexistent")
@@ -649,76 +625,64 @@ class TestLoadSession:
         now = datetime.now(UTC)
         past = now - timedelta(hours=24)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(
-            data={
-                "provider": "expired-session",
-                "checksum": "abc",
-                "created_at": (now - timedelta(hours=48)).isoformat(),
-                "modified_at": (now - timedelta(hours=48)).isoformat(),
-                "expires_at": past.isoformat(),
-                "domain": "example.com",
-                "current_url": None,
-                "cookie_count": 0,
-                "cookie_domains": [],
-                "status": "active",
-                "storage_path": "expired-session/session.pickle",
-            }
-        )
+        metadata_dict = {
+            "name": "expired-session",
+            "checksum": "abc",
+            "created_at": (now - timedelta(hours=48)).isoformat(),
+            "modified_at": (now - timedelta(hours=48)).isoformat(),
+            "expires_at": past.isoformat(),
+            "domain": "example.com",
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+        }
+
+        mock_client.storage.from_.return_value.download.return_value = json.dumps(
+            metadata_dict
+        ).encode("utf-8")
 
         with pytest.raises(SessionExpiredError, match="expired"):
             storage.load_session("expired-session")
 
     @patch("supabase.create_client")
-    def test_load_session_missing_storage_path(self, mock_create_client):
-        """Test load raises SessionExpiredError when storage_path is missing."""
+    def test_load_session_data_download_fails(self, mock_create_client):
+        """Test load raises SessionNotFoundError when session data download fails."""
+        from storage3.exceptions import StorageApiError
+
         storage, mock_client = _make_storage(mock_create_client)
         now = datetime.now(UTC)
 
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(
-            data={
-                "provider": "test",
-                "checksum": "abc",
-                "created_at": now.isoformat(),
-                "modified_at": now.isoformat(),
-                "expires_at": None,
-                "domain": None,
-                "current_url": None,
-                "cookie_count": 0,
-                "cookie_domains": [],
-                "status": "active",
-                # storage_path is missing
-            }
-        )
+        metadata_dict = {
+            "name": "test",
+            "checksum": "abc",
+            "created_at": now.isoformat(),
+            "modified_at": now.isoformat(),
+            "expires_at": None,
+            "domain": None,
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+        }
 
-        with pytest.raises(SessionExpiredError, match="missing storage path"):
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+        # Metadata download succeeds, session data download fails
+        mock_storage_bucket.download.side_effect = [
+            json.dumps(metadata_dict).encode("utf-8"),
+            StorageApiError("Not found", code="404", status=404),
+        ]
+
+        with pytest.raises(SessionNotFoundError, match="not found in storage"):
             storage.load_session("test")
 
     @patch("supabase.create_client")
-    def test_load_session_download_fails_raises_not_found(self, mock_create_client):
-        """Test load raises SessionNotFoundError when download fails."""
+    def test_load_session_http_error_raises_not_found(self, mock_create_client):
+        """Test load raises SessionNotFoundError on HTTP error."""
         from httpx import HTTPStatusError, Request, Response
 
         storage, mock_client = _make_storage(mock_create_client)
-        now = datetime.now(UTC)
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(
-            data={
-                "provider": "test",
-                "checksum": "abc",
-                "created_at": now.isoformat(),
-                "modified_at": now.isoformat(),
-                "expires_at": None,
-                "domain": None,
-                "current_url": None,
-                "cookie_count": 0,
-                "cookie_domains": [],
-                "status": "active",
-                "storage_path": "test/session.pickle",
-            }
-        )
 
         mock_request = MagicMock(spec=Request)
         mock_response = MagicMock(spec=Response)
@@ -727,78 +691,8 @@ class TestLoadSession:
             "Not found", request=mock_request, response=mock_response
         )
 
-        with pytest.raises(SessionNotFoundError, match="not found in storage"):
+        with pytest.raises(SessionNotFoundError, match="not found"):
             storage.load_session("test")
-
-    @patch("supabase.create_client")
-    def test_load_session_api_error_raises_storage_error(self, mock_create_client):
-        """Test load raises StorageError on postgrest APIError."""
-        from postgrest.exceptions import APIError
-
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.side_effect = APIError({"message": "db error"})
-
-        with pytest.raises(StorageError, match="Failed to query"):
-            storage.load_session("test")
-
-    @patch("supabase.create_client")
-    def test_load_session_invalid_expires_at_continues(self, mock_create_client):
-        """Test load continues when expires_at is an invalid datetime string."""
-        storage, mock_client = _make_storage(mock_create_client)
-        now = datetime.now(UTC)
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(
-            data={
-                "provider": "test",
-                "checksum": "abc",
-                "created_at": now.isoformat(),
-                "modified_at": now.isoformat(),
-                "expires_at": "not-a-date",
-                "domain": None,
-                "current_url": None,
-                "cookie_count": 0,
-                "cookie_domains": [],
-                "status": "active",
-                "storage_path": "test/session.pickle",
-            }
-        )
-
-        mock_client.storage.from_.return_value.download.return_value = b"encrypted-data"
-
-        data, metadata = storage.load_session("test")
-        assert data == b"encrypted-data"
-
-    @patch("supabase.create_client")
-    def test_load_session_z_suffix_expires_at(self, mock_create_client):
-        """Test load handles Supabase Z-suffix datetime for expires_at."""
-        storage, mock_client = _make_storage(mock_create_client)
-        now = datetime.now(UTC)
-        future = now + timedelta(hours=24)
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.return_value = MagicMock(
-            data={
-                "provider": "test",
-                "checksum": "abc",
-                "created_at": now.isoformat(),
-                "modified_at": now.isoformat(),
-                "expires_at": future.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "domain": None,
-                "current_url": None,
-                "cookie_count": 0,
-                "cookie_domains": [],
-                "status": "active",
-                "storage_path": "test/session.pickle",
-            }
-        )
-
-        mock_client.storage.from_.return_value.download.return_value = b"data"
-
-        data, metadata = storage.load_session("test")
-        assert data == b"data"
 
 
 class TestSaveSession:
@@ -848,48 +742,6 @@ class TestSaveSession:
 
         # Should have slept between retries (max_retries - 1 sleeps)
         assert mock_sleep.call_count == 1
-
-
-class TestSupabaseExceptionHandling:
-    """Tests for Supabase exception handling."""
-
-    @patch("supabase.create_client")
-    def test_load_session_http_404_raises_session_not_found(self, mock_create_client):
-        """Test that HTTP 404 raises SessionNotFoundError."""
-        from httpx import HTTPStatusError, Request, Response
-
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_request = MagicMock(spec=Request)
-        mock_response = MagicMock(spec=Response)
-        mock_response.status_code = 404
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.side_effect = HTTPStatusError(
-            "Not found", request=mock_request, response=mock_response
-        )
-
-        with pytest.raises(SessionNotFoundError, match="not found"):
-            storage.load_session("non-existent")
-
-    @patch("supabase.create_client")
-    def test_load_session_http_500_raises_storage_error(self, mock_create_client):
-        """Test that HTTP 500 raises StorageError."""
-        from httpx import HTTPStatusError, Request, Response
-
-        storage, mock_client = _make_storage(mock_create_client)
-
-        mock_request = MagicMock(spec=Request)
-        mock_response = MagicMock(spec=Response)
-        mock_response.status_code = 500
-
-        mock_table = _make_table_chain(mock_client)
-        mock_table.execute.side_effect = HTTPStatusError(
-            "Server error", request=mock_request, response=mock_response
-        )
-
-        with pytest.raises(StorageError, match="Failed to query"):
-            storage.load_session("test-session")
 
 
 class TestRetryLogic:
