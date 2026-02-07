@@ -99,6 +99,32 @@ class TestS3SessionStorageInit:
             endpoint_url="https://r2.example.com",
         )
 
+    def test_boto3_import_error_raises_storage_error(self):
+        """Test that missing boto3 raises StorageError with helpful message."""
+        import sys
+
+        # Temporarily hide boto3 to simulate ImportError
+        boto3_backup = sys.modules.get("boto3")
+        sys.modules["boto3"] = None  # type: ignore[assignment]
+
+        try:
+            # Reload the s3 module to trigger import error
+            from importlib import reload
+
+            import graftpunk.storage.s3 as s3_module
+
+            # Force reload to clear cached import
+            reload(s3_module)
+
+            with pytest.raises(StorageError, match="boto3 is required"):
+                s3_module.S3SessionStorage(bucket="test")
+        finally:
+            # Restore boto3
+            if boto3_backup is not None:
+                sys.modules["boto3"] = boto3_backup
+            else:
+                sys.modules.pop("boto3", None)
+
 
 class TestSaveSession:
     """Tests for save_session method."""
@@ -384,3 +410,49 @@ class TestRetryLogic:
 
         storage.save_session("test", b"data", sample_metadata)
         assert mock_s3_client.put_object.call_count == 3  # retry + 2 uploads
+
+    @patch("graftpunk.storage.s3.time.sleep")
+    def test_retry_on_connection_error(self, mock_sleep, storage, mock_s3_client, sample_metadata):
+        """Test retry on ConnectionError."""
+        storage.max_retries = 3
+        storage.base_delay = 0.01
+
+        mock_s3_client.put_object.side_effect = [
+            ConnectionError("Network unreachable"),
+            {},  # Success on second try
+            {},  # Metadata upload
+        ]
+
+        storage.save_session("test", b"data", sample_metadata)
+        assert mock_s3_client.put_object.call_count == 3  # retry + 2 uploads
+        assert mock_sleep.call_count == 1
+
+    @patch("graftpunk.storage.s3.time.sleep")
+    def test_retry_on_timeout_error(self, mock_sleep, storage, mock_s3_client, sample_metadata):
+        """Test retry on TimeoutError."""
+        storage.max_retries = 3
+        storage.base_delay = 0.01
+
+        mock_s3_client.put_object.side_effect = [
+            TimeoutError("Connection timed out"),
+            {},  # Success on second try
+            {},  # Metadata upload
+        ]
+
+        storage.save_session("test", b"data", sample_metadata)
+        assert mock_s3_client.put_object.call_count == 3  # retry + 2 uploads
+
+    @patch("graftpunk.storage.s3.time.sleep")
+    def test_connection_error_exhausts_retries(
+        self, mock_sleep, storage, mock_s3_client, sample_metadata
+    ):
+        """Test that ConnectionError after max retries raises StorageError."""
+        storage.max_retries = 2
+        storage.base_delay = 0.01
+
+        mock_s3_client.put_object.side_effect = ConnectionError("Network unreachable")
+
+        with pytest.raises(StorageError, match="after 2 attempts"):
+            storage.save_session("test", b"data", sample_metadata)
+
+        assert mock_s3_client.put_object.call_count == 2
