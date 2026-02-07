@@ -19,11 +19,13 @@ Storage Structure:
     sessions/{name}/metadata.json - Session metadata
 """
 
+import json
+from datetime import UTC, datetime
 from typing import Any
 
-from graftpunk.exceptions import StorageError
+from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
 from graftpunk.logging import get_logger
-from graftpunk.storage.base import SessionMetadata
+from graftpunk.storage.base import SessionMetadata, parse_datetime_iso
 
 LOG = get_logger(__name__)
 
@@ -153,7 +155,29 @@ class S3SessionStorage:
         Raises:
             StorageError: If save fails after retries
         """
-        raise NotImplementedError("save_session not yet implemented")
+        session_key = self._session_key(name)
+        metadata_key = self._metadata_key(name)
+
+        # Save encrypted session data
+        self._client.put_object(
+            Bucket=self.bucket,
+            Key=session_key,
+            Body=encrypted_data,
+            ContentType="application/octet-stream",
+        )
+
+        # Save metadata as JSON
+        metadata_json = json.dumps(self._metadata_to_dict(metadata), indent=2)
+        self._client.put_object(
+            Bucket=self.bucket,
+            Key=metadata_key,
+            Body=metadata_json.encode("utf-8"),
+            ContentType="application/json",
+        )
+
+        location = f"s3://{self.bucket}/{session_key}"
+        LOG.info("session_saved", name=name, location=location)
+        return location
 
     def load_session(
         self,
@@ -172,7 +196,92 @@ class S3SessionStorage:
             SessionExpiredError: If session TTL exceeded
             StorageError: If load fails after retries
         """
-        raise NotImplementedError("load_session not yet implemented")
+        from botocore.exceptions import ClientError
+
+        metadata_key = self._metadata_key(name)
+        session_key = self._session_key(name)
+
+        # Load metadata first (to check TTL before downloading large pickle)
+        try:
+            metadata_response = self._client.get_object(
+                Bucket=self.bucket,
+                Key=metadata_key,
+            )
+            metadata_json = metadata_response["Body"].read().decode("utf-8")
+            metadata = self._dict_to_metadata(json.loads(metadata_json))
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code in ("NoSuchKey", "404"):
+                raise SessionNotFoundError(f"Session '{name}' not found") from e
+            raise StorageError(f"Failed to load session '{name}': {e}") from e
+
+        # Check TTL
+        if metadata.expires_at and datetime.now(UTC) > metadata.expires_at:
+            raise SessionExpiredError(
+                f"Session '{name}' expired at {metadata.expires_at.isoformat()}"
+            )
+
+        # Load encrypted session data
+        try:
+            session_response = self._client.get_object(
+                Bucket=self.bucket,
+                Key=session_key,
+            )
+            encrypted_data = session_response["Body"].read()
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code in ("NoSuchKey", "404"):
+                raise SessionNotFoundError(
+                    f"Session '{name}' data not found (metadata exists)"
+                ) from e
+            raise StorageError(f"Failed to load session '{name}': {e}") from e
+
+        LOG.info("session_loaded", name=name, size=len(encrypted_data))
+        return encrypted_data, metadata
+
+    def _metadata_to_dict(self, metadata: SessionMetadata) -> dict[str, Any]:
+        """Convert SessionMetadata to JSON-serializable dict.
+
+        Args:
+            metadata: Session metadata object
+
+        Returns:
+            Dictionary suitable for JSON serialization
+        """
+        return {
+            "name": metadata.name,
+            "checksum": metadata.checksum,
+            "created_at": metadata.created_at.isoformat(),
+            "modified_at": metadata.modified_at.isoformat(),
+            "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
+            "domain": metadata.domain,
+            "current_url": metadata.current_url,
+            "cookie_count": metadata.cookie_count,
+            "cookie_domains": metadata.cookie_domains,
+            "status": metadata.status,
+        }
+
+    def _dict_to_metadata(self, data: dict[str, Any]) -> SessionMetadata:
+        """Convert dict to SessionMetadata.
+
+        Args:
+            data: Dictionary from JSON deserialization
+
+        Returns:
+            SessionMetadata object
+        """
+        return SessionMetadata(
+            name=data.get("name", ""),
+            checksum=data.get("checksum", ""),
+            created_at=parse_datetime_iso(data.get("created_at")) or datetime.now(UTC),
+            modified_at=parse_datetime_iso(data.get("modified_at")) or datetime.now(UTC),
+            expires_at=parse_datetime_iso(data.get("expires_at")),
+            domain=data.get("domain"),
+            current_url=data.get("current_url"),
+            cookie_count=data.get("cookie_count", 0),
+            cookie_domains=data.get("cookie_domains", []),
+            status=data.get("status", "active"),
+        )
 
     def list_sessions(self) -> list[str]:
         """List all session names.
