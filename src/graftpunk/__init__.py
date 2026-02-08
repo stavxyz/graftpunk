@@ -32,6 +32,7 @@ from graftpunk.cache import (
     update_session_status,
     validate_session_name,
 )
+from graftpunk.client import GraftpunkClient
 from graftpunk.config import GraftpunkSettings, get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data, get_encryption_key
 from graftpunk.exceptions import (
@@ -50,6 +51,8 @@ __version__ = "1.3.0"
 __all__ = [
     # Version
     "__version__",
+    # Python API
+    "GraftpunkClient",
     # Session management
     "BrowserSession",
     "create_stealth_driver",
