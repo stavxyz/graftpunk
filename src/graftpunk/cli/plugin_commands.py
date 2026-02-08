@@ -285,6 +285,8 @@ def _create_plugin_command(
     )
 
     def callback(**kwargs: Any) -> None:
+        from graftpunk.client import execute_plugin_command
+
         output_format = kwargs.pop("format", "json")
 
         # Per-command requires_session override
@@ -294,6 +296,7 @@ def _create_plugin_command(
             else plugin.requires_session
         )
 
+        # --- Session loading (CLI-specific error handling) ---
         try:
             session = plugin.get_session() if needs_session else requests.Session()
         except SessionNotFoundError:
@@ -304,18 +307,17 @@ def _create_plugin_command(
         except PluginError as exc:
             gp_console.error(f"Plugin error: {exc}")
             raise SystemExit(1) from exc
-        except Exception as exc:  # noqa: BLE001 — CLI boundary: present user-friendly error instead of traceback
+        except Exception as exc:  # noqa: BLE001 — CLI boundary
             gp_console.error(f"Failed to load session: {exc}")
             LOG.exception("session_load_failed", plugin=plugin.site_name)
             raise SystemExit(1) from exc
 
-        # Set gp_base_url on the session so xhr()/navigate()/form_submit()
-        # can resolve relative Referer paths.
+        # Set gp_base_url for relative Referer resolution
         base_url = getattr(plugin, "base_url", "")
         if base_url and hasattr(session, "gp_base_url"):
-            setattr(session, "gp_base_url", base_url)  # noqa: B010 — avoids ty error on requests.Session
+            setattr(session, "gp_base_url", base_url)  # noqa: B010
 
-        # Build observability context from CLI --observe flag
+        # --- Observability context (CLI-specific) ---
         click_ctx = click.get_current_context(silent=True)
         observe_mode: Literal["off", "full"] = "off"
         if click_ctx is not None:
@@ -327,7 +329,10 @@ def _create_plugin_command(
             driver = session.driver  # type: ignore[attr-defined]
         except (BrowserError, AttributeError):
             driver = None
-            LOG.debug("driver_not_available_for_observe", plugin=plugin.site_name)
+            LOG.debug(
+                "driver_not_available_for_observe",
+                plugin=plugin.site_name,
+            )
         observe_ctx = build_observe_context(
             plugin.site_name,
             backend_type,
@@ -336,14 +341,17 @@ def _create_plugin_command(
         )
         if observe_mode != "off" and driver is None:
             gp_console.warn(
-                f"Observability capture unavailable for '{plugin.site_name}': "
-                f"no browser driver. Only event logging will work."
+                f"Observability capture unavailable for "
+                f"'{plugin.site_name}': no browser driver. "
+                f"Only event logging will work."
             )
 
-        # Auto-inject tokens if plugin declares token_config
+        # --- Token injection (CLI-specific ValueError handling) ---
         token_config = getattr(plugin, "token_config", None)
         if token_config is not None and needs_session:
-            from graftpunk.tokens import prepare_session as _prepare_tokens
+            from graftpunk.tokens import (
+                prepare_session as _prepare_tokens,
+            )
 
             base_url = getattr(plugin, "base_url", "")
             try:
@@ -352,6 +360,7 @@ def _create_plugin_command(
                 gp_console.error(f"Token extraction failed: {exc}")
                 raise SystemExit(1) from exc
 
+        # --- Build context and execute via shared pipeline ---
         try:
             ctx = CommandContext(
                 session=session,
@@ -361,11 +370,15 @@ def _create_plugin_command(
                 base_url=getattr(plugin, "base_url", ""),
                 config=getattr(plugin, "_plugin_config", None),
                 observe=observe_ctx,
-                _session_name=plugin.session_name if needs_session else "",
+                _session_name=(plugin.session_name if needs_session else ""),
             )
 
             try:
-                result = _execute_with_limits(cmd_spec.handler, ctx, cmd_spec, **kwargs)
+                result = execute_plugin_command(
+                    cmd_spec,
+                    ctx,
+                    **kwargs,
+                )
             except requests.exceptions.HTTPError as exc:
                 if (
                     exc.response is not None
@@ -373,36 +386,44 @@ def _create_plugin_command(
                     and token_config is not None
                 ):
                     from graftpunk.tokens import clear_cached_tokens
-                    from graftpunk.tokens import prepare_session as _prep
+                    from graftpunk.tokens import (
+                        prepare_session as _prep,
+                    )
 
                     LOG.info(
                         "token_403_retry",
                         command=cmd_spec.name,
-                        url=exc.response.url if exc.response else "unknown",
+                        url=(exc.response.url if exc.response else "unknown"),
                     )
                     clear_cached_tokens(session)
-                    _prep(session, token_config, getattr(plugin, "base_url", ""))
-                    # Mark session dirty so update_session_cookies() is called on exit,
-                    # persisting the freshly re-extracted token cache for future commands.
+                    _prep(
+                        session,
+                        token_config,
+                        getattr(plugin, "base_url", ""),
+                    )
                     ctx._session_dirty = True
-                    result = _execute_with_limits(cmd_spec.handler, ctx, cmd_spec, **kwargs)
+                    result = execute_plugin_command(
+                        cmd_spec,
+                        ctx,
+                        **kwargs,
+                    )
                 else:
                     raise
 
-            # Persist session if requested (decorator or explicit ctx.save_session())
+            # Persist session if requested
             if (cmd_spec.saves_session or ctx._session_dirty) and needs_session:
                 update_session_cookies(session, plugin.session_name)
 
             format_output(result, output_format, _format_console)
         except (SystemExit, KeyboardInterrupt):
-            raise  # Let these propagate normally
+            raise
         except CommandError as exc:
             gp_console.error(exc.user_message)
             raise SystemExit(1) from exc
         except PluginError as exc:
             gp_console.error(f"Plugin error: {exc}")
             raise SystemExit(1) from exc
-        except Exception as exc:  # noqa: BLE001 — CLI boundary: present user-friendly error instead of traceback
+        except Exception as exc:  # noqa: BLE001 — CLI boundary
             LOG.exception(
                 "plugin_command_failed",
                 plugin=plugin.site_name,

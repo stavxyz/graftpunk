@@ -5,6 +5,11 @@ client that wraps a single plugin.  Commands are accessible via
 attribute access (``client.login()``) or string dispatch
 (``client.execute("login")``).
 
+The module-level ``execute_plugin_command()`` function encapsulates the
+shared execution core (handler execution with retry / rate-limit and
+result normalization) used by the CLI callback.  Callers handle
+session loading, token injection, 403 retry, and session persistence.
+
 Example::
 
     from graftpunk.client import GraftpunkClient
@@ -35,6 +40,146 @@ from graftpunk.plugins.cli_plugin import (
 from graftpunk.tokens import clear_cached_tokens, prepare_session
 
 LOG = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level rate-limit state used by execute_plugin_command()
+# ---------------------------------------------------------------------------
+
+_rate_limit_state: dict[str, float] = {}
+
+
+def _enforce_shared_rate_limit(
+    command_key: str,
+    rate_limit: float,
+    state: dict[str, float],
+) -> None:
+    """Enforce a minimum interval between command executions.
+
+    Args:
+        command_key: Unique key for the command.
+        rate_limit: Minimum seconds between executions.
+        state: Mutable dict tracking last-execution timestamps.
+    """
+    now = time.monotonic()
+    last = state.get(command_key)
+    if last is not None:
+        elapsed = now - last
+        if elapsed < rate_limit:
+            time.sleep(rate_limit - elapsed)
+    state[command_key] = time.monotonic()
+
+
+def _run_handler_with_limits(
+    handler: Any,
+    ctx: CommandContext,
+    spec: CommandSpec,
+    rate_limit_state: dict[str, float],
+    **kwargs: Any,
+) -> Any:
+    """Execute handler with retry and rate-limit support.
+
+    Retries the handler up to ``spec.max_retries`` times with
+    exponential backoff on transient failures.
+
+    Args:
+        handler: The command handler callable.
+        ctx: CommandContext to pass to the handler.
+        spec: CommandSpec with retry/rate-limit configuration.
+        rate_limit_state: Mutable dict tracking last-execution times.
+        **kwargs: Additional keyword arguments for the handler.
+
+    Returns:
+        The handler's return value.
+
+    Raises:
+        Exception: The last exception if all attempts fail.
+    """
+    attempts = 1 + spec.max_retries
+    last_exc: Exception | None = None
+    command_key = f"{ctx.plugin_name}.{spec.name}"
+
+    for attempt in range(attempts):
+        try:
+            if spec.rate_limit:
+                _enforce_shared_rate_limit(
+                    command_key,
+                    spec.rate_limit,
+                    rate_limit_state,
+                )
+            result = handler(ctx, **kwargs)
+            if asyncio.iscoroutine(result):
+                LOG.warning(
+                    "async_handler_auto_executed",
+                    command=spec.name,
+                    plugin=ctx.plugin_name,
+                )
+                result = asyncio.run(result)
+            return result
+        except (
+            requests.RequestException,
+            ConnectionError,
+            TimeoutError,
+            OSError,
+        ) as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                backoff = 2**attempt
+                LOG.warning(
+                    "command_retry",
+                    command=spec.name,
+                    attempt=attempt + 1,
+                    backoff=backoff,
+                )
+                time.sleep(backoff)
+
+    assert last_exc is not None  # for type narrowing
+    raise last_exc
+
+
+def execute_plugin_command(
+    spec: CommandSpec,
+    ctx: CommandContext,
+    *,
+    rate_limit_state: dict[str, float] | None = None,
+    **kwargs: Any,
+) -> CommandResult:
+    """Shared execution pipeline for plugin commands.
+
+    Executes the handler from *spec* with retry / rate-limit
+    support and normalises the return value to a
+    ``CommandResult``.
+
+    Token injection, 403 token refresh, and session
+    persistence are the **caller's** responsibility so that
+    each caller (CLI, Python client) can use its own error
+    handling and mock targets.
+
+    Args:
+        spec: The resolved command specification.
+        ctx: Pre-built ``CommandContext``.
+        rate_limit_state: Mutable dict for rate-limit
+            tracking.  Defaults to a module-level dict.
+        **kwargs: Arguments forwarded to the handler.
+
+    Returns:
+        A ``CommandResult`` wrapping the handler's return
+        value.
+    """
+    rl_state = rate_limit_state if rate_limit_state is not None else _rate_limit_state
+
+    # Execute with retry / rate-limit
+    result = _run_handler_with_limits(
+        spec.handler,
+        ctx,
+        spec,
+        rl_state,
+        **kwargs,
+    )
+
+    # Normalise to CommandResult
+    if isinstance(result, CommandResult):
+        return result
+    return CommandResult(data=result)
 
 
 class GraftpunkClient:
