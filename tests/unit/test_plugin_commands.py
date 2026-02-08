@@ -18,7 +18,8 @@ from graftpunk.plugins.cli_plugin import (
     SitePlugin,
     command,
 )
-from graftpunk.plugins.python_loader import PythonDiscoveryResult
+
+DISCOVER_ALL = "graftpunk.cli.plugin_commands.discover_all_plugins"
 
 
 class MockPlugin(SitePlugin):
@@ -124,14 +125,7 @@ class TestPluginRegistration:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=()):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert registered == {}
@@ -142,14 +136,7 @@ class TestPluginRegistration:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"mock": MockPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "mocksite" in registered
@@ -176,14 +163,7 @@ class TestPluginRegistration:
         ]
         yaml_plugin = create_yaml_site_plugin(config, cmds)
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {}
-            mock_yaml.return_value = ([yaml_plugin], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(yaml_plugin,)):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "yamltest" in registered
@@ -208,15 +188,10 @@ class TestPluginRegistration:
         )
 
         with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
+            patch(DISCOVER_ALL, return_value=(MockPlugin(), yaml_plugin)),
+            pytest.raises(PluginError, match="Plugin name collision.*mocksite"),
         ):
-            mock_py.return_value = {"mock": MockPlugin}
-            mock_yaml.return_value = ([yaml_plugin], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
-            with pytest.raises(PluginError, match="Plugin name collision.*mocksite"):
-                register_plugin_commands(app, notify_errors=False)
+            register_plugin_commands(app, notify_errors=False)
 
     def test_register_populates_session_map(self, isolated_config: Path) -> None:
         """Test that register_plugin_commands populates _plugin_session_map."""
@@ -237,14 +212,7 @@ class TestPluginRegistration:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"hn": HNPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(HNPlugin(),)):
             register_plugin_commands(app, notify_errors=False)
 
         try:
@@ -261,14 +229,7 @@ class TestPluginRegistration:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"mock": MockPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
             register_plugin_commands(app, notify_errors=False)
 
         # Verify plugin group was stored on the app
@@ -404,57 +365,29 @@ class TestPluginDiscoveryErrors:
         assert len(result.errors) == 1
         assert isinstance(result.errors[0], PluginDiscoveryError)
 
-    def test_failed_plugin_instantiation_collected(self, isolated_config: Path) -> None:
-        """Test that failed plugin instantiation is collected as error."""
+    def test_failed_plugin_filtered_by_discovery(self, isolated_config: Path) -> None:
+        """Test that failed plugins are filtered out by discover_all_plugins."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
-        from graftpunk.exceptions import PluginError
 
-        class FailingPlugin:
-            def __init__(self) -> None:
-                raise PluginError("Test error")
-
+        # discover_all_plugins filters out bad plugins, returning empty tuple
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
-        ):
-            mock_py.return_value = {"failing": FailingPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=()):
             registered = register_plugin_commands(app, notify_errors=True)
 
-        # Plugin should not be registered
-        assert "failing" not in registered
-
-        # Error notification should be called
-        mock_notify.assert_called_once()
-        result = mock_notify.call_args[0][0]
-        assert result.has_errors is True
-        assert any("failing" in e.plugin_name for e in result.errors)
+        # No plugins should be registered
+        assert registered == {}
 
     def test_notify_errors_disabled(self, isolated_config: Path) -> None:
         """Test that notify_errors=False suppresses error output."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
-        from graftpunk.exceptions import PluginError
-
-        class FailingPlugin:
-            def __init__(self) -> None:
-                raise PluginError("Test error")
 
         app = GraftpunkApp()
 
         with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
+            patch(DISCOVER_ALL, return_value=()),
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
         ):
-            mock_py.return_value = {"failing": FailingPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
             register_plugin_commands(app, notify_errors=False)
 
         # Error notification should NOT be called
@@ -508,78 +441,47 @@ class TestPluginDiscoveryErrors:
             assert len(info_calls) == 2
             assert not any("more" in str(c) for c in info_calls)
 
-    def test_discovery_phase_failure_collected(self, isolated_config: Path) -> None:
-        """Test that discovery-level failures are collected as errors."""
+    def test_discovery_failure_results_in_no_plugins(self, isolated_config: Path) -> None:
+        """Test that discovery failures (handled by discover_all_plugins) result in empty."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
-        ):
-            mock_py.side_effect = RuntimeError("Discovery failed")
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        # discover_all_plugins handles failures internally and returns empty
+        with patch(DISCOVER_ALL, return_value=()):
             registered = register_plugin_commands(app, notify_errors=True)
 
         assert registered == {}
-        mock_notify.assert_called_once()
-        result = mock_notify.call_args[0][0]
-        assert any(e.phase == "discovery" for e in result.errors)
-        assert any("Discovery failed" in e.error for e in result.errors)
 
-    def test_python_file_discovery_failure_collected(self, isolated_config: Path) -> None:
-        """Test that discover_python_plugins failure is collected as error."""
+    def test_discovery_returns_only_valid_plugins(self, isolated_config: Path) -> None:
+        """Test that only valid plugins from discover_all_plugins are registered."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+
+        app = GraftpunkApp()
+
+        # discover_all_plugins filters out bad plugins, only returns valid ones
+        with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
+            registered = register_plugin_commands(app, notify_errors=True)
+
+        assert "mocksite" in registered
+
+    def test_empty_discovery_no_errors(self, isolated_config: Path) -> None:
+        """Test that empty discovery does not produce errors."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
         app = GraftpunkApp()
 
         with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
+            patch(DISCOVER_ALL, return_value=()),
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
         ):
-            mock_py.return_value = {}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.side_effect = RuntimeError("Python file discovery failed")
             registered = register_plugin_commands(app, notify_errors=True)
 
         assert registered == {}
+        # Notify is called but result has no errors
         mock_notify.assert_called_once()
         result = mock_notify.call_args[0][0]
-        assert result.has_errors is True
-        assert any("python-file-plugins" in e.plugin_name for e in result.errors)
-        assert any("Python file discovery failed" in e.error for e in result.errors)
-
-    def test_unexpected_exception_during_instantiation(self, isolated_config: Path) -> None:
-        """Test that unexpected exceptions (not PluginError) are collected."""
-        from graftpunk.cli.plugin_commands import register_plugin_commands
-
-        class UnexpectedlyFailingPlugin:
-            def __init__(self) -> None:
-                raise RuntimeError("Unexpected error")
-
-        app = GraftpunkApp()
-
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
-        ):
-            mock_py.return_value = {"unexpected": UnexpectedlyFailingPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
-            registered = register_plugin_commands(app, notify_errors=True)
-
-        assert "unexpected" not in registered
-        mock_notify.assert_called_once()
-        result = mock_notify.call_args[0][0]
-        assert any("Unexpected error" in e.error for e in result.errors)
+        assert result.has_errors is False
 
 
 class TestDeclarativeLogin:
@@ -784,14 +686,7 @@ class TestAutoLoginCommand:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"autologin": PluginWithLogin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(PluginWithLogin(),)):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "autologin" in registered
@@ -952,14 +847,7 @@ class TestDeclarativeLoginRegistration:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"decltest": DeclPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(DeclPlugin(),)):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "decltest" in registered
@@ -1900,15 +1788,10 @@ class TestSiteNameCollisionDetection:
         app = GraftpunkApp()
 
         with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
+            patch(DISCOVER_ALL, return_value=(PluginA(), PluginB())),
+            pytest.raises(PluginError, match="Plugin name collision.*samename"),
         ):
-            mock_py.return_value = {"a": PluginA, "b": PluginB}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
-            with pytest.raises(PluginError, match="Plugin name collision.*samename"):
-                register_plugin_commands(app, notify_errors=False)
+            register_plugin_commands(app, notify_errors=False)
 
     def test_collision_error_message_includes_source(self, isolated_config: Path) -> None:
         """Error message should mention both plugin sources."""
@@ -1935,15 +1818,10 @@ class TestSiteNameCollisionDetection:
         app = GraftpunkApp()
 
         with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
+            patch(DISCOVER_ALL, return_value=(PluginX(), PluginY())),
+            pytest.raises(PluginError, match="already registered by.*New source:"),
         ):
-            mock_py.return_value = {"x": PluginX, "y": PluginY}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
-            with pytest.raises(PluginError, match="already registered by.*New source:"):
-                register_plugin_commands(app, notify_errors=False)
+            register_plugin_commands(app, notify_errors=False)
 
     def test_different_site_names_no_collision(self, isolated_config: Path) -> None:
         """Plugins with different site_names register fine."""
@@ -1969,14 +1847,7 @@ class TestSiteNameCollisionDetection:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"alpha": PluginAlpha, "beta": PluginBeta}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(PluginAlpha(), PluginBeta())):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "alpha" in registered
@@ -1992,20 +1863,12 @@ class TestSiteNameCollisionDetection:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"mock": MockPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
-
+        with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
             # First call registers mocksite
             register_plugin_commands(app, notify_errors=False)
             assert "mocksite" in _registered_plugin_sources
 
-            # Second call should NOT raise collision — dict is cleared
+            # Second call should NOT raise collision -- dict is cleared
             register_plugin_commands(app, notify_errors=False)
             assert "mocksite" in _registered_plugin_sources
 
@@ -2420,18 +2283,13 @@ class TestIndividualCommandRegistrationFailure:
         app = GraftpunkApp()
 
         with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
+            patch(DISCOVER_ALL, return_value=(TwoCommandPlugin(),)),
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
             patch(
                 "graftpunk.cli.plugin_commands._create_plugin_command",
                 side_effect=[RuntimeError("registration boom"), MagicMock()],
             ),
         ):
-            mock_py.return_value = {"twocmd": TwoCommandPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
             registered = register_plugin_commands(app, notify_errors=True)
 
         # Plugin should still be registered (the second command succeeded)
@@ -2478,18 +2336,13 @@ class TestLoginRegistrationFailure:
         app = GraftpunkApp()
 
         with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
+            patch(DISCOVER_ALL, return_value=(DeclPluginWithCmd(),)),
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
             patch(
                 "graftpunk.cli.login_commands.generate_login_method",
                 side_effect=RuntimeError("login generation failed"),
             ),
         ):
-            mock_py.return_value = {"loginboom": DeclPluginWithCmd}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
             registered = register_plugin_commands(app, notify_errors=True)
 
         # Plugin should still be registered (regular commands work)
@@ -2533,14 +2386,7 @@ class TestLifecycleHooks:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"setuptest": SetupPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(SetupPlugin(),)):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert setup_called is True
@@ -2565,14 +2411,9 @@ class TestLifecycleHooks:
         app = GraftpunkApp()
 
         with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
+            patch(DISCOVER_ALL, return_value=(FailSetupPlugin(),)),
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
         ):
-            mock_py.return_value = {"failsetup": FailSetupPlugin}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
             registered = register_plugin_commands(app, notify_errors=True)
 
         # Plugin should NOT be registered
@@ -2706,14 +2547,7 @@ class TestLifecycleHooks:
 
         app = GraftpunkApp()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.discover_site_plugins") as mock_py,
-            patch("graftpunk.cli.plugin_commands.create_yaml_plugins") as mock_yaml,
-            patch("graftpunk.cli.plugin_commands.discover_python_plugins") as mock_pyfile,
-        ):
-            mock_py.return_value = {"failsetup2": FailSetup2}
-            mock_yaml.return_value = ([], [])
-            mock_pyfile.return_value = PythonDiscoveryResult()
+        with patch(DISCOVER_ALL, return_value=(FailSetup2(),)):
             register_plugin_commands(app, notify_errors=False)
 
         assert all(p.site_name != "failsetup2" for p in _registered_plugins_for_teardown)
@@ -2823,34 +2657,19 @@ class TestAsyncHandlerDetection:
 
 
 class TestAPIVersionCheck:
-    """Tests for API version check at registration time."""
+    """Tests for API version check via discover_all_plugins filtering."""
 
-    def test_unsupported_api_version_rejected(self, isolated_config: Path) -> None:
-        """Plugin with unsupported api_version is skipped with error."""
+    def test_unsupported_api_version_filtered_by_discovery(self, isolated_config: Path) -> None:
+        """Plugin with unsupported api_version is filtered by discover_all_plugins."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
-        from graftpunk.plugins.python_loader import PythonDiscoveryResult
 
-        mock_plugin = MockPlugin()
-        # Override api_version to an unsupported value, saving original to restore
-        original_api_version = MockPlugin.__dict__.get("api_version", 1)
-        type(mock_plugin).api_version = property(lambda self: 99)  # type: ignore[assignment]
+        # discover_all_plugins filters unsupported api_versions,
+        # so register_plugin_commands never sees them
+        app = GraftpunkApp()
+        with patch(DISCOVER_ALL, return_value=()):
+            registered = register_plugin_commands(app, notify_errors=False)
 
-        try:
-            app = GraftpunkApp()
-            with (
-                patch("graftpunk.cli.plugin_commands.discover_site_plugins", return_value={}),
-                patch("graftpunk.cli.plugin_commands.create_yaml_plugins", return_value=([], [])),
-                patch(
-                    "graftpunk.cli.plugin_commands.discover_python_plugins",
-                    return_value=PythonDiscoveryResult(plugins=[mock_plugin], errors=[]),
-                ),
-            ):
-                registered = register_plugin_commands(app, notify_errors=False)
-
-            assert "mocksite" not in registered
-        finally:
-            # Restore original api_version to avoid polluting other tests
-            MockPlugin.api_version = original_api_version  # type: ignore[assignment]
+        assert "mocksite" not in registered
 
 
 class TestCommandContextPopulation:

@@ -16,11 +16,12 @@ Example plugin registration in pyproject.toml:
 """
 
 import warnings
+from functools import lru_cache
 from importlib.metadata import entry_points
 from typing import Any
 from urllib.parse import urlparse
 
-from graftpunk.exceptions import CommandError
+from graftpunk.exceptions import CommandError, PluginError
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import (
     SUPPORTED_API_VERSIONS,
@@ -57,6 +58,7 @@ from graftpunk.plugins.python_loader import (
     PythonDiscoveryResult,
     discover_python_plugins,
 )
+from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 from graftpunk.tokens import Token, TokenConfig
 
 __all__ = [
@@ -108,6 +110,9 @@ __all__ = [
     "PythonDiscoveryError",
     "PythonDiscoveryResult",
     "discover_python_plugins",
+    # Shared plugin discovery (all sources)
+    "discover_all_plugins",
+    "get_plugin",
 ]
 
 LOG = get_logger(__name__)
@@ -301,3 +306,127 @@ def list_available_plugins() -> dict[str, list[str]]:
         "keepalive_handlers": list(discover_keepalive_handlers().keys()),
         "plugins": list(discover_site_plugins().keys()),
     }
+
+
+@lru_cache(maxsize=1)
+def discover_all_plugins() -> tuple[CLIPluginProtocol, ...]:
+    """Discover plugins from all sources and return valid ones.
+
+    Combines entry-point plugins, YAML plugins, and Python file plugins.
+    Filters out plugins that have config errors, missing site_name,
+    or unsupported api_version.
+
+    Results are cached; call ``discover_all_plugins.cache_clear()``
+    to force re-discovery.
+
+    Returns:
+        Tuple of valid CLIPluginProtocol instances from all sources.
+    """
+    all_plugins: list[CLIPluginProtocol] = []
+
+    # 1. Entry-point plugins (need instantiation)
+    try:
+        ep_plugins = discover_site_plugins()
+        for name, plugin_class in ep_plugins.items():
+            try:
+                instance = plugin_class()
+                all_plugins.append(instance)
+                LOG.debug("ep_plugin_discovered", name=name)
+            except PluginError as exc:
+                LOG.warning(
+                    "ep_plugin_instantiation_failed",
+                    name=name,
+                    error=str(exc),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOG.exception(
+                    "ep_plugin_instantiation_unexpected",
+                    name=name,
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
+                )
+    except Exception as exc:  # noqa: BLE001
+        LOG.exception("ep_plugin_discovery_failed", error=str(exc))
+
+    # 2. YAML plugins (already instantiated)
+    try:
+        yaml_plugins, yaml_errors = create_yaml_plugins()
+        all_plugins.extend(yaml_plugins)
+        for yaml_error in yaml_errors:
+            LOG.warning(
+                "yaml_plugin_error",
+                filepath=str(yaml_error.filepath),
+                error=yaml_error.error,
+            )
+    except Exception as exc:  # noqa: BLE001
+        LOG.exception("yaml_plugin_discovery_failed", error=str(exc))
+
+    # 3. Python file plugins (already instantiated)
+    try:
+        py_result = discover_python_plugins()
+        all_plugins.extend(py_result.plugins)
+        for py_error in py_result.errors:
+            LOG.warning(
+                "python_file_plugin_error",
+                filepath=str(py_error.filepath),
+                error=py_error.error,
+            )
+    except Exception as exc:  # noqa: BLE001
+        LOG.exception(
+            "python_file_plugin_discovery_failed",
+            error=str(exc),
+        )
+
+    # Filter out invalid plugins
+    valid: list[CLIPluginProtocol] = []
+    for plugin in all_plugins:
+        config_error = getattr(plugin, "_plugin_config_error", None)
+        if config_error:
+            LOG.warning(
+                "plugin_config_error",
+                plugin=type(plugin).__name__,
+                error=str(config_error),
+            )
+            continue
+
+        if not plugin.site_name:
+            LOG.warning(
+                "plugin_missing_site_name",
+                plugin=type(plugin).__name__,
+            )
+            continue
+
+        if plugin.api_version not in SUPPORTED_API_VERSIONS:
+            LOG.warning(
+                "plugin_unsupported_api_version",
+                plugin=type(plugin).__name__,
+                api_version=plugin.api_version,
+                supported=sorted(SUPPORTED_API_VERSIONS),
+            )
+            continue
+
+        valid.append(plugin)
+
+    LOG.info("all_plugins_discovered", count=len(valid))
+    return tuple(valid)
+
+
+def get_plugin(name: str) -> CLIPluginProtocol:
+    """Look up a plugin by site_name.
+
+    Args:
+        name: The site_name to look up.
+
+    Returns:
+        The matching CLIPluginProtocol instance.
+
+    Raises:
+        PluginError: If no plugin with the given name is found.
+    """
+    plugins = discover_all_plugins()
+    for plugin in plugins:
+        if plugin.site_name == name:
+            return plugin
+
+    available = sorted(p.site_name for p in plugins)
+    raise PluginError(f"Plugin '{name}' is unknown. Available plugins: {available}")

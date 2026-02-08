@@ -30,16 +30,13 @@ from graftpunk.cli.login_commands import (
 from graftpunk.exceptions import BrowserError, CommandError, PluginError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.observe import build_observe_context
-from graftpunk.plugins import discover_site_plugins
+from graftpunk.plugins import discover_all_plugins
 from graftpunk.plugins.cli_plugin import (
-    SUPPORTED_API_VERSIONS,
     CLIPluginProtocol,
     CommandContext,
     CommandSpec,
 )
 from graftpunk.plugins.formatters import discover_formatters, format_output
-from graftpunk.plugins.python_loader import discover_python_plugins
-from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 
 LOG = get_logger(__name__)
 _format_console = Console()
@@ -531,72 +528,16 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     _plugin_session_map.clear()
     _registered_plugins_for_teardown.clear()
     result = PluginDiscoveryResult()
-    all_plugins: list[CLIPluginProtocol] = []
 
-    # Discover Python plugins
-    try:
-        python_plugins = discover_site_plugins()
-        for name, plugin_class in python_plugins.items():
-            try:
-                instance = plugin_class()
-                all_plugins.append(instance)
-                LOG.debug("python_plugin_discovered", name=name)
-            except PluginError as exc:
-                LOG.warning("python_plugin_instantiation_failed", name=name, error=str(exc))
-                result.add_error(name, str(exc), "instantiation")
-            except Exception as exc:  # noqa: BLE001 — plugin boundary: unknown plugin code may raise anything
-                LOG.exception(
-                    "python_plugin_instantiation_unexpected",
-                    name=name,
-                    error=str(exc),
-                    exc_type=type(exc).__name__,
-                )
-                result.add_error(name, str(exc), "instantiation")
-    except Exception as exc:  # noqa: BLE001 — plugin boundary: unknown plugin code may raise anything
-        LOG.exception("python_plugin_discovery_failed", error=str(exc))
-        result.add_error("python-plugins", str(exc), "discovery")
+    # Use shared discovery (clear cache so CLI always gets fresh results)
+    discover_all_plugins.cache_clear()
+    all_plugins = discover_all_plugins()
 
-    # Discover YAML plugins
-    try:
-        yaml_plugins, yaml_errors = create_yaml_plugins()
-        all_plugins.extend(yaml_plugins)
-        # Aggregate any YAML file load errors
-        for yaml_error in yaml_errors:
-            result.add_error(str(yaml_error.filepath.name), yaml_error.error, "discovery")
-    except Exception as exc:  # noqa: BLE001 — plugin boundary: unknown plugin code may raise anything
-        LOG.exception("yaml_plugin_discovery_failed", error=str(exc))
-        result.add_error("yaml-plugins", str(exc), "discovery")
-
-    # Discover Python plugins from files
-    try:
-        python_file_result = discover_python_plugins()
-        all_plugins.extend(python_file_result.plugins)
-        # Aggregate any Python file load errors
-        for py_error in python_file_result.errors:
-            result.add_error(str(py_error.filepath.name), py_error.error, "discovery")
-    except Exception as exc:  # noqa: BLE001 — plugin boundary: unknown plugin code may raise anything
-        LOG.exception("python_file_plugin_discovery_failed", error=str(exc))
-        result.add_error("python-file-plugins", str(exc), "discovery")
-
-    # Register each plugin
+    # Register each plugin (already filtered for config errors,
+    # missing site_name, and unsupported api_version)
     for plugin in all_plugins:
         try:
-            # Skip plugins that failed config validation during __init_subclass__
-            config_error = getattr(plugin, "_plugin_config_error", None)
-            if config_error:
-                LOG.warning(
-                    "plugin_config_error",
-                    plugin=type(plugin).__name__,
-                    error=str(config_error),
-                )
-                result.add_error(type(plugin).__name__, str(config_error), "registration")
-                continue
-
             site_name = plugin.site_name
-            if not site_name:
-                LOG.warning("plugin_missing_site_name", plugin=type(plugin).__name__)
-                result.add_error(type(plugin).__name__, "missing site_name", "registration")
-                continue
 
             # Collision detection: fail fast if two plugins share a site_name
             source = _get_plugin_source(plugin)
@@ -607,17 +548,6 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
                     f"by {existing_source}. New source: {source}. "
                     f"Rename one of the plugins."
                 )
-
-            # API version check: reject plugins targeting unsupported versions
-            if plugin.api_version not in SUPPORTED_API_VERSIONS:
-                result.add_error(
-                    site_name,
-                    f"Plugin requires api_version {plugin.api_version}, "
-                    f"but graftpunk supports {sorted(SUPPORTED_API_VERSIONS)}. "
-                    f"Upgrade graftpunk or downgrade the plugin.",
-                    "registration",
-                )
-                continue
 
             # Use TyperGroup instead of plain click.Group so plugin help
             # output uses the same rich formatting as the main app.
