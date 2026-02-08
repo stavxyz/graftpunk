@@ -16,15 +16,23 @@ Example::
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
+import requests
+
+from graftpunk.cache import load_session_for_api, update_session_cookies
 from graftpunk.logging import get_logger
+from graftpunk.observe import NoOpObservabilityContext
 from graftpunk.plugins import get_plugin
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
+    CommandContext,
     CommandResult,
     CommandSpec,
 )
+from graftpunk.tokens import clear_cached_tokens, prepare_session
 
 LOG = get_logger(__name__)
 
@@ -65,6 +73,8 @@ class GraftpunkClient:
         Raises:
             AttributeError: If *name* is not a known command or group.
         """
+        if name.startswith("_"):
+            raise AttributeError(name)
         if name in self._top_commands:
             return _CommandCallable(self, self._top_commands[name])
         if name in self._groups:
@@ -120,23 +130,174 @@ class GraftpunkClient:
             return spec
         raise ValueError("execute() takes 1 arg (command) or 2 args (group, command)")
 
-    # -- execution (stub) --------------------------------------------------
+    # -- execution ---------------------------------------------------------
 
     def _execute_command(self, spec: CommandSpec, **kwargs: Any) -> CommandResult:
-        """Execute a resolved command.
+        """Execute a resolved command through the full pipeline.
+
+        Pipeline steps:
+        1. Resolve whether a session is needed.
+        2. Lazy-load session via ``load_session_for_api`` if needed.
+        3. Inject tokens via ``prepare_session`` if plugin has ``token_config``.
+        4. Build ``CommandContext``.
+        5. Run handler with retry/rate-limit via ``_execute_with_limits``.
+        6. On 403 + token_config: clear tokens, re-prepare, retry once.
+        7. Persist session if dirty or ``spec.saves_session``.
+        8. Normalize return to ``CommandResult``.
+
+        Args:
+            spec: The resolved command specification.
+            **kwargs: Arguments forwarded to the handler.
+
+        Returns:
+            A ``CommandResult`` wrapping the handler's return value.
+        """
+        plugin = self._plugin
+        needs_session = (
+            spec.requires_session if spec.requires_session is not None else plugin.requires_session
+        )
+
+        # Step 1 — lazy-load session
+        if needs_session and self._session is None:
+            self._session = load_session_for_api(plugin.session_name)
+            base_url = getattr(plugin, "base_url", "")
+            if base_url and hasattr(self._session, "gp_base_url"):
+                setattr(self._session, "gp_base_url", base_url)  # noqa: B010
+
+        session = self._session if needs_session else requests.Session()
+
+        # Step 2 — token injection
+        token_config = getattr(plugin, "token_config", None)
+        if token_config is not None and needs_session:
+            base_url = getattr(plugin, "base_url", "")
+            prepare_session(session, token_config, base_url)
+
+        # Step 3 — build CommandContext
+        ctx = CommandContext(
+            session=session,
+            plugin_name=plugin.site_name,
+            command_name=spec.name,
+            api_version=plugin.api_version,
+            base_url=getattr(plugin, "base_url", ""),
+            config=getattr(plugin, "_plugin_config", None),
+            observe=NoOpObservabilityContext(),
+            _session_name=(plugin.session_name if needs_session else ""),
+        )
+
+        # Step 4 — execute with retry/rate-limit
+        try:
+            result = self._execute_with_limits(spec.handler, ctx, spec, **kwargs)
+        except requests.exceptions.HTTPError as exc:
+            if (
+                exc.response is not None
+                and exc.response.status_code == 403
+                and token_config is not None
+            ):
+                LOG.info(
+                    "token_403_retry",
+                    command=spec.name,
+                    url=(exc.response.url if exc.response else "unknown"),
+                )
+                clear_cached_tokens(session)
+                base_url = getattr(plugin, "base_url", "")
+                prepare_session(session, token_config, base_url)
+                self._session_dirty = True
+                result = self._execute_with_limits(spec.handler, ctx, spec, **kwargs)
+            else:
+                raise
+
+        # Step 5 — persist session if dirty
+        if (spec.saves_session or ctx._session_dirty or self._session_dirty) and needs_session:
+            update_session_cookies(session, plugin.session_name)
+
+        # Step 6 — normalize to CommandResult
+        if isinstance(result, CommandResult):
+            return result
+        return CommandResult(data=result)
+
+    def _execute_with_limits(
+        self,
+        handler: Any,
+        ctx: CommandContext,
+        spec: CommandSpec,
+        **kwargs: Any,
+    ) -> Any:
+        """Execute handler with retry and rate-limit support.
+
+        Retries the handler up to ``spec.max_retries`` times with
+        exponential backoff on transient failures.
+
+        Args:
+            handler: The command handler callable.
+            ctx: CommandContext to pass to the handler.
+            spec: CommandSpec with retry/rate-limit configuration.
+            **kwargs: Additional keyword arguments for the handler.
+
+        Returns:
+            The handler's return value.
 
         Raises:
-            NotImplementedError: Always -- implemented in Task 3.
+            Exception: The last exception if all attempts fail.
         """
-        raise NotImplementedError("Execution pipeline added in Task 3")
+        attempts = 1 + spec.max_retries
+        last_exc: Exception | None = None
+        command_key = f"{ctx.plugin_name}.{spec.name}"
+
+        for attempt in range(attempts):
+            try:
+                if spec.rate_limit:
+                    self._enforce_rate_limit(command_key, spec.rate_limit)
+                result = handler(ctx, **kwargs)
+                if asyncio.iscoroutine(result):
+                    LOG.warning(
+                        "async_handler_auto_executed",
+                        command=spec.name,
+                        plugin=ctx.plugin_name,
+                    )
+                    result = asyncio.run(result)
+                return result
+            except (
+                requests.RequestException,
+                ConnectionError,
+                TimeoutError,
+                OSError,
+            ) as exc:
+                last_exc = exc
+                if attempt < attempts - 1:
+                    backoff = 2**attempt
+                    LOG.warning(
+                        "command_retry",
+                        command=spec.name,
+                        attempt=attempt + 1,
+                        backoff=backoff,
+                    )
+                    time.sleep(backoff)
+
+        assert last_exc is not None  # for type narrowing
+        raise last_exc
+
+    def _enforce_rate_limit(self, command_key: str, rate_limit: float) -> None:
+        """Enforce a minimum interval between command executions.
+
+        Sleeps if the command was executed too recently.
+
+        Args:
+            command_key: Unique key for the command.
+            rate_limit: Minimum seconds between executions.
+        """
+        now = time.monotonic()
+        last = self._last_execution.get(command_key)
+        if last is not None:
+            elapsed = now - last
+            if elapsed < rate_limit:
+                time.sleep(rate_limit - elapsed)
+        self._last_execution[command_key] = time.monotonic()
 
     # -- lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
         """Persist dirty session and tear down the plugin."""
         if self._session is not None and self._session_dirty:
-            from graftpunk.cache import update_session_cookies
-
             update_session_cookies(self._session, self._plugin.session_name)
             self._session_dirty = False
         try:
