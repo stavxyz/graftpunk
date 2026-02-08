@@ -581,3 +581,133 @@ class TestErrorHandling:
         client = GraftpunkClient("testsite")
         with pytest.raises(SessionNotFoundError, match="no session"):
             client.fetch()
+
+
+class TestRetryLogic:
+    """Tests for _execute_with_limits retry behavior."""
+
+    @patch("graftpunk.client.time")
+    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.get_plugin")
+    def test_retries_on_transient_failure(
+        self, mock_get: MagicMock, mock_load: MagicMock, mock_time: MagicMock
+    ) -> None:
+        """Handler succeeds on retry after transient failure."""
+        mock_time.monotonic.return_value = 0.0
+        mock_load.return_value = MagicMock(spec=requests.Session)
+        handler = MagicMock(side_effect=[requests.ConnectionError("reset"), {"ok": True}])
+        spec = _make_spec("fetch", handler=handler, max_retries=1)
+        mock_get.return_value = _make_plugin(commands=[spec])
+
+        client = GraftpunkClient("testsite")
+        result = client.fetch()
+        assert result.data == {"ok": True}
+        assert handler.call_count == 2
+        mock_time.sleep.assert_called_once_with(1)  # 2**0
+
+    @patch("graftpunk.client.time")
+    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.get_plugin")
+    def test_raises_after_retries_exhausted(
+        self, mock_get: MagicMock, mock_load: MagicMock, mock_time: MagicMock
+    ) -> None:
+        """Raises last exception when all retries exhausted."""
+        mock_time.monotonic.return_value = 0.0
+        mock_load.return_value = MagicMock(spec=requests.Session)
+        handler = MagicMock(
+            side_effect=[
+                requests.ConnectionError("fail1"),
+                requests.ConnectionError("fail2"),
+            ]
+        )
+        spec = _make_spec("fetch", handler=handler, max_retries=1)
+        mock_get.return_value = _make_plugin(commands=[spec])
+
+        client = GraftpunkClient("testsite")
+        with pytest.raises(requests.ConnectionError, match="fail2"):
+            client.fetch()
+
+    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.get_plugin")
+    def test_non_retryable_error_propagates_immediately(
+        self, mock_get: MagicMock, mock_load: MagicMock
+    ) -> None:
+        """ValueError is not retried."""
+        mock_load.return_value = MagicMock(spec=requests.Session)
+        handler = MagicMock(side_effect=ValueError("bad"))
+        spec = _make_spec("fetch", handler=handler, max_retries=3)
+        mock_get.return_value = _make_plugin(commands=[spec])
+
+        client = GraftpunkClient("testsite")
+        with pytest.raises(ValueError, match="bad"):
+            client.fetch()
+        assert handler.call_count == 1
+
+    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.get_plugin")
+    def test_403_without_tokens_propagates(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
+        """403 HTTPError without token_config is not retried."""
+        mock_load.return_value = MagicMock(spec=requests.Session)
+        response_403 = MagicMock()
+        response_403.status_code = 403
+        handler = MagicMock(side_effect=requests.exceptions.HTTPError(response=response_403))
+        spec = _make_spec("fetch", handler=handler)
+        mock_get.return_value = _make_plugin(commands=[spec])  # no token_config
+
+        client = GraftpunkClient("testsite")
+        with pytest.raises(requests.exceptions.HTTPError):
+            client.fetch()
+        assert handler.call_count == 1
+
+    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.get_plugin")
+    def test_500_with_tokens_propagates(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
+        """500 HTTPError propagates even when token_config is set."""
+        mock_load.return_value = MagicMock(spec=requests.Session)
+        response_500 = MagicMock()
+        response_500.status_code = 500
+        handler = MagicMock(side_effect=requests.exceptions.HTTPError(response=response_500))
+        spec = _make_spec("fetch", handler=handler)
+        plugin = _make_plugin(commands=[spec])
+        plugin.token_config = MagicMock()
+        mock_get.return_value = plugin
+
+        client = GraftpunkClient("testsite")
+        with pytest.raises(requests.exceptions.HTTPError):
+            client.fetch()
+
+
+class TestSessionDirtyReset:
+    """Tests for session dirty flag reset after persist."""
+
+    @patch("graftpunk.client.update_session_cookies")
+    @patch("graftpunk.client.clear_cached_tokens")
+    @patch("graftpunk.client.prepare_session")
+    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.get_plugin")
+    def test_dirty_flag_reset_after_persist(
+        self,
+        mock_get: MagicMock,
+        mock_load: MagicMock,
+        mock_prepare: MagicMock,
+        mock_clear: MagicMock,
+        mock_update: MagicMock,
+    ) -> None:
+        """_session_dirty is reset after session is persisted."""
+        mock_load.return_value = MagicMock(spec=requests.Session)
+        response_403 = MagicMock()
+        response_403.status_code = 403
+        handler = MagicMock(
+            side_effect=[
+                requests.exceptions.HTTPError(response=response_403),
+                {"ok": True},
+            ]
+        )
+        spec = _make_spec("fetch", handler=handler)
+        plugin = _make_plugin(commands=[spec])
+        plugin.token_config = MagicMock()
+        mock_get.return_value = plugin
+
+        client = GraftpunkClient("testsite")
+        client.fetch()
+        assert not client._session_dirty  # reset after persist

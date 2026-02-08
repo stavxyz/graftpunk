@@ -209,6 +209,7 @@ class GraftpunkClient:
         # Step 5 — persist session if dirty
         if (spec.saves_session or ctx._session_dirty or self._session_dirty) and needs_session:
             update_session_cookies(session, plugin.session_name)
+            self._session_dirty = False
 
         # Step 6 — normalize to CommandResult
         if isinstance(result, CommandResult):
