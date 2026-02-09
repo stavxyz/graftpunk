@@ -735,7 +735,9 @@ gp http post -s mybank --profile form https://secure.mybank.com/submit
 gp http get -s mybank --profile navigate https://secure.mybank.com/page
 ```
 
-Under the hood, `--profile xhr` calls `session.xhr()`, `--profile navigate` calls `session.navigate()`, and `--profile form` calls `session.form_submit()` — the same methods available in the Python API.
+Three built-in profiles are available: `xhr`, `navigate` (alias for `navigation`), and `form`. Plugins can define custom profiles via a `header_profiles` dict — these are merged into the session at request time, so `--profile api` (or any custom name) works the same way.
+
+Under the hood, `--profile` calls `session.request_with_profile()` directly with the profile name. The session checks captured headers first, then plugin-defined profiles, then falls back to canonical Fetch-spec headers for the three built-in profiles.
 
 ---
 
