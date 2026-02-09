@@ -368,14 +368,30 @@ class GraftpunkClient:
     # -- lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
-        """Persist dirty session and tear down the plugin."""
+        """Persist dirty session and tear down the plugin.
+
+        Exceptions from session persistence or teardown are logged
+        but never propagated, so ``close()`` is safe to call
+        unconditionally (including from ``__exit__``).
+        """
         if self._session is not None and self._session_dirty:
-            update_session_cookies(self._session, self._plugin.session_name)
-            self._session_dirty = False
+            try:
+                update_session_cookies(self._session, self._plugin.session_name)
+                self._session_dirty = False
+            except Exception:  # noqa: BLE001
+                LOG.error(
+                    "session_persist_failed",
+                    plugin=self._plugin.site_name,
+                    exc_info=True,
+                )
         try:
             self._plugin.teardown()
         except Exception:  # noqa: BLE001
-            LOG.debug("plugin_teardown_error", exc_info=True)
+            LOG.error(
+                "plugin_teardown_failed",
+                plugin=self._plugin.site_name,
+                exc_info=True,
+            )
 
     def __enter__(self) -> GraftpunkClient:
         return self
