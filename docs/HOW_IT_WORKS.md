@@ -6,13 +6,13 @@ This document explains the internals of graftpunk: browser automation, session m
 
 ## Architecture Overview
 
-graftpunk captures authenticated browser sessions and exposes them as CLI commands. The flow is:
+graftpunk captures authenticated browser sessions and exposes them as CLI commands and a Python API. The flow is:
 
 1. **Login** — A browser opens, you log in (manually or via automation), cookies are captured.
 2. **Cache** — The session (cookies + headers) is encrypted and stored locally.
-3. **Use** — CLI commands load the cached session into a plain `requests.Session` and make API calls without a browser.
+3. **Use** — CLI commands or `GraftpunkClient` load the cached session into a plain `requests.Session` and make API calls without a browser.
 
-Plugins define both the login flow and the commands available for a site.
+Plugins define both the login flow and the commands available for a site. The same plugins work with both the CLI (`gp mysite cmd`) and the Python API (`GraftpunkClient("mysite").cmd()`).
 
 ---
 
@@ -291,6 +291,8 @@ graftpunk discovers plugins from three sources, in order:
 2. **YAML files** — `~/.config/graftpunk/plugins/*.yaml` and `*.yml`
 3. **Python files** — `~/.config/graftpunk/plugins/*.py` (files starting with `_` are skipped)
 
+**Shared discovery API:** `discover_all_plugins()` and `get_plugin()` in `graftpunk.plugins` provide unified plugin lookup across all sources. Both the CLI and `GraftpunkClient` use these functions. `discover_all_plugins()` is cached (`@lru_cache`) — call `discover_all_plugins.cache_clear()` to force re-discovery.
+
 **Collision detection:** If two plugins share the same `site_name`, registration fails with a `PluginError` showing both sources (e.g., `yaml:/path/a.yaml` vs `entry_point:module.name`). The `GraftpunkApp.add_plugin_group()` method also rejects duplicate group names. This prevents silent shadowing.
 
 Discovery errors are accumulated as `PluginDiscoveryError` / `YAMLDiscoveryError` / `PythonDiscoveryError` (all frozen dataclasses) — valid plugins from the same source still load even if others fail.
@@ -511,6 +513,15 @@ MYSITE_USERNAME=x MYSITE_PASSWORD=y gp mysite login  # No prompts
 ---
 
 ## Command Execution
+
+### Execution Paths
+
+Commands execute through two paths that share the same retry/rate-limit core:
+
+- **CLI path** — The CLI callback calls `execute_plugin_command()` from `graftpunk.client`. The CLI handles session loading, token injection, 403 retry, session persistence, and output formatting around it.
+- **Python API path** — `GraftpunkClient._execute_command()` manages the full pipeline: lazy session loading, token injection, retry/rate-limit (via the shared `_run_handler_with_limits()`), 403 token refresh, and session persistence. All commands return `CommandResult`.
+
+Both paths use the same `_run_handler_with_limits()` function for retry and rate-limit enforcement, ensuring consistent behavior.
 
 ### Resource Limits
 
@@ -960,6 +971,7 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 
 | Type | Module | Frozen | Purpose |
 |------|--------|--------|---------|
+| `GraftpunkClient` | `client` | No | Stateful Python API client for a single plugin. Context-manager-friendly. |
 | `SitePlugin` | `plugins.cli_plugin` | N/A (class) | Base class for Python plugins |
 | `CommandContext` | `plugins.cli_plugin` | No | Execution context: `session`, `plugin_name`, `command_name`, `api_version`, `base_url`, `config`, `observe` |
 | `CommandResult` | `plugins.cli_plugin` | Yes | Optional structured return: `data`, `metadata`, `format_hint` |
@@ -985,6 +997,14 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `PluginDiscoveryError` | `cli.plugin_commands` | Yes | Error during plugin discovery |
 | `YAMLDiscoveryError` | `plugins.yaml_loader` | Yes | Error during YAML plugin loading |
 | `PythonDiscoveryError` | `plugins.python_loader` | Yes | Error during Python plugin loading |
+
+### Key Functions
+
+| Function | Module | Purpose |
+|----------|--------|---------|
+| `execute_plugin_command()` | `client` | Shared execution core with retry/rate-limit and `CommandResult` normalization. Used by the CLI callback. |
+| `discover_all_plugins()` | `plugins` | Cached discovery across all sources (entry points, YAML, Python files). Returns tuple of plugins. |
+| `get_plugin()` | `plugins` | Look up a single plugin by `site_name`. Raises `PluginError` if unknown. |
 
 ---
 

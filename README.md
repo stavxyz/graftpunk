@@ -122,21 +122,25 @@ gp quotes random
 ### 2. Use It Programmatically
 
 ```python
+from graftpunk import GraftpunkClient
+
+# Use plugin commands from Python — same session, tokens, and retries as the CLI
+with GraftpunkClient("mybank") as client:
+    accounts = client.accounts()
+    statements = client.statements(month="january", year=2024)
+
+    # Grouped commands use nested attribute access
+    detail = client.accounts.detail(id=42)
+```
+
+For lower-level access without plugins, load a session directly:
+
+```python
 from graftpunk import load_session_for_api
 
-# Load your cached session — returns a GraftpunkSession with
-# browser headers pre-loaded for realistic request fingerprints
+# Returns a GraftpunkSession with browser headers pre-loaded
 api = load_session_for_api("mysite")
-
-# Make authenticated requests that look like they came from Chrome
 response = api.get("https://app.example.com/api/internal/documents")
-documents = response.json()
-
-for doc in documents:
-    print(f"Downloading {doc['name']}...")
-    content = api.get(doc['download_url']).content
-    with open(doc['name'], 'wb') as f:
-        f.write(content)
 ```
 
 ### 3. Keep It Alive
