@@ -1021,6 +1021,63 @@ class TestClosePersistence:
 
 
 # ---------------------------------------------------------------------------
+# _session_dirty propagation from ctx to self
+# ---------------------------------------------------------------------------
+
+
+class TestSessionDirtyPropagation:
+    """Ensure ctx._session_dirty propagates to self for close() safety."""
+
+    @patch("graftpunk.client.update_session_cookies")
+    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.get_plugin")
+    def test_ctx_dirty_sets_self_dirty_before_persist(
+        self, mock_get: MagicMock, mock_load: MagicMock, mock_update: MagicMock
+    ) -> None:
+        """If persist fails mid-pipeline, close() retries because self is dirty."""
+        mock_load.return_value = MagicMock(spec=requests.Session)
+
+        def handler_sets_ctx_dirty(ctx: Any, **kw: Any) -> dict:
+            ctx._session_dirty = True
+            return {"ok": True}
+
+        spec = _make_spec("fetch", handler=handler_sets_ctx_dirty)
+        mock_get.return_value = _make_plugin(commands=[spec])
+
+        client = GraftpunkClient("testsite")
+        # Make persist fail mid-pipeline
+        mock_update.side_effect = RuntimeError("disk full")
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            client.fetch()
+
+        # self._session_dirty should be True so close() retries
+        assert client._session_dirty is True
+
+    @patch("graftpunk.client.update_session_cookies")
+    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.get_plugin")
+    def test_ctx_dirty_resets_after_successful_persist(
+        self, mock_get: MagicMock, mock_load: MagicMock, mock_update: MagicMock
+    ) -> None:
+        """Successful persist resets self._session_dirty to False."""
+        mock_load.return_value = MagicMock(spec=requests.Session)
+
+        def handler_sets_ctx_dirty(ctx: Any, **kw: Any) -> dict:
+            ctx._session_dirty = True
+            return {"ok": True}
+
+        spec = _make_spec("fetch", handler=handler_sets_ctx_dirty)
+        mock_get.return_value = _make_plugin(commands=[spec])
+
+        client = GraftpunkClient("testsite")
+        client.fetch()
+
+        assert client._session_dirty is False
+        mock_update.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # requires_session=None fallback
 # ---------------------------------------------------------------------------
 

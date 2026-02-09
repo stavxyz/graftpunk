@@ -366,7 +366,8 @@ class GraftpunkClient:
                 raise
 
         # 5. Persist session if dirty
-        if (spec.saves_session or ctx._session_dirty or self._session_dirty) and needs_session:
+        if needs_session and (spec.saves_session or ctx._session_dirty or self._session_dirty):
+            self._session_dirty = True
             update_session_cookies(session, plugin.session_name)
             self._session_dirty = False
 
