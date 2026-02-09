@@ -794,9 +794,7 @@ class TestRunHandlerWithLimits:
 
     def test_retry_succeeds_after_transient_failure(self) -> None:
         """Handler fails once then succeeds."""
-        handler = MagicMock(
-            side_effect=[requests.ConnectionError("transient"), {"ok": True}]
-        )
+        handler = MagicMock(side_effect=[requests.ConnectionError("transient"), {"ok": True}])
         spec = _make_spec("cmd", handler=handler, max_retries=2)
         ctx = self._make_ctx()
         with patch("graftpunk.client.time.sleep"):
@@ -1129,9 +1127,7 @@ class TestGpBaseUrl:
         """Session's gp_base_url is set from plugin's base_url."""
         handler = MagicMock(return_value={})
         spec = _make_spec("fetch", handler=handler)
-        mock_get.return_value = _make_plugin(
-            commands=[spec], base_url="https://example.com"
-        )
+        mock_get.return_value = _make_plugin(commands=[spec], base_url="https://example.com")
         session = MagicMock(spec=requests.Session)
         session.gp_base_url = ""
         mock_load.return_value = session
