@@ -7,9 +7,7 @@ directory), and YAML plugins are all supported.
 
 from __future__ import annotations
 
-import asyncio
 import atexit
-import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -146,90 +144,6 @@ class PluginDiscoveryResult:
     def has_errors(self) -> bool:
         """Return True if any errors occurred."""
         return bool(self.errors)
-
-
-_last_execution: dict[str, float] = {}
-
-
-def _enforce_rate_limit(command_key: str, rate_limit: float) -> None:
-    """Enforce a minimum interval between executions of a command.
-
-    Sleeps if the command was executed too recently, ensuring at least
-    ``rate_limit`` seconds between consecutive calls.
-
-    Args:
-        command_key: Unique key for the command (e.g. "plugin.command").
-        rate_limit: Minimum seconds between executions.
-    """
-    now = time.monotonic()
-    last = _last_execution.get(command_key)
-    if last is not None:
-        elapsed = now - last
-        if elapsed < rate_limit:
-            time.sleep(rate_limit - elapsed)
-    _last_execution[command_key] = time.monotonic()
-
-
-def _execute_with_limits(
-    handler: Any, ctx: CommandContext, spec: CommandSpec, **kwargs: Any
-) -> Any:
-    """Execute a command handler with retry and rate-limit support.
-
-    Retries the handler up to ``spec.max_retries`` times with exponential
-    backoff on failure. Rate-limiting is enforced before each attempt.
-
-    Args:
-        handler: The command handler callable.
-        ctx: CommandContext to pass to the handler.
-        spec: CommandSpec with retry/rate-limit configuration.
-        **kwargs: Additional keyword arguments for the handler.
-
-    Returns:
-        The handler's return value.
-
-    Raises:
-        Exception: The last exception if all attempts fail.
-    """
-    attempts = 1 + spec.max_retries
-    last_exc: Exception | None = None
-    command_key = f"{ctx.plugin_name}.{spec.name}"
-
-    # Rate limiting applies on each attempt. During retries, the backoff sleep
-    # already provides spacing; any additional rate-limit delay is conservative.
-    for attempt in range(attempts):
-        try:
-            if spec.rate_limit:
-                _enforce_rate_limit(command_key, spec.rate_limit)
-            result = handler(ctx, **kwargs)
-            if asyncio.iscoroutine(result):
-                LOG.warning(
-                    "async_handler_auto_executed",
-                    command=spec.name,
-                    plugin=ctx.plugin_name,
-                    hint="Async handlers work but are not officially supported in v1. "
-                    "Consider using a synchronous handler.",
-                )
-                result = asyncio.run(result)
-            return result
-        except (requests.RequestException, ConnectionError, TimeoutError, OSError) as exc:
-            last_exc = exc
-            if attempt < attempts - 1:
-                backoff = 2**attempt
-                LOG.warning(
-                    "command_retry",
-                    command=spec.name,
-                    attempt=attempt + 1,
-                    backoff=backoff,
-                )
-                gp_console.warn(
-                    f"Command '{spec.name}' failed ({exc}), "
-                    f"retrying in {backoff}s ({attempt + 1}/{spec.max_retries})..."
-                )
-                time.sleep(backoff)
-
-    # last_exc is always set: attempts >= 1 (validated in CommandSpec.__post_init__)
-    assert last_exc is not None  # for type narrowing
-    raise last_exc
 
 
 def _create_plugin_command(
