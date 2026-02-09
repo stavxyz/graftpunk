@@ -264,7 +264,7 @@ class GraftpunkSession(requests.Session):
         Returns:
             The response object.
         """
-        return self._request_with_profile(
+        return self.request_with_profile(
             "xhr", method, url, referer=referer, headers=headers, **kwargs
         )
 
@@ -294,7 +294,7 @@ class GraftpunkSession(requests.Session):
         Returns:
             The response object.
         """
-        return self._request_with_profile(
+        return self.request_with_profile(
             "navigation", method, url, referer=referer, headers=headers, **kwargs
         )
 
@@ -324,11 +324,11 @@ class GraftpunkSession(requests.Session):
         Returns:
             The response object.
         """
-        return self._request_with_profile(
+        return self.request_with_profile(
             "form", method, url, referer=referer, headers=headers, **kwargs
         )
 
-    def _request_with_profile(
+    def request_with_profile(
         self,
         profile_name: str,
         method: str,
@@ -340,12 +340,19 @@ class GraftpunkSession(requests.Session):
     ) -> requests.Response:
         """Make a request with explicit profile headers.
 
-        Internal implementation for xhr(), navigate(), and form_submit().
-        Composes profile headers, Referer, and caller overrides, then
-        delegates to self.request().
+        Applies the named profile's headers (captured during login, plugin-
+        defined, or canonical fallback), then delegates to ``self.request()``.
+        Used by ``xhr()``, ``navigate()``, ``form_submit()``, and the
+        ``gp http --profile`` flag.
+
+        Profile names can be any string.  Built-in profiles (``"xhr"``,
+        ``"navigation"``, ``"form"``) fall back to canonical Fetch-spec
+        headers when no captured profile exists.  Custom profiles use only
+        headers registered in ``_gp_header_profiles``.
 
         Args:
-            profile_name: Profile to apply ("xhr", "navigation", or "form").
+            profile_name: Profile to apply (e.g. ``"xhr"``, ``"navigation"``,
+                ``"form"``, or any custom profile name).
             method: HTTP method.
             url: Request URL.
             referer: Optional Referer path or URL.
