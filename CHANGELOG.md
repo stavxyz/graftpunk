@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **HTTP Request Header Profiles** (`--profile`): Set browser header profiles on `gp http` commands (#92)
-  - `--profile xhr` — XHR/fetch headers (`Sec-Fetch-Mode: cors`, `X-Requested-With: XMLHttpRequest`)
-  - `--profile navigate` — Navigation headers (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`)
-  - `--profile form` — Form submission headers
+  - Built-in profiles: `xhr`, `navigate`, `form`
+  - Plugin-defined custom profiles: plugins can declare a `header_profiles` dict with arbitrary names
+  - `--profile <name>` dispatches via `request_with_profile()` for any profile name
   - Replaces manual multi-header overrides with a single flag
 
 ## [1.4.0] - 2026-02-08
