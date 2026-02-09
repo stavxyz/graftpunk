@@ -323,6 +323,7 @@ class GraftpunkClient:
                 setattr(self._session, "gp_base_url", base_url)  # noqa: B010
 
         session = self._session if needs_session else requests.Session()
+        assert session is not None  # guaranteed by lazy-load above
 
         # 2. Token injection
         if token_config is not None and needs_session:
