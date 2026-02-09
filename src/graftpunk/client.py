@@ -331,7 +331,9 @@ class GraftpunkClient:
 
         # Step 4 — execute with retry/rate-limit
         try:
-            result = self._execute_with_limits(spec.handler, ctx, spec, **kwargs)
+            result = _run_handler_with_limits(
+                spec.handler, ctx, spec, self._last_execution, **kwargs
+            )
         except requests.exceptions.HTTPError as exc:
             if (
                 exc.response is not None
@@ -347,7 +349,9 @@ class GraftpunkClient:
                 base_url = getattr(plugin, "base_url", "")
                 prepare_session(session, token_config, base_url)
                 self._session_dirty = True
-                result = self._execute_with_limits(spec.handler, ctx, spec, **kwargs)
+                result = _run_handler_with_limits(
+                    spec.handler, ctx, spec, self._last_execution, **kwargs
+                )
             else:
                 raise
 
@@ -360,84 +364,6 @@ class GraftpunkClient:
         if isinstance(result, CommandResult):
             return result
         return CommandResult(data=result)
-
-    def _execute_with_limits(
-        self,
-        handler: Any,
-        ctx: CommandContext,
-        spec: CommandSpec,
-        **kwargs: Any,
-    ) -> Any:
-        """Execute handler with retry and rate-limit support.
-
-        Retries the handler up to ``spec.max_retries`` times with
-        exponential backoff on transient failures.
-
-        Args:
-            handler: The command handler callable.
-            ctx: CommandContext to pass to the handler.
-            spec: CommandSpec with retry/rate-limit configuration.
-            **kwargs: Additional keyword arguments for the handler.
-
-        Returns:
-            The handler's return value.
-
-        Raises:
-            Exception: The last exception if all attempts fail.
-        """
-        attempts = 1 + spec.max_retries
-        last_exc: Exception | None = None
-        command_key = f"{ctx.plugin_name}.{spec.name}"
-
-        for attempt in range(attempts):
-            try:
-                if spec.rate_limit:
-                    self._enforce_rate_limit(command_key, spec.rate_limit)
-                result = handler(ctx, **kwargs)
-                if asyncio.iscoroutine(result):
-                    LOG.warning(
-                        "async_handler_auto_executed",
-                        command=spec.name,
-                        plugin=ctx.plugin_name,
-                    )
-                    result = asyncio.run(result)
-                return result
-            except (
-                requests.RequestException,
-                ConnectionError,
-                TimeoutError,
-                OSError,
-            ) as exc:
-                last_exc = exc
-                if attempt < attempts - 1:
-                    backoff = 2**attempt
-                    LOG.warning(
-                        "command_retry",
-                        command=spec.name,
-                        attempt=attempt + 1,
-                        backoff=backoff,
-                    )
-                    time.sleep(backoff)
-
-        assert last_exc is not None  # for type narrowing
-        raise last_exc
-
-    def _enforce_rate_limit(self, command_key: str, rate_limit: float) -> None:
-        """Enforce a minimum interval between command executions.
-
-        Sleeps if the command was executed too recently.
-
-        Args:
-            command_key: Unique key for the command.
-            rate_limit: Minimum seconds between executions.
-        """
-        now = time.monotonic()
-        last = self._last_execution.get(command_key)
-        if last is not None:
-            elapsed = now - last
-            if elapsed < rate_limit:
-                time.sleep(rate_limit - elapsed)
-        self._last_execution[command_key] = time.monotonic()
 
     # -- lifecycle ---------------------------------------------------------
 
