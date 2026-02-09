@@ -297,11 +297,11 @@ gp http get -s mybank https://secure.mybank.com/api/accounts
 gp http post -s mybank https://secure.mybank.com/api/transfer --data '{"amount": 100}'
 ```
 
-Use `--profile` to set browser header profiles (built-in or plugin-defined):
+Use `--role` to set browser header roles (built-in or plugin-defined):
 
 ```bash
-gp http get -s mybank --profile xhr https://secure.mybank.com/api/status
-gp http get -s mybank --profile api https://secure.mybank.com/v2/data  # custom plugin profile
+gp http get -s mybank --role xhr https://secure.mybank.com/api/status
+gp http get -s mybank --role api https://secure.mybank.com/v2/data  # custom plugin role
 ```
 
 Supports all HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.

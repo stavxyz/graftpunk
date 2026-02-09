@@ -74,7 +74,7 @@ The context manager handles:
 - Flushing observability data (screenshots, HAR, console logs) on exit — each flush step is isolated so one failure doesn't prevent others
 - Browser cleanup (quit/stop) on exit
 
-**Serialization:** `BrowserSession` implements `__getstate__` to strip browser-related state (driver handles, async loops) before pickling. The nodriver backend serializes only HTTP client state (cookies, headers, session name) — browser driver handles are excluded; the selenium backend delegates to `requests.Session.__getstate__`. Both backends preserve `_gp_cached_tokens` (token cache) and `_gp_header_profiles` (browser header profiles) through the pickle roundtrip.
+**Serialization:** `BrowserSession` implements `__getstate__` to strip browser-related state (driver handles, async loops) before pickling. The nodriver backend serializes only HTTP client state (cookies, headers, session name) — browser driver handles are excluded; the selenium backend delegates to `requests.Session.__getstate__`. Both backends preserve `_gp_cached_tokens` (token cache) and `_gp_header_roles` (browser header roles) through the pickle roundtrip.
 
 ---
 
@@ -112,15 +112,15 @@ This extracts cookies and headers from the cached `BrowserSession` into a `Graft
 
 ### GraftpunkSession and Browser Header Replay
 
-`GraftpunkSession` extends `requests.Session` with browser header profiles captured during login. When a session is cached after login, graftpunk captures the actual HTTP headers the browser sends (via CDP network events) and classifies them into profiles:
+`GraftpunkSession` extends `requests.Session` with browser header roles captured during login. When a session is cached after login, graftpunk captures the actual HTTP headers the browser sends (via CDP network events) and classifies them into roles:
 
 - **navigation** — Headers from top-level page loads (Accept, Accept-Language, Accept-Encoding, User-Agent, etc.)
 - **xhr** — Headers from XMLHttpRequest/fetch calls (typically includes additional headers like X-Requested-With)
 - **form** — Headers from form submissions
 
-When `load_session_for_api()` loads a session, it returns a `GraftpunkSession` that automatically detects and applies the appropriate header profile (navigation, xhr, or form) for each request based on its characteristics. This means API calls look like they came from the same Chrome browser that logged in, not from Python's default `requests` User-Agent.
+When `load_session_for_api()` loads a session, it returns a `GraftpunkSession` that automatically detects and applies the appropriate header role (navigation, xhr, or form) for each request based on its characteristics. This means API calls look like they came from the same Chrome browser that logged in, not from Python's default `requests` User-Agent.
 
-**Browser identity separation:** `GraftpunkSession` separates headers into two axes: *browser identity* (User-Agent, sec-ch-ua, sec-ch-ua-mobile, sec-ch-ua-platform, Accept-Language, Accept-Encoding) and *request type* (Accept, Sec-Fetch-*, X-Requested-With). Browser identity headers are extracted at init and set as session defaults — they can never leak, even when the detected request-type profile wasn't captured during login. When a detected profile is missing (e.g., login was an SPA that only produced xhr/form requests, but the plugin later makes a navigation-style request), canonical Chrome request-type headers are used as fallback.
+**Browser identity separation:** `GraftpunkSession` separates headers into two axes: *browser identity* (User-Agent, sec-ch-ua, sec-ch-ua-mobile, sec-ch-ua-platform, Accept-Language, Accept-Encoding) and *request type* (Accept, Sec-Fetch-*, X-Requested-With). Browser identity headers are extracted at init and set as session defaults — they can never leak, even when the detected request-type role wasn't captured during login. When a detected role is missing (e.g., login was an SPA that only produced xhr/form requests, but the plugin later makes a navigation-style request), registered role headers are used as fallback.
 
 ```python
 api = load_session_for_api("mysite")
@@ -134,7 +134,7 @@ Brotli (`br`) is included as a core dependency so `Accept-Encoding: gzip, deflat
 
 #### Request-Type Methods
 
-For explicit control over which header profile is used, `GraftpunkSession` provides three methods:
+For explicit control over which header role is used, `GraftpunkSession` provides three methods:
 
 ```python
 # XHR-style request (Accept: application/json, X-Requested-With, etc.)
@@ -148,29 +148,29 @@ resp = session.form_submit("POST", "https://example.com/login", referer="/login"
 ```
 
 Each method:
-1. Starts from the captured profile headers for that request type (if available)
-2. Falls back to canonical Chrome request-type headers (if the profile wasn't captured during login)
+1. Starts from the captured role headers for that request type (if available)
+2. Falls back to registered role headers (if the role wasn't captured during login)
 3. Browser identity headers are already on `self.headers` from session init
 4. The `referer` kwarg resolves paths against `gp_base_url` (paths like `"/invoice/list"` become full URLs)
-5. Caller-supplied `headers=` override profile headers
+5. Caller-supplied `headers=` override role headers
 6. All other `**kwargs` pass through to `requests.Session.request()`
 
 This eliminates the need for plugins to maintain their own header-building infrastructure. A plugin that previously needed 150 lines of request helpers can reduce to one-line calls.
 
 #### Auto-Detection Rules
 
-When using `session.get()`, `session.post()`, etc. (the standard `requests.Session` methods), `GraftpunkSession` auto-detects which profile to apply via `_detect_profile()`:
+When using `session.get()`, `session.post()`, etc. (the standard `requests.Session` methods), `GraftpunkSession` auto-detects which role to apply via `_detect_role()`:
 
-| Condition | Profile |
-|-----------|---------|
-| `gp_default_profile` is set | Whatever it's set to |
+| Condition | Role |
+|-----------|------|
+| `gp_default_role` is set | Whatever it's set to |
 | Non-GET/POST method (DELETE, PUT, PATCH, HEAD, OPTIONS) | `xhr` — browsers can only issue these via `fetch()`/`XMLHttpRequest` (HTML spec §4.10.18.6) |
 | `Accept: application/json` in caller headers | `xhr` |
 | POST with `json=` kwarg | `xhr` |
 | POST with `data=` kwarg | `form` |
 | GET without `Accept: application/json` | `navigation` |
 
-The explicit methods (`xhr()`, `navigate()`, `form_submit()`) bypass auto-detection and apply the requested profile directly. Their headers are passed as request-level headers, which take precedence over session-level auto-detected headers in the `requests` merge logic.
+The explicit methods (`xhr()`, `navigate()`, `form_submit()`) bypass auto-detection and apply the requested role directly. Their headers are passed as request-level headers, which take precedence over session-level auto-detected headers in the `requests` merge logic.
 
 ### Session Persistence After Commands
 
@@ -725,19 +725,19 @@ All HTTP methods are supported: `get`, `post`, `put`, `patch`, `delete`, `head`,
 
 The session is loaded as a `GraftpunkSession` with full browser header replay, so requests have the same fingerprint as the browser that logged in.
 
-### Header Profiles (`--profile`)
+### Header Roles (`--role`)
 
-By default, `gp http` sends navigation-style headers. Some API endpoints expect XHR headers instead. The `--profile` flag selects the correct combination of `Sec-Fetch-*`, `Accept`, and `X-Requested-With` headers:
+By default, `gp http` sends navigation-style headers. Some API endpoints expect XHR headers instead. The `--role` flag selects the correct combination of `Sec-Fetch-*`, `Accept`, and `X-Requested-With` headers:
 
 ```bash
-gp http get -s mybank --profile xhr https://secure.mybank.com/api/status
-gp http post -s mybank --profile form https://secure.mybank.com/submit
-gp http get -s mybank --profile navigate https://secure.mybank.com/page
+gp http get -s mybank --role xhr https://secure.mybank.com/api/status
+gp http post -s mybank --role form https://secure.mybank.com/submit
+gp http get -s mybank --role navigate https://secure.mybank.com/page
 ```
 
-Three built-in profiles are available: `xhr`, `navigate` (alias for `navigation`), and `form`. Plugins can define custom profiles via a `header_profiles` dict — these are merged into the session at request time, so `--profile api` (or any custom name) works the same way.
+Three built-in roles are registered at import time via `register_role()`: `xhr`, `navigate` (alias for `navigation`), and `form`. Plugins can define custom roles via a `header_roles` dict — these are merged into the session at request time, so `--role api` (or any custom name) works the same way.
 
-Under the hood, `--profile` calls `session.request_with_profile()` directly with the profile name. The session checks captured headers first, then plugin-defined profiles, then falls back to canonical Fetch-spec headers for the three built-in profiles.
+Under the hood, `--role` calls `session.request_with_role()` directly with the role name. The session checks captured headers first, then registered roles (built-in or plugin-defined), then returns empty headers for unknown role names.
 
 ---
 
@@ -1003,7 +1003,7 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `NoOpObservabilityContext` | `observe.context` | No | Null object for disabled observability |
 | `CaptureBackend` | `observe.capture` | N/A (Protocol) | Protocol for browser capture |
 | `ObserveStorage` | `observe.storage` | No | File-based observability storage |
-| `GraftpunkSession` | `session` | No | `requests.Session` subclass with browser header profiles |
+| `GraftpunkSession` | `session` | No | `requests.Session` subclass with browser header roles |
 | `BrowserSession` | `session` | No | Browser automation wrapper |
 | `Token` | `tokens` | Yes | Token extraction configuration |
 | `TokenConfig` | `tokens` | Yes | Collection of token extraction rules |

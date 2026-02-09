@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **HTTP Request Header Profiles** (`--profile`): Set browser header profiles on `gp http` commands (#92)
-  - Built-in profiles: `xhr`, `navigate`, `form`
-  - Plugin-defined custom profiles: plugins can declare a `header_profiles` dict with arbitrary names
-  - `--profile <name>` dispatches via `request_with_profile()` for any profile name
+- **HTTP Request Header Roles** (`--role`): Set browser header roles on `gp http` commands (#92)
+  - Built-in roles: `xhr`, `navigate`, `form` — registered via `register_role()`
+  - Plugin-defined custom roles: plugins can declare a `header_roles` dict with arbitrary names
+  - `--role <name>` dispatches via `request_with_role()` for any role name
   - Replaces manual multi-header overrides with a single flag
 
 ## [1.4.0] - 2026-02-08
@@ -132,15 +132,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Interactive prompts with masked input for password fields
 
 - **Browser Header Replay**: Requests look like they came from Chrome, not Python
-  - `GraftpunkSession` subclass of `requests.Session` with browser header profiles
+  - `GraftpunkSession` subclass of `requests.Session` with browser header roles
   - Captures real browser headers during login via CDP network events
-  - Classifies headers into navigation, XHR, and form profiles
-  - `load_session_for_api()` returns `GraftpunkSession` with browser header profiles
+  - Classifies headers into navigation, XHR, and form roles
+  - `load_session_for_api()` returns `GraftpunkSession` with browser header roles
   - Brotli support (`Accept-Encoding: gzip, deflate, br`)
-  - **Request-type methods** (#50): `xhr()`, `navigate()`, `form_submit()` for explicit profile control
-    - Each method applies the correct captured (or canonical fallback) headers for that request type
+  - **Request-type methods** (#50): `xhr()`, `navigate()`, `form_submit()` for explicit role control
+    - Each method applies the correct captured (or registered fallback) headers for that request type
     - `referer` kwarg resolves paths against `gp_base_url` (e.g., `referer="/invoice/list"`)
-    - Caller-supplied headers override profile headers
+    - Caller-supplied headers override role headers
     - Eliminates boilerplate: plugins no longer need to build request headers manually
 
 - **Token and CSRF Support**: Declarative token extraction and auto-injection
@@ -209,7 +209,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `inject_cookies_to_nodriver()` returns `tuple[int, int]` (injected, skipped) instead of `int`; callers can now see how many cookies were filtered
 - `inject_cookies_to_nodriver()` logs a warning when all cookies are filtered (indicates the session may not work)
 - `GraftpunkSession.__init__` now accepts `base_url` keyword argument for Referer path resolution
-- `_detect_profile()` classifies non-GET/POST methods as XHR (was: navigation); canonical Chrome request-type headers used as fallback when a captured profile is missing
+- `_detect_role()` classifies non-GET/POST methods as XHR (was: navigation); registered role headers used as fallback when a captured role is missing
 - Chrome sandbox disabled by default for NoDriver; `--no-sandbox` warning suppressed
 - Auto-detect Chrome version for matching ChromeDriver
 
@@ -220,7 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session headers contaminating GET requests (#65)
 - `load_session_for_api` overwrites browser UA with python-requests default (#52)
 - Silent failures in S3 storage replaced with explicit `StorageError` exceptions
-- **Browser identity header leak** (#49): `GraftpunkSession` now separates browser identity headers (User-Agent, sec-ch-ua, Accept-Language, Accept-Encoding, etc.) from request-type headers (Accept, Sec-Fetch-*). Identity headers are set as session defaults at init, preventing `python-requests` User-Agent from ever reaching the wire when profiles exist. When a detected profile wasn't captured during login, canonical Chrome request-type headers are used as fallback instead of silently applying no headers. `_detect_profile()` now correctly classifies DELETE/PUT/PATCH/HEAD/OPTIONS as XHR per HTML spec §4.10.18.6 (forms only support GET and POST).
+- **Browser identity header leak** (#49): `GraftpunkSession` now separates browser identity headers (User-Agent, sec-ch-ua, Accept-Language, Accept-Encoding, etc.) from request-type headers (Accept, Sec-Fetch-*). Identity headers are set as session defaults at init, preventing `python-requests` User-Agent from ever reaching the wire when roles exist. When a detected role wasn't captured during login, registered role headers are used as fallback instead of silently applying no headers. `_detect_role()` now correctly classifies DELETE/PUT/PATCH/HEAD/OPTIONS as XHR per HTML spec §4.10.18.6 (forms only support GET and POST).
 - Nested plugin subcommand groups (e.g. `gp bek invoice`) now use `TyperGroup` instead of plain `click.Group`, so `--help` output gets the same rich formatting as top-level commands
 
 ## [1.2.1] - 2026-01-28
