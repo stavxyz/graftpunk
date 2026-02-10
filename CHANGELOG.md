@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **HTTP Request Header Roles** (`--role`): Set browser header roles on `gp http` commands (#92)
-  - Built-in roles: `xhr`, `navigate`, `form` — registered via `register_role()`
+  - Built-in roles: `navigation`, `xhr`, `form` — registered via `register_role()`. CLI accepts `navigate` as shorthand for `navigation`
   - Plugin-defined custom roles: plugins can declare a `header_roles` dict with arbitrary names
   - `--role <name>` dispatches via `request_with_role()` for any role name
   - Replaces manual multi-header overrides with a single flag
