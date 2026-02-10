@@ -844,7 +844,7 @@ The Python template at `~/.config/graftpunk/plugins/` provides a starting point 
 The output format for command results follows this precedence (highest to lowest):
 
 1. **`--format` CLI flag** — Explicit user choice always wins.
-2. **`CommandResult.format_hint`** — Plugin author's suggested format (only applies when the user has not explicitly chosen a format, i.e., when the default `json` is in effect).
+2. **`CommandResult.format_hint`** — Plugin author's suggested format (only applies when the user has not explicitly passed `--format`/`-f` on the command line).
 3. **Default (`json`)** — Pretty-printed JSON.
 
 Example:
