@@ -255,6 +255,8 @@ class CommandResult:
         data: The command response data.
         metadata: Optional metadata dict (pagination, status info, etc.).
         format_hint: Preferred output format ("json", "table", "raw", "csv").
+            Only applies when the user has not explicitly passed ``--format``
+            on the command line; an explicit ``--format`` always wins.
         output_config: Configuration for column filtering and view extraction.
     """
 

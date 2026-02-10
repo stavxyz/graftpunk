@@ -203,6 +203,8 @@ def _create_plugin_command(
 
         output_format = kwargs.pop("format", "json")
         click_ctx = click.get_current_context(silent=True)
+        # Only COMMANDLINE counts as explicit — DEFAULT and DEFAULT_MAP
+        # mean the user did not actively choose, so the hint should apply.
         format_is_explicit = (
             click_ctx is not None
             and click_ctx.get_parameter_source("format") == click.core.ParameterSource.COMMANDLINE
