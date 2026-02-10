@@ -270,7 +270,7 @@ def format_output(
         format_type: Formatter name (e.g. ``"json"``, ``"table"``, ``"raw"``).
         console: Rich console for output.
         user_explicit: True when the user explicitly passed ``--format``/``-f``
-            on the command line.  When True, ``format_hint`` on a
+            on the command line. When True, ``format_hint`` on a
             ``CommandResult`` is ignored so the user's choice wins.
     """
     formatters = discover_formatters()
@@ -288,8 +288,15 @@ def format_output(
     # Unwrap CommandResult
     if isinstance(data, CommandResult):
         output_config = data.output_config  # Extract config
-        if not user_explicit and data.format_hint and data.format_hint in formatters:
-            formatter = formatters[data.format_hint]
+        if not user_explicit and data.format_hint:
+            if data.format_hint in formatters:
+                formatter = formatters[data.format_hint]
+            else:
+                LOG.warning(
+                    "unknown_format_hint",
+                    hint=data.format_hint,
+                    available=sorted(formatters.keys()),
+                )
         data = data.data
 
     formatter.format(data, console, output_config=output_config)
