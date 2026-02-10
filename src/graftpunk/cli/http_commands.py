@@ -11,10 +11,13 @@ from __future__ import annotations
 import datetime
 import os
 import sys
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import requests
 import typer
+
+if TYPE_CHECKING:
+    from graftpunk.graftpunk_session import GraftpunkSession
 
 from graftpunk import console as gp_console
 from graftpunk.cache import load_session_for_api
@@ -85,7 +88,7 @@ def _dispatch_request(
     url: str,
     *,
     role: str | None = None,
-    **kwargs: object,
+    **kwargs: Any,
 ) -> requests.Response:
     """Dispatch a request using a role or plain ``session.request()``.
 
@@ -116,7 +119,8 @@ def _dispatch_request(
                 f"--role '{role}' requires a GraftpunkSession, but got {type(session).__name__}"
             )
         resolved = _resolve_role_name(role)
-        return session.request_with_role(resolved, method, url, **kwargs)
+        gp_session = cast("GraftpunkSession", session)
+        return gp_session.request_with_role(resolved, method, url, **kwargs)
     return session.request(method, url, **kwargs)
 
 
@@ -180,7 +184,7 @@ def _make_request(
             raise typer.Exit(1) from exc
 
     if not browser_headers and hasattr(session, "clear_header_roles"):
-        session.clear_header_roles()
+        cast("GraftpunkSession", session).clear_header_roles()
 
     # Apply extra headers from --header flags
     for header_str in extra_headers or []:
@@ -223,7 +227,7 @@ def _make_request(
                     role=role_name,
                     plugin=getattr(plugin, "site_name", "unknown"),
                 )
-        session.merge_header_roles(plugin_roles)
+        cast("GraftpunkSession", session).merge_header_roles(plugin_roles)
 
     try:
         response = _dispatch_request(session, method, url, role=role, **kwargs)
