@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--format` flag now overrides `format_hint`**: When a user explicitly passes `--format`/`-f` on the command line, the plugin's `CommandResult.format_hint` is ignored so the user's choice always wins (#94)
+
 ### Added
 
 - **HTTP Request Header Roles** (`--role`): Set browser header roles on `gp http` commands (#92)
