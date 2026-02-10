@@ -255,7 +255,13 @@ def discover_formatters() -> dict[str, OutputFormatter]:
 # ---------------------------------------------------------------------------
 
 
-def format_output(data: Any, format_type: str, console: Console) -> None:
+def format_output(
+    data: Any,
+    format_type: str,
+    console: Console,
+    *,
+    user_explicit: bool = False,
+) -> None:
     """Format and print command output.
 
     Args:
@@ -263,6 +269,9 @@ def format_output(data: Any, format_type: str, console: Console) -> None:
             automatically) or raw data.
         format_type: Formatter name (e.g. ``"json"``, ``"table"``, ``"raw"``).
         console: Rich console for output.
+        user_explicit: True when the user explicitly passed ``--format``/``-f``
+            on the command line.  When True, ``format_hint`` on a
+            ``CommandResult`` is ignored so the user's choice wins.
     """
     formatters = discover_formatters()
     formatter = formatters.get(format_type)
@@ -279,10 +288,7 @@ def format_output(data: Any, format_type: str, console: Console) -> None:
     # Unwrap CommandResult
     if isinstance(data, CommandResult):
         output_config = data.output_config  # Extract config
-        if data.format_hint and data.format_hint in formatters and format_type == "json":
-            # When format_type is the default ("json"), the plugin's format_hint
-            # overrides it. Note: we cannot distinguish "user explicitly passed
-            # --format json" from "default json" — in both cases the hint wins.
+        if not user_explicit and data.format_hint and data.format_hint in formatters:
             formatter = formatters[data.format_hint]
         data = data.data
 

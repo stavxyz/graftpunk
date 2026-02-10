@@ -461,36 +461,44 @@ class TestFormatPrecedence:
         """When user specifies --format table, format_hint is ignored."""
         console = MagicMock(spec=Console)
         result = CommandResult(data={"key": "value"}, format_hint="raw")
-        format_output(result, "table", console)
+        format_output(result, "table", console, user_explicit=True)
         console.print.assert_called_once()
         arg = console.print.call_args[0][0]
         assert isinstance(arg, Table)
 
-    def test_hint_applies_when_format_is_json_default(self) -> None:
-        """When format_type is json (default), hint takes effect."""
+    def test_explicit_json_overrides_table_hint(self) -> None:
+        """When user explicitly passes -f json, format_hint='table' is ignored."""
+        console = MagicMock(spec=Console)
+        result = CommandResult(data={"key": "value"}, format_hint="table")
+        format_output(result, "json", console, user_explicit=True)
+        console.print.assert_called_once()
+        arg = console.print.call_args[0][0]
+        assert isinstance(arg, JSON)
+
+    def test_hint_applies_when_format_is_default(self) -> None:
+        """When user did not pass --format, hint takes effect."""
         console = MagicMock(spec=Console)
         result = CommandResult(data={"name": "Alice", "age": 30}, format_hint="table")
-        format_output(result, "json", console)
+        format_output(result, "json", console, user_explicit=False)
         console.print.assert_called_once()
         arg = console.print.call_args[0][0]
-        # Hint says "table" and format_type is "json" (default), so table is used
         assert isinstance(arg, Table)
 
-    def test_hint_csv_applies_when_format_is_json_default(self) -> None:
-        """When format_type is json (default), csv hint takes effect."""
+    def test_hint_csv_applies_when_format_is_default(self) -> None:
+        """When user did not pass --format, csv hint takes effect."""
         console = MagicMock(spec=Console)
         result = CommandResult(data=[{"a": "1"}], format_hint="csv")
-        format_output(result, "json", console)
+        format_output(result, "json", console, user_explicit=False)
         console.print.assert_called_once()
         rows = _parse_csv_output(console)
         assert rows[0] == ["a"]
         assert rows[1] == ["1"]
 
-    def test_hint_ignored_when_format_is_explicit_non_json(self) -> None:
+    def test_hint_ignored_when_format_is_explicit(self) -> None:
         """When user explicitly picks raw, hint is ignored even if set."""
         console = MagicMock(spec=Console)
         result = CommandResult(data="hello", format_hint="table")
-        format_output(result, "raw", console)
+        format_output(result, "raw", console, user_explicit=True)
         console.print.assert_called_once_with("hello")
 
     def test_no_hint_uses_requested_format(self) -> None:

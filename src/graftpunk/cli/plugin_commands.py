@@ -202,6 +202,11 @@ def _create_plugin_command(
         from graftpunk.client import execute_plugin_command
 
         output_format = kwargs.pop("format", "json")
+        click_ctx = click.get_current_context(silent=True)
+        format_is_explicit = (
+            click_ctx is not None
+            and click_ctx.get_parameter_source("format") == click.core.ParameterSource.COMMANDLINE
+        )
 
         # Per-command requires_session override
         needs_session = (
@@ -232,7 +237,6 @@ def _create_plugin_command(
             setattr(session, "gp_base_url", base_url)  # noqa: B010
 
         # --- Observability context (CLI-specific) ---
-        click_ctx = click.get_current_context(silent=True)
         observe_mode: Literal["off", "full"] = "off"
         if click_ctx is not None:
             parent = click_ctx.find_root()
@@ -328,7 +332,12 @@ def _create_plugin_command(
             if (cmd_spec.saves_session or ctx._session_dirty) and needs_session:
                 update_session_cookies(session, plugin.session_name)
 
-            format_output(result, output_format, _format_console)
+            format_output(
+                result,
+                output_format,
+                _format_console,
+                user_explicit=format_is_explicit,
+            )
         except (SystemExit, KeyboardInterrupt):
             raise
         except CommandError as exc:
