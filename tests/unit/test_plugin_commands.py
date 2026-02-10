@@ -3252,3 +3252,65 @@ class TestClickKwargsPassthrough:
         plugin = _make_minimal_plugin()
         cmd = _create_plugin_command(plugin, spec)
         assert cmd.epilog == "See docs for more info."
+
+
+class TestFormatExplicitFlag:
+    """Integration tests: callback passes user_explicit correctly to format_output."""
+
+    def test_explicit_format_flag_sets_user_explicit_true(self, isolated_config: Path) -> None:
+        """Passing -f on the CLI sets user_explicit=True in format_output."""
+        from click.testing import CliRunner
+
+        from graftpunk.cli.plugin_commands import _create_plugin_command
+
+        plugin = _make_minimal_plugin()
+        plugin.get_session = MagicMock(return_value=requests.Session())
+        plugin.requires_session = False
+
+        cmd_spec = CommandSpec(
+            name="test",
+            handler=lambda ctx, **kw: {"ok": True},
+            click_kwargs={"help": "Test"},
+            params=(),
+        )
+        click_cmd = _create_plugin_command(plugin, cmd_spec)
+
+        with (
+            patch("graftpunk.cli.plugin_commands.build_observe_context"),
+            patch("graftpunk.cli.plugin_commands.format_output") as mock_fmt,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(click_cmd, ["-f", "table"])
+
+            assert result.exit_code == 0
+            mock_fmt.assert_called_once()
+            assert mock_fmt.call_args[1]["user_explicit"] is True
+
+    def test_default_format_sets_user_explicit_false(self, isolated_config: Path) -> None:
+        """Omitting -f on the CLI sets user_explicit=False in format_output."""
+        from click.testing import CliRunner
+
+        from graftpunk.cli.plugin_commands import _create_plugin_command
+
+        plugin = _make_minimal_plugin()
+        plugin.get_session = MagicMock(return_value=requests.Session())
+        plugin.requires_session = False
+
+        cmd_spec = CommandSpec(
+            name="test",
+            handler=lambda ctx, **kw: {"ok": True},
+            click_kwargs={"help": "Test"},
+            params=(),
+        )
+        click_cmd = _create_plugin_command(plugin, cmd_spec)
+
+        with (
+            patch("graftpunk.cli.plugin_commands.build_observe_context"),
+            patch("graftpunk.cli.plugin_commands.format_output") as mock_fmt,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(click_cmd, [])
+
+            assert result.exit_code == 0
+            mock_fmt.assert_called_once()
+            assert mock_fmt.call_args[1]["user_explicit"] is False
