@@ -735,9 +735,9 @@ gp http post -s mybank --role form https://secure.mybank.com/submit
 gp http get -s mybank --role navigate https://secure.mybank.com/page
 ```
 
-Three built-in roles are registered at import time via `register_role()`: `xhr`, `navigate` (alias for `navigation`), and `form`. Plugins can define custom roles via a `header_roles` dict — these are merged into the session at request time, so `--role api` (or any custom name) works the same way.
+Three built-in roles are registered at import time via `register_role()`: `navigation`, `xhr`, and `form`. The CLI accepts `navigate` as a shorthand alias for `navigation` via `_ROLE_ALIASES`. Plugins can define custom roles via a `header_roles` dict — these are merged into the session at request time, so `--role api` (or any custom name) works the same way.
 
-Under the hood, `--role` calls `session.request_with_role()` directly with the role name. The session checks captured headers first, then registered roles (built-in or plugin-defined), then returns empty headers for unknown role names.
+Under the hood, `--role` calls `session.request_with_role()` directly with the role name. The session checks captured headers first, then registered roles (built-in or plugin-defined), then logs a warning and applies no role-specific headers for unknown role names.
 
 ---
 
