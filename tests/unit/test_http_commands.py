@@ -93,7 +93,7 @@ class TestMakeRequest:
     def test_no_browser_headers_clears_roles(self, mock_load: MagicMock) -> None:
         mock_session = MagicMock(spec=requests.Session)
         mock_session.headers = {}
-        mock_session._gp_header_roles = {"navigation": {"User-Agent": "Test"}}
+        mock_session.clear_header_roles = MagicMock()
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request.return_value = mock_response
@@ -106,8 +106,8 @@ class TestMakeRequest:
             browser_headers=False,
         )
 
-        # Header roles should have been cleared
-        assert mock_session._gp_header_roles == {}
+        # Header roles should have been cleared via public method
+        mock_session.clear_header_roles.assert_called_once()
 
     @patch("graftpunk.cli.http_commands.load_session_for_api")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
@@ -486,18 +486,12 @@ class TestDispatchRequest:
         )
         assert result == mock_response
 
-    def test_role_without_support_falls_back_to_request(self) -> None:
-        """Session without request_with_role falls back to session.request()."""
+    def test_role_without_support_raises_value_error(self) -> None:
+        """Session without request_with_role raises ValueError."""
         mock_session = MagicMock(spec=requests.Session)
-        mock_response = MagicMock(spec=requests.Response)
-        mock_session.request.return_value = mock_response
 
-        result = _dispatch_request(
-            mock_session, "GET", "https://example.com", role="xhr", timeout=30
-        )
-
-        mock_session.request.assert_called_once_with("GET", "https://example.com", timeout=30)
-        assert result == mock_response
+        with pytest.raises(ValueError, match="--role 'xhr' requires a GraftpunkSession"):
+            _dispatch_request(mock_session, "GET", "https://example.com", role="xhr", timeout=30)
 
 
 class TestMakeRequestWithRole:
@@ -547,10 +541,11 @@ class TestMakeRequestWithRole:
 
     @patch("graftpunk.cli.http_commands.load_session_for_api")
     def test_plugin_header_roles_merged_into_session(self, mock_load: MagicMock) -> None:
-        """Plugin's header_roles dict is merged into session._gp_header_roles."""
+        """Plugin's header_roles dict is merged via merge_header_roles()."""
         mock_session = MagicMock()
         mock_session.headers = {}
         mock_session._gp_header_roles = {"xhr": {"Accept": "application/json"}}
+        mock_session.merge_header_roles = MagicMock()
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request_with_role.return_value = mock_response
@@ -581,9 +576,10 @@ class TestMakeRequestWithRole:
                 role="api",
             )
 
-        # Plugin's "api" role should have been merged into session
-        assert "api" in mock_session._gp_header_roles
-        assert mock_session._gp_header_roles["api"]["X-API-Version"] == "2"
+        # Plugin's roles should have been merged via public method
+        mock_session.merge_header_roles.assert_called_once_with(
+            {"api": {"Accept": "application/json", "X-API-Version": "2"}}
+        )
 
 
 class TestRoleCLI:
@@ -681,6 +677,83 @@ class TestResolveRoleName:
 
     def test_aliases_only_contains_navigate(self) -> None:
         assert _ROLE_ALIASES == {"navigate": "navigation"}
+
+
+class TestRoleHelpText:
+    """Tests for _role_help_text."""
+
+    def test_includes_registered_roles(self) -> None:
+        from graftpunk.cli.http_commands import _role_help_text
+
+        text = _role_help_text()
+        assert "navigation" in text
+        assert "xhr" in text
+        assert "form" in text
+        assert "plugin-defined" in text
+
+    def test_reflects_custom_registered_role(self) -> None:
+        from graftpunk.cli.http_commands import _role_help_text
+        from graftpunk.graftpunk_session import _ROLE_REGISTRY, register_role
+
+        saved = dict(_ROLE_REGISTRY)
+        try:
+            register_role("custom-api", {"Accept": "application/json"})
+            text = _role_help_text()
+            assert "custom-api" in text
+        finally:
+            _ROLE_REGISTRY.clear()
+            _ROLE_REGISTRY.update(saved)
+
+
+class TestTokenRetryWithRole:
+    """Tests for 403 token retry when --role is used."""
+
+    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.tokens.clear_cached_tokens")
+    @patch("graftpunk.tokens.prepare_session")
+    def test_403_retry_preserves_role(
+        self, mock_prepare: MagicMock, mock_clear: MagicMock, mock_load: MagicMock
+    ) -> None:
+        """When a 403 triggers token retry, the retry uses the same role."""
+        mock_session = MagicMock()
+        mock_session.headers = {}
+        mock_session.request_with_role = MagicMock()
+
+        mock_403 = MagicMock(spec=requests.Response)
+        mock_403.status_code = 403
+        mock_200 = MagicMock(spec=requests.Response)
+        mock_200.status_code = 200
+        mock_session.request_with_role.side_effect = [mock_403, mock_200]
+        mock_load.return_value = mock_session
+
+        mock_plugin = MagicMock()
+        mock_plugin.site_name = "test-plugin"
+        mock_plugin.base_url = "https://example.com"
+        mock_plugin.token_config = MagicMock()
+        mock_plugin.header_roles = None
+
+        with (
+            patch(
+                "graftpunk.cli.plugin_commands._plugin_session_map",
+                {"test-plugin": "test-session"},
+            ),
+            patch(
+                "graftpunk.cli.plugin_commands._registered_plugins_for_teardown",
+                [mock_plugin],
+            ),
+        ):
+            response = _make_request(
+                "GET",
+                "https://example.com/api",
+                session_name="test-session",
+                role="xhr",
+            )
+
+        assert response == mock_200
+        # Both initial and retry calls should use request_with_role
+        assert mock_session.request_with_role.call_count == 2
+        for call in mock_session.request_with_role.call_args_list:
+            assert call[0][0] == "xhr"
 
 
 def test_default_browser_headers_removed() -> None:

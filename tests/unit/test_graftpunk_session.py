@@ -11,6 +11,9 @@ from graftpunk.graftpunk_session import (
     _ROLE_REGISTRY,
     GraftpunkSession,
     _case_insensitive_get,
+    get_role_headers,
+    list_roles,
+    register_role,
 )
 
 # Shared browser identity headers — identical across all roles,
@@ -311,19 +314,22 @@ class TestCanonicalFallback:
         assert prepared.headers["Sec-Fetch-Mode"] == "cors"
 
     def test_canonical_navigation_has_correct_headers(self):
-        canonical = _ROLE_REGISTRY["navigation"]
+        canonical = get_role_headers("navigation")
+        assert canonical is not None
         assert "text/html" in canonical["Accept"]
         assert canonical["Sec-Fetch-Mode"] == "navigate"
         assert canonical["Sec-Fetch-Dest"] == "document"
 
     def test_canonical_xhr_has_correct_headers(self):
-        canonical = _ROLE_REGISTRY["xhr"]
+        canonical = get_role_headers("xhr")
+        assert canonical is not None
         assert "application/json" in canonical["Accept"]
         assert canonical["X-Requested-With"] == "XMLHttpRequest"
         assert canonical["Sec-Fetch-Mode"] == "cors"
 
     def test_canonical_form_has_correct_headers(self):
-        canonical = _ROLE_REGISTRY["form"]
+        canonical = get_role_headers("form")
+        assert canonical is not None
         assert "text/html" in canonical["Accept"]
         assert canonical["Content-Type"] == "application/x-www-form-urlencoded"
         assert canonical["Sec-Fetch-Mode"] == "navigate"
@@ -715,7 +721,7 @@ class TestExplicitMethodIntegration:
     """Integration tests: explicit methods through full prepare_request path.
 
     These tests do NOT mock session.request, so the headers flow through
-    both _request_with_role and prepare_request's auto-detection layer.
+    both request_with_role and prepare_request's auto-detection layer.
     This verifies that explicit role headers survive when _detect_role
     would choose a different role.
     """
@@ -836,3 +842,140 @@ class TestCsrfTokenInjection:
         prepared = session.prepare_request(req)
         assert prepared.headers["X-CSRF-Token"] == "csrf123"
         assert prepared.headers["X-Custom-Auth"] == "auth456"
+
+
+# ---------------------------------------------------------------------------
+# Role Registry Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _clean_registry():
+    """Save and restore _ROLE_REGISTRY around tests that mutate it."""
+    saved = dict(_ROLE_REGISTRY)
+    yield
+    _ROLE_REGISTRY.clear()
+    _ROLE_REGISTRY.update(saved)
+
+
+class TestRoleRegistry:
+    """Tests for register_role(), list_roles(), get_role_headers()."""
+
+    def test_get_role_headers_returns_copy(self):
+        headers = get_role_headers("xhr")
+        assert headers is not None
+        headers["MUTATED"] = "yes"
+        assert "MUTATED" not in get_role_headers("xhr")
+
+    def test_get_role_headers_unknown_returns_none(self):
+        assert get_role_headers("nonexistent") is None
+
+    def test_list_roles_returns_sorted(self):
+        names = list_roles()
+        assert names == sorted(names)
+
+    def test_list_roles_contains_builtins(self):
+        names = list_roles()
+        assert "form" in names
+        assert "navigation" in names
+        assert "xhr" in names
+
+    @pytest.mark.usefixtures("_clean_registry")
+    def test_register_role_stores_copy(self):
+        original = {"Accept": "text/plain"}
+        register_role("test-copy", original)
+        original["MUTATED"] = "yes"
+        stored = get_role_headers("test-copy")
+        assert stored is not None
+        assert "MUTATED" not in stored
+
+    @pytest.mark.usefixtures("_clean_registry")
+    def test_register_role_overwrites_existing(self, capsys):
+        register_role("test-overwrite", {"Accept": "text/html"})
+        register_role("test-overwrite", {"Accept": "application/json"})
+        result = get_role_headers("test-overwrite")
+        assert result is not None
+        assert result["Accept"] == "application/json"
+        captured = capsys.readouterr()
+        assert "role_overwritten" in captured.out
+
+    @pytest.mark.usefixtures("_clean_registry")
+    def test_register_role_appears_in_list(self):
+        register_role("custom-api", {"Accept": "application/json"})
+        assert "custom-api" in list_roles()
+
+    def test_register_role_empty_name_raises(self):
+        with pytest.raises(ValueError, match="non-empty string"):
+            register_role("", {"Accept": "text/html"})
+
+    def test_register_role_whitespace_name_raises(self):
+        with pytest.raises(ValueError, match="non-empty string"):
+            register_role("   ", {"Accept": "text/html"})
+
+    def test_register_role_empty_headers_raises(self):
+        with pytest.raises(ValueError, match="at least one header"):
+            register_role("bad-role", {})
+
+
+class TestRequestWithRole:
+    """Tests for request_with_role() with custom role names."""
+
+    @pytest.mark.usefixtures("_clean_registry")
+    def test_custom_role_from_captured(self):
+        roles = {
+            **SAMPLE_ROLES,
+            "api": {"Accept": "application/json", "X-API-Version": "2"},
+        }
+        session = GraftpunkSession(header_roles=roles)
+        with patch.object(session, "request") as mock_request:
+            session.request_with_role("api", "GET", "https://example.com/api")
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["X-API-Version"] == "2"
+
+    @pytest.mark.usefixtures("_clean_registry")
+    def test_custom_role_from_registry(self):
+        register_role("custom-api", {"Accept": "application/json", "X-Custom": "1"})
+        session = GraftpunkSession(header_roles=SAMPLE_ROLES)
+        with patch.object(session, "request") as mock_request:
+            session.request_with_role("custom-api", "GET", "https://example.com/api")
+        headers = mock_request.call_args.kwargs.get("headers", {})
+        assert headers["X-Custom"] == "1"
+
+
+class TestResolveRoleTruthiness:
+    """Test that _resolve_role uses 'is not None' check, not truthiness."""
+
+    def test_empty_captured_role_is_honoured(self):
+        """An explicitly empty captured role should not fall through to registry."""
+        session = GraftpunkSession(header_roles={"xhr": {}})
+        result = session._resolve_role("xhr")
+        assert result == {}
+
+
+class TestSessionEncapsulation:
+    """Tests for clear_header_roles() and merge_header_roles()."""
+
+    def test_clear_header_roles(self):
+        session = GraftpunkSession(header_roles=SAMPLE_ROLES)
+        assert session._gp_header_roles
+        session.clear_header_roles()
+        assert session._gp_header_roles == {}
+
+    def test_merge_header_roles(self):
+        session = GraftpunkSession(header_roles=SAMPLE_ROLES)
+        session.merge_header_roles({"api": {"Accept": "application/json"}})
+        assert "api" in session._gp_header_roles
+        assert session._gp_header_roles["api"]["Accept"] == "application/json"
+
+    def test_merge_header_roles_preserves_existing(self):
+        session = GraftpunkSession(header_roles=SAMPLE_ROLES)
+        session.merge_header_roles({"api": {"Accept": "application/json"}})
+        assert "xhr" in session._gp_header_roles
+        assert "navigation" in session._gp_header_roles
+
+    def test_constructor_copies_roles_dict(self):
+        """Clearing session roles must not mutate the original dict."""
+        original = {"xhr": {"Accept": "*/*"}}
+        session = GraftpunkSession(header_roles=original)
+        session.clear_header_roles()
+        assert original == {"xhr": {"Accept": "*/*"}}
