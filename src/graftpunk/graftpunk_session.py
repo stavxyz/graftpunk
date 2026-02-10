@@ -55,10 +55,27 @@ _ROLE_REGISTRY: dict[str, dict[str, str]] = {}
 def register_role(name: str, headers: dict[str, str]) -> None:
     """Register a header role (built-in or plugin-defined).
 
+    Overwrites any existing role with the same name, logging a warning
+    when this happens.  This allows plugins to customize built-in roles.
+
+    Not thread-safe — intended for use at import time or during plugin
+    discovery, not from concurrent request handlers.
+
     Args:
         name: Role name (e.g. ``"xhr"``, ``"navigation"``, ``"api"``).
+            Must be a non-empty string.
         headers: Dict of HTTP headers that define this role.
+            Must contain at least one header.
+
+    Raises:
+        ValueError: If *name* is empty or *headers* is empty.
     """
+    if not name or not name.strip():
+        raise ValueError("Role name must be a non-empty string")
+    if not headers:
+        raise ValueError(f"Role '{name}' must have at least one header")
+    if name in _ROLE_REGISTRY:
+        LOG.warning("role_overwritten", role=name)
     _ROLE_REGISTRY[name] = dict(headers)
 
 
@@ -158,7 +175,9 @@ class GraftpunkSession(requests.Session):
             **kwargs: Additional arguments passed to requests.Session.
         """
         super().__init__(**kwargs)
-        self._gp_header_roles: dict[str, dict[str, str]] = header_roles or {}
+        self._gp_header_roles: dict[str, dict[str, str]] = (
+            dict(header_roles) if header_roles else {}
+        )
         self._gp_csrf_tokens: dict[str, str] = {}
         self.gp_default_role: str | None = None
         self.gp_base_url: str = base_url
@@ -180,6 +199,18 @@ class GraftpunkSession(requests.Session):
             Header dict for the role, or empty dict if not found.
         """
         return dict(self._gp_header_roles.get(role, {}))
+
+    def clear_header_roles(self) -> None:
+        """Remove all captured header roles from this session."""
+        self._gp_header_roles.clear()
+
+    def merge_header_roles(self, roles: dict[str, dict[str, str]]) -> None:
+        """Merge additional header roles into this session.
+
+        Args:
+            roles: Dict mapping role names to header dicts.
+        """
+        self._gp_header_roles.update(roles)
 
     def _resolve_referer(self, referer: str) -> str:
         """Resolve a Referer value from a path or full URL.
@@ -222,7 +253,7 @@ class GraftpunkSession(requests.Session):
             Copy of the header dict, or None if role is unknown.
         """
         captured = self._gp_header_roles.get(role_name)
-        if captured:
+        if captured is not None:
             return dict(captured)
 
         registered = get_role_headers(role_name)

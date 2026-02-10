@@ -42,6 +42,7 @@ from graftpunk.exceptions import (
     SessionExpiredError,
     SessionNotFoundError,
 )
+from graftpunk.graftpunk_session import get_role_headers, list_roles, register_role
 from graftpunk.session import BrowserSession
 from graftpunk.stealth import create_stealth_driver
 from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
@@ -61,6 +62,10 @@ __all__ = [
     "get_backend",
     "list_backends",
     "register_backend",
+    # Header roles
+    "register_role",
+    "list_roles",
+    "get_role_headers",
     # Cache operations
     "cache_session",
     "load_session",

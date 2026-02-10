@@ -76,9 +76,7 @@ def _role_help_text() -> str:
     from graftpunk.graftpunk_session import list_roles
 
     names = list_roles()
-    if names:
-        return f"Header role ({', '.join(names)}, or plugin-defined)."
-    return "Header role (xhr, navigate, form, or plugin-defined)."
+    return f"Header role ({', '.join(names)}, or plugin-defined)."
 
 
 def _dispatch_request(
@@ -107,7 +105,16 @@ def _dispatch_request(
     Returns:
         The HTTP response.
     """
-    if role is not None and hasattr(session, "request_with_role"):
+    if role is not None:
+        if not hasattr(session, "request_with_role"):
+            LOG.warning(
+                "role_ignored_session_lacks_support",
+                role=role,
+                session_type=type(session).__name__,
+            )
+            raise ValueError(
+                f"--role '{role}' requires a GraftpunkSession, but got {type(session).__name__}"
+            )
         resolved = _resolve_role_name(role)
         return session.request_with_role(resolved, method, url, **kwargs)
     return session.request(method, url, **kwargs)
@@ -172,8 +179,8 @@ def _make_request(
             gp_console.error(f"Failed to load session '{resolved}': {exc}")
             raise typer.Exit(1) from exc
 
-    if not browser_headers and hasattr(session, "_gp_header_roles"):
-        session._gp_header_roles = {}  # type: ignore[assignment]
+    if not browser_headers and hasattr(session, "clear_header_roles"):
+        session.clear_header_roles()
 
     # Apply extra headers from --header flags
     for header_str in extra_headers or []:
@@ -208,11 +215,21 @@ def _make_request(
     # Merge plugin-defined header roles into the session so that
     # --role can reference custom names declared by the plugin.
     plugin_roles = getattr(plugin, "header_roles", None) if plugin else None
-    if plugin_roles and hasattr(session, "_gp_header_roles"):
-        session._gp_header_roles.update(plugin_roles)
+    if plugin_roles and hasattr(session, "merge_header_roles"):
+        for role_name in plugin_roles:
+            if role_name in getattr(session, "_gp_header_roles", {}):
+                LOG.debug(
+                    "plugin_role_overwrites_captured",
+                    role=role_name,
+                    plugin=getattr(plugin, "site_name", "unknown"),
+                )
+        session.merge_header_roles(plugin_roles)
 
     try:
         response = _dispatch_request(session, method, url, role=role, **kwargs)
+    except ValueError as exc:
+        gp_console.error(str(exc))
+        raise typer.Exit(1) from exc
     except requests.exceptions.ConnectionError as exc:
         gp_console.error(f"Connection failed: {exc}")
         raise typer.Exit(1) from exc
