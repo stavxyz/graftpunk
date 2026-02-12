@@ -80,6 +80,9 @@ def validate_session_name(name: str) -> None:
 _session_storage_backend: "SessionStorageBackend | None" = None
 
 
+_VALID_BACKEND_TYPES = {"local", "supabase", "s3"}
+
+
 def _create_backend(backend_type: str) -> "SessionStorageBackend":
     """Create a new storage backend instance for the given type.
 
@@ -88,7 +91,16 @@ def _create_backend(backend_type: str) -> "SessionStorageBackend":
 
     Returns:
         A new SessionStorageBackend instance.
+
+    Raises:
+        ValueError: If backend_type is not a supported value.
     """
+    if backend_type not in _VALID_BACKEND_TYPES:
+        raise ValueError(
+            f"Unsupported storage backend: {backend_type!r}. "
+            f"Supported: {', '.join(sorted(_VALID_BACKEND_TYPES))}"
+        )
+
     settings = get_settings()
     config = settings.get_storage_config(backend_type=backend_type)
 
@@ -112,7 +124,6 @@ def _create_backend(backend_type: str) -> "SessionStorageBackend":
             base_delay=config.get("retry_base_delay", 1.0),
         )
 
-    # Default: local filesystem backend
     from graftpunk.storage.local import LocalSessionStorage
 
     return LocalSessionStorage(base_dir=config["base_dir"])
