@@ -357,6 +357,65 @@ class TestUpdateSessionMetadata:
         assert result is False
 
 
+class TestS3StorageIdentity:
+    """Tests for S3SessionStorage identity properties."""
+
+    def test_s3_backend_without_r2_endpoint(self, mock_s3_client):
+        """Test plain S3 backend without endpoint_url returns 's3'."""
+        from graftpunk.storage.s3 import S3SessionStorage
+
+        storage = S3SessionStorage(
+            bucket="my-bucket",
+            region="us-east-1",
+            client=mock_s3_client,
+        )
+        assert storage.storage_backend == "s3"
+        assert storage.storage_location == "s3://my-bucket"
+
+    def test_r2_backend_detected_from_endpoint(self, mock_s3_client):
+        """Test R2 endpoint auto-detects as 'r2' backend."""
+        from graftpunk.storage.s3 import S3SessionStorage
+
+        storage = S3SessionStorage(
+            bucket="gp-sessions",
+            endpoint_url="https://abc123.r2.cloudflarestorage.com",
+            client=mock_s3_client,
+        )
+        assert storage.storage_backend == "r2"
+        assert storage.storage_location == "r2://gp-sessions"
+
+    def test_non_r2_custom_endpoint(self, mock_s3_client):
+        """Test non-R2 custom endpoint (e.g., MinIO) returns 's3'."""
+        from graftpunk.storage.s3 import S3SessionStorage
+
+        storage = S3SessionStorage(
+            bucket="local-bucket",
+            endpoint_url="http://localhost:9000",
+            client=mock_s3_client,
+        )
+        assert storage.storage_backend == "s3"
+        assert storage.storage_location == "s3://local-bucket"
+
+    def test_save_stamps_storage_fields(self, mock_s3_client, sample_metadata):
+        """Test that save_session stamps storage fields onto metadata JSON."""
+        from graftpunk.storage.s3 import S3SessionStorage
+
+        storage = S3SessionStorage(
+            bucket="gp-sessions",
+            endpoint_url="https://abc123.r2.cloudflarestorage.com",
+            client=mock_s3_client,
+        )
+
+        storage.save_session("test-session", b"encrypted-data", sample_metadata)
+
+        # Second put_object call is the metadata upload
+        metadata_call = mock_s3_client.put_object.call_args_list[1]
+        metadata_json = json.loads(metadata_call.kwargs["Body"].decode("utf-8"))
+
+        assert metadata_json["storage_backend"] == "r2"
+        assert metadata_json["storage_location"] == "r2://gp-sessions"
+
+
 class TestRetryLogic:
     """Tests for retry logic in S3 storage."""
 

@@ -23,6 +23,7 @@ import json
 import random
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -91,6 +92,26 @@ class S3SessionStorage:
             region=region,
             endpoint_url=endpoint_url,
         )
+
+    @property
+    def storage_backend(self) -> str:
+        """Backend type identifier, auto-detecting Cloudflare R2.
+
+        Returns:
+            "r2" if endpoint_url contains r2.cloudflarestorage.com, else "s3"
+        """
+        if self.endpoint_url and "r2.cloudflarestorage.com" in self.endpoint_url:
+            return "r2"
+        return "s3"
+
+    @property
+    def storage_location(self) -> str:
+        """Display-friendly storage location URI.
+
+        Returns:
+            URI in the form "{backend}://{bucket}" (e.g., "s3://my-bucket")
+        """
+        return f"{self.storage_backend}://{self.bucket}"
 
     def _create_client(self) -> Any:
         """Create boto3 S3 client.
@@ -242,8 +263,13 @@ class S3SessionStorage:
             ContentType="application/octet-stream",
         )
 
-        # Save metadata as JSON with retry
-        metadata_json = json.dumps(metadata_to_dict(metadata), indent=2)
+        # Stamp storage identity onto metadata before serialization
+        stamped = replace(
+            metadata,
+            storage_backend=self.storage_backend,
+            storage_location=self.storage_location,
+        )
+        metadata_json = json.dumps(metadata_to_dict(stamped), indent=2)
         self._with_retry(
             "save_session_metadata",
             self._client.put_object,
@@ -432,8 +458,6 @@ class S3SessionStorage:
         metadata = self.get_session_metadata(name)
         if metadata is None:
             return False
-
-        from dataclasses import replace
 
         updates: dict[str, Any] = {"modified_at": datetime.now(UTC)}
         if status is not None:
