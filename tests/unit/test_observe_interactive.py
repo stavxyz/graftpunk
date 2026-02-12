@@ -48,7 +48,10 @@ class TestObserveInteractiveCommandRegistered:
 
     def test_observe_interactive_with_no_session_flag_proceeds(self) -> None:
         """observe interactive --no-session should infer namespace and proceed."""
-        with patch("graftpunk.cli.main.asyncio") as mock_asyncio:
+        with (
+            patch("graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock),
+            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+        ):
             result = runner.invoke(
                 app, ["observe", "--no-session", "interactive", "https://example.com"]
             )
@@ -298,7 +301,9 @@ class TestObserveGoInteractiveFlag:
         """Test that observe go --interactive calls _run_observe_interactive."""
         with (
             patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
-            patch("graftpunk.cli.main._run_observe_interactive") as _mock_interactive,
+            patch(
+                "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
+            ) as _mock_interactive,
             patch("graftpunk.logging.suppress_asyncio_noise"),
             patch("graftpunk.cli.main.asyncio") as mock_asyncio,
         ):
@@ -322,8 +327,10 @@ class TestObserveGoInteractiveFlag:
         """Test that observe go without --interactive calls _run_observe_go."""
         with (
             patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
-            patch("graftpunk.cli.main._run_observe_go") as _mock_go,
-            patch("graftpunk.cli.main._run_observe_interactive") as _mock_interactive,
+            patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock) as _mock_go,
+            patch(
+                "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
+            ) as _mock_interactive,
             patch("graftpunk.cli.main.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
@@ -345,7 +352,9 @@ class TestObserveGoInteractiveFlag:
         """Test that observe go -i also delegates to _run_observe_interactive."""
         with (
             patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
-            patch("graftpunk.cli.main._run_observe_interactive") as _mock_interactive,
+            patch(
+                "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
+            ) as _mock_interactive,
             patch("graftpunk.logging.suppress_asyncio_noise"),
             patch("graftpunk.cli.main.asyncio") as mock_asyncio,
         ):

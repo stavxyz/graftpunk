@@ -1340,7 +1340,10 @@ class TestObserveGoCommand:
 
     def test_with_no_session_flag_proceeds(self):
         """observe go --no-session should infer namespace from URL and proceed."""
-        with patch("graftpunk.cli.main.asyncio") as mock_asyncio:
+        with (
+            patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock),
+            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+        ):
             result = runner.invoke(app, ["observe", "--no-session", "go", "https://example.com"])
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
@@ -1358,6 +1361,7 @@ class TestObserveGoCommand:
         """observe go --session should run the capture flow."""
         with (
             patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
+            patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock),
             patch("graftpunk.cli.main.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
@@ -1370,6 +1374,7 @@ class TestObserveGoCommand:
         """observe go --wait should pass wait value through."""
         with (
             patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
+            patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock),
             patch("graftpunk.cli.main.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
@@ -1382,6 +1387,7 @@ class TestObserveGoCommand:
     def test_observe_go_no_session_interactive_flag(self):
         """observe go --no-session --interactive should proceed without cookies."""
         with (
+            patch("graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock),
             patch("graftpunk.cli.main.asyncio") as mock_asyncio,
             patch("graftpunk.logging.suppress_asyncio_noise"),
         ):

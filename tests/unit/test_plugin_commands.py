@@ -998,7 +998,11 @@ class TestAsyncLoginCommand:
                 return True
 
         plugin = AsyncLoginPlugin()
-        cmd = create_login_command(plugin, plugin.login, {"username": "", "password": ""})
+        # Wrap the real async login method with a MagicMock so calling it
+        # does not produce an unawaited coroutine (asyncio is mocked, so
+        # the coroutine would never be awaited).
+        mock_login = MagicMock(return_value=True)
+        cmd = create_login_command(plugin, mock_login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.login_commands.gp_console") as mock_console,
