@@ -80,47 +80,72 @@ def validate_session_name(name: str) -> None:
 _session_storage_backend: "SessionStorageBackend | None" = None
 
 
-def _get_session_storage_backend() -> "SessionStorageBackend":
-    """Get or create the session storage backend.
+def _create_backend(backend_type: str) -> "SessionStorageBackend":
+    """Create a new storage backend instance for the given type.
 
-    Returns the appropriate backend based on GRAFTPUNK_STORAGE_BACKEND env var:
-    - "local" (default): Returns LocalSessionStorage
-    - "supabase": Returns SupabaseSessionStorage
-    - "s3": Returns S3SessionStorage
+    Args:
+        backend_type: Storage backend type ("local", "supabase", or "s3").
+
+    Returns:
+        A new SessionStorageBackend instance.
     """
-    global _session_storage_backend
-
-    if _session_storage_backend is not None:
-        return _session_storage_backend
-
     settings = get_settings()
+    config = settings.get_storage_config(backend_type=backend_type)
 
-    if settings.storage_backend == "supabase":
-        # Lazy import to avoid circular imports
+    if backend_type == "supabase":
         from graftpunk.storage.supabase import SupabaseSessionStorage
 
-        config = settings.get_storage_config()
-        _session_storage_backend = SupabaseSessionStorage(
+        return SupabaseSessionStorage(
             url=config["url"],
             service_key=config["service_key"],
             bucket_name=config.get("bucket_name", "sessions"),
         )
-    elif settings.storage_backend == "s3":
+
+    if backend_type == "s3":
         from graftpunk.storage.s3 import S3SessionStorage
 
-        config = settings.get_storage_config()
-        _session_storage_backend = S3SessionStorage(
+        return S3SessionStorage(
             bucket=config["bucket"],
             region=config.get("region"),
             endpoint_url=config.get("endpoint_url"),
             max_retries=config.get("retry_max_attempts", 5),
             base_delay=config.get("retry_base_delay", 1.0),
         )
-    else:
-        # Default: local filesystem backend
-        from graftpunk.storage.local import LocalSessionStorage
 
-        _session_storage_backend = LocalSessionStorage(base_dir=settings.sessions_dir)
+    # Default: local filesystem backend
+    from graftpunk.storage.local import LocalSessionStorage
+
+    return LocalSessionStorage(base_dir=config["base_dir"])
+
+
+def _get_session_storage_backend(
+    backend_override: str | None = None,
+) -> "SessionStorageBackend":
+    """Get or create the session storage backend.
+
+    Returns the appropriate backend based on GRAFTPUNK_STORAGE_BACKEND env var:
+    - "local" (default): Returns LocalSessionStorage
+    - "supabase": Returns SupabaseSessionStorage
+    - "s3": Returns S3SessionStorage
+
+    Args:
+        backend_override: If set, create and return a fresh backend instance
+            for this type without caching it in the global singleton. Used by
+            the ``--storage-backend`` CLI flag.
+
+    Returns:
+        A SessionStorageBackend instance.
+    """
+    if backend_override is not None:
+        return _create_backend(backend_override)
+
+    global _session_storage_backend
+
+    if _session_storage_backend is not None:
+        return _session_storage_backend
+
+    settings = get_settings()
+    _session_storage_backend = _create_backend(settings.storage_backend)
 
     return _session_storage_backend
 
@@ -176,7 +201,10 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
     return metadata
 
 
-def get_session_metadata(name: str) -> dict[str, Any] | None:
+def get_session_metadata(
+    name: str,
+    backend_override: str | None = None,
+) -> dict[str, Any] | None:
     """Get session metadata without loading the full session.
 
     This is a lightweight way to check session status, timestamps, etc.
@@ -184,11 +212,12 @@ def get_session_metadata(name: str) -> dict[str, Any] | None:
 
     Args:
         name: Session name.
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         Metadata dict if session exists, None otherwise.
     """
-    backend = _get_session_storage_backend()
+    backend = _get_session_storage_backend(backend_override=backend_override)
     metadata = backend.get_session_metadata(name)
     if metadata is None:
         return None
@@ -205,6 +234,8 @@ def get_session_metadata(name: str) -> dict[str, Any] | None:
         "cookie_count": metadata.cookie_count,
         "cookie_domains": metadata.cookie_domains,
         "status": metadata.status,
+        "storage_backend": metadata.storage_backend,
+        "storage_location": metadata.storage_location,
     }
 
 
@@ -485,18 +516,22 @@ def list_sessions() -> list[str]:
     return backend.list_sessions()
 
 
-def list_sessions_with_metadata() -> list[dict[str, Any]]:
+def list_sessions_with_metadata(
+    backend_override: str | None = None,
+) -> list[dict[str, Any]]:
     """List all cached sessions with metadata.
+
+    Args:
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         List of dicts with session metadata including:
         - name, domain, current_url
         - cookie_count, cookie_domains
         - created_at, modified_at
-        - path (to session directory or file)
+        - storage_backend, storage_location
     """
-    backend = _get_session_storage_backend()
-    settings = get_settings()
+    backend = _get_session_storage_backend(backend_override=backend_override)
     names = backend.list_sessions()
 
     results = []
@@ -515,23 +550,28 @@ def list_sessions_with_metadata() -> list[dict[str, Any]]:
                     "cookie_count": metadata.cookie_count,
                     "cookie_domains": metadata.cookie_domains,
                     "status": metadata.status,
-                    "path": str(settings.sessions_dir / name),
+                    "storage_backend": metadata.storage_backend,
+                    "storage_location": metadata.storage_location,
                 }
             )
 
     return sorted(results, key=lambda x: x.get("modified_at", ""), reverse=True)
 
 
-def clear_session_cache(session_name: str | None = None) -> list[str]:
+def clear_session_cache(
+    session_name: str | None = None,
+    backend_override: str | None = None,
+) -> list[str]:
     """Clear cached sessions.
 
     Args:
         session_name: If provided, clear only this session. Otherwise, clear all.
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         List of removed session names.
     """
-    backend = _get_session_storage_backend()
+    backend = _get_session_storage_backend(backend_override=backend_override)
     removed: list[str] = []
 
     if session_name:

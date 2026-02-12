@@ -763,6 +763,73 @@ class TestLoadSessionForApiGraftpunkSession:
         assert result == {}
 
 
+class TestBackendOverride:
+    """Tests for _get_session_storage_backend with backend_override parameter."""
+
+    def setup_method(self) -> None:
+        _reset_session_storage_backend()
+
+    def teardown_method(self) -> None:
+        _reset_session_storage_backend()
+
+    def test_override_returns_fresh_instance(self, tmp_path, monkeypatch):
+        """Override returns a new backend, not the cached singleton."""
+        _setup_local_env(tmp_path, monkeypatch)
+
+        # Warm up the singleton
+        cached_backend = _get_session_storage_backend()
+
+        # Call with override — should get a different instance
+        override_backend = _get_session_storage_backend(backend_override="local")
+
+        assert override_backend is not cached_backend
+
+    def test_override_does_not_pollute_singleton(self, tmp_path, monkeypatch):
+        """Calling with override must not change the cached singleton."""
+        _setup_local_env(tmp_path, monkeypatch)
+
+        cached_backend = _get_session_storage_backend()
+
+        # Call with override
+        _get_session_storage_backend(backend_override="local")
+
+        # The original singleton must still be the same object
+        assert _get_session_storage_backend() is cached_backend
+
+
+class TestListSessionsStorageFields:
+    """Tests for storage_backend/storage_location in list results."""
+
+    def setup_method(self) -> None:
+        _reset_session_storage_backend()
+
+    def test_list_includes_storage_fields(self, tmp_path, monkeypatch):
+        """list_sessions_with_metadata includes storage_backend and storage_location."""
+        _setup_local_env(tmp_path, monkeypatch)
+
+        # Save a session through the real pipeline so storage fields are stamped
+        session = SimpleSession()
+        cache_session(session, "storage-test")
+
+        results = list_sessions_with_metadata()
+
+        assert len(results) == 1
+        assert results[0]["storage_backend"] == "local"
+        assert results[0]["storage_location"] != ""
+
+    def test_list_no_path_key(self, tmp_path, monkeypatch):
+        """list_sessions_with_metadata must not include the legacy 'path' key."""
+        _setup_local_env(tmp_path, monkeypatch)
+
+        session = SimpleSession()
+        cache_session(session, "no-path-test")
+
+        results = list_sessions_with_metadata()
+
+        assert len(results) == 1
+        assert "path" not in results[0]
+
+
 class TestListSessionsWithMetadata:
     """Tests for list_sessions_with_metadata function."""
 
@@ -800,7 +867,8 @@ class TestListSessionsWithMetadata:
             assert "cookie_count" in result
             assert "cookie_domains" in result
             assert "status" in result
-            assert "path" in result
+            assert "storage_backend" in result
+            assert "storage_location" in result
 
     def test_list_sessions_with_metadata_skips_missing_metadata(self, tmp_path, monkeypatch):
         """Test that sessions without metadata are skipped."""
