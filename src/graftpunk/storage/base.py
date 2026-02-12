@@ -233,3 +233,13 @@ class SessionStorageBackend(Protocol):
             ValueError: If status is not a valid value
         """
         ...
+
+    @property
+    def storage_backend(self) -> str:
+        """Backend type identifier (e.g., "local", "s3", "r2", "supabase")."""
+        ...
+
+    @property
+    def storage_location(self) -> str:
+        """Display-friendly storage location (e.g., "s3://bucket", "~/.config/...")."""
+        ...

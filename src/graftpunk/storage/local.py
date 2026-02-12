@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,27 @@ class LocalSessionStorage:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         LOG.info("local_session_storage_initialized", base_dir=str(base_dir))
 
+    @property
+    def storage_backend(self) -> str:
+        """Backend type identifier.
+
+        Returns:
+            Always "local" for local filesystem storage.
+        """
+        return "local"
+
+    @property
+    def storage_location(self) -> str:
+        """Display-friendly storage location using ~ for home directory paths.
+
+        Returns:
+            Path string with ~ abbreviation for home directory, or full path.
+        """
+        try:
+            return str("~" / self.base_dir.relative_to(Path.home()))
+        except ValueError:
+            return str(self.base_dir)
+
     def save_session(
         self,
         name: str,
@@ -66,6 +88,13 @@ class LocalSessionStorage:
         fd = os.open(pickle_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(encrypted_data)
+
+        # Stamp storage identity fields before serialization
+        metadata = replace(
+            metadata,
+            storage_backend=self.storage_backend,
+            storage_location=self.storage_location,
+        )
 
         # Write metadata
         metadata_dict = self._metadata_to_dict(metadata)
@@ -335,6 +364,8 @@ class LocalSessionStorage:
             "cookie_count": metadata.cookie_count,
             "cookie_domains": metadata.cookie_domains,
             "status": metadata.status,
+            "storage_backend": metadata.storage_backend,
+            "storage_location": metadata.storage_location,
         }
 
     def _dict_to_metadata(self, data: dict[str, Any]) -> SessionMetadata:
@@ -362,4 +393,6 @@ class LocalSessionStorage:
             cookie_count=data.get("cookie_count", 0),
             cookie_domains=data.get("cookie_domains", []),
             status=data.get("status", "active"),
+            storage_backend=data.get("storage_backend", ""),
+            storage_location=data.get("storage_location", ""),
         )

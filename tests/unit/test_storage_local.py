@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -384,3 +385,95 @@ class TestSessionMetadata:
         )
 
         assert metadata.status == "active"
+
+
+class TestLocalStorageIdentity:
+    """Tests for storage identity properties and metadata stamping."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a LocalSessionStorage instance."""
+        return LocalSessionStorage(base_dir=tmp_path)
+
+    @pytest.fixture
+    def sample_metadata(self):
+        """Create sample session metadata."""
+        now = datetime.now(UTC)
+        return SessionMetadata(
+            name="test-session",
+            checksum="abc123",
+            created_at=now,
+            modified_at=now,
+            expires_at=now + timedelta(hours=24),
+            domain="example.com",
+            current_url="https://example.com/dashboard",
+            cookie_count=5,
+            cookie_domains=["example.com", ".example.com"],
+            status="active",
+        )
+
+    def test_storage_backend_is_local(self, storage):
+        """Test that storage_backend property returns 'local'."""
+        assert storage.storage_backend == "local"
+
+    def test_storage_location_uses_tilde(self):
+        """Test that storage_location abbreviates home directory with ~."""
+        home_based_path = Path.home() / ".config/graftpunk/sessions"
+        storage = LocalSessionStorage(base_dir=home_based_path)
+        assert storage.storage_location.startswith("~")
+
+    def test_storage_location_non_home_path(self, tmp_path):
+        """Test that storage_location returns full path for non-home paths."""
+        storage = LocalSessionStorage(base_dir=tmp_path)
+        assert storage.storage_location == str(tmp_path)
+
+    def test_save_stamps_storage_fields_in_metadata(self, storage, sample_metadata, tmp_path):
+        """Test that save_session stamps storage_backend and storage_location."""
+        storage.save_session("stamped", b"data", sample_metadata)
+
+        metadata_path = tmp_path / "stamped" / "metadata.json"
+        with metadata_path.open() as f:
+            saved_dict = json.load(f)
+
+        assert saved_dict["storage_backend"] == "local"
+        assert "storage_location" in saved_dict
+        assert saved_dict["storage_location"] != ""
+
+    def test_private_serializers_include_storage_fields(self, storage):
+        """Test that _metadata_to_dict includes storage_backend and storage_location."""
+        now = datetime.now(UTC)
+        location = "~/.config/graftpunk/sessions"
+        metadata = SessionMetadata(
+            name="test",
+            checksum="abc",
+            created_at=now,
+            modified_at=now,
+            expires_at=None,
+            domain=None,
+            current_url=None,
+            cookie_count=0,
+            cookie_domains=[],
+            storage_backend="local",
+            storage_location=location,
+        )
+        result = storage._metadata_to_dict(metadata)
+        assert result["storage_backend"] == "local"
+        assert result["storage_location"] == location
+
+    def test_private_deserializer_defaults_missing_fields(self, storage):
+        """Test that _dict_to_metadata defaults missing storage fields to empty string."""
+        old_dict = {
+            "name": "old-session",
+            "checksum": "abc",
+            "created_at": datetime.now(UTC).isoformat(),
+            "modified_at": datetime.now(UTC).isoformat(),
+            "expires_at": None,
+            "domain": None,
+            "current_url": None,
+            "cookie_count": 0,
+            "cookie_domains": [],
+            "status": "active",
+        }
+        metadata = storage._dict_to_metadata(old_dict)
+        assert metadata.storage_backend == ""
+        assert metadata.storage_location == ""
