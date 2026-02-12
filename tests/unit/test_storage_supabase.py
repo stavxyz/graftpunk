@@ -747,3 +747,57 @@ class TestRetryLogic:
 
         error = OSError("generic error")
         assert storage._is_retryable_error(error) is False
+
+
+class TestSupabaseStorageIdentity:
+    """Tests for SupabaseSessionStorage identity properties and save stamping."""
+
+    @patch("supabase.create_client")
+    def test_storage_backend_is_supabase(self, mock_create_client):
+        """Test that storage_backend returns 'supabase'."""
+        storage, _mock_client = _make_storage(mock_create_client)
+        assert storage.storage_backend == "supabase"
+
+    @patch("supabase.create_client")
+    def test_storage_location_uses_bucket_name(self, mock_create_client):
+        """Test that storage_location uses default bucket name."""
+        storage, _mock_client = _make_storage(mock_create_client)
+        assert storage.storage_location == "supabase://sessions"
+
+    @patch("supabase.create_client")
+    def test_custom_bucket_name_in_location(self, mock_create_client):
+        """Test that custom bucket name appears in storage_location."""
+        mock_client = MagicMock()
+        mock_create_client.return_value = mock_client
+        from graftpunk.storage.supabase import SupabaseSessionStorage
+
+        storage = SupabaseSessionStorage(
+            url="https://test.supabase.co",
+            service_key="test-key",
+            bucket_name="custom-bucket",
+        )
+        assert storage.storage_location == "supabase://custom-bucket"
+
+    @patch("supabase.create_client")
+    def test_save_stamps_storage_fields(self, mock_create_client, sample_metadata):
+        """Test that _do_save stamps storage_backend and storage_location."""
+        storage, mock_client = _make_storage(mock_create_client)
+
+        # Mock bucket creation (already exists)
+        mock_client.storage.create_bucket.return_value = None
+
+        # Mock storage upload
+        mock_storage_bucket = MagicMock()
+        mock_client.storage.from_.return_value = mock_storage_bucket
+        mock_storage_bucket.upload.return_value = {"Key": "test-session/session.pickle"}
+
+        storage._do_save("test-session", b"encrypted-data", sample_metadata)
+
+        # The second upload call is the metadata upload
+        assert mock_storage_bucket.upload.call_count == 2
+        metadata_call = mock_storage_bucket.upload.call_args_list[1]
+        metadata_bytes = metadata_call.kwargs.get("file") or metadata_call[1].get("file")
+        metadata_dict = json.loads(metadata_bytes.decode("utf-8"))
+
+        assert metadata_dict["storage_backend"] == "supabase"
+        assert metadata_dict["storage_location"] == "supabase://sessions"

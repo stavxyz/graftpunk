@@ -81,6 +81,24 @@ class SupabaseSessionStorage:
             bucket=bucket_name,
         )
 
+    @property
+    def storage_backend(self) -> str:
+        """Backend type identifier.
+
+        Returns:
+            Always "supabase"
+        """
+        return "supabase"
+
+    @property
+    def storage_location(self) -> str:
+        """Display-friendly storage location URI.
+
+        Returns:
+            URI in the form "supabase://{bucket_name}"
+        """
+        return f"supabase://{self.bucket_name}"
+
     def _session_path(self, name: str) -> str:
         """Generate storage path for session pickle data.
 
@@ -206,6 +224,13 @@ class SupabaseSessionStorage:
                 storage.update(file=encrypted_data, path=session_path, file_options=session_options)
             else:
                 raise
+
+        # Stamp storage identity onto metadata before serialization
+        metadata = replace(
+            metadata,
+            storage_backend=self.storage_backend,
+            storage_location=self.storage_location,
+        )
 
         # Upload metadata JSON
         metadata_json = json.dumps(metadata_to_dict(metadata), indent=2)
