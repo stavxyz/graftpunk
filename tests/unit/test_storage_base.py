@@ -170,6 +170,8 @@ class TestMetadataConversion:
             "cookie_count",
             "cookie_domains",
             "status",
+            "storage_backend",
+            "storage_location",
         }
         assert set(data.keys()) == expected_keys
 
@@ -197,3 +199,96 @@ class TestSessionMetadata:
             cookie_domains=[],
         )
         assert metadata.status == "active"
+
+
+class TestStorageFields:
+    """Tests for storage_backend and storage_location fields."""
+
+    def test_metadata_defaults_storage_fields_to_empty(self):
+        """Constructing SessionMetadata without new fields defaults both to ''."""
+        now = datetime.now(UTC)
+        metadata = SessionMetadata(
+            name="test",
+            checksum="abc",
+            created_at=now,
+            modified_at=now,
+            expires_at=None,
+            domain=None,
+            current_url=None,
+            cookie_count=0,
+            cookie_domains=[],
+        )
+        assert metadata.storage_backend == ""
+        assert metadata.storage_location == ""
+
+    def test_metadata_accepts_storage_fields(self):
+        """Constructing with explicit storage fields preserves values."""
+        now = datetime.now(UTC)
+        metadata = SessionMetadata(
+            name="test",
+            checksum="abc",
+            created_at=now,
+            modified_at=now,
+            expires_at=None,
+            domain=None,
+            current_url=None,
+            cookie_count=0,
+            cookie_domains=[],
+            storage_backend="s3",
+            storage_location="s3://bucket/sessions/test",
+        )
+        assert metadata.storage_backend == "s3"
+        assert metadata.storage_location == "s3://bucket/sessions/test"
+
+    def test_metadata_to_dict_includes_storage_fields(self):
+        """metadata_to_dict output includes storage_backend and storage_location."""
+        now = datetime.now(UTC)
+        metadata = SessionMetadata(
+            name="test",
+            checksum="abc",
+            created_at=now,
+            modified_at=now,
+            expires_at=None,
+            domain=None,
+            current_url=None,
+            cookie_count=0,
+            cookie_domains=[],
+            storage_backend="local",
+            storage_location="/home/user/.cache/graftpunk/sessions/test",
+        )
+        data = metadata_to_dict(metadata)
+        assert data["storage_backend"] == "local"
+        assert data["storage_location"] == "/home/user/.cache/graftpunk/sessions/test"
+
+    def test_dict_to_metadata_missing_storage_fields_defaults(self):
+        """dict_to_metadata defaults missing storage fields to ''."""
+        data = {
+            "name": "test",
+            "checksum": "abc",
+            "created_at": datetime.now(UTC).isoformat(),
+            "modified_at": datetime.now(UTC).isoformat(),
+        }
+        metadata = dict_to_metadata(data)
+        assert metadata.storage_backend == ""
+        assert metadata.storage_location == ""
+
+    def test_metadata_to_dict_roundtrip_with_storage_fields(self):
+        """Roundtrip through metadata_to_dict/dict_to_metadata preserves storage fields."""
+        now = datetime.now(UTC)
+        original = SessionMetadata(
+            name="roundtrip",
+            checksum="xyz",
+            created_at=now,
+            modified_at=now,
+            expires_at=None,
+            domain="example.com",
+            current_url="https://example.com",
+            cookie_count=3,
+            cookie_domains=["example.com"],
+            storage_backend="s3",
+            storage_location="s3://my-bucket/sessions/roundtrip",
+        )
+        data = metadata_to_dict(original)
+        restored = dict_to_metadata(data)
+        assert restored.storage_backend == original.storage_backend
+        assert restored.storage_location == original.storage_location

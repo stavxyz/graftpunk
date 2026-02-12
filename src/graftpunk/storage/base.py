@@ -64,6 +64,8 @@ class SessionMetadata:
         cookie_count: Number of cookies in the session
         cookie_domains: List of domains cookies belong to
         status: Session status ("active", "logged_out")
+        storage_backend: Backend that stored this session (e.g., "local", "s3")
+        storage_location: Where the session is stored (path or URI)
     """
 
     name: str
@@ -76,6 +78,8 @@ class SessionMetadata:
     cookie_count: int
     cookie_domains: list[str]
     status: str = "active"
+    storage_backend: str = ""
+    storage_location: str = ""
 
 
 def metadata_to_dict(metadata: SessionMetadata) -> dict[str, "Any"]:
@@ -98,6 +102,8 @@ def metadata_to_dict(metadata: SessionMetadata) -> dict[str, "Any"]:
         "cookie_count": metadata.cookie_count,
         "cookie_domains": metadata.cookie_domains,
         "status": metadata.status,
+        "storage_backend": metadata.storage_backend,
+        "storage_location": metadata.storage_location,
     }
 
 
@@ -121,6 +127,8 @@ def dict_to_metadata(data: dict[str, "Any"]) -> SessionMetadata:
         cookie_count=data.get("cookie_count", 0),
         cookie_domains=data.get("cookie_domains", []),
         status=data.get("status", "active"),
+        storage_backend=data.get("storage_backend", ""),
+        storage_location=data.get("storage_location", ""),
     )
 
 
