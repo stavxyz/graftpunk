@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Session Storage Location Display**: `gp session list` and `gp session show` display where each session is stored (#97)
   - Two new columns: Backend (`local`, `s3`, `r2`, `supabase`) and Location (`~/.config/...`, `s3://bucket`, etc.)
   - Per-session tracking via `storage_backend`/`storage_location` in `metadata.json`
-  - `--storage-backend` flag on all `gp session` commands for querying specific backends
+  - `--storage-backend` flag on `gp session list`, `show`, and `clear` for querying specific backends
   - S3 backend self-identifies as `r2` when endpoint is Cloudflare R2
   - Backward compatible: old sessions display `—` until next save
 
