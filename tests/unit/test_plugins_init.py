@@ -47,13 +47,13 @@ class TestDiscoverPlugins:
         mock_eps.assert_called_once_with(group="test.group")
         assert result == {"myplugin": sentinel}
 
-    @pytest.mark.filterwarnings("ignore::UserWarning")
     @patch(EP_PATCH)
     def test_load_failure_skips_plugin(self, mock_eps: MagicMock) -> None:
         ep = _make_entry_point("badplugin", load_exc=ImportError("no module"))
         mock_eps.return_value = [ep]
 
-        result = discover_plugins("test.group")
+        with pytest.warns(UserWarning, match="badplugin.*failed to load"):
+            result = discover_plugins("test.group")
 
         assert result == {}
 
@@ -65,14 +65,14 @@ class TestDiscoverPlugins:
 
         assert result == {}
 
-    @pytest.mark.filterwarnings("ignore::UserWarning")
     @patch(EP_PATCH)
     def test_multiple_plugins_mixed(self, mock_eps: MagicMock) -> None:
         good = _make_entry_point("good", load_return="loaded")
         bad = _make_entry_point("bad", load_exc=RuntimeError("boom"))
         mock_eps.return_value = [good, bad]
 
-        result = discover_plugins("mixed.group")
+        with pytest.warns(UserWarning, match="bad.*failed to load"):
+            result = discover_plugins("mixed.group")
 
         assert result == {"good": "loaded"}
 
