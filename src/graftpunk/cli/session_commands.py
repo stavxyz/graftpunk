@@ -68,6 +68,8 @@ def session_list(
     table.add_column("Status", justify="center")
     table.add_column("Cookies", justify="right", style="dim")
     table.add_column("Last Modified", style="dim")
+    table.add_column("Backend", style="dim", no_wrap=True)
+    table.add_column("Location", style="dim")
 
     for session in sessions:
         status = session.get("status", "unknown")
@@ -88,6 +90,8 @@ def session_list(
             status_display,
             str(session.get("cookie_count", 0)),
             modified or "[dim]—[/dim]",
+            session.get("storage_backend") or "[dim]—[/dim]",
+            session.get("storage_location") or "[dim]—[/dim]",
         )
 
     console.print(table)
@@ -148,6 +152,9 @@ def show(
     if expires and expires != "never":
         expires = expires[:19].replace("T", " ")
 
+    backend = metadata.get("storage_backend") or "—"
+    location = metadata.get("storage_location") or "—"
+
     info = f"""
 {status_icon} [bold]{name}[/bold]  {status_text}
 
@@ -155,7 +162,9 @@ def show(
 [dim]Cookies:[/dim]    {metadata.get("cookie_count", 0)}
 [dim]Created:[/dim]    {created}
 [dim]Modified:[/dim]   {modified}
-[dim]Expires:[/dim]    {expires}"""
+[dim]Expires:[/dim]    {expires}
+[dim]Backend:[/dim]    {backend}
+[dim]Location:[/dim]   {location}"""
 
     if metadata.get("cookie_domains"):
         domains = ", ".join(metadata["cookie_domains"][:5])

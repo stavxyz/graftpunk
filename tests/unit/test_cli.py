@@ -86,7 +86,10 @@ class TestListCommand:
         assert result.exit_code == 0
         assert "old-session" in result.output
         output = strip_ansi(result.output)
-        assert "logged out" in output
+        # Rich may wrap "logged out" across table rows in narrow terminals;
+        # verify both words appear along with the status indicator
+        assert "\u25cb" in output  # ○ logged-out circle
+        assert "logged" in output
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
     def test_list_unknown_status(self, mock_list):
