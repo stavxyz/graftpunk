@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from graftpunk.plugins import (
     KEEPALIVE_HANDLERS_GROUP,
     PLUGINS_GROUP,
@@ -45,6 +47,7 @@ class TestDiscoverPlugins:
         mock_eps.assert_called_once_with(group="test.group")
         assert result == {"myplugin": sentinel}
 
+    @pytest.mark.filterwarnings("ignore::UserWarning")
     @patch(EP_PATCH)
     def test_load_failure_skips_plugin(self, mock_eps: MagicMock) -> None:
         ep = _make_entry_point("badplugin", load_exc=ImportError("no module"))
@@ -62,6 +65,7 @@ class TestDiscoverPlugins:
 
         assert result == {}
 
+    @pytest.mark.filterwarnings("ignore::UserWarning")
     @patch(EP_PATCH)
     def test_multiple_plugins_mixed(self, mock_eps: MagicMock) -> None:
         good = _make_entry_point("good", load_return="loaded")
