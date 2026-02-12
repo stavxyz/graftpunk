@@ -155,3 +155,37 @@ class TestSessionShowDisplay:
         data = json.loads(result.output)
         assert data["storage_backend"] == "supabase"
         assert data["storage_location"] == "supabase://project.supabase.co"
+
+
+class TestStorageBackendFlag:
+    """Tests for --storage-backend flag via Typer callback."""
+
+    def test_bare_session_shows_help(self) -> None:
+        """Invoking session with no args shows usage help and exits 0."""
+        result = runner.invoke(session_app, [])
+
+        assert result.exit_code == 0
+        output = strip_ansi(result.output)
+        assert "Usage" in output or "session" in output
+
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_flag_passes_override(self, mock_list) -> None:
+        """--storage-backend value is forwarded to backend-using commands."""
+        mock_list.return_value = []
+
+        result = runner.invoke(session_app, ["--storage-backend", "s3", "list"])
+
+        assert result.exit_code == 0
+        mock_list.assert_called_once_with(backend_override="s3")
+
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_flag_with_missing_credentials_shows_error(self, mock_list) -> None:
+        """ValueError from missing credentials produces friendly error."""
+        mock_list.side_effect = ValueError("Missing GRAFTPUNK_S3_BUCKET")
+
+        result = runner.invoke(session_app, ["--storage-backend", "s3", "list"])
+
+        assert result.exit_code == 1
+        output = strip_ansi(result.output)
+        assert "Storage backend error" in output
+        assert "Missing GRAFTPUNK_S3_BUCKET" in output

@@ -223,7 +223,7 @@ class TestClearCommand:
 
         assert result.exit_code == 0
         assert "hackernews" in result.output
-        mock_clear.assert_called_once_with("hackernews")
+        mock_clear.assert_called_once_with("hackernews", backend_override=None)
 
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
     @patch("graftpunk.cli.session_commands.clear_session_cache")
@@ -261,7 +261,7 @@ class TestClearCommand:
                 "modified_at": "2026-01-01T00:00:00",
             },
         ]
-        mock_clear.side_effect = lambda n: [n]
+        mock_clear.side_effect = lambda n, backend_override=None: [n]
 
         result = runner.invoke(app, ["session", "clear", "example.com", "-f"])
 
@@ -306,7 +306,7 @@ class TestClearCommand:
                 "modified_at": "2026-01-01T00:00:00",
             },
         ]
-        mock_clear.side_effect = lambda n: [n]
+        mock_clear.side_effect = lambda n, backend_override=None: [n]
 
         result = runner.invoke(app, ["session", "clear", "--all", "--force"])
 
@@ -1512,7 +1512,7 @@ class TestResolveSessionNameIntegration:
 
         assert result.exit_code == 0
         mock_resolve.assert_called_once_with("my-plugin")
-        mock_clear.assert_called_once_with("resolved-session")
+        mock_clear.assert_called_once_with("resolved-session", backend_override=None)
 
     @patch("graftpunk.cli.session_commands.load_session")
     @patch("graftpunk.cli.session_commands.resolve_session_name")

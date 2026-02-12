@@ -24,20 +24,43 @@ if TYPE_CHECKING:
 session_app = typer.Typer(
     name="session",
     help="Manage encrypted browser sessions.",
-    no_args_is_help=True,
 )
 console = Console()
 
 
+@session_app.callback(invoke_without_command=True)
+def session_callback(
+    ctx: typer.Context,
+    storage_backend: Annotated[
+        str | None,
+        typer.Option(
+            "--storage-backend",
+            help="Storage backend to use (local, s3, supabase)",
+        ),
+    ] = None,
+) -> None:
+    """Manage encrypted browser sessions."""
+    ctx.ensure_object(dict)
+    ctx.obj["storage_backend"] = storage_backend
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
+
+
 @session_app.command("list")
 def session_list(
+    ctx: typer.Context,
     json_output: Annotated[
         bool,
         typer.Option("--json", "-j", help="Output as JSON for scripting"),
     ] = False,
 ) -> None:
     """List all cached sessions with status and metadata."""
-    sessions = list_sessions_with_metadata()
+    backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
+    try:
+        sessions = list_sessions_with_metadata(backend_override=backend_override)
+    except ValueError as exc:
+        console.print(f"[red]✗ Storage backend error: {exc}[/red]")
+        raise typer.Exit(1) from None
 
     if not sessions:
         console.print(
@@ -100,6 +123,7 @@ def session_list(
 
 @session_app.command("show")
 def show(
+    ctx: typer.Context,
     name: Annotated[
         str,
         typer.Argument(
@@ -117,8 +141,13 @@ def show(
     ] = False,
 ) -> None:
     """Show detailed information about a cached session."""
+    backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
     name = resolve_session_name(name)
-    metadata = get_session_metadata(name)
+    try:
+        metadata = get_session_metadata(name, backend_override=backend_override)
+    except ValueError as exc:
+        console.print(f"[red]✗ Storage backend error: {exc}[/red]")
+        raise typer.Exit(1) from None
 
     if not metadata:
         console.print(f"[red]✗ Session '{name}' not found[/red]")
@@ -177,6 +206,7 @@ def show(
 
 @session_app.command("export")
 def export(
+    ctx: typer.Context,
     name: Annotated[
         str,
         typer.Argument(
@@ -226,6 +256,7 @@ def export(
 
 @session_app.command("clear")
 def session_clear(
+    ctx: typer.Context,
     target: Annotated[
         str | None,
         typer.Argument(
@@ -255,7 +286,14 @@ def session_clear(
         console.print("[red]Specify a session name, domain, or use --all[/red]")
         raise typer.Exit(1)
 
-    all_metadata = list_sessions_with_metadata()
+    backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
+    try:
+        all_metadata = list_sessions_with_metadata(
+            backend_override=backend_override,
+        )
+    except ValueError as exc:
+        console.print(f"[red]✗ Storage backend error: {exc}[/red]")
+        raise typer.Exit(1) from None
 
     if all_sessions:
         if not all_metadata:
@@ -272,7 +310,10 @@ def session_clear(
 
         removed = []
         for s in all_metadata:
-            result = clear_session_cache(s["name"])
+            result = clear_session_cache(
+                s["name"],
+                backend_override=backend_override,
+            )
             if result:
                 removed.append(s)
 
@@ -299,7 +340,10 @@ def session_clear(
 
         removed = []
         for s in matches:
-            result = clear_session_cache(s["name"])
+            result = clear_session_cache(
+                s["name"],
+                backend_override=backend_override,
+            )
             if result:
                 removed.append(s)
 
@@ -319,7 +363,7 @@ def session_clear(
                 console.print("[dim]Cancelled[/dim]")
                 return
 
-        clear_session_cache(target)
+        clear_session_cache(target, backend_override=backend_override)
         _print_removed([match])
 
 
