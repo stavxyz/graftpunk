@@ -1,8 +1,53 @@
 """Tests for NoDriverBackend property accessors and cookie operations."""
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from graftpunk.backends.nodriver import NoDriverBackend
+
+
+def close_coro_and_return(return_value: Any = None) -> Any:
+    """Create a side_effect function that closes coroutines to avoid RuntimeWarnings.
+
+    When mocking asyncio.run(), the coroutine passed to it is created but never
+    awaited. This creates RuntimeWarnings about unawaited coroutines. This helper
+    creates a side_effect that properly closes the coroutine before returning.
+
+    Args:
+        return_value: Value to return from the mock.
+
+    Returns:
+        A function suitable for use as side_effect on a Mock.
+    """
+
+    def _side_effect(coro: Any) -> Any:
+        # Close the coroutine to prevent "never awaited" warnings
+        if hasattr(coro, "close"):
+            coro.close()
+        return return_value
+
+    return _side_effect
+
+
+def close_coro_and_raise(exc: Exception) -> Any:
+    """Create a side_effect function that closes coroutines then raises an exception.
+
+    Similar to close_coro_and_return, but raises an exception after closing
+    the coroutine. Used for tests that verify error handling paths.
+
+    Args:
+        exc: Exception instance to raise.
+
+    Returns:
+        A function suitable for use as side_effect on a Mock.
+    """
+
+    def _side_effect(coro: Any) -> Any:
+        if hasattr(coro, "close"):
+            coro.close()
+        raise exc
+
+    return _side_effect
 
 
 class TestNoDriverBackendProperties:
@@ -20,7 +65,7 @@ class TestNoDriverBackendProperties:
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
-        mock_run.return_value = "https://example.com/page"
+        mock_run.side_effect = close_coro_and_return("https://example.com/page")
 
         assert backend.current_url == "https://example.com/page"
         mock_run.assert_called()
@@ -37,7 +82,7 @@ class TestNoDriverBackendProperties:
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
-        mock_run.return_value = "Example Page Title"
+        mock_run.side_effect = close_coro_and_return("Example Page Title")
 
         assert backend.page_title == "Example Page Title"
         mock_run.assert_called()
@@ -54,7 +99,7 @@ class TestNoDriverBackendProperties:
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
-        mock_run.return_value = "<html><body>Test</body></html>"
+        mock_run.side_effect = close_coro_and_return("<html><body>Test</body></html>")
 
         assert backend.page_source == "<html><body>Test</body></html>"
         mock_run.assert_called()
@@ -71,7 +116,7 @@ class TestNoDriverBackendProperties:
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
-        mock_run.return_value = "Mozilla/5.0 Test Browser"
+        mock_run.side_effect = close_coro_and_return("Mozilla/5.0 Test Browser")
 
         assert backend.get_user_agent() == "Mozilla/5.0 Test Browser"
         mock_run.assert_called()
@@ -88,6 +133,7 @@ class TestNoDriverBackendCookies:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_set_cookies_starts_if_not_running(self, mock_run: MagicMock) -> None:
         """set_cookies() starts browser if not running."""
+        mock_run.side_effect = close_coro_and_return(True)
         backend = NoDriverBackend()
         result = backend.set_cookies([{"name": "test", "value": "value"}])
 
@@ -99,6 +145,7 @@ class TestNoDriverBackendCookies:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_set_cookies_returns_count(self, mock_run: MagicMock) -> None:
         """set_cookies() returns number of cookies successfully set."""
+        mock_run.side_effect = close_coro_and_return(True)
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = MagicMock()
@@ -120,7 +167,7 @@ class TestNoDriverBackendCookies:
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
-        mock_run.side_effect = RuntimeError("CDP error")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("CDP error"))
 
         result = backend.set_cookies([{"name": "test", "value": "value"}])
 
@@ -133,7 +180,7 @@ class TestNoDriverBackendCookies:
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
-        mock_run.return_value = True  # Async method returns True on success
+        mock_run.side_effect = close_coro_and_return(True)
 
         result = backend.delete_all_cookies()
 
@@ -147,7 +194,7 @@ class TestNoDriverBackendCookies:
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
-        mock_run.side_effect = RuntimeError("CDP error")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("CDP error"))
 
         result = backend.delete_all_cookies()
 

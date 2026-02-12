@@ -33,6 +33,27 @@ def close_coro_and_return(return_value: Any = None) -> Any:
     return _side_effect
 
 
+def close_coro_and_raise(exc: Exception) -> Any:
+    """Create a side_effect function that closes coroutines then raises an exception.
+
+    Similar to close_coro_and_return, but raises an exception after closing
+    the coroutine. Used for tests that verify error handling paths.
+
+    Args:
+        exc: Exception instance to raise.
+
+    Returns:
+        A function suitable for use as side_effect on a Mock.
+    """
+
+    def _side_effect(coro: Any) -> Any:
+        if hasattr(coro, "close"):
+            coro.close()
+        raise exc
+
+    return _side_effect
+
+
 class TestNoDriverBackendProtocol:
     """Tests for NoDriverBackend Protocol compliance."""
 
@@ -316,7 +337,7 @@ class TestNoDriverBackendErrorHandling:
         """RuntimeError during start raises BrowserError."""
         from graftpunk.exceptions import BrowserError
 
-        mock_run.side_effect = RuntimeError("Chrome not found")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("Chrome not found"))
 
         backend = NoDriverBackend()
         with pytest.raises(BrowserError, match="Failed to start NoDriver"):
@@ -327,7 +348,7 @@ class TestNoDriverBackendErrorHandling:
         """ConnectionError during start raises BrowserError."""
         from graftpunk.exceptions import BrowserError
 
-        mock_run.side_effect = ConnectionError("CDP connection failed")
+        mock_run.side_effect = close_coro_and_raise(ConnectionError("CDP connection failed"))
 
         backend = NoDriverBackend()
         with pytest.raises(BrowserError, match="Failed to start NoDriver"):
@@ -338,7 +359,7 @@ class TestNoDriverBackendErrorHandling:
         """TimeoutError during start raises BrowserError."""
         from graftpunk.exceptions import BrowserError
 
-        mock_run.side_effect = TimeoutError("Browser startup timed out")
+        mock_run.side_effect = close_coro_and_raise(TimeoutError("Browser startup timed out"))
 
         backend = NoDriverBackend()
         with pytest.raises(BrowserError, match="Failed to start NoDriver"):
@@ -349,7 +370,7 @@ class TestNoDriverBackendErrorHandling:
         """OSError during start raises BrowserError."""
         from graftpunk.exceptions import BrowserError
 
-        mock_run.side_effect = OSError("Chrome binary not found")
+        mock_run.side_effect = close_coro_and_raise(OSError("Chrome binary not found"))
 
         backend = NoDriverBackend()
         with pytest.raises(BrowserError, match="Failed to start NoDriver"):
@@ -362,8 +383,10 @@ class TestNoDriverBackendErrorHandling:
         # Simulate nodriver not being installed by making asyncio.run raise
         # the BrowserError that would come from the import failure
         with patch("graftpunk.backends.nodriver.asyncio.run") as mock_run:
-            mock_run.side_effect = BrowserError(
-                "nodriver package not installed. Install with: pip install graftpunk[nodriver]"
+            mock_run.side_effect = close_coro_and_raise(
+                BrowserError(
+                    "nodriver package not installed. Install with: pip install graftpunk[nodriver]"
+                )
             )
 
             backend = NoDriverBackend()
@@ -380,7 +403,7 @@ class TestNoDriverBackendErrorHandling:
         backend._browser = MagicMock()
 
         # First call is for navigate, make it raise
-        mock_run.side_effect = RuntimeError("navigation failed")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("navigation failed"))
 
         with pytest.raises(BrowserError, match="Navigation failed"):
             backend.navigate("https://example.com")
@@ -394,7 +417,7 @@ class TestNoDriverBackendErrorHandling:
         backend._page = MagicMock()
 
         # Make stop raise RuntimeError
-        mock_run.side_effect = RuntimeError("already stopped")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("already stopped"))
 
         # Should not raise
         backend.stop()
@@ -409,7 +432,7 @@ class TestNoDriverBackendErrorHandling:
         backend._page = MagicMock()
 
         # Make stop raise OSError
-        mock_run.side_effect = OSError("process died")
+        mock_run.side_effect = close_coro_and_raise(OSError("process died"))
 
         # Should not raise
         backend.stop()
@@ -427,7 +450,7 @@ class TestNoDriverBackendErrorHandling:
         backend._page = MagicMock()
 
         # Use an expected error pattern
-        mock_run.side_effect = RuntimeError("browser is already closed")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("browser is already closed"))
         backend.stop()
 
         # Should log at debug level for expected error
@@ -445,7 +468,9 @@ class TestNoDriverBackendErrorHandling:
         backend._page = MagicMock()
 
         # Use an unexpected error pattern
-        mock_run.side_effect = RuntimeError("unexpected error not in patterns")
+        mock_run.side_effect = close_coro_and_raise(
+            RuntimeError("unexpected error not in patterns")
+        )
         backend.stop()
 
         # Should log at warning level for unexpected error
@@ -454,6 +479,7 @@ class TestNoDriverBackendErrorHandling:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_navigate_auto_starts_browser(self, mock_run: MagicMock) -> None:
         """navigate() auto-starts browser if not running."""
+        mock_run.side_effect = close_coro_and_return(None)
         backend = NoDriverBackend()
         assert backend.is_running is False
 
@@ -472,7 +498,7 @@ class TestNoDriverBackendErrorHandling:
         backend._page = MagicMock()
 
         # Make set_cookies fail
-        mock_run.side_effect = RuntimeError("cookies failed")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("cookies failed"))
 
         # Should not raise, but log warning
         backend.set_cookies([{"name": "test", "value": "value"}])
@@ -486,7 +512,7 @@ class TestNoDriverBackendErrorHandling:
         backend._page = MagicMock()
 
         # Make delete fail
-        mock_run.side_effect = RuntimeError("delete failed")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("delete failed"))
 
         # Should not raise, but log warning
         backend.delete_all_cookies()
@@ -499,7 +525,7 @@ class TestNoDriverBackendErrorHandling:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        mock_run.side_effect = RuntimeError("page gone")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("page gone"))
 
         assert backend.current_url == ""
 
@@ -511,7 +537,7 @@ class TestNoDriverBackendErrorHandling:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        mock_run.side_effect = RuntimeError("page gone")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("page gone"))
 
         assert backend.page_title == ""
 
@@ -523,7 +549,7 @@ class TestNoDriverBackendErrorHandling:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        mock_run.side_effect = RuntimeError("page gone")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("page gone"))
 
         assert backend.page_source == ""
 
@@ -535,7 +561,7 @@ class TestNoDriverBackendErrorHandling:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        mock_run.side_effect = RuntimeError("page gone")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("page gone"))
 
         assert backend.get_user_agent() == ""
 
@@ -692,7 +718,7 @@ class TestNoDriverBackendMissingCoverage:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        mock_run.side_effect = RuntimeError("failed")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("failed"))
 
         assert backend.get_cookies() == []
 
@@ -798,7 +824,7 @@ class TestNoDriverBackendMalformedUrls:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        mock_run.side_effect = RuntimeError("Invalid URL")
+        mock_run.side_effect = close_coro_and_raise(RuntimeError("Invalid URL"))
 
         with pytest.raises(BrowserError, match="Navigation failed"):
             backend.navigate("")
@@ -813,7 +839,9 @@ class TestNoDriverBackendMalformedUrls:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        mock_run.side_effect = RuntimeError("invalid argument: 'url' must be a valid URL")
+        mock_run.side_effect = close_coro_and_raise(
+            RuntimeError("invalid argument: 'url' must be a valid URL")
+        )
 
         with pytest.raises(BrowserError, match="Navigation failed"):
             backend.navigate("not-a-valid-url")
@@ -873,7 +901,7 @@ class TestNoDriverNavigateErrorTypes:
         backend._started = True
         backend._browser = MagicMock()
 
-        mock_run.side_effect = ConnectionError("connection refused")
+        mock_run.side_effect = close_coro_and_raise(ConnectionError("connection refused"))
 
         with pytest.raises(BrowserError, match="Navigation failed"):
             backend.navigate("https://example.com")
@@ -887,7 +915,7 @@ class TestNoDriverNavigateErrorTypes:
         backend._started = True
         backend._browser = MagicMock()
 
-        mock_run.side_effect = TimeoutError("operation timed out")
+        mock_run.side_effect = close_coro_and_raise(TimeoutError("operation timed out"))
 
         with pytest.raises(BrowserError, match="Navigation failed"):
             backend.navigate("https://example.com")
@@ -908,7 +936,7 @@ class TestNoDriverSetCookiesNoPage:
         backend._page = None  # Page is None
 
         # Make _run_async return False (page was None)
-        mock_run.return_value = False
+        mock_run.side_effect = close_coro_and_return(False)
 
         cookies = [{"name": "test", "value": "value"}]
         result = backend.set_cookies(cookies)
