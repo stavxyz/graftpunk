@@ -107,10 +107,11 @@ class TestDeclarativeLoginEngine:
         plugin = DeclarativeHN()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -133,10 +134,11 @@ class TestDeclarativeLoginEngine:
         plugin = DeclarativeHN()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Bad login.</html>")
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -285,8 +287,9 @@ class TestLoginEngineExceptionPaths:
         plugin = DeclarativeHN()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(side_effect=RuntimeError("Element vanished"))
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -307,8 +310,9 @@ class TestLoginEngineExceptionPaths:
         plugin = DeclarativeHN()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(side_effect=RuntimeError("Boom"))
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -572,9 +576,10 @@ class TestNodriverLoginValidationPaths:
         plugin = DeclarativeNodriverSuccess()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
+        mock_tab.send = AsyncMock()
 
         # select succeeds for form fields, returns None for success selector (timeout)
         async def select_side_effect(selector: str, **kwargs: object) -> AsyncMock | None:
@@ -601,10 +606,11 @@ class TestNodriverLoginValidationPaths:
         plugin = DeclarativeNodriverSuccess()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -627,9 +633,10 @@ class TestNodriverLoginValidationPaths:
         plugin = DeclarativeNodriverSuccess()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
+        mock_tab.send = AsyncMock()
 
         # select succeeds for form fields, raises unknown error for success selector
         async def select_side_effect(selector: str, **kwargs: object) -> AsyncMock:
@@ -657,10 +664,11 @@ class TestNodriverLoginValidationPaths:
         plugin = DeclarativeNodriverNoValidation()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -873,7 +881,7 @@ class TestLoginEngineHeaderCapture:
         plugin = DeclarativeHN()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
@@ -1399,7 +1407,7 @@ class TestNodriverMultiStepLogin:
         plugin = DeclarativeTopLevelWaitFor()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
         instance.driver.get = AsyncMock(return_value=mock_tab)
@@ -1429,7 +1437,7 @@ class TestNodriverMultiStepLogin:
         plugin = DeclarativeMultiStep()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
@@ -1479,7 +1487,7 @@ class TestNodriverMultiStepLogin:
             select_calls.append(selector)
             return AsyncMock()
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
         mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
 
@@ -1525,7 +1533,7 @@ class TestNodriverMultiStepLogin:
                 return None
             return AsyncMock()
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -1566,7 +1574,7 @@ class TestNodriverMultiStepLogin:
                 return None
             return AsyncMock()
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -1607,7 +1615,7 @@ class TestNodriverMultiStepLogin:
                 return None
             return AsyncMock()
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -1640,7 +1648,7 @@ class TestNodriverMultiStepLogin:
         plugin = DeclarativeStepWithDelay()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
@@ -1711,7 +1719,7 @@ class TestNodriverMultiStepLogin:
         mock_element = AsyncMock()
         mock_element.click = mock_click
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
 
@@ -1754,7 +1762,7 @@ class TestNodriverMultiStepLogin:
             selectors_called.append(selector)
             return AsyncMock()
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
         mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
 

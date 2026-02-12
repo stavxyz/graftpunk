@@ -70,7 +70,7 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_returns_element_on_first_try(self) -> None:
         """Returns element immediately when select succeeds."""
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
 
@@ -83,7 +83,7 @@ class TestSelectWithRetry:
         """Retries when ProtocolException is raised, succeeds on later attempt."""
         from nodriver.core.connection import ProtocolException
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
 
         # Fail twice with ProtocolException, succeed on third
@@ -99,7 +99,7 @@ class TestSelectWithRetry:
         """Raises last ProtocolException when timeout expires."""
         from nodriver.core.connection import ProtocolException
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=exc)
 
@@ -109,7 +109,7 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_returns_none_when_select_returns_none(self) -> None:
         """Returns None when select returns None and timeout expires (no exception)."""
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=None)
 
         result = await _select_with_retry(mock_tab, "input#gone", timeout=0.1, interval=0.01)
@@ -118,7 +118,7 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_non_protocol_exception_propagates(self) -> None:
         """Non-ProtocolException errors propagate immediately (no retry)."""
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_tab.select = AsyncMock(side_effect=RuntimeError("unexpected"))
 
         with pytest.raises(RuntimeError, match="unexpected"):
@@ -154,7 +154,7 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_per_attempt_timeout_capped(self) -> None:
         """Each select() attempt uses min(5.0, remaining) as timeout."""
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
 
@@ -168,7 +168,7 @@ class TestSelectWithRetry:
     @pytest.mark.asyncio
     async def test_none_then_element_on_retry(self) -> None:
         """Returns element when select returns None first, then succeeds."""
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(side_effect=[None, None, mock_element])
 
@@ -181,7 +181,7 @@ class TestSelectWithRetry:
         """Returns element when select alternates between None and ProtocolException."""
         from nodriver.core.connection import ProtocolException
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
 
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
@@ -205,13 +205,14 @@ class TestLoginRetryIntegration:
         plugin = DeclarativeHN()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
 
         # select() fails with ProtocolException on first call, succeeds after
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=[exc, mock_element, mock_element, mock_element])
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -239,7 +240,7 @@ class TestLoginWaitFor:
         plugin = DeclarativeWaitFor()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         select_calls: list[str] = []
 
@@ -249,6 +250,7 @@ class TestLoginWaitFor:
 
         mock_tab.select = tracking_select
         mock_tab.get_content = AsyncMock(return_value="<html>OK</html>")
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -277,9 +279,10 @@ class TestLoginWaitFor:
         plugin = DeclarativeWaitFor()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         # select always returns None (element never appears)
         mock_tab.select = AsyncMock(return_value=None)
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -302,9 +305,10 @@ class TestLoginWaitFor:
         plugin = DeclarativeWaitFor()
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=exc)
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -325,10 +329,11 @@ class TestLoginWaitFor:
         plugin = DeclarativeHN()  # no wait_for
         login_method = generate_login_method(plugin)
 
-        mock_tab = AsyncMock()
+        mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
+        mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
