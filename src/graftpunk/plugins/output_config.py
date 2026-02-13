@@ -117,7 +117,7 @@ class OutputConfig:
         for name in names:
             view = views_by_name.get(name)
             if view is None:
-                LOG.debug("filter_views_unknown", name=name)
+                LOG.warning("filter_views_unknown", name=name, available=list(views_by_name))
                 continue
             if name in overrides:
                 view = ViewConfig(

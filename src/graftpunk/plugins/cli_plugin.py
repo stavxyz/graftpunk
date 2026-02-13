@@ -254,7 +254,7 @@ class CommandResult:
     Attributes:
         data: The command response data.
         metadata: Optional metadata dict (pagination, status info, etc.).
-        format_hint: Preferred output format ("json", "table", "raw", "csv").
+        format_hint: Preferred output format (e.g. ``"json"``, ``"table"``).
             Only applies when the user has not explicitly passed ``--format``
             on the command line; an explicit ``--format`` always wins.
         output_config: Configuration for column filtering and view extraction.
@@ -262,7 +262,7 @@ class CommandResult:
 
     data: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    format_hint: Literal["json", "table", "raw", "csv"] | None = None
+    format_hint: Literal["json", "table", "raw", "csv", "xlsx"] | None = None
     output_config: OutputConfig | None = None
 
 
