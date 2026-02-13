@@ -23,6 +23,7 @@ from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.output_config import (
     OutputConfig,
+    ViewConfig,
     apply_column_filter,
     extract_view_data,
     parse_view_arg,
@@ -52,6 +53,28 @@ class OutputFormatter(Protocol):
     ) -> None:
         """Format and print data to the console."""
         ...
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_view_data(data: Any, view: ViewConfig) -> Any | None:
+    """Extract and filter data for a single view.
+
+    Applies path extraction via ``extract_view_data`` and column filtering
+    via ``apply_column_filter`` in one step.
+
+    Returns:
+        The resolved data, or ``None`` if path extraction yields nothing.
+    """
+    view_data = extract_view_data(data, view.path) if view.path else data
+    if view_data is None:
+        return None
+    if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
+        view_data = apply_column_filter(view_data, view.columns)
+    return view_data
 
 
 # ---------------------------------------------------------------------------
@@ -110,28 +133,21 @@ class TableFormatter:
         """
         views = output_config.views
         multi = len(views) > 1
-        rendered_count = 0
+        first = True
 
         for view in views:
-            view_data = extract_view_data(data, view.path) if view.path else data
+            view_data = _resolve_view_data(data, view)
             if view_data is None:
-                LOG.debug(
-                    "multi_view_empty",
-                    view=view.name,
-                    path=view.path,
-                )
+                LOG.debug("multi_view_empty", view=view.name, path=view.path)
                 continue
-            if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
-                view_data = apply_column_filter(view_data, view.columns)
             if multi:
-                if rendered_count > 0:
+                if not first:
                     console.print("")
-                title = view.title or view.name
-                console.print(Rule(title=title))
+                console.print(Rule(title=view.title or view.name))
             self._render_data(view_data, console)
-            rendered_count += 1
+            first = False
 
-        if rendered_count == 0:
+        if first:
             LOG.warning("multi_view_all_empty", view_count=len(views))
 
     def _render_data(self, data: Any, console: Console) -> None:
@@ -300,12 +316,10 @@ class XlsxFormatter:
 
             if output_config and output_config.views:
                 for view in output_config.views:
-                    view_data = extract_view_data(data, view.path) if view.path else data
+                    view_data = _resolve_view_data(data, view)
                     if view_data is None:
                         LOG.debug("xlsx_view_empty", view=view.name, path=view.path)
                         continue
-                    if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
-                        view_data = apply_column_filter(view_data, view.columns)
                     # Excel worksheet names are limited to 31 characters
                     sheet_name = (view.title or view.name)[:31]
                     self._write_sheet(workbook, sheet_name, view_data, bold)
