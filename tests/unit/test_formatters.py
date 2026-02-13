@@ -648,3 +648,132 @@ class TestFormatOutputWithOutputConfig:
         console.print.assert_called_once()
         table = console.print.call_args[0][0]
         assert len(table.columns) == 2
+
+
+class TestTableFormatterMultiView:
+    """Tests for TableFormatter multi-view rendering."""
+
+    def test_single_view_no_section_header(self) -> None:
+        """A single view renders without a Rule separator."""
+        from rich.rule import Rule
+
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {"results": [{"id": 1, "name": "foo"}]}
+        cfg = OutputConfig(
+            views=[ViewConfig(name="items", path="results", title="Items")],
+        )
+        TableFormatter().format(data, console, output_config=cfg)
+        # Should print exactly one thing: the table
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert isinstance(table, Table)
+        # No Rule should have been printed
+        for call in console.print.call_args_list:
+            args = call[0]
+            for arg in args:
+                assert not isinstance(arg, Rule)
+
+    def test_multiple_views_renders_all_with_headers(self) -> None:
+        """Multiple views each get a Rule header and a Table."""
+        from rich.rule import Rule
+
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1, "name": "foo"}],
+            "page": {"current": 1, "total": 5},
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items", title="Results"),
+                ViewConfig(name="page", path="page", title="Pagination"),
+            ],
+        )
+        TableFormatter().format(data, console, output_config=cfg)
+        # Collect all printed args
+        rules = []
+        tables = []
+        for call in console.print.call_args_list:
+            args = call[0]
+            for arg in args:
+                if isinstance(arg, Rule):
+                    rules.append(arg)
+                elif isinstance(arg, Table):
+                    tables.append(arg)
+        assert len(rules) == 2
+        assert len(tables) == 2
+        assert rules[0].title == "Results"
+        assert rules[1].title == "Pagination"
+
+    def test_empty_view_data_skipped(self) -> None:
+        """A view whose path yields None is silently skipped."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {"items": [{"id": 1}]}
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items"),
+                ViewConfig(name="missing", path="nonexistent"),
+            ],
+        )
+        TableFormatter().format(data, console, output_config=cfg)
+        # Only one table rendered (the "missing" view is skipped)
+        tables = [
+            call[0][0]
+            for call in console.print.call_args_list
+            if call[0] and isinstance(call[0][0], Table)
+        ]
+        assert len(tables) == 1
+
+    def test_multi_view_with_column_filter(self) -> None:
+        """Column filters apply per-view in multi-view mode."""
+        from graftpunk.plugins import ColumnFilter, OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1, "name": "foo", "desc": "long"}],
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(
+                    name="items",
+                    path="items",
+                    columns=ColumnFilter("include", ["id", "name"]),
+                ),
+            ],
+        )
+        TableFormatter().format(data, console, output_config=cfg)
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert isinstance(table, Table)
+        assert len(table.columns) == 2
+
+    def test_no_config_still_works(self) -> None:
+        """No output_config renders same as before (backward compat)."""
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo"}]
+        TableFormatter().format(data, console, output_config=None)
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert isinstance(table, Table)
+        assert len(table.columns) == 2
+        assert table.row_count == 1
+
+    def test_single_dict_view_renders_key_value_pairs(self) -> None:
+        """A view that extracts a single dict renders as key-value table."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {"meta": {"version": "1.0", "status": "ok"}}
+        cfg = OutputConfig(
+            views=[ViewConfig(name="meta", path="meta")],
+        )
+        TableFormatter().format(data, console, output_config=cfg)
+        console.print.assert_called_once()
+        table = console.print.call_args[0][0]
+        assert isinstance(table, Table)
+        assert table.row_count == 2

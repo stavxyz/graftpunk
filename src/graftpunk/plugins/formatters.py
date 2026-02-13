@@ -13,6 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from rich.console import Console
 from rich.json import JSON
+from rich.rule import Rule
 from rich.table import Table
 
 from graftpunk import console as gp_console
@@ -78,41 +79,77 @@ class TableFormatter:
         console: Console,
         output_config: OutputConfig | None = None,
     ) -> None:
-        # Apply output config if provided
-        if output_config:
-            view = output_config.get_default_view()
-            if view:
-                if view.path:
-                    data = extract_view_data(data, view.path)
-                if isinstance(data, list) and data and isinstance(data[0], dict):
-                    data = apply_column_filter(data, view.columns)
+        """Format data as a rich table.
 
+        When output_config has views, delegates to _render_views for
+        multi-view rendering. Otherwise renders a single auto-detected table.
+        """
+        if output_config and output_config.views:
+            self._render_views(data, console, output_config)
+        else:
+            self._render_data(data, console)
+
+    def _render_views(
+        self,
+        data: Any,
+        console: Console,
+        output_config: OutputConfig,
+    ) -> None:
+        """Render one or more views from OutputConfig.
+
+        Args:
+            data: The full response data to extract views from.
+            console: Rich console for output.
+            output_config: Configuration containing view definitions.
+        """
+        views = output_config.views
+        multi = len(views) > 1
+        rendered_count = 0
+
+        for view in views:
+            view_data = extract_view_data(data, view.path) if view.path else data
+            if view_data is None:
+                LOG.debug(
+                    "multi_view_empty",
+                    view=view.name,
+                    path=view.path,
+                )
+                continue
+            if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
+                view_data = apply_column_filter(view_data, view.columns)
+            if multi:
+                if rendered_count > 0:
+                    console.print("")
+                title = view.title or view.name
+                console.print(Rule(title=title))
+            self._render_data(view_data, console)
+            rendered_count += 1
+
+    def _render_data(self, data: Any, console: Console) -> None:
+        """Render a single data object as a table.
+
+        Args:
+            data: Data to render (list of dicts, dict, or other).
+            console: Rich console for output.
+        """
         if isinstance(data, list) and data and isinstance(data[0], dict):
-            # List of dicts - display as table with columns
             headers = list(data[0].keys())
-
             table = Table(header_style="bold cyan", border_style="dim")
             for header in headers:
                 table.add_column(header)
-
             for row in data:
                 table.add_row(*[str(row.get(h, "")) for h in headers])
-
             console.print(table)
         elif isinstance(data, dict):
-            # Single dict - display as key/value pairs
             table = Table(show_header=False, border_style="dim")
             table.add_column("Key", style="cyan")
             table.add_column("Value")
-
             for key, value in data.items():
                 if isinstance(value, (dict, list)):
                     value = json.dumps(value, default=str)
                 table.add_row(str(key), str(value))
-
             console.print(table)
         else:
-            # Fallback to JSON for other types
             JsonFormatter().format(data, console)
 
 
