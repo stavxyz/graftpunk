@@ -9,6 +9,8 @@ import csv
 import importlib.metadata
 import io
 import json
+import os
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from rich.console import Console
@@ -187,6 +189,16 @@ class CsvFormatter:
             console.print(data)
             return
 
+        # Warn if multiple views exist — CSV can only render one
+        if output_config and len(output_config.views) > 1:
+            view_names = [v.name for v in output_config.views]
+            default = output_config.get_default_view()
+            default_name = default.name if default else view_names[0]
+            gp_console.warn(
+                f"Multiple views available ({', '.join(view_names)}). "
+                f"Use --view to select. Showing default view: {default_name}"
+            )
+
         # Apply output config path extraction BEFORE type conversion
         if output_config:
             view = output_config.get_default_view()
@@ -290,6 +302,23 @@ def discover_formatters() -> dict[str, OutputFormatter]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+_DEFAULT_DOWNLOADS_DIR = "gp-downloads"
+
+
+def get_downloads_dir() -> Path:
+    """Resolve the download directory for file-based output.
+
+    Uses the ``GP_DOWNLOADS_DIR`` environment variable if set,
+    otherwise defaults to ``./gp-downloads/``. Creates the
+    directory if it doesn't exist.
+
+    Returns:
+        Path to the downloads directory.
+    """
+    dir_path = Path(os.environ.get("GP_DOWNLOADS_DIR", _DEFAULT_DOWNLOADS_DIR))
+    dir_path.mkdir(parents=True, exist_ok=True)
+    return dir_path
 
 
 def format_output(
