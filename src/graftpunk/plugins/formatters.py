@@ -21,7 +21,12 @@ from rich.table import Table
 from graftpunk import console as gp_console
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
-from graftpunk.plugins.output_config import OutputConfig, apply_column_filter, extract_view_data
+from graftpunk.plugins.output_config import (
+    OutputConfig,
+    apply_column_filter,
+    extract_view_data,
+    parse_view_arg,
+)
 
 LOG = get_logger(__name__)
 
@@ -126,6 +131,9 @@ class TableFormatter:
                 console.print(Rule(title=title))
             self._render_data(view_data, console)
             rendered_count += 1
+
+        if rendered_count == 0:
+            LOG.warning("multi_view_all_empty", view_count=len(views))
 
     def _render_data(self, data: Any, console: Console) -> None:
         """Render a single data object as a table.
@@ -471,16 +479,17 @@ def format_output(
         data = data.data
 
     # Apply --view filtering
-    if view_args and output_config:
-        from graftpunk.plugins.output_config import parse_view_arg
-
-        names: list[str] = []
-        column_overrides: dict[str, list[str]] = {}
-        for arg in view_args:
-            name, cols = parse_view_arg(arg)
-            names.append(name)
-            if cols:
-                column_overrides[name] = cols
-        output_config = output_config.filter_views(names, column_overrides)
+    if view_args:
+        if output_config is None:
+            gp_console.warn("--view has no effect: this command does not define views.")
+        else:
+            names: list[str] = []
+            column_overrides: dict[str, list[str]] = {}
+            for arg in view_args:
+                name, cols = parse_view_arg(arg)
+                names.append(name)
+                if cols:
+                    column_overrides[name] = cols
+            output_config = output_config.filter_views(names, column_overrides)
 
     formatter.format(data, console, output_config=output_config)
