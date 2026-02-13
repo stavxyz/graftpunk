@@ -802,9 +802,7 @@ class TestTableFormatterMultiView:
         )
         TableFormatter().format(data, console, output_config=cfg)
         rules = [
-            c[0][0]
-            for c in console.print.call_args_list
-            if c[0] and isinstance(c[0][0], Rule)
+            c[0][0] for c in console.print.call_args_list if c[0] and isinstance(c[0][0], Rule)
         ]
         assert len(rules) == 2
         assert rules[0].title == "items"
