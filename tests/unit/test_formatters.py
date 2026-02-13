@@ -782,6 +782,67 @@ class TestTableFormatterMultiView:
         assert table.row_count == 2
 
 
+class TestCsvFormatterMultiView:
+    """Tests for CsvFormatter multi-view warning behavior."""
+
+    def test_warns_when_multiple_views_unfiltered(self) -> None:
+        """CsvFormatter warns to stderr when OutputConfig has >1 view."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1, "name": "foo"}],
+            "page": [{"number": 0}],
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items", title="Items"),
+                ViewConfig(name="page", path="page", title="Page Info"),
+            ],
+            default_view="items",
+        )
+        with patch("graftpunk.plugins.formatters.gp_console") as mock_gp:
+            CsvFormatter().format(data, console, output_config=cfg)
+            mock_gp.warn.assert_called_once()
+            warning_msg = mock_gp.warn.call_args[0][0]
+            assert "items" in warning_msg
+            assert "page" in warning_msg
+            assert "--view" in warning_msg
+
+    def test_no_warning_for_single_view(self) -> None:
+        """CsvFormatter does not warn when OutputConfig has only 1 view."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo"}]
+        cfg = OutputConfig(views=[ViewConfig(name="items", title="Items")])
+        with patch("graftpunk.plugins.formatters.gp_console") as mock_gp:
+            CsvFormatter().format(data, console, output_config=cfg)
+            mock_gp.warn.assert_not_called()
+
+    def test_renders_default_view_when_multiple_views(self) -> None:
+        """CsvFormatter renders the default view data, not all views."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1, "name": "foo"}],
+            "page": [{"number": 0}],
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items", title="Items"),
+                ViewConfig(name="page", path="page", title="Page Info"),
+            ],
+            default_view="items",
+        )
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            CsvFormatter().format(data, console, output_config=cfg)
+        rows = _parse_csv_output(console)
+        assert rows[0] == ["id", "name"]
+        assert rows[1] == ["1", "foo"]
+
+
 class TestGetDownloadsDir:
     """Tests for the get_downloads_dir utility function."""
 
