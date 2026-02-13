@@ -45,6 +45,7 @@ dependencies = [
     "pyyaml>=6.0",
     "nodriver>=0.48",
     "brotli>=1.1.0",
+    "xlsxwriter>=3.0.0",
 ]
 
 [project.optional-dependencies]
