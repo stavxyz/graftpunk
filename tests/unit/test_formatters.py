@@ -19,6 +19,7 @@ from graftpunk.plugins.formatters import (
     OutputFormatter,
     RawFormatter,
     TableFormatter,
+    XlsxFormatter,
     discover_formatters,
     format_output,
     get_downloads_dir,
@@ -866,3 +867,113 @@ class TestGetDownloadsDir:
         result = get_downloads_dir()
         assert result == download_dir
         assert result.is_dir()
+
+
+class TestXlsxFormatter:
+    """Tests for the XlsxFormatter."""
+
+    def test_satisfies_protocol(self) -> None:
+        """XlsxFormatter satisfies the OutputFormatter protocol."""
+        assert isinstance(XlsxFormatter(), OutputFormatter)
+
+    def test_writes_xlsx_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """XlsxFormatter creates a .xlsx file in the downloads directory."""
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo"}, {"id": 2, "name": "bar"}]
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console") as mock_gp:
+            XlsxFormatter().format(data, console)
+            mock_gp.info.assert_called_once()
+            output_msg = mock_gp.info.call_args[0][0]
+            assert str(tmp_path) in output_msg
+            assert ".xlsx" in output_msg
+        xlsx_files = list(tmp_path.glob("*.xlsx"))
+        assert len(xlsx_files) == 1
+
+    def test_single_view_creates_named_worksheet(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A single view creates one worksheet with the view title."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {"items": [{"id": 1, "name": "foo"}]}
+        cfg = OutputConfig(
+            views=[ViewConfig(name="items", path="items", title="Products")],
+        )
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, console, output_config=cfg)
+        xlsx_files = list(tmp_path.glob("*.xlsx"))
+        assert len(xlsx_files) == 1
+
+    def test_multiple_views_creates_multiple_worksheets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Multiple views each become a separate worksheet."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1, "name": "foo"}],
+            "page": [{"number": 0, "totalPages": 5}],
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items", title="Products"),
+                ViewConfig(name="page", path="page", title="Page Info"),
+            ],
+        )
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, console, output_config=cfg)
+        xlsx_files = list(tmp_path.glob("*.xlsx"))
+        assert len(xlsx_files) == 1
+
+    def test_empty_data_still_creates_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty list still produces a valid .xlsx file."""
+        console = MagicMock(spec=Console)
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console") as mock_gp:
+            XlsxFormatter().format([], console)
+            mock_gp.info.assert_called_once()
+            output_msg = mock_gp.info.call_args[0][0]
+            assert ".xlsx" in output_msg
+
+    def test_single_dict_renders_as_key_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A plain dict is rendered as key-value pairs."""
+        console = MagicMock(spec=Console)
+        data = {"name": "Alice", "age": 30}
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, console)
+        xlsx_files = list(tmp_path.glob("*.xlsx"))
+        assert len(xlsx_files) == 1
+
+    def test_xlsx_in_builtin_formatters(self) -> None:
+        """XlsxFormatter is registered in BUILTIN_FORMATTERS."""
+        assert "xlsx" in BUILTIN_FORMATTERS
+
+    def test_column_filter_applied(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Column filters from OutputConfig are applied to xlsx output."""
+        from graftpunk.plugins import ColumnFilter, OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo", "desc": "long"}]
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(
+                    name="default",
+                    columns=ColumnFilter("include", ["id", "name"]),
+                ),
+            ],
+        )
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, console, output_config=cfg)
+        xlsx_files = list(tmp_path.glob("*.xlsx"))
+        assert len(xlsx_files) == 1

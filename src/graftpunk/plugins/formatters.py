@@ -258,11 +258,110 @@ class CsvFormatter:
         console.print(buf.getvalue(), end="")
 
 
+class XlsxFormatter:
+    """Output as an Excel XLSX file with one worksheet per view."""
+
+    name = "xlsx"
+
+    def format(
+        self,
+        data: Any,
+        console: Console,
+        output_config: OutputConfig | None = None,
+    ) -> None:
+        """Format data as an Excel XLSX file.
+
+        Creates a ``.xlsx`` workbook in the downloads directory. When
+        *output_config* contains views, each view becomes a separate
+        worksheet; otherwise a single ``Sheet1`` is written.
+
+        Args:
+            data: Response data to format.
+            console: Rich console (unused — output goes to a file).
+            output_config: Optional view configuration.
+        """
+        import datetime
+
+        import xlsxwriter
+
+        downloads_dir = get_downloads_dir()
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        filepath = downloads_dir / f"output-{timestamp}.xlsx"
+
+        workbook = xlsxwriter.Workbook(str(filepath))
+        bold = workbook.add_format({"bold": True})
+
+        if output_config and output_config.views:
+            for view in output_config.views:
+                view_data = extract_view_data(data, view.path) if view.path else data
+                if view_data is None:
+                    LOG.debug("xlsx_view_empty", view=view.name, path=view.path)
+                    continue
+                if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
+                    view_data = apply_column_filter(view_data, view.columns)
+                sheet_name = (view.title or view.name)[:31]
+                self._write_sheet(workbook, sheet_name, view_data, bold)
+        else:
+            self._write_sheet(workbook, "Sheet1", data, bold)
+
+        workbook.close()
+        gp_console.info(f"Saved: {filepath}")
+
+    def _write_sheet(
+        self,
+        workbook: Any,
+        sheet_name: str,
+        data: Any,
+        bold: Any,
+    ) -> None:
+        """Write data to a named worksheet.
+
+        Args:
+            workbook: An open xlsxwriter Workbook.
+            sheet_name: Name for the worksheet tab.
+            data: Data to write (list of dicts, dict, or scalar).
+            bold: A bold cell format for header rows.
+        """
+        worksheet = workbook.add_worksheet(sheet_name)
+
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            headers = list(data[0].keys())
+            for col, header in enumerate(headers):
+                worksheet.write(0, col, header, bold)
+            for row_idx, row in enumerate(data, start=1):
+                for col_idx, header in enumerate(headers):
+                    value = row.get(header, "")
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value, default=str)
+                    worksheet.write(row_idx, col_idx, value)
+            for col_idx, header in enumerate(headers):
+                max_len = len(header)
+                for row in data[:100]:
+                    val = str(row.get(header, ""))
+                    max_len = max(max_len, min(len(val), 50))
+                worksheet.set_column(col_idx, col_idx, max_len + 2)
+        elif isinstance(data, dict):
+            worksheet.write(0, 0, "Key", bold)
+            worksheet.write(0, 1, "Value", bold)
+            for row_idx, (key, value) in enumerate(data.items(), start=1):
+                worksheet.write(row_idx, 0, str(key))
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, default=str)
+                worksheet.write(row_idx, 1, value)
+            worksheet.set_column(0, 0, 20)
+            worksheet.set_column(1, 1, 40)
+        elif isinstance(data, list):
+            pass  # Empty list — just create the sheet
+        else:
+            worksheet.write(0, 0, str(data))
+
+
 BUILTIN_FORMATTERS: dict[str, OutputFormatter] = {
     "json": JsonFormatter(),
     "table": TableFormatter(),
     "raw": RawFormatter(),
     "csv": CsvFormatter(),
+    "xlsx": XlsxFormatter(),
 }
 
 
