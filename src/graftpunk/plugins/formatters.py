@@ -289,22 +289,24 @@ class XlsxFormatter:
         filepath = downloads_dir / f"output-{timestamp}.xlsx"
 
         workbook = xlsxwriter.Workbook(str(filepath))
-        bold = workbook.add_format({"bold": True})
+        try:
+            bold = workbook.add_format({"bold": True})
 
-        if output_config and output_config.views:
-            for view in output_config.views:
-                view_data = extract_view_data(data, view.path) if view.path else data
-                if view_data is None:
-                    LOG.debug("xlsx_view_empty", view=view.name, path=view.path)
-                    continue
-                if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
-                    view_data = apply_column_filter(view_data, view.columns)
-                sheet_name = (view.title or view.name)[:31]
-                self._write_sheet(workbook, sheet_name, view_data, bold)
-        else:
-            self._write_sheet(workbook, "Sheet1", data, bold)
-
-        workbook.close()
+            if output_config and output_config.views:
+                for view in output_config.views:
+                    view_data = extract_view_data(data, view.path) if view.path else data
+                    if view_data is None:
+                        LOG.debug("xlsx_view_empty", view=view.name, path=view.path)
+                        continue
+                    if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
+                        view_data = apply_column_filter(view_data, view.columns)
+                    # Excel worksheet names are limited to 31 characters
+                    sheet_name = (view.title or view.name)[:31]
+                    self._write_sheet(workbook, sheet_name, view_data, bold)
+            else:
+                self._write_sheet(workbook, "Sheet1", data, bold)
+        finally:
+            workbook.close()
         gp_console.info(f"Saved: {filepath}")
 
     def _write_sheet(
