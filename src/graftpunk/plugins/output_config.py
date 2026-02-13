@@ -96,6 +96,40 @@ class OutputConfig:
             return self.get_view(self.default_view)
         return self.views[0] if self.views else None
 
+    def filter_views(
+        self,
+        names: list[str],
+        column_overrides: dict[str, list[str]] | None = None,
+    ) -> "OutputConfig":
+        """Return a new OutputConfig with only the requested views.
+
+        Args:
+            names: View names to include, in the requested order.
+            column_overrides: Optional mapping of view name to column list.
+                Replaces the view's ColumnFilter with an include filter.
+
+        Returns:
+            New OutputConfig with filtered views.
+        """
+        overrides = column_overrides or {}
+        views_by_name = {v.name: v for v in self.views}
+        filtered: list[ViewConfig] = []
+        for name in names:
+            view = views_by_name.get(name)
+            if view is None:
+                LOG.debug("filter_views_unknown", name=name)
+                continue
+            if name in overrides:
+                view = ViewConfig(
+                    name=view.name,
+                    path=view.path,
+                    title=view.title,
+                    columns=ColumnFilter("include", overrides[name]),
+                    display=view.display,
+                )
+            filtered.append(view)
+        return OutputConfig(views=filtered)
+
 
 def parse_view_arg(arg: str) -> tuple[str, list[str]]:
     """Parse view argument string into name and column list.

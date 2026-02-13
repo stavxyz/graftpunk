@@ -183,6 +183,66 @@ class TestOutputConfig:
         assert cfg.get_default_view() is None
 
 
+class TestFilterViews:
+    def test_filter_by_name(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", title="Items"),
+                ViewConfig(name="page", title="Page Info"),
+                ViewConfig(name="facets", title="Facets"),
+            ],
+        )
+        filtered = cfg.filter_views(["items", "facets"])
+        assert len(filtered.views) == 2
+        assert filtered.views[0].name == "items"
+        assert filtered.views[1].name == "facets"
+
+    def test_filter_preserves_order_of_request(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", title="Items"),
+                ViewConfig(name="page", title="Page Info"),
+            ],
+        )
+        filtered = cfg.filter_views(["page", "items"])
+        assert filtered.views[0].name == "page"
+        assert filtered.views[1].name == "items"
+
+    def test_filter_unknown_names_skipped(self) -> None:
+        cfg = OutputConfig(views=[ViewConfig(name="items", title="Items")])
+        filtered = cfg.filter_views(["items", "nonexistent"])
+        assert len(filtered.views) == 1
+        assert filtered.views[0].name == "items"
+
+    def test_filter_with_column_overrides(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(
+                    name="items",
+                    columns=ColumnFilter("include", ["id", "name", "desc"]),
+                ),
+            ],
+        )
+        overrides = {"items": ["id", "name"]}
+        filtered = cfg.filter_views(["items"], column_overrides=overrides)
+        assert filtered.views[0].columns is not None
+        assert filtered.views[0].columns.columns == ["id", "name"]
+        assert filtered.views[0].columns.mode == "include"
+
+    def test_filter_empty_names_returns_empty(self) -> None:
+        cfg = OutputConfig(views=[ViewConfig(name="items", title="Items")])
+        filtered = cfg.filter_views([])
+        assert len(filtered.views) == 0
+
+    def test_filter_returns_new_instance(self) -> None:
+        cfg = OutputConfig(
+            views=[ViewConfig(name="items"), ViewConfig(name="page")],
+        )
+        filtered = cfg.filter_views(["items"])
+        assert len(cfg.views) == 2  # Original unchanged
+        assert len(filtered.views) == 1
+
+
 class TestParseViewArg:
     def test_name_and_columns(self) -> None:
         name, cols = parse_view_arg("items:id,name,brand")
