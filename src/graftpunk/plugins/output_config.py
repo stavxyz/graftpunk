@@ -4,7 +4,7 @@ Provides dataclasses for configuring how command output is filtered,
 formatted, and displayed across table, CSV, and other formats.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from graftpunk.logging import get_logger
@@ -109,7 +109,8 @@ class OutputConfig:
                 Replaces the view's ColumnFilter with an include filter.
 
         Returns:
-            New OutputConfig with filtered views.
+            New OutputConfig with filtered views. Preserves ``default_view``
+            if it appears in the filtered set.
         """
         overrides = column_overrides or {}
         views_by_name = {v.name: v for v in self.views}
@@ -120,15 +121,11 @@ class OutputConfig:
                 LOG.warning("filter_views_unknown", name=name, available=list(views_by_name))
                 continue
             if name in overrides:
-                view = ViewConfig(
-                    name=view.name,
-                    path=view.path,
-                    title=view.title,
-                    columns=ColumnFilter("include", overrides[name]),
-                    display=view.display,
-                )
+                view = replace(view, columns=ColumnFilter("include", overrides[name]))
             filtered.append(view)
-        return OutputConfig(views=filtered)
+        filtered_names = {v.name for v in filtered}
+        default = self.default_view if self.default_view in filtered_names else ""
+        return OutputConfig(views=filtered, default_view=default)
 
 
 def parse_view_arg(arg: str) -> tuple[str, list[str]]:
