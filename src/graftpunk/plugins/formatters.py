@@ -356,6 +356,8 @@ class XlsxFormatter:
                     if isinstance(value, (dict, list)):
                         value = json.dumps(value, default=str)
                     worksheet.write(row_idx, col_idx, value)
+            # Auto-size columns: sample first 100 rows for performance,
+            # cap cell width at 50 chars to prevent very wide columns.
             for col_idx, header in enumerate(headers):
                 max_len = len(header)
                 for row in data[:100]:
