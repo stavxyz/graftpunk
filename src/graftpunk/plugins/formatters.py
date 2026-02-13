@@ -35,7 +35,7 @@ LOG = get_logger(__name__)
 class OutputFormatter(Protocol):
     """Protocol for custom output formatters.
 
-    Implementations must expose a ``name`` property (used as the ``--format``
+    Implementations must expose a ``name`` attribute (used as the ``--format``
     flag value) and a ``format`` method that renders data to a Rich console.
     """
 
@@ -70,7 +70,6 @@ class JsonFormatter:
         console: Console,
         output_config: OutputConfig | None = None,
     ) -> None:
-        # JSON formatter ignores output_config - shows full data
         json_str = json.dumps(data, indent=2, default=str)
         console.print(JSON(json_str))
 
@@ -174,7 +173,6 @@ class RawFormatter:
         console: Console,
         output_config: OutputConfig | None = None,
     ) -> None:
-        # Raw formatter ignores output_config
         if isinstance(data, str):
             console.print(data)
         else:

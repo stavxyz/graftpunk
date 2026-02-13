@@ -47,11 +47,12 @@ class TestOutputFormatterProtocol:
     def test_csv_formatter_satisfies_protocol(self) -> None:
         assert isinstance(CsvFormatter(), OutputFormatter)
 
-    def test_builtin_formatters_has_all_four(self) -> None:
+    def test_builtin_formatters_has_all_five(self) -> None:
         assert "json" in BUILTIN_FORMATTERS
         assert "table" in BUILTIN_FORMATTERS
         assert "raw" in BUILTIN_FORMATTERS
         assert "csv" in BUILTIN_FORMATTERS
+        assert "xlsx" in BUILTIN_FORMATTERS
 
     def test_custom_class_satisfies_protocol(self) -> None:
         class YamlFormatter:
@@ -784,7 +785,7 @@ class TestTableFormatterMultiView:
 
 
 class TestCsvFormatterMultiView:
-    """Tests for CsvFormatter multi-view warning behavior."""
+    """Tests for CsvFormatter behavior with multi-view OutputConfig."""
 
     def test_warns_when_multiple_views_unfiltered(self) -> None:
         """CsvFormatter warns to stderr when OutputConfig has >1 view."""

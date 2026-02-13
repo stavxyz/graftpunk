@@ -202,7 +202,7 @@ def _create_plugin_command(
             ["--view"],
             multiple=True,
             default=(),
-            help="Select view(s) to render (NAME or NAME:COL1,COL2,...)",
+            help="Select view(s) to render; repeatable (NAME or NAME:COL1,COL2,...)",
         )
     )
 
