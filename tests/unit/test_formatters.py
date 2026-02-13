@@ -783,6 +783,50 @@ class TestTableFormatterMultiView:
         assert isinstance(table, Table)
         assert table.row_count == 2
 
+    def test_title_fallback_to_name(self) -> None:
+        """Multi-view Rule header falls back to view name when title is empty."""
+        from rich.rule import Rule
+
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1}],
+            "page": [{"number": 0}],
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items"),
+                ViewConfig(name="page", path="page"),
+            ],
+        )
+        TableFormatter().format(data, console, output_config=cfg)
+        rules = [
+            c[0][0]
+            for c in console.print.call_args_list
+            if c[0] and isinstance(c[0][0], Rule)
+        ]
+        assert len(rules) == 2
+        assert rules[0].title == "items"
+        assert rules[1].title == "page"
+
+    def test_all_views_empty_logs_warning(self) -> None:
+        """When all views yield None data, a warning is logged."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {"other": "value"}
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="a", path="missing_a"),
+                ViewConfig(name="b", path="missing_b"),
+            ],
+        )
+        with patch("graftpunk.plugins.formatters.LOG") as mock_log:
+            TableFormatter().format(data, console, output_config=cfg)
+            mock_log.warning.assert_called_once()
+            assert mock_log.warning.call_args[0][0] == "multi_view_all_empty"
+
 
 class TestCsvFormatterMultiView:
     """Tests for CsvFormatter behavior with multi-view OutputConfig."""
@@ -979,6 +1023,104 @@ class TestXlsxFormatter:
         xlsx_files = list(tmp_path.glob("*.xlsx"))
         assert len(xlsx_files) == 1
 
+    def test_list_of_dicts_content(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify XLSX cell content for a list of dicts."""
+        import openpyxl
+
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, console)
+        xlsx_file = next(tmp_path.glob("*.xlsx"))
+        wb = openpyxl.load_workbook(xlsx_file)
+        ws = wb.active
+        assert ws.cell(1, 1).value == "id"
+        assert ws.cell(1, 2).value == "name"
+        assert ws.cell(2, 1).value == 1
+        assert ws.cell(2, 2).value == "Alice"
+        assert ws.cell(3, 1).value == 2
+        assert ws.cell(3, 2).value == "Bob"
+        wb.close()
+
+    def test_multi_view_worksheet_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Multiple views create worksheets with correct names and content."""
+        import openpyxl
+
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1, "name": "foo"}],
+            "meta": {"version": "2.0"},
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items", title="Products"),
+                ViewConfig(name="meta", path="meta", title="Metadata"),
+            ],
+        )
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, console, output_config=cfg)
+        xlsx_file = next(tmp_path.glob("*.xlsx"))
+        wb = openpyxl.load_workbook(xlsx_file)
+        assert wb.sheetnames == ["Products", "Metadata"]
+        ws_items = wb["Products"]
+        assert ws_items.cell(1, 1).value == "id"
+        assert ws_items.cell(2, 1).value == 1
+        ws_meta = wb["Metadata"]
+        assert ws_meta.cell(1, 1).value == "Key"
+        assert ws_meta.cell(2, 1).value == "version"
+        assert ws_meta.cell(2, 2).value == "2.0"
+        wb.close()
+
+    def test_sheet_name_truncated_to_31_chars(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Worksheet name is truncated to Excel's 31-character limit."""
+        import openpyxl
+
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        long_title = "A" * 50
+        data = {"items": [{"id": 1}]}
+        cfg = OutputConfig(
+            views=[ViewConfig(name="items", path="items", title=long_title)],
+        )
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, console, output_config=cfg)
+        xlsx_file = next(tmp_path.glob("*.xlsx"))
+        wb = openpyxl.load_workbook(xlsx_file)
+        assert wb.sheetnames == ["A" * 31]
+        wb.close()
+
+    def test_empty_view_skipped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Views whose path yields None are skipped (no empty worksheet)."""
+        import openpyxl
+
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {"items": [{"id": 1}]}
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items", title="Items"),
+                ViewConfig(name="missing", path="nonexistent", title="Missing"),
+            ],
+        )
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        with patch("graftpunk.plugins.formatters.gp_console"):
+            XlsxFormatter().format(data, console, output_config=cfg)
+        xlsx_file = next(tmp_path.glob("*.xlsx"))
+        wb = openpyxl.load_workbook(xlsx_file)
+        assert wb.sheetnames == ["Items"]
+        wb.close()
+
 
 class TestFormatOutputViewArgs:
     """Tests for format_output with --view filtering."""
@@ -1042,13 +1184,30 @@ class TestFormatOutputViewArgs:
         tables = [a for a in printed_args if isinstance(a, Table)]
         assert len(tables) == 2
 
-    def test_view_args_no_output_config_ignored(self) -> None:
-        """view_args with no output_config is harmlessly ignored."""
+    def test_view_args_no_output_config_warns(self) -> None:
+        """view_args with no output_config warns and still renders."""
         console = MagicMock(spec=Console)
         result = CommandResult(data={"key": "value"})
-        format_output(result, "table", console, view_args=("items",))
-        # Should still render (no crash)
+        with patch("graftpunk.plugins.formatters.gp_console") as mock_gp:
+            format_output(result, "table", console, view_args=("items",))
+            mock_gp.warn.assert_called_once()
         console.print.assert_called()
+
+    def test_nonexistent_view_name_logs_warning(self) -> None:
+        """format_output with a nonexistent view name triggers a warning log."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        cfg = OutputConfig(views=[ViewConfig(name="items", path="items")])
+        result = CommandResult(
+            data={"items": [{"id": 1}]},
+            output_config=cfg,
+            format_hint="table",
+        )
+        with patch("graftpunk.plugins.output_config.LOG") as mock_log:
+            format_output(result, "table", console, view_args=("nonexistent",))
+            mock_log.warning.assert_called()
+            assert mock_log.warning.call_args[0][0] == "filter_views_unknown"
 
     def test_backward_compat_no_view_args(self) -> None:
         """format_output without view_args still works (backward compat)."""

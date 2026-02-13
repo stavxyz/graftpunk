@@ -242,6 +242,49 @@ class TestFilterViews:
         assert len(cfg.views) == 2  # Original unchanged
         assert len(filtered.views) == 1
 
+    def test_filter_with_column_overrides_preserves_other_fields(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(
+                    name="items",
+                    path="results.items",
+                    title="Product Items",
+                    columns=ColumnFilter("include", ["id", "name", "desc"]),
+                    display=[ColumnDisplayConfig(name="id", header="ID")],
+                ),
+            ],
+        )
+        overrides = {"items": ["id", "name"]}
+        filtered = cfg.filter_views(["items"], column_overrides=overrides)
+        view = filtered.views[0]
+        assert view.path == "results.items"
+        assert view.title == "Product Items"
+        assert len(view.display) == 1
+        assert view.display[0].header == "ID"
+
+    def test_filter_preserves_default_view_when_in_filtered_set(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items"),
+                ViewConfig(name="page"),
+                ViewConfig(name="facets"),
+            ],
+            default_view="page",
+        )
+        filtered = cfg.filter_views(["items", "page"])
+        assert filtered.default_view == "page"
+
+    def test_filter_drops_default_view_when_not_in_filtered_set(self) -> None:
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items"),
+                ViewConfig(name="page"),
+            ],
+            default_view="page",
+        )
+        filtered = cfg.filter_views(["items"])
+        assert filtered.default_view == ""
+
 
 class TestParseViewArg:
     def test_name_and_columns(self) -> None:
