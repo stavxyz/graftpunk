@@ -977,3 +977,81 @@ class TestXlsxFormatter:
             XlsxFormatter().format(data, console, output_config=cfg)
         xlsx_files = list(tmp_path.glob("*.xlsx"))
         assert len(xlsx_files) == 1
+
+
+class TestFormatOutputViewArgs:
+    """Tests for format_output with --view filtering."""
+
+    def test_view_args_filters_to_single_view(self) -> None:
+        """format_output with view_args filters OutputConfig to one view."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1, "name": "foo"}],
+            "page": [{"number": 0}],
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items", title="Items"),
+                ViewConfig(name="page", path="page", title="Page Info"),
+            ],
+        )
+        result = CommandResult(data=data, output_config=cfg, format_hint="table")
+        format_output(result, "table", console, view_args=("items",))
+        # Should render only one table (items), not two
+        printed_args = [c[0][0] for c in console.print.call_args_list]
+        tables = [a for a in printed_args if isinstance(a, Table)]
+        assert len(tables) == 1
+
+    def test_view_args_with_column_override(self) -> None:
+        """format_output with view_args applies column override."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = [{"id": 1, "name": "foo", "desc": "long"}]
+        cfg = OutputConfig(
+            views=[ViewConfig(name="default")],
+        )
+        result = CommandResult(data=data, output_config=cfg, format_hint="table")
+        format_output(result, "table", console, view_args=("default:id,name",))
+        printed_args = [c[0][0] for c in console.print.call_args_list]
+        tables = [a for a in printed_args if isinstance(a, Table)]
+        assert len(tables) == 1
+        assert len(tables[0].columns) == 2  # Only id, name
+
+    def test_view_args_empty_tuple_renders_all(self) -> None:
+        """Empty view_args renders all views (default behavior)."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        console = MagicMock(spec=Console)
+        data = {
+            "items": [{"id": 1}],
+            "page": [{"number": 0}],
+        }
+        cfg = OutputConfig(
+            views=[
+                ViewConfig(name="items", path="items", title="Items"),
+                ViewConfig(name="page", path="page", title="Page Info"),
+            ],
+        )
+        result = CommandResult(data=data, output_config=cfg, format_hint="table")
+        format_output(result, "table", console, view_args=())
+        printed_args = [c[0][0] for c in console.print.call_args_list]
+        tables = [a for a in printed_args if isinstance(a, Table)]
+        assert len(tables) == 2
+
+    def test_view_args_no_output_config_ignored(self) -> None:
+        """view_args with no output_config is harmlessly ignored."""
+        console = MagicMock(spec=Console)
+        result = CommandResult(data={"key": "value"})
+        format_output(result, "table", console, view_args=("items",))
+        # Should still render (no crash)
+        console.print.assert_called()
+
+    def test_backward_compat_no_view_args(self) -> None:
+        """format_output without view_args still works (backward compat)."""
+        console = MagicMock(spec=Console)
+        result = CommandResult(data={"key": "value"})
+        format_output(result, "json", console)
+        console.print.assert_called_once()

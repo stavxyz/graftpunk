@@ -426,6 +426,7 @@ def format_output(
     console: Console,
     *,
     user_explicit: bool = False,
+    view_args: tuple[str, ...] = (),
 ) -> None:
     """Format and print command output.
 
@@ -437,6 +438,9 @@ def format_output(
         user_explicit: True when the user explicitly passed ``--format``/``-f``
             on the command line. When True, ``format_hint`` on a
             ``CommandResult`` is ignored so the user's choice wins.
+        view_args: Tuple of ``--view`` CLI values. Each element is either
+            a view name (``"items"``) or ``"name:col1,col2,..."`` to
+            restrict columns. Empty tuple means show all views.
     """
     formatters = discover_formatters()
     formatter = formatters.get(format_type)
@@ -463,5 +467,18 @@ def format_output(
                     available=sorted(formatters.keys()),
                 )
         data = data.data
+
+    # Apply --view filtering
+    if view_args and output_config:
+        from graftpunk.plugins.output_config import parse_view_arg
+
+        names: list[str] = []
+        column_overrides: dict[str, list[str]] = {}
+        for arg in view_args:
+            name, cols = parse_view_arg(arg)
+            names.append(name)
+            if cols:
+                column_overrides[name] = cols
+        output_config = output_config.filter_views(names, column_overrides)
 
     formatter.format(data, console, output_config=output_config)
