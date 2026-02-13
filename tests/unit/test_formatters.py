@@ -3,8 +3,10 @@
 import csv
 import io
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from rich.console import Console
 from rich.json import JSON
 from rich.table import Table
@@ -19,6 +21,7 @@ from graftpunk.plugins.formatters import (
     TableFormatter,
     discover_formatters,
     format_output,
+    get_downloads_dir,
 )
 
 
@@ -777,3 +780,28 @@ class TestTableFormatterMultiView:
         table = console.print.call_args[0][0]
         assert isinstance(table, Table)
         assert table.row_count == 2
+
+
+class TestGetDownloadsDir:
+    """Tests for the get_downloads_dir utility function."""
+
+    def test_default_directory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default download directory is ./gp-downloads/."""
+        monkeypatch.delenv("GP_DOWNLOADS_DIR", raising=False)
+        result = get_downloads_dir()
+        assert result == Path("gp-downloads")
+
+    def test_env_var_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GP_DOWNLOADS_DIR env var overrides default."""
+        custom_dir = tmp_path / "my-downloads"
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(custom_dir))
+        result = get_downloads_dir()
+        assert result == custom_dir
+
+    def test_creates_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Download directory is created if it doesn't exist."""
+        download_dir = tmp_path / "downloads"
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(download_dir))
+        result = get_downloads_dir()
+        assert result == download_dir
+        assert result.is_dir()
