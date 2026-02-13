@@ -282,7 +282,7 @@ class XlsxFormatter:
         """
         import datetime
 
-        import xlsxwriter
+        import xlsxwriter  # type: ignore[unresolved-import]
 
         downloads_dir = get_downloads_dir()
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
