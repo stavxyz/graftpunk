@@ -161,7 +161,8 @@ Sessions expire. graftpunk can keep them alive in the background with the keepal
 | 📡 | **Observability** | Capture screenshots, HAR files, console logs, and network traffic. Interactive mode lets you browse manually while recording. |
 | 🔄 | **Keepalive Daemon** | Background daemon pings sites periodically to prevent session timeout. |
 | 🛠️ | **Ad-hoc HTTP** | `gp http get -s <session> <url>` — make one-off authenticated requests without writing a plugin. |
-| 🎨 | **Beautiful CLI** | Rich terminal output with spinners, tables, and color. `--format json\|table\|raw` on all commands. |
+| 📊 | **Multi-View Output** | Commands can define multiple views on response data. Table format renders each view as a separate section. XLSX creates one worksheet per view. `--view` lets you cherry-pick views and columns. |
+| 🎨 | **Beautiful CLI** | Rich terminal output with spinners, tables, and color. `--format json\|table\|csv\|xlsx\|raw` on all commands. |
 
 ## Plugins
 

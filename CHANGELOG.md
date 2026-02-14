@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Multi-View Rendering**: Commands can define multiple named views on their response data, rendered as separate sections (#80)
+  - **TableFormatter**: Multiple views render as Rich tables with titled Rule section headers; single views render clean without headers
+  - **XlsxFormatter** (new): Writes `.xlsx` files with one worksheet per view, bold headers, and auto-sized columns. Files saved to `GP_DOWNLOADS_DIR` (default: `./gp-downloads/`)
+  - **CsvFormatter**: Warns when multiple views exist and renders the default view; suggests `--view` to select
+  - **`--view` CLI option**: Select specific views and columns — `--view items`, `--view items:id,name`. Repeatable for multiple views
+  - **`OutputConfig.filter_views()`**: Filter views by name with optional per-view column overrides
+  - **`_resolve_view_data()` helper**: Shared extraction+filtering for consistent behavior across all formatters
+
+### Changed
+
+- `OutputConfig.views`, `ColumnFilter.columns`, and `ViewConfig.display` fields changed from `list` to `tuple` on frozen dataclasses, preventing post-construction mutation
+- `get_downloads_dir()` now resolves paths to absolute via `Path.resolve()` for deterministic behavior regardless of working directory
+- `CommandResult.format_hint` Literal type now includes `"xlsx"`
+
 ## [1.5.0] - 2026-02-11
 
 ### Fixed

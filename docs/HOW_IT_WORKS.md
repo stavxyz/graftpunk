@@ -552,13 +552,107 @@ commands:
 
 ### Output Formatting
 
-All plugin commands support `--format` / `-f`:
+All plugin commands support `--format` / `-f` with five built-in formatters:
 
-- **`json`** (default) — Pretty-printed JSON
-- **`table`** — Tabular format for list data
-- **`raw`** — Unformatted output
+- **`json`** (default) — Pretty-printed JSON with syntax highlighting via Rich.
+- **`table`** — Rich tables. Lists of dicts become rows; single dicts become key-value pairs. Falls back to JSON for other types.
+- **`csv`** — Comma-separated values. Headers are the union of all row keys. Nested dicts/lists are JSON-serialized in cells.
+- **`xlsx`** — Excel workbook saved to disk. Files are written to `GP_DOWNLOADS_DIR` (default: `./gp-downloads/`), with bold headers and auto-sized columns.
+- **`raw`** — Strings pass through directly; other types are JSON-dumped without highlighting.
 
-If a command returns a `CommandResult`, the `data` field is extracted for formatting.
+Third-party formatters can be registered via the `graftpunk.formatters` entry-point group. They must implement the `OutputFormatter` protocol (a `name` property and a `format()` method).
+
+If a command returns a `CommandResult`, the `data` field is extracted for formatting and the optional `format_hint` is applied (see [Output Format Precedence](#output-format-precedence)).
+
+#### Multi-View Rendering
+
+Commands can define multiple **views** on their response data using `OutputConfig` with one or more `ViewConfig` entries. Each view selects a subset of the data by path and optionally filters columns.
+
+How each formatter handles multiple views:
+
+| Formatter | Multi-View Behavior |
+|-----------|-------------------|
+| **table** | Renders each view as a separate section with a titled Rule header. Single views render without a header. Empty views are silently skipped. |
+| **xlsx** | Creates one worksheet per view. Worksheet tabs use `view.title` or `view.name` (truncated to 31 chars for Excel compatibility). |
+| **csv** | Warns that only one view can render and uses the default view. Suggests `--view` to select a specific view. |
+| **json** | Ignores views — always renders the full data structure. |
+| **raw** | Ignores views — renders as-is. |
+
+Example from a Python plugin:
+
+```python
+from graftpunk.plugins.cli_plugin import CommandResult
+from graftpunk.plugins.output_config import OutputConfig, ViewConfig
+
+@command(help="List invoices with summary")
+def list(self, ctx: CommandContext):
+    data = ctx.session.get(f"{self.base_url}/api/invoices").json()
+    return CommandResult(
+        data=data,
+        format_hint="table",
+        output_config=OutputConfig(
+            views=[
+                ViewConfig(name="invoices", path="items", title="Invoices"),
+                ViewConfig(name="summary", path="totals", title="Summary"),
+            ],
+            default_view="invoices",
+        ),
+    )
+```
+
+#### The `--view` CLI Option
+
+Users can select specific views and restrict columns with `--view`:
+
+```bash
+# Show only the "invoices" view
+gp mysite list --view invoices
+
+# Show "invoices" view with only id and amount columns
+gp mysite list --view invoices:id,amount
+
+# Show multiple views
+gp mysite list --view invoices --view summary
+```
+
+The `--view` option is repeatable. When used with a single view, section headers are suppressed for cleaner output.
+
+#### OutputConfig Types
+
+All output configuration types are frozen dataclasses with tuple fields to prevent post-construction mutation.
+
+- **`OutputConfig`** — Container for views. Fields: `views: tuple[ViewConfig, ...]`, `default_view: str`. Provides `filter_views(names, column_overrides)` for `--view` support and `get_default_view()` for single-view formatters like CSV.
+- **`ViewConfig`** — A single named view. Fields: `name`, `path` (dot-separated extraction path), `title` (display label), `columns` (optional `ColumnFilter`), `display` (column display config).
+- **`ColumnFilter`** — Include or exclude columns. Fields: `mode: Literal["include", "exclude"]`, `columns: tuple[str, ...]`.
+
+YAML plugins configure views declaratively:
+
+```yaml
+commands:
+  list:
+    url: "/api/invoices"
+    output:
+      default_view: invoices
+      views:
+        - name: invoices
+          path: items
+          title: "Invoice List"
+          columns:
+            mode: include
+            columns: [id, date, amount, status]
+        - name: summary
+          path: totals
+          title: "Summary"
+```
+
+#### Downloads Directory
+
+File-based formatters (XLSX) write to a downloads directory:
+
+- **`GP_DOWNLOADS_DIR`** environment variable overrides the default
+- Default: `./gp-downloads/` (resolved to an absolute path)
+- The directory is created automatically if it doesn't exist
+- Files are named `output-YYYYMMDD-HHMMSS.xlsx`
 
 ---
 
@@ -843,9 +937,11 @@ The Python template at `~/.config/graftpunk/plugins/` provides a starting point 
 
 The output format for command results follows this precedence (highest to lowest):
 
-1. **`--format` CLI flag** — Explicit user choice always wins.
+1. **`--format` CLI flag** — Explicit user choice always wins. Detection uses Click's `get_parameter_source()` to distinguish "user passed `-f json`" from "json is the default."
 2. **`CommandResult.format_hint`** — Plugin author's suggested format (only applies when the user has not explicitly passed `--format`/`-f` on the command line).
 3. **Default (`json`)** — Pretty-printed JSON.
+
+The `--view` option applies after format selection. It filters `OutputConfig.views` by name and optionally overrides columns per view. If the command has no `output_config`, `--view` is ignored with a warning.
 
 Example:
 
@@ -997,6 +1093,10 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `PluginConfig` | `plugins.cli_plugin` | Yes | Canonical config: `site_name`, `session_name`, `help_text`, `base_url`, `requires_session`, `backend`, `api_version`, `username_envvar`, `password_envvar`, `login_config`, `plugin_version`, `plugin_author`, `plugin_url` |
 | `PluginParamSpec` | `plugins.cli_plugin` | Yes | CLI parameter specification |
 | `CLIPluginProtocol` | `plugins.cli_plugin` | N/A (Protocol) | Structural typing contract for all plugins |
+| `OutputConfig` | `plugins.output_config` | Yes | Multi-view output configuration: `views`, `default_view`. Provides `filter_views()` and `get_default_view()` |
+| `ViewConfig` | `plugins.output_config` | Yes | Single named view: `name`, `path`, `title`, `columns`, `display` |
+| `ColumnFilter` | `plugins.output_config` | Yes | Column include/exclude filter: `mode`, `columns` |
+| `OutputFormatter` | `plugins.formatters` | N/A (Protocol) | Protocol for output formatters: `name` property, `format()` method |
 | `CommandError` | `exceptions` | N/A | Expected command failure with user-facing message |
 | `PluginError` | `exceptions` | N/A | Infrastructure/plugin loading failure |
 | `ObservabilityContext` | `observe.context` | No | Plugin-facing observability handle |
@@ -1019,6 +1119,9 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `execute_plugin_command()` | `client` | Shared execution core with retry/rate-limit and `CommandResult` normalization. Used by the CLI callback. |
 | `discover_all_plugins()` | `plugins` | Cached discovery across all sources (entry points, YAML, Python files). Returns tuple of plugins. |
 | `get_plugin()` | `plugins` | Look up a single plugin by `site_name`. Raises `PluginError` if unknown. |
+| `format_output()` | `plugins.formatters` | Format and print data. Resolves formatter, unwraps `CommandResult`, applies `--view` filtering. |
+| `discover_formatters()` | `plugins.formatters` | Discover built-in + entry-point formatters. Returns dict of name → formatter. |
+| `get_downloads_dir()` | `plugins.formatters` | Resolve download directory for file-based formatters (XLSX). Uses `GP_DOWNLOADS_DIR` or `./gp-downloads/`. |
 
 ---
 
@@ -1029,7 +1132,7 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 - **TTL expiration** — Sessions expire after a configurable time (`GRAFTPUNK_SESSION_TTL_HOURS`).
 - **Path validation** — Observability storage validates session names and run IDs against a strict allowlist pattern to prevent path traversal. Screenshot labels are sanitized.
 - **Narrow exception handling** — Selenium operations catch `WebDriverException` specifically, not bare `Exception`. This prevents masking programming errors.
-- **Frozen value types** — Configuration and metadata types (`PluginConfig`, `LoginConfig`, `LoginStep`, `CommandMetadata`, `PluginParamSpec`, discovery error types) are frozen dataclasses, preventing accidental mutation after construction.
+- **Frozen value types** — Configuration and metadata types (`PluginConfig`, `LoginConfig`, `LoginStep`, `CommandMetadata`, `PluginParamSpec`, `OutputConfig`, `ViewConfig`, `ColumnFilter`, discovery error types) are frozen dataclasses with tuple container fields, preventing accidental mutation after construction.
 - **Local-only by default** — Sessions are stored on the local filesystem. The Supabase backend is opt-in.
 
 **Note:** Session deserialization uses `dill` (pickle). Only load sessions from trusted sources — this is by design for local-machine use.
