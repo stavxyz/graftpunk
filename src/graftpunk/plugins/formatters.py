@@ -439,7 +439,7 @@ def get_downloads_dir() -> Path:
     Returns:
         Path to the downloads directory.
     """
-    dir_path = Path(os.environ.get("GP_DOWNLOADS_DIR", _DEFAULT_DOWNLOADS_DIR))
+    dir_path = Path(os.environ.get("GP_DOWNLOADS_DIR", _DEFAULT_DOWNLOADS_DIR)).resolve()
     dir_path.mkdir(parents=True, exist_ok=True)
     return dir_path
 
