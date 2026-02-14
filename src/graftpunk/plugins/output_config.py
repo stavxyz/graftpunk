@@ -4,7 +4,7 @@ Provides dataclasses for configuring how command output is filtered,
 formatted, and displayed across table, CSV, and other formats.
 """
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from graftpunk.logging import get_logger
@@ -22,12 +22,12 @@ class ColumnFilter:
     """
 
     mode: Literal["include", "exclude"]
-    columns: list[str]
+    columns: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if self.mode not in ("include", "exclude"):
             raise ValueError(f"mode must be 'include' or 'exclude', got {self.mode!r}")
-        object.__setattr__(self, "columns", list(self.columns))
+        object.__setattr__(self, "columns", tuple(self.columns))
 
 
 @dataclass(frozen=True)
@@ -56,23 +56,23 @@ class ViewConfig:
     path: str = ""
     title: str = ""
     columns: ColumnFilter | None = None
-    display: list[ColumnDisplayConfig] = field(default_factory=list)
+    display: tuple[ColumnDisplayConfig, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("name must be non-empty")
-        object.__setattr__(self, "display", list(self.display))
+        object.__setattr__(self, "display", tuple(self.display))
 
 
 @dataclass(frozen=True)
 class OutputConfig:
     """Complete output configuration for a command."""
 
-    views: list[ViewConfig] = field(default_factory=list)
+    views: tuple[ViewConfig, ...] = ()
     default_view: str = ""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "views", list(self.views))
+        object.__setattr__(self, "views", tuple(self.views))
         # Validate unique view names
         view_names = [v.name for v in self.views]
         if len(view_names) != len(set(view_names)):
@@ -121,11 +121,11 @@ class OutputConfig:
                 LOG.warning("filter_views_unknown", name=name, available=list(views_by_name))
                 continue
             if name in overrides:
-                view = replace(view, columns=ColumnFilter("include", overrides[name]))
+                view = replace(view, columns=ColumnFilter("include", tuple(overrides[name])))
             filtered.append(view)
         filtered_names = {v.name for v in filtered}
         default = self.default_view if self.default_view in filtered_names else ""
-        return OutputConfig(views=filtered, default_view=default)
+        return OutputConfig(views=tuple(filtered), default_view=default)
 
 
 def parse_view_arg(arg: str) -> tuple[str, list[str]]:
