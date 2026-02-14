@@ -74,6 +74,8 @@ def _resolve_view_data(data: Any, view: ViewConfig) -> Any | None:
         return None
     if isinstance(view_data, list) and view_data and isinstance(view_data[0], dict):
         view_data = apply_column_filter(view_data, view.columns)
+    elif isinstance(view_data, dict) and view.columns:
+        view_data = apply_column_filter([view_data], view.columns)[0]
     return view_data
 
 
