@@ -445,10 +445,16 @@ def load_session_for_api(name: str) -> requests.Session:
     # The pickled BrowserSession (a requests.Session) carries default headers
     # like User-Agent: python-requests/2.x — copying them overwrites the
     # Chrome UA that _apply_browser_identity() set during GraftpunkSession init.
+    # Also skip ephemeral security headers (e.g. X-CSRF-TOKEN from Akamai Bot
+    # Manager) that are per-request and would cause stale-blob rejections.
+    _ephemeral_headers = frozenset({"x-csrf-token"})
     if hasattr(browser_session, "headers"):
         _requests_defaults = requests.utils.default_headers()
         for key, value in browser_session.headers.items():
             if key in _requests_defaults and _requests_defaults[key] == value:
+                continue
+            if key.lower() in _ephemeral_headers:
+                LOG.debug("skipped_ephemeral_header", header=key)
                 continue
             api_session.headers[key] = value
         LOG.debug("copied_headers_from_session")
