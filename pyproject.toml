@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graftpunk"
-version = "1.6.0"
+version = "1.6.1"
 description = "Turn any website into an API. Graft scriptable access onto authenticated web services."
 readme = "README.md"
 license = "MIT"

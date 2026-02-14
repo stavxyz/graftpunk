@@ -47,7 +47,7 @@ from graftpunk.session import BrowserSession
 from graftpunk.stealth import create_stealth_driver
 from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 __all__ = [
     # Version
