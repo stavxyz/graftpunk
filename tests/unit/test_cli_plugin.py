@@ -1433,6 +1433,18 @@ class TestPluginParamSpecClickKwargs:
         assert result.exit_code == 0
         assert captured["output"] is None
 
+    def test_click_kwargs_can_override_default_by_design(self) -> None:
+        """click_kwargs intentionally overrides explicit params including default.
+
+        The docstring documents this: "overriding explicit values on conflict".
+        This test ensures the escape hatch works for advanced plugin authors
+        who need full control over Click kwargs.
+        """
+        spec = PluginParamSpec.option(
+            "name", type=str, required=False, click_kwargs={"default": "custom"}
+        )
+        assert spec.click_kwargs["default"] == "custom"
+
 
 class TestCommandMetadataClickKwargs:
     """Tests for CommandMetadata with click_kwargs passthrough."""

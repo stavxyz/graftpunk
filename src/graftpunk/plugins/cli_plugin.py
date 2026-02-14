@@ -123,9 +123,10 @@ class PluginParamSpec:
                 f"default={default!r}. A required option cannot have a default value."
             )
         kw: dict[str, Any] = {"type": type, "required": required}
-        # When required=True, omit default so Click uses its internal
-        # sentinel (Sentinel.UNSET) and properly enforces the requirement.
-        # Passing default=None defeats Click's required enforcement.
+        # When required=True, omit default so Click keeps its internal
+        # UNSET sentinel as the default and properly enforces the requirement.
+        # Passing default=None explicitly satisfies Click's missing-value
+        # check, bypassing required enforcement.
         if not required:
             kw["default"] = default
         if help:
@@ -165,8 +166,10 @@ class PluginParamSpec:
                 f"default={default!r}. A required argument cannot have a default value."
             )
         kw: dict[str, Any] = {"type": type, "required": required}
-        # When required=True, omit default so Click uses its internal
-        # sentinel and properly enforces the requirement.
+        # When required=True, omit default so Click keeps its internal
+        # UNSET sentinel as the default and properly enforces the requirement.
+        # Passing default=None explicitly satisfies Click's missing-value
+        # check, bypassing required enforcement.
         if not required:
             kw["default"] = default
         if click_kwargs:

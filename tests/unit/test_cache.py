@@ -724,6 +724,26 @@ class TestLoadSessionForApiGraftpunkSession:
         assert api_session.headers.get("X-Custom-Header") == "keep-me"
         assert "X-CSRF-TOKEN" not in api_session.headers
 
+    def test_load_session_for_api_skips_x_csrf_token_case_insensitive(self, monkeypatch):
+        """Ephemeral header filtering is case-insensitive via .lower()."""
+        import requests
+
+        mock_session = MagicMock()
+        mock_session.cookies = requests.cookies.RequestsCookieJar()
+        mock_session.headers = {
+            **requests.utils.default_headers(),
+            "X-Custom-Header": "keep-me",
+            "x-Csrf-Token": "mixed-case-sensor-blob",
+        }
+        mock_session._gp_header_roles = {}
+        del mock_session._gp_cached_tokens
+        monkeypatch.setattr("graftpunk.cache.load_session", lambda name: mock_session)
+
+        api_session = load_session_for_api("test")
+
+        assert api_session.headers.get("X-Custom-Header") == "keep-me"
+        assert "x-Csrf-Token" not in api_session.headers
+
     def test_load_session_for_api_no_token_cache(self, monkeypatch):
         """API session works fine when browser session has no token cache."""
         import requests
