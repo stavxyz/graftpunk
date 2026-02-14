@@ -5,6 +5,7 @@ import io
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from rich.console import Console
 from rich.json import JSON
 from rich.table import Table
@@ -91,14 +92,12 @@ class TestFormatOutput:
         rows = _parse_csv_output(console)
         assert rows[0] == ["name", "age"]
 
-    def test_unknown_format_falls_back_to_json(self) -> None:
-        """Unknown format names fall back to the json formatter."""
+    def test_unknown_format_raises_value_error(self) -> None:
+        """Unknown format names raise ValueError instead of silent fallback."""
         console = MagicMock(spec=Console)
         data = {"key": "value"}
-        format_output(data, "nonexistent", console)
-        console.print.assert_called_once()
-        arg = console.print.call_args[0][0]
-        assert isinstance(arg, JSON)
+        with pytest.raises(ValueError, match="Unknown output format 'nonexistent'"):
+            format_output(data, "nonexistent", console)
 
 
 class TestJsonFormatter:

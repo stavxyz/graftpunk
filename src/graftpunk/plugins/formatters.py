@@ -471,12 +471,8 @@ def format_output(
     formatters = discover_formatters()
     formatter = formatters.get(format_type)
     if formatter is None:
-        LOG.warning("unknown_format", format=format_type)
-        gp_console.warn(
-            f"Unknown format '{format_type}'. Falling back to JSON. "
-            f"Available formats: {', '.join(sorted(formatters.keys()))}"
-        )
-        formatter = formatters["json"]  # fallback
+        available = ", ".join(sorted(formatters.keys()))
+        raise ValueError(f"Unknown output format {format_type!r}. Available: {available}")
 
     output_config = None
 
