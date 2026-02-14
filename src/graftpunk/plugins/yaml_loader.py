@@ -185,7 +185,7 @@ def _parse_output_config(config_dict: dict[str, Any] | None) -> OutputConfig | N
         )
 
     return OutputConfig(
-        views=views,
+        views=tuple(views),
         default_view=config_dict.get("default_view", ""),
     )
 

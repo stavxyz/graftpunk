@@ -871,7 +871,7 @@ class TestYAMLOutputConfig:
         assert config.views[0].path == "results.items"
         assert config.views[0].columns is not None
         assert config.views[0].columns.mode == "include"
-        assert config.views[0].columns.columns == ["id", "name"]
+        assert config.views[0].columns.columns == ("id", "name")
 
     def test_parse_output_config_explicit_include_mode(self) -> None:
         """Test parsing output_config with explicit include mode."""
@@ -890,7 +890,7 @@ class TestYAMLOutputConfig:
         assert config is not None
         assert config.views[0].columns is not None
         assert config.views[0].columns.mode == "include"
-        assert config.views[0].columns.columns == ["id", "name", "price"]
+        assert config.views[0].columns.columns == ("id", "name", "price")
 
     def test_parse_output_config_exclude_mode(self) -> None:
         """Test parsing output_config with exclude mode."""
@@ -909,7 +909,7 @@ class TestYAMLOutputConfig:
         assert config is not None
         assert config.views[0].columns is not None
         assert config.views[0].columns.mode == "exclude"
-        assert config.views[0].columns.columns == ["description", "metadata"]
+        assert config.views[0].columns.columns == ("description", "metadata")
 
     def test_parse_output_config_default_view(self) -> None:
         """Test parsing output_config with default_view."""
@@ -952,7 +952,7 @@ class TestYAMLOutputConfig:
 
         config = _parse_output_config({"views": []})
         assert config is not None
-        assert config.views == []
+        assert config.views == ()
 
     def test_yaml_command_with_output_config(self, tmp_path: Path) -> None:
         """Test that YAML command includes output_config in parsed result."""
@@ -981,7 +981,7 @@ commands:
         assert cmd.output_config.views[0].name == "items"
         assert cmd.output_config.views[0].path == "results.items"
         assert cmd.output_config.views[0].columns is not None
-        assert cmd.output_config.views[0].columns.columns == ["id", "name", "price"]
+        assert cmd.output_config.views[0].columns.columns == ("id", "name", "price")
 
     def test_yaml_command_with_explicit_exclude_mode(self, tmp_path: Path) -> None:
         """Test YAML command with explicit exclude mode in output_config."""
@@ -1006,7 +1006,7 @@ commands:
         assert commands[0].output_config is not None
         assert commands[0].output_config.views[0].columns is not None
         assert commands[0].output_config.views[0].columns.mode == "exclude"
-        assert commands[0].output_config.views[0].columns.columns == ["internal_id", "metadata"]
+        assert commands[0].output_config.views[0].columns.columns == ("internal_id", "metadata")
 
     def test_yaml_command_without_output_config(self, tmp_path: Path) -> None:
         """Test that YAML command without output_config has None."""

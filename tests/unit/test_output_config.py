@@ -18,12 +18,12 @@ class TestColumnFilter:
     def test_include_mode(self) -> None:
         cf = ColumnFilter(mode="include", columns=["id", "name"])
         assert cf.mode == "include"
-        assert cf.columns == ["id", "name"]
+        assert cf.columns == ("id", "name")
 
     def test_exclude_mode(self) -> None:
         cf = ColumnFilter(mode="exclude", columns=["description"])
         assert cf.mode == "exclude"
-        assert cf.columns == ["description"]
+        assert cf.columns == ("description",)
 
     def test_invalid_mode_rejected(self) -> None:
         with pytest.raises(ValueError, match="mode must be"):
@@ -31,11 +31,11 @@ class TestColumnFilter:
 
     def test_empty_columns_allowed(self) -> None:
         cf = ColumnFilter(mode="include", columns=[])
-        assert cf.columns == []
+        assert cf.columns == ()
 
-    def test_accepts_tuple_input(self) -> None:
-        cf = ColumnFilter(mode="include", columns=("id", "name"))
-        assert cf.columns == ["id", "name"]
+    def test_accepts_list_input(self) -> None:
+        cf = ColumnFilter(mode="include", columns=["id", "name"])
+        assert cf.columns == ("id", "name")
 
 
 class TestColumnDisplayConfig:
@@ -78,7 +78,7 @@ class TestViewConfig:
         assert view.path == ""
         assert view.title == ""
         assert view.columns is None
-        assert view.display == []
+        assert view.display == ()
 
     def test_full_view(self) -> None:
         view = ViewConfig(
@@ -103,7 +103,7 @@ class TestViewConfig:
 class TestOutputConfig:
     def test_empty_config(self) -> None:
         cfg = OutputConfig()
-        assert cfg.views == []
+        assert cfg.views == ()
         assert cfg.default_view == ""
 
     def test_single_view(self) -> None:
@@ -226,7 +226,7 @@ class TestFilterViews:
         overrides = {"items": ["id", "name"]}
         filtered = cfg.filter_views(["items"], column_overrides=overrides)
         assert filtered.views[0].columns is not None
-        assert filtered.views[0].columns.columns == ["id", "name"]
+        assert filtered.views[0].columns.columns == ("id", "name")
         assert filtered.views[0].columns.mode == "include"
 
     def test_filter_empty_names_returns_empty(self) -> None:
