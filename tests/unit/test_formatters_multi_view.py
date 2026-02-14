@@ -262,10 +262,11 @@ class TestGetDownloadsDir:
     """Tests for the get_downloads_dir utility function."""
 
     def test_default_directory(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Default download directory is ./gp-downloads/."""
+        """Default download directory is ./gp-downloads/ resolved to absolute."""
         monkeypatch.delenv("GP_DOWNLOADS_DIR", raising=False)
         result = get_downloads_dir()
-        assert result == Path("gp-downloads")
+        assert result == Path("gp-downloads").resolve()
+        assert result.is_absolute()
 
     def test_env_var_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """GP_DOWNLOADS_DIR env var overrides default."""
