@@ -122,7 +122,12 @@ class PluginParamSpec:
                 f"PluginParamSpec.option({name!r}): required=True conflicts with "
                 f"default={default!r}. A required option cannot have a default value."
             )
-        kw: dict[str, Any] = {"type": type, "required": required, "default": default}
+        kw: dict[str, Any] = {"type": type, "required": required}
+        # When required=True, omit default so Click uses its internal
+        # sentinel (Sentinel.UNSET) and properly enforces the requirement.
+        # Passing default=None defeats Click's required enforcement.
+        if not required:
+            kw["default"] = default
         if help:
             kw["help"] = help
         # Smart default: bool with default=False -> is_flag=True
@@ -159,7 +164,11 @@ class PluginParamSpec:
                 f"PluginParamSpec.argument({name!r}): required=True conflicts with "
                 f"default={default!r}. A required argument cannot have a default value."
             )
-        kw: dict[str, Any] = {"type": type, "required": required, "default": default}
+        kw: dict[str, Any] = {"type": type, "required": required}
+        # When required=True, omit default so Click uses its internal
+        # sentinel and properly enforces the requirement.
+        if not required:
+            kw["default"] = default
         if click_kwargs:
             kw.update(click_kwargs)
         return PluginParamSpec(name=name, is_option=False, click_kwargs=kw)

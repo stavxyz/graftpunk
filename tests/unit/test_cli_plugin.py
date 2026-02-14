@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import click
+import click.testing
 import pytest
 
 from graftpunk.plugins.cli_plugin import (
@@ -1347,10 +1349,12 @@ class TestPluginParamSpecClickKwargs:
         assert spec.click_kwargs["default"] is None
 
     def test_argument_default_values(self) -> None:
-        """argument() defaults: type=str, required=True, default=None."""
+        """argument() defaults: type=str, required=True, default omitted."""
         spec = PluginParamSpec.argument("arg")
         assert spec.click_kwargs["type"] is str
         assert spec.click_kwargs["required"] is True
+        # default is omitted when required=True so Click enforces the requirement
+        assert "default" not in spec.click_kwargs
 
     def test_click_kwargs_overrides_explicit_params(self) -> None:
         """When click_kwargs conflicts with explicit params, click_kwargs wins."""
@@ -1386,16 +1390,48 @@ class TestPluginParamSpecClickKwargs:
             PluginParamSpec.argument("file", type=str, required=True, default="out.txt")
 
     def test_option_required_with_none_default_ok(self) -> None:
-        """option() allows required=True when default is None (the sentinel)."""
+        """option() allows required=True when default is None; default omitted from kwargs."""
         spec = PluginParamSpec.option("name", type=str, required=True)
         assert spec.click_kwargs["required"] is True
-        assert spec.click_kwargs["default"] is None
+        # default is omitted when required=True so Click enforces the requirement
+        assert "default" not in spec.click_kwargs
 
     def test_argument_not_required_with_default_ok(self) -> None:
         """argument() allows required=False with a default value."""
         spec = PluginParamSpec.argument("output", type=str, required=False, default="out.txt")
         assert spec.click_kwargs["required"] is False
         assert spec.click_kwargs["default"] == "out.txt"
+
+    def test_required_argument_enforced_by_click(self) -> None:
+        """Click raises MissingParameter when required argument is omitted."""
+        spec = PluginParamSpec.argument("account_id", type=str)
+        param = click.Argument(["account_id"], **spec.click_kwargs)
+        cmd = click.Command("test", params=[param], callback=lambda **kw: kw)
+        runner = click.testing.CliRunner()
+        result = runner.invoke(cmd, [])
+        assert result.exit_code != 0
+        assert "Missing argument" in result.output
+
+    def test_required_option_enforced_by_click(self) -> None:
+        """Click raises MissingParameter when required option is omitted."""
+        spec = PluginParamSpec.option("name", type=str, required=True)
+        param = click.Option(["--name"], **spec.click_kwargs)
+        cmd = click.Command("test", params=[param], callback=lambda **kw: kw)
+        runner = click.testing.CliRunner()
+        result = runner.invoke(cmd, [])
+        assert result.exit_code != 0
+        assert "Missing option" in result.output
+
+    def test_optional_argument_accepts_omission(self) -> None:
+        """Optional argument with default=None passes None to handler."""
+        spec = PluginParamSpec.argument("output", type=str, required=False, default=None)
+        param = click.Argument(["output"], **spec.click_kwargs)
+        captured = {}
+        cmd = click.Command("test", params=[param], callback=lambda **kw: captured.update(kw))
+        runner = click.testing.CliRunner()
+        result = runner.invoke(cmd, [])
+        assert result.exit_code == 0
+        assert captured["output"] is None
 
 
 class TestCommandMetadataClickKwargs:
