@@ -111,6 +111,28 @@ def test_excluded_headers_contains_referer_and_origin():
     assert "origin" in EXCLUDED_HEADERS
 
 
+def test_excluded_headers_contains_x_csrf_token():
+    """x-csrf-token excluded — ephemeral Akamai Bot Manager sensor blob."""
+    assert "x-csrf-token" in EXCLUDED_HEADERS
+
+
+def test_extract_header_roles_excludes_x_csrf_token():
+    """X-CSRF-TOKEN from login POST should not leak into role profiles."""
+    request_map = {
+        "1": {
+            "headers": {
+                "sec-fetch-mode": "cors",
+                "Accept": "application/json",
+                "X-CSRF-TOKEN": "base64-akamai-sensor-blob",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        },
+    }
+    roles = extract_header_roles(request_map)
+    assert "xhr" in roles
+    assert "X-CSRF-TOKEN" not in roles["xhr"]
+
+
 # --- extract_header_roles() tests ---
 
 

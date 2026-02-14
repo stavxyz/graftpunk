@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 # Headers excluded from roles: request-specific (cookie, host, referer, origin,
-# content-length, content-type) or HTTP/2 pseudo-headers (managed by transport layer)
+# content-length, content-type), ephemeral security tokens, or HTTP/2
+# pseudo-headers (managed by transport layer).
 EXCLUDED_HEADERS: frozenset[str] = frozenset(
     {
         "cookie",
@@ -14,6 +15,7 @@ EXCLUDED_HEADERS: frozenset[str] = frozenset(
         "content-type",
         "referer",
         "origin",
+        "x-csrf-token",
         ":authority",
         ":method",
         ":path",
