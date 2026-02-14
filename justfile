@@ -251,7 +251,12 @@ bump VERSION:
         sed -i '' "s/## \[Unreleased\]/## [${NEW}] - ${DATE}/" CHANGELOG.md
         echo "✅ CHANGELOG.md: [Unreleased] → [${NEW}] - ${DATE}"
     else
-        echo "⚠️  No [Unreleased] section found in CHANGELOG.md — skipping"
+        echo "❌ CHANGELOG.md has no [Unreleased] section."
+        echo "   Add your changes under '## [Unreleased]' before bumping."
+        echo "   The bump will rename it to '## [${NEW}] - ${DATE}'."
+        # Revert pyproject.toml and __init__.py changes before exiting
+        git checkout -- pyproject.toml src/graftpunk/__init__.py
+        exit 1
     fi
 
     # Update lockfile
