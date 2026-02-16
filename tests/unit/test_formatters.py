@@ -20,6 +20,7 @@ from graftpunk.plugins.formatters import (
     PdfFormatter,
     RawFormatter,
     TableFormatter,
+    XlsxFormatter,
     discover_formatters,
     format_output,
 )
@@ -764,3 +765,152 @@ class TestPdfFormatter:
         assert len(pdf_files) == 1
         content = pdf_files[0].read_bytes()
         assert content[:5] == b"%PDF-"
+
+
+class TestOutputPath:
+    """Tests for the --output/-o file output functionality."""
+
+    def test_json_to_file(self, tmp_path: Path) -> None:
+        """JsonFormatter with output_path writes JSON to file."""
+        outfile = tmp_path / "out.json"
+        console = MagicMock(spec=Console)
+        data = {"name": "Alice", "age": 30}
+
+        JsonFormatter().format(data, console, output_path=str(outfile))
+
+        assert outfile.exists()
+        content = outfile.read_text()
+        # The file should contain the JSON data (Rich JSON rendering
+        # includes syntax highlighting markup, but the data is present)
+        assert "Alice" in content
+        assert "30" in content
+        # Console mock should NOT have been called (file console used instead)
+        console.print.assert_not_called()
+
+    def test_table_to_file(self, tmp_path: Path) -> None:
+        """TableFormatter with output_path writes table to file."""
+        outfile = tmp_path / "out.txt"
+        console = MagicMock(spec=Console)
+        data = [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
+
+        TableFormatter().format(data, console, output_path=str(outfile))
+
+        assert outfile.exists()
+        content = outfile.read_text()
+        assert "Alice" in content
+        assert "Bob" in content
+        console.print.assert_not_called()
+
+    def test_csv_to_file(self, tmp_path: Path) -> None:
+        """CsvFormatter with output_path writes CSV to file."""
+        outfile = tmp_path / "out.csv"
+        console = MagicMock(spec=Console)
+        data = [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
+
+        CsvFormatter().format(data, console, output_path=str(outfile))
+
+        assert outfile.exists()
+        content = outfile.read_text()
+        rows = list(csv.reader(io.StringIO(content)))
+        assert rows[0] == ["name", "age"]
+        assert rows[1] == ["Alice", "30"]
+        assert rows[2] == ["Bob", "25"]
+        # Console should not be used for output
+        console.print.assert_not_called()
+
+    def test_raw_to_file(self, tmp_path: Path) -> None:
+        """RawFormatter with output_path writes text to file."""
+        outfile = tmp_path / "out.txt"
+        console = MagicMock(spec=Console)
+
+        RawFormatter().format("hello world", console, output_path=str(outfile))
+
+        assert outfile.exists()
+        content = outfile.read_text()
+        assert "hello world" in content
+        console.print.assert_not_called()
+
+    def test_xlsx_uses_output_path(self, tmp_path: Path) -> None:
+        """XlsxFormatter with output_path uses the provided path."""
+        outfile = tmp_path / "custom.xlsx"
+        console = MagicMock(spec=Console)
+        data = [{"name": "Alice", "age": "30"}]
+
+        XlsxFormatter().format(data, console, output_path=str(outfile))
+
+        assert outfile.exists()
+        assert outfile.stat().st_size > 0
+
+    def test_pdf_uses_output_path(self, tmp_path: Path) -> None:
+        """PdfFormatter with output_path uses the provided path."""
+        outfile = tmp_path / "custom.pdf"
+        console = MagicMock(spec=Console)
+        data = [{"name": "Alice", "age": "30"}]
+
+        PdfFormatter().format(data, console, output_path=str(outfile))
+
+        assert outfile.exists()
+        content = outfile.read_bytes()
+        assert content[:5] == b"%PDF-"
+
+    def test_xlsx_auto_generates_without_output_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """XlsxFormatter without output_path auto-generates in downloads dir."""
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        console = MagicMock(spec=Console)
+        data = [{"name": "Alice", "age": "30"}]
+
+        XlsxFormatter().format(data, console)
+
+        xlsx_files = list(tmp_path.glob("*.xlsx"))
+        assert len(xlsx_files) == 1
+
+    def test_pdf_auto_generates_without_output_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PdfFormatter without output_path auto-generates in downloads dir."""
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        console = MagicMock(spec=Console)
+        data = [{"name": "Alice", "age": "30"}]
+
+        PdfFormatter().format(data, console)
+
+        pdf_files = list(tmp_path.glob("*.pdf"))
+        assert len(pdf_files) == 1
+
+    def test_format_output_passes_output_path(self, tmp_path: Path) -> None:
+        """format_output passes output_path through to the formatter."""
+        outfile = tmp_path / "out.csv"
+        console = MagicMock(spec=Console)
+        data = [{"name": "Alice"}]
+
+        format_output(data, "csv", console, output_path=str(outfile))
+
+        assert outfile.exists()
+        content = outfile.read_text()
+        rows = list(csv.reader(io.StringIO(content)))
+        assert rows[0] == ["name"]
+        assert rows[1] == ["Alice"]
+
+    def test_output_path_creates_parent_dirs(self, tmp_path: Path) -> None:
+        """output_path creates parent directories if they don't exist."""
+        outfile = tmp_path / "subdir" / "nested" / "out.json"
+        console = MagicMock(spec=Console)
+        data = {"key": "value"}
+
+        JsonFormatter().format(data, console, output_path=str(outfile))
+
+        assert outfile.exists()
+        assert "value" in outfile.read_text()
+
+    def test_output_path_empty_string_uses_console(self) -> None:
+        """Empty output_path string means output goes to console (default)."""
+        console = MagicMock(spec=Console)
+        data = {"key": "value"}
+
+        JsonFormatter().format(data, console, output_path="")
+
+        console.print.assert_called_once()
+        arg = console.print.call_args[0][0]
+        assert isinstance(arg, JSON)
