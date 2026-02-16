@@ -49,8 +49,19 @@ class OutputFormatter(Protocol):
         data: Any,
         console: Console,
         output_config: OutputConfig | None = None,
+        output_path: str = "",
     ) -> None:
-        """Format and print data to the console."""
+        """Format and print data to the console.
+
+        Args:
+            data: Response data to format.
+            console: Rich console for output.
+            output_config: Optional view/column configuration.
+            output_path: If non-empty, write output to this file path
+                instead of the console. Text formatters create the file
+                and write text; file formatters (xlsx, pdf) use this as
+                the destination path.
+        """
         ...
 
 
@@ -93,8 +104,18 @@ class JsonFormatter:
         data: Any,
         console: Console,
         output_config: OutputConfig | None = None,
+        output_path: str = "",
     ) -> None:
         json_str = json.dumps(data, indent=2, default=str)
+        if output_path:
+            from pathlib import Path
+
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            buf = io.StringIO()
+            file_console = Console(file=buf, width=200)
+            file_console.print(JSON(json_str))
+            Path(output_path).write_text(buf.getvalue())
+            return
         console.print(JSON(json_str))
 
 
@@ -108,16 +129,28 @@ class TableFormatter:
         data: Any,
         console: Console,
         output_config: OutputConfig | None = None,
+        output_path: str = "",
     ) -> None:
         """Format data as a rich table.
 
         When output_config has views, delegates to _render_views for
         multi-view rendering. Otherwise renders a single auto-detected table.
         """
+        buf: io.StringIO | None = None
+        if output_path:
+            from pathlib import Path
+
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            buf = io.StringIO()
+            console = Console(file=buf, width=200)
         if output_config and output_config.views:
             self._render_views(data, console, output_config)
         else:
             self._render_data(data, console)
+        if output_path and buf is not None:
+            from pathlib import Path
+
+            Path(output_path).write_text(buf.getvalue())
 
     def _render_views(
         self,
@@ -189,11 +222,23 @@ class RawFormatter:
         data: Any,
         console: Console,
         output_config: OutputConfig | None = None,
+        output_path: str = "",
     ) -> None:
+        buf: io.StringIO | None = None
+        if output_path:
+            from pathlib import Path
+
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            buf = io.StringIO()
+            console = Console(file=buf, width=200)
         if isinstance(data, str):
             console.print(data)
         else:
             console.print(json.dumps(data, default=str))
+        if output_path and buf is not None:
+            from pathlib import Path
+
+            Path(output_path).write_text(buf.getvalue())
 
 
 class CsvFormatter:
@@ -206,6 +251,7 @@ class CsvFormatter:
         data: Any,
         console: Console,
         output_config: OutputConfig | None = None,
+        output_path: str = "",
     ) -> None:
         if isinstance(data, str):
             LOG.debug("csv_format_string_passthrough", length=len(data))
@@ -278,6 +324,13 @@ class CsvFormatter:
                     for v in (row.get(h, "") for h in headers)
                 ]
             )
+        if output_path:
+            from pathlib import Path
+
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_text(buf.getvalue())
+            gp_console.info(f"Saved: {output_path}")
+            return
         console.print(buf.getvalue(), end="")
 
 
@@ -291,25 +344,34 @@ class XlsxFormatter:
         data: Any,
         console: Console,
         output_config: OutputConfig | None = None,
+        output_path: str = "",
     ) -> None:
         """Format data as an Excel XLSX file.
 
-        Creates a ``.xlsx`` workbook in the downloads directory. When
-        *output_config* contains views, each view becomes a separate
-        worksheet; otherwise a single ``Sheet1`` is written.
+        Creates a ``.xlsx`` workbook in the downloads directory (or at
+        *output_path* if provided). When *output_config* contains views,
+        each view becomes a separate worksheet; otherwise a single
+        ``Sheet1`` is written.
 
         Args:
             data: Response data to format.
             console: Rich console (unused — output goes to a file).
             output_config: Optional view configuration.
+            output_path: If non-empty, use this path instead of
+                auto-generating one in the downloads directory.
         """
         import datetime
+        from pathlib import Path
 
         import xlsxwriter  # type: ignore[unresolved-import]
 
-        downloads_dir = get_downloads_dir()
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        filepath = downloads_dir / f"output-{timestamp}.xlsx"
+        if output_path:
+            filepath = Path(output_path)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            downloads_dir = get_downloads_dir()
+            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            filepath = downloads_dir / f"output-{timestamp}.xlsx"
 
         workbook = xlsxwriter.Workbook(str(filepath))
         try:
@@ -391,19 +453,24 @@ class PdfFormatter:
         data: Any,
         console: Console,
         output_config: OutputConfig | None = None,
+        output_path: str = "",
     ) -> None:
         """Format data as a PDF file with a table layout.
 
-        Creates a ``.pdf`` file in the downloads directory using
-        ``json_to_pdf`` from the export module. When *output_config*
-        contains views, the default view is applied before rendering.
+        Creates a ``.pdf`` file in the downloads directory (or at
+        *output_path* if provided) using ``json_to_pdf`` from the
+        export module. When *output_config* contains views, the
+        default view is applied before rendering.
 
         Args:
             data: Response data to format.
             console: Rich console (unused -- output goes to a file).
             output_config: Optional view configuration.
+            output_path: If non-empty, use this path instead of
+                auto-generating one in the downloads directory.
         """
         import datetime
+        from pathlib import Path
 
         from graftpunk.plugins.export import json_to_pdf
 
@@ -423,9 +490,13 @@ class PdfFormatter:
             JsonFormatter().format(data, console)
             return
 
-        downloads_dir = get_downloads_dir()
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        filepath = downloads_dir / f"output-{timestamp}.pdf"
+        if output_path:
+            filepath = Path(output_path)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            downloads_dir = get_downloads_dir()
+            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            filepath = downloads_dir / f"output-{timestamp}.pdf"
 
         json_to_pdf(data, filepath)
         gp_console.info(f"Saved: {filepath}")
@@ -481,6 +552,7 @@ def format_output(
     *,
     user_explicit: bool = False,
     view_args: tuple[str, ...] = (),
+    output_path: str = "",
 ) -> None:
     """Format and print command output.
 
@@ -495,6 +567,8 @@ def format_output(
         view_args: Tuple of ``--view`` CLI values. Each element is either
             a view name (``"items"``) or ``"name:col1,col2,..."`` to
             restrict columns. Empty tuple means show all views.
+        output_path: If non-empty, write output to this file path instead
+            of the console. Passed through to the formatter.
     """
     formatters = discover_formatters()
     formatter = formatters.get(format_type)
@@ -532,4 +606,4 @@ def format_output(
                     column_overrides[name] = cols
             output_config = output_config.filter_views(names, column_overrides)
 
-    formatter.format(data, console, output_config=output_config)
+    formatter.format(data, console, output_config=output_config, output_path=output_path)

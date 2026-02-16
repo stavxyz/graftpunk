@@ -205,12 +205,21 @@ def _create_plugin_command(
             help="Select view(s) to render; repeatable (NAME or NAME:COL1,COL2,...)",
         )
     )
+    params.append(
+        click.Option(
+            ["--output", "-o"],
+            type=click.Path(),
+            default="",
+            help="Write output to file instead of stdout",
+        )
+    )
 
     def callback(**kwargs: Any) -> None:
         from graftpunk.client import execute_plugin_command
 
         output_format = kwargs.pop("format", "json")
         view_args: tuple[str, ...] = kwargs.pop("view", ())
+        output_path: str = kwargs.pop("output", "")
         click_ctx = click.get_current_context(silent=True)
         # Only COMMANDLINE counts as explicit — DEFAULT and DEFAULT_MAP
         # mean the user did not actively choose, so the hint should apply.
@@ -349,6 +358,7 @@ def _create_plugin_command(
                 _format_console,
                 user_explicit=format_is_explicit,
                 view_args=view_args,
+                output_path=output_path,
             )
         except (SystemExit, KeyboardInterrupt):
             raise
