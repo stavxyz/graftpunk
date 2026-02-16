@@ -44,7 +44,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import requests
 
@@ -274,8 +274,9 @@ class CommandResult:
 
     data: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    format_hint: Literal["json", "table", "raw", "csv", "xlsx"] | None = None
+    format_hint: Literal["json", "table", "raw", "csv", "xlsx", "pdf"] | None = None
     output_config: OutputConfig | None = None
+    format_overrides: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -693,6 +694,11 @@ class SitePlugin:
     backend: Literal["selenium", "nodriver"] = "selenium"
     login_config: LoginConfig | None = None
     token_config: TokenConfig | None = None
+
+    # Plugin-wide format overrides: keys are format names, values are
+    # OutputFormatter instances or callable factories.  Overrides core
+    # formatters for all commands in this plugin.
+    format_overrides: ClassVar[dict[str, Any]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Apply shared defaults and store canonical config via metaclass behavior.

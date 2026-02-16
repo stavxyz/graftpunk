@@ -192,9 +192,9 @@ def _create_plugin_command(
     params.append(
         click.Option(
             ["--format", "-f"],
-            type=click.Choice(available_formats),
+            type=str,
             default="json",
-            help=f"Output format: {', '.join(available_formats)}",
+            help=f"Output format (built-in: {', '.join(available_formats)})",
         )
     )
     params.append(
@@ -352,6 +352,9 @@ def _create_plugin_command(
             if (cmd_spec.saves_session or ctx._session_dirty) and needs_session:
                 update_session_cookies(session, plugin.session_name)
 
+            # Extract plugin-wide format overrides (if any)
+            plugin_formatters = getattr(plugin, "format_overrides", None) or {}
+
             format_output(
                 result,
                 output_format,
@@ -359,6 +362,7 @@ def _create_plugin_command(
                 user_explicit=format_is_explicit,
                 view_args=view_args,
                 output_path=output_path,
+                plugin_formatters=plugin_formatters if plugin_formatters else None,
             )
         except (SystemExit, KeyboardInterrupt):
             raise
