@@ -1,10 +1,10 @@
 """Generic data-to-file export utilities.
 
-Provides ``flatten_dict``, ``json_to_csv``, ``json_to_pdf``, and
-``get_downloads_dir`` for converting lists of flat or nested dicts
-into CSV and PDF files respectively, and resolving the download
-directory for file-based output.  Intended for use by plugin
-download/export commands.
+Provides ``flatten_dict``, ``ordered_keys``, ``json_to_csv``,
+``json_to_pdf``, and ``get_downloads_dir`` for converting lists of
+flat or nested dicts into CSV and PDF files respectively, and
+resolving the download directory for file-based output.  Intended
+for use by plugin download/export commands.
 """
 
 from __future__ import annotations
@@ -14,6 +14,10 @@ import json
 import os
 from pathlib import Path
 from typing import cast
+
+from graftpunk.logging import get_logger
+
+LOG = get_logger(__name__)
 
 _DEFAULT_DOWNLOADS_DIR = "gp-downloads"
 
@@ -150,9 +154,12 @@ def json_to_pdf(
     # Vendor header with optional logo
     if vendor or logo:
         logo_w = 0
-        if logo and Path(logo).exists():
-            logo_w = 25
-            pdf.image(str(logo), x=pdf.l_margin, y=pdf.get_y(), w=logo_w)
+        if logo:
+            if Path(logo).exists():
+                logo_w = 25
+                pdf.image(str(logo), x=pdf.l_margin, y=pdf.get_y(), w=logo_w)
+            else:
+                LOG.warning("pdf_logo_not_found", path=str(logo))
 
         x_after_logo = pdf.l_margin + logo_w + (3 if logo_w else 0)
         pdf.set_x(x_after_logo)
@@ -165,12 +172,10 @@ def json_to_pdf(
             pdf.set_font("Helvetica", size=8)
             pdf.cell(text=vendor_info, new_x="LMARGIN", new_y="NEXT")
 
-        # Ensure we're below the logo
         if logo_w:
-            pdf.set_y(max(pdf.get_y(), pdf.get_y() + 2))
+            pdf.set_y(pdf.get_y() + 2)
         pdf.ln(2)
 
-        # Horizontal rule
         y = pdf.get_y()
         pdf.line(pdf.l_margin, y, pdf.l_margin + page_width, y)
         pdf.ln(4)
