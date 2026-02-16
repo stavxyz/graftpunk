@@ -23,6 +23,12 @@ from urllib.parse import urlparse
 
 from graftpunk.exceptions import CommandError, PluginError
 from graftpunk.logging import get_logger
+from graftpunk.plugins.export import (
+    flatten_dict,
+    json_to_csv,
+    json_to_pdf,
+    ordered_keys,
+)
 from graftpunk.plugins.cli_plugin import (
     SUPPORTED_API_VERSIONS,
     CLIPluginProtocol,
@@ -93,6 +99,11 @@ __all__ = [
     "auto_detect_columns",
     "extract_view_data",
     "parse_view_arg",
+    # Export utilities
+    "flatten_dict",
+    "json_to_csv",
+    "json_to_pdf",
+    "ordered_keys",
     # Exceptions
     "CommandError",
     # Utilities
