@@ -1,16 +1,36 @@
 """Generic data-to-file export utilities.
 
-Provides ``flatten_dict``, ``json_to_csv``, and ``json_to_pdf`` for
-converting lists of flat or nested dicts into CSV and PDF files
-respectively. Intended for use by plugin download/export commands.
+Provides ``flatten_dict``, ``json_to_csv``, ``json_to_pdf``, and
+``get_downloads_dir`` for converting lists of flat or nested dicts
+into CSV and PDF files respectively, and resolving the download
+directory for file-based output.  Intended for use by plugin
+download/export commands.
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 from typing import cast
+
+_DEFAULT_DOWNLOADS_DIR = "gp-downloads"
+
+
+def get_downloads_dir() -> Path:
+    """Resolve the download directory for file-based output.
+
+    Uses the ``GP_DOWNLOADS_DIR`` environment variable if set,
+    otherwise defaults to ``./gp-downloads/``. Creates the
+    directory if it doesn't exist.
+
+    Returns:
+        Path to the downloads directory.
+    """
+    dir_path = Path(os.environ.get("GP_DOWNLOADS_DIR", _DEFAULT_DOWNLOADS_DIR)).resolve()
+    dir_path.mkdir(parents=True, exist_ok=True)
+    return dir_path
 
 
 def flatten_dict(
