@@ -553,8 +553,17 @@ def format_output(
     user_explicit: bool = False,
     view_args: tuple[str, ...] = (),
     output_path: str = "",
+    plugin_formatters: dict[str, Any] | None = None,
 ) -> None:
     """Format and print command output.
+
+    Formatter resolution follows a three-level override hierarchy:
+
+    1. **Per-command** (highest priority): ``CommandResult.format_overrides``
+    2. **Plugin-wide**: ``plugin_formatters`` parameter (from
+       ``SitePlugin.format_overrides``)
+    3. **Core** (lowest priority): built-in + entry-point formatters
+       discovered by :func:`discover_formatters`
 
     Args:
         data: Response data to format. May be a CommandResult (unwrapped
@@ -569,21 +578,32 @@ def format_output(
             restrict columns. Empty tuple means show all views.
         output_path: If non-empty, write output to this file path instead
             of the console. Passed through to the formatter.
+        plugin_formatters: Plugin-wide formatter overrides. Keys are format
+            names, values are OutputFormatter instances (or compatible objects).
+            These override core formatters but are themselves overridden by
+            per-command overrides on CommandResult.
     """
+    # Level 3: core formatters (built-in + entry points)
     formatters = discover_formatters()
-    formatter = formatters.get(format_type)
-    if formatter is None:
-        available = ", ".join(sorted(formatters.keys()))
-        raise ValueError(f"Unknown output format {format_type!r}. Available: {available}")
+
+    # Level 2: plugin-wide overrides
+    if plugin_formatters:
+        formatters.update(plugin_formatters)
 
     output_config = None
+    effective_format = format_type
 
     # Unwrap CommandResult
     if isinstance(data, CommandResult):
         output_config = data.output_config  # Extract config
+
+        # Level 1: per-command overrides (highest priority)
+        if data.format_overrides:
+            formatters.update(data.format_overrides)
+
         if not user_explicit and data.format_hint:
             if data.format_hint in formatters:
-                formatter = formatters[data.format_hint]
+                effective_format = data.format_hint
             else:
                 LOG.warning(
                     "unknown_format_hint",
@@ -591,6 +611,12 @@ def format_output(
                     available=sorted(formatters.keys()),
                 )
         data = data.data
+
+    # Resolve the formatter for the effective format
+    formatter = formatters.get(effective_format)
+    if formatter is None:
+        available = ", ".join(sorted(formatters.keys()))
+        raise ValueError(f"Unknown output format {effective_format!r}. Available: {available}")
 
     # Apply --view filtering
     if view_args:
