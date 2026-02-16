@@ -6,9 +6,12 @@ the ``graftpunk.formatters`` entry-point group.
 """
 
 import csv
+import datetime
 import importlib.metadata
 import io
 import json
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from rich.console import Console
@@ -19,7 +22,7 @@ from rich.table import Table
 from graftpunk import console as gp_console
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
-from graftpunk.plugins.export import get_downloads_dir
+from graftpunk.plugins.export import get_downloads_dir, ordered_keys
 from graftpunk.plugins.output_config import (
     OutputConfig,
     ViewConfig,
@@ -89,6 +92,37 @@ def _resolve_view_data(data: Any, view: ViewConfig) -> Any | None:
     return view_data
 
 
+def _write_to_file(
+    output_path: str,
+    render_fn: Callable[[Console], None],
+) -> None:
+    """Redirect console-based rendering to a file.
+
+    Creates parent directories, renders into a StringIO-backed Console,
+    and writes the captured text to *output_path*.
+    """
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    buf = io.StringIO()
+    file_console = Console(file=buf, width=200)
+    render_fn(file_console)
+    Path(output_path).write_text(buf.getvalue())
+
+
+def _resolve_output_filepath(output_path: str, extension: str) -> Path:
+    """Resolve the output file path for file-based formatters.
+
+    If *output_path* is non-empty, uses it (creating parent dirs).
+    Otherwise auto-generates a timestamped filename in the downloads dir.
+    """
+    if output_path:
+        filepath = Path(output_path)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        return filepath
+    downloads_dir = get_downloads_dir()
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return downloads_dir / f"output-{timestamp}.{extension}"
+
+
 # ---------------------------------------------------------------------------
 # Built-in formatters
 # ---------------------------------------------------------------------------
@@ -108,13 +142,7 @@ class JsonFormatter:
     ) -> None:
         json_str = json.dumps(data, indent=2, default=str)
         if output_path:
-            from pathlib import Path
-
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            buf = io.StringIO()
-            file_console = Console(file=buf, width=200)
-            file_console.print(JSON(json_str))
-            Path(output_path).write_text(buf.getvalue())
+            _write_to_file(output_path, lambda c: c.print(JSON(json_str)))
             return
         console.print(JSON(json_str))
 
@@ -136,21 +164,17 @@ class TableFormatter:
         When output_config has views, delegates to _render_views for
         multi-view rendering. Otherwise renders a single auto-detected table.
         """
-        buf: io.StringIO | None = None
+
+        def render(c: Console) -> None:
+            if output_config and output_config.views:
+                self._render_views(data, c, output_config)
+            else:
+                self._render_data(data, c)
+
         if output_path:
-            from pathlib import Path
-
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            buf = io.StringIO()
-            console = Console(file=buf, width=200)
-        if output_config and output_config.views:
-            self._render_views(data, console, output_config)
-        else:
-            self._render_data(data, console)
-        if output_path and buf is not None:
-            from pathlib import Path
-
-            Path(output_path).write_text(buf.getvalue())
+            _write_to_file(output_path, render)
+            return
+        render(console)
 
     def _render_views(
         self,
@@ -224,21 +248,16 @@ class RawFormatter:
         output_config: OutputConfig | None = None,
         output_path: str = "",
     ) -> None:
-        buf: io.StringIO | None = None
+        def render(c: Console) -> None:
+            if isinstance(data, str):
+                c.print(data)
+            else:
+                c.print(json.dumps(data, default=str))
+
         if output_path:
-            from pathlib import Path
-
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            buf = io.StringIO()
-            console = Console(file=buf, width=200)
-        if isinstance(data, str):
-            console.print(data)
-        else:
-            console.print(json.dumps(data, default=str))
-        if output_path and buf is not None:
-            from pathlib import Path
-
-            Path(output_path).write_text(buf.getvalue())
+            _write_to_file(output_path, render)
+            return
+        render(console)
 
 
 class CsvFormatter:
@@ -255,7 +274,7 @@ class CsvFormatter:
     ) -> None:
         if isinstance(data, str):
             LOG.debug("csv_format_string_passthrough", length=len(data))
-            console.print(data)
+            RawFormatter().format(data, console, output_path=output_path)
             return
 
         # Warn if multiple views exist — CSV can only render one
@@ -284,7 +303,7 @@ class CsvFormatter:
                 data_type=type(data).__name__,
                 fallback="raw",
             )
-            RawFormatter().format(data, console)
+            RawFormatter().format(data, console, output_path=output_path)
             return
         if not data:
             LOG.debug("csv_format_empty_list")
@@ -295,7 +314,7 @@ class CsvFormatter:
                 data_type="list[mixed]",
                 fallback="raw",
             )
-            RawFormatter().format(data, console)
+            RawFormatter().format(data, console, output_path=output_path)
             return
 
         # Apply column filter from output config
@@ -308,12 +327,7 @@ class CsvFormatter:
             LOG.debug("csv_format_empty_after_config")
             return
 
-        # Collect headers as union of all row keys, preserving insertion order
-        all_keys: dict[str, None] = {}
-        for row in data:
-            for k in row:
-                all_keys.setdefault(k, None)
-        headers = list(all_keys)
+        headers = ordered_keys(data)
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(headers)
@@ -325,8 +339,6 @@ class CsvFormatter:
                 ]
             )
         if output_path:
-            from pathlib import Path
-
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_text(buf.getvalue())
             gp_console.info(f"Saved: {output_path}")
@@ -360,18 +372,9 @@ class XlsxFormatter:
             output_path: If non-empty, use this path instead of
                 auto-generating one in the downloads directory.
         """
-        import datetime
-        from pathlib import Path
-
         import xlsxwriter  # type: ignore[unresolved-import]
 
-        if output_path:
-            filepath = Path(output_path)
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            downloads_dir = get_downloads_dir()
-            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            filepath = downloads_dir / f"output-{timestamp}.xlsx"
+        filepath = _resolve_output_filepath(output_path, "xlsx")
 
         workbook = xlsxwriter.Workbook(str(filepath))
         try:
@@ -464,14 +467,12 @@ class PdfFormatter:
 
         Args:
             data: Response data to format.
-            console: Rich console (unused -- output goes to a file).
+            console: Rich console (used only when falling back to JSON
+                for non-tabular data; PDF output goes to a file).
             output_config: Optional view configuration.
             output_path: If non-empty, use this path instead of
                 auto-generating one in the downloads directory.
         """
-        import datetime
-        from pathlib import Path
-
         from graftpunk.plugins.export import json_to_pdf
 
         # Apply view data extraction (use default view if available)
@@ -487,16 +488,10 @@ class PdfFormatter:
             data = [data]
         if not isinstance(data, list):
             # Can't render as PDF table -- fall back to JSON
-            JsonFormatter().format(data, console)
+            JsonFormatter().format(data, console, output_path=output_path)
             return
 
-        if output_path:
-            filepath = Path(output_path)
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            downloads_dir = get_downloads_dir()
-            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            filepath = downloads_dir / f"output-{timestamp}.pdf"
+        filepath = _resolve_output_filepath(output_path, "pdf")
 
         json_to_pdf(data, filepath)
         gp_console.info(f"Saved: {filepath}")
@@ -553,7 +548,7 @@ def format_output(
     user_explicit: bool = False,
     view_args: tuple[str, ...] = (),
     output_path: str = "",
-    plugin_formatters: dict[str, Any] | None = None,
+    plugin_formatters: dict[str, OutputFormatter] | None = None,
 ) -> None:
     """Format and print command output.
 
@@ -579,9 +574,9 @@ def format_output(
         output_path: If non-empty, write output to this file path instead
             of the console. Passed through to the formatter.
         plugin_formatters: Plugin-wide formatter overrides. Keys are format
-            names, values are OutputFormatter instances (or compatible objects).
-            These override core formatters but are themselves overridden by
-            per-command overrides on CommandResult.
+            names, values are OutputFormatter instances. These override core
+            formatters but are themselves overridden by per-command overrides
+            on CommandResult.
     """
     # Level 3: core formatters (built-in + entry points)
     formatters = discover_formatters()
