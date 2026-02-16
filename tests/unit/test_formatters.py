@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from graftpunk.plugins.formatters import (
     CsvFormatter,
     JsonFormatter,
     OutputFormatter,
+    PdfFormatter,
     RawFormatter,
     TableFormatter,
     discover_formatters,
@@ -44,12 +46,16 @@ class TestOutputFormatterProtocol:
     def test_csv_formatter_satisfies_protocol(self) -> None:
         assert isinstance(CsvFormatter(), OutputFormatter)
 
-    def test_builtin_formatters_has_all_five(self) -> None:
+    def test_pdf_formatter_satisfies_protocol(self) -> None:
+        assert isinstance(PdfFormatter(), OutputFormatter)
+
+    def test_builtin_formatters_has_all_six(self) -> None:
         assert "json" in BUILTIN_FORMATTERS
         assert "table" in BUILTIN_FORMATTERS
         assert "raw" in BUILTIN_FORMATTERS
         assert "csv" in BUILTIN_FORMATTERS
         assert "xlsx" in BUILTIN_FORMATTERS
+        assert "pdf" in BUILTIN_FORMATTERS
 
     def test_custom_class_satisfies_protocol(self) -> None:
         class YamlFormatter:
@@ -648,3 +654,113 @@ class TestFormatOutputWithOutputConfig:
         console.print.assert_called_once()
         table = console.print.call_args[0][0]
         assert len(table.columns) == 2
+
+
+class TestPdfFormatter:
+    """Tests for PdfFormatter."""
+
+    def test_name_is_pdf(self) -> None:
+        assert PdfFormatter().name == "pdf"
+
+    def test_satisfies_output_formatter_protocol(self) -> None:
+        assert isinstance(PdfFormatter(), OutputFormatter)
+
+    def test_registered_in_builtin_formatters(self) -> None:
+        assert "pdf" in BUILTIN_FORMATTERS
+        assert isinstance(BUILTIN_FORMATTERS["pdf"], PdfFormatter)
+
+    def test_discovered_by_discover_formatters(self) -> None:
+        formatters = discover_formatters()
+        assert "pdf" in formatters
+        assert formatters["pdf"].name == "pdf"
+
+    def test_list_of_dicts_produces_pdf_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Formatting a list of dicts creates a valid PDF file."""
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        console = MagicMock(spec=Console)
+        data = [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
+
+        PdfFormatter().format(data, console)
+
+        pdf_files = list(tmp_path.glob("*.pdf"))
+        assert len(pdf_files) == 1
+        content = pdf_files[0].read_bytes()
+        assert content[:5] == b"%PDF-"
+
+    def test_single_dict_produces_pdf_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Formatting a single dict wraps it into a list and creates a PDF."""
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        console = MagicMock(spec=Console)
+        data = {"name": "Alice", "age": "30"}
+
+        PdfFormatter().format(data, console)
+
+        pdf_files = list(tmp_path.glob("*.pdf"))
+        assert len(pdf_files) == 1
+        content = pdf_files[0].read_bytes()
+        assert content[:5] == b"%PDF-"
+
+    def test_empty_list_produces_pdf_with_no_data(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Formatting an empty list still creates a PDF (with 'No data' text)."""
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        console = MagicMock(spec=Console)
+
+        PdfFormatter().format([], console)
+
+        pdf_files = list(tmp_path.glob("*.pdf"))
+        assert len(pdf_files) == 1
+        content = pdf_files[0].read_bytes()
+        assert content[:5] == b"%PDF-"
+
+    def test_non_dict_non_list_falls_back_to_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-dict/list data falls back to JSON output, no PDF file created."""
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        console = MagicMock(spec=Console)
+
+        PdfFormatter().format("just a string", console)
+
+        pdf_files = list(tmp_path.glob("*.pdf"))
+        assert len(pdf_files) == 0
+        # Should have printed JSON to console instead
+        console.print.assert_called_once()
+        arg = console.print.call_args[0][0]
+        assert isinstance(arg, JSON)
+
+    def test_integer_falls_back_to_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Integer data falls back to JSON output, no PDF file created."""
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        console = MagicMock(spec=Console)
+
+        PdfFormatter().format(42, console)
+
+        pdf_files = list(tmp_path.glob("*.pdf"))
+        assert len(pdf_files) == 0
+        console.print.assert_called_once()
+
+    def test_applies_view_data_extraction(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OutputConfig view path extraction is applied before rendering."""
+        from graftpunk.plugins import OutputConfig, ViewConfig
+
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(tmp_path))
+        console = MagicMock(spec=Console)
+        data = {"results": [{"id": 1, "name": "foo"}]}
+        cfg = OutputConfig(views=[ViewConfig(name="default", path="results")])
+
+        PdfFormatter().format(data, console, output_config=cfg)
+
+        pdf_files = list(tmp_path.glob("*.pdf"))
+        assert len(pdf_files) == 1
+        content = pdf_files[0].read_bytes()
+        assert content[:5] == b"%PDF-"

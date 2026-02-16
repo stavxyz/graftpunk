@@ -381,12 +381,63 @@ class XlsxFormatter:
             worksheet.write(0, 0, str(data))
 
 
+class PdfFormatter:
+    """Output as a PDF file with table layout."""
+
+    name = "pdf"
+
+    def format(
+        self,
+        data: Any,
+        console: Console,
+        output_config: OutputConfig | None = None,
+    ) -> None:
+        """Format data as a PDF file with a table layout.
+
+        Creates a ``.pdf`` file in the downloads directory using
+        ``json_to_pdf`` from the export module. When *output_config*
+        contains views, the default view is applied before rendering.
+
+        Args:
+            data: Response data to format.
+            console: Rich console (unused -- output goes to a file).
+            output_config: Optional view configuration.
+        """
+        import datetime
+
+        from graftpunk.plugins.export import json_to_pdf
+
+        # Apply view data extraction (use default view if available)
+        if output_config and output_config.views:
+            view = output_config.get_default_view()
+            if view:
+                view_data = _resolve_view_data(data, view)
+                if view_data is not None:
+                    data = view_data
+
+        # Normalize data to list of dicts for json_to_pdf
+        if isinstance(data, dict):
+            data = [data]
+        if not isinstance(data, list):
+            # Can't render as PDF table -- fall back to JSON
+            JsonFormatter().format(data, console)
+            return
+
+        downloads_dir = get_downloads_dir()
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        filepath = downloads_dir / f"output-{timestamp}.pdf"
+
+        json_to_pdf(data, filepath)
+        gp_console.info(f"Saved: {filepath}")
+
+
 BUILTIN_FORMATTERS: dict[str, OutputFormatter] = {
     "json": JsonFormatter(),
     "table": TableFormatter(),
     "raw": RawFormatter(),
     "csv": CsvFormatter(),
     "xlsx": XlsxFormatter(),
+    "pdf": PdfFormatter(),
 }
 
 
