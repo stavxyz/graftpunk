@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_chec
 import requests
 
 if TYPE_CHECKING:
+    from graftpunk.plugins.formatters import OutputFormatter
     from graftpunk.plugins.output_config import OutputConfig
     from graftpunk.tokens import TokenConfig
 
@@ -270,13 +271,16 @@ class CommandResult:
             Only applies when the user has not explicitly passed ``--format``
             on the command line; an explicit ``--format`` always wins.
         output_config: Configuration for column filtering and view extraction.
+        format_overrides: Per-command formatter overrides. Keys are format
+            names, values are OutputFormatter instances. These take highest
+            priority in the three-level override hierarchy.
     """
 
     data: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     format_hint: Literal["json", "table", "raw", "csv", "xlsx", "pdf"] | None = None
     output_config: OutputConfig | None = None
-    format_overrides: dict[str, Any] | None = None
+    format_overrides: dict[str, OutputFormatter] | None = None
 
 
 @dataclass(frozen=True)
@@ -696,9 +700,9 @@ class SitePlugin:
     token_config: TokenConfig | None = None
 
     # Plugin-wide format overrides: keys are format names, values are
-    # OutputFormatter instances or callable factories.  Overrides core
-    # formatters for all commands in this plugin.
-    format_overrides: ClassVar[dict[str, Any]] = {}
+    # OutputFormatter instances.  Overrides core formatters for all
+    # commands in this plugin.
+    format_overrides: ClassVar[dict[str, OutputFormatter]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Apply shared defaults and store canonical config via metaclass behavior.
