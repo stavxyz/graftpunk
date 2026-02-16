@@ -1,7 +1,5 @@
 """Tests for configuration management."""
 
-import os
-
 import pytest
 
 from graftpunk.config import get_settings, reset_settings

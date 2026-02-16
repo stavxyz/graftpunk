@@ -914,3 +914,155 @@ class TestOutputPath:
         console.print.assert_called_once()
         arg = console.print.call_args[0][0]
         assert isinstance(arg, JSON)
+
+    def test_csv_string_passthrough_to_file(self, tmp_path: Path) -> None:
+        """CsvFormatter string passthrough with output_path writes to file."""
+        outfile = tmp_path / "out.csv"
+        console = MagicMock(spec=Console)
+        csv_str = "name,age\nAlice,30\n"
+
+        CsvFormatter().format(csv_str, console, output_path=str(outfile))
+
+        assert outfile.exists()
+        assert "Alice" in outfile.read_text()
+        console.print.assert_not_called()
+
+    def test_csv_fallback_to_file(self, tmp_path: Path) -> None:
+        """CsvFormatter non-dict data with output_path falls back to file."""
+        outfile = tmp_path / "out.txt"
+        console = MagicMock(spec=Console)
+
+        CsvFormatter().format(42, console, output_path=str(outfile))
+
+        assert outfile.exists()
+        assert "42" in outfile.read_text()
+        console.print.assert_not_called()
+
+    def test_pdf_fallback_to_file(self, tmp_path: Path) -> None:
+        """PdfFormatter non-list data with output_path falls back to JSON file."""
+        outfile = tmp_path / "out.json"
+        console = MagicMock(spec=Console)
+
+        PdfFormatter().format("just a string", console, output_path=str(outfile))
+
+        assert outfile.exists()
+        content = outfile.read_text()
+        assert "just a string" in content
+        # No PDF file should be created
+        assert not list(tmp_path.glob("*.pdf"))
+        console.print.assert_not_called()
+
+
+class TestFormatOverrides:
+    """Tests for the three-level format override hierarchy."""
+
+    def test_command_result_format_overrides(self) -> None:
+        """Per-command format_overrides on CommandResult take highest priority."""
+
+        class CustomTable:
+            name = "table"
+
+            def format(
+                self,
+                data: object,
+                console: Console,
+                output_config: object = None,
+                output_path: str = "",
+            ) -> None:
+                console.print("custom-table-output")
+
+        console = MagicMock(spec=Console)
+        result = CommandResult(
+            data={"key": "value"},
+            format_overrides={"table": CustomTable()},
+        )
+        format_output(result, "table", console)
+        console.print.assert_called_once_with("custom-table-output")
+
+    def test_plugin_formatters_override_core(self) -> None:
+        """Plugin-wide formatters override core formatters."""
+
+        class CustomRaw:
+            name = "raw"
+
+            def format(
+                self,
+                data: object,
+                console: Console,
+                output_config: object = None,
+                output_path: str = "",
+            ) -> None:
+                console.print("plugin-raw-output")
+
+        console = MagicMock(spec=Console)
+        format_output(
+            "hello",
+            "raw",
+            console,
+            plugin_formatters={"raw": CustomRaw()},
+        )
+        console.print.assert_called_once_with("plugin-raw-output")
+
+    def test_command_overrides_beat_plugin_overrides(self) -> None:
+        """Per-command overrides beat plugin-wide overrides."""
+
+        class PluginJson:
+            name = "json"
+
+            def format(
+                self,
+                data: object,
+                console: Console,
+                output_config: object = None,
+                output_path: str = "",
+            ) -> None:
+                console.print("plugin-json")
+
+        class CommandJson:
+            name = "json"
+
+            def format(
+                self,
+                data: object,
+                console: Console,
+                output_config: object = None,
+                output_path: str = "",
+            ) -> None:
+                console.print("command-json")
+
+        console = MagicMock(spec=Console)
+        result = CommandResult(
+            data={"key": "value"},
+            format_overrides={"json": CommandJson()},
+        )
+        format_output(
+            result,
+            "json",
+            console,
+            plugin_formatters={"json": PluginJson()},
+        )
+        console.print.assert_called_once_with("command-json")
+
+    def test_format_hint_with_override_only_format(self) -> None:
+        """format_hint can reference a format only available via overrides."""
+
+        class MarkdownFormatter:
+            name = "markdown"
+
+            def format(
+                self,
+                data: object,
+                console: Console,
+                output_config: object = None,
+                output_path: str = "",
+            ) -> None:
+                console.print("# markdown output")
+
+        console = MagicMock(spec=Console)
+        result = CommandResult(
+            data={"key": "value"},
+            format_hint="markdown",
+            format_overrides={"markdown": MarkdownFormatter()},
+        )
+        format_output(result, "json", console, user_explicit=False)
+        console.print.assert_called_once_with("# markdown output")

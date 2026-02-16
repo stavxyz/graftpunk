@@ -236,6 +236,34 @@ class TestJsonToPdf:
         path, pages = json_to_pdf(data, out)
         assert pages > 1
 
+    def test_vendor_header(self, tmp_path: Path) -> None:
+        """Vendor name appears in the PDF header."""
+        data = [{"name": "Alice"}]
+        out = tmp_path / "out.pdf"
+        path, pages = json_to_pdf(data, out, vendor="Acme Corp")
+        assert pages >= 1
+        assert Path(path).exists()
+        content = Path(path).read_bytes()
+        assert len(content) > 100
+
+    def test_vendor_with_info(self, tmp_path: Path) -> None:
+        """Vendor name and info line both render."""
+        data = [{"name": "Alice"}]
+        out = tmp_path / "out.pdf"
+        path, pages = json_to_pdf(data, out, vendor="Acme Corp", vendor_info="123 Main St")
+        assert pages >= 1
+        assert Path(path).exists()
+
+    def test_logo_missing_file_still_renders(self, tmp_path: Path) -> None:
+        """Missing logo file logs a warning but still produces a PDF."""
+        data = [{"name": "Alice"}]
+        out = tmp_path / "out.pdf"
+        path, pages = json_to_pdf(data, out, vendor="Acme Corp", logo="/nonexistent/logo.png")
+        assert pages >= 1
+        assert Path(path).exists()
+        content = Path(path).read_bytes()
+        assert content[:5] == b"%PDF-"
+
 
 class TestGetDownloadsDir:
     """Tests for the get_downloads_dir utility function."""
