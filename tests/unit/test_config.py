@@ -1,20 +1,38 @@
 """Tests for configuration management."""
 
+import os
+
 import pytest
 
 from graftpunk.config import get_settings, reset_settings
+
+# Env vars that affect storage config — tests that assume defaults must clear these.
+_STORAGE_ENV_VARS = [
+    "GRAFTPUNK_STORAGE_BACKEND",
+    "GRAFTPUNK_S3_BUCKET",
+    "GRAFTPUNK_S3_REGION",
+    "GRAFTPUNK_S3_ENDPOINT_URL",
+]
+
+
+@pytest.fixture()
+def _clean_storage_env(monkeypatch):
+    """Remove storage env vars so tests see default settings."""
+    for var in _STORAGE_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    reset_settings()
 
 
 class TestGetStorageConfig:
     """Tests for GraftpunkSettings.get_storage_config."""
 
-    def test_local_storage_config(self):
+    def test_local_storage_config(self, _clean_storage_env):
         """Local backend returns sessions directory."""
         settings = get_settings()
         config = settings.get_storage_config("local")
         assert config == {"base_dir": settings.sessions_dir}
 
-    def test_local_storage_config_default(self):
+    def test_local_storage_config_default(self, _clean_storage_env):
         """Default storage backend is local."""
         settings = get_settings()
         config = settings.get_storage_config()
@@ -64,13 +82,13 @@ class TestGetStorageConfig:
         assert config["retry_max_attempts"] == 5
         assert config["retry_base_delay"] == 1.0
 
-    def test_s3_missing_bucket(self):
+    def test_s3_missing_bucket(self, _clean_storage_env):
         """S3 backend raises ValueError when bucket is missing."""
         settings = get_settings()
         with pytest.raises(ValueError, match="GRAFTPUNK_S3_BUCKET"):
             settings.get_storage_config("s3")
 
-    def test_s3_optional_fields_default_to_none(self, monkeypatch):
+    def test_s3_optional_fields_default_to_none(self, monkeypatch, _clean_storage_env):
         """S3 backend allows region and endpoint_url to be None."""
         monkeypatch.setenv("GRAFTPUNK_S3_BUCKET", "my-bucket")
         reset_settings()
