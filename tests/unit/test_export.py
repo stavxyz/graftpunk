@@ -4,7 +4,15 @@ import csv
 import json
 from pathlib import Path
 
-from graftpunk.plugins.export import flatten_dict, json_to_csv, json_to_pdf, ordered_keys
+import pytest
+
+from graftpunk.plugins.export import (
+    flatten_dict,
+    get_downloads_dir,
+    json_to_csv,
+    json_to_pdf,
+    ordered_keys,
+)
 
 
 class TestFlattenDict:
@@ -227,3 +235,29 @@ class TestJsonToPdf:
         out = tmp_path / "out.pdf"
         path, pages = json_to_pdf(data, out)
         assert pages > 1
+
+
+class TestGetDownloadsDir:
+    """Tests for the get_downloads_dir utility function."""
+
+    def test_default_directory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default download directory is ./gp-downloads/ resolved to absolute."""
+        monkeypatch.delenv("GP_DOWNLOADS_DIR", raising=False)
+        result = get_downloads_dir()
+        assert result == Path("gp-downloads").resolve()
+        assert result.is_absolute()
+
+    def test_env_var_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GP_DOWNLOADS_DIR env var overrides default."""
+        custom_dir = tmp_path / "my-downloads"
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(custom_dir))
+        result = get_downloads_dir()
+        assert result == custom_dir
+
+    def test_creates_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Download directory is created if it doesn't exist."""
+        download_dir = tmp_path / "downloads"
+        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(download_dir))
+        result = get_downloads_dir()
+        assert result == download_dir
+        assert result.is_dir()

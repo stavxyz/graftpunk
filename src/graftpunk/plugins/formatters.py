@@ -9,8 +9,6 @@ import csv
 import importlib.metadata
 import io
 import json
-import os
-from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from rich.console import Console
@@ -21,6 +19,7 @@ from rich.table import Table
 from graftpunk import console as gp_console
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
+from graftpunk.plugins.export import get_downloads_dir
 from graftpunk.plugins.output_config import (
     OutputConfig,
     ViewConfig,
@@ -422,28 +421,6 @@ def discover_formatters() -> dict[str, OutputFormatter]:
         except Exception:  # noqa: BLE001
             LOG.warning("formatter_load_failed", entry_point=ep.name, exc_info=True)
     return formatters
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-_DEFAULT_DOWNLOADS_DIR = "gp-downloads"
-
-
-def get_downloads_dir() -> Path:
-    """Resolve the download directory for file-based output.
-
-    Uses the ``GP_DOWNLOADS_DIR`` environment variable if set,
-    otherwise defaults to ``./gp-downloads/``. Creates the
-    directory if it doesn't exist.
-
-    Returns:
-        Path to the downloads directory.
-    """
-    dir_path = Path(os.environ.get("GP_DOWNLOADS_DIR", _DEFAULT_DOWNLOADS_DIR)).resolve()
-    dir_path.mkdir(parents=True, exist_ok=True)
-    return dir_path
 
 
 def format_output(

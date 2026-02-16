@@ -23,12 +23,6 @@ from urllib.parse import urlparse
 
 from graftpunk.exceptions import CommandError, PluginError
 from graftpunk.logging import get_logger
-from graftpunk.plugins.export import (
-    flatten_dict,
-    json_to_csv,
-    json_to_pdf,
-    ordered_keys,
-)
 from graftpunk.plugins.cli_plugin import (
     SUPPORTED_API_VERSIONS,
     CLIPluginProtocol,
@@ -44,6 +38,13 @@ from graftpunk.plugins.cli_plugin import (
     SitePlugin,
     build_plugin_config,
     command,
+)
+from graftpunk.plugins.export import (
+    flatten_dict,
+    get_downloads_dir,
+    json_to_csv,
+    json_to_pdf,
+    ordered_keys,
 )
 from graftpunk.plugins.formatters import (
     OutputFormatter,
@@ -101,6 +102,7 @@ __all__ = [
     "parse_view_arg",
     # Export utilities
     "flatten_dict",
+    "get_downloads_dir",
     "json_to_csv",
     "json_to_pdf",
     "ordered_keys",

@@ -16,7 +16,6 @@ from graftpunk.plugins.formatters import (
     TableFormatter,
     XlsxFormatter,
     format_output,
-    get_downloads_dir,
 )
 
 
@@ -256,32 +255,6 @@ class TestCsvFormatterMultiView:
         rows = _parse_csv_output(console)
         assert rows[0] == ["id", "name"]
         assert rows[1] == ["1", "foo"]
-
-
-class TestGetDownloadsDir:
-    """Tests for the get_downloads_dir utility function."""
-
-    def test_default_directory(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Default download directory is ./gp-downloads/ resolved to absolute."""
-        monkeypatch.delenv("GP_DOWNLOADS_DIR", raising=False)
-        result = get_downloads_dir()
-        assert result == Path("gp-downloads").resolve()
-        assert result.is_absolute()
-
-    def test_env_var_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GP_DOWNLOADS_DIR env var overrides default."""
-        custom_dir = tmp_path / "my-downloads"
-        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(custom_dir))
-        result = get_downloads_dir()
-        assert result == custom_dir
-
-    def test_creates_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Download directory is created if it doesn't exist."""
-        download_dir = tmp_path / "downloads"
-        monkeypatch.setenv("GP_DOWNLOADS_DIR", str(download_dir))
-        result = get_downloads_dir()
-        assert result == download_dir
-        assert result.is_dir()
 
 
 class TestXlsxFormatter:
