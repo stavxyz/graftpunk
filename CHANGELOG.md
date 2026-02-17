@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-02-17
+
+### Added
+
+- **Export Utilities Module** (`graftpunk.export`): Shared helpers for data export
+  - `flatten_dict()` — recursively flatten nested dicts with dot-delimited keys
+  - `json_to_csv()` — convert JSON data to CSV files with ordered columns
+  - `json_to_pdf()` — convert JSON data to PDF with optional vendor header and logo
+  - `get_downloads_dir()` moved here from formatters and exported publicly
+
+- **PDF Formatter**: Built-in `PdfFormatter` registered as `--format pdf`
+  - Renders command output as styled PDF documents
+  - Supports vendor headers with logo, company name, and document title
+  - Falls back to JSON format when `fpdf2` is not installed
+
+- **`--output`/`-o` Framework Flag**: Direct file output for any plugin command
+  - Text formatters (json, table, raw, csv) capture output and write to the specified file path
+  - File formatters (xlsx, pdf) use the provided path instead of auto-generating one in `gp-downloads/`
+  - Added to all plugin commands automatically via the framework
+
+- **Three-Level Format Override System**: Plugin-customizable output formatting
+  - Core formatters (built-in + entry points) as the base layer
+  - Plugin-wide overrides via `SitePlugin.format_overrides` class variable
+  - Per-command overrides via `CommandResult.format_overrides` field
+  - `--format` accepts any string, allowing plugins to register custom format names not known to core
+
+### Changed
+
+- `get_downloads_dir()` moved from `graftpunk.formatters` to `graftpunk.export` (re-exported for backwards compatibility)
+- Extracted `_write_to_file` and `_resolve_output_filepath` DRY helpers, eliminating duplicated file-output boilerplate across 6 formatters
+- `format_overrides` typed as `dict[str, OutputFormatter]` on `CommandResult`, `SitePlugin`, and `format_output` (was `dict[str, Any]`)
+
+### Fixed
+
+- No-op `max(y, y+2)` in PDF export corrected to unconditional `y+2`
+- Missing logo path in PDF export now logs a warning instead of silently skipping
+- Storage config tests no longer leak `GRAFTPUNK_S3_*` and `GRAFTPUNK_STORAGE_BACKEND` env vars from the shell
+
 ## [1.6.1] - 2026-02-13
 
 ### Fixed
