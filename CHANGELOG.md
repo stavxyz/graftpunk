@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-02-18
+
+### Fixed
+
+- **Intermittent nodriver browser startup failure** — `_start_async()` now retries `uc.start()` up to 3 times with back-off when Chrome's CDP port isn't ready within nodriver's ~2.75s timeout (common on macOS under load)
+- Sync `start()` now catches the bare `Exception` that nodriver raises on connection failure, wrapping it as `BrowserError` instead of letting it propagate unwrapped
+
 ## [1.7.0] - 2026-02-17
 
 ### Added
