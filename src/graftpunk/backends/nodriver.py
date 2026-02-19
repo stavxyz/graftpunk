@@ -199,8 +199,14 @@ class NoDriverBackend:
 
         return asyncio.run(coro)
 
-    async def _start_async(self) -> None:
-        """Async implementation of browser start."""
+    async def _start_async(self, _max_attempts: int = 3) -> None:
+        """Async implementation of browser start.
+
+        nodriver gives Chrome ~2.75s to accept CDP connections. On macOS this
+        sometimes isn't enough (Gatekeeper checks, system load, etc.), so we
+        retry the entire ``uc.start()`` call up to *_max_attempts* times with
+        a short back-off between attempts.
+        """
         try:
             import nodriver as uc
         except ImportError as exc:
@@ -228,9 +234,30 @@ class NoDriverBackend:
         if "lang" in self._options:
             start_kwargs["lang"] = self._options["lang"]
 
-        self._browser = await uc.start(**start_kwargs)
-        # Get initial page/tab - navigate to blank page
-        self._page = await self._browser.get("about:blank")
+        last_exc: Exception | None = None
+        for attempt in range(1, _max_attempts + 1):
+            try:
+                self._browser = await uc.start(**start_kwargs)
+                # Get initial page/tab - navigate to blank page
+                self._page = await self._browser.get("about:blank")
+                return
+            except Exception as exc:
+                last_exc = exc
+                if "Failed to connect to browser" not in str(exc):
+                    raise
+                if attempt < _max_attempts:
+                    LOG.warning(
+                        "nodriver_browser_connect_retry",
+                        attempt=attempt,
+                        max_attempts=_max_attempts,
+                    )
+                    await asyncio.sleep(1.0 * attempt)
+
+        raise BrowserError(
+            f"Failed to connect to browser after {_max_attempts} attempts. "
+            "Chrome may be slow to start — try again, or check for stale "
+            "Chrome processes."
+        ) from last_exc
 
     def start(
         self,
@@ -270,7 +297,9 @@ class NoDriverBackend:
             self._run_async(self._start_async())
             self._started = True
             LOG.info("nodriver_backend_started")
-        except (RuntimeError, ConnectionError, TimeoutError, OSError) as exc:
+        except BrowserError:
+            raise
+        except Exception as exc:
             LOG.error(
                 "nodriver_backend_start_failed",
                 error=str(exc),
