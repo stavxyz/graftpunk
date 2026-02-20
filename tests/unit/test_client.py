@@ -65,6 +65,7 @@ def _make_plugin(
     plugin.backend = backend
     plugin.api_version = api_version
     plugin._plugin_config = None
+    plugin.format_overrides = None
     plugin.get_commands.return_value = commands or []
     return plugin
 
