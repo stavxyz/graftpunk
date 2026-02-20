@@ -318,6 +318,7 @@ def _create_plugin_command(
                 result = execute_plugin_command(
                     cmd_spec,
                     ctx,
+                    plugin_formatters=getattr(plugin, "format_overrides", None) or None,
                     **kwargs,
                 )
             except requests.exceptions.HTTPError as exc:
@@ -346,6 +347,7 @@ def _create_plugin_command(
                     result = execute_plugin_command(
                         cmd_spec,
                         ctx,
+                        plugin_formatters=getattr(plugin, "format_overrides", None) or None,
                         **kwargs,
                     )
                 else:

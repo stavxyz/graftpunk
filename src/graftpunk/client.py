@@ -142,6 +142,7 @@ def execute_plugin_command(
     ctx: CommandContext,
     *,
     rate_limit_state: dict[str, float] | None = None,
+    plugin_formatters: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> CommandResult:
     """Shared execution pipeline for plugin commands.
@@ -160,6 +161,8 @@ def execute_plugin_command(
         ctx: Pre-built ``CommandContext``.
         rate_limit_state: Mutable dict for rate-limit
             tracking.  Defaults to a module-level dict.
+        plugin_formatters: Plugin-wide formatter overrides to
+            attach to the result for ``export()`` support.
         **kwargs: Arguments forwarded to the handler.
 
     Returns:
@@ -179,8 +182,17 @@ def execute_plugin_command(
 
     # Normalise to CommandResult
     if isinstance(result, CommandResult):
+        if plugin_formatters and not result._plugin_formatters:
+            result = CommandResult(
+                data=result.data,
+                metadata=result.metadata,
+                format_hint=result.format_hint,
+                output_config=result.output_config,
+                format_overrides=result.format_overrides,
+                _plugin_formatters=plugin_formatters,
+            )
         return result
-    return CommandResult(data=result)
+    return CommandResult(data=result, _plugin_formatters=plugin_formatters)
 
 
 class GraftpunkClient:
@@ -373,9 +385,19 @@ class GraftpunkClient:
             self._session_dirty = False
 
         # 6. Normalize to CommandResult
+        plugin_fmts = getattr(plugin, "format_overrides", None) or None
         if isinstance(result, CommandResult):
+            if plugin_fmts and not result._plugin_formatters:
+                result = CommandResult(
+                    data=result.data,
+                    metadata=result.metadata,
+                    format_hint=result.format_hint,
+                    output_config=result.output_config,
+                    format_overrides=result.format_overrides,
+                    _plugin_formatters=plugin_fmts,
+                )
             return result
-        return CommandResult(data=result)
+        return CommandResult(data=result, _plugin_formatters=plugin_fmts)
 
     # -- lifecycle ---------------------------------------------------------
 

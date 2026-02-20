@@ -5,11 +5,12 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch
 
-from graftpunk.plugins.cli_plugin import CommandResult
+from graftpunk.client import GraftpunkClient, execute_plugin_command
+from graftpunk.plugins.cli_plugin import CommandContext, CommandResult, CommandSpec
 from graftpunk.plugins.export import (
     flatten_dict,
     get_downloads_dir,
@@ -447,9 +448,7 @@ class TestExportBinaryFormats:
         assert output[:4] == b"%PDF"
 
     @patch("graftpunk.plugins.formatters.gp_console")
-    def test_export_pdf_to_file_returns_path(
-        self, mock_console: object, tmp_path: Path
-    ) -> None:
+    def test_export_pdf_to_file_returns_path(self, mock_console: object, tmp_path: Path) -> None:
         data = [{"name": "Alice"}]
         result = CommandResult(data=data)
         out = tmp_path / "out.pdf"
@@ -480,12 +479,95 @@ class TestExportViewFiltering:
 
     def test_csv_with_column_filter(self) -> None:
         data = {"items": [{"name": "A", "price": "10", "qty": "5"}]}
-        config = OutputConfig(
-            views=(ViewConfig(name="items", path="items"),)
-        )
+        config = OutputConfig(views=(ViewConfig(name="items", path="items"),))
         result = CommandResult(data=data, output_config=config)
         output = result.export("csv", views=("items:name,price",))
         assert isinstance(output, str)
         assert "name" in output
         assert "price" in output
         assert "qty" not in output
+
+
+def _make_test_spec(name: str = "test", handler: object = None, **kw: object) -> CommandSpec:
+    return CommandSpec(
+        name=name,
+        handler=handler or (lambda ctx, **k: {"data": "ok"}),
+        **kw,
+    )
+
+
+def _make_test_plugin(
+    commands: list[CommandSpec] | None = None,
+    format_overrides: dict | None = None,
+) -> MagicMock:
+    plugin = MagicMock()
+    plugin.site_name = "test"
+    plugin.session_name = "test"
+    plugin.requires_session = False
+    plugin.token_config = None
+    plugin.base_url = ""
+    plugin.backend = "selenium"
+    plugin.api_version = 1
+    plugin._plugin_config = None
+    plugin.get_commands.return_value = commands or []
+    plugin.format_overrides = format_overrides
+    return plugin
+
+
+class TestPluginFormattersThreading:
+    """_plugin_formatters is populated during result normalization."""
+
+    def test_execute_plugin_command_threads_formatters(self) -> None:
+        fake_fmt = MagicMock()
+        fake_fmt.name = "custom"
+        spec = _make_test_spec()
+        ctx = MagicMock(spec=CommandContext)
+        ctx.plugin_name = "test"
+        result = execute_plugin_command(
+            spec,
+            ctx,
+            plugin_formatters={"custom": fake_fmt},
+        )
+        assert result._plugin_formatters == {"custom": fake_fmt}
+
+    def test_execute_plugin_command_none_by_default(self) -> None:
+        spec = _make_test_spec()
+        ctx = MagicMock(spec=CommandContext)
+        ctx.plugin_name = "test"
+        result = execute_plugin_command(spec, ctx)
+        assert result._plugin_formatters is None
+
+    @patch("graftpunk.client.get_plugin")
+    def test_client_execute_threads_formatters(
+        self,
+        mock_get: MagicMock,
+    ) -> None:
+        fake_fmt = MagicMock()
+        fake_fmt.name = "custom"
+        spec = _make_test_spec(handler=lambda ctx, **kw: {"ok": True})
+        plugin = _make_test_plugin(
+            commands=[spec],
+            format_overrides={"custom": fake_fmt},
+        )
+        mock_get.return_value = plugin
+        client = GraftpunkClient("test")
+        result = client.execute("test")
+        assert result._plugin_formatters == {"custom": fake_fmt}
+
+    @patch("graftpunk.client.get_plugin")
+    def test_client_threads_formatters_on_handler_returned_result(
+        self,
+        mock_get: MagicMock,
+    ) -> None:
+        """When handler returns CommandResult, plugin formatters are merged."""
+        fake_fmt = MagicMock()
+        handler_result = CommandResult(data={"x": 1})
+        spec = _make_test_spec(handler=lambda ctx, **kw: handler_result)
+        plugin = _make_test_plugin(
+            commands=[spec],
+            format_overrides={"custom": fake_fmt},
+        )
+        mock_get.return_value = plugin
+        client = GraftpunkClient("test")
+        result = client.execute("test")
+        assert result._plugin_formatters == {"custom": fake_fmt}
