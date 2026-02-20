@@ -274,6 +274,10 @@ class CommandResult:
         format_overrides: Per-command formatter overrides. Keys are format
             names, values are OutputFormatter instances. These take highest
             priority in the three-level override hierarchy.
+        _plugin_formatters: Internal field populated during result
+            normalization. Carries plugin-wide formatter overrides so
+            ``export()`` can resolve them without needing a plugin reference.
+            Not included in ``repr()`` or equality comparisons.
     """
 
     data: Any
@@ -281,6 +285,9 @@ class CommandResult:
     format_hint: Literal["json", "table", "raw", "csv", "xlsx", "pdf"] | None = None
     output_config: OutputConfig | None = None
     format_overrides: dict[str, OutputFormatter] | None = None
+    _plugin_formatters: dict[str, OutputFormatter] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 @dataclass(frozen=True)
