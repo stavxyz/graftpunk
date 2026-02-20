@@ -334,3 +334,20 @@ class TestFormatterBinaryProperty:
                 pass
 
         assert isinstance(BinaryFormatter(), OutputFormatter)
+
+
+class TestCommandResultPluginFormatters:
+    """CommandResult carries plugin-wide formatters for export()."""
+
+    def test_plugin_formatters_defaults_to_none(self) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        result = CommandResult(data={"key": "value"})
+        assert result._plugin_formatters is None
+
+    def test_plugin_formatters_can_be_set(self) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        fmt = JsonFormatter()
+        result = CommandResult(data={}, _plugin_formatters={"json": fmt})
+        assert result._plugin_formatters == {"json": fmt}
