@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 
 import pytest
+from unittest.mock import patch
 
+from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.export import (
     flatten_dict,
     get_downloads_dir,
@@ -24,6 +26,7 @@ from graftpunk.plugins.formatters import (
     TableFormatter,
     XlsxFormatter,
 )
+from graftpunk.plugins.output_config import OutputConfig, ViewConfig
 
 
 class TestFlattenDict:
@@ -340,13 +343,11 @@ class TestCommandResultPluginFormatters:
     """CommandResult carries plugin-wide formatters for export()."""
 
     def test_plugin_formatters_defaults_to_none(self) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         result = CommandResult(data={"key": "value"})
         assert result._plugin_formatters is None
 
     def test_plugin_formatters_can_be_set(self) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         fmt = JsonFormatter()
         result = CommandResult(data={}, _plugin_formatters={"json": fmt})
@@ -357,7 +358,6 @@ class TestExportTextFormats:
     """export() returns str for text formats without output path."""
 
     def test_export_json_returns_string(self) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         data = {"name": "Alice", "age": 30}
         result = CommandResult(data=data)
@@ -367,7 +367,6 @@ class TestExportTextFormats:
         assert parsed == data
 
     def test_export_raw_returns_string(self) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         result = CommandResult(data="hello world")
         output = result.export("raw")
@@ -375,7 +374,6 @@ class TestExportTextFormats:
         assert "hello world" in output
 
     def test_export_csv_returns_string(self) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         data = [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
         result = CommandResult(data=data)
@@ -385,7 +383,6 @@ class TestExportTextFormats:
         assert "Bob" in output
 
     def test_export_table_returns_string(self) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         data = [{"col": "val"}]
         result = CommandResult(data=data)
@@ -394,7 +391,6 @@ class TestExportTextFormats:
         assert "val" in output
 
     def test_export_json_to_file_returns_path(self, tmp_path: Path) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         data = {"key": "value"}
         result = CommandResult(data=data)
@@ -405,7 +401,6 @@ class TestExportTextFormats:
         assert out.exists()
 
     def test_export_csv_to_file_returns_path(self, tmp_path: Path) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         data = [{"a": "1"}]
         result = CommandResult(data=data)
@@ -416,8 +411,81 @@ class TestExportTextFormats:
         assert "a" in out.read_text()
 
     def test_export_unknown_format_raises(self) -> None:
-        from graftpunk.plugins.cli_plugin import CommandResult
 
         result = CommandResult(data={})
         with pytest.raises(ValueError, match="Unknown output format"):
             result.export("nonexistent")
+
+
+class TestExportBinaryFormats:
+    """export() returns bytes for binary formats without output path."""
+
+    def test_export_xlsx_returns_bytes(self) -> None:
+        data = [{"name": "Alice", "age": 30}]
+        result = CommandResult(data=data)
+        output = result.export("xlsx")
+        assert isinstance(output, bytes)
+        # XLSX files start with PK (ZIP magic bytes)
+        assert output[:2] == b"PK"
+
+    def test_export_xlsx_to_file_returns_path(self, tmp_path: Path) -> None:
+        data = [{"name": "Alice"}]
+        result = CommandResult(data=data)
+        out = tmp_path / "out.xlsx"
+        returned = result.export("xlsx", out)
+        assert isinstance(returned, Path)
+        assert out.exists()
+        assert out.read_bytes()[:2] == b"PK"
+
+    @patch("graftpunk.plugins.formatters.gp_console")
+    def test_export_pdf_returns_bytes(self, mock_console: object) -> None:
+        data = [{"name": "Alice", "age": "30"}]
+        result = CommandResult(data=data)
+        output = result.export("pdf")
+        assert isinstance(output, bytes)
+        # PDF files start with %PDF
+        assert output[:4] == b"%PDF"
+
+    @patch("graftpunk.plugins.formatters.gp_console")
+    def test_export_pdf_to_file_returns_path(
+        self, mock_console: object, tmp_path: Path
+    ) -> None:
+        data = [{"name": "Alice"}]
+        result = CommandResult(data=data)
+        out = tmp_path / "out.pdf"
+        returned = result.export("pdf", out)
+        assert isinstance(returned, Path)
+        assert out.exists()
+
+
+class TestExportViewFiltering:
+    """export() supports view filtering via the views parameter."""
+
+    def test_csv_with_view_filter(self) -> None:
+        data = {
+            "items": [{"name": "A", "price": "10"}, {"name": "B", "price": "20"}],
+            "summary": {"total": 30},
+        }
+        config = OutputConfig(
+            views=(
+                ViewConfig(name="items", path="items"),
+                ViewConfig(name="summary", path="summary"),
+            )
+        )
+        result = CommandResult(data=data, output_config=config)
+        output = result.export("csv", views=("items",))
+        assert isinstance(output, str)
+        assert "A" in output
+        assert "total" not in output
+
+    def test_csv_with_column_filter(self) -> None:
+        data = {"items": [{"name": "A", "price": "10", "qty": "5"}]}
+        config = OutputConfig(
+            views=(ViewConfig(name="items", path="items"),)
+        )
+        result = CommandResult(data=data, output_config=config)
+        output = result.export("csv", views=("items:name,price",))
+        assert isinstance(output, str)
+        assert "name" in output
+        assert "price" in output
+        assert "qty" not in output
