@@ -47,6 +47,11 @@ class OutputFormatter(Protocol):
         """Formatter name used in --format flag."""
         ...
 
+    @property
+    def binary(self) -> bool:
+        """Whether this formatter produces binary output (e.g. xlsx, pdf)."""
+        ...
+
     def format(
         self,
         data: Any,
@@ -132,6 +137,7 @@ class JsonFormatter:
     """Output as formatted JSON with syntax highlighting."""
 
     name = "json"
+    binary = False
 
     def format(
         self,
@@ -151,6 +157,7 @@ class TableFormatter:
     """Output as a rich table (for lists of dicts or single dicts)."""
 
     name = "table"
+    binary = False
 
     def format(
         self,
@@ -240,6 +247,7 @@ class RawFormatter:
     """Output raw string representation."""
 
     name = "raw"
+    binary = False
 
     def format(
         self,
@@ -264,6 +272,7 @@ class CsvFormatter:
     """Output as CSV (comma-separated values)."""
 
     name = "csv"
+    binary = False
 
     def format(
         self,
@@ -350,6 +359,7 @@ class XlsxFormatter:
     """Output as an Excel XLSX file with one worksheet per view."""
 
     name = "xlsx"
+    binary = True
 
     def format(
         self,
@@ -450,6 +460,7 @@ class PdfFormatter:
     """Output as a PDF file with table layout."""
 
     name = "pdf"
+    binary = True
 
     def format(
         self,

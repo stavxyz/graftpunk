@@ -15,6 +15,8 @@ from graftpunk.plugins.formatters import OutputFormatter, format_output
 class MockFormatter:
     """Test formatter that records calls."""
 
+    binary = False
+
     def __init__(self, name_val: str) -> None:
         self._name = name_val
         self.called = False
