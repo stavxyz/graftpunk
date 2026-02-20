@@ -1,3 +1,5 @@
+"""Tests for export utilities and CommandResult.export() API."""
+
 from __future__ import annotations
 
 import csv
@@ -12,6 +14,15 @@ from graftpunk.plugins.export import (
     json_to_csv,
     json_to_pdf,
     ordered_keys,
+)
+from graftpunk.plugins.formatters import (
+    CsvFormatter,
+    JsonFormatter,
+    OutputFormatter,
+    PdfFormatter,
+    RawFormatter,
+    TableFormatter,
+    XlsxFormatter,
 )
 
 
@@ -289,3 +300,37 @@ class TestGetDownloadsDir:
         result = get_downloads_dir()
         assert result == download_dir
         assert result.is_dir()
+
+
+class TestFormatterBinaryProperty:
+    """All formatters must declare whether they produce binary output."""
+
+    def test_json_formatter_is_not_binary(self) -> None:
+        assert JsonFormatter().binary is False
+
+    def test_table_formatter_is_not_binary(self) -> None:
+        assert TableFormatter().binary is False
+
+    def test_raw_formatter_is_not_binary(self) -> None:
+        assert RawFormatter().binary is False
+
+    def test_csv_formatter_is_not_binary(self) -> None:
+        assert CsvFormatter().binary is False
+
+    def test_xlsx_formatter_is_binary(self) -> None:
+        assert XlsxFormatter().binary is True
+
+    def test_pdf_formatter_is_binary(self) -> None:
+        assert PdfFormatter().binary is True
+
+    def test_binary_property_in_protocol(self) -> None:
+        """Custom formatter with binary property satisfies protocol."""
+
+        class BinaryFormatter:
+            name = "bin"
+            binary = True
+
+            def format(self, data: object, console: object) -> None:
+                pass
+
+        assert isinstance(BinaryFormatter(), OutputFormatter)

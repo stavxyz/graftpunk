@@ -61,6 +61,7 @@ class TestOutputFormatterProtocol:
     def test_custom_class_satisfies_protocol(self) -> None:
         class YamlFormatter:
             name = "yaml"
+            binary = False
 
             def format(self, data: object, console: Console) -> None:
                 console.print("yaml output")
@@ -382,6 +383,7 @@ class TestDiscoverFormatters:
 
         class YamlFormatter:
             name = "yaml"
+            binary = False
 
             def format(self, data: object, console: Console) -> None:
                 console.print("yaml")
@@ -422,6 +424,7 @@ class TestDiscoverFormatters:
 
         class CustomJson:
             name = "json"
+            binary = False
 
             def format(self, data: object, console: Console) -> None:
                 console.print("custom json")
@@ -961,6 +964,7 @@ class TestFormatOverrides:
 
         class CustomTable:
             name = "table"
+            binary = False
 
             def format(
                 self,
@@ -984,6 +988,7 @@ class TestFormatOverrides:
 
         class CustomRaw:
             name = "raw"
+            binary = False
 
             def format(
                 self,
@@ -1008,6 +1013,7 @@ class TestFormatOverrides:
 
         class PluginJson:
             name = "json"
+            binary = False
 
             def format(
                 self,
@@ -1020,6 +1026,7 @@ class TestFormatOverrides:
 
         class CommandJson:
             name = "json"
+            binary = False
 
             def format(
                 self,
@@ -1048,6 +1055,7 @@ class TestFormatOverrides:
 
         class MarkdownFormatter:
             name = "markdown"
+            binary = False
 
             def format(
                 self,
