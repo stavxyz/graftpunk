@@ -14,8 +14,14 @@ _STORAGE_ENV_VARS = [
 
 
 @pytest.fixture()
-def _clean_storage_env(monkeypatch):
-    """Remove storage env vars so tests see default settings."""
+def _clean_storage_env(monkeypatch, tmp_path):
+    """Remove storage env vars so tests see default settings.
+
+    monkeypatch.delenv() only patches os.environ, but pydantic-settings
+    also reads .env files directly (``env_file=".env"``).  Changing to
+    a temp directory prevents it from finding the project's .env.
+    """
+    monkeypatch.chdir(tmp_path)
     for var in _STORAGE_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     reset_settings()
