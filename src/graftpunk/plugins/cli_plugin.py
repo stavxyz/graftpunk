@@ -289,6 +289,106 @@ class CommandResult:
         default=None, repr=False, compare=False
     )
 
+    def export(
+        self,
+        format: str,  # noqa: A002
+        output: str | Path = "",
+        *,
+        views: tuple[str, ...] = (),
+    ) -> str | bytes | Path:
+        """Export the result data in the specified format.
+
+        Args:
+            format: Formatter name (e.g. ``"json"``, ``"csv"``, ``"pdf"``).
+            output: If non-empty, write to this file path instead of
+                returning the formatted content.
+            views: Tuple of view specifiers for filtering output sections.
+                Each element is either a view name (``"items"``) or
+                ``"name:col1,col2,..."`` to restrict columns.
+
+        Returns:
+            ``str`` for text formats without output path, ``bytes`` for
+            binary formats without output path, or ``Path`` when an
+            output path is given.
+
+        Raises:
+            ValueError: If the format name is not recognised.
+        """
+        import io
+        import tempfile
+
+        from rich.console import Console
+
+        from graftpunk.plugins.formatters import discover_formatters
+        from graftpunk.plugins.output_config import parse_view_arg
+
+        # Resolve formatters using the 3-level hierarchy
+        formatters = discover_formatters()
+        if self._plugin_formatters:
+            formatters.update(self._plugin_formatters)
+        if self.format_overrides:
+            formatters.update(self.format_overrides)
+
+        formatter = formatters.get(format)
+        if formatter is None:
+            available = ", ".join(sorted(formatters.keys()))
+            raise ValueError(f"Unknown output format {format!r}. Available: {available}")
+
+        # Apply view filtering
+        output_config = self.output_config
+        if views and output_config is not None:
+            names: list[str] = []
+            column_overrides: dict[str, list[str]] = {}
+            for arg in views:
+                name, cols = parse_view_arg(arg)
+                names.append(name)
+                if cols:
+                    column_overrides[name] = cols
+            output_config = output_config.filter_views(names, column_overrides)
+
+        output_path = str(output) if output else ""
+
+        # --- Output path given: write to file, return Path ---
+        if output_path:
+            buf_console = Console(file=io.StringIO(), width=200)
+            formatter.format(
+                self.data,
+                buf_console,
+                output_config=output_config,
+                output_path=output_path,
+            )
+            return Path(output_path)
+
+        # --- Binary format, no output path: return bytes ---
+        if getattr(formatter, "binary", False):
+            with tempfile.NamedTemporaryFile(
+                suffix=f".{format}",
+                delete=False,
+            ) as tmp:
+                tmp_path = tmp.name
+            try:
+                buf_console = Console(file=io.StringIO(), width=200)
+                formatter.format(
+                    self.data,
+                    buf_console,
+                    output_config=output_config,
+                    output_path=tmp_path,
+                )
+                return Path(tmp_path).read_bytes()
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+
+        # --- Text format, no output path: return str ---
+        buf = io.StringIO()
+        buf_console = Console(file=buf, width=200)
+        formatter.format(
+            self.data,
+            buf_console,
+            output_config=output_config,
+            output_path="",
+        )
+        return buf.getvalue()
+
 
 @dataclass(frozen=True)
 class CommandSpec:

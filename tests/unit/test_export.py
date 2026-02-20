@@ -351,3 +351,73 @@ class TestCommandResultPluginFormatters:
         fmt = JsonFormatter()
         result = CommandResult(data={}, _plugin_formatters={"json": fmt})
         assert result._plugin_formatters == {"json": fmt}
+
+
+class TestExportTextFormats:
+    """export() returns str for text formats without output path."""
+
+    def test_export_json_returns_string(self) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        data = {"name": "Alice", "age": 30}
+        result = CommandResult(data=data)
+        output = result.export("json")
+        assert isinstance(output, str)
+        parsed = json.loads(output)
+        assert parsed == data
+
+    def test_export_raw_returns_string(self) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        result = CommandResult(data="hello world")
+        output = result.export("raw")
+        assert isinstance(output, str)
+        assert "hello world" in output
+
+    def test_export_csv_returns_string(self) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        data = [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
+        result = CommandResult(data=data)
+        output = result.export("csv")
+        assert isinstance(output, str)
+        assert "Alice" in output
+        assert "Bob" in output
+
+    def test_export_table_returns_string(self) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        data = [{"col": "val"}]
+        result = CommandResult(data=data)
+        output = result.export("table")
+        assert isinstance(output, str)
+        assert "val" in output
+
+    def test_export_json_to_file_returns_path(self, tmp_path: Path) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        data = {"key": "value"}
+        result = CommandResult(data=data)
+        out = tmp_path / "out.json"
+        returned = result.export("json", out)
+        assert isinstance(returned, Path)
+        assert returned == out
+        assert out.exists()
+
+    def test_export_csv_to_file_returns_path(self, tmp_path: Path) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        data = [{"a": "1"}]
+        result = CommandResult(data=data)
+        out = tmp_path / "out.csv"
+        returned = result.export("csv", out)
+        assert isinstance(returned, Path)
+        assert out.exists()
+        assert "a" in out.read_text()
+
+    def test_export_unknown_format_raises(self) -> None:
+        from graftpunk.plugins.cli_plugin import CommandResult
+
+        result = CommandResult(data={})
+        with pytest.raises(ValueError, match="Unknown output format"):
+            result.export("nonexistent")
