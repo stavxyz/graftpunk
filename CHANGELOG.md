@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - Unreleased
+
+### Added
+
+- **`CommandResult.export()` Method**: Format and export command output programmatically without importing CLI internals (#112)
+  - `result.export("json")` → `str` (formatted JSON text)
+  - `result.export("pdf")` → `bytes` (raw PDF bytes)
+  - `result.export("csv", "/tmp/data.csv")` → `Path` (file written)
+  - Supports all format types: json, table, raw, csv, xlsx, pdf
+  - View and column filtering via `views` parameter: `result.export("csv", views=("items:name,price",))`
+  - Uses the same 3-level formatter hierarchy as the CLI (core → plugin-wide → per-command)
+- **`binary` property on `OutputFormatter` protocol**: Formatters declare whether they produce binary output (xlsx, pdf) or text (json, table, raw, csv)
+
+### Changed
+
+- `execute_plugin_command()` accepts optional `plugin_formatters` keyword argument and threads them onto the returned `CommandResult`
+- `GraftpunkClient._execute_command()` populates `_plugin_formatters` from `plugin.format_overrides` during result normalization
+
 ## [1.7.1] - 2026-02-18
 
 ### Fixed
