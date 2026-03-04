@@ -10,6 +10,8 @@ from graftpunk.exceptions import PluginError
 from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 from graftpunk.plugins.login_engine import _select_with_retry
 
+pytestmark = pytest.mark.usefixtures("_fast_login_timings")
+
 
 class DeclarativeHN(SitePlugin):
     """Test plugin with declarative login (nodriver)."""
