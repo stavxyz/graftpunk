@@ -458,7 +458,34 @@ async def _setup_observe_session(
     # so Ctrl+C only reaches Python. We save data, then explicitly stop Chrome.
     old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        browser = await nodriver.start(headless=headless)
+        # Retry logic matching NoDriverBackend._start_async()
+        max_attempts = 3
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                browser = await nodriver.start(
+                    headless=headless,
+                    sandbox=False,
+                    browser_args=["--test-type"],
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if "Failed to connect to browser" not in str(exc):
+                    raise
+                if attempt < max_attempts:
+                    LOG.warning(
+                        "observe_browser_connect_retry",
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                    )
+                    await asyncio.sleep(1.0 * attempt)
+        else:
+            raise RuntimeError(
+                f"Failed to connect to browser after {max_attempts} attempts. "
+                "Chrome may be slow to start — try again, or check for stale "
+                "Chrome processes."
+            ) from last_exc
     finally:
         signal.signal(signal.SIGINT, old_sigint)
     try:
