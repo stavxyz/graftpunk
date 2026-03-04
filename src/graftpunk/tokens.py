@@ -34,10 +34,36 @@ async def nodriver_start(*, headless: bool = True) -> Any:
     """Start a nodriver browser instance.
 
     Thin wrapper to isolate the nodriver import for testability.
+    Retries on connection failure, matching NoDriverBackend._start_async().
     """
     import nodriver
 
-    return await nodriver.start(headless=headless)
+    max_attempts = 3
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await nodriver.start(
+                headless=headless,
+                sandbox=False,
+                browser_args=["--test-type"],
+            )
+        except Exception as exc:
+            last_exc = exc
+            if "Failed to connect to browser" not in str(exc):
+                raise
+            if attempt < max_attempts:
+                LOG.warning(
+                    "nodriver_start_retry",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+                await asyncio.sleep(1.0 * attempt)
+
+    raise RuntimeError(
+        f"Failed to connect to browser after {max_attempts} attempts. "
+        "Chrome may be slow to start — try again, or check for stale "
+        "Chrome processes."
+    ) from last_exc
 
 
 def _deregister_nodriver_browser(browser: Any) -> None:
