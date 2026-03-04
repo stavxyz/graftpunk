@@ -651,12 +651,10 @@ class TestImportHarCommand:
         result = runner.invoke(app, ["import-har", str(tmp_path / "nonexistent.har")])
         # Typer returns exit code 2 for validation errors (file doesn't exist)
         assert result.exit_code in (1, 2)
-        # Strip Rich box-drawing characters and normalize whitespace: Rich
-        # box rendering wraps text differently at various terminal widths
-        # (e.g. under pytest-xdist workers), inserting │ borders mid-phrase.
-        import re
-
-        stripped = re.sub(r"[│╭╮╰╯─]", " ", result.output.lower())
+        # Strip Rich box-drawing characters and normalize whitespace: under
+        # pytest-xdist workers the terminal width differs, so Rich wraps text
+        # mid-phrase (e.g. "not\n│ found") breaking substring matching.
+        stripped = re.sub(r"[\u2500-\u257f]", " ", result.output.lower())
         normalized = " ".join(stripped.split())
         assert "not found" in normalized or "does not exist" in normalized
 
