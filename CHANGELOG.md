@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Intermittent nodriver startup failure in observe mode and token extraction** — `nodriver_start()` in `tokens.py` and `_setup_observe_session()` in `cli/main.py` now retry on "Failed to connect to browser" with back-off, matching the existing pattern in `NoDriverBackend._start_async()`. Also passes `sandbox=False` and `--test-type` browser args consistently across all nodriver launch sites.
+- **`ty` type-check errors in encryption vault parsing** — added explicit `dict[str, str]` type narrowing for Supabase RPC `result.data` so `ty` can resolve the `.get()` overload
+
+### Changed
+
+- **Test suite runs 13x faster** (120s → 9s) via two improvements:
+  - Patched login engine timing constants (`_ELEMENT_WAIT_TIMEOUT`, `_POST_SUBMIT_DELAY`, `_ELEMENT_RETRY_INTERVAL`) in tests via a shared `_fast_login_timings` fixture — eliminates 30s real-clock deadline loops and 3s real sleeps
+  - Added `pytest-xdist` for parallel test execution (`-n auto` default in `addopts`)
+- `_select_with_retry()` now uses `None` sentinel defaults resolved at call time (instead of definition time) so `monkeypatch.setattr` on module constants takes effect in tests
+
 ## [1.8.0] - 2026-02-19
 
 ### Added
