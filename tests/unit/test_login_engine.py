@@ -1679,10 +1679,13 @@ class TestNodriverMultiStepLogin:
             result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Should have two sleep calls: step delay (0.5) and post-submit delay (0, patched)
+        # Exactly two sleep calls: step delay (0.5) and post-submit delay (patched to 0)
+        from graftpunk.plugins.login_engine import _POST_SUBMIT_DELAY
+
+        assert mock_sleep.call_count == 2
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
-        assert mock_sleep.call_count >= 2  # step delay + post-submit delay
+        assert _POST_SUBMIT_DELAY in sleep_calls
 
     @pytest.mark.asyncio
     async def test_step_without_submit_skips_click(self) -> None:
@@ -2009,10 +2012,13 @@ class TestSeleniumMultiStepLogin:
             result = login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Should have two sleep calls: step delay (0.5) and post-submit delay (0, patched)
+        # Exactly two sleep calls: step delay (0.5) and post-submit delay (patched to 0)
+        from graftpunk.plugins.login_engine import _POST_SUBMIT_DELAY
+
+        assert mock_sleep.call_count == 2
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
-        assert mock_sleep.call_count >= 2  # step delay + post-submit delay
+        assert _POST_SUBMIT_DELAY in sleep_calls
 
     def test_step_without_submit_skips_click(self) -> None:
         """Step without submit selector skips the click action."""
