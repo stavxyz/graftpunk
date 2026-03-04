@@ -7,6 +7,8 @@ import pytest
 from graftpunk.exceptions import PluginError
 from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 
+pytestmark = pytest.mark.usefixtures("_fast_login_timings")
+
 
 class DeclarativeHN(SitePlugin):
     """Test plugin with declarative login (nodriver)."""
@@ -1677,10 +1679,10 @@ class TestNodriverMultiStepLogin:
             result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Should have two sleep calls: step delay (0.5) and post-submit delay (3)
+        # Should have two sleep calls: step delay (0.5) and post-submit delay (0, patched)
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
-        assert 3 in sleep_calls  # _POST_SUBMIT_DELAY
+        assert mock_sleep.call_count >= 2  # step delay + post-submit delay
 
     @pytest.mark.asyncio
     async def test_step_without_submit_skips_click(self) -> None:
@@ -2007,10 +2009,10 @@ class TestSeleniumMultiStepLogin:
             result = login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Should have two sleep calls: step delay (0.5) and post-submit delay (3)
+        # Should have two sleep calls: step delay (0.5) and post-submit delay (0, patched)
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
-        assert 3 in sleep_calls  # _POST_SUBMIT_DELAY
+        assert mock_sleep.call_count >= 2  # step delay + post-submit delay
 
     def test_step_without_submit_skips_click(self) -> None:
         """Step without submit selector skips the click action."""
