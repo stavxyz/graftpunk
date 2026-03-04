@@ -52,9 +52,12 @@ async def _select_with_retry(
         tab: nodriver tab instance.
         selector: CSS selector string.
         timeout: Total seconds to wait before giving up (must be positive).
-            Defaults to ``_ELEMENT_WAIT_TIMEOUT`` at call time.
+            Defaults to the current value of ``_ELEMENT_WAIT_TIMEOUT``
+            (resolved at call time, not definition time, so monkeypatching
+            the module constant takes effect).
         interval: Seconds between retry attempts (must be positive).
-            Defaults to ``_ELEMENT_RETRY_INTERVAL`` at call time.
+            Defaults to the current value of ``_ELEMENT_RETRY_INTERVAL``
+            (resolved at call time for the same reason).
 
     Returns:
         The matched element, or None if not found within timeout.
