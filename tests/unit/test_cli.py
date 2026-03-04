@@ -651,7 +651,14 @@ class TestImportHarCommand:
         result = runner.invoke(app, ["import-har", str(tmp_path / "nonexistent.har")])
         # Typer returns exit code 2 for validation errors (file doesn't exist)
         assert result.exit_code in (1, 2)
-        assert "not found" in result.output.lower() or "does not exist" in result.output.lower()
+        # Strip Rich box-drawing characters and normalize whitespace: Rich
+        # box rendering wraps text differently at various terminal widths
+        # (e.g. under pytest-xdist workers), inserting │ borders mid-phrase.
+        import re
+
+        stripped = re.sub(r"[│╭╮╰╯─]", " ", result.output.lower())
+        normalized = " ".join(stripped.split())
+        assert "not found" in normalized or "does not exist" in normalized
 
     def test_import_har_invalid_format(self, tmp_path):
         """Test import-har with invalid format type."""
