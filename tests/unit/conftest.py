@@ -56,7 +56,9 @@ def _fast_login_timings(monkeypatch: pytest.MonkeyPatch) -> None:
     _ELEMENT_WAIT_TIMEOUT (30s) causes deadline-based loops to spin for 30
     real seconds even when asyncio.sleep is mocked.  _POST_SUBMIT_DELAY (3s)
     causes a real asyncio.sleep(3) in tests that don't mock sleep.
+    _ELEMENT_RETRY_INTERVAL (1s) adds real delay between retry attempts in
+    _select_with_retry's deadline loop.
     """
-    monkeypatch.setattr("graftpunk.plugins.login_engine._POST_SUBMIT_DELAY", 0)
+    monkeypatch.setattr("graftpunk.plugins.login_engine._POST_SUBMIT_DELAY", 0.001)
     monkeypatch.setattr("graftpunk.plugins.login_engine._ELEMENT_WAIT_TIMEOUT", 0.05)
     monkeypatch.setattr("graftpunk.plugins.login_engine._ELEMENT_RETRY_INTERVAL", 0.001)
