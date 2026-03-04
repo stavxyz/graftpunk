@@ -148,12 +148,21 @@ def _get_key_from_supabase_vault() -> bytes:
                 "SELECT vault.create_secret('base64-key', 'session-encryption-key');"
             )
 
-        # The RPC returns the decrypted secret value
+        # The RPC returns the decrypted secret value.  Supabase-py types
+        # result.data as Any, but ty resolves it to object | list[object] |
+        # None depending on the code path, so we cast through dict[str, ...]
+        # to satisfy the type checker.
         secret_value = result.data
         if isinstance(secret_value, list) and len(secret_value) > 0:
-            secret_value = secret_value[0].get("decrypted_secret", "")
+            first = secret_value[0]
+            if isinstance(first, dict):
+                row: dict[str, str] = first  # type: ignore[assignment]
+                secret_value = row.get("decrypted_secret", "")
+            else:
+                secret_value = ""
         elif isinstance(secret_value, dict):
-            secret_value = secret_value.get("decrypted_secret", "")
+            row_d: dict[str, str] = secret_value  # type: ignore[assignment]
+            secret_value = row_d.get("decrypted_secret", "")
 
         if not secret_value:
             raise EncryptionError(f"Empty encryption key returned from Vault for '{vault_name}'")
