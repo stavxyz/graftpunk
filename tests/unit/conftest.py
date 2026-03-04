@@ -2,6 +2,8 @@
 
 from typing import Any
 
+import pytest
+
 
 def close_coro_and_return(return_value: Any = None) -> Any:
     """Create a side_effect function that closes coroutines to avoid RuntimeWarnings.
@@ -45,3 +47,16 @@ def close_coro_and_raise(exc: Exception) -> Any:
         raise exc
 
     return _side_effect
+
+
+@pytest.fixture()
+def _fast_login_timings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch login engine timing constants so tests don't wait real time.
+
+    _ELEMENT_WAIT_TIMEOUT (30s) causes deadline-based loops to spin for 30
+    real seconds even when asyncio.sleep is mocked.  _POST_SUBMIT_DELAY (3s)
+    causes a real asyncio.sleep(3) in tests that don't mock sleep.
+    """
+    monkeypatch.setattr("graftpunk.plugins.login_engine._POST_SUBMIT_DELAY", 0)
+    monkeypatch.setattr("graftpunk.plugins.login_engine._ELEMENT_WAIT_TIMEOUT", 0.05)
+    monkeypatch.setattr("graftpunk.plugins.login_engine._ELEMENT_RETRY_INTERVAL", 0.001)
