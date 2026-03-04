@@ -35,8 +35,8 @@ async def _select_with_retry(
     tab: Any,  # nodriver.Tab — can't import due to upstream SyntaxError in CDP codegen
     selector: str,
     *,
-    timeout: float = _ELEMENT_WAIT_TIMEOUT,
-    interval: float = _ELEMENT_RETRY_INTERVAL,
+    timeout: float | None = None,
+    interval: float | None = None,
 ) -> Any:  # nodriver.Element | None
     """Wait for a CSS selector, retrying through page transitions.
 
@@ -52,7 +52,9 @@ async def _select_with_retry(
         tab: nodriver tab instance.
         selector: CSS selector string.
         timeout: Total seconds to wait before giving up (must be positive).
+            Defaults to ``_ELEMENT_WAIT_TIMEOUT`` at call time.
         interval: Seconds between retry attempts (must be positive).
+            Defaults to ``_ELEMENT_RETRY_INTERVAL`` at call time.
 
     Returns:
         The matched element, or None if not found within timeout.
@@ -61,6 +63,10 @@ async def _select_with_retry(
         ValueError: If timeout or interval are not positive.
         ProtocolException: If timeout expires and last failure was a protocol error.
     """
+    if timeout is None:
+        timeout = _ELEMENT_WAIT_TIMEOUT
+    if interval is None:
+        interval = _ELEMENT_RETRY_INTERVAL
     if timeout <= 0:
         raise ValueError(f"timeout must be positive, got {timeout}")
     if interval <= 0:
