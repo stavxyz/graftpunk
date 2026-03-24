@@ -43,6 +43,39 @@ if TYPE_CHECKING:
 
 LOG = get_logger(__name__)
 
+_nodriver_cookie_patched = False
+
+
+def _patch_nodriver_cookie_parsing() -> None:
+    """Patch nodriver's Cookie.from_json to handle missing 'sameParty' field.
+
+    Chrome removed the 'sameParty' field from CDP Network.Cookie responses,
+    but nodriver 0.48.1 still does a hard key lookup that raises KeyError.
+    This patches Cookie.from_json to use .get() with a default instead.
+
+    See: https://github.com/nicefail/nodriver/issues/new (issues restricted)
+    Idempotent — safe to call multiple times.
+    """
+    global _nodriver_cookie_patched  # noqa: PLW0603
+    if _nodriver_cookie_patched:
+        return
+
+    try:
+        from nodriver.cdp.network import Cookie  # type: ignore[attr-defined]
+    except ImportError:
+        return
+
+    _original_from_json = Cookie.from_json.__func__
+
+    @classmethod  # type: ignore[misc]
+    def _patched_from_json(cls, json):  # type: ignore[no-untyped-def]  # noqa: N805, ANN001
+        json.setdefault("sameParty", False)
+        return _original_from_json(cls, json)
+
+    Cookie.from_json = _patched_from_json  # type: ignore[assignment]
+    _nodriver_cookie_patched = True
+    LOG.debug("nodriver_cookie_sameparty_patched")
+
 
 @contextmanager
 def _suppress_nodriver_cleanup_noise():
@@ -213,6 +246,8 @@ class NoDriverBackend:
             raise BrowserError(
                 "nodriver package not installed. Install with: pip install graftpunk[nodriver]"
             ) from exc
+
+        _patch_nodriver_cookie_parsing()
 
         # --test-type suppresses Chrome's "unsupported flag" warning banner
         browser_args = ["--test-type"]
