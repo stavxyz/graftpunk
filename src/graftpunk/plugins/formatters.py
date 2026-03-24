@@ -226,7 +226,7 @@ class TableFormatter:
             headers = list(data[0].keys())
             table = Table(header_style="bold cyan", border_style="dim")
             for header in headers:
-                table.add_column(header)
+                table.add_column(header)  # type: ignore[arg-type]
             for row in data:
                 table.add_row(*[str(row.get(h, "")) for h in headers])
             console.print(table)
@@ -428,16 +428,16 @@ class XlsxFormatter:
                 worksheet.write(0, col, header, bold)
             for row_idx, row in enumerate(data, start=1):
                 for col_idx, header in enumerate(headers):
-                    value = row.get(header, "")
+                    value = row.get(header, "")  # type: ignore[union-attr]
                     if isinstance(value, (dict, list)):
                         value = json.dumps(value, default=str)
                     worksheet.write(row_idx, col_idx, value)
             # Auto-size columns: sample first 100 rows for performance,
             # cap cell width at 50 chars to prevent very wide columns.
             for col_idx, header in enumerate(headers):
-                max_len = len(header)
+                max_len = len(header)  # type: ignore[arg-type]
                 for row in data[:100]:
-                    val = str(row.get(header, ""))
+                    val = str(row.get(header, ""))  # type: ignore[union-attr]
                     max_len = max(max_len, min(len(val), 50))
                 worksheet.set_column(col_idx, col_idx, max_len + 2)
         elif isinstance(data, dict):

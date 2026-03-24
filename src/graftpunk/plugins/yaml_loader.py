@@ -257,12 +257,12 @@ def validate_yaml_schema(data: dict[str, Any], filepath: Path) -> None:
                 )
 
             # Validate param type if specified
-            param_type = param.get("type", "str").lower()
+            param_type = param.get("type", "str").lower()  # type: ignore[no-matching-overload]
             valid_types = {"str", "string", "int", "integer", "float", "bool", "boolean"}
             if param_type not in valid_types:
                 raise PluginError(
                     f"Plugin '{filepath}': command '{cmd_name}' param "
-                    f"'{param['name']}' has invalid type '{param_type}'. "
+                    f"'{param['name']}' has invalid type '{param_type}'. "  # type: ignore[index]
                     f"Valid types: str, int, float, bool"
                 )
 
@@ -372,10 +372,10 @@ def parse_yaml_plugin(
                 )
             try:
                 step = LoginStep(
-                    fields=step_dict.get("fields", {}),
-                    submit=step_dict.get("submit", ""),
-                    wait_for=step_dict.get("wait_for", ""),
-                    delay=step_dict.get("delay", 0.0),
+                    fields=step_dict.get("fields", {}),  # type: ignore[no-matching-overload]
+                    submit=step_dict.get("submit", ""),  # type: ignore[no-matching-overload]
+                    wait_for=step_dict.get("wait_for", ""),  # type: ignore[no-matching-overload]
+                    delay=step_dict.get("delay", 0.0),  # type: ignore[no-matching-overload]
                 )
                 steps.append(step)
             except ValueError as exc:
@@ -408,13 +408,13 @@ def parse_yaml_plugin(
                 )
             tokens.append(
                 Token(
-                    name=token_def["name"],
-                    source=token_def["source"],
-                    pattern=token_def.get("pattern"),
-                    cookie_name=token_def.get("cookie_name"),
-                    response_header=token_def.get("response_header"),
-                    page_url=token_def.get("page_url", "/"),
-                    cache_duration=token_def.get("cache_duration", 300),
+                    name=token_def["name"],  # type: ignore[index]
+                    source=token_def["source"],  # type: ignore[index]
+                    pattern=token_def.get("pattern"),  # type: ignore[arg-type]
+                    cookie_name=token_def.get("cookie_name"),  # type: ignore[arg-type]
+                    response_header=token_def.get("response_header"),  # type: ignore[arg-type]
+                    page_url=token_def.get("page_url", "/"),  # type: ignore[no-matching-overload]
+                    cache_duration=token_def.get("cache_duration", 300),  # type: ignore[no-matching-overload]
                 )
             )
         token_config = TokenConfig(tokens=tuple(tokens))
