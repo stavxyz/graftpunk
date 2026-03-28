@@ -20,6 +20,7 @@ Example:
     >>> session = BrowserSession(backend="selenium", headless=False)
 """
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -254,11 +255,14 @@ class BrowserSession(requestium.Session):
             )
         return webdriver
 
-    async def transfer_nodriver_cookies_to_session(self) -> None:
+    async def transfer_nodriver_cookies_to_session(self, *, timeout: float = 30) -> None:
         """Transfer cookies from nodriver browser to the requests session.
 
         Call this after login before caching the session so that browser
         cookies are available for subsequent API calls.
+
+        Args:
+            timeout: Max seconds to wait for the browser to return cookies.
 
         Raises:
             BrowserError: If backend is not initialized or browser is not started.
@@ -274,7 +278,12 @@ class BrowserSession(requestium.Session):
             raise BrowserError(
                 "Cannot transfer cookies: browser is None. Ensure browser was started successfully."
             )
-        cookies = await browser.cookies.get_all()
+        try:
+            async with asyncio.timeout(timeout):
+                cookies = await browser.cookies.get_all()
+        except TimeoutError:
+            LOG.warning("cookie_transfer_timeout", timeout=timeout)
+            return
         for cookie in cookies:
             if cookie.value is None:
                 LOG.debug("skipping_none_valued_cookie", name=cookie.name, domain=cookie.domain)
