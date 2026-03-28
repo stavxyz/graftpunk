@@ -24,6 +24,7 @@ LOG = get_logger(__name__)
 _POST_SUBMIT_DELAY = 3  # seconds to wait after form submission for page to settle
 _ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transitions
 _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
+_LOGIN_NAV_TIMEOUT = 60  # seconds — max time for initial login page navigation
 
 
 # TODO: Replace Any type annotations with proper nodriver.Tab / nodriver.Element
@@ -345,7 +346,17 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
         failure_text = plugin.login_config.failure
 
         async with BrowserSession(backend="nodriver", headless=False) as session:
-            tab = await session.driver.get(f"{base_url}{login_url}")
+            try:
+                async with asyncio.timeout(_LOGIN_NAV_TIMEOUT):
+                    tab = await session.driver.get(f"{base_url}{login_url}")
+            except TimeoutError:
+                LOG.error(
+                    "login_page_navigation_timeout",
+                    plugin=plugin.site_name,
+                    url=f"{base_url}{login_url}",
+                    timeout=_LOGIN_NAV_TIMEOUT,
+                )
+                return False
 
             # Start header capture for role extraction (lightweight, no body fetching)
             from graftpunk.observe.capture import create_capture_backend
