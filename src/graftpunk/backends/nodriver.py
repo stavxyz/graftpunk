@@ -77,6 +77,35 @@ def _patch_nodriver_cookie_parsing() -> None:
     LOG.debug("nodriver_cookie_sameparty_patched")
 
 
+def _patch_nodriver_cookie_compat() -> None:
+    """Patch nodriver's Cookie.from_json to handle missing ``sameParty`` field.
+
+    Chrome 146+ removed ``sameParty`` from CDP cookie responses, but nodriver's
+    auto-generated ``network.Cookie.from_json()`` does a hard ``json['sameParty']``
+    lookup that raises ``KeyError``.  This kills the CDP listener task and leaves
+    the ``Storage.getCookies`` Future unresolved, hanging the caller forever.
+
+    Applied once at import time so all cookie operations are safe.
+    """
+    try:
+        from nodriver.cdp.network import Cookie
+
+        _original_from_json = Cookie.from_json.__func__  # type: ignore[attr-defined]
+
+        @classmethod  # type: ignore[misc]
+        def _patched_from_json(cls, json):  # type: ignore[no-untyped-def]  # noqa: N805, ANN001
+            json.setdefault("sameParty", False)
+            return _original_from_json(cls, json)
+
+        Cookie.from_json = _patched_from_json  # type: ignore[assignment]
+        LOG.debug("nodriver_cookie_compat_patched")
+    except Exception:
+        LOG.debug("nodriver_cookie_compat_patch_skipped")
+
+
+_patch_nodriver_cookie_compat()
+
+
 @contextmanager
 def _suppress_nodriver_cleanup_noise():
     """Suppress noisy stdout from nodriver cleanup during browser stop.
