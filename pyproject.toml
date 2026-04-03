@@ -120,6 +120,10 @@ unused-type-ignore-comment = "ignore"
 [tool.ty.environment]
 python-version = "3.11"
 
+[tool.ty.analysis]
+# nodriver generates CDP types at build time; ty cannot resolve them statically.
+allowed-unresolved-imports = ["nodriver.cdp.**"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-v", "--strict-markers", "--tb=short", "-n", "auto"]

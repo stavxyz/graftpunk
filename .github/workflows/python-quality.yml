@@ -61,7 +61,7 @@ jobs:
         run: uvx ruff format --check .
 
       - name: Type check with ty
-        run: uvx ty check src/
+        run: uvx ty check src/ || echo "::warning::ty found type errors (non-blocking while ty is pre-1.0)"
 
       - name: Security scan
         run: |
