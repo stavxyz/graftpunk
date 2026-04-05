@@ -115,10 +115,15 @@ quote-style = "double"
 [tool.ty.rules]
 # nodriver CDP stubs resolve on some Python/nodriver versions but not others,
 # so type: ignore[attr-defined] comments may appear unused locally.
+# See also [tool.ty.analysis] for allowed-unresolved-imports.
 unused-type-ignore-comment = "ignore"
 
 [tool.ty.environment]
 python-version = "3.11"
+
+[tool.ty.analysis]
+# nodriver generates CDP types at build time; ty cannot resolve them statically.
+allowed-unresolved-imports = ["nodriver.cdp.**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
