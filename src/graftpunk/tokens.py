@@ -18,7 +18,8 @@ LOG = get_logger(__name__)
 # Polling constants for browser-based token extraction.
 # Tokens may not appear immediately (e.g. anti-bot challenges, lazy-rendered pages).
 _TOKEN_POLL_ATTEMPTS = 6
-_TOKEN_POLL_INTERVAL = 0.5  # seconds between attempts (total max: 3s)
+_TOKEN_POLL_INTERVAL = 0.5  # seconds between retry attempts
+_TOKEN_NAV_TIMEOUT = 30  # seconds — per-URL max for navigation + token extraction
 
 
 class _BrowserExtractionNeeded(Exception):  # noqa: N818 — internal control flow signal, not an error
@@ -157,9 +158,18 @@ async def _extract_tokens_browser(
         for page_url, token_group in by_url.items():
             url = f"{base_url.rstrip('/')}{page_url}"
             try:
-                tab = await browser.get(url)
-                extracted = await _poll_for_tokens(tab, token_group, url, "browser_token")
-                results.update(extracted)
+                async with asyncio.timeout(_TOKEN_NAV_TIMEOUT):
+                    tab = await browser.get(url)
+                    extracted = await _poll_for_tokens(tab, token_group, url, "browser_token")
+                    results.update(extracted)
+            except TimeoutError:
+                LOG.warning(
+                    "browser_token_navigation_timeout",
+                    url=url,
+                    timeout=_TOKEN_NAV_TIMEOUT,
+                    token_count=len(token_group),
+                )
+                continue
             except Exception as exc:  # noqa: BLE001 — per-URL isolation; nodriver raises varied exception types
                 LOG.warning(
                     "browser_token_navigation_failed",
@@ -203,11 +213,26 @@ async def extract_tokens_from_tab(
     for page_url, token_group in by_url.items():
         url = f"{base_url.rstrip('/')}{page_url}"
         try:
-            tab = await tab.browser.get(url)
-            extracted = await _poll_for_tokens(tab, token_group, url, "login_token")
-            results.update(extracted)
+            async with asyncio.timeout(_TOKEN_NAV_TIMEOUT):
+                tab = await tab.browser.get(url)
+                extracted = await _poll_for_tokens(tab, token_group, url, "login_token")
+                results.update(extracted)
+        except TimeoutError:
+            LOG.warning(
+                "login_token_extraction_timeout",
+                url=url,
+                timeout=_TOKEN_NAV_TIMEOUT,
+                token_count=len(token_group),
+            )
+            continue
         except Exception as exc:  # noqa: BLE001 — per-URL isolation; best-effort during login
-            LOG.warning("login_token_extraction_failed", url=url, error=str(exc))
+            LOG.warning(
+                "login_token_extraction_failed",
+                url=url,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                token_count=len(token_group),
+            )
             continue
 
     return results
