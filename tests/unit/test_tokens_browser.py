@@ -153,6 +153,59 @@ class TestExtractTokensBrowser:
         assert "X-Nonce" not in results
 
     @pytest.mark.asyncio
+    async def test_timeout_skips_url_and_continues(self) -> None:
+        """Per-URL timeout skips the timed-out URL, extracts remaining."""
+        import asyncio
+
+        from graftpunk.tokens import _extract_tokens_browser
+
+        session = requests.Session()
+        token_slow = Token(
+            name="X-Slow",
+            source="page",
+            pattern=r'slow = "([^"]+)"',
+            page_url="/slow",
+            extraction="browser",
+        )
+        token_fast = Token(
+            name="X-Fast",
+            source="page",
+            pattern=r'fast = "([^"]+)"',
+            page_url="/fast",
+            extraction="browser",
+        )
+
+        mock_tab_fast = _AwaitableMock()
+        mock_tab_fast.get_content = AsyncMock(return_value='fast = "val1";')
+
+        async def _side_effect(url):
+            if "/slow" in url:
+                await asyncio.sleep(999)
+            return mock_tab_fast
+
+        mock_browser = AsyncMock()
+        mock_browser.get = _side_effect
+        mock_browser.stop = MagicMock()
+        mock_browser.main_tab = _AwaitableMock()
+
+        with (
+            patch("graftpunk.tokens.nodriver_start", return_value=mock_browser),
+            patch(
+                "graftpunk.session.inject_cookies_to_nodriver",
+                new_callable=AsyncMock,
+                return_value=(0, 0),
+            ),
+            patch("graftpunk.tokens._deregister_nodriver_browser"),
+            patch("graftpunk.tokens._TOKEN_NAV_TIMEOUT", 0.05),
+        ):
+            results = await _extract_tokens_browser(
+                session, [token_slow, token_fast], "https://example.com"
+            )
+
+        assert "X-Slow" not in results
+        assert results == {"X-Fast": "val1"}
+
+    @pytest.mark.asyncio
     async def test_pattern_not_found_excluded_from_results(self) -> None:
         from graftpunk.tokens import _extract_tokens_browser
 
@@ -444,6 +497,34 @@ class TestExtractTokensFromTab:
         mock_tab.browser = MagicMock()
 
         results = await extract_tokens_from_tab(mock_tab, [token], "https://example.com")
+        assert results == {}
+
+    @pytest.mark.asyncio
+    async def test_timeout_skips_url_and_continues(self) -> None:
+        """Per-URL timeout skips the timed-out URL without crashing."""
+        import asyncio
+
+        from graftpunk.tokens import Token, extract_tokens_from_tab
+
+        token = Token(
+            name="X-CSRF",
+            source="page",
+            pattern=r'csrf = "([^"]+)"',
+            page_url="/slow",
+            extraction="browser",
+        )
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(999)
+
+        mock_tab = _AwaitableMock()
+        mock_browser = MagicMock()
+        mock_browser.get = _hang
+        mock_tab.browser = mock_browser
+
+        with patch("graftpunk.tokens._TOKEN_NAV_TIMEOUT", 0.05):
+            results = await extract_tokens_from_tab(mock_tab, [token], "https://example.com")
+
         assert results == {}
 
 

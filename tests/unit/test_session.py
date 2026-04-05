@@ -539,6 +539,28 @@ class TestTransferNodriverCookies:
             with pytest.raises(BrowserError, match="browser is None"):
                 await session.transfer_nodriver_cookies_to_session()
 
+    async def test_raises_on_cookie_transfer_timeout(self):
+        """Raises BrowserError when browser.cookies.get_all() hangs."""
+        from graftpunk.exceptions import BrowserError
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+
+            import asyncio
+
+            async def _hang_forever():
+                await asyncio.sleep(999)
+                return []  # pragma: no cover
+
+            mock_browser = MagicMock()
+            mock_browser.cookies.get_all = _hang_forever
+            session._backend_instance = MagicMock()
+            session._backend_instance._browser = mock_browser
+
+            with pytest.raises(BrowserError, match="Cookie transfer timed out"):
+                await session.transfer_nodriver_cookies_to_session(timeout=0.05)
+
 
 class TestStartAsync:
     """Tests for async start_async method."""

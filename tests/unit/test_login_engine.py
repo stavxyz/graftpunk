@@ -151,6 +151,29 @@ class TestDeclarativeLoginEngine:
 
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_nodriver_login_page_navigation_timeout(self) -> None:
+        """Raises PluginError when login page navigation times out."""
+        import asyncio
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeHN()
+        login_method = generate_login_method(plugin)
+
+        async def _hang_forever(*_args, **_kwargs):
+            await asyncio.sleep(999)
+
+        mock_bs, instance = _make_nodriver_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.get = _hang_forever
+
+        with (
+            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            pytest.raises(PluginError, match="Timed out loading login page"),
+        ):
+            await login_method({"username": "user", "password": "test"})  # noqa: S106
+
     def test_selenium_login_success(self) -> None:
         """Test selenium declarative login success path."""
         from graftpunk.plugins.login_engine import generate_login_method
