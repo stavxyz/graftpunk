@@ -45,6 +45,53 @@ LOG = get_logger(__name__)
 
 _nodriver_cookie_patched = False
 
+# Subprocess reap timeouts. nodriver's Browser.stop() sends SIGTERM (or kill
+# fallback) but never awaits proc.wait(), so the Chrome subprocess sits as a
+# zombie under the live python parent. _reap_browser_process below awaits
+# the subprocess to give the kernel a chance to collect its exit status.
+# Module-level constants (rather than function defaults) so tests can
+# monkeypatch tight timeouts.
+_REAP_TERM_TIMEOUT_S: float = 3.0
+_REAP_KILL_TIMEOUT_S: float = 1.0
+
+
+async def _reap_browser_process(proc: asyncio.subprocess.Process | None) -> None:
+    """Await Chrome subprocess exit so the kernel can reap it.
+
+    nodriver's Browser.stop() calls proc.terminate() (or proc.kill() as a
+    fallback) and then sets self._process = None without ever awaiting
+    proc.wait(). asyncio child processes must be wait()ed for the kernel to
+    collect their exit status; otherwise they accumulate as <defunct>
+    (zombie) entries under the parent.
+
+    Behavior:
+      1. await wait_for(proc.wait(), _REAP_TERM_TIMEOUT_S) — normal SIGTERM path.
+      2. On timeout: proc.kill() (SIGKILL), then await wait_for(proc.wait(),
+         _REAP_KILL_TIMEOUT_S). SIGKILL cannot be caught/ignored, so the
+         second wait should always return.
+      3. On second timeout (kernel-level wedge): log a warning and return.
+         The zombie persists until the python process exits.
+      4. ProcessLookupError from proc.kill() is swallowed — Chrome exited in
+         the race window between the first wait timeout and our kill call.
+
+    Args:
+        proc: The asyncio subprocess. None is a no-op (start() may have
+            failed before subprocess spawn, or the backend was never started).
+    """
+    if proc is None:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), _REAP_TERM_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), _REAP_KILL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            LOG.warning("chrome_failed_to_exit_after_sigkill", pid=proc.pid)
+
 
 def _patch_nodriver_cookie_parsing() -> None:
     """Patch nodriver's Cookie.from_json to handle missing 'sameParty' field.
@@ -368,6 +415,11 @@ class NoDriverBackend:
             pass to asyncio.run().
         """
         if self._browser is not None:
+            # Capture the subprocess BEFORE browser.stop() runs, because
+            # nodriver's stop() resets self._process = None inside its
+            # cleanup loop. If we read it afterward, we get None and the
+            # reap silently no-ops.
+            proc = getattr(self._browser, "_process", None)
             try:
                 self._browser.stop()
             except (RuntimeError, OSError) as exc:
@@ -375,6 +427,15 @@ class NoDriverBackend:
             # Remove browser from nodriver's global registry so the atexit
             # handler doesn't re-stop it and print cleanup messages to stdout.
             self._deregister_browser()
+            # Reap the Chrome subprocess. nodriver's Browser.stop() sends
+            # SIGTERM but never awaits proc.wait(), leaving Chrome as a
+            # zombie under the live python parent.
+            #
+            # Edge case: if browser.stop() raised BEFORE sending SIGTERM,
+            # the helper will pay one _REAP_TERM_TIMEOUT_S (3s) wait before
+            # the SIGKILL escalation reaps the process. Acceptable — error
+            # paths are rare and a 3s delay is bounded.
+            await _reap_browser_process(proc)
 
     def stop(self) -> None:
         """Stop the browser and release resources.
