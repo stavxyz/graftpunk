@@ -1020,3 +1020,13 @@ class TestNoDriverBackendStopReap:
 
         assert proc.wait_call_count == 1, "proc.wait() should have been awaited exactly once"
         assert proc.kill_called is False, "kill() should not be needed on success"
+
+    async def test_stop_async_no_op_when_no_browser(self) -> None:
+        """_stop_async returns immediately when _browser is None — helper
+        is not invoked at all. Regression test for the early-return guard."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = None
+
+        # Should not raise (no proc to read, helper not called).
+        await backend._stop_async()
