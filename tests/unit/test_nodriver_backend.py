@@ -1120,3 +1120,34 @@ class TestNoDriverBackendStopReap:
             and e.get("log_level") == "warning"
             for e in cap
         ), f"expected warning event in captured logs: {cap}"
+
+    async def test_stop_async_handles_process_lookup_race(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ProcessLookupError on kill() is a successful reap (race-tight).
+
+        SIGTERM wait timed out; Chrome exited in the window between the
+        wait_for timeout and our kill() call. kill() raises
+        ProcessLookupError because the PID is gone. This is success — the
+        process IS reaped, the wait_for just missed the exit by microseconds.
+        """
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05
+        )
+
+        # First wait blocks; kill raises ProcessLookupError; helper returns
+        # without making a second wait call.
+        proc = self._make_proc(
+            wait_behavior=["block"], kill_raises=ProcessLookupError(3, "No such process")
+        )
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc)
+
+        # Should not raise.
+        await backend._stop_async()
+
+        assert proc.wait_call_count == 1, (
+            "Helper should not call wait() a second time after ProcessLookupError"
+        )
+        assert proc.kill_called is True
