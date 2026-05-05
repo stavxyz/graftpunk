@@ -1151,3 +1151,18 @@ class TestNoDriverBackendStopReap:
             "Helper should not call wait() a second time after ProcessLookupError"
         )
         assert proc.kill_called is True
+
+    def test_sync_stop_also_reaps_process(self) -> None:
+        """The sync stop() path inherits the reap via _run_async->_stop_async.
+
+        Regression guard against a future refactor that splits the sync and
+        async stop paths and forgets to wire the reap into both.
+        """
+        proc = self._make_proc(wait_behavior=[0])
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc)
+
+        backend.stop()  # sync path
+
+        assert proc.wait_call_count == 1, "sync stop() should also reap via _stop_async"
