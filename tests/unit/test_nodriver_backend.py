@@ -983,6 +983,7 @@ class TestNoDriverBackendStopReap:
             r = next(results_iter)
             if r == "block":
                 import asyncio as _asyncio
+
                 await _asyncio.Event().wait()
             if isinstance(r, BaseException):
                 raise r
@@ -1069,12 +1070,8 @@ class TestNoDriverBackendStopReap:
     ) -> None:
         """When SIGTERM times out, helper escalates to SIGKILL and re-waits."""
         # Tighten timeouts so the test runs in milliseconds.
-        monkeypatch.setattr(
-            "graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05
-        )
-        monkeypatch.setattr(
-            "graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05
-        )
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05)
 
         # First wait blocks (simulates Chrome ignoring SIGTERM); second wait
         # returns immediately (simulates exit after SIGKILL).
@@ -1093,12 +1090,8 @@ class TestNoDriverBackendStopReap:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When even SIGKILL doesn't unblock wait(), log a warning and return."""
-        monkeypatch.setattr(
-            "graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05
-        )
-        monkeypatch.setattr(
-            "graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05
-        )
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05)
 
         # Both wait() calls block — simulates a kernel-level wedge.
         proc = self._make_proc(wait_behavior=["block", "block"])
@@ -1131,9 +1124,7 @@ class TestNoDriverBackendStopReap:
         ProcessLookupError because the PID is gone. This is success — the
         process IS reaped, the wait_for just missed the exit by microseconds.
         """
-        monkeypatch.setattr(
-            "graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05
-        )
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
 
         # First wait blocks; kill raises ProcessLookupError; helper returns
         # without making a second wait call.

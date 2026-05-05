@@ -82,14 +82,14 @@ async def _reap_browser_process(proc: asyncio.subprocess.Process | None) -> None
         return
     try:
         await asyncio.wait_for(proc.wait(), _REAP_TERM_TIMEOUT_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:
             return
         try:
             await asyncio.wait_for(proc.wait(), _REAP_KILL_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             LOG.warning("chrome_failed_to_exit_after_sigkill", pid=proc.pid)
 
 
