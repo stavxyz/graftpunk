@@ -1030,3 +1030,13 @@ class TestNoDriverBackendStopReap:
 
         # Should not raise (no proc to read, helper not called).
         await backend._stop_async()
+
+    async def test_stop_async_handles_browser_with_no_process(self) -> None:
+        """If start() raised between Browser construction and subprocess
+        spawn, _browser._process is None. Helper must no-op cleanly."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc=None)
+
+        # Should not raise.
+        await backend._stop_async()
