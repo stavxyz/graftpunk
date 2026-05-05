@@ -1040,3 +1040,25 @@ class TestNoDriverBackendStopReap:
 
         # Should not raise.
         await backend._stop_async()
+
+    async def test_stop_async_captures_proc_before_browser_stop_nulls_it(self) -> None:
+        """_stop_async must capture _browser._process BEFORE calling stop().
+
+        nodriver's Browser.stop() resets self._process = None inside its
+        cleanup loop. If our backend reads _process AFTER stop(), it gets
+        None and the helper no-ops, leaving the subprocess as a zombie.
+        """
+        proc = self._make_proc(wait_behavior=[0])
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc)
+
+        await backend._stop_async()
+
+        assert proc.wait_call_count == 1, (
+            "wait() not awaited — capture-before-stop ordering may be broken"
+        )
+        # Sanity: fake_stop nulled _process. If our backend read _process
+        # after stop(), it would have received None and skipped wait() —
+        # which is exactly the bug this test guards against.
+        assert backend._browser._process is None
