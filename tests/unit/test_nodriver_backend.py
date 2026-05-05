@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from graftpunk.backends import get_backend, list_backends
 from graftpunk.backends.nodriver import NoDriverBackend
@@ -1086,3 +1087,36 @@ class TestNoDriverBackendStopReap:
 
         assert proc.wait_call_count == 2, "Expected two wait() calls (SIGTERM + SIGKILL)"
         assert proc.kill_called is True, "kill() should have been called after SIGTERM timeout"
+
+    async def test_stop_async_logs_when_sigkill_also_times_out(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When even SIGKILL doesn't unblock wait(), log a warning and return."""
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05
+        )
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05
+        )
+
+        # Both wait() calls block — simulates a kernel-level wedge.
+        proc = self._make_proc(wait_behavior=["block", "block"])
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc)
+
+        with capture_logs() as cap:
+            await backend._stop_async()
+
+        assert proc.wait_call_count == 2
+        assert proc.kill_called is True
+        # capture_logs() returns event_dicts where 'log_level' is the level
+        # key (structlog's testing processor normalises method name → log_level)
+        # and 'event' is the event string.
+        assert any(
+            e.get("event") == "chrome_failed_to_exit_after_sigkill"
+            and e.get("pid") == proc.pid
+            and e.get("log_level") == "warning"
+            for e in cap
+        ), f"expected warning event in captured logs: {cap}"
