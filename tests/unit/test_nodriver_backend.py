@@ -1062,3 +1062,27 @@ class TestNoDriverBackendStopReap:
         # after stop(), it would have received None and skipped wait() —
         # which is exactly the bug this test guards against.
         assert backend._browser._process is None
+
+    async def test_stop_async_escalates_to_sigkill_on_term_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When SIGTERM times out, helper escalates to SIGKILL and re-waits."""
+        # Tighten timeouts so the test runs in milliseconds.
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05
+        )
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05
+        )
+
+        # First wait blocks (simulates Chrome ignoring SIGTERM); second wait
+        # returns immediately (simulates exit after SIGKILL).
+        proc = self._make_proc(wait_behavior=["block", 0])
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc)
+
+        await backend._stop_async()
+
+        assert proc.wait_call_count == 2, "Expected two wait() calls (SIGTERM + SIGKILL)"
+        assert proc.kill_called is True, "kill() should have been called after SIGTERM timeout"
