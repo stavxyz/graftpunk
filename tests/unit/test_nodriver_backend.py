@@ -948,3 +948,75 @@ class TestNoDriverExpectedStopPatterns:
         """Unexpected patterns are correctly identified."""
         backend = NoDriverBackend()
         assert backend._is_expected_stop_error(pattern) is False
+
+
+class TestNoDriverBackendStopReap:
+    """Tests that NoDriverBackend.stop() reaps the Chrome subprocess.
+
+    nodriver's Browser.stop() sends SIGTERM but never awaits proc.wait(),
+    leaving Chrome as a zombie under the live python parent. The backend's
+    _stop_async() compensates by awaiting the subprocess after browser.stop()
+    via the _reap_browser_process helper.
+    """
+
+    @staticmethod
+    def _make_proc(
+        wait_behavior: list,
+        kill_raises: BaseException | None = None,
+    ) -> MagicMock:
+        """Build a MagicMock asyncio subprocess.
+
+        wait_behavior: list consumed in order on each .wait() call. Each entry
+            is either an int (returned exit code), an Exception (raised), or
+            the string "block" (wait blocks until cancelled by wait_for).
+        kill_raises: if not None, .kill() raises this exception.
+        """
+        proc = MagicMock()
+        proc.pid = 12345
+        proc.wait_call_count = 0
+        proc.kill_called = False
+        results_iter = iter(wait_behavior)
+
+        async def fake_wait():
+            proc.wait_call_count += 1
+            r = next(results_iter)
+            if r == "block":
+                import asyncio as _asyncio
+                await _asyncio.Event().wait()
+            if isinstance(r, BaseException):
+                raise r
+            return r
+
+        def fake_kill():
+            proc.kill_called = True
+            if kill_raises is not None:
+                raise kill_raises
+
+        proc.wait = fake_wait
+        proc.kill = fake_kill
+        return proc
+
+    @staticmethod
+    def _make_browser(proc: MagicMock | None) -> MagicMock:
+        """Build a MagicMock Browser whose .stop() nulls _process (matches
+        nodriver's real behavior in core/browser.py:718)."""
+        browser = MagicMock()
+        browser._process = proc
+
+        def fake_stop():
+            browser._process = None
+
+        browser.stop = fake_stop
+        return browser
+
+    async def test_stop_async_reaps_process(self) -> None:
+        """_stop_async awaits proc.wait() so the kernel reaps Chrome."""
+        proc = self._make_proc(wait_behavior=[0])
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc)
+
+        await backend._stop_async()
+
+        assert proc.wait_call_count == 1, "proc.wait() should have been awaited exactly once"
+        assert proc.kill_called is False, "kill() should not be needed on success"
