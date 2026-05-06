@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-05-05
+
+### Fixed
+
+- **Chrome subprocesses leaked as zombies under live python parents** — `NoDriverBackend._stop_async()` now awaits the Chrome subprocess after `browser.stop()` so the kernel can collect its exit status. Without this, nodriver's `Browser.stop()` sends SIGTERM but never `await`s `proc.wait()`, leaving Chrome as a `<defunct>` entry under the parent until that parent exits. In a docker container with `init: true`, docker-init can't help because the parent is alive — init only reaps processes whose parent has died. The fix adds a module-level `_reap_browser_process()` helper with SIGTERM→SIGKILL escalation (3s, then 1s) and a final warning log on kernel-level wedge. The reap runs in a `try/finally` so it always executes even when `browser.stop()` itself raises. Closes #127. See also #96 (complementary — covers abnormal-exit orphans).
+
 ## [1.8.1] - 2026-03-04
 
 ### Fixed
