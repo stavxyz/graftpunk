@@ -1,5 +1,6 @@
 """Tests for NoDriver browser backend."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -963,17 +964,20 @@ class TestNoDriverBackendStopReap:
     @staticmethod
     def _make_proc(
         wait_behavior: list,
-        kill_raises: BaseException | None = None,
+        kill_raises: OSError | None = None,
     ) -> MagicMock:
         """Build a MagicMock asyncio subprocess.
 
         wait_behavior: list consumed in order on each .wait() call. Each entry
             is either an int (returned exit code), an Exception (raised), or
             the string "block" (wait blocks until cancelled by wait_for).
-        kill_raises: if not None, .kill() raises this exception.
+        kill_raises: if not None, .kill() raises this OSError. Typed as
+            OSError because the helper only handles ProcessLookupError and
+            other OSError subclasses on the kill path.
         """
         proc = MagicMock()
         proc.pid = 12345
+        proc.returncode = None
         proc.wait_call_count = 0
         proc.kill_called = False
         results_iter = iter(wait_behavior)
@@ -982,9 +986,7 @@ class TestNoDriverBackendStopReap:
             proc.wait_call_count += 1
             r = next(results_iter)
             if r == "block":
-                import asyncio as _asyncio
-
-                await _asyncio.Event().wait()
+                await asyncio.Event().wait()
             if isinstance(r, BaseException):
                 raise r
             return r
@@ -1157,3 +1159,56 @@ class TestNoDriverBackendStopReap:
         backend.stop()  # sync path
 
         assert proc.wait_call_count == 1, "sync stop() should also reap via _stop_async"
+
+    async def test_stop_async_public_api_reaps_process(self) -> None:
+        """The public async stop_async() inherits the reap via _stop_async.
+
+        Symmetric regression guard to test_sync_stop_also_reaps_process —
+        BrowserSession.__aexit__ calls stop_async() (not _stop_async()),
+        so the public path is production-critical.
+        """
+        proc = self._make_proc(wait_behavior=[0])
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc)
+
+        await backend.stop_async()
+
+        assert proc.wait_call_count == 1, "stop_async() should reap via _stop_async"
+
+    async def test_stop_async_still_reaps_when_browser_stop_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If browser.stop() raises a handled error, the reap still runs.
+
+        Locks the documented edge case from _stop_async's inline comment:
+        even when browser.stop() raises (and is swallowed by
+        _handle_stop_error), the try/finally must still drive
+        _reap_browser_process so the subprocess is collected. Without the
+        finally, a stop()-side exception would leak the very subprocess
+        the reap exists to collect.
+        """
+        # Tighten timeouts so SIGTERM-then-SIGKILL completes in milliseconds.
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05)
+
+        # First wait blocks (no SIGTERM was sent because stop() raised);
+        # second wait returns 0 after our SIGKILL escalation.
+        proc = self._make_proc(wait_behavior=["block", 0])
+        backend = NoDriverBackend()
+        backend._started = True
+        browser = self._make_browser(proc)
+
+        def raising_stop() -> None:
+            raise RuntimeError("browser is already closed")
+
+        browser.stop = raising_stop
+        backend._browser = browser
+
+        # Should not raise (RuntimeError caught by _handle_stop_error).
+        await backend._stop_async()
+
+        assert proc.kill_called is True, (
+            "SIGKILL escalation should reap the process when browser.stop() raised"
+        )
+        assert proc.wait_call_count == 2, "Both wait() calls (SIGTERM + SIGKILL) should have run"
