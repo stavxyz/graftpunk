@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-07-16
+
+### Added
+
+- **`GRAFTPUNK_BROWSER_EXECUTABLE_PATH` setting** — point the nodriver login browser at a specific Chrome/Chromium binary (e.g. Chrome-for-Testing) on machines/CI without a system Chrome install. `BrowserSession` forwards it to the nodriver backend's `browser_executable_path` option. Refs #132.
+
+### Fixed
+
+- **Login engine couldn't navigate to an absolute `login_config.url` (login host != API `base_url`)** — the login URL was built as `f"{base_url}{login_url}"`, assuming `login_config.url` is a path to append. That produced a malformed URL for a plugin whose login form is on a different host than its API `base_url`. The engine now uses `login_config.url` directly when it is absolute (and joins it onto `base_url` otherwise), in both the nodriver and selenium login generators. Closes #132.
+
 ## [1.8.2] - 2026-05-05
 
 ### Fixed
