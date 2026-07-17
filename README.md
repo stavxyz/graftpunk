@@ -348,6 +348,7 @@ gp import-har auth-flow.har --name mybank
 | `GRAFTPUNK_SESSION_TTL_HOURS` | `720` | Session lifetime (30 days) |
 | `GRAFTPUNK_LOG_LEVEL` | `WARNING` | Logging verbosity |
 | `GRAFTPUNK_LOG_FORMAT` | `console` | Log format: `console` or `json` |
+| `GRAFTPUNK_BROWSER_EXECUTABLE_PATH` | _(system Chrome)_ | Path to a Chrome/Chromium binary for the `nodriver` backend (e.g. Chrome-for-Testing on machines/CI without a system Chrome install) |
 
 CLI flags: `-v` (info), `-vv` (debug), `--log-format json`, `--observe full`, `--network-debug` (wire-level HTTP tracing).
 
@@ -370,6 +371,8 @@ from graftpunk import BrowserSession
 # Use BrowserSession with explicit backend
 session = BrowserSession(backend="nodriver", headless=False)
 ```
+
+**Custom Chrome binary:** the `nodriver` backend auto-detects a system Chrome. Set `GRAFTPUNK_BROWSER_EXECUTABLE_PATH` to point it at a specific Chrome/Chromium binary (e.g. Chrome-for-Testing) on machines or CI without a system Chrome install.
 
 ## Security
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+import urllib.parse
 from typing import TYPE_CHECKING, Any
 
 from graftpunk import BrowserSession, cache_session
@@ -25,6 +26,28 @@ _POST_SUBMIT_DELAY = 3  # seconds to wait after form submission for page to sett
 _ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transitions
 _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
 _LOGIN_NAV_TIMEOUT = 60  # seconds — login page may redirect through SSO/IdP chains
+
+
+def _resolve_url(base_url: str, url: str) -> str:
+    """Resolve a configured plugin URL against ``base_url``.
+
+    A ``LoginConfig.url`` or a token page URL may be either a path appended to
+    ``base_url`` (the common same-host case) or an **absolute** URL, used as-is,
+    when the target host differs from the API ``base_url`` (e.g. a login form on
+    ``www.example.com`` while the API ``base_url`` is ``api.example.com``). An
+    empty string yields ``base_url`` itself.
+
+    Args:
+        base_url: The plugin's API base URL (no trailing slash).
+        url: A path (``/login``), an absolute URL (``https://host/login``), or
+            an empty string.
+
+    Returns:
+        The absolute URL to navigate to.
+    """
+    # Absolute when it carries a scheme (http/https, any case — urlsplit
+    # lower-cases the scheme). Otherwise treat it as a path onto base_url.
+    return url if urllib.parse.urlsplit(url).scheme else f"{base_url}{url}"
 
 
 # TODO: Replace Any type annotations with proper nodriver.Tab / nodriver.Element
@@ -289,7 +312,7 @@ def _extract_and_cache_tokens_selenium(
                 token_results[t.name] = val
         elif t.source == "page" and t.pattern:
             try:
-                session.driver.get(f"{base_url}{t.page_url}")
+                session.driver.get(_resolve_url(base_url, t.page_url))
                 time.sleep(2)
                 match = re.search(t.pattern, session.driver.page_source)
                 if match:
@@ -298,7 +321,7 @@ def _extract_and_cache_tokens_selenium(
                     LOG.warning(
                         "login_token_pattern_not_found",
                         token=t.name,
-                        url=f"{base_url}{t.page_url}",
+                        url=_resolve_url(base_url, t.page_url),
                     )
             except Exception as exc:  # noqa: BLE001 — best-effort token extraction
                 LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
@@ -343,23 +366,24 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             )
         base_url = plugin.base_url.rstrip("/")
         login_url = plugin.login_config.url
+        login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
 
         async with BrowserSession(backend="nodriver", headless=False) as session:
             try:
                 async with asyncio.timeout(_LOGIN_NAV_TIMEOUT):
-                    tab = await session.driver.get(f"{base_url}{login_url}")
+                    tab = await session.driver.get(login_target)
             except TimeoutError:
                 LOG.error(
                     "login_page_navigation_timeout",
                     plugin=plugin.site_name,
-                    url=f"{base_url}{login_url}",
+                    url=login_target,
                     timeout=_LOGIN_NAV_TIMEOUT,
                 )
                 raise PluginError(
                     f"Timed out loading login page ({_LOGIN_NAV_TIMEOUT}s). "
                     f"The site may be unreachable or blocked by a WAF. "
-                    f"URL: {base_url}{login_url}"
+                    f"URL: {login_target}"
                 ) from None
 
             # Start header capture for role extraction (lightweight, no body fetching)
@@ -450,12 +474,12 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             # Capture current URL before caching (used for domain display)
             try:
                 if tab and hasattr(tab, "url"):
-                    session.current_url = tab.url or f"{base_url}{login_url}"
+                    session.current_url = tab.url or login_target
                 else:
-                    session.current_url = f"{base_url}{login_url}"
+                    session.current_url = login_target
             except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
                 LOG.debug("login_url_capture_failed", error=str(exc), backend="nodriver")
-                session.current_url = f"{base_url}{login_url}"
+                session.current_url = login_target
 
             # Extract header roles from captured network requests
             session._gp_header_roles = _header_capture.get_header_roles()
@@ -492,6 +516,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             )
         base_url = plugin.base_url.rstrip("/")
         login_url = plugin.login_config.url
+        login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
         success_selector = plugin.login_config.success
 
@@ -502,7 +527,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             _header_capture = create_capture_backend("selenium", session.driver)
             _header_capture.start_capture()
 
-            session.driver.get(f"{base_url}{login_url}")
+            session.driver.get(login_target)
 
             # Top-level wait_for is not supported for selenium
             if plugin.login_config.wait_for:
@@ -581,7 +606,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 session.current_url = session.driver.current_url
             except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
                 LOG.debug("login_url_capture_failed", error=str(exc), backend="selenium")
-                session.current_url = f"{base_url}{login_url}"
+                session.current_url = login_target
 
             # Stop capture to parse perf log, then extract roles
             _header_capture.stop_capture()

@@ -121,7 +121,16 @@ class BrowserSession(requestium.Session):
             # Call await session.start_async() in async context before using the driver.
             LOG.info("creating_nodriver_browser_session", headless=headless)
             try:
-                self._backend_instance = get_backend("nodriver", headless=headless)
+                from graftpunk.config import get_settings
+
+                nodriver_opts: dict[str, Any] = {"headless": headless}
+                # Allow pointing nodriver at a specific Chrome/Chromium binary
+                # (e.g. Chrome-for-Testing) via GRAFTPUNK_BROWSER_EXECUTABLE_PATH,
+                # for machines/CI without a system Chrome install.
+                browser_path = get_settings().browser_executable_path
+                if browser_path:
+                    nodriver_opts["browser_executable_path"] = browser_path
+                self._backend_instance = get_backend("nodriver", **nodriver_opts)
 
                 # Initialize minimal session (no driver creation)
                 import requests

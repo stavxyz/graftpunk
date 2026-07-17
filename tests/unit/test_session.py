@@ -1894,3 +1894,32 @@ class TestBotCookieFiltering:
         assert "bm_" in BOT_DETECTION_COOKIE_PREFIXES
         assert "ak_bmsc" in BOT_DETECTION_COOKIE_PREFIXES
         assert "_abck" in BOT_DETECTION_COOKIE_PREFIXES
+
+
+class TestNodriverBrowserExecutablePath:
+    """BrowserSession forwards GRAFTPUNK_BROWSER_EXECUTABLE_PATH to the nodriver backend."""
+
+    def test_forwarded_when_set(self, monkeypatch):
+        from graftpunk.config import reset_settings
+        from graftpunk.session import BrowserSession
+
+        monkeypatch.setenv("GRAFTPUNK_BROWSER_EXECUTABLE_PATH", "/opt/cft/chrome")
+        reset_settings()
+        # get_backend is imported inside BrowserSession.__init__ from graftpunk.backends
+        with patch("graftpunk.backends.get_backend") as gb:
+            BrowserSession(backend="nodriver", headless=True)
+        _, kwargs = gb.call_args
+        assert kwargs.get("browser_executable_path") == "/opt/cft/chrome"
+        reset_settings()
+
+    def test_absent_when_unset(self, monkeypatch):
+        from graftpunk.config import reset_settings
+        from graftpunk.session import BrowserSession
+
+        monkeypatch.delenv("GRAFTPUNK_BROWSER_EXECUTABLE_PATH", raising=False)
+        reset_settings()
+        with patch("graftpunk.backends.get_backend") as gb:
+            BrowserSession(backend="nodriver", headless=True)
+        _, kwargs = gb.call_args
+        assert "browser_executable_path" not in kwargs
+        reset_settings()

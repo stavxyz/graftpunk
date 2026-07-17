@@ -79,6 +79,16 @@ class GraftpunkSettings(BaseSettings):
         description="Base delay in seconds for exponential backoff",
     )
 
+    browser_executable_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to a Chrome/Chromium binary for the nodriver backend. When set, "
+            "browser sessions use it instead of the system Chrome auto-detection — "
+            "e.g. point at a Chrome-for-Testing binary on machines/CI without a "
+            "system Chrome install."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_prefix="GRAFTPUNK_",
         env_file=".env",
