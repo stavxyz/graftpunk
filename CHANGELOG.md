@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Automated PyPI release via GitHub Actions Trusted Publishing** — `.github/workflows/release.yml` publishes to PyPI over OIDC (no stored token) when a `vX.Y.Z` tag is pushed: it runs the tests, verifies the tag matches `pyproject.toml`, builds, publishes, and creates the GitHub release. A `workflow_dispatch` (`ref: vX.Y.Z`) re-runs the pipeline against an existing tag. Requires a one-time PyPI trusted-publisher config (see README "Releasing").
+
+### Changed
+
+- **`just release` now only validates + pushes the tag** — build, PyPI upload, and GitHub-release creation moved to CI (above). This removes the local PyPI credential requirement and runs the build/publish gate on a CI-pinned Python instead of the local interpreter. `just publish` remains as a manual token-based fallback.
+
 ## [1.9.0] - 2026-07-16
 
 ### Added

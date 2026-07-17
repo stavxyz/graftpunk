@@ -409,6 +409,22 @@ just build    # Build for PyPI
 
 Requires [uv](https://docs.astral.sh/uv/) for development. See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
+### Releasing
+
+Releases publish to PyPI through GitHub Actions using [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) — no API token is stored anywhere.
+
+```bash
+just bump X.Y.Z   # opens a version-bump PR (pyproject, __init__, uv.lock, CHANGELOG)
+# merge the PR, then on an up-to-date main:
+just release      # validates, tags vX.Y.Z, and pushes the tag
+```
+
+Pushing the tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which runs the tests, builds the sdist/wheel, publishes to PyPI via OIDC, and creates the GitHub release. Because build + publish run in CI on a pinned Python, releasing no longer depends on your local interpreter or any local credentials.
+
+To (re)publish a tag that was cut before this workflow existed, or to retry a failed publish, run the workflow manually (**Actions → Release → Run workflow**) with the tag (e.g. `v1.9.0`).
+
+**One-time setup** (repo owner, on [pypi.org](https://pypi.org/manage/project/graftpunk/settings/publishing/) → graftpunk → Publishing): add a GitHub Actions trusted publisher with owner `stavxyz`, repository `graftpunk`, workflow `release.yml`, and environment `pypi`.
+
 ## License
 
 MIT License—see [LICENSE](LICENSE).
