@@ -260,11 +260,9 @@ bump VERSION:
 
     echo "📦 Bumping ${OLD} → ${NEW}"
 
-    # Update pyproject.toml
+    # Update pyproject.toml (the single source of truth; __version__ is derived
+    # from package metadata at import time, so there is nothing else to bump).
     sed -i '' "s/^version = \"${OLD}\"/version = \"${NEW}\"/" pyproject.toml
-
-    # Update __init__.py
-    sed -i '' "s/__version__ = \"${OLD}\"/__version__ = \"${NEW}\"/" src/graftpunk/__init__.py
 
     # Update CHANGELOG: rename [Unreleased] to [X.Y.Z] with today's date
     DATE=$(date +%Y-%m-%d)
@@ -275,22 +273,22 @@ bump VERSION:
         echo "❌ CHANGELOG.md has no [Unreleased] section."
         echo "   Add your changes under '## [Unreleased]' before bumping."
         echo "   The bump will rename it to '## [${NEW}] - ${DATE}'."
-        # Revert pyproject.toml and __init__.py changes before exiting
-        git checkout -- pyproject.toml src/graftpunk/__init__.py
+        # Revert the pyproject.toml change before exiting
+        git checkout -- pyproject.toml
         exit 1
     fi
 
     # Update lockfile
     uv lock --quiet
-    echo "✅ Updated pyproject.toml, __init__.py, uv.lock"
+    echo "✅ Updated pyproject.toml, uv.lock"
 
     # Create branch, commit, and PR
     BRANCH="chore/bump-v${NEW}"
     git checkout -b "$BRANCH"
-    git add pyproject.toml src/graftpunk/__init__.py uv.lock CHANGELOG.md
+    git add pyproject.toml uv.lock CHANGELOG.md
     git commit -m "chore: bump version to ${NEW}"
     git push -u origin "$BRANCH"
-    gh pr create --title "chore: bump version to ${NEW}" --body "Bump version ${OLD} → ${NEW} (pyproject.toml, __init__.py, uv.lock)"
+    gh pr create --title "chore: bump version to ${NEW}" --body "Bump version ${OLD} → ${NEW} (pyproject.toml, uv.lock)"
 
     echo ""
     echo "✅ PR created for v${NEW}"
