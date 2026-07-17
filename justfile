@@ -73,9 +73,12 @@ publish-test: check-dist
     @echo "📦 Uploaded to Test PyPI"
     @echo "🔗 https://test.pypi.org/project/graftpunk/"
 
-# Upload to PyPI (production)
+# Upload to PyPI (production) — MANUAL FALLBACK ONLY.
+# The normal path is `just release` → the tag triggers CI, which publishes via
+# Trusted Publishing (no token). Use this only if you must publish by hand with
+# a local token (e.g. CI is unavailable).
 publish: check-dist
-    @echo "⚠️  Publishing to PyPI (production)"
+    @echo "⚠️  Publishing to PyPI (production) — manual fallback"
     @read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ]
     uvx twine upload dist/*
     @echo "📦 Uploaded to PyPI"
@@ -89,8 +92,13 @@ publish: check-dist
 _get-version:
     @grep '^version = ' pyproject.toml | head -1 | cut -d'"' -f2
 
-# Full release: tag, GitHub release, PyPI upload
-release: check
+# Full release: tag + push (CI builds, publishes to PyPI, cuts the GitHub release)
+#
+# Publishing runs in GitHub Actions (.github/workflows/release.yml) via PyPI
+# Trusted Publishing (OIDC) — no local PyPI credentials, and the test/build
+# gate runs on a CI-controlled Python rather than your local interpreter.
+# This recipe only validates + pushes the tag; the pushed tag does the rest.
+release:
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -172,6 +180,27 @@ release: check
         exit 1
     fi
 
+    # Check the latest CI run for this commit is green (best-effort). A failed
+    # or still-running run blocks; only a genuine "no run found" proceeds, since
+    # not every commit triggers the path-filtered quality workflow.
+    echo "🔍 Checking CI status for HEAD (${LOCAL})..."
+    CI=$(gh run list --commit "$LOCAL" --workflow "Python Code Quality" --limit 1 \
+        --json status,conclusion \
+        --jq '.[0] | "\(.status // "none"):\(.conclusion // "none")"' 2>/dev/null || echo "none:none")
+    CI_STATUS="${CI%%:*}"
+    CI_CONCLUSION="${CI##*:}"
+    if [ "$CI_STATUS" = "none" ]; then
+        echo "   (no CI run found for HEAD — proceeding)"
+    elif [ "$CI_STATUS" != "completed" ]; then
+        echo "❌ CI for HEAD is still running (status: ${CI_STATUS}). Wait for it to finish."
+        exit 1
+    elif [ "$CI_CONCLUSION" = "success" ]; then
+        echo "   CI is green"
+    else
+        echo "❌ CI for HEAD concluded '${CI_CONCLUSION}'. Fix before releasing."
+        exit 1
+    fi
+
     # ----------------------------
     # Confirmation
     # ----------------------------
@@ -181,8 +210,10 @@ release: check
     echo "This will:"
     echo "  1. Create git tag ${TAG}"
     echo "  2. Push tag to origin"
-    echo "  3. Create GitHub release"
-    echo "  4. Build and upload to PyPI"
+    echo ""
+    echo "The pushed tag triggers .github/workflows/release.yml, which tests,"
+    echo "builds, publishes to PyPI (Trusted Publishing / OIDC), and creates"
+    echo "the GitHub release. No local PyPI credentials are used."
     echo ""
     read -p "Continue? [y/N] " confirm
     if [ "$confirm" != "y" ]; then
@@ -194,25 +225,15 @@ release: check
     # Release
     # ----------------------------
 
-    # Create and push tag
+    # Create and push tag — CI (release.yml) does build + publish + GH release.
     git tag -a "$TAG" -m "Release ${TAG}"
     git push origin "$TAG" --no-verify
-    echo "✅ Tag ${TAG} pushed"
-
-    # Create GitHub release
-    gh release create "$TAG" --title "${TAG}" --generate-notes
-    echo "✅ GitHub release created"
-
-    # Build and upload to PyPI
-    just clean
-    uvx --from build pyproject-build
-    uvx twine check dist/*
-    uvx twine upload dist/*
 
     echo ""
-    echo "✅ Released ${TAG}"
-    echo "🔗 https://github.com/stavxyz/graftpunk/releases/tag/${TAG}"
-    echo "🔗 https://pypi.org/project/graftpunk/${VERSION}/"
+    echo "✅ Tag ${TAG} pushed — the Release workflow will publish to PyPI"
+    echo "🔗 Watch:   https://github.com/stavxyz/graftpunk/actions/workflows/release.yml"
+    echo "🔗 Release: https://github.com/stavxyz/graftpunk/releases/tag/${TAG}"
+    echo "🔗 PyPI:    https://pypi.org/project/graftpunk/${VERSION}/"
 
 # --------------------------------------------------------------------------
 # Version Bump

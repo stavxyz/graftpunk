@@ -1,0 +1,179 @@
+name: Release
+
+# Publishes graftpunk to PyPI via Trusted Publishing (OIDC) — no stored token.
+#
+# Cutting a release is just pushing a tag:
+#   just release        # validates, tags vX.Y.Z, pushes the tag
+# The pushed tag triggers this workflow, which tests, builds, publishes to
+# PyPI, and creates the GitHub release. See README "Releasing".
+#
+# workflow_dispatch (ref: vX.Y.Z) re-runs the pipeline against an existing tag
+# — used to publish a tag that was cut before this workflow existed, or to
+# retry a failed publish (the publish step uses skip-existing, so retries are
+# idempotent).
+#
+# One-time PyPI setup (repo owner, on pypi.org → graftpunk → Publishing):
+#   Add a GitHub Actions trusted publisher:
+#     Owner:        stavxyz
+#     Repository:   graftpunk
+#     Workflow:     release.yml
+#     Environment:  pypi
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Existing tag to (re)publish, e.g. v1.9.0"
+        required: true
+        type: string
+
+# One release run per ref; never cancel an in-flight publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Pin the interpreter uv selects for the whole pipeline (the package requires
+  # >=3.11; 3.12 is the release build/test target).
+  UV_PYTHON: "3.12"
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          RAW_REF: ${{ inputs.ref || github.ref_name }}
+        run: |
+          TAG="${RAW_REF#refs/tags/}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches pyproject version
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          TAG_VERSION="${TAG#v}"
+          PKG_VERSION=$(grep '^version = ' pyproject.toml | head -1 | cut -d'"' -f2)
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag version (${TAG_VERSION}) does not match pyproject.toml version (${PKG_VERSION})"
+            exit 1
+          fi
+          echo "Tag ${TAG_VERSION} matches pyproject.toml ${PKG_VERSION}"
+
+  test:
+    name: Lint & test (release gate)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Lint with ruff
+        run: uvx ruff check .
+
+      - name: Format check with ruff
+        run: uvx ruff format --check .
+
+      - name: Run tests
+        run: uv run pytest tests/ -v
+
+  build:
+    name: Build distribution
+    needs: [verify, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Build sdist and wheel
+        run: uvx --from build pyproject-build
+
+      - name: Check distributions
+        run: uvx twine check dist/*
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi-publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/graftpunk
+    permissions:
+      id-token: write # OIDC token for Trusted Publishing — no stored secret
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Idempotent: a workflow_dispatch retry after a partial/failed upload
+          # skips files already on PyPI instead of erroring on the whole run.
+          skip-existing: true
+
+  github-release:
+    name: Create GitHub release
+    needs: [verify, pypi-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release / tag notes
+    steps:
+      - name: Create GitHub release (if missing)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release ${TAG} already exists — skipping."
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+            echo "Created GitHub release ${TAG}."
+          fi
