@@ -485,8 +485,9 @@ class LoginConfig:
     Attributes:
         steps: Sequence of LoginStep objects to execute (list or tuple accepted).
             Required and non-empty. Input is converted to tuple for immutability.
-        url: Login page path (appended to base_url). Empty string (default)
-            means use base_url directly.
+        url: Login page path (appended to base_url), or an absolute URL (used
+            as-is) when the login form is on a different host than base_url.
+            Empty string (default) means use base_url directly.
         failure: Text on the page indicating login failure.
         success: CSS selector for an element indicating login success.
         wait_for: CSS selector to wait for before any steps execute.

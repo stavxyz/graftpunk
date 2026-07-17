@@ -123,3 +123,20 @@ class TestSessionsDir:
         settings = get_settings()
         assert settings.sessions_dir.exists()
         assert settings.sessions_dir.is_dir()
+
+
+class TestBrowserExecutablePath:
+    """Tests for the GRAFTPUNK_BROWSER_EXECUTABLE_PATH setting."""
+
+    def test_default_is_none(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)  # avoid picking up a project .env
+        monkeypatch.delenv("GRAFTPUNK_BROWSER_EXECUTABLE_PATH", raising=False)
+        reset_settings()
+        assert get_settings().browser_executable_path is None
+
+    def test_read_from_env(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GRAFTPUNK_BROWSER_EXECUTABLE_PATH", "/opt/chrome-for-testing/chrome")
+        reset_settings()
+        assert get_settings().browser_executable_path == "/opt/chrome-for-testing/chrome"
+        reset_settings()

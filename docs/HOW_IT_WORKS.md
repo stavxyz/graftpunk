@@ -334,7 +334,7 @@ Each step in a login flow can include:
 The top-level login configuration includes:
 
 - **`steps`** — Required list of `LoginStep` objects defining the login flow.
-- **`url`** — Optional login page path (appended to `base_url`).
+- **`url`** — Optional login page path (appended to `base_url`), or an absolute URL (used as-is) when the login form lives on a different host than `base_url`.
 - **`wait_for`** — Optional top-level wait for element before any steps begin.
 - **`failure`** — Optional text that indicates login failure.
 - **`success`** — Optional CSS selector that indicates login success.

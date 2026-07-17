@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Login engine couldn't navigate to an absolute `login_config.url` (login host != API `base_url`)** — the login URL was built as `f"{base_url}{login_url}"`, assuming `login_config.url` is a path to append. That produced a malformed URL for a plugin whose login form is on a different host than its API `base_url`. The engine now uses `login_config.url` directly when it is absolute (and joins it onto `base_url` otherwise), in both the nodriver and selenium login generators. Closes #132.
+- **Login engine couldn't navigate to an absolute `login_config.url` (login host != API `base_url`)** — the login URL was built as `f"{base_url}{login_url}"`, assuming `login_config.url` is a path to append. That produced a malformed URL for a plugin whose login form is on a different host than its API `base_url`. A shared `_resolve_url` helper now uses an absolute URL as-is (any scheme) and joins a path onto `base_url` otherwise — applied to the login URL in both the nodriver and selenium generators (including the timeout-error message), and to token-extraction page URLs, which had the same latent bug. Closes #132.
 
 ## [1.8.2] - 2026-05-05
 

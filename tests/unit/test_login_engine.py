@@ -2112,3 +2112,33 @@ class TestSeleniumMultiStepLogin:
         # Clicks: 2 field clicks + 1 submit click = 3
         # (Step 1 has no submit, Step 2 has submit)
         assert click_count == 3
+
+
+class TestResolveUrl:
+    """Tests for _resolve_url — login/token URL resolution against base_url."""
+
+    def test_relative_path_joined_onto_base_url(self):
+        from graftpunk.plugins.login_engine import _resolve_url
+
+        assert _resolve_url("https://api.example.com", "/login") == "https://api.example.com/login"
+
+    def test_empty_url_yields_base_url(self):
+        from graftpunk.plugins.login_engine import _resolve_url
+
+        assert _resolve_url("https://api.example.com", "") == "https://api.example.com"
+
+    def test_absolute_url_on_different_host_used_as_is(self):
+        # The bug this guards: login host differs from the API base_url, so the
+        # absolute login_config.url must be used directly, not concatenated.
+        from graftpunk.plugins.login_engine import _resolve_url
+
+        assert (
+            _resolve_url("https://embedded.example.com", "https://www.example.com/login")
+            == "https://www.example.com/login"
+        )
+
+    def test_absolute_http_and_uppercase_scheme_used_as_is(self):
+        from graftpunk.plugins.login_engine import _resolve_url
+
+        assert _resolve_url("https://api.x.com", "http://login.x.com/") == "http://login.x.com/"
+        assert _resolve_url("https://api.x.com", "HTTPS://login.x.com/a") == "HTTPS://login.x.com/a"
