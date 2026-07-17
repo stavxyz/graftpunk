@@ -414,7 +414,7 @@ Requires [uv](https://docs.astral.sh/uv/) for development. See [CONTRIBUTING.md]
 Releases publish to PyPI through GitHub Actions using [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) — no API token is stored anywhere.
 
 ```bash
-just bump X.Y.Z   # opens a version-bump PR (pyproject, __init__, uv.lock, CHANGELOG)
+just bump X.Y.Z   # opens a version-bump PR (pyproject, uv.lock, CHANGELOG)
 # merge the PR, then on an up-to-date main:
 just release      # validates, tags vX.Y.Z, and pushes the tag
 ```

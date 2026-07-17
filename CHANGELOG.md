@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.9.1] - 2026-07-17
 
 ### Added
 
@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`just release` now only validates + pushes the tag** — build, PyPI upload, and GitHub-release creation moved to CI (above). This removes the local PyPI credential requirement and runs the build/publish gate on a CI-pinned Python instead of the local interpreter. `just publish` remains as a manual token-based fallback.
+
+### Fixed
+
+- **`graftpunk.__version__` no longer drifts from the packaged version** — it is now derived from the installed package metadata (`importlib.metadata.version`) instead of a hardcoded literal in `__init__.py`. The 1.9.0 release shipped `__version__ == "1.8.2"` because that release was bumped by hand and the `__init__.py` literal was missed; `pyproject.toml` is now the single source of truth, so this class of mismatch is unrepresentable. `just bump` no longer edits `__init__.py`.
 
 ## [1.9.0] - 2026-07-16
 

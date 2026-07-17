@@ -20,6 +20,9 @@ Example:
     >>> response = api.get("https://mysite.com/api/data")
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
 from graftpunk.backends import BrowserBackend, get_backend, list_backends, register_backend
 from graftpunk.cache import (
     cache_session,
@@ -47,7 +50,13 @@ from graftpunk.session import BrowserSession
 from graftpunk.stealth import create_stealth_driver
 from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
 
-__version__ = "1.8.2"
+# Single source of truth: the version lives in pyproject.toml and is read back
+# from the installed package metadata. There is no literal to bump (or forget),
+# so __version__ can never drift from the packaged version.
+try:
+    __version__ = _pkg_version("graftpunk")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     # Version
