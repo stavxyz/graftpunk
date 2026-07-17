@@ -343,17 +343,25 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             )
         base_url = plugin.base_url.rstrip("/")
         login_url = plugin.login_config.url
+        # login_config.url may be an absolute URL (when the login host differs
+        # from the API base_url) or a path to append to base_url. Use it
+        # directly when absolute; otherwise join it onto base_url.
+        login_target = (
+            login_url
+            if login_url.startswith(("http://", "https://"))
+            else base_url + login_url
+        )
         failure_text = plugin.login_config.failure
 
         async with BrowserSession(backend="nodriver", headless=False) as session:
             try:
                 async with asyncio.timeout(_LOGIN_NAV_TIMEOUT):
-                    tab = await session.driver.get(f"{base_url}{login_url}")
+                    tab = await session.driver.get(login_target)
             except TimeoutError:
                 LOG.error(
                     "login_page_navigation_timeout",
                     plugin=plugin.site_name,
-                    url=f"{base_url}{login_url}",
+                    url=login_target,
                     timeout=_LOGIN_NAV_TIMEOUT,
                 )
                 raise PluginError(
@@ -450,12 +458,12 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             # Capture current URL before caching (used for domain display)
             try:
                 if tab and hasattr(tab, "url"):
-                    session.current_url = tab.url or f"{base_url}{login_url}"
+                    session.current_url = tab.url or login_target
                 else:
-                    session.current_url = f"{base_url}{login_url}"
+                    session.current_url = login_target
             except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
                 LOG.debug("login_url_capture_failed", error=str(exc), backend="nodriver")
-                session.current_url = f"{base_url}{login_url}"
+                session.current_url = login_target
 
             # Extract header roles from captured network requests
             session._gp_header_roles = _header_capture.get_header_roles()
@@ -492,6 +500,14 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             )
         base_url = plugin.base_url.rstrip("/")
         login_url = plugin.login_config.url
+        # login_config.url may be an absolute URL (when the login host differs
+        # from the API base_url) or a path to append to base_url. Use it
+        # directly when absolute; otherwise join it onto base_url.
+        login_target = (
+            login_url
+            if login_url.startswith(("http://", "https://"))
+            else base_url + login_url
+        )
         failure_text = plugin.login_config.failure
         success_selector = plugin.login_config.success
 
@@ -502,7 +518,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             _header_capture = create_capture_backend("selenium", session.driver)
             _header_capture.start_capture()
 
-            session.driver.get(f"{base_url}{login_url}")
+            session.driver.get(login_target)
 
             # Top-level wait_for is not supported for selenium
             if plugin.login_config.wait_for:
@@ -581,7 +597,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 session.current_url = session.driver.current_url
             except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
                 LOG.debug("login_url_capture_failed", error=str(exc), backend="selenium")
-                session.current_url = f"{base_url}{login_url}"
+                session.current_url = login_target
 
             # Stop capture to parse perf log, then extract roles
             _header_capture.stop_capture()
