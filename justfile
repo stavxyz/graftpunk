@@ -180,20 +180,26 @@ release:
         exit 1
     fi
 
-    # Check the latest CI run for this commit is green (best-effort: a failure
-    # blocks; success or no-run-found proceeds, since not every commit triggers
-    # the path-filtered quality workflow).
+    # Check the latest CI run for this commit is green (best-effort). A failed
+    # or still-running run blocks; only a genuine "no run found" proceeds, since
+    # not every commit triggers the path-filtered quality workflow.
     echo "🔍 Checking CI status for HEAD (${LOCAL})..."
-    CI_CONCLUSION=$(gh run list --commit "$LOCAL" --workflow "Python Code Quality" \
-        --limit 1 --json conclusion --jq '.[0].conclusion // ""' 2>/dev/null || echo "")
-    case "$CI_CONCLUSION" in
-        success) echo "   CI is green" ;;
-        "")      echo "   (no CI run found for HEAD — proceeding)" ;;
-        *)
-            echo "❌ CI for HEAD concluded '${CI_CONCLUSION}'. Fix before releasing."
-            exit 1
-            ;;
-    esac
+    CI=$(gh run list --commit "$LOCAL" --workflow "Python Code Quality" --limit 1 \
+        --json status,conclusion \
+        --jq '.[0] | "\(.status // "none"):\(.conclusion // "none")"' 2>/dev/null || echo "none:none")
+    CI_STATUS="${CI%%:*}"
+    CI_CONCLUSION="${CI##*:}"
+    if [ "$CI_STATUS" = "none" ]; then
+        echo "   (no CI run found for HEAD — proceeding)"
+    elif [ "$CI_STATUS" != "completed" ]; then
+        echo "❌ CI for HEAD is still running (status: ${CI_STATUS}). Wait for it to finish."
+        exit 1
+    elif [ "$CI_CONCLUSION" = "success" ]; then
+        echo "   CI is green"
+    else
+        echo "❌ CI for HEAD concluded '${CI_CONCLUSION}'. Fix before releasing."
+        exit 1
+    fi
 
     # ----------------------------
     # Confirmation
