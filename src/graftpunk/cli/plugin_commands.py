@@ -58,6 +58,20 @@ def _teardown_all_plugins() -> None:
 atexit.register(_teardown_all_plugins)
 
 
+def _is_command_group(obj: object) -> bool:
+    """True if ``obj`` is a Click/Typer command *group* (can hold subcommands).
+
+    typer>=0.26 vendored Click into ``typer._click``, so ``TyperGroup`` no
+    longer subclasses the external ``click.Group`` — ``isinstance(obj,
+    click.Group)`` is ``False`` for the groups Typer builds (both the app
+    command from ``typer.main.get_command`` and the nested groups we create).
+    Duck-type on the group interface instead (a ``.commands`` mapping plus
+    ``.add_command``), which holds for external Click and Typer's fork alike; a
+    leaf Command has neither, so groups are still distinguished from commands.
+    """
+    return hasattr(obj, "commands") and hasattr(obj, "add_command")
+
+
 class GraftpunkApp(typer.Typer):
     """Extended Typer application with plugin command support.
 
@@ -79,12 +93,22 @@ class GraftpunkApp(typer.Typer):
             raise ValueError(f"Plugin group '{name}' is already registered")
         self._plugin_groups[name] = group
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Build the Click group, inject plugin commands, then run."""
+    def _build_click_app(self) -> Any:
+        """Build the Click command for this app and inject plugin groups.
+
+        Split out from ``__call__`` so the plugin-group injection is unit
+        testable without actually running the CLI (Typer's ``CliRunner`` builds
+        the command itself and would bypass ``__call__`` entirely).
+        """
         click_app = typer.main.get_command(self)
-        if isinstance(click_app, click.Group):
+        if _is_command_group(click_app):
             for name, group in self._plugin_groups.items():
                 click_app.add_command(group, name=name)
+        return click_app
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Build the Click group, inject plugin commands, then run."""
+        click_app = self._build_click_app()
         try:
             return click_app.main(standalone_mode=False)
         except click.UsageError as exc:
@@ -470,7 +494,7 @@ def _ensure_group_hierarchy(parent_group: click.Group, dotted_path: str) -> clic
             )
             current.add_command(new_group, name=part)
             current = new_group
-        elif isinstance(existing, click.Group):
+        elif _is_command_group(existing):
             current = existing
         else:
             # Conflict: a command already exists with this name

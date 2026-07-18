@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Plugin subcommands stopped mounting under typer>=0.26 (`gp <site>` → "No such command")** — typer 0.26 vendored Click into `typer._click`, so the groups Typer builds (`TyperGroup`) are no longer subclasses of the external `click.Group`. Every `isinstance(x, click.Group)` check in the CLI silently became `False`: `GraftpunkApp` never injected plugin groups (so no `gp <site>` command existed), and nested command groups collided (`command_group_conflict`) instead of being reused, mangling grouped subcommands. Both sites now duck-type the group interface (`.commands` + `.add_command`) via a shared `_is_command_group` helper, which holds for external Click and Typer's fork alike. Affects anyone who installed with typer 0.26+ (the dependency is unpinned).
+
 ## [1.9.1] - 2026-07-17
 
 ### Added

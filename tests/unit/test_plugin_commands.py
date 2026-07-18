@@ -3318,3 +3318,59 @@ class TestFormatExplicitFlag:
             assert result.exit_code == 0
             mock_fmt.assert_called_once()
             assert mock_fmt.call_args[1]["user_explicit"] is False
+
+
+class TestTyperVendoredClickGroups:
+    """Regression: typer>=0.26 vendored Click into ``typer._click``.
+
+    The groups Typer builds (``TyperGroup``) are no longer subclasses of the
+    external ``click.Group``, so ``isinstance(x, click.Group)`` silently
+    returned False. That skipped plugin-group injection in ``GraftpunkApp``
+    (every ``gp <site>`` became "No such command") and made nested command
+    groups collide instead of being reused.
+    """
+
+    def test_is_command_group_distinguishes_groups_from_commands(self) -> None:
+        import click
+        import typer
+
+        from graftpunk.cli.plugin_commands import _is_command_group
+
+        assert _is_command_group(typer.core.TyperGroup(name="g")) is True
+        assert _is_command_group(click.Group(name="g")) is True
+        assert _is_command_group(click.Command(name="c")) is False
+
+    def test_ensure_group_hierarchy_reuses_existing_typer_group(self) -> None:
+        import click
+        import typer
+
+        from graftpunk.cli.plugin_commands import _ensure_group_hierarchy
+
+        root = typer.core.TyperGroup(name="root")
+        first = _ensure_group_hierarchy(root, "export")
+        second = _ensure_group_hierarchy(root, "export")
+        # Same group reused across calls, not treated as a name conflict.
+        assert first is second
+        first.add_command(click.Command(name="list"), name="list")
+        second.add_command(click.Command(name="get"), name="get")
+        # Both grouped commands land under the single 'export' group.
+        assert set(root.commands["export"].commands) == {"list", "get"}
+
+    def test_app_injects_plugin_groups_despite_vendored_click(self) -> None:
+        import click
+        import typer
+
+        app = GraftpunkApp()
+
+        @app.callback()
+        def _cb() -> None:  # a callback makes Typer build a group, not a command
+            ...
+
+        demo = typer.core.TyperGroup(name="demo")
+        demo.add_command(click.Command(name="ping"), name="ping")
+        app.add_plugin_group("demo", demo)
+
+        click_app = app._build_click_app()
+        # The plugin group is injected and reachable as a subcommand.
+        assert "demo" in click_app.commands
+        assert "ping" in click_app.commands["demo"].commands
