@@ -99,6 +99,57 @@ class TestEncryption:
         with pytest.raises(EncryptionError):
             decrypt_data(encrypted)
 
+    def test_decrypt_data_explicit_none_key_uses_configured_key(self, tmp_path, monkeypatch):
+        """decrypt_data(..., key=None) is equivalent to the default configured-key path."""
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        reset_encryption_key_cache()
+
+        from graftpunk.config import reset_settings
+
+        reset_settings()
+
+        original_data = b"Hello via configured key"
+        encrypted = encrypt_data(original_data)
+
+        assert decrypt_data(encrypted, key=None) == original_data
+
+    def test_decrypt_data_with_explicit_key_roundtrip(self, tmp_path, monkeypatch):
+        """decrypt_data(..., key=<key>) decrypts with the caller-supplied key,
+        bypassing the configured key sources entirely (e.g. a Worker holding
+        the Fernet key as a secret, with no graftpunk key file present)."""
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        reset_encryption_key_cache()
+
+        from graftpunk.config import reset_settings
+
+        reset_settings()
+
+        explicit_key = Fernet.generate_key()
+        original_data = b"Hello via explicit key"
+        encrypted = Fernet(explicit_key).encrypt(original_data)
+
+        assert decrypt_data(encrypted, key=explicit_key) == original_data
+
+    def test_decrypt_data_with_wrong_explicit_key_raises_error(self, tmp_path, monkeypatch):
+        """A wrong explicit key raises EncryptionError, same mapping as the
+        configured-key path."""
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("GRAFTPUNK_STORAGE_BACKEND", "local")
+        reset_encryption_key_cache()
+
+        from graftpunk.config import reset_settings
+
+        reset_settings()
+
+        right_key = Fernet.generate_key()
+        wrong_key = Fernet.generate_key()
+        encrypted = Fernet(right_key).encrypt(b"Secret message")
+
+        with pytest.raises(EncryptionError):
+            decrypt_data(encrypted, key=wrong_key)
+
 
 class TestEncryptionKeyFile:
     """Tests for encryption key file management."""
