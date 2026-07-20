@@ -1,4 +1,5 @@
 import io
+import pathlib
 import subprocess
 import sys
 import types
@@ -11,6 +12,8 @@ from graftpunk import cache
 from graftpunk.encryption import encrypt_data
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
+
+_FIX = pathlib.Path(__file__).parent.parent / "fixtures"
 
 
 def _fake_source():
@@ -204,3 +207,44 @@ def test_lazy_browser_symbols_still_resolve():
     # Accessing the lazy attributes still works on a full install.
     assert graftpunk.BrowserSession is not None
     assert callable(graftpunk.create_stealth_driver)
+
+
+# --- A4: committed fixture guard --------------------------------------------
+
+
+def test_a4_fixture_decodes_browser_free(monkeypatch):
+    """Whack-once guard: a real committed BrowserSession pickle (pickled BY
+    REFERENCE to graftpunk.session.BrowserSession, see
+    scripts/gen_browserfree_fixture.py) must keep decoding through the
+    browser-free path (cookies/headers/roles/tokens) as graftpunk/deps evolve.
+
+    The CI/dev env used to run this suite has the full browser stack
+    installed, so graftpunk.session IS importable here. If we just loaded the
+    fixture as-is, dill would reconstruct the REAL BrowserSession via its
+    normal __setstate__ and the test would never touch cache._Stub or
+    cache._BrowserFreeUnpickler's except-branch at all -- it would pass
+    without exercising the browser-free path it's meant to guard. So we force
+    the browser stack (and its transitive deps) out of sys.modules for the
+    duration of this test, simulating a Pyodide/lite environment where those
+    imports genuinely fail, which is what makes find_class fall back to a
+    stub and is the only way this guard can catch a real regression.
+    """
+    enc = (_FIX / "browserfree_session.enc").read_bytes()
+    key = (_FIX / "browserfree_session.key").read_bytes()
+
+    for mod in (
+        "graftpunk.session",
+        "graftpunk.stealth",
+        "requestium",
+        "selenium",
+        "webdriver_manager",
+        "httpie",
+        "httpie.cookies",
+    ):
+        monkeypatch.setitem(sys.modules, mod, None)  # None -> import raises ImportError
+
+    api = cache.load_session_for_api_from_bytes(enc, key=key)
+    assert api.cookies.get("User", domain="example.com") == "dummyuser"
+    assert api.cookies.get("Password", domain="example.com") == "dummypass"
+    assert "Mozilla/5.0 (dummy)" in api.headers["User-Agent"]
+    assert api._gp_header_roles == {"api": {"X-Api-Key": "dummy"}}
