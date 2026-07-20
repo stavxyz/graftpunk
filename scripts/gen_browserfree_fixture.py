@@ -35,7 +35,7 @@ def main() -> None:
 
     sess = BrowserSession.__new__(BrowserSession)  # no __init__ -> no browser launch
     sess._backend_type = "nodriver"  # force the browser-free __getstate__ branch
-    sess._use_stealth = False
+    sess._use_stealth = False  # read by BrowserSession.__getstate__'s nodriver branch
     sess.current_url = "https://example.com"  # non-empty -> __getstate__ won't touch self.driver
     sess._session_name = "fixture"
 
