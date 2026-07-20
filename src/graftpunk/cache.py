@@ -495,7 +495,7 @@ class _BrowserFreeUnpickler(pickle.Unpickler):  # pickle is dill (see top import
     def find_class(self, module: str, name: str):
         try:
             return super().find_class(module, name)
-        except (ImportError, ModuleNotFoundError, AttributeError):
+        except ImportError:
             return type(name, (_Stub,), {})
 
 
