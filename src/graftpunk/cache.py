@@ -31,6 +31,7 @@ from graftpunk.logging import get_logger
 from graftpunk.storage.base import SessionMetadata
 
 if TYPE_CHECKING:
+    from graftpunk.graftpunk_session import GraftpunkSession
     from graftpunk.storage.base import SessionStorageBackend
 
 
