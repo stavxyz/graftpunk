@@ -195,7 +195,7 @@ def test_import_graftpunk_does_not_eagerly_import_browser_stack():
         "print('ok')"
     )
     result = subprocess.run(  # noqa: S603
-        [sys.executable, "-c", code], capture_output=True, text=True
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
     )
     assert result.returncode == 0, result.stderr
     assert "ok" in result.stdout
