@@ -2,10 +2,12 @@ import io
 import sys
 import types
 
+import dill
 import pytest
 import requests
 
 from graftpunk import cache
+from graftpunk.encryption import encrypt_data
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
 
@@ -132,3 +134,29 @@ def test_deserialize_browserfree_stub_roundtrip_by_reference():
     assert isinstance(recovered, cache._Stub)
     assert recovered.cookies.get("User", domain="example.com") == "dummyuser"
     assert recovered.headers["User-Agent"] == "Chrome/999"
+
+
+# --- load_session_for_api_from_bytes ---------------------------------------
+
+
+class _FakeBrowserSessionState:
+    """A minimal stand-in for a pickled BrowserSession's plain state, used to
+    exercise the encrypt -> load_session_for_api_from_bytes round trip below."""
+
+
+def test_load_session_for_api_from_bytes_roundtrip():
+    # Build a plain-state object that looks like a pickled BrowserSession.
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("User", "dummyuser", domain="example.com")
+    obj = _FakeBrowserSessionState()
+    obj.cookies = jar
+    obj.headers = {"User-Agent": "Chrome/999"}
+    obj._gp_header_roles = {}
+    _FakeBrowserSessionState.__module__ = "graftpunk._nonexistent_browser"
+    _FakeBrowserSessionState.__qualname__ = "BrowserSession"
+
+    encrypted = encrypt_data(dill.dumps(obj))
+    api = cache.load_session_for_api_from_bytes(encrypted)
+    assert isinstance(api, requests.Session)
+    assert api.cookies.get("User", domain="example.com") == "dummyuser"
+    assert api.headers["User-Agent"] == "Chrome/999"
