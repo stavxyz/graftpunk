@@ -16,7 +16,7 @@ Typer's runtime, which is the root fix for the vendored-Click breakage.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import typer
@@ -104,3 +104,102 @@ def map_param_spec(
         annotation=annotation,
     )
     return param, annotation
+
+
+# The built-in option contract: names + defaults, in ONE place. The factory
+# declares these options from this mapping and the runtime (plugin_runtime)
+# pops them against the same mapping -- a rename or default change cannot
+# silently diverge between construction and execution.
+BUILTIN_OPTIONS: dict[str, Any] = {"format": "json", "view": (), "output": ""}
+
+
+def _builtin_option_params() -> list[tuple[inspect.Parameter, type]]:
+    from graftpunk.plugins.formatters import discover_formatters
+
+    available = ", ".join(discover_formatters().keys())
+    fmt = inspect.Parameter(
+        "format",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=typer.Option(
+            BUILTIN_OPTIONS["format"],
+            "--format",
+            "-f",
+            help=f"Output format (built-in: {available})",
+        ),
+        annotation=str,
+    )
+    view = inspect.Parameter(
+        "view",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=typer.Option(
+            None, "--view", help="Select view(s) to render; repeatable (NAME or NAME:COL1,COL2,...)"
+        ),
+        annotation=list[str],
+    )
+    out = inspect.Parameter(
+        "output",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=typer.Option(
+            BUILTIN_OPTIONS["output"],
+            "--output",
+            "-o",
+            help="Write output to file instead of stdout",
+        ),
+        annotation=str,
+    )
+    return [(fmt, str), (view, list[str]), (out, str)]
+
+
+def synthesize_command_fn(
+    *,
+    name: str,
+    param_specs: Sequence[PluginParamSpec],
+    body: CommandBody,
+    plugin_name: str = "",
+    include_builtin_options: bool = True,
+    help_text: str | None = None,
+) -> Callable[..., None]:
+    """Synthesize a function Typer can register as a command.
+
+    The function's ``__signature__``/``__annotations__`` declare
+    ``ctx: typer.Context`` plus one parameter per spec (positional arguments
+    first, then options), plus the ``--format/--view/--output`` built-ins when
+    ``include_builtin_options``. Typer introspects the synthesized signature
+    and builds every parameter with its own Click. At call time the function
+    forwards ``body(ctx, **parsed_kwargs)`` (built-ins included; the body pops
+    them). ``view`` is normalized to ``[]`` when absent.
+    """
+    positional = [s for s in param_specs if not s.is_option]
+    options = [s for s in param_specs if s.is_option]
+
+    params: list[inspect.Parameter] = []
+    annotations: dict[str, Any] = {}
+
+    ctx_param = inspect.Parameter(
+        "ctx", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=typer.Context
+    )
+    params.append(ctx_param)
+    annotations["ctx"] = typer.Context
+
+    for spec in [*positional, *options]:
+        param, annotation = map_param_spec(plugin_name, name, spec)
+        params.append(param)
+        annotations[spec.name] = annotation
+
+    if include_builtin_options:
+        for param, annotation in _builtin_option_params():
+            params.append(param)
+            annotations[param.name] = annotation
+
+    def _command(**kwargs: Any) -> None:
+        ctx = kwargs.pop("ctx")
+        if "view" in kwargs and kwargs["view"] is None:
+            kwargs["view"] = []
+        return body(ctx, **kwargs)
+
+    _command.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
+    _command.__annotations__ = annotations
+    _command.__name__ = name.replace("-", "_")
+    if help_text:
+        _command.__doc__ = help_text
+    return _command

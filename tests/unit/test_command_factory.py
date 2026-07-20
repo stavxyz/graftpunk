@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import inspect
+import tempfile
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
-from graftpunk.cli.command_factory import map_param_spec
+from graftpunk.cli.command_factory import map_param_spec, synthesize_command_fn
 from graftpunk.exceptions import PluginError
 from graftpunk.plugins.cli_plugin import PluginParamSpec
 
@@ -96,3 +98,122 @@ class TestMapParamSpec:
         )
         with pytest.raises(PluginError, match="is_flag"):
             map_param_spec("p", "c", spec)
+
+
+def _capture_body(captured: dict):
+    def body(ctx: typer.Context, **kwargs) -> None:
+        captured["ctx"] = ctx
+        captured["kwargs"] = kwargs
+        source = ctx.get_parameter_source("format")
+        # name-compare: version-proof across external/vendored ParameterSource enums
+        captured["format_explicit"] = source is not None and source.name == "COMMANDLINE"
+
+    return body
+
+
+def _app_with(fn, name="cmd"):
+    app = typer.Typer()
+    app.command(name=name)(fn)
+    return app
+
+
+class TestSynthesizeCommandFn:
+    def test_declared_default_applied_when_flag_absent(self) -> None:
+        # THE regression that motivated the RFC: absent option must get its
+        # declared default (typer>=0.26 dropped externally-built defaults).
+        captured: dict = {}
+        fn = synthesize_command_fn(
+            name="search",
+            param_specs=[PluginParamSpec.option("county", type=str, default="all")],
+            body=_capture_body(captured),
+        )
+        result = CliRunner().invoke(_app_with(fn, "search"), [])
+        assert result.exit_code == 0, result.output
+        assert captured["kwargs"]["county"] == "all"
+
+    def test_explicit_value_wins_and_format_detection(self) -> None:
+        captured: dict = {}
+        fn = synthesize_command_fn(
+            name="search",
+            param_specs=[PluginParamSpec.option("county", type=str, default="all")],
+            body=_capture_body(captured),
+        )
+        app = _app_with(fn, "search")
+        r1 = CliRunner().invoke(app, ["--county", "travis"])
+        assert r1.exit_code == 0, r1.output
+        assert captured["kwargs"]["county"] == "travis"
+        assert captured["format_explicit"] is False  # --format not passed
+        r2 = CliRunner().invoke(app, ["--format", "csv"])
+        assert r2.exit_code == 0, r2.output
+        assert captured["kwargs"]["format"] == "csv"
+        assert captured["format_explicit"] is True
+
+    def test_builtin_options_present_with_defaults(self) -> None:
+        captured: dict = {}
+        fn = synthesize_command_fn(name="c", param_specs=[], body=_capture_body(captured))
+        result = CliRunner().invoke(_app_with(fn), [])
+        assert result.exit_code == 0, result.output
+        assert captured["kwargs"]["format"] == "json"
+        assert captured["kwargs"]["view"] == []
+        assert captured["kwargs"]["output"] == ""
+
+    def test_short_flags_f_and_o(self) -> None:
+        captured: dict = {}
+        fn = synthesize_command_fn(name="c", param_specs=[], body=_capture_body(captured))
+        with tempfile.NamedTemporaryFile(suffix=".csv") as tmp:
+            result = CliRunner().invoke(_app_with(fn), ["-f", "csv", "-o", tmp.name])
+            assert result.exit_code == 0, result.output
+            assert captured["kwargs"]["format"] == "csv"
+            assert captured["kwargs"]["output"] == tmp.name
+
+    def test_no_builtins_mode_for_login(self) -> None:
+        captured: dict = {}
+        fn = synthesize_command_fn(
+            name="login",
+            param_specs=[],
+            body=_capture_body(captured),
+            include_builtin_options=False,
+        )
+        result = CliRunner().invoke(_app_with(fn, "login"), [])
+        assert result.exit_code == 0, result.output
+        assert "format" not in captured["kwargs"]
+
+    def test_required_option_missing_errors_exit_2(self) -> None:
+        fn = synthesize_command_fn(
+            name="document",
+            param_specs=[PluginParamSpec.option("docno", type=str, required=True)],
+            body=_capture_body({}),
+        )
+        result = CliRunner().invoke(_app_with(fn, "document"), [])
+        assert result.exit_code == 2
+
+    def test_bool_flag_and_variadic_argument(self) -> None:
+        captured: dict = {}
+        fn = synthesize_command_fn(
+            name="run",
+            param_specs=[
+                PluginParamSpec.argument(
+                    "files", type=str, required=False, click_kwargs={"nargs": -1}
+                ),
+                PluginParamSpec.option("no_wait", type=bool, default=False),
+            ],
+            body=_capture_body(captured),
+        )
+        app = _app_with(fn, "run")
+        result = CliRunner().invoke(app, ["a.csv", "b.csv", "--no-wait"])
+        assert result.exit_code == 0, result.output
+        assert list(captured["kwargs"]["files"]) == ["a.csv", "b.csv"]
+        assert captured["kwargs"]["no_wait"] is True
+
+    def test_ctx_is_injected_click_context(self) -> None:
+        captured: dict = {}
+        fn = synthesize_command_fn(name="c", param_specs=[], body=_capture_body(captured))
+        CliRunner().invoke(_app_with(fn), [])
+        # The injected ctx is the RUNNING Click's Context (external click on
+        # typer<0.26, vendored typer._click on >=0.26). typer.Context is an
+        # annotation MARKER only -- isinstance(ctx, typer.Context) is False on
+        # BOTH generations. Assert the behavioral contract instead.
+        ctx = captured["ctx"]
+        assert type(ctx).__name__ == "Context"
+        assert hasattr(ctx, "get_parameter_source")
+        assert hasattr(ctx, "find_root")
