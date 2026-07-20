@@ -402,6 +402,48 @@ def load_session(name: str) -> SessionLike:
         raise SessionExpiredError(f"Failed to load session '{name}': {exc}") from exc
 
 
+def _api_session_from_session(source: "SessionLike") -> "GraftpunkSession":
+    """Build a browser-free GraftpunkSession from a session-like object
+    (the module's SessionLike Protocol — cookies + headers), copying header
+    roles and token caches when present.
+
+    Shared by load_session_for_api (from a cached BrowserSession) and
+    load_session_for_api_from_bytes (from a browser-free deserialize).
+    """
+    from graftpunk.graftpunk_session import GraftpunkSession
+    from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
+
+    header_roles = getattr(source, "_gp_header_roles", {})
+    api_session = GraftpunkSession(header_roles=header_roles)
+
+    if hasattr(source, "cookies"):
+        api_session.cookies = source.cookies
+        LOG.debug("copied_cookies_from_session", cookie_count=len(source.cookies))
+
+    if hasattr(source, "headers"):
+        _requests_defaults = requests.utils.default_headers()
+        for key, value in source.headers.items():
+            if key in _requests_defaults and _requests_defaults[key] == value:
+                continue
+            if key.lower() in _EPHEMERAL_HEADERS:
+                LOG.debug("skipped_ephemeral_header", header=key)
+                continue
+            api_session.headers[key] = value
+        LOG.debug("copied_headers_from_session")
+
+    token_cache = getattr(source, _CACHE_ATTR, None)
+    if token_cache:
+        setattr(api_session, _CACHE_ATTR, token_cache)
+        LOG.debug("copied_cached_tokens_from_session", count=len(token_cache))
+
+    csrf_tokens = getattr(source, _CSRF_TOKENS_ATTR, None)
+    if csrf_tokens is not None:
+        setattr(api_session, _CSRF_TOKENS_ATTR, dict(csrf_tokens))
+        LOG.debug("copied_csrf_tokens_from_session", count=len(csrf_tokens))
+
+    return api_session
+
+
 def load_session_for_api(name: str) -> requests.Session:
     """Load cached session for API use (no browser required).
 
@@ -429,59 +471,11 @@ def load_session_for_api(name: str) -> requests.Session:
             f"No cached session found for '{name}'. Please login first."
         ) from exc
 
-    # Extract header roles if present (from sessions created after header capture feature)
-    header_roles = getattr(browser_session, "_gp_header_roles", {})
-
-    # Create GraftpunkSession with header roles for auto-detection
-    from graftpunk.graftpunk_session import GraftpunkSession
-
-    api_session = GraftpunkSession(header_roles=header_roles)
-
-    # Copy cookies from browser session
-    if hasattr(browser_session, "cookies"):
-        api_session.cookies = browser_session.cookies
-        LOG.debug(
-            "copied_cookies_from_session",
-            cookie_count=len(browser_session.cookies),
-        )
-
-    # Copy headers from browser session, but skip requests-library defaults
-    # that would clobber browser identity headers extracted from roles.
-    # The pickled BrowserSession (a requests.Session) carries default headers
-    # like User-Agent: python-requests/2.x — copying them overwrites the
-    # Chrome UA that _apply_browser_identity() set during GraftpunkSession init.
-    # Also skip ephemeral security headers (e.g. X-CSRF-TOKEN from WAFs like
-    # Akamai Bot Manager) that are per-request and would cause stale-blob
-    # rejections if replayed.
-    if hasattr(browser_session, "headers"):
-        _requests_defaults = requests.utils.default_headers()
-        for key, value in browser_session.headers.items():
-            if key in _requests_defaults and _requests_defaults[key] == value:
-                continue
-            if key.lower() in _EPHEMERAL_HEADERS:
-                LOG.debug("skipped_ephemeral_header", header=key)
-                continue
-            api_session.headers[key] = value
-        LOG.debug("copied_headers_from_session")
-
-    # Copy cached tokens and CSRF tokens from browser session
-    from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
-
-    token_cache = getattr(browser_session, _CACHE_ATTR, None)
-    if token_cache:
-        setattr(api_session, _CACHE_ATTR, token_cache)
-        LOG.debug("copied_cached_tokens_from_session", count=len(token_cache))
-
-    csrf_tokens = getattr(browser_session, _CSRF_TOKENS_ATTR, None)
-    if csrf_tokens is not None:
-        setattr(api_session, _CSRF_TOKENS_ATTR, dict(csrf_tokens))
-        LOG.debug("copied_csrf_tokens_from_session", count=len(csrf_tokens))
-
+    api_session = _api_session_from_session(browser_session)
     LOG.info(
         "created_api_session_from_cached_session",
         name=name,
-        has_header_roles=bool(header_roles),
-        role_count=len(header_roles),
+        has_header_roles=bool(getattr(browser_session, "_gp_header_roles", {})),
     )
     return api_session
 
