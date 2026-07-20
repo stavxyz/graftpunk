@@ -128,6 +128,13 @@ def _builtin_option_params() -> list[tuple[inspect.Parameter, type]]:
         ),
         annotation=str,
     )
+    # The `view` option's default is `None` (not a concrete tuple or list) because `None`
+    # is the Typer-level sentinel for "option not passed by the user". A concrete `()` or `[]`
+    # default would be indistinguishable from "user passed nothing" across Typer versions.
+    # The synthesized _command body (lines 196-197) normalizes `None` -> `[]` before forwarding.
+    # The runtime (plugin_runtime) pops with BUILTIN_OPTIONS["view"] (empty tuple) as its default,
+    # so all three spellings (`None`, `()`, `[]`) mean "no --view given".
+    # BUILTIN_OPTIONS["view"] is the single authoritative contract for the option name + default.
     view = inspect.Parameter(
         "view",
         inspect.Parameter.KEYWORD_ONLY,
