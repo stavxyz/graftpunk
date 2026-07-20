@@ -606,7 +606,10 @@ class TestAutoLoginCommand:
         """Test that environment variables are resolved at runtime."""
         import os
 
-        from graftpunk.cli.login_commands import create_login_command
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.login_commands import create_login_fn
 
         class PluginWithLogin(SitePlugin):
             site_name = "my-test-site"
@@ -617,7 +620,7 @@ class TestAutoLoginCommand:
                 return credentials.get("username") == "envuser"
 
         plugin = PluginWithLogin()
-        cmd = create_login_command(plugin, plugin.login, {"username": "", "password": ""})
+        fn = create_login_fn(plugin, plugin.login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.plugin_commands.gp_console"),
@@ -627,17 +630,20 @@ class TestAutoLoginCommand:
                 {"MY_TEST_SITE_USERNAME": "envuser", "MY_TEST_SITE_PASSWORD": "envpass"},
             ),
         ):
-            from click.testing import CliRunner
-
+            app = typer.Typer()
+            app.command(name="login")(fn)
             runner = CliRunner()
-            result = runner.invoke(cmd, [])
+            result = runner.invoke(app, [])
             assert result.exit_code == 0
 
     def test_login_command_envvar_override(self) -> None:
         """Test that plugins can override login envvar names."""
         import os
 
-        from graftpunk.cli.login_commands import create_login_command
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.login_commands import create_login_fn
 
         class PluginWithCustomEnvvars(SitePlugin):
             site_name = "mybank"
@@ -650,7 +656,7 @@ class TestAutoLoginCommand:
                 return credentials.get("username") == "bankuser"
 
         plugin = PluginWithCustomEnvvars()
-        cmd = create_login_command(plugin, plugin.login, {"username": "", "password": ""})
+        fn = create_login_fn(plugin, plugin.login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.plugin_commands.gp_console"),
@@ -660,10 +666,10 @@ class TestAutoLoginCommand:
                 {"MYBANK_USER": "bankuser", "MYBANK_PASS": "bankpass"},
             ),
         ):
-            from click.testing import CliRunner
-
+            app = typer.Typer()
+            app.command(name="login")(fn)
             runner = CliRunner()
-            result = runner.invoke(cmd, [])
+            result = runner.invoke(app, [])
             assert result.exit_code == 0
 
     def test_login_command_registered_for_plugin(self, isolated_config: Path) -> None:
@@ -704,7 +710,10 @@ class TestLoginCommandOutput:
         """Test that successful login uses console.success."""
         import os
 
-        from graftpunk.cli.login_commands import create_login_command
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.login_commands import create_login_fn
 
         class PluginWithLogin(SitePlugin):
             site_name = "richtest"
@@ -715,24 +724,27 @@ class TestLoginCommandOutput:
                 return True
 
         plugin = PluginWithLogin()
-        cmd = create_login_command(plugin, plugin.login, {"username": "", "password": ""})
+        fn = create_login_fn(plugin, plugin.login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.login_commands.gp_console") as mock_console,
             patch("graftpunk.cli.login_commands.Status"),
             patch.dict(os.environ, {"RICHTEST_USERNAME": "u", "RICHTEST_PASSWORD": "p"}),
         ):
-            from click.testing import CliRunner
-
+            app = typer.Typer()
+            app.command(name="login")(fn)
             runner = CliRunner()
-            runner.invoke(cmd, [])
+            runner.invoke(app, [])
             mock_console.success.assert_called_once()
 
     def test_login_failure_uses_console_error(self) -> None:
         """Test that failed login uses console.error and exits with code 1."""
         import os
 
-        from graftpunk.cli.login_commands import create_login_command
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.login_commands import create_login_fn
 
         class PluginWithLogin(SitePlugin):
             site_name = "richtest"
@@ -743,17 +755,17 @@ class TestLoginCommandOutput:
                 return False
 
         plugin = PluginWithLogin()
-        cmd = create_login_command(plugin, plugin.login, {"username": "", "password": ""})
+        fn = create_login_fn(plugin, plugin.login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.login_commands.gp_console") as mock_console,
             patch("graftpunk.cli.login_commands.Status"),
             patch.dict(os.environ, {"RICHTEST_USERNAME": "u", "RICHTEST_PASSWORD": "p"}),
         ):
-            from click.testing import CliRunner
-
+            app = typer.Typer()
+            app.command(name="login")(fn)
             runner = CliRunner()
-            result = runner.invoke(cmd, [])
+            result = runner.invoke(app, [])
             mock_console.error.assert_called_once()
             assert result.exit_code == 1
 
@@ -761,7 +773,10 @@ class TestLoginCommandOutput:
         """Test that login exception uses console.error."""
         import os
 
-        from graftpunk.cli.login_commands import create_login_command
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.login_commands import create_login_fn
 
         class PluginWithLogin(SitePlugin):
             site_name = "richtest"
@@ -772,17 +787,17 @@ class TestLoginCommandOutput:
                 raise RuntimeError("Connection failed")
 
         plugin = PluginWithLogin()
-        cmd = create_login_command(plugin, plugin.login, {"username": "", "password": ""})
+        fn = create_login_fn(plugin, plugin.login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.login_commands.gp_console") as mock_console,
             patch("graftpunk.cli.login_commands.Status"),
             patch.dict(os.environ, {"RICHTEST_USERNAME": "u", "RICHTEST_PASSWORD": "p"}),
         ):
-            from click.testing import CliRunner
-
+            app = typer.Typer()
+            app.command(name="login")(fn)
             runner = CliRunner()
-            runner.invoke(cmd, [])
+            runner.invoke(app, [])
             mock_console.error.assert_called_once()
 
 
@@ -987,7 +1002,10 @@ class TestAsyncLoginCommand:
         """Test that async login methods are run via asyncio.run."""
         import os
 
-        from graftpunk.cli.login_commands import create_login_command
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.login_commands import create_login_fn
 
         class AsyncLoginPlugin(SitePlugin):
             site_name = "asynclogin"
@@ -1002,7 +1020,7 @@ class TestAsyncLoginCommand:
         # does not produce an unawaited coroutine (asyncio is mocked, so
         # the coroutine would never be awaited).
         mock_login = MagicMock(return_value=True)
-        cmd = create_login_command(plugin, mock_login, {"username": "", "password": ""})
+        fn = create_login_fn(plugin, mock_login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.login_commands.gp_console") as mock_console,
@@ -1013,10 +1031,10 @@ class TestAsyncLoginCommand:
             mock_asyncio.iscoroutinefunction.return_value = True
             mock_asyncio.run.return_value = True
 
-            from click.testing import CliRunner
-
+            app = typer.Typer()
+            app.command(name="login")(fn)
             runner = CliRunner()
-            result = runner.invoke(cmd, [])
+            result = runner.invoke(app, [])
 
             mock_asyncio.run.assert_called_once()
             mock_console.success.assert_called_once()
@@ -2084,7 +2102,10 @@ class TestLoginEmptyEnvvar:
         """When env var is set to empty string, prompt is shown instead."""
         import os
 
-        from graftpunk.cli.login_commands import create_login_command
+        import typer
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.login_commands import create_login_fn
 
         class PluginWithLogin(SitePlugin):
             site_name = "emptyenv"
@@ -2095,7 +2116,7 @@ class TestLoginEmptyEnvvar:
                 return True
 
         plugin = PluginWithLogin()
-        cmd = create_login_command(plugin, plugin.login, {"username": "", "password": ""})
+        fn = create_login_fn(plugin, plugin.login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.plugin_commands.gp_console"),
@@ -2104,16 +2125,14 @@ class TestLoginEmptyEnvvar:
                 os.environ,
                 {"EMPTYENV_USERNAME": "", "EMPTYENV_PASSWORD": ""},
             ),
-            patch(
-                "graftpunk.cli.plugin_commands.click.prompt", return_value="prompted_value"
-            ) as mock_prompt,
+            patch("typer.prompt", return_value="prompted_value") as mock_prompt,
         ):
-            from click.testing import CliRunner
-
+            app = typer.Typer()
+            app.command(name="login")(fn)
             runner = CliRunner()
-            result = runner.invoke(cmd, [])
+            result = runner.invoke(app, [])
             assert result.exit_code == 0
-            # click.prompt should have been called for both fields since env vars were empty
+            # typer.prompt should have been called for both fields since env vars were empty
             assert mock_prompt.call_count == 2
 
 

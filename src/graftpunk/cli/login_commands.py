@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 import click
+import typer
 import typer.core
 from rich.status import Status
 
@@ -195,4 +196,114 @@ def create_login_command(
         callback=callback,
         params=[],
         help=help_text,
+    )
+
+
+# TODO(task-5): remove create_login_command (above) once register_plugin_commands
+# uses create_login_fn instead; `import click` above stays until that call site
+# moves, since create_login_command.callback still uses click.prompt.
+
+
+def make_login_body(
+    plugin: CLIPluginProtocol,
+    login_callable: Callable[..., Any],
+    fields: dict[str, str],
+) -> Callable[..., None]:
+    """Build the login command BODY: credential resolution -> login callable.
+
+    Credential resolution order (unchanged): environment variables
+    ({SITE_PREFIX}_{FIELD} or plugin-level username_envvar/password_envvar
+    overrides), then interactive prompts (masked for password/secret/token/key
+    fields). The resolved credentials dict is passed INTO the login callable.
+    """
+    secret_keywords = {"password", "secret", "token", "key"}
+
+    envvar_overrides: dict[str, str] = {}
+    username_envvar = getattr(plugin, "username_envvar", "")
+    password_envvar = getattr(plugin, "password_envvar", "")
+    if username_envvar:
+        envvar_overrides["username"] = username_envvar
+    if password_envvar:
+        envvar_overrides["password"] = password_envvar
+
+    def body(ctx: typer.Context, **kwargs: Any) -> None:  # noqa: ARG001 — zero params by design
+        login_method = login_callable
+        credentials: dict[str, str] = {}
+        site_prefix = plugin.site_name.upper().replace("-", "_").replace(" ", "_")
+
+        for field_name in fields:
+            is_secret = any(kw in field_name.lower() for kw in secret_keywords)
+            envvar = envvar_overrides.get(field_name, f"{site_prefix}_{field_name.upper()}")
+
+            env_value = os.environ.get(envvar)
+            if env_value:
+                credentials[field_name] = env_value
+            else:
+                if env_value is not None:
+                    LOG.debug("login_envvar_empty", field=field_name, envvar=envvar)
+                credentials[field_name] = typer.prompt(
+                    field_name.replace("_", " ").title(),
+                    hide_input=is_secret,
+                )
+
+        try:
+            with Status("Logging in...", console=gp_console.err_console):
+                if asyncio.iscoroutinefunction(login_method):
+                    # Suppress asyncio "Loop ... is closed" warning that fires when
+                    # asyncio.run() closes the event loop while nodriver's subprocess
+                    # handlers are still pending. Suppression covers the entire
+                    # asyncio.run() call because the warning fires during shutdown,
+                    # which is inseparable from the run() call itself.
+                    from graftpunk.logging import suppress_asyncio_noise
+
+                    with suppress_asyncio_noise():
+                        result = asyncio.run(login_method(credentials))
+                else:
+                    result = login_method(credentials)
+
+            if result is False:
+                gp_console.error(
+                    f"Login failed for {plugin.site_name}. Check your credentials and try again."
+                )
+                raise SystemExit(1)
+            if result is not True:
+                LOG.warning(
+                    "login_unexpected_return",
+                    plugin=plugin.site_name,
+                    result_type=type(result).__name__,
+                    result=repr(result),
+                )
+            gp_console.success(f"Logged in to {plugin.site_name} (session cached)")
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except Exception as exc:  # noqa: BLE001 — CLI boundary: present user-friendly error instead of traceback
+            LOG.exception(
+                "plugin_login_failed",
+                plugin=plugin.site_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            gp_console.error(f"Login failed: {exc}")
+            raise SystemExit(1) from exc
+
+    return body
+
+
+def create_login_fn(
+    plugin: CLIPluginProtocol,
+    login_callable: Callable[..., Any],
+    fields: dict[str, str],
+) -> Callable[..., None]:
+    """Synthesize the zero-parameter ``login`` command function."""
+    from graftpunk.cli.command_factory import synthesize_command_fn
+
+    help_text = inspect.getdoc(login_callable) or f"Log in to {plugin.site_name}"
+    help_text = help_text.split("\n")[0]
+    return synthesize_command_fn(
+        name="login",
+        param_specs=[],
+        body=make_login_body(plugin, login_callable, fields),
+        plugin_name=plugin.site_name,
+        include_builtin_options=False,
+        help_text=help_text,
     )
