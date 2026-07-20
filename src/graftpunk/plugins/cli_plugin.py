@@ -407,7 +407,7 @@ class CommandSpec:
     """Specification for a single CLI command.
 
     ``click_kwargs`` is a documented, closed contract interpreted by
-    ``graftpunk.cli.command_factory`` into Typer-native command configuration.
+    ``graftpunk.cli.plugin_commands`` into Typer-native command configuration.
     Supported keys: ``help``, ``short_help``, ``hidden``, ``deprecated``, ``epilog``.
     Unsupported keys raise ``PluginError`` at registration.
     Per-parameter Click kwargs are stored on each :class:`PluginParamSpec` in ``params``.
