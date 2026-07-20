@@ -4,6 +4,7 @@ Manage encrypted browser sessions from the terminal.
 """
 
 import asyncio
+import enum
 import os
 import shutil
 import signal
@@ -11,7 +12,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
-import click
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -70,6 +70,11 @@ app = typer.Typer(
 console = Console()
 
 
+class ObserveMode(enum.StrEnum):
+    off = "off"
+    full = "full"
+
+
 @app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
@@ -97,13 +102,12 @@ def main_callback(
         ),
     ] = False,
     observe: Annotated[
-        str,
+        ObserveMode,
         typer.Option(
             "--observe",
-            click_type=click.Choice(["off", "full"]),
             help="Observability capture mode",
         ),
-    ] = "off",
+    ] = ObserveMode.off,
 ) -> None:
     """graftpunk - turn any website into an API."""
     settings = get_settings()
@@ -120,7 +124,7 @@ def main_callback(
     if network_debug:
         enable_network_debug()
 
-    ctx.ensure_object(dict)["observe_mode"] = observe
+    ctx.ensure_object(dict)["observe_mode"] = observe.value
 
 
 @app.command("version")
@@ -800,7 +804,7 @@ def config() -> None:
 
 
 # Register plugin commands dynamically at module load time so they appear in --help.
-# GraftpunkApp.__call__ injects plugin groups into the Click group before running.
+# Plugin sub-apps are attached with app.add_typer() at import time (below).
 _registered_plugins: dict[str, str] = {}
 try:
     from graftpunk.cli.plugin_commands import register_plugin_commands
