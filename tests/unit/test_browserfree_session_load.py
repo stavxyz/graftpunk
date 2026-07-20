@@ -1,4 +1,5 @@
 import io
+import subprocess
 import sys
 import types
 
@@ -180,3 +181,26 @@ def test_load_session_for_api_from_bytes_with_explicit_key():
     assert isinstance(api, requests.Session)
     assert api.cookies.get("User", domain="example.com") == "dummyuser"
     assert api.headers["User-Agent"] == "Chrome/999"
+
+
+def test_import_graftpunk_does_not_eagerly_import_browser_stack():
+    # Fresh interpreter: importing graftpunk must not pull graftpunk.session.
+    code = (
+        "import graftpunk, sys; "
+        "assert 'graftpunk.session' not in sys.modules, 'session eagerly imported'; "
+        "assert 'graftpunk.stealth' not in sys.modules, 'stealth eagerly imported'; "
+        "print('ok')"
+    )
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
+def test_lazy_browser_symbols_still_resolve():
+    import graftpunk
+
+    # Accessing the lazy attributes still works on a full install.
+    assert graftpunk.BrowserSession is not None
+    assert callable(graftpunk.create_stealth_driver)
