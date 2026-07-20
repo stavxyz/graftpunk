@@ -160,3 +160,23 @@ def test_load_session_for_api_from_bytes_roundtrip():
     assert isinstance(api, requests.Session)
     assert api.cookies.get("User", domain="example.com") == "dummyuser"
     assert api.headers["User-Agent"] == "Chrome/999"
+
+
+def test_load_session_for_api_from_bytes_with_explicit_key():
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key()
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("User", "dummyuser", domain="example.com")
+    obj = _FakeBrowserSessionState()
+    obj.cookies = jar
+    obj.headers = {"User-Agent": "Chrome/999"}
+    obj._gp_header_roles = {}
+    _FakeBrowserSessionState.__module__ = "graftpunk._nonexistent_browser"
+    _FakeBrowserSessionState.__qualname__ = "BrowserSession"
+
+    encrypted = Fernet(key).encrypt(dill.dumps(obj))
+    api = cache.load_session_for_api_from_bytes(encrypted, key=key)
+    assert isinstance(api, requests.Session)
+    assert api.cookies.get("User", domain="example.com") == "dummyuser"
+    assert api.headers["User-Agent"] == "Chrome/999"
