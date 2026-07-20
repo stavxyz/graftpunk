@@ -541,6 +541,41 @@ def load_session_for_api(name: str) -> requests.Session:
     return api_session
 
 
+def load_session_for_api_from_bytes(
+    encrypted: bytes, *, key: bytes | None = None
+) -> requests.Session:
+    """Build a browser-free API session directly from encrypted session bytes.
+
+    For callers that already hold the encrypted blob (e.g. a Cloudflare Worker
+    that read it through an R2 binding) and cannot/should not go through a
+    storage backend or the browser stack. Decrypts, deserializes browser-free,
+    and extracts cookies/headers/roles/tokens into a GraftpunkSession.
+
+    Args:
+        encrypted: the Fernet(pickle(...)) blob.
+        key: optional raw Fernet key. When given, decrypt with it directly —
+            for environments where graftpunk's key file/vault does not exist
+            (a Worker holding the key as a secret). When None, use the normal
+            `decrypt_data` key sources.
+
+    Raises:
+        SessionExpiredError: if decryption or deserialization fails, or the
+            recovered object lacks the expected structure.
+    """
+    try:
+        decrypted = decrypt_data(encrypted, key=key)
+        source = _deserialize_browserfree(decrypted)
+    except SessionExpiredError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise SessionExpiredError(f"Failed to load session from bytes: {exc}") from exc
+
+    if not hasattr(source, "cookies") or not hasattr(source, "headers"):
+        raise SessionExpiredError("Session bytes have invalid structure.")
+
+    return _api_session_from_session(source)
+
+
 def update_session_cookies(api_session: requests.Session, session_name: str) -> None:
     """Persist an API session's cookies and token cache back to the session cache.
 
