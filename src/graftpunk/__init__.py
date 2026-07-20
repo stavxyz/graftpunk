@@ -46,9 +46,22 @@ from graftpunk.exceptions import (
     SessionNotFoundError,
 )
 from graftpunk.graftpunk_session import get_role_headers, list_roles, register_role
-from graftpunk.session import BrowserSession
-from graftpunk.stealth import create_stealth_driver
 from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
+
+
+def __getattr__(name):  # PEP 562 lazy attribute loading
+    """Lazy-load browser-only symbols so `import graftpunk` works without the
+    browser stack (selenium/requestium/etc.) installed — e.g. under Pyodide."""
+    if name == "BrowserSession":
+        from graftpunk.session import BrowserSession
+
+        return BrowserSession
+    if name == "create_stealth_driver":
+        from graftpunk.stealth import create_stealth_driver
+
+        return create_stealth_driver
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Single source of truth: the version lives in pyproject.toml and is read back
 # from the installed package metadata. There is no literal to bump (or forget),
