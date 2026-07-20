@@ -15,6 +15,7 @@ Thread Safety:
 """
 
 import hashlib
+import io
 import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
@@ -450,6 +451,56 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
         LOG.debug("copied_csrf_tokens_from_session", count=len(csrf_tokens))
 
     return api_session
+
+
+class _Stub:
+    """Placeholder for a class the browser-free path cannot import (the browser
+    stack is absent). Unpickling restores state via __setstate__ below.
+
+    cookies/headers/_gp_header_roles and the cached-token dict are plain data in
+    BrowserSession.__getstate__ (session.py:581-582), so they land directly on
+    the stub. NOTE: __getstate__ does NOT serialize `_gp_csrf_tokens`, so csrf
+    tokens are absent from the pickle entirely — the stub cannot and does not
+    surface them.
+    """
+
+    def __setstate__(self, state) -> None:
+        # pickle/dill deliver either a dict, or a (dict, slotstate) 2-tuple for
+        # __slots__-bearing classes. Handle both; fail loud on any other shape
+        # rather than silently discarding state.
+        if isinstance(state, tuple) and len(state) == 2:
+            dict_state, slot_state = state
+            if dict_state:
+                self.__dict__.update(dict_state)
+            for key, value in (slot_state or {}).items():
+                setattr(self, key, value)
+        elif isinstance(state, dict):
+            self.__dict__.update(state)
+        else:
+            raise TypeError(f"_Stub cannot restore pickle state of type {type(state)!r}")
+
+
+class _BrowserFreeUnpickler(pickle.Unpickler):  # pickle is dill (see top import)
+    """Unpickler that stubs classes it cannot import BECAUSE the browser stack is
+    absent (graftpunk.session.BrowserSession -> requestium/selenium/httpie), so a
+    cached session's plain state deserializes browser-free.
+
+    Only import-family errors are converted to stubs. Any OTHER resolution error
+    (a genuinely broken module, a renamed-but-present symbol) propagates — it
+    must not be silently masked into a stub, which the A4 fixture could never
+    catch (stubbing still lands the plain __dict__ and the test keeps passing).
+    """
+
+    def find_class(self, module: str, name: str):
+        try:
+            return super().find_class(module, name)
+        except (ImportError, ModuleNotFoundError, AttributeError):
+            return type(name, (_Stub,), {})
+
+
+def _deserialize_browserfree(decrypted: bytes) -> object:
+    """Deserialize decrypted session bytes without importing the browser stack."""
+    return _BrowserFreeUnpickler(io.BytesIO(decrypted)).load()
 
 
 def load_session_for_api(name: str) -> requests.Session:
