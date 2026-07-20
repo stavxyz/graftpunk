@@ -560,8 +560,10 @@ def load_session_for_api_from_bytes(
             `decrypt_data` key sources.
 
     Raises:
-        SessionExpiredError: if decryption or deserialization fails, or the
-            recovered object lacks the expected structure.
+        SessionExpiredError: if decryption or deserialization fails (including
+            EncryptionError from decrypt_data, which is caught and remapped here
+            for uniform caller-facing contract), or the recovered object lacks
+            the expected structure.
     """
     try:
         decrypted = decrypt_data(encrypted, key=key)
