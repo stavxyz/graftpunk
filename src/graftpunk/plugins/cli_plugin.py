@@ -68,8 +68,13 @@ class PluginParamSpec:
     """Specification for a command parameter.
 
     Holds the parameter name, whether it is a Click option or argument,
-    and a ``click_kwargs`` dict that is splatted directly into
-    ``click.Option()`` or ``click.Argument()`` at registration time.
+    and a ``click_kwargs`` dict interpreted by ``graftpunk.cli.command_factory``
+    into Typer-native parameters.
+
+    For options, supported keys are: ``type``, ``required``, ``default``, ``help``,
+    ``is_flag``, ``show_default``, ``envvar``.
+    For arguments, supported keys are: ``type``, ``required``, ``default``, ``nargs``.
+    Unsupported keys raise ``PluginError`` at registration.
 
     Use the convenience constructors :meth:`option` and :meth:`argument`
     for ergonomic creation with sensible defaults.
@@ -99,8 +104,12 @@ class PluginParamSpec:
 
         Builds a ``click_kwargs`` dict from the explicit parameters,
         then merges any extra *click_kwargs* on top (overriding explicit
-        values on conflict).  The final dict is splatted into
-        ``click.Option()`` at command registration time.
+        values on conflict).  The final dict is interpreted by
+        ``graftpunk.cli.command_factory`` into Typer-native parameters.
+
+        Supported ``click_kwargs`` keys: ``type``, ``required``, ``default``, ``help``,
+        ``is_flag``, ``show_default``, ``envvar``.
+        Unsupported keys raise ``PluginError`` at registration.
 
         When *type* is ``bool`` and *default* is ``False``, ``is_flag``
         is automatically set to ``True``.  Pass ``click_kwargs={"is_flag": False}``
@@ -113,10 +122,10 @@ class PluginParamSpec:
             default: Default value when not provided.
             help: Help text for ``--help`` output.
             click_kwargs: Extra kwargs merged into the dict passed to
-                ``click.Option()``.  These override the explicit parameters.
+                Typer's parameter layer.  These override the explicit parameters.
 
         Returns:
-            A new PluginParamSpec configured as a Click option.
+            A new PluginParamSpec configured as a Typer option.
         """
         if required and default is not None:
             raise ValueError(
@@ -150,16 +159,19 @@ class PluginParamSpec:
     ) -> PluginParamSpec:
         """Create a positional argument parameter spec.
 
+        Supported ``click_kwargs`` keys: ``type``, ``required``, ``default``, ``nargs``.
+        Unsupported keys raise ``PluginError`` at registration.
+
         Args:
             name: Parameter name.
             type: Click type for the parameter (e.g. ``str``, ``int``).
             required: Whether the argument is required (default ``True``).
             default: Default value when not provided.
             click_kwargs: Extra kwargs merged into the dict passed to
-                ``click.Argument()``.  These override the explicit parameters.
+                Typer's parameter layer.  These override the explicit parameters.
 
         Returns:
-            A new PluginParamSpec configured as a Click argument.
+            A new PluginParamSpec configured as a Typer argument.
         """
         if required and default is not None:
             raise ValueError(
@@ -394,10 +406,11 @@ class CommandResult:
 class CommandSpec:
     """Specification for a single CLI command.
 
-    ``click_kwargs`` is splatted into ``TyperCommand()`` at registration
-    time, supporting ``help``, ``hidden``, ``deprecated``, ``epilog``,
-    ``short_help``, and other Click command kwargs.  Per-parameter Click
-    kwargs are stored on each :class:`PluginParamSpec` in ``params``.
+    ``click_kwargs`` is a documented, closed contract interpreted by
+    ``graftpunk.cli.command_factory`` into Typer-native command configuration.
+    Supported keys: ``help``, ``short_help``, ``hidden``, ``deprecated``, ``epilog``.
+    Unsupported keys raise ``PluginError`` at registration.
+    Per-parameter Click kwargs are stored on each :class:`PluginParamSpec` in ``params``.
     """
 
     name: str
