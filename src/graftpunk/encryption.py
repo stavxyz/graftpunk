@@ -221,11 +221,15 @@ def encrypt_data(data: bytes) -> bytes:
     return fernet.encrypt(data)
 
 
-def decrypt_data(data: bytes) -> bytes:
+def decrypt_data(data: bytes, *, key: bytes | None = None) -> bytes:
     """Decrypt data using Fernet symmetric encryption.
 
     Args:
         data: Encrypted bytes.
+        key: Optional raw Fernet key. When given, decrypt with it directly,
+            bypassing the configured key sources (for environments without
+            graftpunk's key file/vault, e.g. a Worker holding the key as a
+            secret). When None (default), use the configured key.
 
     Returns:
         Decrypted raw bytes.
@@ -235,8 +239,8 @@ def decrypt_data(data: bytes) -> bytes:
     """
     from cryptography.fernet import InvalidToken
 
-    key = get_encryption_key()
-    fernet = Fernet(key)
+    fernet_key = key if key is not None else get_encryption_key()
+    fernet = Fernet(fernet_key)
     try:
         return fernet.decrypt(data)
     except InvalidToken as exc:
