@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import requests
+import typer
+from typer.testing import CliRunner as TyperCliRunner
 
-from graftpunk.cli.plugin_commands import GraftpunkApp
+from graftpunk.cli.command_factory import synthesize_command_fn
+from graftpunk.cli.plugin_runtime import run_plugin_command
 from graftpunk.exceptions import CommandError, PluginError
 from graftpunk.plugins.cli_plugin import (
     CommandContext,
@@ -20,6 +23,55 @@ from graftpunk.plugins.cli_plugin import (
 )
 
 DISCOVER_ALL = "graftpunk.cli.plugin_commands.discover_all_plugins"
+
+
+def build_command_app(plugin, cmd_spec):
+    """Test helper for PARSE→BODY FORWARDING tests only.
+
+    Registration-level behavior (help text, hidden/deprecated/epilog, group
+    nesting, collisions) must be tested through the production wiring
+    (`_build_site_app` with a single-command plugin), NOT this helper —
+    otherwise the suite exercises a test-local copy of the wiring and stays
+    green while production drifts.
+
+    NOTE: the returned app always has exactly one registered command and no
+    registered groups/callback, so Typer's `get_command()` collapses it to a
+    bare `Command` (not a `Group`) -- invoke with `TyperCliRunner().invoke(app,
+    [*args])`, WITHOUT the command name (passing the name raises "Got
+    unexpected extra argument").
+    """
+
+    def body(ctx: typer.Context, **kwargs) -> None:
+        run_plugin_command(plugin, cmd_spec, ctx, **kwargs)
+
+    fn = synthesize_command_fn(
+        name=cmd_spec.name,
+        param_specs=list(cmd_spec.params),
+        body=body,
+        plugin_name=plugin.site_name,
+    )
+    app = typer.Typer()
+    app.command(name=cmd_spec.name)(fn)
+    return app
+
+
+def _site_plugin_with_commands(site_name: str, specs: list) -> SitePlugin:
+    """Build a minimal, login-less SitePlugin whose get_commands() is fixed.
+
+    Used by registration-level tests (_build_site_app / register_plugin_commands)
+    that need precise control over CommandSpec.group paths without going
+    through the @command decorator's group-class discovery machinery.
+    """
+
+    class _Plugin(SitePlugin):
+        pass
+
+    _Plugin.site_name = site_name
+    _Plugin.session_name = site_name
+    _Plugin.help_text = "Test"
+    plugin = _Plugin()
+    plugin.get_commands = lambda: specs  # type: ignore[method-assign]
+    return plugin
 
 
 class MockPlugin(SitePlugin):
@@ -123,7 +175,7 @@ class TestPluginRegistration:
         """Test registration with no plugins."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=()):
             registered = register_plugin_commands(app, notify_errors=False)
@@ -134,7 +186,7 @@ class TestPluginRegistration:
         """Test registering a Python plugin."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
             registered = register_plugin_commands(app, notify_errors=False)
@@ -149,7 +201,7 @@ class TestPluginRegistration:
         from graftpunk.plugins.yaml_loader import YAMLCommandDef
         from graftpunk.plugins.yaml_plugin import create_yaml_site_plugin
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         config = build_plugin_config(
             site_name="yamltest",
@@ -175,7 +227,7 @@ class TestPluginRegistration:
         from graftpunk.plugins.yaml_loader import YAMLCommandDef
         from graftpunk.plugins.yaml_plugin import create_yaml_site_plugin
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         # Create YAML plugin with same site_name as MockPlugin
         config = build_plugin_config(
@@ -210,7 +262,7 @@ class TestPluginRegistration:
             def items(self, ctx: Any) -> dict[str, list[int]]:
                 return {"items": []}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(HNPlugin(),)):
             register_plugin_commands(app, notify_errors=False)
@@ -222,22 +274,21 @@ class TestPluginRegistration:
             _plugin_session_map.pop("hn", None)
 
     def test_plugin_groups_registered_on_app(self, isolated_config: Path) -> None:
-        """Test that plugin groups are registered on a GraftpunkApp instance."""
-        import click
-
+        """Test that plugin groups are registered on the Typer app as sub-apps."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
             register_plugin_commands(app, notify_errors=False)
 
-        # Verify plugin group was stored on the app
-        assert "mocksite" in app._plugin_groups
-        plugin_group = app._plugin_groups["mocksite"]
-        assert isinstance(plugin_group, click.Group)
-        assert "items" in plugin_group.commands
-        assert "item" in plugin_group.commands
+        # Verify plugin group was mounted on the app
+        group_names = [g.name for g in app.registered_groups]
+        assert "mocksite" in group_names
+        plugin_group = next(g for g in app.registered_groups if g.name == "mocksite")
+        cmd_names = [c.name for c in plugin_group.typer_instance.registered_commands]
+        assert "items" in cmd_names
+        assert "item" in cmd_names
 
 
 class TestCommandExecution:
@@ -245,8 +296,6 @@ class TestCommandExecution:
 
     def test_command_with_session(self, isolated_config: Path) -> None:
         """Test command execution with mocked session."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
-
         mock_session = MagicMock()
         mock_plugin = MockPlugin()
         mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
@@ -260,13 +309,21 @@ class TestCommandExecution:
             params=(),
         )
 
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
-        assert click_cmd.name == "test"
-        assert click_cmd.help == "Test command"
+        app = build_command_app(mock_plugin, cmd_spec)
+        assert app.registered_commands[0].name == "test"
+
+        # build_command_app is parse->body forwarding only (no help_text) --
+        # help text is a registration-level concern, covered by
+        # TestClickKwargsPassthrough through _build_site_app. Here, verify
+        # the mocked session is actually used to execute the command.
+        result = TyperCliRunner().invoke(app, [])
+        assert result.exit_code == 0
+        mock_plugin.get_session.assert_called_once()
 
     def test_command_with_params(self, isolated_config: Path) -> None:
         """Test command with parameters."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        import typer.main
+
         from graftpunk.plugins.cli_plugin import PluginParamSpec
 
         mock_plugin = MockPlugin()
@@ -278,7 +335,8 @@ class TestCommandExecution:
             params=(PluginParamSpec.argument("item_id", type=int),),
         )
 
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
+        click_cmd = typer.main.get_command(app)
 
         # Check params were added
         param_names = [p.name for p in click_cmd.params]
@@ -370,7 +428,7 @@ class TestPluginDiscoveryErrors:
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
         # discover_all_plugins filters out bad plugins, returning empty tuple
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=()):
             registered = register_plugin_commands(app, notify_errors=True)
@@ -382,7 +440,7 @@ class TestPluginDiscoveryErrors:
         """Test that notify_errors=False suppresses error output."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with (
             patch(DISCOVER_ALL, return_value=()),
@@ -445,7 +503,7 @@ class TestPluginDiscoveryErrors:
         """Test that discovery failures (handled by discover_all_plugins) result in empty."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         # discover_all_plugins handles failures internally and returns empty
         with patch(DISCOVER_ALL, return_value=()):
@@ -457,7 +515,7 @@ class TestPluginDiscoveryErrors:
         """Test that only valid plugins from discover_all_plugins are registered."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         # discover_all_plugins filters out bad plugins, only returns valid ones
         with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
@@ -469,7 +527,7 @@ class TestPluginDiscoveryErrors:
         """Test that empty discovery does not produce errors."""
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with (
             patch(DISCOVER_ALL, return_value=()),
@@ -582,7 +640,9 @@ class TestAutoLoginCommand:
 
     def testcreate_login_command(self) -> None:
         """Test creation of login command with correct structure."""
-        from graftpunk.cli.login_commands import create_login_command
+        import inspect
+
+        from graftpunk.cli.login_commands import create_login_fn
 
         class PluginWithLogin(SitePlugin):
             site_name = "testlogin"
@@ -594,20 +654,21 @@ class TestAutoLoginCommand:
                 return True
 
         plugin = PluginWithLogin()
-        cmd = create_login_command(plugin, plugin.login, {"username": "", "password": ""})
+        fn = create_login_fn(plugin, plugin.login, {"username": "", "password": ""})
 
-        assert cmd.name == "login"
-        assert "Log in to testlogin site" in cmd.help
+        assert fn.__name__ == "login"
+        assert "Log in to testlogin site" in fn.__doc__
 
-        # No Click params -- credentials are gathered via prompts/envvars at runtime
-        assert cmd.params == []
+        # No params beyond ctx -- credentials are gathered via prompts/envvars
+        # at runtime (include_builtin_options=False, zero param_specs).
+        params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
+        assert params == []
 
     def test_login_command_envvar_resolution(self) -> None:
         """Test that environment variables are resolved at runtime."""
         import os
 
         import typer
-        from typer.testing import CliRunner
 
         from graftpunk.cli.login_commands import create_login_fn
 
@@ -632,7 +693,7 @@ class TestAutoLoginCommand:
         ):
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = CliRunner()
+            runner = TyperCliRunner()
             result = runner.invoke(app, [])
             assert result.exit_code == 0
 
@@ -641,7 +702,6 @@ class TestAutoLoginCommand:
         import os
 
         import typer
-        from typer.testing import CliRunner
 
         from graftpunk.cli.login_commands import create_login_fn
 
@@ -668,14 +728,12 @@ class TestAutoLoginCommand:
         ):
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = CliRunner()
+            runner = TyperCliRunner()
             result = runner.invoke(app, [])
             assert result.exit_code == 0
 
     def test_login_command_registered_for_plugin(self, isolated_config: Path) -> None:
         """Test that login command is auto-registered for plugins with login method."""
-        import click
-
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
         class PluginWithLogin(SitePlugin):
@@ -690,17 +748,24 @@ class TestAutoLoginCommand:
             def items(self, ctx: Any) -> dict[str, list[int]]:
                 return {"items": []}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(PluginWithLogin(),)):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "autologin" in registered
 
-        plugin_group = app._plugin_groups["autologin"]
-        assert isinstance(plugin_group, click.Group)
-        assert "login" in plugin_group.commands
-        assert "items" in plugin_group.commands
+        plugin_group = next(g for g in app.registered_groups if g.name == "autologin")
+        cmd_names = [c.name for c in plugin_group.typer_instance.registered_commands]
+        assert "login" in cmd_names
+        assert "items" in cmd_names
+
+        # Drive through register_plugin_commands (production wiring) and
+        # confirm the login command is actually invocable under the site
+        # sub-app (not just present in the registry).
+        runner = TyperCliRunner()
+        help_result = runner.invoke(app, ["autologin", "login", "--help"])
+        assert help_result.exit_code == 0
 
 
 class TestLoginCommandOutput:
@@ -711,7 +776,6 @@ class TestLoginCommandOutput:
         import os
 
         import typer
-        from typer.testing import CliRunner
 
         from graftpunk.cli.login_commands import create_login_fn
 
@@ -733,7 +797,7 @@ class TestLoginCommandOutput:
         ):
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = CliRunner()
+            runner = TyperCliRunner()
             runner.invoke(app, [])
             mock_console.success.assert_called_once()
 
@@ -742,7 +806,6 @@ class TestLoginCommandOutput:
         import os
 
         import typer
-        from typer.testing import CliRunner
 
         from graftpunk.cli.login_commands import create_login_fn
 
@@ -764,7 +827,7 @@ class TestLoginCommandOutput:
         ):
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = CliRunner()
+            runner = TyperCliRunner()
             result = runner.invoke(app, [])
             mock_console.error.assert_called_once()
             assert result.exit_code == 1
@@ -774,7 +837,6 @@ class TestLoginCommandOutput:
         import os
 
         import typer
-        from typer.testing import CliRunner
 
         from graftpunk.cli.login_commands import create_login_fn
 
@@ -796,7 +858,7 @@ class TestLoginCommandOutput:
         ):
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = CliRunner()
+            runner = TyperCliRunner()
             runner.invoke(app, [])
             mock_console.error.assert_called_once()
 
@@ -806,7 +868,6 @@ class TestCommandOutputConsole:
 
     def test_session_not_found_uses_console_error(self, isolated_config: Path) -> None:
         """Test that session-not-found uses console.error."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
         from graftpunk.exceptions import SessionNotFoundError
 
         mock_plugin = MockPlugin()
@@ -820,13 +881,11 @@ class TestCommandOutputConsole:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.gp_console") as mock_con:
-            from click.testing import CliRunner
-
-            runner = CliRunner()
-            runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.gp_console") as mock_con:
+            runner = TyperCliRunner()
+            runner.invoke(app, [])
             mock_con.error.assert_called_once()
 
 
@@ -835,8 +894,6 @@ class TestDeclarativeLoginRegistration:
 
     def test_declarative_plugin_gets_login_command(self, isolated_config: Path) -> None:
         """Test that declarative login plugin gets auto-generated login command."""
-        import click
-
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
         class DeclPlugin(SitePlugin):
@@ -860,17 +917,17 @@ class TestDeclarativeLoginRegistration:
             def items(self, ctx: Any) -> dict[str, list[int]]:
                 return {"items": []}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(DeclPlugin(),)):
             registered = register_plugin_commands(app, notify_errors=False)
 
         assert "decltest" in registered
 
-        plugin_group = app._plugin_groups["decltest"]
-        assert isinstance(plugin_group, click.Group)
-        assert "login" in plugin_group.commands
-        assert "items" in plugin_group.commands
+        plugin_group = next(g for g in app.registered_groups if g.name == "decltest")
+        cmd_names = [c.name for c in plugin_group.typer_instance.registered_commands]
+        assert "login" in cmd_names
+        assert "items" in cmd_names
 
     def test_explicit_login_overrides_declarative(self, isolated_config: Path) -> None:
         """Test that an explicit login() method takes precedence over declarative."""
@@ -924,7 +981,7 @@ class FilePlugin(SitePlugin):
 """
         (plugins_dir / "file_plugin.py").write_text(plugin_code)
 
-        app = GraftpunkApp()
+        app = typer.Typer()
         registered = register_plugin_commands(app, notify_errors=False)
 
         assert "fileplugin" in registered
@@ -1003,7 +1060,6 @@ class TestAsyncLoginCommand:
         import os
 
         import typer
-        from typer.testing import CliRunner
 
         from graftpunk.cli.login_commands import create_login_fn
 
@@ -1033,7 +1089,7 @@ class TestAsyncLoginCommand:
 
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = CliRunner()
+            runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
             mock_asyncio.run.assert_called_once()
@@ -1807,7 +1863,7 @@ class TestSiteNameCollisionDetection:
             def cmd(self, ctx: Any) -> dict[str, str]:
                 return {"source": "b"}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with (
             patch(DISCOVER_ALL, return_value=(PluginA(), PluginB())),
@@ -1837,7 +1893,7 @@ class TestSiteNameCollisionDetection:
             def cmd(self, ctx: Any) -> dict[str, str]:
                 return {"source": "y"}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with (
             patch(DISCOVER_ALL, return_value=(PluginX(), PluginY())),
@@ -1867,7 +1923,7 @@ class TestSiteNameCollisionDetection:
             def cmd(self, ctx: Any) -> dict[str, str]:
                 return {"source": "beta"}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(PluginAlpha(), PluginBeta())):
             registered = register_plugin_commands(app, notify_errors=False)
@@ -1883,7 +1939,7 @@ class TestSiteNameCollisionDetection:
             register_plugin_commands,
         )
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
             # First call registers mocksite
@@ -1895,80 +1951,58 @@ class TestSiteNameCollisionDetection:
             assert "mocksite" in _registered_plugin_sources
 
 
-class TestGraftpunkAppCall:
-    """Tests for GraftpunkApp.__call__() and add_plugin_group."""
+class TestPluginMounting:
+    """Tests for register_plugin_commands mounting plugin sub-apps via app.add_typer.
 
-    def test_add_plugin_group_duplicate_raises_value_error(self) -> None:
-        """Adding a plugin group with a duplicate name raises ValueError."""
-        import click
+    Supersedes the deleted GraftpunkApp tests:
+    - ``test_add_plugin_group_duplicate_raises_value_error`` is superseded by
+      ``TestPluginRegistration::test_duplicate_site_names_raises_plugin_error``
+      -- site-name collisions are now detected in register_plugin_commands
+      itself, there is no separate add_plugin_group() registry to guard.
+    - ``test_plugin_groups_injected_into_click_app`` and
+      ``test_usage_error_caught_and_exits_with_code_2`` tested
+      GraftpunkApp.__call__'s custom machinery (typer.main.get_command()
+      injection of a hand-built click.Group, and a bespoke
+      click.UsageError -> gp_console.error + SystemExit(2) funnel). That
+      machinery is gone: app.add_typer() mounts plugin sub-apps directly on
+      a plain typer.Typer, and Typer/Click's own dispatch -- including its
+      default usage-error handling -- takes over end to end.
+    """
 
-        app = GraftpunkApp()
-        group = click.Group(name="testgroup")
-        app.add_plugin_group("mygroup", group)
+    def test_registered_plugin_command_is_invocable(self, isolated_config: Path) -> None:
+        """A plugin mounted via register_plugin_commands is invocable end-to-end."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        with pytest.raises(ValueError, match="Plugin group 'mygroup' is already registered"):
-            app.add_plugin_group("mygroup", group)
+        plugin = MockPlugin()
+        plugin.get_session = MagicMock(  # type: ignore[method-assign]
+            return_value=requests.Session()
+        )
+        app = typer.Typer()
 
-    def test_plugin_groups_injected_into_click_app(self) -> None:
-        """Plugin groups are injected into the Click app on __call__."""
-        import click
+        with patch(DISCOVER_ALL, return_value=(plugin,)):
+            register_plugin_commands(app, notify_errors=False)
 
-        app = GraftpunkApp(name="testapp")
+        result = TyperCliRunner().invoke(app, ["mocksite", "items"])
+        assert result.exit_code == 0
 
-        # Add a simple typer command so the app has content
-        @app.command()
-        def hello() -> None:
-            """Say hello."""
+    def test_unknown_subcommand_exits_with_code_2(self, isolated_config: Path) -> None:
+        """An unknown subcommand under a mounted plugin exits with code 2."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        group = click.Group(name="myplugin", commands={"sub": click.Command("sub", callback=None)})
-        app.add_plugin_group("myplugin", group)
+        app = typer.Typer()
 
-        with (
-            patch("graftpunk.cli.plugin_commands.typer.main.get_command") as mock_get_cmd,
-        ):
-            mock_click_app = MagicMock(spec=click.Group)
-            mock_get_cmd.return_value = mock_click_app
-            mock_click_app.main.return_value = None
+        with patch(DISCOVER_ALL, return_value=(MockPlugin(),)):
+            register_plugin_commands(app, notify_errors=False)
 
-            app()
-
-            mock_click_app.add_command.assert_called_once_with(group, name="myplugin")
-            mock_click_app.main.assert_called_once_with(standalone_mode=False)
-
-    def test_usage_error_caught_and_exits_with_code_2(self) -> None:
-        """click.UsageError is caught, printed via gp_console.error, and raises SystemExit(2)."""
-        import click
-
-        app = GraftpunkApp(name="testapp")
-
-        @app.command()
-        def hello() -> None:
-            """Say hello."""
-
-        with (
-            patch("graftpunk.cli.plugin_commands.typer.main.get_command") as mock_get_cmd,
-            patch("graftpunk.cli.plugin_commands.gp_console") as mock_console,
-        ):
-            mock_click_app = MagicMock(spec=click.Group)
-            mock_get_cmd.return_value = mock_click_app
-            mock_click_app.main.side_effect = click.UsageError("No such command 'foo'")
-
-            with pytest.raises(SystemExit) as exc_info:
-                app()
-
-            assert exc_info.value.code == 2
-            mock_console.error.assert_called_once_with("No such command 'foo'")
+        result = TyperCliRunner().invoke(app, ["mocksite", "bogus"])
+        assert result.exit_code == 2
 
 
-class TestCreatePluginCommandCallback:
-    """Tests for _create_plugin_command callback error paths."""
+class TestSynthesizedCommandCallback:
+    """Tests for run_plugin_command's error paths, driven via a synthesized command."""
 
     def test_plugin_error_during_session_load_exits_1(self, isolated_config: Path) -> None:
         """PluginError during get_session exits with code 1."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
-
         mock_plugin = MockPlugin()
         mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
             side_effect=PluginError("session corrupted")
@@ -1980,11 +2014,11 @@ class TestCreatePluginCommandCallback:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.gp_console") as mock_console:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 1
             mock_console.error.assert_called_once()
@@ -1994,10 +2028,6 @@ class TestCreatePluginCommandCallback:
         self, isolated_config: Path
     ) -> None:
         """Generic Exception during get_session exits with code 1 and logs."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
-
         mock_plugin = MockPlugin()
         mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
             side_effect=RuntimeError("unexpected db error")
@@ -2009,14 +2039,14 @@ class TestCreatePluginCommandCallback:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
         with (
-            patch("graftpunk.cli.plugin_commands.gp_console") as mock_console,
-            patch("graftpunk.cli.plugin_commands.LOG") as mock_log,
+            patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
+            patch("graftpunk.cli.plugin_runtime.LOG") as mock_log,
         ):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 1
             mock_console.error.assert_called_once()
@@ -2025,10 +2055,6 @@ class TestCreatePluginCommandCallback:
 
     def test_plain_requests_session_sets_driver_none(self, isolated_config: Path) -> None:
         """A plain requests.Session (no .driver attr) should not crash the callback."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
-
         plain_session = requests.Session()
         mock_plugin = MockPlugin()
         mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
@@ -2041,11 +2067,11 @@ class TestCreatePluginCommandCallback:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.build_observe_context") as mock_build:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.build_observe_context") as mock_build:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0
             # build_observe_context should have been called with driver=None
@@ -2059,10 +2085,6 @@ class TestCreatePluginCommandCallback:
 
     def test_handler_exception_exits_1(self, isolated_config: Path) -> None:
         """Exception raised by the command handler exits with code 1."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
-
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
@@ -2079,15 +2101,15 @@ class TestCreatePluginCommandCallback:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
         with (
-            patch("graftpunk.cli.plugin_commands.gp_console") as mock_console,
-            patch("graftpunk.cli.plugin_commands.LOG") as mock_log,
-            patch("graftpunk.cli.plugin_commands.build_observe_context"),
+            patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
+            patch("graftpunk.cli.plugin_runtime.LOG") as mock_log,
+            patch("graftpunk.cli.plugin_runtime.build_observe_context"),
         ):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 1
             mock_console.error.assert_called_once()
@@ -2103,7 +2125,6 @@ class TestLoginEmptyEnvvar:
         import os
 
         import typer
-        from typer.testing import CliRunner
 
         from graftpunk.cli.login_commands import create_login_fn
 
@@ -2129,7 +2150,7 @@ class TestLoginEmptyEnvvar:
         ):
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = CliRunner()
+            runner = TyperCliRunner()
             result = runner.invoke(app, [])
             assert result.exit_code == 0
             # typer.prompt should have been called for both fields since env vars were empty
@@ -2156,13 +2177,13 @@ class TestIndividualCommandRegistrationFailure:
             def bad_cmd(self, ctx: Any) -> dict[str, str]:
                 return {"status": "bad"}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with (
             patch(DISCOVER_ALL, return_value=(TwoCommandPlugin(),)),
             patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
             patch(
-                "graftpunk.cli.plugin_commands._create_plugin_command",
+                "graftpunk.cli.command_factory.synthesize_command_fn",
                 side_effect=[RuntimeError("registration boom"), MagicMock()],
             ),
         ):
@@ -2184,8 +2205,6 @@ class TestLoginRegistrationFailure:
 
     def test_login_registration_failure_collected(self, isolated_config: Path) -> None:
         """Login command registration failure doesn't block other commands."""
-        import click
-
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
         class DeclPluginWithCmd(SitePlugin):
@@ -2209,7 +2228,7 @@ class TestLoginRegistrationFailure:
             def items(self, ctx: Any) -> dict[str, list[int]]:
                 return {"items": []}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with (
             patch(DISCOVER_ALL, return_value=(DeclPluginWithCmd(),)),
@@ -2225,10 +2244,10 @@ class TestLoginRegistrationFailure:
         assert "loginboom" in registered
 
         # The plugin group should have the items command but not login
-        plugin_group = app._plugin_groups["loginboom"]
-        assert isinstance(plugin_group, click.Group)
-        assert "items" in plugin_group.commands
-        assert "login" not in plugin_group.commands
+        plugin_group = next(g for g in app.registered_groups if g.name == "loginboom")
+        cmd_names = [c.name for c in plugin_group.typer_instance.registered_commands]
+        assert "items" in cmd_names
+        assert "login" not in cmd_names
 
         # Error should be collected
         mock_notify.assert_called_once()
@@ -2260,7 +2279,7 @@ class TestLifecycleHooks:
             def cmd(self, ctx: Any) -> dict[str, str]:
                 return {"ok": "yes"}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(SetupPlugin(),)):
             registered = register_plugin_commands(app, notify_errors=False)
@@ -2284,7 +2303,7 @@ class TestLifecycleHooks:
             def cmd(self, ctx: Any) -> dict[str, str]:
                 return {"ok": "yes"}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with (
             patch(DISCOVER_ALL, return_value=(FailSetupPlugin(),)),
@@ -2421,7 +2440,7 @@ class TestLifecycleHooks:
             def cmd(self, ctx: Any) -> dict[str, str]:
                 return {}
 
-        app = GraftpunkApp()
+        app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(FailSetup2(),)):
             register_plugin_commands(app, notify_errors=False)
@@ -2438,7 +2457,7 @@ class TestAPIVersionCheck:
 
         # discover_all_plugins filters unsupported api_versions,
         # so register_plugin_commands never sees them
-        app = GraftpunkApp()
+        app = typer.Typer()
         with patch(DISCOVER_ALL, return_value=()):
             registered = register_plugin_commands(app, notify_errors=False)
 
@@ -2450,10 +2469,6 @@ class TestCommandContextPopulation:
 
     def test_context_has_base_url_and_config(self, isolated_config: Path) -> None:
         """CommandContext receives base_url and _plugin_config from plugin."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
-
         captured_ctx: list[CommandContext] = []
 
         def capturing_handler(ctx: CommandContext, **kwargs: Any) -> dict[str, str]:
@@ -2472,10 +2487,10 @@ class TestCommandContextPopulation:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        runner = CliRunner()
-        result = runner.invoke(click_cmd, [])
+        runner = TyperCliRunner()
+        result = runner.invoke(app, [])
         assert result.exit_code == 0
         assert len(captured_ctx) == 1
         assert captured_ctx[0].base_url == "https://example.com"
@@ -2488,9 +2503,6 @@ class TestCommandErrorCatch:
 
     def test_command_error_displays_user_message(self, isolated_config: Path) -> None:
         """CommandError shows user_message and exits 1."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         def failing_handler(ctx: Any, **kwargs: Any) -> None:
             raise CommandError("Amount must be positive")
@@ -2506,20 +2518,17 @@ class TestCommandErrorCatch:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.gp_console") as mock_console:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 1
             mock_console.error.assert_called_once_with("Amount must be positive")
 
     def test_plugin_error_still_caught(self, isolated_config: Path) -> None:
         """PluginError (non-CommandError) still caught with 'Plugin error' prefix."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         def failing_handler(ctx: Any, **kwargs: Any) -> None:
             raise PluginError("something broke")
@@ -2535,11 +2544,11 @@ class TestCommandErrorCatch:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.gp_console") as mock_console:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 1
             mock_console.error.assert_called_once()
@@ -2551,10 +2560,6 @@ class TestPerCommandRequiresSession:
 
     def test_requires_session_false_gets_plain_session(self, isolated_config: Path) -> None:
         """Command with requires_session=False uses plain requests.Session."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
-
         captured_sessions: list[requests.Session] = []
 
         def handler(ctx: CommandContext, **kwargs: Any) -> dict[str, str]:
@@ -2570,10 +2575,10 @@ class TestPerCommandRequiresSession:
             params=(),
             requires_session=False,
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        runner = CliRunner()
-        result = runner.invoke(click_cmd, [])
+        runner = TyperCliRunner()
+        result = runner.invoke(app, [])
 
         assert result.exit_code == 0
         assert len(captured_sessions) == 1
@@ -2586,10 +2591,6 @@ class TestPerCommandRequiresSession:
 
     def test_requires_session_none_inherits_from_plugin(self, isolated_config: Path) -> None:
         """Command with requires_session=None inherits plugin.requires_session."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
-
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
         mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
@@ -2610,10 +2611,10 @@ class TestPerCommandRequiresSession:
             params=(),
             requires_session=None,
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        runner = CliRunner()
-        result = runner.invoke(click_cmd, [])
+        runner = TyperCliRunner()
+        result = runner.invoke(app, [])
 
         assert result.exit_code == 0
         mock_plugin.get_session.assert_called_once()
@@ -2621,65 +2622,136 @@ class TestPerCommandRequiresSession:
 
 
 class TestEnsureGroupHierarchy:
-    """Tests for _ensure_group_hierarchy creating nested Click groups."""
+    """Tests for _build_site_app's dotted-group nesting (production wiring).
+
+    _ensure_group_hierarchy (hand-built nested click.Group()s) is deleted;
+    dotted CommandSpec.group paths now become nested Typer sub-apps built
+    directly by _build_site_app, so these tests drive that function instead.
+    """
 
     def test_single_level(self) -> None:
-        """Single-level path creates one nested group."""
-        import click
+        """Single-level group path creates one nested Typer sub-app."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
-        from graftpunk.cli.plugin_commands import _ensure_group_hierarchy
+        spec = CommandSpec(
+            name="list",
+            handler=lambda ctx: {"ok": True},
+            group="accounts",
+            requires_session=False,
+        )
+        plugin = _site_plugin_with_commands("hierarchy1", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
 
-        parent = click.Group(name="root")
-        result = _ensure_group_hierarchy(parent, "accounts")
+        group_names = [g.name for g in site_app.registered_groups]
+        assert "accounts" in group_names
 
-        assert isinstance(result, click.Group)
-        assert result.name == "accounts"
-        assert "accounts" in parent.commands
+        accounts_app = next(
+            g for g in site_app.registered_groups if g.name == "accounts"
+        ).typer_instance
+        assert "list" in [c.name for c in accounts_app.registered_commands]
+
+        run = TyperCliRunner().invoke(site_app, ["accounts", "list"])
+        assert run.exit_code == 0
 
     def test_nested_levels(self) -> None:
-        """Dotted path creates multiple nested groups."""
-        import click
+        """Dotted group path creates multiple nested Typer sub-apps."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
-        from graftpunk.cli.plugin_commands import _ensure_group_hierarchy
+        spec = CommandSpec(
+            name="list",
+            handler=lambda ctx: {"ok": True},
+            group="accounts.statements",
+            requires_session=False,
+        )
+        plugin = _site_plugin_with_commands("hierarchy2", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
 
-        parent = click.Group(name="root")
-        result = _ensure_group_hierarchy(parent, "accounts.statements")
+        accounts_app = next(
+            g for g in site_app.registered_groups if g.name == "accounts"
+        ).typer_instance
+        assert "statements" in [g.name for g in accounts_app.registered_groups]
 
-        assert result.name == "statements"
-        accounts_group = parent.commands["accounts"]
-        assert isinstance(accounts_group, click.Group)
-        assert "statements" in accounts_group.commands  # type: ignore[union-attr]
+        statements_app = next(
+            g for g in accounts_app.registered_groups if g.name == "statements"
+        ).typer_instance
+        assert "list" in [c.name for c in statements_app.registered_commands]
+
+        run = TyperCliRunner().invoke(site_app, ["accounts", "statements", "list"])
+        assert run.exit_code == 0
 
     def test_reuses_existing_group(self) -> None:
-        """If a group already exists at a path segment, it is reused."""
-        import click
+        """Two commands sharing a dotted group path share one Typer sub-app."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
-        from graftpunk.cli.plugin_commands import _ensure_group_hierarchy
+        specs = [
+            CommandSpec(
+                name="list",
+                handler=lambda ctx: {"ok": True},
+                group="accounts",
+                requires_session=False,
+            ),
+            CommandSpec(
+                name="show",
+                handler=lambda ctx: {"ok": True},
+                group="accounts",
+                requires_session=False,
+            ),
+        ]
+        plugin = _site_plugin_with_commands("hierarchy3", specs)
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
 
-        parent = click.Group(name="root")
-        existing = click.Group(name="accounts")
-        parent.add_command(existing, name="accounts")
+        account_groups = [g for g in site_app.registered_groups if g.name == "accounts"]
+        assert len(account_groups) == 1
+        cmd_names = [c.name for c in account_groups[0].typer_instance.registered_commands]
+        assert set(cmd_names) == {"list", "show"}
 
-        result = _ensure_group_hierarchy(parent, "accounts.statements")
+    def test_group_command_name_collision_raises_plugin_error(self) -> None:
+        """A group path colliding with an existing command name raises PluginError."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
-        # The accounts group should be the same object
-        assert parent.commands["accounts"] is existing
-        assert result.name == "statements"
+        specs = [
+            CommandSpec(name="accounts", handler=lambda ctx: {"ok": True}, requires_session=False),
+            CommandSpec(
+                name="sub",
+                handler=lambda ctx: {"ok": True},
+                group="accounts",
+                requires_session=False,
+            ),
+        ]
+        plugin = _site_plugin_with_commands("hierarchy4", specs)
 
-    def test_conflict_with_non_group(self) -> None:
-        """If a non-group command exists at a path segment, traversal stops."""
-        import click
+        with pytest.raises(PluginError, match="collides with an existing command"):
+            _build_site_app(plugin, PluginDiscoveryResult())
 
-        from graftpunk.cli.plugin_commands import _ensure_group_hierarchy
+    def test_plugin_error_skips_whole_plugin_in_registration(self, isolated_config: Path) -> None:
+        """register_plugin_commands converts an escaped PluginError into a whole-plugin skip."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
 
-        parent = click.Group(name="root")
-        cmd = click.Command(name="accounts", callback=lambda: None)
-        parent.add_command(cmd, name="accounts")
+        specs = [
+            CommandSpec(name="accounts", handler=lambda ctx: {"ok": True}, requires_session=False),
+            CommandSpec(
+                name="sub",
+                handler=lambda ctx: {"ok": True},
+                group="accounts",
+                requires_session=False,
+            ),
+        ]
+        plugin = _site_plugin_with_commands("hierarchy5", specs)
 
-        # Should return parent (traversal stops at conflict)
-        result = _ensure_group_hierarchy(parent, "accounts.statements")
-        # The result should be the parent since we couldn't traverse past "accounts"
-        assert result is parent
+        app = typer.Typer()
+        with (
+            patch(DISCOVER_ALL, return_value=(plugin,)),
+            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
+        ):
+            registered = register_plugin_commands(app, notify_errors=True)
+
+        assert "hierarchy5" not in registered
+        assert "hierarchy5" not in [g.name for g in app.registered_groups]
+
+        mock_notify.assert_called_once()
+        result = mock_notify.call_args[0][0]
+        assert result.has_errors is True
+        assert any(e.plugin_name == "hierarchy5" for e in result.errors)
 
 
 class TestYAMLCommandsHaveGroupNone:
@@ -2707,9 +2779,6 @@ class TestTokenAutoInjection:
 
     def test_command_with_token_config_injects_tokens(self, isolated_config: Path) -> None:
         """Plugin with token_config gets prepare_session called before command execution."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
@@ -2733,13 +2802,13 @@ class TestTokenAutoInjection:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
         with patch("graftpunk.tokens.prepare_session") as mock_prepare:
             mock_prepare.return_value = mock_session
 
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0, result.output
             assert handler_called
@@ -2749,9 +2818,6 @@ class TestTokenAutoInjection:
 
     def test_command_without_token_config_skips_injection(self, isolated_config: Path) -> None:
         """Plugin without token_config is unaffected."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
@@ -2767,20 +2833,17 @@ class TestTokenAutoInjection:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
         with patch("graftpunk.tokens.prepare_session") as mock_prepare:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0
             mock_prepare.assert_not_called()
 
     def test_token_extraction_failure_shows_error(self, isolated_config: Path) -> None:
         """Token extraction ValueError shows user-friendly error and exits."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
@@ -2796,17 +2859,17 @@ class TestTokenAutoInjection:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
         with (
             patch(
                 "graftpunk.tokens.prepare_session",
                 side_effect=ValueError("CSRF token not found in response"),
             ),
-            patch("graftpunk.cli.plugin_commands.gp_console") as mock_console,
+            patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
         ):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 1
             mock_console.error.assert_called_once()
@@ -2824,9 +2887,6 @@ class TestTokenRefreshOn403:
 
     def test_403_retries_with_fresh_token(self, isolated_config: Path) -> None:
         """HTTPError 403 clears tokens, re-extracts, and retries once."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
@@ -2851,14 +2911,14 @@ class TestTokenRefreshOn403:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
         with (
             patch("graftpunk.tokens.prepare_session") as mock_prepare,
             patch("graftpunk.tokens.clear_cached_tokens") as mock_clear,
         ):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0, result.output
             assert call_count == 2
@@ -2868,9 +2928,6 @@ class TestTokenRefreshOn403:
 
     def test_403_without_token_config_propagates(self, isolated_config: Path) -> None:
         """HTTPError 403 without token_config raises normally."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
@@ -2887,20 +2944,17 @@ class TestTokenRefreshOn403:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.gp_console"):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.gp_console"):
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             # Should exit with error (caught by generic exception handler)
             assert result.exit_code == 1
 
     def test_403_retry_marks_session_dirty(self, isolated_config: Path) -> None:
         """403 retry sets ctx._session_dirty, triggering update_session_cookies."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
@@ -2924,15 +2978,15 @@ class TestTokenRefreshOn403:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
         with (
             patch("graftpunk.tokens.prepare_session"),
             patch("graftpunk.tokens.clear_cached_tokens"),
-            patch("graftpunk.cli.plugin_commands.update_session_cookies") as mock_update,
+            patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
         ):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0, result.output
             # Dirty flag should trigger session persistence
@@ -2940,9 +2994,6 @@ class TestTokenRefreshOn403:
 
     def test_second_403_propagates(self, isolated_config: Path) -> None:
         """If retry also returns 403, error propagates."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
@@ -2960,15 +3011,15 @@ class TestTokenRefreshOn403:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
         with (
             patch("graftpunk.tokens.prepare_session"),
             patch("graftpunk.tokens.clear_cached_tokens"),
-            patch("graftpunk.cli.plugin_commands.gp_console"),
+            patch("graftpunk.cli.plugin_runtime.gp_console"),
         ):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             # Second 403 propagates as error
             assert result.exit_code == 1
@@ -2979,9 +3030,6 @@ class TestSessionPersistence:
 
     def test_saves_session_decorator_persists_after_success(self, isolated_config: Path) -> None:
         """Plugin with @command(saves_session=True) calls update_session_cookies on success."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
@@ -2999,20 +3047,17 @@ class TestSessionPersistence:
             params=(),
             saves_session=True,
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.update_session_cookies") as mock_update:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0, result.output
             mock_update.assert_called_once_with(mock_session, "mocksession")
 
     def test_ctx_save_session_persists_after_success(self, isolated_config: Path) -> None:
         """Handler calling ctx.save_session() triggers update_session_cookies."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
@@ -3030,20 +3075,17 @@ class TestSessionPersistence:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.update_session_cookies") as mock_update:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0, result.output
             mock_update.assert_called_once_with(mock_session, "mocksession")
 
     def test_no_save_when_not_requested(self, isolated_config: Path) -> None:
         """Plain @command() without ctx.save_session() does NOT call update_session_cookies."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
@@ -3060,20 +3102,17 @@ class TestSessionPersistence:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.update_session_cookies") as mock_update:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0, result.output
             mock_update.assert_not_called()
 
     def test_no_save_on_command_failure(self, isolated_config: Path) -> None:
         """Handler exception prevents update_session_cookies from being called."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
@@ -3091,18 +3130,18 @@ class TestSessionPersistence:
             params=(),
             saves_session=True,
         )
-        click_cmd = _create_plugin_command(mock_plugin, cmd_spec)
+        app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_commands.update_session_cookies") as mock_update:
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+        with patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 1
             mock_update.assert_not_called()
 
 
 def _make_minimal_plugin() -> MagicMock:
-    """Create a minimal mock plugin for testing _create_plugin_command."""
+    """Create a minimal mock plugin for build_command_app-based tests."""
     plugin = MagicMock()
     plugin.site_name = "test-plugin"
     plugin.session_name = "test-plugin"
@@ -3116,11 +3155,19 @@ def _make_minimal_plugin() -> MagicMock:
 
 
 class TestClickKwargsPassthrough:
-    """Verify click_kwargs pass straight through to Click params."""
+    """Verify click_kwargs pass through _build_site_app (production wiring).
+
+    Each test builds a single-command plugin and drives it through
+    _build_site_app, not the build_command_app test helper -- registration-
+    level behavior (help text, hidden/deprecated/epilog, --help rendering,
+    envvar resolution, invalid-kwargs contract enforcement) is owned by
+    _build_site_app / synthesize_command_fn, and must be exercised there so
+    the suite can't stay green while production drifts.
+    """
 
     def test_option_show_default_passes_through(self) -> None:
-        """show_default in click_kwargs reaches the Click Option."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        """show_default in click_kwargs renders in --help."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
         param = PluginParamSpec.option(
             "count",
@@ -3132,15 +3179,28 @@ class TestClickKwargsPassthrough:
             name="test-cmd",
             handler=lambda ctx: None,
             params=(param,),
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        cmd = _create_plugin_command(plugin, spec)
-        count_param = next(p for p in cmd.params if getattr(p, "name", "") == "count")
-        assert count_param.show_default is True
+        plugin = _site_plugin_with_commands("clickkw1", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
+
+        root = typer.Typer()
+        root.add_typer(site_app, name=plugin.site_name)
+        result = TyperCliRunner().invoke(root, [plugin.site_name, "test-cmd", "--help"])
+        assert result.exit_code == 0
+        assert "default: 5" in result.output
 
     def test_option_envvar_passes_through(self) -> None:
-        """envvar in click_kwargs reaches the Click Option."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        """envvar in click_kwargs resolves from the environment."""
+        import os
+
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
+
+        captured: dict[str, Any] = {}
+
+        def handler(ctx: Any, **kwargs: Any) -> dict[str, bool]:
+            captured.update(kwargs)
+            return {"ok": True}
 
         param = PluginParamSpec.option(
             "token",
@@ -3149,17 +3209,31 @@ class TestClickKwargsPassthrough:
         )
         spec = CommandSpec(
             name="test-cmd",
-            handler=lambda ctx: None,
+            handler=handler,
             params=(param,),
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        cmd = _create_plugin_command(plugin, spec)
-        token_param = next(p for p in cmd.params if getattr(p, "name", "") == "token")
-        assert token_param.envvar == "MY_TOKEN"
+        plugin = _site_plugin_with_commands("clickkw2", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
+
+        root = typer.Typer()
+        root.add_typer(site_app, name=plugin.site_name)
+
+        with patch.dict(os.environ, {"MY_TOKEN": "abc123"}):
+            result = TyperCliRunner().invoke(root, [plugin.site_name, "test-cmd"])
+
+        assert result.exit_code == 0, result.output
+        assert captured.get("token") == "abc123"
 
     def test_argument_nargs_passes_through(self) -> None:
-        """nargs in click_kwargs reaches the Click Argument."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        """nargs=-1 in click_kwargs collects multiple positional args into a list."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
+
+        captured: dict[str, Any] = {}
+
+        def handler(ctx: Any, **kwargs: Any) -> dict[str, bool]:
+            captured.update(kwargs)
+            return {"ok": True}
 
         param = PluginParamSpec.argument(
             "files",
@@ -3168,42 +3242,50 @@ class TestClickKwargsPassthrough:
         )
         spec = CommandSpec(
             name="test-cmd",
-            handler=lambda ctx: None,
+            handler=handler,
             params=(param,),
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        cmd = _create_plugin_command(plugin, spec)
-        files_param = next(p for p in cmd.params if getattr(p, "name", "") == "files")
-        assert files_param.nargs == -1
+        plugin = _site_plugin_with_commands("clickkw3", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
+
+        root = typer.Typer()
+        root.add_typer(site_app, name=plugin.site_name)
+        result = TyperCliRunner().invoke(root, [plugin.site_name, "test-cmd", "a.txt", "b.txt"])
+
+        assert result.exit_code == 0, result.output
+        assert captured.get("files") == ["a.txt", "b.txt"]
 
     def test_command_help_from_click_kwargs(self) -> None:
         """Command help text comes from CommandSpec.click_kwargs['help']."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
         spec = CommandSpec(
             name="test-cmd",
             handler=lambda ctx: None,
             click_kwargs={"help": "My custom help"},
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        cmd = _create_plugin_command(plugin, spec)
-        assert cmd.help == "My custom help"
+        plugin = _site_plugin_with_commands("clickkw4", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
+        assert site_app.registered_commands[0].help == "My custom help"
 
     def test_command_default_help_when_no_click_kwargs(self) -> None:
         """When no help in click_kwargs, default 'Run X command' is used."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
         spec = CommandSpec(
             name="test-cmd",
             handler=lambda ctx: None,
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        cmd = _create_plugin_command(plugin, spec)
-        assert cmd.help == "Run test-cmd command"
+        plugin = _site_plugin_with_commands("clickkw5", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
+        assert site_app.registered_commands[0].help == "Run test-cmd command"
 
     def test_invalid_option_click_kwargs_raises_plugin_error(self) -> None:
         """Invalid click_kwargs for an option produce a PluginError."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
         param = PluginParamSpec(
             name="bad",
@@ -3214,14 +3296,15 @@ class TestClickKwargsPassthrough:
             name="test-cmd",
             handler=lambda ctx: None,
             params=(param,),
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        with pytest.raises(PluginError, match="Invalid click_kwargs for option 'bad'"):
-            _create_plugin_command(plugin, spec)
+        plugin = _site_plugin_with_commands("clickkw6", [spec])
+        with pytest.raises(PluginError, match="param 'bad'.*unsupported click_kwargs.*option"):
+            _build_site_app(plugin, PluginDiscoveryResult())
 
     def test_invalid_argument_click_kwargs_raises_plugin_error(self) -> None:
         """Invalid click_kwargs for an argument produce a PluginError."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
         param = PluginParamSpec(
             name="bad",
@@ -3232,49 +3315,67 @@ class TestClickKwargsPassthrough:
             name="test-cmd",
             handler=lambda ctx: None,
             params=(param,),
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        with pytest.raises(PluginError, match="Invalid click_kwargs for argument 'bad'"):
-            _create_plugin_command(plugin, spec)
+        plugin = _site_plugin_with_commands("clickkw7", [spec])
+        with pytest.raises(PluginError, match="param 'bad'.*unsupported click_kwargs.*argument"):
+            _build_site_app(plugin, PluginDiscoveryResult())
 
     def test_command_hidden_via_click_kwargs(self) -> None:
-        """hidden=True in CommandSpec.click_kwargs reaches the TyperCommand."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        """hidden=True in CommandSpec.click_kwargs lands on the Typer command."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
         spec = CommandSpec(
             name="secret",
             handler=lambda ctx: None,
             click_kwargs={"help": "Secret command", "hidden": True},
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        cmd = _create_plugin_command(plugin, spec)
-        assert cmd.hidden is True
+        plugin = _site_plugin_with_commands("clickkw8", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
+        assert site_app.registered_commands[0].hidden is True
 
     def test_command_deprecated_via_click_kwargs(self) -> None:
-        """deprecated=True in CommandSpec.click_kwargs reaches the TyperCommand."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        """deprecated=True in CommandSpec.click_kwargs lands on the Typer command."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
         spec = CommandSpec(
             name="old-cmd",
             handler=lambda ctx: None,
             click_kwargs={"help": "Old command", "deprecated": True},
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        cmd = _create_plugin_command(plugin, spec)
-        assert cmd.deprecated is True
+        plugin = _site_plugin_with_commands("clickkw9", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
+        assert site_app.registered_commands[0].deprecated is True
 
     def test_command_epilog_via_click_kwargs(self) -> None:
-        """epilog in CommandSpec.click_kwargs reaches the TyperCommand."""
-        from graftpunk.cli.plugin_commands import _create_plugin_command
+        """epilog in CommandSpec.click_kwargs lands on the Typer command."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
 
         spec = CommandSpec(
             name="test-cmd",
             handler=lambda ctx: None,
             click_kwargs={"help": "Test", "epilog": "See docs for more info."},
+            requires_session=False,
         )
-        plugin = _make_minimal_plugin()
-        cmd = _create_plugin_command(plugin, spec)
-        assert cmd.epilog == "See docs for more info."
+        plugin = _site_plugin_with_commands("clickkw10", [spec])
+        site_app = _build_site_app(plugin, PluginDiscoveryResult())
+        assert site_app.registered_commands[0].epilog == "See docs for more info."
+
+    def test_unsupported_command_level_key_raises_plugin_error(self) -> None:
+        """An unsupported command-level click_kwargs key raises PluginError (COMMAND_KEYS)."""
+        from graftpunk.cli.plugin_commands import PluginDiscoveryResult, _build_site_app
+
+        spec = CommandSpec(
+            name="test-cmd",
+            handler=lambda ctx: None,
+            click_kwargs={"help": "Test", "not_a_real_command_kwarg": True},
+            requires_session=False,
+        )
+        plugin = _site_plugin_with_commands("clickkw11", [spec])
+        with pytest.raises(PluginError, match="unsupported command-level click_kwargs key"):
+            _build_site_app(plugin, PluginDiscoveryResult())
 
 
 class TestFormatExplicitFlag:
@@ -3282,9 +3383,6 @@ class TestFormatExplicitFlag:
 
     def test_explicit_format_flag_sets_user_explicit_true(self, isolated_config: Path) -> None:
         """Passing -f on the CLI sets user_explicit=True in format_output."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         plugin = _make_minimal_plugin()
         plugin.get_session = MagicMock(return_value=requests.Session())
@@ -3296,14 +3394,14 @@ class TestFormatExplicitFlag:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(plugin, cmd_spec)
+        app = build_command_app(plugin, cmd_spec)
 
         with (
-            patch("graftpunk.cli.plugin_commands.build_observe_context"),
-            patch("graftpunk.cli.plugin_commands.format_output") as mock_fmt,
+            patch("graftpunk.cli.plugin_runtime.build_observe_context"),
+            patch("graftpunk.cli.plugin_runtime.format_output") as mock_fmt,
         ):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, ["-f", "table"])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, ["-f", "table"])
 
             assert result.exit_code == 0
             mock_fmt.assert_called_once()
@@ -3311,9 +3409,6 @@ class TestFormatExplicitFlag:
 
     def test_default_format_sets_user_explicit_false(self, isolated_config: Path) -> None:
         """Omitting -f on the CLI sets user_explicit=False in format_output."""
-        from click.testing import CliRunner
-
-        from graftpunk.cli.plugin_commands import _create_plugin_command
 
         plugin = _make_minimal_plugin()
         plugin.get_session = MagicMock(return_value=requests.Session())
@@ -3325,14 +3420,14 @@ class TestFormatExplicitFlag:
             click_kwargs={"help": "Test"},
             params=(),
         )
-        click_cmd = _create_plugin_command(plugin, cmd_spec)
+        app = build_command_app(plugin, cmd_spec)
 
         with (
-            patch("graftpunk.cli.plugin_commands.build_observe_context"),
-            patch("graftpunk.cli.plugin_commands.format_output") as mock_fmt,
+            patch("graftpunk.cli.plugin_runtime.build_observe_context"),
+            patch("graftpunk.cli.plugin_runtime.format_output") as mock_fmt,
         ):
-            runner = CliRunner()
-            result = runner.invoke(click_cmd, [])
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
             assert result.exit_code == 0
             mock_fmt.assert_called_once()

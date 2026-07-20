@@ -20,7 +20,7 @@ from rich.table import Table
 import graftpunk
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
-from graftpunk.cli.plugin_commands import GraftpunkApp, resolve_session_name
+from graftpunk.cli.plugin_commands import resolve_session_name
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
 from graftpunk.logging import configure_logging, enable_network_debug, get_logger
@@ -45,7 +45,7 @@ configure_logging(
 
 LOG = get_logger(__name__)
 
-app = GraftpunkApp(
+app = typer.Typer(
     name="graftpunk",
     help="""
     🔌 graftpunk - turn any website into an API
