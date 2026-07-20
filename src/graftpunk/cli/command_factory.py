@@ -63,6 +63,15 @@ def map_param_spec(
     required: bool = bool(kw.get("required", not spec.is_option))
     default: Any = kw.get("default")
 
+    # Fail loud: required and default are mutually exclusive
+    if required and default is not None:
+        kind = "option" if spec.is_option else "argument"
+        raise PluginError(
+            f"plugin '{plugin_name}', command '{command_name}', param '{spec.name}': "
+            f"a required {kind} cannot also declare a default "
+            f"(required=True with default={default!r})."
+        )
+
     if spec.is_option:
         _reject_unsupported(plugin_name, command_name, spec, OPTION_KEYS)
         if base_type is bool and kw.get("is_flag") is False:

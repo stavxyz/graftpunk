@@ -99,6 +99,15 @@ class TestMapParamSpec:
         with pytest.raises(PluginError, match="is_flag"):
             map_param_spec("p", "c", spec)
 
+    def test_required_with_default_raises_plugin_error(self) -> None:
+        # The .option()/.argument() constructors reject this combo; a directly
+        # constructed spec must hit the same fail-loud wall at the mapper.
+        spec = PluginParamSpec(
+            "docno", is_option=True, click_kwargs={"type": str, "required": True, "default": "x"}
+        )
+        with pytest.raises(PluginError, match="required.*cannot also declare a default"):
+            map_param_spec("p", "c", spec)
+
 
 def _capture_body(captured: dict):
     def body(ctx: typer.Context, **kwargs) -> None:
