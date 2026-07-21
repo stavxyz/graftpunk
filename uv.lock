@@ -606,7 +606,7 @@ wheels = [
 
 [[package]]
 name = "graftpunk"
-version = "1.9.1"
+version = "1.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "brotli" },
