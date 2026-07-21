@@ -613,35 +613,45 @@ dependencies = [
     { name = "cryptography" },
     { name = "dill" },
     { name = "fpdf2" },
-    { name = "httpie" },
-    { name = "nodriver" },
     { name = "pydantic-settings" },
     { name = "pyotp" },
     { name = "python-slugify" },
     { name = "pyyaml" },
-    { name = "requestium" },
+    { name = "requests" },
     { name = "rich" },
-    { name = "selenium" },
-    { name = "selenium-stealth" },
     { name = "structlog" },
     { name = "typer" },
-    { name = "undetected-chromedriver" },
-    { name = "webdriver-manager" },
     { name = "xlsxwriter" },
 ]
 
 [package.optional-dependencies]
 all = [
     { name = "boto3" },
+    { name = "httpie" },
     { name = "jmespath" },
     { name = "mypy" },
+    { name = "nodriver" },
     { name = "openpyxl" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
     { name = "pytest-xdist" },
+    { name = "requestium" },
     { name = "ruff" },
+    { name = "selenium" },
+    { name = "selenium-stealth" },
     { name = "supabase" },
+    { name = "undetected-chromedriver" },
+    { name = "webdriver-manager" },
+]
+browser = [
+    { name = "httpie" },
+    { name = "nodriver" },
+    { name = "requestium" },
+    { name = "selenium" },
+    { name = "selenium-stealth" },
+    { name = "undetected-chromedriver" },
+    { name = "webdriver-manager" },
 ]
 dev = [
     { name = "mypy" },
@@ -655,6 +665,15 @@ dev = [
 jmespath = [
     { name = "jmespath" },
 ]
+nodriver = [
+    { name = "httpie" },
+    { name = "nodriver" },
+    { name = "requestium" },
+    { name = "selenium" },
+    { name = "selenium-stealth" },
+    { name = "undetected-chromedriver" },
+    { name = "webdriver-manager" },
+]
 s3 = [
     { name = "boto3" },
 ]
@@ -664,6 +683,7 @@ supabase = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "graftpunk", extra = ["browser"] },
     { name = "pytest-asyncio" },
     { name = "pytest-xdist" },
 ]
@@ -675,11 +695,12 @@ requires-dist = [
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "dill", specifier = ">=0.3.0" },
     { name = "fpdf2", specifier = ">=2.8.0" },
-    { name = "graftpunk", extras = ["supabase", "s3", "jmespath", "nodriver", "dev"], marker = "extra == 'all'" },
-    { name = "httpie", specifier = ">=3.0.0" },
+    { name = "graftpunk", extras = ["browser"], marker = "extra == 'nodriver'" },
+    { name = "graftpunk", extras = ["browser", "supabase", "s3", "jmespath", "nodriver", "dev"], marker = "extra == 'all'" },
+    { name = "httpie", marker = "extra == 'browser'", specifier = ">=3.0.0" },
     { name = "jmespath", marker = "extra == 'jmespath'", specifier = ">=1.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
-    { name = "nodriver", specifier = ">=0.48" },
+    { name = "nodriver", marker = "extra == 'browser'", specifier = ">=0.48" },
     { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pyotp", specifier = ">=2.9.0" },
@@ -689,22 +710,24 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0.0" },
     { name = "python-slugify", specifier = ">=8.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "requestium", specifier = ">=0.2.5" },
+    { name = "requestium", marker = "extra == 'browser'", specifier = ">=0.2.5" },
+    { name = "requests", specifier = ">=2.28.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5.0" },
-    { name = "selenium", specifier = ">=4.0.0" },
-    { name = "selenium-stealth", specifier = ">=1.0.6" },
+    { name = "selenium", marker = "extra == 'browser'", specifier = ">=4.0.0" },
+    { name = "selenium-stealth", marker = "extra == 'browser'", specifier = ">=1.0.6" },
     { name = "structlog", specifier = ">=23.0.0" },
     { name = "supabase", marker = "extra == 'supabase'", specifier = ">=2.10.0" },
     { name = "typer", specifier = ">=0.9.0" },
-    { name = "undetected-chromedriver", specifier = ">=3.5.0" },
-    { name = "webdriver-manager", specifier = ">=4.0.0" },
+    { name = "undetected-chromedriver", marker = "extra == 'browser'", specifier = ">=3.5.0" },
+    { name = "webdriver-manager", marker = "extra == 'browser'", specifier = ">=4.0.0" },
     { name = "xlsxwriter", specifier = ">=3.0.0" },
 ]
-provides-extras = ["supabase", "s3", "jmespath", "nodriver", "dev", "all"]
+provides-extras = ["browser", "supabase", "s3", "jmespath", "nodriver", "dev", "all"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "graftpunk", extras = ["browser"] },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-xdist", specifier = ">=3.0.0" },
 ]
