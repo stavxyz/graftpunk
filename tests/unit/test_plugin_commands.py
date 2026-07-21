@@ -638,7 +638,7 @@ class TestAutoLoginCommand:
         plugin = PluginWithCommandLogin()
         assert has_login_method(plugin) is False
 
-    def testcreate_login_command(self) -> None:
+    def test_create_login_fn(self) -> None:
         """Test creation of login command with correct structure."""
         import inspect
 
@@ -2752,6 +2752,75 @@ class TestEnsureGroupHierarchy:
         result = mock_notify.call_args[0][0]
         assert result.has_errors is True
         assert any(e.plugin_name == "hierarchy5" for e in result.errors)
+
+    def test_login_resolution_plugin_error_skips_whole_plugin(self, isolated_config: Path) -> None:
+        """A PluginError raised while resolving/registering login must escape
+        the login block's except-Exception, not be swallowed there -- the
+        module's single-owner policy says PluginError = contract violation
+        that skips the WHOLE plugin (mirrors
+        test_plugin_error_skips_whole_plugin_in_registration, but for the
+        login-registration block instead of the leaf-command loop).
+        """
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+
+        specs = [
+            CommandSpec(name="items", handler=lambda ctx: {"ok": True}, requires_session=False),
+        ]
+        plugin = _site_plugin_with_commands("loginboom", specs)
+
+        app = typer.Typer()
+        with (
+            patch(DISCOVER_ALL, return_value=(plugin,)),
+            patch(
+                "graftpunk.cli.plugin_commands.resolve_login_callable",
+                side_effect=PluginError("boom"),
+            ),
+            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
+        ):
+            registered = register_plugin_commands(app, notify_errors=True)
+
+        assert "loginboom" not in registered
+        assert "loginboom" not in [g.name for g in app.registered_groups]
+
+        mock_notify.assert_called_once()
+        result = mock_notify.call_args[0][0]
+        assert result.has_errors is True
+        assert any(e.plugin_name == "loginboom" for e in result.errors)
+
+    def test_login_name_collision_skips_whole_plugin(self, isolated_config: Path) -> None:
+        """A plugin with both a root command named 'login' and a login_config
+        would otherwise double-register 'login' on the site Typer app;
+        the guard treats this as a name collision -- a PluginError that
+        skips the whole plugin, consistent with every other collision.
+        """
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+
+        specs = [
+            CommandSpec(name="login", handler=lambda ctx: {"ok": True}, requires_session=False),
+        ]
+        plugin = _site_plugin_with_commands("logincollide", specs)
+        plugin.login_config = LoginConfig(  # type: ignore[attr-defined]
+            steps=[LoginStep(fields={"username": "#u", "password": "#p"}, submit="#s")],
+            url="/login",
+            failure="Bad login",
+        )
+
+        app = typer.Typer()
+        with (
+            patch(DISCOVER_ALL, return_value=(plugin,)),
+            patch("graftpunk.cli.plugin_commands._notify_plugin_errors") as mock_notify,
+        ):
+            registered = register_plugin_commands(app, notify_errors=True)
+
+        assert "logincollide" not in registered
+        assert "logincollide" not in [g.name for g in app.registered_groups]
+
+        mock_notify.assert_called_once()
+        result = mock_notify.call_args[0][0]
+        assert result.has_errors is True
+        assert any(
+            e.plugin_name == "logincollide" and "login" in e.error.lower() for e in result.errors
+        )
 
 
 class TestYAMLCommandsHaveGroupNone:

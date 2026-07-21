@@ -99,6 +99,41 @@ class TestMapParamSpec:
         with pytest.raises(PluginError, match="is_flag"):
             map_param_spec("p", "c", spec)
 
+    def test_bool_without_is_flag_rejected_loudly(self) -> None:
+        # .option()'s smart default only sets is_flag=True for default=False;
+        # a direct-constructed spec with default=True bypasses that heuristic
+        # and would otherwise silently map to a one-way flag that can never
+        # express False. Must fail loudly, same as is_flag=False.
+        spec = PluginParamSpec(
+            "enabled", is_option=True, click_kwargs={"type": bool, "default": True}
+        )
+        with pytest.raises(PluginError, match="bool"):
+            map_param_spec("p", "c", spec)
+
+    def test_nargs_two_rejected_loudly(self) -> None:
+        # The RFC's closed contract only promises nargs=-1 (variadic); any
+        # other nargs value maps to a scalar argument at runtime -- a silent
+        # usage-error trap. Must fail loudly at registration instead.
+        spec = PluginParamSpec(
+            "pair",
+            is_option=False,
+            click_kwargs={"type": str, "required": False, "nargs": 2},
+        )
+        with pytest.raises(PluginError, match="nargs"):
+            map_param_spec("p", "c", spec)
+
+    def test_variadic_with_default_rejected_loudly(self) -> None:
+        # nargs=-1 + a non-None default is unsupported: Typer variadic
+        # arguments cannot express a non-empty default, so the default would
+        # be silently dropped. Must fail loudly instead.
+        spec = PluginParamSpec(
+            "files",
+            is_option=False,
+            click_kwargs={"type": str, "required": False, "nargs": -1, "default": ["a"]},
+        )
+        with pytest.raises(PluginError, match="nargs=-1"):
+            map_param_spec("p", "c", spec)
+
     def test_required_with_default_raises_plugin_error(self) -> None:
         # The .option()/.argument() constructors reject this combo; a directly
         # constructed spec must hit the same fail-loud wall at the mapper.
@@ -213,6 +248,43 @@ class TestSynthesizeCommandFn:
         assert result.exit_code == 0, result.output
         assert list(captured["kwargs"]["files"]) == ["a.csv", "b.csv"]
         assert captured["kwargs"]["no_wait"] is True
+
+    def test_reserved_param_name_ctx_rejected(self) -> None:
+        # A plugin param literally named `ctx` collides with the always-
+        # injected Context param and would hit inspect.Signature's duplicate
+        # -param ValueError; must fail loudly with a clear message instead.
+        with pytest.raises(PluginError, match="reserved"):
+            synthesize_command_fn(
+                name="c",
+                param_specs=[PluginParamSpec.option("ctx", type=str, default="x")],
+                body=_capture_body({}),
+            )
+
+    def test_reserved_param_name_format_rejected(self) -> None:
+        # `format`/`view`/`output` are injected as built-ins when
+        # include_builtin_options is True (the default); a plugin param
+        # sharing one of those names must fail loudly, not collide silently.
+        with pytest.raises(PluginError, match="reserved"):
+            synthesize_command_fn(
+                name="c",
+                param_specs=[PluginParamSpec.option("format", type=str, default="x")],
+                body=_capture_body({}),
+            )
+
+    def test_reserved_param_name_allowed_without_builtins(self) -> None:
+        # `format` is only reserved because the built-in options are
+        # injected; with include_builtin_options=False (e.g. login commands)
+        # it's a perfectly normal plugin param name.
+        captured: dict = {}
+        fn = synthesize_command_fn(
+            name="c",
+            param_specs=[PluginParamSpec.option("format", type=str, default="x")],
+            body=_capture_body(captured),
+            include_builtin_options=False,
+        )
+        result = CliRunner().invoke(_app_with(fn), [])
+        assert result.exit_code == 0, result.output
+        assert captured["kwargs"]["format"] == "x"
 
     def test_ctx_is_injected_click_context(self) -> None:
         captured: dict = {}

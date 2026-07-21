@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `typer` floor raised to `>=0.21` (the oldest CI-tested version); no upper bound.
-- `PluginParamSpec.click_kwargs` is now a documented, closed contract (type/required/default/help/is_flag/show_default/envvar for options; type/required/default/nargs for arguments) interpreted into Typer-native parameters; unsupported keys raise `PluginError` at registration instead of being splatted into `click.Option`. Command-level `CommandSpec.click_kwargs` get the same closed, fail-loud treatment (help/short_help/hidden/deprecated/epilog).
+- `PluginParamSpec.click_kwargs` is now a documented, closed contract (type/required/default/help/is_flag/show_default/envvar for options; type/required/default/nargs for arguments) interpreted into Typer-native parameters; unsupported keys raise `PluginError` at registration instead of being splatted into `click.Option`, including bool options that aren't declared as flags (`is_flag=True`) and `nargs` values other than `1`/`-1` (or `-1` combined with a `default`). Command-level `CommandSpec.click_kwargs` get the same closed, fail-loud treatment (help/short_help/hidden/deprecated/epilog).
 - A group-segment name colliding with an existing command is now a registration-time `PluginError` (previously a `command_group_conflict` warning that silently mangled the group).
 - Plugin command/`--help`/usage-error rendering now comes from Typer's standard pipeline (minor cosmetic differences; documented interface — names, options, arguments, types, defaults, behavior — unchanged).
 

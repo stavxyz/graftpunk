@@ -15,6 +15,7 @@ Typer's runtime, which is the root fix for the vendored-Click breakage.
 
 from __future__ import annotations
 
+import functools
 import inspect
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -74,11 +75,15 @@ def map_param_spec(
 
     if spec.is_option:
         _reject_unsupported(plugin_name, command_name, spec, OPTION_KEYS)
-        if base_type is bool and kw.get("is_flag") is False:
+        if base_type is bool and not kw.get("is_flag"):
             raise PluginError(
                 f"plugin '{plugin_name}', command '{command_name}', param '{spec.name}': "
-                "is_flag=False (a value-taking bool option) has no Typer-native "
-                "equivalent; use a str/int option or a plain flag."
+                "bool options must be flags (is_flag=True) -- "
+                "PluginParamSpec.option() auto-sets this for type=bool, default=False, "
+                "but any other bool default (e.g. default=True) must set "
+                "click_kwargs={'is_flag': True} explicitly. A value-taking bool option "
+                "(is_flag=False or unset) has no Typer-native equivalent; use a str/int "
+                "option or a plain flag."
             )
         # Explicit positive-only decl: bare flag for bools (no --no-* pair),
         # and immune to typer-version differences in derived flag names.
@@ -100,7 +105,22 @@ def map_param_spec(
         return param, annotation
 
     _reject_unsupported(plugin_name, command_name, spec, ARGUMENT_KEYS)
-    if kw.get("nargs") == -1:
+    nargs = kw.get("nargs")
+    if nargs not in (None, 1, -1):
+        raise PluginError(
+            f"plugin '{plugin_name}', command '{command_name}', param '{spec.name}': "
+            f"nargs={nargs!r} has no Typer-native equivalent; the RFC's closed "
+            "contract only supports nargs=-1 (variadic) or the default "
+            "(a single value)."
+        )
+    if nargs == -1 and default is not None:
+        raise PluginError(
+            f"plugin '{plugin_name}', command '{command_name}', param '{spec.name}': "
+            f"nargs=-1 (variadic) combined with default={default!r} is unsupported -- "
+            "Typer variadic arguments cannot express a non-empty default; omit default "
+            "(an absent variadic argument collects as an empty list)."
+        )
+    if nargs == -1:
         annotation = list[base_type]  # type: ignore[valid-type]
         info = typer.Argument(None if not required else ...)
     else:
@@ -122,10 +142,20 @@ def map_param_spec(
 BUILTIN_OPTIONS: dict[str, Any] = {"format": "json", "view": (), "output": ""}
 
 
-def _builtin_option_params() -> list[tuple[inspect.Parameter, type]]:
+@functools.lru_cache(maxsize=1)
+def _available_formats() -> str:
+    """Comma-joined formatter names for the ``--format`` help text.
+
+    Cached: entry points don't change within a process, and this is
+    recomputed once per synthesized command otherwise.
+    """
     from graftpunk.plugins.formatters import discover_formatters
 
-    available = ", ".join(discover_formatters().keys())
+    return ", ".join(discover_formatters().keys())
+
+
+def _builtin_option_params() -> list[tuple[inspect.Parameter, type]]:
+    available = _available_formats()
     fmt = inspect.Parameter(
         "format",
         inspect.Parameter.KEYWORD_ONLY,
@@ -140,7 +170,8 @@ def _builtin_option_params() -> list[tuple[inspect.Parameter, type]]:
     # The `view` option's default is `None` (not a concrete tuple or list) because `None`
     # is the Typer-level sentinel for "option not passed by the user". A concrete `()` or `[]`
     # default would be indistinguishable from "user passed nothing" across Typer versions.
-    # The synthesized _command body (lines 196-197) normalizes `None` -> `[]` before forwarding.
+    # The synthesized `_command` body (in synthesize_command_fn) normalizes `None` -> `[]`
+    # before forwarding.
     # The runtime (plugin_runtime) pops with BUILTIN_OPTIONS["view"] (empty tuple) as its default,
     # so all three spellings (`None`, `()`, `[]`) mean "no --view given".
     # BUILTIN_OPTIONS["view"] is the single authoritative contract for the option name + default.
@@ -187,6 +218,19 @@ def synthesize_command_fn(
     """
     positional = [s for s in param_specs if not s.is_option]
     options = [s for s in param_specs if s.is_option]
+
+    # Reserved names: `ctx` is always injected; the built-in options are
+    # injected when include_builtin_options. A plugin param sharing one of
+    # these names hits inspect.Signature's duplicate-param ValueError --
+    # fail loud with a clear message instead of leaking that internal error.
+    reserved = {"ctx"} | (set(BUILTIN_OPTIONS) if include_builtin_options else set())
+    for spec in [*positional, *options]:
+        if spec.name in reserved:
+            raise PluginError(
+                f"plugin '{plugin_name}', command '{name}', param '{spec.name}': "
+                f"reserved parameter name (reserved: {', '.join(sorted(reserved))}); "
+                "rename the plugin parameter."
+            )
 
     params: list[inspect.Parameter] = []
     annotations: dict[str, Any] = {}
