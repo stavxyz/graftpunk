@@ -89,3 +89,40 @@ jobs:
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
+
+  typer-compat:
+    # uv.lock pins one typer; consumers resolve others. The vendored-Click
+    # break (see docs/rfcs/2026-07-19-typer-native-plugin-commands.md) shipped
+    # because CI only ever exercised the locked generation. This matrix runs
+    # the plugin-CLI suite on the oldest supported typer and the latest.
+    needs: filter-paths
+    if: needs.filter-paths.outputs.python_changed == 'true'
+    name: Plugin CLI on typer ${{ matrix.typer-version }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        typer-version: ["==0.21.*", ">=0.26"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Force typer ${{ matrix.typer-version }}
+        run: |
+          uv pip install "typer${{ matrix.typer-version }}"
+          uv run --no-sync python -c "import typer; print('typer', typer.__version__)"
+
+      - name: Run plugin CLI tests
+        run: uv run --no-sync pytest tests/unit/test_plugin_commands.py tests/unit/test_command_factory.py tests/unit/test_plugin_runtime.py tests/unit/test_cli_no_external_click.py -v

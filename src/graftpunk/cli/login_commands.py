@@ -12,8 +12,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-import click
-import typer.core
+import typer
 from rich.status import Status
 
 from graftpunk import console as gp_console
@@ -92,31 +91,20 @@ def resolve_login_fields(plugin: CLIPluginProtocol) -> dict[str, str]:
     return {"username": "", "password": ""}
 
 
-def create_login_command(
+def make_login_body(
     plugin: CLIPluginProtocol,
     login_callable: Callable[..., Any],
     fields: dict[str, str],
-) -> typer.core.TyperCommand:
-    """Create an auto-generated login command for plugins with login() method.
+) -> Callable[..., None]:
+    """Build the login command BODY: credential resolution -> login callable.
 
-    Generates a 'login' CLI command that dynamically prompts for credentials
-    based on the plugin's ``LoginConfig.fields``. Credential resolution order:
-
-    1. Environment variables ({SITE_PREFIX}_{FIELD_NAME} or plugin-level overrides)
-    2. Interactive prompts (fields with "password", "secret", "token", or "key"
-       in the name are masked during input)
-
-    Args:
-        plugin: Plugin instance with a login() method.
-        login_callable: The callable to invoke for login (user-defined or generated).
-        fields: Dictionary of field names to default values for credential prompts.
-
-    Returns:
-        Click Command for the login operation.
+    Credential resolution order (unchanged): environment variables
+    ({SITE_PREFIX}_{FIELD} or plugin-level username_envvar/password_envvar
+    overrides), then interactive prompts (masked for password/secret/token/key
+    fields). The resolved credentials dict is passed INTO the login callable.
     """
     secret_keywords = {"password", "secret", "token", "key"}
 
-    # Build envvar override map before the credential loop
     envvar_overrides: dict[str, str] = {}
     username_envvar = getattr(plugin, "username_envvar", "")
     password_envvar = getattr(plugin, "password_envvar", "")
@@ -125,7 +113,7 @@ def create_login_command(
     if password_envvar:
         envvar_overrides["password"] = password_envvar
 
-    def callback() -> None:
+    def body(ctx: typer.Context, **kwargs: Any) -> None:  # noqa: ARG001 — zero params by design
         login_method = login_callable
         credentials: dict[str, str] = {}
         site_prefix = plugin.site_name.upper().replace("-", "_").replace(" ", "_")
@@ -140,7 +128,7 @@ def create_login_command(
             else:
                 if env_value is not None:
                     LOG.debug("login_envvar_empty", field=field_name, envvar=envvar)
-                credentials[field_name] = click.prompt(
+                credentials[field_name] = typer.prompt(
                     field_name.replace("_", " ").title(),
                     hide_input=is_secret,
                 )
@@ -185,14 +173,24 @@ def create_login_command(
             gp_console.error(f"Login failed: {exc}")
             raise SystemExit(1) from exc
 
-    # Get help text from login method docstring if available
-    help_text = inspect.getdoc(login_callable) or f"Log in to {plugin.site_name}"
-    # Use first line of docstring for help
-    help_text = help_text.split("\n")[0]
+    return body
 
-    return typer.core.TyperCommand(
+
+def create_login_fn(
+    plugin: CLIPluginProtocol,
+    login_callable: Callable[..., Any],
+    fields: dict[str, str],
+) -> Callable[..., None]:
+    """Synthesize the zero-parameter ``login`` command function."""
+    from graftpunk.cli.command_factory import synthesize_command_fn
+
+    help_text = inspect.getdoc(login_callable) or f"Log in to {plugin.site_name}"
+    help_text = help_text.split("\n")[0]
+    return synthesize_command_fn(
         name="login",
-        callback=callback,
-        params=[],
-        help=help_text,
+        param_specs=[],
+        body=make_login_body(plugin, login_callable, fields),
+        plugin_name=plugin.site_name,
+        include_builtin_options=False,
+        help_text=help_text,
     )

@@ -696,7 +696,7 @@ requires-dist = [
     { name = "selenium-stealth", specifier = ">=1.0.6" },
     { name = "structlog", specifier = ">=23.0.0" },
     { name = "supabase", marker = "extra == 'supabase'", specifier = ">=2.10.0" },
-    { name = "typer", specifier = ">=0.9.0" },
+    { name = "typer", specifier = ">=0.21" },
     { name = "undetected-chromedriver", specifier = ">=3.5.0" },
     { name = "webdriver-manager", specifier = ">=4.0.0" },
     { name = "xlsxwriter", specifier = ">=3.0.0" },

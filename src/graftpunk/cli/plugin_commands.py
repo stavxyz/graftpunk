@@ -11,33 +11,22 @@ import atexit
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-import click
-import requests
 import typer
-import typer.core
-import typer.main
-from rich.console import Console
 
 from graftpunk import console as gp_console
-from graftpunk.cache import update_session_cookies
 from graftpunk.cli.login_commands import (
-    create_login_command,
     resolve_login_callable,
     resolve_login_fields,
 )
-from graftpunk.exceptions import BrowserError, CommandError, PluginError, SessionNotFoundError
+from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
-from graftpunk.observe import build_observe_context
 from graftpunk.plugins import discover_all_plugins
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
-    CommandContext,
     CommandSpec,
 )
-from graftpunk.plugins.formatters import discover_formatters, format_output
 
 LOG = get_logger(__name__)
-_format_console = Console()
 
 _registered_plugins_for_teardown: list[CLIPluginProtocol] = []
 
@@ -56,40 +45,6 @@ def _teardown_all_plugins() -> None:
 
 
 atexit.register(_teardown_all_plugins)
-
-
-class GraftpunkApp(typer.Typer):
-    """Extended Typer application with plugin command support.
-
-    Manages dynamically-registered plugin Click groups and injects them
-    into the Click group that Typer builds on each invocation.
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._plugin_groups: dict[str, click.Group] = {}
-
-    def add_plugin_group(self, name: str, group: click.Group) -> None:
-        """Register a plugin command group for injection at runtime.
-
-        Raises:
-            ValueError: If a group with this name is already registered.
-        """
-        if name in self._plugin_groups:
-            raise ValueError(f"Plugin group '{name}' is already registered")
-        self._plugin_groups[name] = group
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Build the Click group, inject plugin commands, then run."""
-        click_app = typer.main.get_command(self)
-        if isinstance(click_app, click.Group):
-            for name, group in self._plugin_groups.items():
-                click_app.add_command(group, name=name)
-        try:
-            return click_app.main(standalone_mode=False)
-        except click.UsageError as exc:
-            gp_console.error(str(exc))
-            raise SystemExit(2) from None
 
 
 # Map site_name → session_name for alias resolution in core commands
@@ -146,255 +101,6 @@ class PluginDiscoveryResult:
         return bool(self.errors)
 
 
-def _create_plugin_command(
-    plugin: CLIPluginProtocol,
-    cmd_spec: CommandSpec,
-) -> typer.core.TyperCommand:
-    """Create a TyperCommand from a CommandSpec.
-
-    Builds Click parameters from the spec's ``PluginParamSpec`` list
-    (splatting each param's ``click_kwargs`` into ``click.Option()`` or
-    ``click.Argument()``), wires up the execution callback, and returns
-    a ``TyperCommand`` ready for group registration.
-
-    Automatically adds ``--format``/``-f``, ``--view``, and
-    ``--output``/``-o`` options to every command.
-
-    Args:
-        plugin: Plugin instance that owns the command.
-        cmd_spec: Command specification with handler and params.
-
-    Returns:
-        TyperCommand ready for registration in a plugin group.
-    """
-    params: list[click.Parameter] = []
-
-    positional_params = [p for p in cmd_spec.params if not p.is_option]
-    option_params = [p for p in cmd_spec.params if p.is_option]
-
-    for param in positional_params:
-        try:
-            params.append(click.Argument([param.name], **param.click_kwargs))
-        except TypeError as exc:
-            raise PluginError(
-                f"Invalid click_kwargs for argument '{param.name}': {exc}. "
-                f"Received kwargs: {param.click_kwargs}"
-            ) from exc
-
-    for param in option_params:
-        option_name = f"--{param.name.replace('_', '-')}"
-        try:
-            params.append(click.Option([option_name], **param.click_kwargs))
-        except TypeError as exc:
-            raise PluginError(
-                f"Invalid click_kwargs for option '{param.name}': {exc}. "
-                f"Received kwargs: {param.click_kwargs}"
-            ) from exc
-
-    available_formats = list(discover_formatters().keys())
-    params.append(
-        click.Option(
-            ["--format", "-f"],
-            type=str,
-            default="json",
-            help=f"Output format (built-in: {', '.join(available_formats)})",
-        )
-    )
-    params.append(
-        click.Option(
-            ["--view"],
-            multiple=True,
-            default=(),
-            help="Select view(s) to render; repeatable (NAME or NAME:COL1,COL2,...)",
-        )
-    )
-    params.append(
-        click.Option(
-            ["--output", "-o"],
-            type=click.Path(),
-            default="",
-            help="Write output to file instead of stdout",
-        )
-    )
-
-    def callback(**kwargs: Any) -> None:
-        from graftpunk.client import execute_plugin_command
-
-        output_format = kwargs.pop("format", "json")
-        view_args: tuple[str, ...] = kwargs.pop("view", ())
-        output_path: str = kwargs.pop("output", "")
-        click_ctx = click.get_current_context(silent=True)
-        # Only COMMANDLINE counts as explicit — DEFAULT and DEFAULT_MAP
-        # mean the user did not actively choose, so the hint should apply.
-        format_is_explicit = (
-            click_ctx is not None
-            and click_ctx.get_parameter_source("format") == click.core.ParameterSource.COMMANDLINE
-        )
-
-        # Per-command requires_session override
-        needs_session = (
-            cmd_spec.requires_session
-            if cmd_spec.requires_session is not None
-            else plugin.requires_session
-        )
-
-        # --- Session loading (CLI-specific error handling) ---
-        try:
-            session = plugin.get_session() if needs_session else requests.Session()
-        except SessionNotFoundError:
-            gp_console.error(
-                f"Session '{plugin.session_name}' not found. Please create a session first."
-            )
-            raise SystemExit(1) from None
-        except PluginError as exc:
-            gp_console.error(f"Plugin error: {exc}")
-            raise SystemExit(1) from exc
-        except Exception as exc:  # noqa: BLE001 — CLI boundary
-            gp_console.error(f"Failed to load session: {exc}")
-            LOG.exception("session_load_failed", plugin=plugin.site_name)
-            raise SystemExit(1) from exc
-
-        # Set gp_base_url for relative Referer resolution
-        base_url = getattr(plugin, "base_url", "")
-        if base_url and hasattr(session, "gp_base_url"):
-            setattr(session, "gp_base_url", base_url)  # noqa: B010
-
-        # --- Observability context (CLI-specific) ---
-        observe_mode: Literal["off", "full"] = "off"
-        if click_ctx is not None:
-            parent = click_ctx.find_root()
-            observe_mode = (parent.obj or {}).get("observe_mode", "off")
-
-        backend_type = plugin.backend
-        try:
-            driver = session.driver  # type: ignore[attr-defined]
-        except (BrowserError, AttributeError):
-            driver = None
-            LOG.debug(
-                "driver_not_available_for_observe",
-                plugin=plugin.site_name,
-            )
-        observe_ctx = build_observe_context(
-            plugin.site_name,
-            backend_type,
-            driver,
-            observe_mode,
-        )
-        if observe_mode != "off" and driver is None:
-            gp_console.warn(
-                f"Observability capture unavailable for "
-                f"'{plugin.site_name}': no browser driver. "
-                f"Only event logging will work."
-            )
-
-        # --- Token injection (CLI-specific ValueError handling) ---
-        token_config = getattr(plugin, "token_config", None)
-        if token_config is not None and needs_session:
-            from graftpunk.tokens import (
-                prepare_session as _prepare_tokens,
-            )
-
-            base_url = getattr(plugin, "base_url", "")
-            try:
-                _prepare_tokens(session, token_config, base_url)
-            except ValueError as exc:
-                gp_console.error(f"Token extraction failed: {exc}")
-                raise SystemExit(1) from exc
-
-        # --- Build context and execute via shared pipeline ---
-        try:
-            ctx = CommandContext(
-                session=session,
-                plugin_name=plugin.site_name,
-                command_name=cmd_spec.name,
-                api_version=plugin.api_version,
-                base_url=getattr(plugin, "base_url", ""),
-                config=getattr(plugin, "_plugin_config", None),
-                observe=observe_ctx,
-                _session_name=(plugin.session_name if needs_session else ""),
-            )
-
-            try:
-                result = execute_plugin_command(
-                    cmd_spec,
-                    ctx,
-                    plugin_formatters=getattr(plugin, "format_overrides", None) or None,
-                    **kwargs,
-                )
-            except requests.exceptions.HTTPError as exc:
-                if (
-                    exc.response is not None
-                    and exc.response.status_code == 403
-                    and token_config is not None
-                ):
-                    from graftpunk.tokens import clear_cached_tokens
-                    from graftpunk.tokens import (
-                        prepare_session as _prep,
-                    )
-
-                    LOG.info(
-                        "token_403_retry",
-                        command=cmd_spec.name,
-                        url=(exc.response.url if exc.response else "unknown"),
-                    )
-                    clear_cached_tokens(session)
-                    _prep(
-                        session,
-                        token_config,
-                        getattr(plugin, "base_url", ""),
-                    )
-                    ctx._session_dirty = True
-                    result = execute_plugin_command(
-                        cmd_spec,
-                        ctx,
-                        plugin_formatters=getattr(plugin, "format_overrides", None) or None,
-                        **kwargs,
-                    )
-                else:
-                    raise
-
-            # Persist session if requested
-            if (cmd_spec.saves_session or ctx._session_dirty) and needs_session:
-                update_session_cookies(session, plugin.session_name)
-
-            format_output(
-                result,
-                output_format,
-                _format_console,
-                user_explicit=format_is_explicit,
-                view_args=view_args,
-                output_path=output_path,
-                plugin_formatters=getattr(plugin, "format_overrides", None) or None,
-            )
-        except (SystemExit, KeyboardInterrupt):
-            raise
-        except CommandError as exc:
-            gp_console.error(exc.user_message)
-            raise SystemExit(1) from exc
-        except PluginError as exc:
-            gp_console.error(f"Plugin error: {exc}")
-            raise SystemExit(1) from exc
-        except Exception as exc:  # noqa: BLE001 — CLI boundary
-            LOG.exception(
-                "plugin_command_failed",
-                plugin=plugin.site_name,
-                command=cmd_spec.name,
-                error=str(exc),
-                exc_type=type(exc).__name__,
-            )
-            gp_console.error(f"Command failed: {exc}")
-            raise SystemExit(1) from exc
-
-    cmd_kw = dict(cmd_spec.click_kwargs)
-    cmd_kw.setdefault("help", f"Run {cmd_spec.name} command")
-    return typer.core.TyperCommand(
-        name=cmd_spec.name,
-        callback=callback,
-        params=params,
-        **cmd_kw,
-    )
-
-
 def _notify_plugin_errors(result: PluginDiscoveryResult) -> None:
     """Print plugin discovery errors to stderr for user visibility.
 
@@ -442,41 +148,133 @@ def _get_plugin_source(plugin: CLIPluginProtocol) -> str:
     return f"unknown:{type(plugin).__name__}"
 
 
-def _ensure_group_hierarchy(parent_group: click.Group, dotted_path: str) -> click.Group:
-    """Create nested Click groups for a dotted path like 'accounts.statements'.
+# Command-level click_kwargs contract (same closed, fail-loud policy as the
+# param-level contract in command_factory.OPTION_KEYS/ARGUMENT_KEYS).
+COMMAND_KEYS = frozenset({"help", "short_help", "hidden", "deprecated", "epilog"})
 
-    Walks each segment of the dotted path, creating Click groups as needed.
-    If a segment already exists as a Group, it is reused. If a non-group
-    command exists with the same name, a warning is logged and traversal stops.
 
-    Args:
-        parent_group: The top-level Click group to nest under.
-        dotted_path: Dot-separated group path (e.g. "accounts.statements").
+def _build_site_app(plugin: CLIPluginProtocol, result: PluginDiscoveryResult) -> typer.Typer:
+    """Build one plugin's command tree as a Typer sub-app.
 
-    Returns:
-        The innermost Click group for the path.
+    Leaf commands are factory-synthesized functions whose body closes over
+    (plugin, cmd_spec) and delegates to run_plugin_command. Dotted
+    ``cmd_spec.group`` paths become nested Typer sub-apps.
+
+    Error policy (single owner -- consumed verbatim by this task's tests):
+    ``PluginError`` means a plugin-author CONTRACT VIOLATION (group/command
+    name collision, duplicate command, unsupported click_kwargs) and ESCAPES
+    this function; register_plugin_commands converts it into a whole-plugin
+    skip plus a user-visible error. Only unexpected non-PluginError failures
+    are contained per-command. (Previously: a command_group_conflict warning
+    that silently mangled the group.)
     """
-    current = parent_group
-    for part in dotted_path.split("."):
-        existing = current.commands.get(part)
-        if existing is None:
-            # Use TyperGroup (not click.Group) so nested subcommand help
-            # output gets the same rich formatting as top-level groups.
-            new_group = typer.core.TyperGroup(
-                name=part,
-                no_args_is_help=True,
-                rich_markup_mode="rich",
-                context_settings={"help_option_names": ["-h", "--help"]},
+    from graftpunk.cli.command_factory import synthesize_command_fn
+    from graftpunk.cli.plugin_runtime import run_plugin_command
+
+    site_app = typer.Typer(
+        name=plugin.site_name,
+        help=plugin.help_text or f"Commands for {plugin.site_name}",
+        no_args_is_help=True,
+    )
+    # dotted-path -> sub-app registry ("" is the site root)
+    group_apps: dict[str, typer.Typer] = {"": site_app}
+    registered_names: dict[str, set[str]] = {"": set()}
+
+    def _group_app(dotted: str) -> typer.Typer:
+        if dotted in group_apps:
+            return group_apps[dotted]
+        parent_path, _, segment = dotted.rpartition(".")
+        parent = _group_app(parent_path)
+        if segment in registered_names[parent_path]:
+            raise PluginError(
+                f"plugin '{plugin.site_name}': group '{dotted}' collides with an "
+                f"existing command named '{segment}'"
             )
-            current.add_command(new_group, name=part)
-            current = new_group
-        elif isinstance(existing, click.Group):
-            current = existing
-        else:
-            # Conflict: a command already exists with this name
-            LOG.warning("command_group_conflict", name=part, path=dotted_path)
-            break
-    return current
+        sub = typer.Typer(name=segment, no_args_is_help=True)
+        parent.add_typer(sub, name=segment)
+        group_apps[dotted] = sub
+        registered_names[parent_path].add(segment)
+        registered_names[dotted] = set()
+        return sub
+
+    def _make_body(spec: CommandSpec):
+        def body(ctx: typer.Context, **kwargs: Any) -> None:
+            run_plugin_command(plugin, spec, ctx, **kwargs)
+
+        return body
+
+    for cmd_spec in plugin.get_commands():
+        try:
+            target = _group_app(cmd_spec.group or "")
+            group_path = cmd_spec.group or ""
+            if cmd_spec.name in registered_names[group_path]:
+                raise PluginError(
+                    f"plugin '{plugin.site_name}': duplicate command "
+                    f"'{cmd_spec.name}' in group '{group_path or '<root>'}'"
+                )
+            cmd_kw = dict(cmd_spec.click_kwargs)
+            unsupported = set(cmd_kw) - COMMAND_KEYS
+            if unsupported:
+                raise PluginError(
+                    f"plugin '{plugin.site_name}', command '{cmd_spec.name}': "
+                    f"unsupported command-level click_kwargs key(s): "
+                    f"{', '.join(sorted(unsupported))}. "
+                    f"Supported: {', '.join(sorted(COMMAND_KEYS))}."
+                )
+            help_text = cmd_kw.pop("help", f"Run {cmd_spec.name} command")
+            fn = synthesize_command_fn(
+                name=cmd_spec.name,
+                param_specs=list(cmd_spec.params),
+                body=_make_body(cmd_spec),
+                plugin_name=plugin.site_name,
+                help_text=help_text,
+            )
+            target.command(name=cmd_spec.name, help=help_text, **cmd_kw)(fn)
+            registered_names[group_path].add(cmd_spec.name)
+            LOG.debug(
+                "command_registered",
+                plugin=plugin.site_name,
+                command=cmd_spec.name,
+                group=cmd_spec.group,
+            )
+        except PluginError:
+            raise  # contract violation -- loud, escapes (see docstring policy)
+        except Exception as exc:  # noqa: BLE001 — plugin boundary (unexpected plugin defects)
+            LOG.warning(
+                "command_registration_failed",
+                plugin=plugin.site_name,
+                command=cmd_spec.name,
+                error=str(exc),
+            )
+            result.add_error(f"{plugin.site_name}.{cmd_spec.name}", str(exc), "registration")
+
+    # Auto-register login command if plugin has login capability
+    try:
+        login_callable = resolve_login_callable(plugin)
+        if login_callable is not None:
+            from graftpunk.cli.login_commands import create_login_fn
+
+            if "login" in registered_names[""]:
+                raise PluginError(
+                    f"plugin '{plugin.site_name}': login command collides with an "
+                    f"existing root command named 'login'"
+                )
+            login_fields = resolve_login_fields(plugin)
+            login_fn = create_login_fn(plugin, login_callable, login_fields)
+            site_app.command(name="login", help=login_fn.__doc__)(login_fn)
+            registered_names[""].add("login")
+            LOG.debug("login_command_registered", plugin=plugin.site_name)
+    except PluginError:
+        raise  # contract violation -- loud, escapes (see docstring policy)
+    except Exception as exc:  # noqa: BLE001 — plugin boundary
+        LOG.warning(
+            "login_command_registration_failed",
+            plugin=plugin.site_name,
+            exc_info=True,
+        )
+        result.add_error(f"{plugin.site_name}.login", str(exc), "registration")
+
+    return site_app
 
 
 def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) -> dict[str, str]:
@@ -521,58 +319,17 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
                     f"Rename one of the plugins."
                 )
 
-            # Use TyperGroup instead of plain click.Group so plugin help
-            # output uses the same rich formatting as the main app.
-            plugin_group = typer.core.TyperGroup(
-                name=site_name,
-                help=plugin.help_text or f"Commands for {site_name}",
-                no_args_is_help=True,
-                rich_markup_mode="rich",
-                context_settings={"help_option_names": ["-h", "--help"]},
-            )
-
-            # Add commands to the group
-            command_list = plugin.get_commands()
-            for cmd_spec in command_list:
-                try:
-                    click_cmd = _create_plugin_command(plugin, cmd_spec)
-                    if cmd_spec.group is None:
-                        # Top-level command
-                        plugin_group.add_command(click_cmd, name=cmd_spec.name)
-                    else:
-                        # Grouped command -- ensure parent groups exist
-                        group = _ensure_group_hierarchy(plugin_group, cmd_spec.group)
-                        group.add_command(click_cmd, name=cmd_spec.name)
-                    LOG.debug(
-                        "command_registered",
-                        plugin=site_name,
-                        command=cmd_spec.name,
-                        group=cmd_spec.group,
-                    )
-                except Exception as exc:  # noqa: BLE001 — plugin boundary: unknown plugin code may raise anything
-                    LOG.warning(
-                        "command_registration_failed",
-                        plugin=site_name,
-                        command=cmd_spec.name,
-                        error=str(exc),
-                    )
-                    result.add_error(f"{site_name}.{cmd_spec.name}", str(exc), "registration")
-
-            # Auto-register login command if plugin has login capability
             try:
-                login_callable = resolve_login_callable(plugin)
-                if login_callable is not None:
-                    login_fields = resolve_login_fields(plugin)
-                    login_cmd = create_login_command(plugin, login_callable, login_fields)
-                    plugin_group.add_command(login_cmd, name="login")
-                    LOG.debug("login_command_registered", plugin=site_name)
-            except Exception as exc:  # noqa: BLE001 — plugin boundary: unknown plugin code may raise anything
-                LOG.warning(
-                    "login_command_registration_failed",
-                    plugin=site_name,
-                    exc_info=True,
-                )
-                result.add_error(f"{site_name}.login", str(exc), "registration")
+                site_app = _build_site_app(plugin, result)
+            except PluginError as exc:
+                # Contract violation inside this plugin: skip the WHOLE plugin
+                # loudly (recorded + printed via _notify_plugin_errors) rather
+                # than mounting a silently-mangled command tree. The site-name
+                # collision PluginError raised earlier in this loop body still
+                # propagates via the outer `except PluginError: raise`.
+                LOG.warning("plugin_contract_violation", plugin=site_name, error=str(exc))
+                result.add_error(site_name, str(exc), "registration")
+                continue
 
             # Run plugin setup hook
             try:
@@ -583,10 +340,8 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
                 result.add_error(site_name, f"setup() failed: {exc}", "registration")
                 continue  # Skip this plugin
 
-            # Register group with the app (if it's a GraftpunkApp)
             _registered_plugin_sources[site_name] = source
-            if isinstance(app, GraftpunkApp):
-                app.add_plugin_group(site_name, plugin_group)
+            app.add_typer(site_app, name=site_name)
             _plugin_session_map[site_name] = plugin.session_name
             _registered_plugins_for_teardown.append(plugin)
             result.registered[site_name] = plugin.help_text
