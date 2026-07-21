@@ -27,12 +27,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+# Base dependencies are kept lean and WASM-friendly (pure-Python or wheels that
+# resolve under Pyodide/Cloudflare Workers). The browser-automation stack has no
+# usable WASM wheels, so it lives in the optional [browser] extra (see #121).
 dependencies = [
-    "requestium>=0.2.5",
-    "selenium>=4.0.0",
-    "webdriver-manager>=4.0.0",
-    "undetected-chromedriver>=3.5.0",
-    "selenium-stealth>=1.0.6",
+    "requests>=2.28.0",
     "cryptography>=42.0.0",
     "dill>=0.3.0",
     "pydantic-settings>=2.0.0",
@@ -40,16 +39,28 @@ dependencies = [
     "rich>=13.0.0",
     "structlog>=23.0.0",
     "python-slugify>=8.0.0",
-    "httpie>=3.0.0",
     "pyotp>=2.9.0",
     "pyyaml>=6.0",
-    "nodriver>=0.48",
     "brotli>=1.1.0",
     "xlsxwriter>=3.0.0",
     "fpdf2>=2.8.0",
 ]
 
 [project.optional-dependencies]
+# Browser-automation stack. Required for live login / stealth driving
+# (session.py, stealth.py, backends/selenium.py, backends/nodriver.py) but NOT
+# for the browser-free session-load path (load_session_for_api_from_bytes),
+# which is why these are optional — none ship WASM wheels, so requiring them
+# makes the package unresolvable under Pyodide/Cloudflare Workers (#121).
+browser = [
+    "requestium>=0.2.5",
+    "selenium>=4.0.0",
+    "webdriver-manager>=4.0.0",
+    "undetected-chromedriver>=3.5.0",
+    "selenium-stealth>=1.0.6",
+    "nodriver>=0.48",
+    "httpie>=3.0.0",
+]
 supabase = [
     "supabase>=2.10.0",
 ]
@@ -60,7 +71,9 @@ jmespath = [
     "jmespath>=1.0.0",
 ]
 nodriver = [
-    # nodriver is now a core dependency; this extra is kept for backwards compatibility
+    # nodriver moved into the [browser] extra; this alias is kept for
+    # backwards compatibility (installs the full browser stack).
+    "graftpunk[browser]",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -72,7 +85,7 @@ dev = [
     "openpyxl>=3.1.0",
 ]
 all = [
-    "graftpunk[supabase,s3,jmespath,nodriver,dev]",
+    "graftpunk[browser,supabase,s3,jmespath,nodriver,dev]",
 ]
 
 [project.scripts]
@@ -147,6 +160,11 @@ exclude_lines = [
 
 [dependency-groups]
 dev = [
+    # The test suite exercises the browser layer (session.py, stealth.py,
+    # backends/*), so the dev environment must pull the [browser] extra even
+    # though it is optional for end users. `uv sync` (default group) and
+    # `just setup-dev` therefore still install the full browser stack.
+    "graftpunk[browser]",
     "pytest-asyncio>=1.3.0",
     "pytest-xdist>=3.0.0",
 ]
