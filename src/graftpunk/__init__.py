@@ -32,6 +32,7 @@ from graftpunk.cache import (
     list_sessions_with_metadata,
     load_session,
     load_session_for_api,
+    load_session_for_api_from_bytes,
     update_session_status,
     validate_session_name,
 )
@@ -92,6 +93,7 @@ __all__ = [
     "cache_session",
     "load_session",
     "load_session_for_api",
+    "load_session_for_api_from_bytes",
     "list_sessions",
     "list_sessions_with_metadata",
     "clear_session_cache",
