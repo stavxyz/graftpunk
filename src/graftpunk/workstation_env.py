@@ -255,9 +255,7 @@ def set_entry(name: str, value: str) -> None:
     if not _NAME_RE.match(name):
         raise ValueError(f"invalid variable name: {name!r}")
     path = paths.workstation_env_path()
-    lines = (
-        path.read_text(encoding="utf-8").splitlines(keepends=True) if path.is_file() else []
-    )
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.is_file() else []
     pattern = _entry_line_pattern(name)
     hits = [i for i, line in enumerate(lines) if pattern.match(line)]
     if len(hits) > 1:
