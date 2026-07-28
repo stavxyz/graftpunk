@@ -1,6 +1,7 @@
 """Tests for graftpunk.workstation_env (spec: docs/rfcs/2026-07-28-workstation-env.md)."""
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,103 @@ class TestParser:
         with capture_logs() as cap:
             workstation_env.load()
         assert any(e["event"] == "workstation_env_permissive_mode" for e in cap)
+
+
+class TestLookup:
+    def test_real_env_beats_file(self, env_file, monkeypatch):
+        _write(env_file, "K=fromfile\n")
+        monkeypatch.setenv("K", "fromenv")
+        assert workstation_env.load().lookup("K") == "fromenv"
+
+    def test_empty_string_env_is_a_miss(self, env_file, monkeypatch):
+        # Intended behavior change vs. today's login flow: empty env falls
+        # through to the file tier.
+        _write(env_file, "K=fromfile\n")
+        monkeypatch.setenv("K", "")
+        assert workstation_env.load().lookup("K") == "fromfile"
+
+    def test_static_entry_resolves_without_subprocess(self, env_file, monkeypatch):
+        _write(env_file, "K=v\n")
+        monkeypatch.delenv("K", raising=False)
+
+        def boom(*a, **kw):
+            raise AssertionError("no subprocess for statics")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert workstation_env.load().lookup("K") == "v"
+
+    def test_command_entry_executes_and_strips_one_newline(self, env_file, monkeypatch):
+        _write(env_file, "K=$(printf 'secret\\n')\n")
+        monkeypatch.delenv("K", raising=False)
+        assert workstation_env.load().lookup("K") == "secret"
+
+    def test_command_memoized_single_subprocess(self, env_file, monkeypatch):
+        _write(env_file, "K=$(echo hi)\n")
+        monkeypatch.delenv("K", raising=False)
+        env = workstation_env.load()
+        calls = []
+        real_run = subprocess.run
+
+        def counting_run(*a, **kw):
+            calls.append(a)
+            return real_run(*a, **kw)
+
+        monkeypatch.setattr(subprocess, "run", counting_run)
+        assert env.lookup("K") == "hi"
+        assert env.lookup("K") == "hi"
+        assert len(calls) == 1
+
+    def test_command_failure_memoized_returns_none_and_logs(self, env_file, monkeypatch):
+        _write(env_file, "K=$(exit 3)\n")
+        monkeypatch.delenv("K", raising=False)
+        env = workstation_env.load()
+        calls = []
+        real_run = subprocess.run
+
+        def counting_run(*a, **kw):
+            calls.append(a)
+            return real_run(*a, **kw)
+
+        monkeypatch.setattr(subprocess, "run", counting_run)
+        with capture_logs() as cap:
+            assert env.lookup("K") is None
+            assert env.lookup("K") is None
+        assert len(calls) == 1  # failure memoized, never re-run
+        assert any(e["event"] == "workstation_env_command_failed" for e in cap)
+
+    def test_unknown_name_is_none(self, env_file, monkeypatch):
+        _write(env_file, "K=v\n")
+        monkeypatch.delenv("MISSING", raising=False)
+        assert workstation_env.load().lookup("MISSING") is None
+
+    def test_command_entry_names(self, env_file):
+        _write(env_file, "A=static\nB=$(echo x)\nC=$(echo y)\n")
+        assert workstation_env.load().command_entry_names() == {"B", "C"}
+
+    def test_resolve_file_value_skips_env_tier(self, env_file, monkeypatch):
+        # The --resolve primitive answers "what does the FILE say" even when
+        # the real environment defines the name.
+        _write(env_file, "K=fromfile\n")
+        monkeypatch.setenv("K", "fromenv")
+        assert workstation_env.load().resolve_file_value("K") == "fromfile"
+        assert workstation_env.load().lookup("K") == "fromenv"
+
+
+class TestBootstrap:
+    def test_inject_static_sets_absent_only(self, env_file, monkeypatch):
+        _write(env_file, "INJ_A=filevalue\nINJ_B=filevalue\nINJ_C=$(echo never)\n")
+        monkeypatch.setenv("INJ_B", "envwins")
+        monkeypatch.delenv("INJ_A", raising=False)
+        monkeypatch.delenv("INJ_C", raising=False)
+        workstation_env.load().inject_static()
+        assert os.environ["INJ_A"] == "filevalue"
+        assert os.environ["INJ_B"] == "envwins"
+        assert "INJ_C" not in os.environ  # commands never injected
+
+    def test_ensure_bootstrap_idempotent(self, env_file, monkeypatch):
+        _write(env_file, "INJ_D=v\n")
+        monkeypatch.delenv("INJ_D", raising=False)
+        workstation_env.ensure_bootstrap()
+        os.environ["INJ_D"] = "changed"
+        workstation_env.ensure_bootstrap()  # second call must not re-inject
+        assert os.environ["INJ_D"] == "changed"

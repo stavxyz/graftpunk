@@ -7,8 +7,10 @@ Single owner of file knowledge AND of the env-beats-file precedence rule
 Spec: docs/rfcs/2026-07-28-workstation-env.md
 """
 
+import os
 import re
 import stat
+import subprocess
 from dataclasses import dataclass
 from typing import Literal
 
@@ -76,6 +78,70 @@ class WorkstationEnv:
     def get(self, name: str) -> Entry | None:
         return self._entries.get(name)
 
+    def resolve_file_value(self, name: str) -> str | None:
+        """FILE-tier resolution only — never consults os.environ.
+
+        Statics return their value; commands execute via /bin/sh once per
+        process (results AND failures memoized). This is the single owner
+        of command-execution mechanics, and the public primitive behind
+        `gp config get --resolve` (which deliberately bypasses the env
+        tier: it answers "what does the FILE say").
+        """
+        entry = self._entries.get(name)
+        if entry is None:
+            return None
+        if entry.kind == STATIC:
+            return entry.raw_value
+        if name in self._memo:
+            return self._memo[name]
+        result = subprocess.run(  # noqa: S603
+            ["/bin/sh", "-c", entry.command],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            LOG.error(
+                "workstation_env_command_failed",
+                name=name,
+                returncode=result.returncode,
+                stderr=result.stderr.strip(),
+            )
+            self._memo[name] = None
+            return None
+        value = result.stdout
+        if value.endswith("\n"):
+            value = value[:-1]
+        self._memo[name] = value
+        return value
+
+    def lookup(self, name: str) -> str | None:
+        """THE precedence rule: real env -> file -> None.
+
+        A non-empty os.environ value wins (an empty-string value counts as
+        a miss — deliberate, unified across all consumption points).
+        Callers never hand-sequence env-then-file; this is the only
+        implementation of the ordering.
+        """
+        env_value = os.environ.get(name)
+        if env_value:
+            return env_value
+        return self.resolve_file_value(name)
+
+    def command_entry_names(self) -> set[str]:
+        return {e.name for e in self._entries.values() if e.kind == COMMAND}
+
+    def inject_static(self) -> None:
+        """Bootstrap: set static entries into os.environ where absent.
+
+        Deliberate asymmetry with lookup(): injection gates on PRESENCE
+        (an operator's explicit empty-string export is respected and never
+        overwritten), while lookup() treats empty-string as a miss (an
+        empty credential is never useful; fall to the file tier).
+        """
+        for entry in self._entries.values():
+            if entry.kind == STATIC and entry.name not in os.environ:
+                os.environ[entry.name] = entry.raw_value
+
 
 def _parse(text: str, source: str) -> dict[str, Entry]:
     entries: dict[str, Entry] = {}
@@ -134,5 +200,24 @@ def load() -> WorkstationEnv:
 
 
 def _invalidate_cache() -> None:
-    global _cached
+    global _cached, _bootstrapped
     _cached = None
+    _bootstrapped = False
+
+
+_bootstrapped = False
+
+
+def ensure_bootstrap() -> None:
+    """Idempotent: parse the file and inject statics, once per process.
+
+    Called by config.get_settings() (before first model construction —
+    which makes the ordering invariant structural for every entry path,
+    CLI and library alike) and by cli/main.py at module scope (only so
+    statics precede the early logging config).
+    """
+    global _bootstrapped
+    if _bootstrapped:
+        return
+    load().inject_static()
+    _bootstrapped = True
