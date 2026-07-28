@@ -173,24 +173,110 @@ class GraftpunkSettings(BaseSettings):
         )
 
 
+# Leaf fields consumed ONLY via external attribute access — safe for the
+# lazy overlay. Reads that happen INSIDE model methods/properties
+# (get_storage_config()'s supabase_*/s3_*, sessions_dir's config_dir) bind
+# to the raw model and can never see the overlay, so command values for
+# those fields are unsupported (warned + ignored; supply via real env).
+PROXY_SAFE_FIELDS = frozenset({"browser_executable_path"})
+
+
+class LazySettings:
+    """Bounded lazy overlay over GraftpunkSettings.
+
+    Resolves command-valued workstation-env entries for PROXY_SAFE_FIELDS on
+    first attribute access. Source-aware precedence gate: the overlay is
+    skipped only when the REAL environment provides the field (a merely
+    .env-provided value still yields to the workstation command value), so
+    the documented order — real env > workstation file > cwd .env > default —
+    holds for both value kinds and is decided here alone.
+    """
+
+    def __init__(self, model: GraftpunkSettings, lazy_fields: dict[str, str]):
+        # lazy_fields: field name -> env var name (derived from model config,
+        # pydantic stays the single authority for the mapping)
+        object.__setattr__(self, "_model", model)
+        object.__setattr__(self, "_lazy_fields", lazy_fields)
+        object.__setattr__(self, "_resolved", {})
+
+    def __getattr__(self, name: str):
+        lazy_fields = object.__getattribute__(self, "_lazy_fields")
+        if name in lazy_fields:
+            resolved = object.__getattribute__(self, "_resolved")
+            if name not in resolved:
+                from pydantic import TypeAdapter
+
+                from graftpunk import workstation_env
+
+                raw = workstation_env.load().lookup(lazy_fields[name])
+                model = object.__getattribute__(self, "_model")
+                if raw is None:
+                    resolved[name] = getattr(model, name)
+                else:
+                    adapter = TypeAdapter(GraftpunkSettings.model_fields[name].annotation)
+                    resolved[name] = adapter.validate_python(raw)
+            return resolved[name]
+        return getattr(object.__getattribute__(self, "_model"), name)
+
+
+def _field_env_name(field_name: str) -> str:
+    """Derive the env var name from the model's own settings config."""
+    prefix = GraftpunkSettings.model_config.get("env_prefix", "")
+    return f"{prefix}{field_name}".upper()
+
+
+def _build_lazy_field_map() -> dict[str, str]:
+    """Map allowlisted field -> env var for command entries the real env
+    doesn't override. Warns about command entries targeting non-allowlisted
+    GRAFTPUNK_* fields (static-only; see PROXY_SAFE_FIELDS)."""
+    import os
+
+    from graftpunk import workstation_env
+    from graftpunk.logging import get_logger
+
+    log = get_logger(__name__)
+    lazy: dict[str, str] = {}
+    command_names = workstation_env.load().command_entry_names()
+    for field_name in GraftpunkSettings.model_fields:
+        env_name = _field_env_name(field_name)
+        if env_name not in command_names:
+            continue
+        if field_name not in PROXY_SAFE_FIELDS:
+            log.warning(
+                "workstation_env_command_unsupported_for_field",
+                envvar=env_name,
+                hint="command values are unsupported for this setting; "
+                "treat as static-only or supply via the real environment",
+            )
+            continue
+        if os.environ.get(env_name):
+            continue  # real env wins; empty string counts as a miss
+        lazy[field_name] = env_name
+    return lazy
+
+
 # Global settings instance
-_settings: GraftpunkSettings | None = None
+_settings: "GraftpunkSettings | LazySettings | None" = None
 
 
-def get_settings() -> GraftpunkSettings:
+def get_settings() -> "GraftpunkSettings | LazySettings":
     """Get or create the global settings instance.
 
-    Returns a singleton instance of GraftpunkSettings, creating it on first call.
-    Subsequent calls return the cached instance. Settings are loaded from
-    environment variables with the GRAFTPUNK_ prefix.
-
-    Returns:
-        The global GraftpunkSettings instance with all configuration loaded
-        from environment variables.
+    First call runs workstation_env.ensure_bootstrap() BEFORE constructing
+    the model — the ordering invariant (file statics precede the singleton)
+    is owned here, structurally, for every entry path: the CLI and
+    in-process library consumers alike. When the workstation file holds
+    command-valued entries for PROXY_SAFE_FIELDS, the singleton is wrapped
+    in a LazySettings proxy; otherwise the raw model is returned unchanged.
     """
     global _settings
     if _settings is None:
-        _settings = GraftpunkSettings()
+        from graftpunk import workstation_env
+
+        workstation_env.ensure_bootstrap()
+        model = GraftpunkSettings()
+        lazy_fields = _build_lazy_field_map()
+        _settings = LazySettings(model, lazy_fields) if lazy_fields else model
     return _settings
 
 
