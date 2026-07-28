@@ -6,6 +6,8 @@ from typing import Any, Literal
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from graftpunk import paths
+
 
 class GraftpunkSettings(BaseSettings):
     """graftpunk application settings loaded from environment variables.
@@ -19,7 +21,10 @@ class GraftpunkSettings(BaseSettings):
         description="Storage backend: local, supabase, s3",
     )
     config_dir: Path = Field(
-        default=Path.home() / ".config" / "graftpunk",
+        # Lambda (not the bare function ref) so the resolver stays
+        # late-bound: tests can monkeypatch paths.config_dir and the
+        # default picks it up.
+        default_factory=lambda: paths.config_dir(),
         description="Configuration directory for graftpunk data",
     )
     session_ttl_hours: int = Field(
