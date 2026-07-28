@@ -7,10 +7,8 @@ Single owner of file knowledge AND of the env-beats-file precedence rule
 Spec: docs/rfcs/2026-07-28-workstation-env.md
 """
 
-import os
 import re
 import stat
-import subprocess
 from dataclasses import dataclass
 from typing import Literal
 

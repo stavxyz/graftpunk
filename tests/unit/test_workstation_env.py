@@ -1,8 +1,6 @@
 """Tests for graftpunk.workstation_env (spec: docs/rfcs/2026-07-28-workstation-env.md)."""
 
 import os
-import stat
-import subprocess
 from pathlib import Path
 
 import pytest
