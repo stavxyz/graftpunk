@@ -7,6 +7,7 @@ Single owner of file knowledge AND of the env-beats-file precedence rule
 Spec: docs/rfcs/2026-07-28-workstation-env.md
 """
 
+import contextlib
 import os
 import re
 import stat
@@ -221,3 +222,83 @@ def ensure_bootstrap() -> None:
         return
     load().inject_static()
     _bootstrapped = True
+
+
+def _atomic_write(path, lines: list[str]) -> None:
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".env-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("".join(lines))
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+    os.chmod(path, 0o600)
+
+
+def _entry_line_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(rf"^\s*{re.escape(name)}\s*=")
+
+
+def set_entry(name: str, value: str) -> None:
+    """Add or surgically replace NAME=value; preserves every other line.
+
+    Replaces the LAST occurrence when the name is duplicated (read semantics
+    are last-wins), warning about the others. Appends new names at the end.
+    Atomic write (temp + os.replace), 0600 re-asserted.
+    """
+    if not _NAME_RE.match(name):
+        raise ValueError(f"invalid variable name: {name!r}")
+    path = paths.workstation_env_path()
+    lines = (
+        path.read_text(encoding="utf-8").splitlines(keepends=True) if path.is_file() else []
+    )
+    pattern = _entry_line_pattern(name)
+    hits = [i for i, line in enumerate(lines) if pattern.match(line)]
+    if len(hits) > 1:
+        LOG.warning("workstation_env_duplicate_entries", name=name, count=len(hits))
+    if hits:
+        lines[hits[-1]] = f"{name}={value}\n"
+    else:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(f"{name}={value}\n")
+    _atomic_write(path, lines)
+    _invalidate_cache()
+
+
+def unset_entry(name: str) -> int:
+    """Remove ALL occurrences of NAME (git-config --unset-all semantics).
+
+    Duplicate lines are never intentional; removing only one would silently
+    resurrect an earlier occurrence. Returns the number of lines removed.
+    """
+    path = paths.workstation_env_path()
+    if not path.is_file():
+        return 0
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    pattern = _entry_line_pattern(name)
+    kept = [line for line in lines if not pattern.match(line)]
+    removed = len(lines) - len(kept)
+    if removed > 1:
+        LOG.warning("workstation_env_removed_duplicates", name=name, count=removed)
+    if removed:
+        _atomic_write(path, kept)
+        _invalidate_cache()
+    return removed
+
+
+def ensure_file() -> None:
+    """Create the workstation env file (empty, 0600, parents) if absent.
+
+    The public create-if-absent operation — callers (e.g. `gp config edit`)
+    must never reach for the private _atomic_write.
+    """
+    path = paths.workstation_env_path()
+    if not path.is_file():
+        _atomic_write(path, [])

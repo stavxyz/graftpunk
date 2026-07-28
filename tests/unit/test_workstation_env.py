@@ -1,6 +1,7 @@
 """Tests for graftpunk.workstation_env (spec: docs/rfcs/2026-07-28-workstation-env.md)."""
 
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -192,3 +193,57 @@ class TestBootstrap:
         os.environ["INJ_D"] = "changed"
         workstation_env.ensure_bootstrap()  # second call must not re-inject
         assert os.environ["INJ_D"] == "changed"
+
+
+class TestWriter:
+    def test_set_appends_new_name_and_chmods(self, env_file):
+        workstation_env.set_entry("NEW", "val")
+        assert "NEW=val" in env_file.read_text().splitlines()
+        assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+
+    def test_set_preserves_comments_and_order(self, env_file):
+        _write(env_file, "# header comment\nA=1\n\n# about B\nB=2\n")
+        workstation_env.set_entry("B", "3")
+        assert env_file.read_text() == "# header comment\nA=1\n\n# about B\nB=3\n"
+
+    def test_set_replaces_last_duplicate_and_warns(self, env_file):
+        _write(env_file, "K=first\nK=second\n")
+        with capture_logs() as cap:
+            workstation_env.set_entry("K", "third")
+        lines = env_file.read_text().splitlines()
+        assert lines == ["K=first", "K=third"]
+        assert any(e["event"] == "workstation_env_duplicate_entries" for e in cap)
+
+    def test_set_creates_parent_dir_and_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path / "deep" / "cfg"))
+        workstation_env._invalidate_cache()
+        workstation_env.set_entry("K", "v")
+        target = tmp_path / "deep" / "cfg" / "env"
+        assert target.read_text() == "K=v\n"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_unset_removes_all_occurrences(self, env_file):
+        _write(env_file, "K=a\nOTHER=x\nK=b\n")
+        removed = workstation_env.unset_entry("K")
+        assert removed == 2
+        assert env_file.read_text() == "OTHER=x\n"
+
+    def test_unset_absent_is_zero_and_ok(self, env_file):
+        _write(env_file, "A=1\n")
+        assert workstation_env.unset_entry("MISSING") == 0
+
+    def test_write_then_lookup_sees_fresh_value(self, env_file, monkeypatch):
+        # Cache coherence contract: writers invalidate the load() cache.
+        _write(env_file, "K=old\n")
+        monkeypatch.delenv("K", raising=False)
+        assert workstation_env.load().lookup("K") == "old"
+        workstation_env.set_entry("K", "new")
+        assert workstation_env.load().lookup("K") == "new"
+
+    def test_ensure_file_creates_empty_0600_and_is_idempotent(self, env_file):
+        workstation_env.ensure_file()
+        assert env_file.read_text() == ""
+        assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+        _write(env_file, "K=v\n")
+        workstation_env.ensure_file()  # must not truncate an existing file
+        assert env_file.read_text() == "K=v\n"
