@@ -1,5 +1,16 @@
 ---
 type: spec
+validated:
+  sha: dbf1db293582c116f7eea4a5bfa9e92e81fb6a2d
+  date: 2026-07-28T19:45:46Z
+  reviewers: [fact-check, solid-hygiene]
+  findings:
+    critical: 0
+    important: 6
+    medium: 1
+    low: 3
+    nitpick: 0
+  net_negative_remaining: 0
 ---
 
 # Workstation environment file + `gp config` (lazy credential & settings loading)
@@ -80,24 +91,37 @@ Precedence, owned by a single lookup function (see Components):
 
 - **Credentials:** real env → workstation file → interactive prompt.
 - **Settings (`GRAFTPUNK_*`):** real env → workstation file → cwd `.env`
-  (pydantic's existing `env_file` source) → field default. The
-  workstation file outranks cwd `.env` because statics are injected into
-  `os.environ` and pydantic ranks env above dotenv — this is intended
-  and documented: the workstation file is the machine-global answer, the
-  cwd `.env` remains a per-project override *only* for values the
-  workstation file doesn't set.
+  (pydantic's existing `env_file` source) → field default — and this
+  order holds for **both value kinds**. Statics: injected into
+  `os.environ`, and pydantic ranks env above dotenv. Command values
+  (allowlisted fields only): the proxy's source-aware gate skips a
+  field only when the *real environment* provides it; a merely
+  `.env`-provided field still yields to the workstation command value.
+  The workstation file is the machine-global answer; the cwd `.env`
+  remains a per-project override *only* for values the workstation file
+  doesn't set.
 - **YAML plugin headers:** real env → workstation file → existing
-  `PluginError` ("Environment variable $X is not set").
+  `PluginError` ("Environment variable $X is not set"), resolved
+  through the same single `lookup()` entry point.
 
 Other env reads exist and are **not** instrumented — by the laziness
 contract they work with static values (via bootstrap injection) but not
-command values. Known import-time accesses (static-only, documented):
+command values. Static-only is also the rule for `GRAFTPUNK_*` fields
+consumed by **model-internal** methods/properties (`supabase_url`,
+`supabase_service_key`, `s3_bucket` via `get_storage_config()`;
+`config_dir` via the `sessions_dir` property) — internal reads bind to
+the raw model and cannot see the lazy overlay, so command values there
+are warned about and ignored (see Consumption point (b)); supply those
+secrets via the real environment. Known import-time accesses
+(static-only, documented):
 `GRAFTPUNK_LOG_LEVEL` / `GRAFTPUNK_LOG_FORMAT` (`cli/main.py`, read at
 module scope for early logging — bootstrap injection precedes them, so
 file *statics* do work), `GRAFTPUNK_SESSION` (`session_context.py:27`),
-`GP_DOWNLOADS_DIR` (`plugins/export.py:35`), and `settings.plugins_dir`
-(accessed during import-time plugin discovery — a command value there
-would evaluate at import; keep it static).
+`GP_DOWNLOADS_DIR` (`plugins/export.py:35`), and `settings.config_dir`
+(accessed during import-time plugin discovery, which reads
+`settings.config_dir / "plugins"` — `yaml_loader.py:453`,
+`python_loader.py:128`; there is no separate `plugins_dir` setting, and
+an in-file `GRAFTPUNK_CONFIG_DIR` is already unsupported per § The file).
 
 ## The file
 
@@ -131,6 +155,15 @@ would evaluate at import; keep it static).
   - Malformed lines (no `=`, bad name): warn once with `file:line`,
     skip the line, continue.
   - Duplicate `NAME` lines: last one wins (shell semantics).
+
+> **Design note (2026-07-28):** this is deliberately a *second* env-file
+> dialect, distinct from the cwd `.env` pydantic parses — command-value
+> semantics can't be expressed in dotenv. To keep the delta enumerable:
+> the format diverges from dotenv conventions **only** where command
+> values require it (quote-kind meaning, whole-value `$()`, inline `#`
+> kept literal), `gp config list` surfaces each entry's `kind`
+> (`static`/`command`) so misclassifications are visible, and this
+> section is the single home of the divergence list.
 - **Permissions:** created `0600`; every CLI write re-asserts `0600`.
   On read, if the file is group- or world-readable, log a one-line
   warning (do not refuse).
@@ -175,14 +208,21 @@ The single owner of file knowledge **and** of the env-beats-file
 precedence rule. Import-light (imports `paths`, never `config`).
 
 - `load() -> WorkstationEnv` — parse the file (absent file → empty
-  instance), cached per-process.
+  instance), cached per-process. **Cache coherence contract:** the
+  writer functions (`set_entry`/`unset_entry`) invalidate this cache,
+  so a write-then-lookup in one process (tests, future in-process
+  callers) always sees fresh entries.
+- `ensure_bootstrap() -> None` — idempotent module-level function:
+  `load()` + `inject_static()` once per process. Called by
+  `get_settings()` (see Bootstrap section) and by `cli/main.py`.
 - `WorkstationEnv.inject_static() -> None` — bootstrap: for each static
   entry whose name is not already in `os.environ`, set it.
 - `WorkstationEnv.lookup(name: str) -> str | None` — **the public
   resolution entry point; the only implementation of the precedence
   rule.** Order: `os.environ` (hit → return it, including values
-  injected at bootstrap) → file entry (static → its value; command →
-  memoized result, else execute now, memoize, return) → `None`.
+  injected at bootstrap; an **empty-string value counts as a miss**) →
+  file entry (static → its value; command → memoized result, else
+  execute now, memoize, return) → `None`.
   Command failure (non-zero exit): log
   `workstation_env_command_failed` with the var name and the command's
   stderr, memoize the failure (never re-run a failing command in the
@@ -205,30 +245,37 @@ precedence rule. Import-light (imports `paths`, never `config`).
 Callers never sequence "check os.environ, then the file" by hand —
 that inversion-prone duplication is what `lookup()` exists to prevent.
 
-### Bootstrap hook — module scope of `cli/main.py`
+### Bootstrap — `ensure_bootstrap()`, owned by the settings chokepoint
 
-Immediately after imports, **before** the module-level
-`configure_logging` call (currently `cli/main.py:41-44`) and before
-`register_plugin_commands(app)` (currently `cli/main.py:810-812`):
+Static injection is **entry-path-agnostic**: `workstation_env` exposes
+an idempotent `ensure_bootstrap()` (parse file if needed, inject
+statics, mark done), and `get_settings()` calls it as its first
+statement — *before* first model construction. The ordering invariant
+("statics precede the singleton") is thereby owned structurally at the
+one chokepoint every consumer goes through: the CLI, and equally
+in-process **library consumers** (grocerbot drives
+`GraftpunkClient("shopkeep")` without ever importing `graftpunk.cli`)
+get identical behavior for statics and command values alike. No mixed
+reach: both mechanisms live at the same depth.
 
-```python
-from graftpunk import workstation_env
-workstation_env.load().inject_static()
-```
+`cli/main.py` additionally calls `ensure_bootstrap()` at module scope,
+immediately after imports and **before** the module-level
+`configure_logging` call (currently `cli/main.py:41-44`) — needed only
+so file *statics* for `GRAFTPUNK_LOG_LEVEL`/`GRAFTPUNK_LOG_FORMAT`
+take effect before early logging config (which reads `os.environ`
+directly and never constructs settings). Idempotence makes the double
+call free.
 
-This ordering is the design's load-bearing invariant, so it is owned
-structurally, not positionally: a lifecycle-faithful test (Testing #1)
-imports the real CLI module fresh and asserts injected statics are
-visible in `get_settings()` — any future re-ordering that constructs
-settings before injection fails that test. Because injection precedes
-the early logging config, file *statics* for
-`GRAFTPUNK_LOG_LEVEL`/`GRAFTPUNK_LOG_FORMAT` take effect too.
-
-Rationale for module scope rather than `main_callback()`: the settings
-singleton is constructed at import time — `register_plugin_commands`
-drives plugin discovery, which calls `get_settings()`
-(`plugins/yaml_loader.py:452`, `plugins/python_loader.py:127`) — so any
-hook inside a Typer callback runs after the singleton is frozen.
+Rationale for not hooking `main_callback()`: the settings singleton is
+constructed at import time — `register_plugin_commands`
+(`cli/main.py:810-812`) drives plugin discovery, which calls
+`get_settings()` (`plugins/yaml_loader.py:452`,
+`plugins/python_loader.py:127`) — so any hook inside a Typer callback
+runs after the singleton is frozen. With `ensure_bootstrap()` inside
+`get_settings()`, that import-time construction is itself what
+triggers injection, in order, everywhere. A lifecycle-faithful test
+(Testing #1) imports the real CLI module fresh and asserts injected
+statics are visible in `get_settings()`.
 
 ### Consumption point (a) — credential resolution (`cli/login_commands.py`)
 
@@ -256,40 +303,82 @@ through to the file tier first, then the prompt — intended.
 `get_settings()` keeps constructing the `GraftpunkSettings` singleton
 exactly as today (pydantic reads real env, injected statics, and cwd
 `.env` at construction). What changes is the return value when — and
-only when — the workstation file contains command-valued `GRAFTPUNK_*`
-entries for fields pydantic did not receive from any source
-(`model_fields_set`): `get_settings()` wraps the singleton in a
-`LazySettings` proxy (~50 lines, defined in `config.py`):
+only when — the workstation file contains command-valued entries for
+**proxy-safe** `GRAFTPUNK_*` fields: `get_settings()` wraps the
+singleton in a `LazySettings` proxy (~50 lines, defined in `config.py`).
 
-- `__getattr__(field)`: if `field` is in the lazy overlay (command
-  entry `GRAFTPUNK_<FIELD>` exists, field not provided by env/.env,
-  not yet resolved) → `workstation_env.load().lookup(...)`, coerce via
-  the field's pydantic `TypeAdapter`, cache on the proxy, return.
-  Otherwise delegate to the underlying model. Failed command → the
-  field's pydantic default (no `GraftpunkSettings` field is required,
-  so there is no missing-field error path; a bad value surfaces
-  downstream, e.g. `get_storage_config()`'s `ValueError` or a
-  browser-not-found failure).
-- When the file has no command-valued `GRAFTPUNK_*` entries (the common
-  case), `get_settings()` returns the raw model — zero overhead, zero
-  behavior change.
+**The overlay is bounded by an explicit allowlist, not implied
+universality.** The proxy intercepts only external attribute access;
+reads that happen *inside* the model's own methods and properties
+(`get_storage_config()`'s `self.supabase_service_key`/`self.s3_bucket`,
+the `sessions_dir` property's `self.config_dir`) bind to the raw model
+and can never see the overlay. Therefore:
+
+- `PROXY_SAFE_FIELDS` (in `config.py`, next to the model) enumerates
+  the leaf fields consumed only via external attribute access — today:
+  `browser_executable_path` (and future leaves added deliberately, with
+  the review question "is this field read model-internally?").
+- A command value targeting any **non**-allowlisted `GRAFTPUNK_*` field
+  warns at load time ("command values are unsupported for
+  GRAFTPUNK_X; treat as static-only") and is ignored by the overlay.
+  Fields consumed by model-internal methods (`supabase_*`, `s3_*`,
+  `config_dir`) join the documented static-only list alongside the
+  import-time accesses — real env remains the way to supply those
+  secrets.
+
+Proxy behavior for allowlisted fields:
+
+- `__getattr__(field)`: if `field` is in the lazy overlay (allowlisted,
+  command entry exists, **not provided by the real environment**, not
+  yet resolved) → `workstation_env.load().lookup(...)`, coerce via the
+  field's pydantic `TypeAdapter`, cache on the proxy, return. Otherwise
+  delegate to the underlying model. Failed command → the field's
+  pydantic default (no `GraftpunkSettings` field is required, so there
+  is no missing-field error path; a bad value surfaces downstream,
+  e.g. a browser-not-found failure).
+- **Source-aware precedence gate:** the overlay skips a field only when
+  its env var name is present in `os.environ` (real env or
+  bootstrap-injected static — env wins). A field provided merely by a
+  cwd `.env` still yields to the workstation command value, so the
+  documented order — real env → workstation file → cwd `.env` → default
+  — holds for **both** value kinds and is decided in exactly one place
+  (this gate). `model_fields_set` is not used for precedence: it cannot
+  distinguish env-provided from dotenv-provided.
+- The overlay's env-var names are derived from the model's own
+  settings metadata (`env_prefix` + field aliases), not re-assembled by
+  hand — pydantic stays the single authority for the field→envvar
+  mapping.
+- When the file has no command-valued entries for allowlisted fields
+  (the common case), `get_settings()` returns the raw model — zero
+  overhead, zero behavior change.
 
 Consequences, per the laziness contract: `gp --help` constructs the
 proxy but accesses no lazy field → zero evaluations. A command-valued
-`GRAFTPUNK_BROWSER_EXECUTABLE_PATH` evaluates when session start first
-reads it (`session.py:130`) — inside a login, exactly where the cost
-belongs. A command-valued `plugins_dir` would evaluate at import
-(discovery accesses it); the contract says keep such fields static.
+`GRAFTPUNK_BROWSER_EXECUTABLE_PATH` evaluates when `BrowserSession`
+construction first reads it (`session.py:130`) — inside a login, exactly
+where the cost belongs. A command-valued `config_dir` would evaluate at
+import (discovery accesses `settings.config_dir`) — but an in-file
+`GRAFTPUNK_CONFIG_DIR` is already unsupported (see § The file).
 
 ### Consumption point (c) — YAML plugin header expansion
 
 `expand_env_vars` (`plugins/yaml_loader.py:124-146`), invoked at
 command-execution time from `plugins/yaml_plugin.py:126-128`, currently
-raises `PluginError` when `os.environ` lacks `${VAR}`. It gains a
-one-line fallback: on miss, consult `workstation_env.load().lookup(var)`
-before raising. This makes API-key-style headers first-class lazy
-consumers — the evaluation happens when that plugin command actually
-runs.
+reads `os.environ.get` itself and raises `PluginError` when `${VAR}` is
+unset. Its env read is **replaced** by the single precedence-owning
+entry point — symmetrical with consumption point (a): the replacer
+resolves each `${VAR}` via `workstation_env.load().lookup(var)` alone
+and raises the existing `PluginError` on `None`. No call-site
+env-then-file sequencing survives anywhere; `lookup()` remains the only
+implementation of the precedence rule across all three consumers. This
+makes API-key-style headers first-class lazy consumers — evaluation
+happens when that plugin command actually runs.
+
+One deliberate behavior change, same as point (a) and documented once
+in `lookup()`'s contract: an **empty-string** environment variable
+counts as a miss and falls through to the file tier (previously
+`expand_env_vars` treated empty-as-set). Unified semantics across all
+three consumption points.
 
 ### `gp config` command family (`cli/config_commands.py`, new)
 
@@ -310,7 +399,7 @@ in the same change.
 | `gp config path` | Print the workstation env file's absolute path (whether or not it exists). |
 | `gp config list` | Print `NAME=raw_value` per entry, file order. Commands display unevaluated. Nothing is masked — the convention keeps secrets behind `$(…)`; a literal secret stored against convention IS printed, an acknowledged residual exposure consistent with the 0600 posture. Absent/empty file → no output, exit 0. |
 | `gp config get NAME` | Print the raw stored value. Exit 1, message on stderr, if unset. |
-| `gp config get NAME --resolve` | Evaluate a command value and print the result (explicit opt-in to printing a secret, same posture as `op read`). Static values print verbatim. Failed command → its stderr and exit 1. |
+| `gp config get NAME --resolve` | Evaluate a command value and print the result (explicit opt-in to printing a secret, same posture as `op read`). Static values print verbatim. Failed command → its stderr and exit 1. Deliberately inspects the file's stored value directly, bypassing the env→file precedence — it answers "what does the *file* say," not "what would `lookup()` return"; the one intentional exception to lookup()-only resolution. |
 | `gp config set NAME VALUE` | Validate `NAME` against `[A-Za-z_][A-Za-z0-9_]*`; write/replace surgically; create file (0600) and parent dir if needed. `VALUE` stored verbatim — the operator's shell quoting (`'$(op read …)'`) is what defers evaluation. **Guardrail:** when `NAME` contains a secret keyword (`password`/`secret`/`token`/`key`, matching `login_commands.py:106`) and `VALUE` contains no `$(`, warn: the operator's shell may have already substituted an unquoted `$(op read …)`, and a plaintext secret is being written to disk. Warn, don't refuse. |
 | `gp config unset NAME` | Remove **all** occurrences (see writer semantics). Exit 0 even if absent (idempotent). |
 | `gp config edit` | Open the file in `$VISUAL`, else `$EDITOR`, else `vi`; create the file first if absent. |
@@ -381,22 +470,29 @@ phases called in an assumed order.
    non-login plugin command through the real entry path; spy on
    `subprocess.run` — assert **zero** invocations from
    `workstation_env`.
-3. **Lazy field semantics:** command-valued `GRAFTPUNK_*` entry → not
-   evaluated at `get_settings()`; evaluated exactly once on first field
-   access; real-env-provided field never consults the file
-   (`model_fields_set` respected); failed command → pydantic default;
-   raw model returned (no proxy) when no command entries exist.
+3. **Lazy field semantics:** command-valued entry for an allowlisted
+   field → not evaluated at `get_settings()`; evaluated exactly once on
+   first field access; **source-aware gate:** real-env-provided field
+   never consults the file, but a field provided only by cwd `.env`
+   yields to the workstation command value (documented order holds for
+   both value kinds); failed command → pydantic default; raw model
+   returned (no proxy) when no allowlisted command entries exist;
+   command value targeting a NON-allowlisted `GRAFTPUNK_*` field warns
+   at load and is ignored by the overlay; overlay env names derived
+   from model metadata, not hand-assembled.
 4. **`lookup()` precedence:** real env beats file (including bootstrap-
    injected statics); file beats `None`; command memoized (exactly one
    subprocess across repeated lookups); failure memoized (no re-run);
    empty-string env falls through to the file tier (intended change,
-   asserted).
+   asserted); `set_entry`/`unset_entry` invalidate the `load()` cache
+   (write-then-lookup sees fresh entries).
 5. **Credential chain:** env miss → file resolve (subprocess mocked) →
    prompt fallback on command failure; envvar-override plugins resolve
    by their override names.
-6. **YAML header fallback:** `${VAR}` miss in `os.environ` resolves from
-   the file at command execution; still raises `PluginError` when both
-   miss.
+6. **YAML header resolution:** `${VAR}` resolves through `lookup()`
+   alone at command execution (env hit, file static, file command each
+   asserted); raises `PluginError` on `None`; empty-string env falls
+   through to the file tier here too (unified semantics asserted).
 7. **Parser:** quote handling order (single-quoted `'$(x)'` is static;
    double-quoted `"$(x)"` is a command; bare `$(x)` is a command; mixed
    `pre$(x)post` is static + warning); inline `#` kept; malformed lines
@@ -413,3 +509,8 @@ phases called in an assumed order.
 10. **Paths:** `paths.config_dir()` honors real-env
     `GRAFTPUNK_CONFIG_DIR` without constructing settings and creates no
     directories; pydantic's `config_dir` default routes through it.
+11. **Library reach:** a consumer that never imports `graftpunk.cli`
+    (constructs `GraftpunkClient` / calls `get_settings()` directly)
+    sees file statics and allowlisted command values identically to the
+    CLI — `ensure_bootstrap()` inside `get_settings()` asserted via a
+    fresh-import test that touches no CLI module.
