@@ -20,6 +20,40 @@ validated:
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ## ⚠️ As-built deviations (this plan is a historical record, not the shipped code)
+>
+> The implementation departed from this plan in four ways. Read the code, not the
+> snippets below, where they disagree:
+>
+> 1. **`find_class` catches `ImportError` only** — not the planned
+>    `(ImportError, ModuleNotFoundError, AttributeError)` (`ModuleNotFoundError`
+>    is already an `ImportError` subclass). The design note under Task 2 argues
+>    for swallowing `AttributeError`; that was **rejected**, because masking a
+>    renamed-but-present symbol into a silent stub is exactly the regression the
+>    A4 fixture could never catch. See the docstring on
+>    `_BrowserFreeUnpickler` for the shipped rationale.
+> 2. **Test names differ.** `test_deserialize_browserfree_stubs_unimportable_class`
+>    (referenced in Tasks 2–3) does not exist. The mechanism is covered by
+>    `test_find_class_stubs_genuinely_unimportable_module`,
+>    `test_deserialize_browserfree_stub_roundtrip_by_reference`, and the A4
+>    fixture test — an earlier single test passed *without* exercising the stub
+>    path (dill pickled by value), which is why it was split.
+> 3. **The `[browser]` optional extra is not in this plan at all.** Moving
+>    `requestium`/`selenium`/`webdriver-manager`/`undetected-chromedriver`/
+>    `selenium-stealth`/`nodriver`/`httpie` out of base `dependencies` is the
+>    largest and only *breaking* part of the change, and it was necessary: with
+>    them in base, the package cannot resolve under Pyodide at all, so the rest
+>    of this plan would be unusable in the environment it targets. It therefore
+>    also breaches the "no behavior change on the desktop path / new code is
+>    additive" Global Constraint below. Documented as BREAKING in `CHANGELOG.md`,
+>    with the migration (`pip install 'graftpunk[browser]'`).
+> 4. **Follow-on hardening the plan did not anticipate**, found in review:
+>    `plugins/login_engine.py` imported `BrowserSession` at module scope and sits
+>    on the CLI's eager import path, so the extras split broke *every* `gp`
+>    command on a base install; the lazy accessor now raises an `ImportError`
+>    naming the extra; and a `lean-install` CI job proves the base install stays
+>    importable, CLI-capable, and browser-free.
+
 **Goal:** Make `import graftpunk` and a cookies-bearing session load work in a no-browser (Pyodide/Workers) environment, without changing the at-rest format or the `BrowserSession` class hierarchy.
 
 **Architecture:** `load_session_for_api` already extracts cookies/headers/roles/tokens from the unpickled `BrowserSession` into a browser-free `GraftpunkSession`. Two changes unblock Pyodide: (1) lazy the only two eager browser imports in `__init__.py`; (2) add a browser-free deserialize (a `find_class`-stubbing unpickler) plus a bytes-in entry `load_session_for_api_from_bytes`, so a caller holding the encrypted bytes (a Worker via its R2 binding) can build a session with no browser stack, no storage backend, and no filesystem. A committed fixture test is the load-bearing guard.

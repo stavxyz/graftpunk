@@ -182,6 +182,28 @@ pytest tests/ -k "test_encryption" -v
 - Use descriptive test names: `test_<what>_<when>_<expected>`
 - Mock external dependencies (browsers, network, filesystem)
 
+### Committed fixtures
+
+`tests/fixtures/browserfree_session.{enc,key}` guard the browser-free
+session-load path (`load_session_for_api_from_bytes`, used under Pyodide /
+Cloudflare Workers). If you change `BrowserSession`'s pickled state, regenerate
+them with `python scripts/gen_browserfree_fixture.py` — see
+[`tests/fixtures/README.md`](tests/fixtures/README.md) for why the fixture has
+to be pickled by reference and what that guards.
+
+### The base install must stay browser-free
+
+Browser automation lives behind the `[browser]` extra so graftpunk resolves under
+Pyodide / Cloudflare Python Workers, where that stack has no installable wheels.
+Two rules follow:
+
+- Never import browser modules (`graftpunk.session`, `graftpunk.stealth`,
+  selenium, requestium, nodriver, httpie) at **module scope** in anything the CLI
+  imports — import them inside the function that needs them. A module-level
+  import there breaks *every* `gp` command on a base install, not just the
+  browser ones. `test_cli_import_stays_browser_free` guards this.
+- Don't move those packages back into base `dependencies`.
+
 Example:
 
 ```python

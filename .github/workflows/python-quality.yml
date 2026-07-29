@@ -126,3 +126,102 @@ jobs:
 
       - name: Run plugin CLI tests
         run: uv run --no-sync pytest tests/unit/test_plugin_commands.py tests/unit/test_command_factory.py tests/unit/test_plugin_runtime.py tests/unit/test_cli_no_external_click.py -v
+
+  # The lean-install contract: `pip install graftpunk` (NO extras) must stay
+  # importable, keep a working CLI, and still load a cached session browser-free.
+  # Every other job runs `uv sync --all-extras`, so nothing there can catch a
+  # browser dependency creeping back into the base install or onto the CLI's
+  # eager import path — which is exactly how a release once shipped a `gp` that
+  # tracebacked on every invocation. This job installs the built wheel into a
+  # clean venv with no extras and exercises the contract for real.
+  lean-install:
+    needs: filter-paths
+    if: needs.filter-paths.outputs.python_changed == 'true'
+    name: Lean install (no browser extra)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Build the wheel
+        run: uv build --wheel --out-dir dist
+
+      - name: Install the wheel with NO extras into a clean venv
+        run: |
+          uv venv --python 3.13 .lean
+          uv pip install --python .lean/bin/python dist/*.whl
+
+      - name: Assert the browser stack is absent
+        run: |
+          .lean/bin/python - <<'PY'
+          import importlib.util
+          absent = ["selenium", "requestium", "nodriver", "webdriver_manager",
+                    "undetected_chromedriver", "selenium_stealth", "httpie"]
+          present = [m for m in absent if importlib.util.find_spec(m) is not None]
+          assert not present, f"browser deps leaked into the base install: {present}"
+          print("browser stack absent:", ", ".join(absent))
+          PY
+
+      - name: Import graftpunk without pulling the browser stack
+        run: |
+          .lean/bin/python - <<'PY'
+          import sys
+          import graftpunk
+          for mod in ("graftpunk.session", "graftpunk.stealth", "selenium"):
+              assert mod not in sys.modules, f"{mod} eagerly imported by `import graftpunk`"
+          print("import graftpunk OK")
+          PY
+
+      - name: "CLI must start (regression: gp was broken on base installs)"
+        run: |
+          .lean/bin/gp --help > /dev/null
+          .lean/bin/gp version > /dev/null
+          .lean/bin/python - <<'PY'
+          import subprocess, sys
+          # The CLI import itself must not drag in the browser stack.
+          code = ("import graftpunk.cli.main, sys; "
+                  "assert 'graftpunk.session' not in sys.modules; "
+                  "assert 'httpie' not in sys.modules; print('cli import OK')")
+          out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+          assert out.returncode == 0, out.stderr
+          print(out.stdout.strip())
+          PY
+
+      - name: Browser-free session load must work (A4 fixture round-trip)
+        run: |
+          .lean/bin/python - <<'PY'
+          import pathlib
+          from graftpunk import load_session_for_api_from_bytes
+          fix = pathlib.Path("tests/fixtures")
+          enc = (fix / "browserfree_session.enc").read_bytes()
+          key = (fix / "browserfree_session.key").read_bytes().strip()
+          api = load_session_for_api_from_bytes(enc, key=key)
+          cookies = {c.name: c.value for c in api.cookies}
+          assert cookies.get("User") == "dummyuser", cookies
+          assert cookies.get("Password") == "dummypass", cookies
+          assert "Mozilla/5.0 (dummy)" in api.headers["User-Agent"]
+          print("browser-free session load OK:", sorted(cookies))
+          PY
+
+      - name: Missing-browser errors must name the extra
+        run: |
+          .lean/bin/python - <<'PY'
+          import graftpunk
+          try:
+              getattr(graftpunk, "BrowserSession")
+          except ImportError as exc:
+              assert "graftpunk[browser]" in str(exc), exc
+              print("actionable error OK")
+          else:
+              raise AssertionError("expected ImportError without the [browser] extra")
+          PY

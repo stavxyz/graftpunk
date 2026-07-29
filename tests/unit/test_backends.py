@@ -855,11 +855,16 @@ class TestGetBackendImportError:
     """Tests for get_backend() import error handling."""
 
     def test_get_backend_import_error_provides_helpful_message(self) -> None:
-        """ImportError during backend loading provides helpful message."""
+        """ImportError during backend loading names the extra to install.
+
+        "No module named 'nodriver'" alone doesn't tell the caller what to do;
+        every browser backend lives behind the [browser] extra, so the message
+        must say so.
+        """
         with patch("graftpunk.backends.import_module") as mock_import:
             mock_import.side_effect = ImportError("No module named 'nodriver'")
 
-            with pytest.raises(ImportError, match="requires additional dependencies"):
+            with pytest.raises(ImportError, match=r"graftpunk\[browser\]"):
                 get_backend("nodriver")
 
     def test_get_backend_attribute_error_provides_helpful_message(self) -> None:

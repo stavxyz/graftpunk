@@ -380,7 +380,14 @@ def load_session(name: str) -> SessionLike:
                 hint="Consider re-saving session to add checksum",
             )
 
-        # Unpickle (encrypted data has already been validated via Fernet MAC)
+        # Unpickle (encrypted data has already been validated via Fernet MAC).
+        # NOTE: this deliberately uses the plain unpickler, not
+        # _deserialize_browserfree: load_session returns the REAL cached object,
+        # which update_session_cookies mutates and re-pickles. Stubbing the class
+        # here would let a lean install silently re-save the session as a stub
+        # type and lose its browser state. Callers that only need cookies/headers
+        # should use load_session_for_api_from_bytes, which is browser-free by
+        # design.
         session = pickle.loads(decrypted_data)  # noqa: S301
 
         # Runtime validation: verify unpickled object has expected attributes
@@ -394,6 +401,21 @@ def load_session(name: str) -> SessionLike:
 
     except (SessionNotFoundError, SessionExpiredError):
         raise
+    except ModuleNotFoundError as exc:
+        # A cached BrowserSession pickle names graftpunk.session, which imports
+        # the browser stack. On a base install (no [browser] extra) that raises
+        # ModuleNotFoundError from inside pickle.loads — which is neither an
+        # UnpicklingError nor a RuntimeError, so without this it escaped raw as
+        # "No module named 'httpie'".
+        LOG.error("failed_to_load_session_missing_browser_stack", name=name, error=str(exc))
+        raise ImportError(
+            f"Loading the cached session '{name}' requires the browser automation "
+            f"stack, which is not installed. Install it with: "
+            f"pip install 'graftpunk[browser]'\n"
+            f"(To read cookies/headers from a session WITHOUT the browser stack, use "
+            f"load_session_for_api_from_bytes.)\n"
+            f"(underlying import failure: {exc})"
+        ) from exc
     except (pickle.UnpicklingError, RuntimeError) as exc:
         LOG.error(
             "failed_to_load_session",
@@ -465,7 +487,7 @@ class _Stub:
     surface them.
     """
 
-    def __setstate__(self, state) -> None:
+    def __setstate__(self, state: object) -> None:
         # pickle/dill deliver either a dict, or a (dict, slotstate) 2-tuple for
         # __slots__-bearing classes. Handle both; fail loud on any other shape
         # rather than silently discarding state.
@@ -502,7 +524,7 @@ class _BrowserFreeUnpickler(pickle.Unpickler):  # pickle is dill (see top import
     unpickle a blob from one trust domain with a key from another.
     """
 
-    def find_class(self, module: str, name: str):
+    def find_class(self, module: str, name: str) -> type:
         try:
             return super().find_class(module, name)
         except ImportError:
@@ -515,12 +537,19 @@ def _deserialize_browserfree(decrypted: bytes) -> object:
 
 
 def load_session_for_api(name: str) -> requests.Session:
-    """Load cached session for API use (no browser required).
+    """Load cached session for API use (no browser launched).
 
     This extracts cookies and headers from a cached BrowserSession
     and creates a GraftpunkSession that can be used for API calls
     without launching a browser. If the cached session has header
     roles (captured during login), they are applied automatically.
+
+    No browser *process* is started — but this does go through
+    :func:`load_session`, which reconstructs the real cached object and so needs
+    the browser *package* importable (the ``[browser]`` extra). For a genuinely
+    browser-free load — e.g. under Pyodide / Cloudflare Workers — use
+    :func:`load_session_for_api_from_bytes`, which stubs the browser classes
+    instead of importing them.
 
     Args:
         name: Session name (without .session.pickle extension).
@@ -532,6 +561,8 @@ def load_session_for_api(name: str) -> requests.Session:
     Raises:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be unpickled.
+        ImportError: If the browser stack needed to reconstruct the cached
+            object is not installed (see note above).
     """
     try:
         browser_session = load_session(name)

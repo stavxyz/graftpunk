@@ -76,6 +76,11 @@ nodriver = [
     "graftpunk[browser]",
 ]
 dev = [
+    # The test suite drives real browser code paths, so a dev install needs the
+    # browser stack. Kept in sync with the [dependency-groups] dev group below so
+    # `pip install -e .[dev]` and `uv sync --group dev` are equivalent — without
+    # this, a pip-based contributor's suite fails on `import requestium`.
+    "graftpunk[browser]",
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.0.0",

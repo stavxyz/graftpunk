@@ -112,6 +112,22 @@ session = load_session_for_api("mysite")  # returns GraftpunkSession
 
 This extracts cookies and headers from the cached `BrowserSession` into a `GraftpunkSession` (a `requests.Session` subclass) suitable for API calls.
 
+#### Loading from bytes (no filesystem, no browser stack)
+
+`load_session_for_api_from_bytes(encrypted, *, key=None)` does the same thing for callers that already hold the encrypted blob and cannot use a storage backend or the browser stack — the motivating case is a Cloudflare Python (Pyodide) Worker that read the session through an R2 binding and holds the Fernet key as a secret:
+
+```python
+from graftpunk import load_session_for_api_from_bytes
+
+api = load_session_for_api_from_bytes(r2_object_bytes, key=worker_secret_key)
+```
+
+Deserialization here never imports the browser stack: an unpickler stubs out classes it cannot import (`graftpunk.session.BrowserSession` and friends) and keeps the plain state — cookies, headers, header roles, cached tokens. That is what makes the lite install (no `[browser]`) usable under Pyodide.
+
+Errors are deliberately distinguishable: `EncryptionError` means the bytes could not be decrypted with that key (malformed, wrong, or rotated — an operator/config problem), while `SessionExpiredError` means the payload decrypted but is not a usable session (log in again).
+
+**Trust boundary:** the Fernet key is the *only* thing gating what reaches the unpickler, and unpickling can execute code. The post-load structure check is a shape guard, not a safety control. Never pass a blob and a key that come from different trust domains.
+
 ### GraftpunkSession and Browser Header Replay
 
 `GraftpunkSession` extends `requests.Session` with browser header roles captured during login. When a session is cached after login, graftpunk captures the actual HTTP headers the browser sends (via CDP network events) and classifies them into roles:
