@@ -15,6 +15,7 @@ Thread Safety:
 """
 
 import hashlib
+import io
 import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
@@ -30,6 +31,7 @@ from graftpunk.logging import get_logger
 from graftpunk.storage.base import SessionMetadata
 
 if TYPE_CHECKING:
+    from graftpunk.graftpunk_session import GraftpunkSession
     from graftpunk.storage.base import SessionStorageBackend
 
 
@@ -378,7 +380,14 @@ def load_session(name: str) -> SessionLike:
                 hint="Consider re-saving session to add checksum",
             )
 
-        # Unpickle (encrypted data has already been validated via Fernet MAC)
+        # Unpickle (encrypted data has already been validated via Fernet MAC).
+        # NOTE: this deliberately uses the plain unpickler, not
+        # _deserialize_browserfree: load_session returns the REAL cached object,
+        # which update_session_cookies mutates and re-pickles. Stubbing the class
+        # here would let a lean install silently re-save the session as a stub
+        # type and lose its browser state. Callers that only need cookies/headers
+        # should use load_session_for_api_from_bytes, which is browser-free by
+        # design.
         session = pickle.loads(decrypted_data)  # noqa: S301
 
         # Runtime validation: verify unpickled object has expected attributes
@@ -392,6 +401,21 @@ def load_session(name: str) -> SessionLike:
 
     except (SessionNotFoundError, SessionExpiredError):
         raise
+    except ModuleNotFoundError as exc:
+        # A cached BrowserSession pickle names graftpunk.session, which imports
+        # the browser stack. On a base install (no [browser] extra) that raises
+        # ModuleNotFoundError from inside pickle.loads — which is neither an
+        # UnpicklingError nor a RuntimeError, so without this it escaped raw as
+        # "No module named 'httpie'".
+        LOG.error("failed_to_load_session_missing_browser_stack", name=name, error=str(exc))
+        raise ImportError(
+            f"Loading the cached session '{name}' requires the browser automation "
+            f"stack, which is not installed. Install it with: "
+            f"pip install 'graftpunk[browser]'\n"
+            f"(To read cookies/headers from a session WITHOUT the browser stack, use "
+            f"load_session_for_api_from_bytes.)\n"
+            f"(underlying import failure: {exc})"
+        ) from exc
     except (pickle.UnpicklingError, RuntimeError) as exc:
         LOG.error(
             "failed_to_load_session",
@@ -402,13 +426,130 @@ def load_session(name: str) -> SessionLike:
         raise SessionExpiredError(f"Failed to load session '{name}': {exc}") from exc
 
 
+def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
+    """Build a browser-free GraftpunkSession from a session-like object
+    (the module's SessionLike Protocol — cookies + headers), copying header
+    roles and token caches when present.
+
+    Shared by load_session_for_api (from a cached BrowserSession) and
+    load_session_for_api_from_bytes (from a browser-free deserialize).
+    """
+    from graftpunk.graftpunk_session import GraftpunkSession
+    from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
+
+    header_roles = getattr(source, "_gp_header_roles", {})
+    api_session = GraftpunkSession(header_roles=header_roles)
+
+    if hasattr(source, "cookies"):
+        api_session.cookies = source.cookies
+        LOG.debug("copied_cookies_from_session", cookie_count=len(source.cookies))
+
+    if hasattr(source, "headers"):
+        # Copy headers from browser session, but skip requests-library defaults
+        # that would clobber browser identity headers extracted from roles.
+        # The pickled BrowserSession (a requests.Session) carries default headers
+        # like User-Agent: python-requests/2.x — copying them overwrites the
+        # Chrome UA that _apply_browser_identity() set during GraftpunkSession init.
+        # Also skip ephemeral security headers (e.g. X-CSRF-TOKEN from WAFs like
+        # Akamai Bot Manager) that are per-request and would cause stale-blob
+        # rejections if replayed.
+        _requests_defaults = requests.utils.default_headers()
+        for key, value in source.headers.items():
+            if key in _requests_defaults and _requests_defaults[key] == value:
+                continue
+            if key.lower() in _EPHEMERAL_HEADERS:
+                LOG.debug("skipped_ephemeral_header", header=key)
+                continue
+            api_session.headers[key] = value
+        LOG.debug("copied_headers_from_session")
+
+    token_cache = getattr(source, _CACHE_ATTR, None)
+    if token_cache:
+        setattr(api_session, _CACHE_ATTR, token_cache)
+        LOG.debug("copied_cached_tokens_from_session", count=len(token_cache))
+
+    csrf_tokens = getattr(source, _CSRF_TOKENS_ATTR, None)
+    if csrf_tokens is not None:
+        setattr(api_session, _CSRF_TOKENS_ATTR, dict(csrf_tokens))
+        LOG.debug("copied_csrf_tokens_from_session", count=len(csrf_tokens))
+
+    return api_session
+
+
+class _Stub:
+    """Placeholder for a class the browser-free path cannot import (the browser
+    stack is absent). Unpickling restores state via __setstate__ below.
+
+    cookies/headers/_gp_header_roles and the cached-token dict are plain data in
+    BrowserSession.__getstate__ (session.py:581-582), so they land directly on
+    the stub. NOTE: __getstate__ does NOT serialize `_gp_csrf_tokens`, so csrf
+    tokens are absent from the pickle entirely — the stub cannot and does not
+    surface them.
+    """
+
+    def __setstate__(self, state: object) -> None:
+        # pickle/dill deliver either a dict, or a (dict, slotstate) 2-tuple for
+        # __slots__-bearing classes. Handle both; fail loud on any other shape
+        # rather than silently discarding state.
+        if isinstance(state, tuple) and len(state) == 2:
+            dict_state, slot_state = state
+            if dict_state:
+                self.__dict__.update(dict_state)
+            for key, value in (slot_state or {}).items():
+                setattr(self, key, value)
+        elif isinstance(state, dict):
+            self.__dict__.update(state)
+        else:
+            raise TypeError(f"_Stub cannot restore pickle state of type {type(state)!r}")
+
+
+class _BrowserFreeUnpickler(pickle.Unpickler):  # pickle is dill (see top import)
+    """Unpickler that stubs classes it cannot import BECAUSE the browser stack is
+    absent (graftpunk.session.BrowserSession -> requestium/selenium/httpie), so a
+    cached session's plain state deserializes browser-free.
+
+    Only import-family errors are converted to stubs. Any OTHER resolution error
+    (a genuinely broken module, a renamed-but-present symbol) propagates — it
+    must not be silently masked into a stub, which the A4 fixture could never
+    catch (stubbing still lands the plain __dict__ and the test keeps passing).
+
+    THIS IS NOT A SECURITY BOUNDARY. Despite the name, it imposes no restriction
+    on what a payload may construct: ``super().find_class`` resolves any
+    importable module/attribute, so a hostile pickle can still execute code
+    (``__reduce__`` -> ``os.system``) exactly as the stdlib unpickler would.
+    "Stub" here means "tolerate classes that are ABSENT", not "reject classes
+    that are dangerous". The only thing preventing a forged payload from ever
+    reaching this class is Fernet's authenticated encryption — i.e. possession
+    of the key. Callers must treat the key as the trust boundary and never
+    unpickle a blob from one trust domain with a key from another.
+    """
+
+    def find_class(self, module: str, name: str) -> type:
+        try:
+            return super().find_class(module, name)
+        except ImportError:
+            return type(name, (_Stub,), {})
+
+
+def _deserialize_browserfree(decrypted: bytes) -> object:
+    """Deserialize decrypted session bytes without importing the browser stack."""
+    return _BrowserFreeUnpickler(io.BytesIO(decrypted)).load()
+
+
 def load_session_for_api(name: str) -> requests.Session:
-    """Load cached session for API use (no browser required).
+    """Load cached session for API use (no browser launched).
 
     This extracts cookies and headers from a cached BrowserSession
     and creates a GraftpunkSession that can be used for API calls
     without launching a browser. If the cached session has header
     roles (captured during login), they are applied automatically.
+
+    No browser *process* is started — but this does go through
+    :func:`load_session`, which reconstructs the real cached object and so needs
+    the browser *package* importable (the ``[browser]`` extra). For a genuinely
+    browser-free load — e.g. under Pyodide / Cloudflare Workers — use
+    :func:`load_session_for_api_from_bytes`, which stubs the browser classes
+    instead of importing them.
 
     Args:
         name: Session name (without .session.pickle extension).
@@ -420,6 +561,8 @@ def load_session_for_api(name: str) -> requests.Session:
     Raises:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be unpickled.
+        ImportError: If the browser stack needed to reconstruct the cached
+            object is not installed (see note above).
     """
     try:
         browser_session = load_session(name)
@@ -429,54 +572,8 @@ def load_session_for_api(name: str) -> requests.Session:
             f"No cached session found for '{name}'. Please login first."
         ) from exc
 
-    # Extract header roles if present (from sessions created after header capture feature)
     header_roles = getattr(browser_session, "_gp_header_roles", {})
-
-    # Create GraftpunkSession with header roles for auto-detection
-    from graftpunk.graftpunk_session import GraftpunkSession
-
-    api_session = GraftpunkSession(header_roles=header_roles)
-
-    # Copy cookies from browser session
-    if hasattr(browser_session, "cookies"):
-        api_session.cookies = browser_session.cookies
-        LOG.debug(
-            "copied_cookies_from_session",
-            cookie_count=len(browser_session.cookies),
-        )
-
-    # Copy headers from browser session, but skip requests-library defaults
-    # that would clobber browser identity headers extracted from roles.
-    # The pickled BrowserSession (a requests.Session) carries default headers
-    # like User-Agent: python-requests/2.x — copying them overwrites the
-    # Chrome UA that _apply_browser_identity() set during GraftpunkSession init.
-    # Also skip ephemeral security headers (e.g. X-CSRF-TOKEN from WAFs like
-    # Akamai Bot Manager) that are per-request and would cause stale-blob
-    # rejections if replayed.
-    if hasattr(browser_session, "headers"):
-        _requests_defaults = requests.utils.default_headers()
-        for key, value in browser_session.headers.items():
-            if key in _requests_defaults and _requests_defaults[key] == value:
-                continue
-            if key.lower() in _EPHEMERAL_HEADERS:
-                LOG.debug("skipped_ephemeral_header", header=key)
-                continue
-            api_session.headers[key] = value
-        LOG.debug("copied_headers_from_session")
-
-    # Copy cached tokens and CSRF tokens from browser session
-    from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
-
-    token_cache = getattr(browser_session, _CACHE_ATTR, None)
-    if token_cache:
-        setattr(api_session, _CACHE_ATTR, token_cache)
-        LOG.debug("copied_cached_tokens_from_session", count=len(token_cache))
-
-    csrf_tokens = getattr(browser_session, _CSRF_TOKENS_ATTR, None)
-    if csrf_tokens is not None:
-        setattr(api_session, _CSRF_TOKENS_ATTR, dict(csrf_tokens))
-        LOG.debug("copied_csrf_tokens_from_session", count=len(csrf_tokens))
-
+    api_session = _api_session_from_session(browser_session)
     LOG.info(
         "created_api_session_from_cached_session",
         name=name,
@@ -484,6 +581,61 @@ def load_session_for_api(name: str) -> requests.Session:
         role_count=len(header_roles),
     )
     return api_session
+
+
+def load_session_for_api_from_bytes(
+    encrypted: bytes, *, key: bytes | None = None
+) -> requests.Session:
+    """Build a browser-free API session directly from encrypted session bytes.
+
+    For callers that already hold the encrypted blob (e.g. a Cloudflare Worker
+    that read it through an R2 binding) and cannot/should not go through a
+    storage backend or the browser stack. Decrypts, deserializes browser-free,
+    and extracts cookies/headers/roles/tokens into a GraftpunkSession.
+
+    Args:
+        encrypted: the Fernet(pickle(...)) blob.
+        key: optional raw Fernet key. When given, decrypt with it directly —
+            for environments where graftpunk's key file/vault does not exist
+            (a Worker holding the key as a secret). When None, use the normal
+            `decrypt_data` key sources.
+
+    Security note: integrity and authenticity come SOLELY from the Fernet key —
+    a valid MAC is the only thing standing between these bytes and the
+    unpickler, which resolves whatever classes the payload names (see
+    :class:`_BrowserFreeUnpickler`). The structure check below is a shape guard,
+    NOT a safety control: it runs after unpickling, so it cannot prevent code a
+    forged payload would already have executed. Never call this with a blob and
+    a key from different trust domains, and treat the key as the security
+    boundary it is.
+
+    Raises:
+        EncryptionError: if the key is malformed, or the bytes cannot be
+            decrypted with it (wrong/rotated key, corrupted blob). Deliberately
+            NOT remapped to SessionExpiredError: "I can't decrypt this" is an
+            operator/config problem (fix the key) while "this session is
+            unusable" prompts a re-login, and conflating them sends the caller
+            down the wrong path.
+        SessionExpiredError: if the decrypted payload cannot be deserialized, or
+            the recovered object lacks the expected session structure.
+    """
+    # EncryptionError from decrypt_data intentionally propagates (see Raises).
+    decrypted = decrypt_data(encrypted, key=key)
+    try:
+        source = _deserialize_browserfree(decrypted)
+    except Exception as exc:  # noqa: BLE001 — any deserialization failure is an unusable session
+        raise SessionExpiredError(f"Failed to deserialize session bytes: {exc}") from exc
+
+    # isinstance against the runtime-checkable protocol does the same shape check
+    # as two hasattr calls while also narrowing `object` for the type checker on
+    # the _api_session_from_session(source: SessionLike) call below.
+    if not isinstance(source, SessionLike):
+        raise SessionExpiredError("Session bytes have invalid structure.")
+
+    try:
+        return _api_session_from_session(source)
+    except Exception as exc:  # noqa: BLE001 — structurally present but malformed contents
+        raise SessionExpiredError(f"Session bytes have unusable cookies/headers: {exc}") from exc
 
 
 def update_session_cookies(api_session: requests.Session, session_name: str) -> None:

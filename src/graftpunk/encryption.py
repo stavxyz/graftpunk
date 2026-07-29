@@ -221,22 +221,37 @@ def encrypt_data(data: bytes) -> bytes:
     return fernet.encrypt(data)
 
 
-def decrypt_data(data: bytes) -> bytes:
+def decrypt_data(data: bytes, *, key: bytes | None = None) -> bytes:
     """Decrypt data using Fernet symmetric encryption.
 
     Args:
         data: Encrypted bytes.
+        key: Optional raw Fernet key. When given, decrypt with it directly,
+            bypassing the configured key sources (for environments without
+            graftpunk's key file/vault, e.g. a Worker holding the key as a
+            secret). When None (default), use the configured key.
 
     Returns:
         Decrypted raw bytes.
 
     Raises:
-        EncryptionError: If decryption fails (wrong key or corrupted data).
+        EncryptionError: If the key is malformed, or decryption fails (wrong key
+            or corrupted data).
     """
     from cryptography.fernet import InvalidToken
 
-    key = get_encryption_key()
-    fernet = Fernet(key)
+    fernet_key = key if key is not None else get_encryption_key()
+    # Fernet() itself raises ValueError on a malformed key (wrong length, not
+    # url-safe base64, stray trailing newline). That is the single likeliest
+    # failure for a caller passing `key=` from a secret store, so it is mapped
+    # to EncryptionError rather than escaping as a bare ValueError that the
+    # documented contract above doesn't mention.
+    try:
+        fernet = Fernet(fernet_key)
+    except (ValueError, TypeError) as exc:
+        raise EncryptionError(
+            "Invalid encryption key: a Fernet key must be 32 url-safe base64-encoded bytes."
+        ) from exc
     try:
         return fernet.decrypt(data)
     except InvalidToken as exc:

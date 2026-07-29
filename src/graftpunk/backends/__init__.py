@@ -3,9 +3,13 @@
 This module provides pluggable browser backends with a unified interface.
 The default backend is "selenium" (using undetected-chromedriver).
 
+All browser backends require the browser automation stack, which is an optional
+extra: `pip install 'graftpunk[browser]'`. The base install is deliberately
+browser-free (see the [browser] extra in pyproject.toml and issue #121).
+
 Available backends:
     - selenium: Selenium + undetected-chromedriver (default)
-    - nodriver: CDP-direct Chrome automation (requires: pip install graftpunk[nodriver])
+    - nodriver: CDP-direct Chrome automation
 
 Note: "legacy" is accepted as an alias for "selenium" for backward compatibility.
 
@@ -81,9 +85,12 @@ def get_backend(name: str = "selenium", **kwargs: Any) -> BrowserBackend:
     try:
         module = import_module(module_path)
     except ImportError as exc:
+        # Name the extra: every browser backend lives behind [browser], and the
+        # raw failure ("No module named 'selenium'") doesn't tell the caller that.
         raise ImportError(
-            f"Backend '{name}' requires additional dependencies. "
-            f"Failed to import {module_path}: {exc}"
+            f"Backend '{name}' requires the browser automation stack, which is not "
+            f"installed. Install it with: pip install 'graftpunk[browser]'\n"
+            f"(failed to import {module_path}: {exc})"
         ) from exc
 
     # Get the backend class

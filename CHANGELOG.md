@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING (install): browser automation moved to the `[browser]` extra.** `requestium`, `selenium`, `webdriver-manager`, `undetected-chromedriver`, `selenium-stealth`, `nodriver`, and `httpie` are no longer base dependencies. The base install is now lean and WASM-friendly, so `graftpunk` resolves under Pyodide / Cloudflare Python Workers, where the browser stack has no installable wheels (see [#121](https://github.com/stavxyz/graftpunk/issues/121)).
+
+  **Migration — if you use live login, stealth driving, or any `gp <site> login` flow, install the extra:**
+
+  ```bash
+  pip install 'graftpunk[browser]'
+  ```
+
+  The `[nodriver]` and `[all]` extras and the `dev` dependency group already pull `graftpunk[browser]`, so those workflows are unchanged. A plain `pip install graftpunk` still gives you the full CLI and cached-session API replay (`load_session_for_api`, `load_session_for_api_from_bytes`); only launching a browser needs the extra. Accessing `graftpunk.BrowserSession` or `graftpunk.create_stealth_driver` without it now raises an `ImportError` naming the extra to install.
+
+  Side benefit: base installs no longer pull `httpie`, taking its permanently-ignored PYSEC-2023-242 advisory out of the default dependency surface.
+
+- `decrypt_data()` now raises `EncryptionError` (not a bare `ValueError`) when handed a malformed Fernet key — the likeliest failure for callers passing `key=` from a secret store.
+
+### Added
+
+- **`load_session_for_api_from_bytes(encrypted, *, key=None)`** — build a browser-free API session directly from encrypted session bytes, for callers that already hold the blob (e.g. a Cloudflare Worker reading it through an R2 binding) and cannot go through a storage backend or the browser stack. Decrypts, deserializes browser-free, and returns a `GraftpunkSession` with cookies, headers, header roles, and cached tokens. Distinguishes "cannot decrypt" (`EncryptionError` — fix the key) from "session unusable" (`SessionExpiredError` — log in again).
+- Browser-only symbols (`BrowserSession`, `create_stealth_driver`) are now loaded lazily (PEP 562), so `import graftpunk` succeeds with no browser stack present.
+
 ## [1.10.0] - 2026-07-21
 
 ### Fixed

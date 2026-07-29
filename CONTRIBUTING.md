@@ -118,8 +118,7 @@ git commit -m "docs: improve plugin development guide"
 1. **Use type hints** for all function signatures
 
    ```python
-   def cache_session(session: BrowserSession, name: str) -> str:
-       ...
+   def cache_session(session: BrowserSession, name: str) -> str: ...
    ```
 
 2. **Use docstrings** for public functions and classes (Google style)
@@ -183,6 +182,28 @@ pytest tests/ -k "test_encryption" -v
 - Use descriptive test names: `test_<what>_<when>_<expected>`
 - Mock external dependencies (browsers, network, filesystem)
 
+### Committed fixtures
+
+`tests/fixtures/browserfree_session.{enc,key}` guard the browser-free
+session-load path (`load_session_for_api_from_bytes`, used under Pyodide /
+Cloudflare Workers). If you change `BrowserSession`'s pickled state, regenerate
+them with `python scripts/gen_browserfree_fixture.py` — see
+[`tests/fixtures/README.md`](tests/fixtures/README.md) for why the fixture has
+to be pickled by reference and what that guards.
+
+### The base install must stay browser-free
+
+Browser automation lives behind the `[browser]` extra so graftpunk resolves under
+Pyodide / Cloudflare Python Workers, where that stack has no installable wheels.
+Two rules follow:
+
+- Never import browser modules (`graftpunk.session`, `graftpunk.stealth`,
+  selenium, requestium, nodriver, httpie) at **module scope** in anything the CLI
+  imports — import them inside the function that needs them. A module-level
+  import there breaks *every* `gp` command on a base install, not just the
+  browser ones. `test_cli_import_stays_browser_free` guards this.
+- Don't move those packages back into base `dependencies`.
+
 Example:
 
 ```python
@@ -208,6 +229,7 @@ Implement `SessionStorageBackend` protocol:
 ```python
 from graftpunk.storage.base import SessionStorageBackend, SessionMetadata
 
+
 class MyStorage:
     def save_session(self, name: str, data: bytes, metadata: SessionMetadata) -> str: ...
     def load_session(self, name: str) -> tuple[bytes, SessionMetadata]: ...
@@ -229,6 +251,7 @@ Implement `KeepaliveHandler` protocol:
 ```python
 from graftpunk.keepalive.handler import KeepaliveHandler, SessionStatus
 
+
 class MyHandler:
     site_name: str = "My Site"
 
@@ -249,6 +272,7 @@ Subclass `SitePlugin` and use `@command` to define CLI commands. Handlers receiv
 
 ```python
 from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
+
 
 class MySitePlugin(SitePlugin):
     site_name = "mysite"
