@@ -235,12 +235,23 @@ def decrypt_data(data: bytes, *, key: bytes | None = None) -> bytes:
         Decrypted raw bytes.
 
     Raises:
-        EncryptionError: If decryption fails (wrong key or corrupted data).
+        EncryptionError: If the key is malformed, or decryption fails (wrong key
+            or corrupted data).
     """
     from cryptography.fernet import InvalidToken
 
     fernet_key = key if key is not None else get_encryption_key()
-    fernet = Fernet(fernet_key)
+    # Fernet() itself raises ValueError on a malformed key (wrong length, not
+    # url-safe base64, stray trailing newline). That is the single likeliest
+    # failure for a caller passing `key=` from a secret store, so it is mapped
+    # to EncryptionError rather than escaping as a bare ValueError that the
+    # documented contract above doesn't mention.
+    try:
+        fernet = Fernet(fernet_key)
+    except (ValueError, TypeError) as exc:
+        raise EncryptionError(
+            "Invalid encryption key: a Fernet key must be 32 url-safe base64-encoded bytes."
+        ) from exc
     try:
         return fernet.decrypt(data)
     except InvalidToken as exc:

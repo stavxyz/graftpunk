@@ -10,6 +10,7 @@ import requests
 
 from graftpunk import cache
 from graftpunk.encryption import encrypt_data
+from graftpunk.exceptions import EncryptionError, SessionExpiredError
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
 
@@ -201,12 +202,69 @@ def test_import_graftpunk_does_not_eagerly_import_browser_stack():
     assert "ok" in result.stdout
 
 
+def test_cli_import_stays_browser_free():
+    """The CLI entry point must import without the browser stack.
+
+    Regression guard for a shipped-breakage class the `import graftpunk` test
+    above cannot see: `[project.scripts]` declares `gp` unconditionally, and
+    cli/main.py -> cli/plugin_commands.py -> cli/login_commands.py ->
+    plugins/login_engine.py used to do a MODULE-LEVEL
+    `from graftpunk import BrowserSession`. The lazy __getattr__ doesn't help
+    there — it just moves where the eager chain fires — so on a base install
+    EVERY `gp` invocation (even `gp --version`) died with
+    "ModuleNotFoundError: No module named 'httpie'".
+    """
+    code = (
+        "import graftpunk.cli.main, sys; "
+        "assert 'graftpunk.session' not in sys.modules, 'session eagerly imported via CLI'; "
+        "assert 'httpie' not in sys.modules, 'httpie eagerly imported via CLI'; "
+        "assert 'selenium' not in sys.modules, 'selenium eagerly imported via CLI'; "
+        "print('ok')"
+    )
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
 def test_lazy_browser_symbols_still_resolve():
     import graftpunk
 
     # Accessing the lazy attributes still works on a full install.
     assert graftpunk.BrowserSession is not None
     assert callable(graftpunk.create_stealth_driver)
+
+
+def test_dir_lists_lazy_browser_symbols():
+    # PEP 562 __getattr__ doesn't feed dir(); the __dir__ companion restores
+    # tab-completion/introspection for the lazily-loaded symbols.
+    import graftpunk
+
+    listing = dir(graftpunk)
+    assert "BrowserSession" in listing
+    assert "create_stealth_driver" in listing
+
+
+def test_missing_browser_stack_error_names_the_extra(monkeypatch):
+    """A missing browser stack must say what to install.
+
+    The raw failure is `No module named 'httpie'` — a package the caller never
+    asked for, with no hint that the [browser] extra is the fix.
+    """
+    import graftpunk
+
+    monkeypatch.setitem(sys.modules, "graftpunk.session", None)
+    with pytest.raises(ImportError, match=r"graftpunk\[browser\]"):
+        getattr(graftpunk, "BrowserSession")  # noqa: B009 - must go through __getattr__
+
+
+def test_unknown_attribute_still_raises_attribute_error():
+    # The lazy __getattr__ must not swallow genuine typos into an ImportError.
+    import graftpunk
+
+    with pytest.raises(AttributeError):
+        getattr(graftpunk, "definitely_not_a_real_symbol")  # noqa: B009 - via __getattr__
 
 
 # --- A4: committed fixture guard --------------------------------------------
@@ -257,3 +315,61 @@ def test_a4_fixture_decodes_browser_free(monkeypatch):
     assert api.cookies.get("Password", domain="example.com") == "dummypass"
     assert "Mozilla/5.0 (dummy)" in api.headers["User-Agent"]
     assert api._gp_header_roles == {"api": {"X-Api-Key": "dummy"}}
+    # The docstring claims this guards TOKENS too, so assert them — otherwise a
+    # regression in token carry-over would slip through a test that says it looks.
+    assert getattr(api, _CACHE_ATTR) == {"cached": "dummy"}
+
+
+# --- load_session_for_api_from_bytes: documented error paths -----------------
+# The Worker's error handling depends on this contract, and none of it was
+# pinned before — which is how a structural failure escaping as a raw
+# AttributeError went unnoticed.
+
+
+def test_from_bytes_malformed_key_raises_encryption_error():
+    """A malformed key secret (wrong length / stray newline) is the likeliest
+    Worker misconfiguration. It must say "bad key", not "session expired" —
+    otherwise the operator re-runs a login instead of fixing the secret."""
+    with pytest.raises(EncryptionError, match="Invalid encryption key"):
+        cache.load_session_for_api_from_bytes(b"whatever", key=b"not-a-fernet-key")
+
+
+def test_from_bytes_wrong_key_raises_encryption_error():
+    from cryptography.fernet import Fernet
+
+    good, other = Fernet.generate_key(), Fernet.generate_key()
+    blob = Fernet(good).encrypt(dill.dumps(_fake_source()))
+    # Decryptable-looking bytes under the WRONG key: an operator/config problem.
+    with pytest.raises(EncryptionError, match="Decryption failed"):
+        cache.load_session_for_api_from_bytes(blob, key=other)
+
+
+def test_from_bytes_undeserializable_payload_raises_session_expired():
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key()
+    blob = Fernet(key).encrypt(b"this is not a pickle at all")
+    with pytest.raises(SessionExpiredError, match="deserialize"):
+        cache.load_session_for_api_from_bytes(blob, key=key)
+
+
+def test_from_bytes_object_without_session_shape_raises_session_expired():
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key()
+    blob = Fernet(key).encrypt(dill.dumps({"not": "a session"}))
+    with pytest.raises(SessionExpiredError, match="invalid structure"):
+        cache.load_session_for_api_from_bytes(blob, key=key)
+
+
+def test_from_bytes_malformed_cookies_raises_session_expired():
+    """Structurally present but unusable contents must still honour the
+    documented SessionExpiredError contract rather than leaking an
+    AttributeError from deep inside session construction."""
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key()
+    broken = types.SimpleNamespace(cookies="not-a-jar", headers="not-a-mapping")
+    blob = Fernet(key).encrypt(dill.dumps(broken))
+    with pytest.raises(SessionExpiredError):
+        cache.load_session_for_api_from_bytes(blob, key=key)

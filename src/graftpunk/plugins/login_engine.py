@@ -13,12 +13,19 @@ import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
-from graftpunk import BrowserSession, cache_session
+from graftpunk import cache_session
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 
 if TYPE_CHECKING:
     from graftpunk.plugins.cli_plugin import SitePlugin
+
+# NOTE: `BrowserSession` is imported lazily inside the two login bodies below,
+# NOT at module scope. This module is on the CLI's eager import path
+# (cli/main.py -> cli/plugin_commands.py -> cli/login_commands.py -> here), so a
+# module-level `from graftpunk import BrowserSession` pulls in the whole browser
+# stack and makes EVERY `gp` invocation — even `gp --version` — fail on a base
+# install without the [browser] extra. See test_cli_import_stays_browser_free.
 
 LOG = get_logger(__name__)
 
@@ -369,6 +376,8 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
         login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
 
+        from graftpunk import BrowserSession  # lazy: browser stack ([browser] extra)
+
         async with BrowserSession(backend="nodriver", headless=False) as session:
             try:
                 async with asyncio.timeout(_LOGIN_NAV_TIMEOUT):
@@ -519,6 +528,8 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
         success_selector = plugin.login_config.success
+
+        from graftpunk import BrowserSession  # lazy: browser stack ([browser] extra)
 
         with BrowserSession(backend="selenium", headless=False) as session:
             # Start header capture for role extraction

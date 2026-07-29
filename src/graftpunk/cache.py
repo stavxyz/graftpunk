@@ -490,6 +490,16 @@ class _BrowserFreeUnpickler(pickle.Unpickler):  # pickle is dill (see top import
     (a genuinely broken module, a renamed-but-present symbol) propagates — it
     must not be silently masked into a stub, which the A4 fixture could never
     catch (stubbing still lands the plain __dict__ and the test keeps passing).
+
+    THIS IS NOT A SECURITY BOUNDARY. Despite the name, it imposes no restriction
+    on what a payload may construct: ``super().find_class`` resolves any
+    importable module/attribute, so a hostile pickle can still execute code
+    (``__reduce__`` -> ``os.system``) exactly as the stdlib unpickler would.
+    "Stub" here means "tolerate classes that are ABSENT", not "reject classes
+    that are dangerous". The only thing preventing a forged payload from ever
+    reaching this class is Fernet's authenticated encryption — i.e. possession
+    of the key. Callers must treat the key as the trust boundary and never
+    unpickle a blob from one trust domain with a key from another.
     """
 
     def find_class(self, module: str, name: str):
@@ -559,24 +569,42 @@ def load_session_for_api_from_bytes(
             (a Worker holding the key as a secret). When None, use the normal
             `decrypt_data` key sources.
 
-    Raises:
-        SessionExpiredError: if decryption or deserialization fails (including
-            EncryptionError from decrypt_data, which is caught and remapped here
-            for uniform caller-facing contract), or the recovered object lacks
-            the expected structure.
-    """
-    try:
-        decrypted = decrypt_data(encrypted, key=key)
-        source = _deserialize_browserfree(decrypted)
-    except SessionExpiredError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise SessionExpiredError(f"Failed to load session from bytes: {exc}") from exc
+    Security note: integrity and authenticity come SOLELY from the Fernet key —
+    a valid MAC is the only thing standing between these bytes and the
+    unpickler, which resolves whatever classes the payload names (see
+    :class:`_BrowserFreeUnpickler`). The structure check below is a shape guard,
+    NOT a safety control: it runs after unpickling, so it cannot prevent code a
+    forged payload would already have executed. Never call this with a blob and
+    a key from different trust domains, and treat the key as the security
+    boundary it is.
 
-    if not hasattr(source, "cookies") or not hasattr(source, "headers"):
+    Raises:
+        EncryptionError: if the key is malformed, or the bytes cannot be
+            decrypted with it (wrong/rotated key, corrupted blob). Deliberately
+            NOT remapped to SessionExpiredError: "I can't decrypt this" is an
+            operator/config problem (fix the key) while "this session is
+            unusable" prompts a re-login, and conflating them sends the caller
+            down the wrong path.
+        SessionExpiredError: if the decrypted payload cannot be deserialized, or
+            the recovered object lacks the expected session structure.
+    """
+    # EncryptionError from decrypt_data intentionally propagates (see Raises).
+    decrypted = decrypt_data(encrypted, key=key)
+    try:
+        source = _deserialize_browserfree(decrypted)
+    except Exception as exc:  # noqa: BLE001 — any deserialization failure is an unusable session
+        raise SessionExpiredError(f"Failed to deserialize session bytes: {exc}") from exc
+
+    # isinstance against the runtime-checkable protocol does the same shape check
+    # as two hasattr calls while also narrowing `object` for the type checker on
+    # the _api_session_from_session(source: SessionLike) call below.
+    if not isinstance(source, SessionLike):
         raise SessionExpiredError("Session bytes have invalid structure.")
 
-    return _api_session_from_session(source)
+    try:
+        return _api_session_from_session(source)
+    except Exception as exc:  # noqa: BLE001 — structurally present but malformed contents
+        raise SessionExpiredError(f"Session bytes have unusable cookies/headers: {exc}") from exc
 
 
 def update_session_cookies(api_session: requests.Session, session_name: str) -> None:

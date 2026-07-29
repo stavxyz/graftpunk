@@ -20,8 +20,10 @@ Example:
     >>> response = api.get("https://mysite.com/api/data")
 """
 
+from importlib import import_module as _import_module
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from typing import TYPE_CHECKING, Any
 
 from graftpunk.backends import BrowserBackend, get_backend, list_backends, register_backend
 from graftpunk.cache import (
@@ -49,19 +51,57 @@ from graftpunk.exceptions import (
 from graftpunk.graftpunk_session import get_role_headers, list_roles, register_role
 from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
 
+# Browser-only symbols, resolved lazily by __getattr__ below. Declared here so
+# type checkers and IDEs still see them (PEP 562 lazy attributes are invisible to
+# static analysis otherwise).
+if TYPE_CHECKING:
+    from graftpunk.session import BrowserSession
+    from graftpunk.stealth import create_stealth_driver
 
-def __getattr__(name):  # PEP 562 lazy attribute loading
+_LAZY_BROWSER_SYMBOLS = {
+    "BrowserSession": ("graftpunk.session", "BrowserSession"),
+    "create_stealth_driver": ("graftpunk.stealth", "create_stealth_driver"),
+}
+
+
+def __getattr__(name: str) -> Any:  # PEP 562 lazy attribute loading
     """Lazy-load browser-only symbols so `import graftpunk` works without the
-    browser stack (selenium/requestium/etc.) installed — e.g. under Pyodide."""
-    if name == "BrowserSession":
-        from graftpunk.session import BrowserSession
+    browser stack (selenium/requestium/etc.) installed — e.g. under Pyodide.
 
-        return BrowserSession
-    if name == "create_stealth_driver":
-        from graftpunk.stealth import create_stealth_driver
+    A missing browser stack is reported as an ImportError naming the extra to
+    install. Without that translation the caller sees the raw transitive failure
+    (``No module named 'httpie'``), which names a package they never asked for
+    and gives no hint that ``pip install 'graftpunk[browser]'`` is the fix.
 
-        return create_stealth_driver
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    Note: ImportError (not AttributeError) is deliberate — this is a missing
+    dependency, and ``except ImportError`` is what callers reach for. The
+    trade-off is that ``hasattr(graftpunk, "BrowserSession")`` propagates rather
+    than returning False, so probe for the browser stack with try/except
+    ImportError instead of hasattr. (The two cannot both be satisfied:
+    ImportError and AttributeError have incompatible C layouts and cannot be
+    combined into one exception class.)
+    """
+    target = _LAZY_BROWSER_SYMBOLS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr = target
+    try:
+        module = _import_module(module_name)
+    except ImportError as exc:
+        raise ImportError(
+            f"graftpunk.{name} requires the browser automation stack, which is not "
+            f"installed. Install it with: pip install 'graftpunk[browser]'"
+        ) from exc
+    return getattr(module, attr)
+
+
+def __dir__() -> list[str]:
+    """Include the lazily-loaded browser symbols in dir()/tab-completion.
+
+    PEP 562 ``__getattr__`` does not feed ``dir()``, so without this the two
+    browser symbols silently disappear from introspection.
+    """
+    return sorted(set(globals()) | set(_LAZY_BROWSER_SYMBOLS))
 
 
 # Single source of truth: the version lives in pyproject.toml and is read back

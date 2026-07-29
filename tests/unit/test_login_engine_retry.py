@@ -1,4 +1,9 @@
-"""Tests for _select_with_retry and wait_for login engine features."""
+"""Tests for _select_with_retry and wait_for login engine features.
+
+Patches ``graftpunk.BrowserSession`` (not ``...login_engine.BrowserSession``) —
+see the note in test_login_engine.py for why login_engine has no module-level
+BrowserSession.
+"""
 
 from __future__ import annotations
 
@@ -222,7 +227,7 @@ class TestLoginRetryIntegration:
         instance.transfer_nodriver_cookies_to_session = AsyncMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -260,7 +265,7 @@ class TestLoginWaitFor:
         instance.transfer_nodriver_cookies_to_session = AsyncMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
         ):
@@ -291,7 +296,7 @@ class TestLoginWaitFor:
         instance.driver.get = AsyncMock(return_value=mock_tab)
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(PluginError, match="Timed out waiting for"),
         ):
@@ -317,7 +322,7 @@ class TestLoginWaitFor:
         instance.driver.get = AsyncMock(return_value=mock_tab)
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(PluginError, match="Timed out waiting for"),
         ):
@@ -343,7 +348,7 @@ class TestLoginWaitFor:
         instance.transfer_nodriver_cookies_to_session = AsyncMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
         ):

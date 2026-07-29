@@ -1,4 +1,12 @@
-"""Tests for the declarative login engine."""
+"""Tests for the declarative login engine.
+
+NOTE ON THE PATCH TARGET: these tests patch ``graftpunk.BrowserSession``, NOT
+``graftpunk.plugins.login_engine.BrowserSession``. login_engine deliberately has
+no module-level BrowserSession — it is on the CLI's eager import path, so a
+module-level import would drag in the browser stack and break every `gp` command
+on a base install (no [browser] extra). The login bodies import it lazily from
+``graftpunk`` at call time, so ``graftpunk`` is where the patch has to land.
+"""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -121,7 +129,7 @@ class TestDeclarativeLoginEngine:
         instance.transfer_nodriver_cookies_to_session = AsyncMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
         ):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -146,7 +154,7 @@ class TestDeclarativeLoginEngine:
         instance.driver = MagicMock()
         instance.driver.get = AsyncMock(return_value=mock_tab)
 
-        with patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs):
+        with patch("graftpunk.BrowserSession", mock_bs):
             result = await login_method({"username": "user", "password": "wrong"})  # noqa: S106
 
         assert result is False
@@ -169,7 +177,7 @@ class TestDeclarativeLoginEngine:
         instance.driver.get = _hang_forever
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             pytest.raises(PluginError, match="Timed out loading login page"),
         ):
             await login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -190,7 +198,7 @@ class TestDeclarativeLoginEngine:
         instance.transfer_driver_cookies_to_session = MagicMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
@@ -224,7 +232,7 @@ class TestDeclarativeLoginEngine:
         instance.driver.find_element = mock_find_element
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
@@ -269,7 +277,7 @@ class TestSeleniumFailureTextPath:
         instance.driver.page_source = "<html>Invalid credentials</html>"
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             result = login_method({"username": "user", "password": "wrong"})  # noqa: S106
@@ -292,7 +300,7 @@ class TestSeleniumFailureTextPath:
         instance.transfer_driver_cookies_to_session = MagicMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
@@ -320,7 +328,7 @@ class TestLoginEngineExceptionPaths:
         instance.driver = MagicMock()
         instance.driver.get = AsyncMock(return_value=mock_tab)
 
-        with patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs):
+        with patch("graftpunk.BrowserSession", mock_bs):
             with pytest.raises(PluginError, match="Element vanished"):
                 await login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -343,7 +351,7 @@ class TestLoginEngineExceptionPaths:
         instance.driver = MagicMock()
         instance.driver.get = AsyncMock(return_value=mock_tab)
 
-        with patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs):
+        with patch("graftpunk.BrowserSession", mock_bs):
             with pytest.raises(PluginError, match="Boom"):
                 await login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -363,7 +371,7 @@ class TestLoginEngineExceptionPaths:
         instance.driver.get = MagicMock(side_effect=ConnectionError("Refused"))
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             with pytest.raises(ConnectionError, match="Refused"):
@@ -384,7 +392,7 @@ class TestLoginEngineExceptionPaths:
         instance.driver.get = MagicMock(side_effect=RuntimeError("Crash"))
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             with pytest.raises(RuntimeError, match="Crash"):
@@ -417,7 +425,7 @@ class TestLoginEngineExceptionPaths:
         instance.driver.find_element = mock_find_element
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
             pytest.raises(ConnectionError, match="WebDriver session crashed"),
         ):
@@ -468,7 +476,7 @@ class TestLoginFieldMapping:
         instance.driver.page_source = "<html>Invalid</html>"
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             result = login_method({"email": "myuser", "password": "mypass"})  # noqa: S106
@@ -519,7 +527,7 @@ class TestLoginFieldMapping:
         instance.driver.page_source = "<html>Invalid</html>"
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             # Only pass password, no email key
@@ -618,7 +626,7 @@ class TestNodriverLoginValidationPaths:
         instance.driver = MagicMock()
         instance.driver.get = AsyncMock(return_value=mock_tab)
 
-        with patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs):
+        with patch("graftpunk.BrowserSession", mock_bs):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106
 
         assert result is False
@@ -643,7 +651,7 @@ class TestNodriverLoginValidationPaths:
         instance.transfer_nodriver_cookies_to_session = AsyncMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
         ):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -676,7 +684,7 @@ class TestNodriverLoginValidationPaths:
         instance.driver.get = AsyncMock(return_value=mock_tab)
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             pytest.raises(ConnectionError, match="WebDriver session crashed"),
         ):
             await login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -701,7 +709,7 @@ class TestNodriverLoginValidationPaths:
         instance.transfer_nodriver_cookies_to_session = AsyncMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.LOG") as mock_log,
         ):
@@ -923,7 +931,7 @@ class TestLoginEngineHeaderCapture:
         }
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -956,7 +964,7 @@ class TestLoginEngineHeaderCapture:
         mock_capture.get_header_roles.return_value = {"xhr": {"Accept": "application/json"}}
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
@@ -992,7 +1000,7 @@ class TestSeleniumLoginValidationPaths:
         instance.transfer_driver_cookies_to_session = MagicMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
@@ -1017,7 +1025,7 @@ class TestSeleniumLoginValidationPaths:
         instance.transfer_driver_cookies_to_session = MagicMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
@@ -1079,7 +1087,7 @@ class TestLoginTimeTokenExtraction:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1128,7 +1136,7 @@ class TestLoginTimeTokenExtraction:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1190,7 +1198,7 @@ class TestSeleniumTokenExtraction:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
@@ -1228,7 +1236,7 @@ class TestSeleniumTokenExtraction:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
@@ -1277,7 +1285,7 @@ class TestSeleniumWaitForRaises:
         instance.driver = MagicMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             pytest.raises(PluginError, match="wait_for.*requires.*nodriver"),
         ):
             login_method({"username": "user"})
@@ -1316,7 +1324,7 @@ class TestSeleniumWaitForRaises:
         instance.driver.find_element = MagicMock(return_value=mock_element)
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
             pytest.raises(PluginError, match="Step 2.*step.wait_for is not supported for selenium"),
         ):
@@ -1441,7 +1449,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.start_capture_async = AsyncMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1477,7 +1485,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1526,7 +1534,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1570,7 +1578,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1611,7 +1619,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1652,7 +1660,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1688,7 +1696,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1761,7 +1769,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1804,7 +1812,7 @@ class TestNodriverMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1909,7 +1917,7 @@ class TestSeleniumMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
@@ -1954,7 +1962,7 @@ class TestSeleniumMultiStepLogin:
         mock_capture.start_capture = MagicMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1993,7 +2001,7 @@ class TestSeleniumMultiStepLogin:
         mock_capture.start_capture = MagicMock()
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -2024,7 +2032,7 @@ class TestSeleniumMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time.sleep") as mock_sleep,
             patch(
@@ -2098,7 +2106,7 @@ class TestSeleniumMultiStepLogin:
         mock_capture.get_header_roles = MagicMock(return_value={})
 
         with (
-            patch("graftpunk.plugins.login_engine.BrowserSession", mock_bs),
+            patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.login_engine.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
