@@ -211,6 +211,7 @@ commands:
 ```python
 from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
 
+
 class MyBankPlugin(SitePlugin):
     site_name = "mybank"
     base_url = "https://secure.mybank.com"

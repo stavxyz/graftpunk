@@ -46,10 +46,10 @@ Uses [nodriver](https://github.com/ultrafunkamsterdam/nodriver), a direct Chrome
 
 ```python
 session = BrowserSession(
-    backend="selenium",    # or "nodriver"
-    headless=False,        # show browser window
-    use_stealth=True,      # anti-detection (selenium only)
-    observe_mode="off",    # "off" or "full"
+    backend="selenium",  # or "nodriver"
+    headless=False,  # show browser window
+    use_stealth=True,  # anti-detection (selenium only)
+    observe_mode="off",  # "off" or "full"
 )
 ```
 
@@ -86,6 +86,7 @@ When a login completes, the session is cached:
 
 ```python
 from graftpunk import cache_session
+
 cache_session(session, "mysite")
 ```
 
@@ -105,6 +106,7 @@ For CLI commands, sessions are loaded without a browser:
 
 ```python
 from graftpunk.cache import load_session_for_api
+
 session = load_session_for_api("mysite")  # returns GraftpunkSession
 ```
 
@@ -144,7 +146,9 @@ resp = session.xhr("GET", "https://example.com/api/data", referer="/dashboard")
 resp = session.navigate("GET", "https://example.com/page")
 
 # Form submission (Content-Type: application/x-www-form-urlencoded, etc.)
-resp = session.form_submit("POST", "https://example.com/login", referer="/login", data={"user": "me"})
+resp = session.form_submit(
+    "POST", "https://example.com/login", referer="/login", data={"user": "me"}
+)
 ```
 
 Each method:
@@ -230,6 +234,7 @@ Subclass `SitePlugin` and use the `@command` decorator:
 
 ```python
 from graftpunk.plugins import CommandContext, SitePlugin, command
+
 
 class MyPlugin(SitePlugin):
     site_name = "mysite"
@@ -346,6 +351,7 @@ For simple login forms where username and password are on the same page:
 ```python
 from graftpunk.plugins import LoginConfig, LoginStep
 
+
 class MyPlugin(SitePlugin):
     base_url = "https://example.com"
     backend = "selenium"
@@ -382,6 +388,7 @@ For modern login flows where username and password are on separate screens (comm
 
 ```python
 from graftpunk.plugins import LoginConfig, LoginStep
+
 
 class MyPlugin(SitePlugin):
     base_url = "https://example.com"
@@ -529,8 +536,8 @@ Commands can specify resource limits on `CommandSpec`:
 
 ```python
 @command(help="Fetch data")
-def fetch(self, ctx: CommandContext):
-    ...
+def fetch(self, ctx: CommandContext): ...
+
 
 # Or set on the spec directly:
 CommandSpec(name="fetch", handler=fn, timeout=30, max_retries=2, rate_limit=1.0)
@@ -583,6 +590,7 @@ Example from a Python plugin:
 ```python
 from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.output_config import OutputConfig, ViewConfig
+
 
 @command(help="List invoices with summary")
 def list(self, ctx: CommandContext):
@@ -966,6 +974,7 @@ Plugins should use the exception hierarchy for clear error reporting:
 ```python
 from graftpunk.exceptions import CommandError
 
+
 @command(help="Get account")
 def account(self, ctx: CommandContext, account_id: int):
     resp = ctx.session.get(f"{self.base_url}/api/accounts/{account_id}")
@@ -985,6 +994,7 @@ Handlers must be synchronous in API version 1. If a handler is defined as `async
 @command(help="List items")
 def items(self, ctx: CommandContext):
     return ctx.session.get(f"{self.base_url}/api/items").json()
+
 
 # Auto-detected but not officially supported
 @command(help="List items")
@@ -1008,6 +1018,7 @@ The graftpunk framework does **not** read this directory. It is a convention for
 from pathlib import Path
 import yaml
 
+
 @command(help="List items")
 def items(self, ctx: CommandContext):
     config_path = Path.home() / ".config/graftpunk/plugin-config" / f"{self.site_name}.yaml"
@@ -1026,6 +1037,7 @@ The `@command` decorator supports both individual commands and command groups (n
 
 ```python
 from graftpunk.plugins import CommandContext, SitePlugin, command
+
 
 class MyPlugin(SitePlugin):
     site_name = "bank"
@@ -1048,21 +1060,18 @@ This creates CLI commands: `gp bank accounts list` and `gp bank accounts detail 
 Command groups can be nested using the `parent=` parameter:
 
 ```python
-    @command(help="Account operations")
-    class Accounts:
-        def list(self, ctx: CommandContext):
-            ...
+@command(help="Account operations")
+class Accounts:
+    def list(self, ctx: CommandContext): ...
 
-        def detail(self, ctx: CommandContext, id: int):
-            ...
+    def detail(self, ctx: CommandContext, id: int): ...
 
-    @command(help="Account statements", parent=Accounts)
-    class Statements:
-        def download(self, ctx: CommandContext, account_id: int):
-            ...
 
-        def summary(self, ctx: CommandContext, account_id: int):
-            ...
+@command(help="Account statements", parent=Accounts)
+class Statements:
+    def download(self, ctx: CommandContext, account_id: int): ...
+
+    def summary(self, ctx: CommandContext, account_id: int): ...
 ```
 
 This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank accounts statements download <account_id>`, etc.

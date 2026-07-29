@@ -118,8 +118,7 @@ git commit -m "docs: improve plugin development guide"
 1. **Use type hints** for all function signatures
 
    ```python
-   def cache_session(session: BrowserSession, name: str) -> str:
-       ...
+   def cache_session(session: BrowserSession, name: str) -> str: ...
    ```
 
 2. **Use docstrings** for public functions and classes (Google style)
@@ -208,6 +207,7 @@ Implement `SessionStorageBackend` protocol:
 ```python
 from graftpunk.storage.base import SessionStorageBackend, SessionMetadata
 
+
 class MyStorage:
     def save_session(self, name: str, data: bytes, metadata: SessionMetadata) -> str: ...
     def load_session(self, name: str) -> tuple[bytes, SessionMetadata]: ...
@@ -229,6 +229,7 @@ Implement `KeepaliveHandler` protocol:
 ```python
 from graftpunk.keepalive.handler import KeepaliveHandler, SessionStatus
 
+
 class MyHandler:
     site_name: str = "My Site"
 
@@ -249,6 +250,7 @@ Subclass `SitePlugin` and use `@command` to define CLI commands. Handlers receiv
 
 ```python
 from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
+
 
 class MySitePlugin(SitePlugin):
     site_name = "mysite"

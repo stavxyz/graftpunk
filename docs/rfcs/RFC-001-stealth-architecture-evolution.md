@@ -338,10 +338,10 @@ element.addEventListener('click', (e) => {
 class StealthTier(Enum):
     """Predefined stealth configurations."""
 
-    MINIMAL = "minimal"      # Legacy stack, minimal deps
-    STANDARD = "standard"    # nodriver + curl_cffi (recommended default)
-    MAXIMUM = "maximum"      # Camoufox + full behavioral simulation
-    CUSTOM = "custom"        # User-defined configuration
+    MINIMAL = "minimal"  # Legacy stack, minimal deps
+    STANDARD = "standard"  # nodriver + curl_cffi (recommended default)
+    MAXIMUM = "maximum"  # Camoufox + full behavioral simulation
+    CUSTOM = "custom"  # User-defined configuration
 ```
 
 ### 4.5 Core Abstractions
@@ -350,6 +350,7 @@ class StealthTier(Enum):
 # graftpunk/browser/base.py
 from abc import ABC, abstractmethod
 from typing import Protocol
+
 
 class BrowserBackend(ABC):
     """Abstract base for browser automation backends."""
@@ -405,6 +406,7 @@ class BrowserContext(Protocol):
 # graftpunk/browser/backends/nodriver_backend.py
 import nodriver as nd
 from graftpunk.browser.base import BrowserBackend, BrowserContext
+
 
 class NoDriverBackend(BrowserBackend):
     """Chrome automation via direct CDP (no WebDriver)."""
@@ -470,6 +472,7 @@ class NoDriverBackend(BrowserBackend):
 from camoufox.sync_api import Camoufox
 from browserforge.fingerprints import Screen
 
+
 class CamoufoxBackend(BrowserBackend):
     """Firefox automation with C++ level fingerprint spoofing."""
 
@@ -524,6 +527,7 @@ class CamoufoxBackend(BrowserBackend):
 # graftpunk/browser/backends/playwright_backend.py
 from playwright.async_api import async_playwright
 from playwright_stealth import stealth_async
+
 
 class PlaywrightBackend(BrowserBackend):
     """Multi-browser automation via Playwright."""
@@ -580,6 +584,7 @@ class PlaywrightBackend(BrowserBackend):
 # graftpunk/browser/backends/legacy_backend.py
 from graftpunk.stealth import create_stealth_driver
 
+
 class LegacyBackend(BrowserBackend):
     """Current undetected-chromedriver + selenium-stealth stack."""
 
@@ -633,10 +638,7 @@ curl_cffi provides browser-impersonation at the TLS/HTTP level:
 from curl_cffi import requests
 
 # Impersonates Chrome 131's TLS and HTTP/2 fingerprints
-response = requests.get(
-    "https://protected-site.com",
-    impersonate="chrome131"
-)
+response = requests.get("https://protected-site.com", impersonate="chrome131")
 ```
 
 **Supported impersonation profiles:**
@@ -655,6 +657,7 @@ The key insight: Use browser for JavaScript-heavy auth, then switch to curl_cffi
 ```python
 # graftpunk/http/client.py
 from curl_cffi import requests as curl_requests
+
 
 class GraftpunkHttpClient:
     """HTTP client with TLS fingerprint impersonation."""
@@ -734,6 +737,7 @@ Passing fingerprint checks but failing behavioral analysis still triggers CAPTCH
 import numpy as np
 from scipy import interpolate
 
+
 def generate_human_path(
     start: tuple[int, int],
     end: tuple[int, int],
@@ -755,7 +759,7 @@ def generate_human_path(
     tck, _ = interpolate.splprep([x, y], k=degree)
 
     # Generate path points based on distance
-    distance = np.sqrt((end[0] - start[0])**2 + (end[1] - start[1])**2)
+    distance = np.sqrt((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2)
     num_points = max(10, int(distance / 30))
     u_new = np.linspace(0, 1, num=num_points)
 
@@ -767,6 +771,7 @@ def generate_human_path(
 ```python
 # graftpunk/behavior/keyboard.py
 import numpy as np
+
 
 def human_typing_delay(wpm: int = 60, variance: float = 0.4) -> float:
     """Log-normal distributed typing delay (matches human patterns)."""
@@ -805,6 +810,7 @@ async def type_humanlike(
 ```python
 # graftpunk/behavior/click.py
 
+
 async def human_click(page, selector: str):
     """Click with proper event cascade and offset from center."""
     element = await page.query_selector(selector)
@@ -839,6 +845,7 @@ async def human_click(page, selector: str):
 ```python
 # graftpunk/behavior/warmup.py
 
+
 async def warm_up_session(browser, target_url: str):
     """Establish browsing history before sensitive operations."""
 
@@ -871,6 +878,7 @@ async def warm_up_session(browser, target_url: str):
 # graftpunk/config.py (extended)
 from pydantic import BaseModel
 from typing import Literal
+
 
 class BrowserConfig(BaseModel):
     """Browser automation configuration."""
@@ -1196,11 +1204,13 @@ all = [
 ```python
 # Default (simple scripts)
 from graftpunk import Browser
+
 with Browser() as browser:
     browser.goto("https://example.com")
 
 # Power user (concurrent sessions)
 from graftpunk.async_api import Browser
+
 async with Browser() as browser:
     await browser.goto("https://example.com")
 ```
