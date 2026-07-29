@@ -606,7 +606,7 @@ wheels = [
 
 [[package]]
 name = "graftpunk"
-version = "1.10.0"
+version = "1.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "brotli" },
@@ -654,13 +654,20 @@ browser = [
     { name = "webdriver-manager" },
 ]
 dev = [
+    { name = "httpie" },
     { name = "mypy" },
+    { name = "nodriver" },
     { name = "openpyxl" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
     { name = "pytest-xdist" },
+    { name = "requestium" },
     { name = "ruff" },
+    { name = "selenium" },
+    { name = "selenium-stealth" },
+    { name = "undetected-chromedriver" },
+    { name = "webdriver-manager" },
 ]
 jmespath = [
     { name = "jmespath" },
@@ -695,6 +702,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "dill", specifier = ">=0.3.0" },
     { name = "fpdf2", specifier = ">=2.8.0" },
+    { name = "graftpunk", extras = ["browser"], marker = "extra == 'dev'" },
     { name = "graftpunk", extras = ["browser"], marker = "extra == 'nodriver'" },
     { name = "graftpunk", extras = ["browser", "supabase", "s3", "jmespath", "nodriver", "dev"], marker = "extra == 'all'" },
     { name = "httpie", marker = "extra == 'browser'", specifier = ">=3.0.0" },
