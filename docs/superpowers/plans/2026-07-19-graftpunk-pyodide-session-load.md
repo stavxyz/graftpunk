@@ -463,9 +463,7 @@ def test_import_graftpunk_does_not_eagerly_import_browser_stack():
         "assert 'graftpunk.stealth' not in sys.modules, 'stealth eagerly imported'; "
         "print('ok')"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert "ok" in result.stdout
 
@@ -548,6 +546,7 @@ Run on a FULL graftpunk install (browser deps present). Produces a Fernet-
 encrypted dill pickle of a real BrowserSession carrying DUMMY credentials,
 plus the test key used to encrypt it. Commit both outputs.
 """
+
 import pathlib
 
 from cryptography.fernet import Fernet
@@ -569,8 +568,9 @@ def main() -> None:
     # __getstate__ builds state manually without touching a live driver.
     from unittest.mock import patch
 
-    with patch("graftpunk.stealth.create_stealth_driver"), patch(
-        "requestium.Session.__init__", return_value=None
+    with (
+        patch("graftpunk.stealth.create_stealth_driver"),
+        patch("requestium.Session.__init__", return_value=None),
     ):
         sess = BrowserSession(headless=True, backend="nodriver")
 

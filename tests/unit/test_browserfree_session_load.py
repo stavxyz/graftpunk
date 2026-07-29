@@ -245,11 +245,12 @@ def test_a4_fixture_decodes_browser_free(monkeypatch):
 
     # Verify the stub path is genuinely taken under forced browser-stack absence.
     from graftpunk.encryption import decrypt_data
+
     decrypted = decrypt_data(enc, key=key)
     source = cache._deserialize_browserfree(decrypted)
-    assert isinstance(
-        source, cache._Stub
-    ), "A4 must exercise the stub fallback, not the real BrowserSession"
+    assert isinstance(source, cache._Stub), (
+        "A4 must exercise the stub fallback, not the real BrowserSession"
+    )
 
     api = cache.load_session_for_api_from_bytes(enc, key=key)
     assert api.cookies.get("User", domain="example.com") == "dummyuser"
