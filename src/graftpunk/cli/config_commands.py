@@ -113,7 +113,7 @@ def set_cmd(name: str, value: str) -> None:
     """Add or replace NAME=VALUE (stored verbatim; quote $(…) in your shell)."""
     try:
         workstation_env.set_entry(name, value)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     is_secret_name = any(kw in name.lower() for kw in SECRET_KEYWORDS)
@@ -129,7 +129,11 @@ def set_cmd(name: str, value: str) -> None:
 @config_app.command("unset")
 def unset_cmd(name: str) -> None:
     """Remove NAME (all occurrences). Idempotent."""
-    workstation_env.unset_entry(name)
+    try:
+        workstation_env.unset_entry(name)
+    except OSError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
 
 @config_app.command("edit")

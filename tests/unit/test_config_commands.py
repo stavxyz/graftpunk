@@ -1,5 +1,6 @@
 """gp config command family (spec § gp config command family)."""
 
+import os
 import stat
 
 import pytest
@@ -111,6 +112,34 @@ def test_edit_uses_visual_then_editor(monkeypatch, _isolated):
     monkeypatch.setattr("subprocess.call", lambda argv: calls.append(argv) or 0)
     runner.invoke(app, ["config", "edit"])
     assert calls and calls[0][0] == "visual-editor"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses permission bits")
+def test_set_unwritable_config_dir_exits_1_with_message(_isolated):
+    # Prime settings construction (creates config_dir/sessions) while the
+    # directory is still writable, so the read-only chmod below exercises
+    # set_entry()'s own write failure rather than an unrelated PermissionError
+    # from GraftpunkSettings.__init__'s directory creation in main_callback.
+    runner.invoke(app, ["config", "path"])
+    _isolated.chmod(0o500)
+    try:
+        result = runner.invoke(app, ["config", "set", "K", "v"])
+        assert result.exit_code == 1
+        assert result.stderr
+    finally:
+        _isolated.chmod(0o700)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses permission bits")
+def test_unset_unwritable_config_dir_exits_1_with_message(_isolated):
+    runner.invoke(app, ["config", "set", "K", "v"])
+    _isolated.chmod(0o500)
+    try:
+        result = runner.invoke(app, ["config", "unset", "K"])
+        assert result.exit_code == 1
+        assert result.stderr
+    finally:
+        _isolated.chmod(0o700)
 
 
 def test_edit_reasserts_0600_after_editor_exits(monkeypatch, _isolated):
