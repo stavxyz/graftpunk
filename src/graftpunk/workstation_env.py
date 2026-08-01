@@ -136,14 +136,23 @@ class WorkstationEnv:
         """THE precedence rule: real env -> file -> None.
 
         A non-empty os.environ value wins (an empty-string value counts as
-        a miss — deliberate, unified across all consumption points).
-        Callers never hand-sequence env-then-file; this is the only
-        implementation of the ordering.
+        a miss — deliberate, unified across all consumption points). The
+        file tier is held to the SAME empty-is-a-miss rule: an empty
+        static (`K=`) or a command that exits 0 with no output also counts
+        as a miss, not a hit of `""` — otherwise a YAML `${VAR}` header
+        would silently render an empty substitution (e.g. `Bearer `)
+        instead of raising the clear "not set" PluginError, and a lazy
+        settings field would silently pick up `""`. Note `resolve_file_value()`
+        itself keeps returning `""` verbatim (`gp config get --resolve`
+        legitimately distinguishes "empty" from "failed"); the miss
+        conversion happens here, in lookup(), alone. Callers never
+        hand-sequence env-then-file; this is the only implementation of
+        the ordering.
         """
         env_value = os.environ.get(name)
         if env_value:
             return env_value
-        return self.resolve_file_value(name)
+        return self.resolve_file_value(name) or None
 
     def command_entry_names(self) -> set[str]:
         return {e.name for e in self._entries.values() if e.kind == COMMAND}

@@ -100,6 +100,21 @@ class TestExpandEnvVarsWorkstationFile:
         with pytest.raises(PluginError, match="TOTALLY_MISSING"):
             expand_env_vars("${TOTALLY_MISSING}")
 
+    def test_empty_static_in_file_raises_plugin_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty static (`K=`) in the file counts as a miss, not a hit of "".
+
+        Without the fix, this would silently render "Bearer " instead of
+        raising -- an opaque 401 downstream rather than a clear error.
+        """
+        from graftpunk.plugins.yaml_loader import expand_env_vars
+
+        (self.tmp_path / "env").write_text("EMPTY_KEY=\n")
+        monkeypatch.delenv("EMPTY_KEY", raising=False)
+        with pytest.raises(PluginError, match="EMPTY_KEY"):
+            expand_env_vars("Bearer ${EMPTY_KEY}")
+
 
 class TestValidateYamlSchema:
     """Tests for YAML schema validation."""

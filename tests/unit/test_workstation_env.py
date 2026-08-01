@@ -216,6 +216,26 @@ class TestLookup:
         _write(env_file, "A=static\nB=$(echo x)\nC=$(echo y)\n")
         assert workstation_env.load().command_entry_names() == {"B", "C"}
 
+    def test_empty_static_is_a_miss(self, env_file, monkeypatch):
+        # Unified empty-is-a-miss rule (A4): an empty static in the file
+        # must not surface as a hit of "" -- e.g. it would otherwise let a
+        # YAML `${VAR}` header silently render "Bearer " instead of raising
+        # the clear "not set" PluginError.
+        _write(env_file, "K=\n")
+        monkeypatch.delenv("K", raising=False)
+        assert workstation_env.load().lookup("K") is None
+        # resolve_file_value() is the deliberate exception: it keeps
+        # returning "" verbatim (gp config get --resolve distinguishes
+        # "empty" from "failed").
+        assert workstation_env.load().resolve_file_value("K") == ""
+
+    def test_empty_command_output_is_a_miss(self, env_file, monkeypatch):
+        _write(env_file, "K=$(true)\n")
+        monkeypatch.delenv("K", raising=False)
+        env = workstation_env.load()
+        assert env.lookup("K") is None
+        assert env.resolve_file_value("K") == ""
+
     def test_resolve_file_value_skips_env_tier(self, env_file, monkeypatch):
         # The --resolve primitive answers "what does the FILE say" even when
         # the real environment defines the name.
