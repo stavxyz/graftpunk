@@ -1,6 +1,8 @@
 """Pytest configuration for graftpunk tests."""
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,27 @@ from structlog._config import BoundLoggerLazyProxy
 src_dir = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_dir))
 
+# MODULE SCOPE, not a fixture: this root conftest.py is imported before ANY
+# test module, at collection time — before per-test fixtures ever run.
+# graftpunk.cli.main runs workstation_env.ensure_bootstrap() at ITS module
+# scope too, so merely collecting a test module that imports (directly or
+# transitively) graftpunk.cli.main triggers bootstrap against whatever
+# GRAFTPUNK_CONFIG_DIR is live in the real process environment — which, on a
+# developer machine with a populated ~/.config/graftpunk/env, means real
+# statics (e.g. GRAFTPUNK_BROWSER_EXECUTABLE_PATH) get injected into
+# os.environ. ensure_bootstrap()/inject_static() are idempotent-once-per-
+# process, so that leak is permanent for the rest of the pytest run and
+# contaminates unrelated tests (isolated_config's per-test monkeypatch runs
+# far too late to prevent it). Point GRAFTPUNK_CONFIG_DIR at a fresh, empty
+# temp directory (no `env` file in it) before collection can import anything,
+# so collection-time bootstrap reads an absent file instead of the real one.
+# setdefault (not setenv) so an operator/CI override of GRAFTPUNK_CONFIG_DIR
+# still wins.
+os.environ.setdefault(
+    "GRAFTPUNK_CONFIG_DIR",
+    tempfile.mkdtemp(prefix="graftpunk-test-config-"),
+)
+
 
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -20,6 +43,9 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     - Creates a temporary config directory for each test
     - Sets GRAFTPUNK_CONFIG_DIR to the temp directory
     - Resets the global settings instance before each test
+    - Invalidates workstation_env's process-global cache/bootstrap flag so
+      load() re-reads from THIS test's config dir instead of whatever was
+      cached under a previous config dir (collection-time or another test's)
     """
     config_dir = tmp_path / "graftpunk"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -27,12 +53,19 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Set environment variable for config directory
     monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(config_dir))
 
-    # Reset global settings to pick up new config
+    from graftpunk import workstation_env
     from graftpunk.config import reset_settings
 
+    # Reset global settings to pick up new config
     reset_settings()
+    # Retire the per-file autouse _invalidate_cache() fixtures' reason for
+    # existing: this single call, at this single seam, makes every test see
+    # its own config_dir's workstation env file (or lack of one).
+    workstation_env._invalidate_cache()
 
-    return config_dir
+    yield config_dir
+
+    workstation_env._invalidate_cache()
 
 
 @pytest.fixture(autouse=True)
