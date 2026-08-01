@@ -137,4 +137,12 @@ def edit_cmd() -> None:
     """Open the workstation env file in $VISUAL, else $EDITOR, else vi."""
     workstation_env.ensure_file()
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-    raise typer.Exit(subprocess.call([editor, str(paths.workstation_env_path())]))  # noqa: S603
+    env_path = paths.workstation_env_path()
+    exit_code = subprocess.call([editor, str(env_path)])  # noqa: S603
+    # Some editors write via a temp-file-then-rename (replace-on-write),
+    # which leaves the new inode with the process umask's permissions
+    # rather than preserving the original 0600 -- re-assert it here so
+    # every write path (not just workstation_env's own writers) honors the
+    # spec's "every CLI write is 0600" invariant.
+    os.chmod(env_path, 0o600)
+    raise typer.Exit(exit_code)

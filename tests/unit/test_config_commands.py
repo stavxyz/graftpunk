@@ -111,3 +111,18 @@ def test_edit_uses_visual_then_editor(monkeypatch, _isolated):
     monkeypatch.setattr("subprocess.call", lambda argv: calls.append(argv) or 0)
     runner.invoke(app, ["config", "edit"])
     assert calls and calls[0][0] == "visual-editor"
+
+
+def test_edit_reasserts_0600_after_editor_exits(monkeypatch, _isolated):
+    # Simulate an editor that writes via replace-on-save, leaving the file
+    # at the process umask's permissions (e.g. 0644) rather than 0600.
+    def fake_editor_call(argv):
+        (_isolated / "env").chmod(0o644)
+        return 0
+
+    monkeypatch.setenv("EDITOR", "some-editor")
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setattr("subprocess.call", fake_editor_call)
+    result = runner.invoke(app, ["config", "edit"])
+    assert result.exit_code == 0
+    assert stat.S_IMODE((_isolated / "env").stat().st_mode) == 0o600
