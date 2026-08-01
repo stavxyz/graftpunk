@@ -254,6 +254,12 @@ def set_entry(name: str, value: str) -> None:
     """
     if not _NAME_RE.match(name):
         raise ValueError(f"invalid variable name: {name!r}")
+    if "\n" in value or "\r" in value:
+        # A newline in value would let a single set_entry() call inject a
+        # second, attacker-controlled NAME=value line (e.g.
+        # K=$'x\nEVIL=1') into the file we otherwise write one line at a
+        # time.
+        raise ValueError(f"value for {name!r} must not contain newlines")
     path = paths.workstation_env_path()
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.is_file() else []
     pattern = _entry_line_pattern(name)

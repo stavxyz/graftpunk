@@ -196,6 +196,14 @@ class TestBootstrap:
 
 
 class TestWriter:
+    @pytest.mark.parametrize("bad_value", ["x\nEVIL=1", "x\r\nEVIL=1", "trailing\r"])
+    def test_set_rejects_embedded_newline(self, env_file, bad_value):
+        # A newline in the value would let one set_entry() call smuggle a
+        # second NAME=value line into the file (e.g. K=$'x\nEVIL=1').
+        with pytest.raises(ValueError, match="newline"):
+            workstation_env.set_entry("K", bad_value)
+        assert not env_file.exists()
+
     def test_set_appends_new_name_and_chmods(self, env_file):
         workstation_env.set_entry("NEW", "val")
         assert "NEW=val" in env_file.read_text().splitlines()
