@@ -384,6 +384,27 @@ gp import-har auth-flow.har --name mybank
 
 CLI flags: `-v` (info), `-vv` (debug), `--log-format json`, `--observe full`, `--network-debug` (wire-level HTTP tracing).
 
+### Workstation configuration (`gp config`)
+
+Persist per-machine environment for gp in `~/.config/graftpunk/env` —
+credentials as lazy 1Password (or any) command values, settings as statics:
+
+```bash
+gp config set GRAFTPUNK_BROWSER_EXECUTABLE_PATH "/path/to/chrome"
+gp config set SHOPKEEP_USERNAME '$(op read "op://vault/item/username")'
+gp config set SHOPKEEP_PASSWORD '$(op read "op://vault/item/password")'
+gp config list
+```
+
+Static values load at startup; `$(…)` values run only when a command
+actually needs them (login, first access of an allowlisted setting, or a
+YAML plugin's `${VAR}` header expansion) — `gp --help` never triggers your
+secret manager. Real environment variables always win over the file — a
+variable set to the empty string counts as unset, so an accidental
+`export FOO=` doesn't shadow a workstation-file value. Single-quote command
+values so your shell doesn't evaluate them at `set` time. See
+`docs/rfcs/2026-07-28-workstation-env.md` for the full design.
+
 ## Browser Backends
 
 graftpunk supports two browser automation backends (both included by default):

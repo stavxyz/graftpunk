@@ -50,6 +50,72 @@ class TestExpandEnvVars:
         assert result == "$NOT_A_PATTERN"
 
 
+class TestExpandEnvVarsWorkstationFile:
+    """Tests for environment variable expansion through workstation env file."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Invalidate workstation env cache before and after each test."""
+        from graftpunk import workstation_env
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        workstation_env._invalidate_cache()
+        self.tmp_path = tmp_path
+        yield
+        workstation_env._invalidate_cache()
+
+    def test_resolves_from_workstation_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test expanding variable from workstation env file."""
+        from graftpunk.plugins.yaml_loader import expand_env_vars
+
+        (self.tmp_path / "env").write_text("API_KEY=file-key\n")
+        monkeypatch.delenv("API_KEY", raising=False)
+        assert expand_env_vars("Bearer ${API_KEY}") == "Bearer file-key"
+
+    def test_env_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that environment variable takes precedence over file."""
+        from graftpunk.plugins.yaml_loader import expand_env_vars
+
+        (self.tmp_path / "env").write_text("API_KEY=file-key\n")
+        monkeypatch.setenv("API_KEY", "env-key")
+        assert expand_env_vars("${API_KEY}") == "env-key"
+
+    def test_empty_env_falls_through_to_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that empty-string env counts as a miss and falls through to file.
+
+        Unified semantics with the credential chain (spec § point (c)):
+        empty-string env counts as a miss.
+        """
+        from graftpunk.plugins.yaml_loader import expand_env_vars
+
+        (self.tmp_path / "env").write_text("API_KEY=file-key\n")
+        monkeypatch.setenv("API_KEY", "")
+        assert expand_env_vars("${API_KEY}") == "file-key"
+
+    def test_both_missing_raises_plugin_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that missing from both env and file raises PluginError."""
+        from graftpunk.plugins.yaml_loader import expand_env_vars
+
+        monkeypatch.delenv("TOTALLY_MISSING", raising=False)
+        with pytest.raises(PluginError, match="TOTALLY_MISSING"):
+            expand_env_vars("${TOTALLY_MISSING}")
+
+    def test_empty_static_in_file_raises_plugin_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty static (`K=`) in the file counts as a miss, not a hit of "".
+
+        Without the fix, this would silently render "Bearer " instead of
+        raising -- an opaque 401 downstream rather than a clear error.
+        """
+        from graftpunk.plugins.yaml_loader import expand_env_vars
+
+        (self.tmp_path / "env").write_text("EMPTY_KEY=\n")
+        monkeypatch.delenv("EMPTY_KEY", raising=False)
+        with pytest.raises(PluginError, match="EMPTY_KEY"):
+            expand_env_vars("Bearer ${EMPTY_KEY}")
+
+
 class TestValidateYamlSchema:
     """Tests for YAML schema validation."""
 

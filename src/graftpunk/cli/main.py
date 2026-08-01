@@ -18,6 +18,16 @@ from rich.panel import Panel
 from rich.table import Table
 
 import graftpunk
+
+# Workstation env bootstrap MUST precede plugin registration below (which
+# constructs the settings singleton) so file statics are visible to it.
+# It's sandwiched between two configure_logging() calls below: the first
+# (pre-bootstrap) ensures any warning bootstrap itself emits goes to stderr,
+# the second (post-bootstrap) picks up file statics for
+# GRAFTPUNK_LOG_LEVEL/GRAFTPUNK_LOG_FORMAT. get_settings() also calls
+# ensure_bootstrap() — idempotent, order-owned there.
+from graftpunk import workstation_env
+from graftpunk.cli.config_commands import config_app
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
 from graftpunk.cli.plugin_commands import resolve_session_name
@@ -34,9 +44,26 @@ from graftpunk.plugins import (
 from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 from graftpunk.session_context import resolve_session
 
-# Configure logging early (before plugin registration) using env vars directly.
-# We avoid calling get_settings() here because GraftpunkSettings.__init__ creates
-# directories as a side effect, which breaks test isolation.
+# Configure logging BEFORE workstation-env bootstrap so any warning
+# ensure_bootstrap() emits (permissive file mode, malformed line, mixed
+# substitution) routes through structlog's configured stderr renderer
+# instead of structlog's default PrintLoggerFactory (stdout) -- which would
+# otherwise corrupt piped `gp` output for CSV/JSON consumers. We avoid
+# calling get_settings() here because GraftpunkSettings.__init__ creates
+# directories as a side effect, which breaks test isolation; env vars are
+# read directly instead.
+configure_logging(
+    level=os.environ.get("GRAFTPUNK_LOG_LEVEL", "WARNING"),
+    json_output=os.environ.get("GRAFTPUNK_LOG_FORMAT", "console") == "json",
+)
+
+workstation_env.ensure_bootstrap()
+
+# Re-configure logging: ensure_bootstrap() may have just injected file-static
+# GRAFTPUNK_LOG_LEVEL/GRAFTPUNK_LOG_FORMAT into os.environ (only when the
+# real env didn't already set them), so re-read them now. configure_logging()
+# is idempotent, so this is a no-op unless the file actually changed one of
+# those two vars.
 # The -v/-vv and --log-format flags in main_callback() may reconfigure later.
 configure_logging(
     level=os.environ.get("GRAFTPUNK_LOG_LEVEL", "WARNING"),
@@ -58,7 +85,7 @@ app = typer.Typer(
       gp session list          Show all cached sessions
       gp session show <name>   View session details
       gp session clear <name>  Remove a session
-      gp config                Show current configuration
+      gp config                Show config / manage the workstation env file
 
     \b
     Documentation: https://github.com/stavxyz/graftpunk
@@ -664,6 +691,9 @@ app.add_typer(keepalive_app)
 # HTTP subcommand group (defined in http_commands.py)
 app.add_typer(http_app)
 
+# Config subcommand group (defined in config_commands.py)
+app.add_typer(config_app)
+
 
 @app.command("plugins")
 def plugins() -> None:
@@ -779,28 +809,6 @@ def import_har_cmd(
         discover_api=discover_api,
         dry_run=dry_run,
     )
-
-
-@app.command("config")
-def config() -> None:
-    """Show current graftpunk configuration."""
-    settings = get_settings()
-
-    storage_display = settings.storage_backend
-    if settings.storage_backend == "supabase":
-        storage_display = f"{settings.storage_backend} [dim](cloud)[/dim]"
-    elif settings.storage_backend == "local":
-        storage_display = f"{settings.storage_backend} [dim](filesystem)[/dim]"
-
-    info = f"""
-[dim]Config directory:[/dim]   {settings.config_dir}
-[dim]Sessions directory:[/dim] {settings.sessions_dir}
-[dim]Storage backend:[/dim]    {storage_display}
-[dim]Session TTL:[/dim]        {settings.session_ttl_hours}h ({settings.session_ttl_hours // 24}d)
-[dim]Log level:[/dim]          {settings.log_level}
-[dim]Log format:[/dim]         {settings.log_format}"""
-
-    console.print(Panel(info.strip(), title="⚙ Configuration", border_style="cyan"))
 
 
 # Register plugin commands dynamically at module load time so they appear in --help.
