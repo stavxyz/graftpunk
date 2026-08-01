@@ -18,6 +18,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 import graftpunk
+
+# Workstation env bootstrap MUST precede the early logging config below so
+# file statics for GRAFTPUNK_LOG_LEVEL/GRAFTPUNK_LOG_FORMAT take effect, and
+# precede plugin registration (which constructs the settings singleton).
+# get_settings() also calls ensure_bootstrap() — idempotent, order-owned there.
+from graftpunk import workstation_env
+from graftpunk.cli.config_commands import config_app
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
 from graftpunk.cli.plugin_commands import resolve_session_name
@@ -33,6 +40,8 @@ from graftpunk.plugins import (
 )
 from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 from graftpunk.session_context import resolve_session
+
+workstation_env.ensure_bootstrap()
 
 # Configure logging early (before plugin registration) using env vars directly.
 # We avoid calling get_settings() here because GraftpunkSettings.__init__ creates
@@ -58,7 +67,7 @@ app = typer.Typer(
       gp session list          Show all cached sessions
       gp session show <name>   View session details
       gp session clear <name>  Remove a session
-      gp config                Show current configuration
+      gp config                Show config / manage the workstation env file
 
     \b
     Documentation: https://github.com/stavxyz/graftpunk
@@ -664,6 +673,9 @@ app.add_typer(keepalive_app)
 # HTTP subcommand group (defined in http_commands.py)
 app.add_typer(http_app)
 
+# Config subcommand group (defined in config_commands.py)
+app.add_typer(config_app)
+
 
 @app.command("plugins")
 def plugins() -> None:
@@ -779,28 +791,6 @@ def import_har_cmd(
         discover_api=discover_api,
         dry_run=dry_run,
     )
-
-
-@app.command("config")
-def config() -> None:
-    """Show current graftpunk configuration."""
-    settings = get_settings()
-
-    storage_display = settings.storage_backend
-    if settings.storage_backend == "supabase":
-        storage_display = f"{settings.storage_backend} [dim](cloud)[/dim]"
-    elif settings.storage_backend == "local":
-        storage_display = f"{settings.storage_backend} [dim](filesystem)[/dim]"
-
-    info = f"""
-[dim]Config directory:[/dim]   {settings.config_dir}
-[dim]Sessions directory:[/dim] {settings.sessions_dir}
-[dim]Storage backend:[/dim]    {storage_display}
-[dim]Session TTL:[/dim]        {settings.session_ttl_hours}h ({settings.session_ttl_hours // 24}d)
-[dim]Log level:[/dim]          {settings.log_level}
-[dim]Log format:[/dim]         {settings.log_format}"""
-
-    console.print(Panel(info.strip(), title="⚙ Configuration", border_style="cyan"))
 
 
 # Register plugin commands dynamically at module load time so they appear in --help.

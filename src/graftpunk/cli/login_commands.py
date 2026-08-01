@@ -26,6 +26,11 @@ from graftpunk.plugins.login_engine import generate_login_method
 
 LOG = get_logger(__name__)
 
+# Field-name keywords that mark a credential as secret. Shared policy:
+# make_login_body masks prompts with it, and gp config's set guardrail
+# (cli/config_commands.py) warns on literal values for such names.
+SECRET_KEYWORDS = frozenset({"password", "secret", "token", "key"})
+
 
 def has_login_method(plugin: CLIPluginProtocol) -> bool:
     """Check if plugin has a login method that's not a CLI command.
@@ -103,7 +108,7 @@ def make_login_body(
     overrides), then interactive prompts (masked for password/secret/token/key
     fields). The resolved credentials dict is passed INTO the login callable.
     """
-    secret_keywords = {"password", "secret", "token", "key"}
+    secret_keywords = SECRET_KEYWORDS
 
     envvar_overrides: dict[str, str] = {}
     username_envvar = getattr(plugin, "username_envvar", "")
