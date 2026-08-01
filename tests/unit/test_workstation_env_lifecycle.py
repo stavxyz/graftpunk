@@ -73,6 +73,35 @@ def test_laziness_regression_help_runs_zero_commands(tmp_path):
     assert not (tmp_path / "SETTING_EVALUATED").exists()
 
 
+def test_bootstrap_warning_goes_to_stderr_not_stdout(tmp_path):
+    # Reviewer finding: ensure_bootstrap() used to run BEFORE
+    # configure_logging(), so any warning it emits (e.g. permissive file
+    # mode) printed via structlog's built-in default PrintLogger (stdout)
+    # instead of the CLI's configured stderr renderer -- corrupting piped
+    # `gp` output for CSV/JSON consumers. A deliberately 0644 env file
+    # triggers workstation_env_permissive_mode at import time, inside
+    # cli.main's module-scope ensure_bootstrap() call. Calls the real Typer
+    # app object directly (not CliRunner, which redirects sys.stdout/stderr
+    # to an in-memory buffer that never reaches this test's subprocess-level
+    # capture) so stdout/stderr are exactly what a real `gp` invocation
+    # would produce.
+    path = tmp_path / "env"
+    path.write_text("K=v\n")
+    path.chmod(0o644)
+    result = _run_child(
+        tmp_path,
+        "import sys\n"
+        "from graftpunk.cli.main import app\n"
+        "try:\n"
+        "    app(['config', 'path'])\n"
+        "except SystemExit as e:\n"
+        "    sys.exit(e.code or 0)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(path)  # stdout carries ONLY the path
+    assert "workstation_env_permissive_mode" in result.stderr
+
+
 def test_library_reach_without_cli_import(tmp_path):
     # Spec Testing #11: a consumer that never imports graftpunk.cli (e.g.
     # grocerbot's in-process GraftpunkClient) sees file statics identically —

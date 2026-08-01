@@ -19,10 +19,13 @@ from rich.table import Table
 
 import graftpunk
 
-# Workstation env bootstrap MUST precede the early logging config below so
-# file statics for GRAFTPUNK_LOG_LEVEL/GRAFTPUNK_LOG_FORMAT take effect, and
-# precede plugin registration (which constructs the settings singleton).
-# get_settings() also calls ensure_bootstrap() — idempotent, order-owned there.
+# Workstation env bootstrap MUST precede plugin registration below (which
+# constructs the settings singleton) so file statics are visible to it.
+# It's sandwiched between two configure_logging() calls below: the first
+# (pre-bootstrap) ensures any warning bootstrap itself emits goes to stderr,
+# the second (post-bootstrap) picks up file statics for
+# GRAFTPUNK_LOG_LEVEL/GRAFTPUNK_LOG_FORMAT. get_settings() also calls
+# ensure_bootstrap() — idempotent, order-owned there.
 from graftpunk import workstation_env
 from graftpunk.cli.config_commands import config_app
 from graftpunk.cli.http_commands import http_app
@@ -41,11 +44,26 @@ from graftpunk.plugins import (
 from graftpunk.plugins.yaml_plugin import create_yaml_plugins
 from graftpunk.session_context import resolve_session
 
+# Configure logging BEFORE workstation-env bootstrap so any warning
+# ensure_bootstrap() emits (permissive file mode, malformed line, mixed
+# substitution) routes through structlog's configured stderr renderer
+# instead of structlog's default PrintLoggerFactory (stdout) -- which would
+# otherwise corrupt piped `gp` output for CSV/JSON consumers. We avoid
+# calling get_settings() here because GraftpunkSettings.__init__ creates
+# directories as a side effect, which breaks test isolation; env vars are
+# read directly instead.
+configure_logging(
+    level=os.environ.get("GRAFTPUNK_LOG_LEVEL", "WARNING"),
+    json_output=os.environ.get("GRAFTPUNK_LOG_FORMAT", "console") == "json",
+)
+
 workstation_env.ensure_bootstrap()
 
-# Configure logging early (before plugin registration) using env vars directly.
-# We avoid calling get_settings() here because GraftpunkSettings.__init__ creates
-# directories as a side effect, which breaks test isolation.
+# Re-configure logging: ensure_bootstrap() may have just injected file-static
+# GRAFTPUNK_LOG_LEVEL/GRAFTPUNK_LOG_FORMAT into os.environ (only when the
+# real env didn't already set them), so re-read them now. configure_logging()
+# is idempotent, so this is a no-op unless the file actually changed one of
+# those two vars.
 # The -v/-vv and --log-format flags in main_callback() may reconfigure later.
 configure_logging(
     level=os.environ.get("GRAFTPUNK_LOG_LEVEL", "WARNING"),
