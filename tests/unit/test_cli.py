@@ -577,7 +577,7 @@ class TestPluginsCommand:
 class TestConfigCommand:
     """Tests for config command."""
 
-    @patch("graftpunk.cli.main.get_settings")
+    @patch("graftpunk.cli.config_commands.get_settings")
     def test_config_command(self, mock_settings):
         """Test config command output."""
         mock_settings.return_value = MagicMock(
@@ -595,7 +595,7 @@ class TestConfigCommand:
         assert "local" in result.output
         assert "filesystem" in result.output
 
-    @patch("graftpunk.cli.main.get_settings")
+    @patch("graftpunk.cli.config_commands.get_settings")
     def test_config_supabase_storage(self, mock_settings):
         """Test config command with supabase storage backend."""
         mock_settings.return_value = MagicMock(

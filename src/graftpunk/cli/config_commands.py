@@ -14,6 +14,7 @@ from rich.panel import Panel
 
 from graftpunk import paths, workstation_env
 from graftpunk.cli.login_commands import SECRET_KEYWORDS
+from graftpunk.config import get_settings
 
 console = Console()
 err_console = Console(stderr=True)
@@ -27,19 +28,7 @@ config_app = typer.Typer(
 
 
 def render_settings_panel(target_console: Console) -> None:
-    """The settings display formerly at `gp config` (migrated verbatim).
-
-    get_settings is imported here (from graftpunk.cli.main, not
-    graftpunk.config) rather than at module scope: pre-existing tests in
-    tests/unit/test_cli.py patch `graftpunk.cli.main.get_settings` (written
-    when this command lived in main.py). A deferred, call-time attribute
-    lookup on the main module is what lets those patches keep taking effect
-    after the move — a module-scope `from graftpunk.config import
-    get_settings` here would bind its own reference and silently ignore
-    that patch target.
-    """
-    from graftpunk.cli.main import get_settings
-
+    """The settings display formerly at `gp config` (migrated verbatim)."""
     settings = get_settings()
 
     storage_display = settings.storage_backend
