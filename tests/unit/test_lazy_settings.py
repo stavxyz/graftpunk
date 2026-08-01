@@ -114,6 +114,20 @@ def test_failed_command_falls_back_to_default(_fresh):
     assert any(e["event"] == "workstation_env_command_failed" for e in cap)
 
 
+def test_unknown_graftpunk_command_entry_warns_typo(_fresh):
+    # GRAFTPUNK_ prefix but no matching model field at all -- most likely a
+    # misspelled setting name (e.g. BROWSER misspelled), otherwise silently
+    # ignored forever.
+    _write_env(_fresh, "GRAFTPUNK_BROWSR_EXECUTABLE_PATH=$(echo /typo/chrome)\n")
+    with capture_logs() as cap:
+        gp_config.get_settings()
+    assert any(
+        e["event"] == "workstation_env_command_unknown_setting"
+        and e.get("envvar") == "GRAFTPUNK_BROWSR_EXECUTABLE_PATH"
+        for e in cap
+    )
+
+
 def test_proxy_delegates_methods_to_model(_fresh):
     _write_env(_fresh, "GRAFTPUNK_BROWSER_EXECUTABLE_PATH=$(echo /lazy/chrome)\n")
     settings = gp_config.get_settings()

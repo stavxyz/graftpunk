@@ -237,10 +237,12 @@ def _build_lazy_field_map() -> dict[str, str]:
     log = get_logger(__name__)
     lazy: dict[str, str] = {}
     command_names = workstation_env.load().command_entry_names()
+    matched_env_names: set[str] = set()
     for field_name in GraftpunkSettings.model_fields:
         env_name = _field_env_name(field_name)
         if env_name not in command_names:
             continue
+        matched_env_names.add(env_name)
         if field_name not in PROXY_SAFE_FIELDS:
             log.warning(
                 "workstation_env_command_unsupported_for_field",
@@ -252,6 +254,18 @@ def _build_lazy_field_map() -> dict[str, str]:
         if os.environ.get(env_name):
             continue  # real env wins; empty string counts as a miss
         lazy[field_name] = env_name
+
+    # Typo diagnostic: a command entry that LOOKS like a settings field
+    # (GRAFTPUNK_ prefix) but matches NO model field at all would otherwise
+    # be silently ignored forever — most likely a misspelled setting name.
+    prefix = GraftpunkSettings.model_config.get("env_prefix", "")
+    for env_name in command_names:
+        if env_name.startswith(prefix) and env_name not in matched_env_names:
+            log.warning(
+                "workstation_env_command_unknown_setting",
+                envvar=env_name,
+                hint="no GraftpunkSettings field maps to this name; check for a typo",
+            )
     return lazy
 
 
