@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import os
 from collections.abc import Callable
 from typing import Any
 
@@ -16,6 +15,7 @@ import typer
 from rich.status import Status
 
 from graftpunk import console as gp_console
+from graftpunk import workstation_env
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
@@ -103,10 +103,11 @@ def make_login_body(
 ) -> Callable[..., None]:
     """Build the login command BODY: credential resolution -> login callable.
 
-    Credential resolution order (unchanged): environment variables
-    ({SITE_PREFIX}_{FIELD} or plugin-level username_envvar/password_envvar
-    overrides), then interactive prompts (masked for password/secret/token/key
-    fields). The resolved credentials dict is passed INTO the login callable.
+    Credential resolution order: environment variables ({SITE_PREFIX}_{FIELD}
+    or plugin-level username_envvar/password_envvar overrides), then the
+    workstation env file (static or $(…) command values, resolved lazily), then
+    interactive prompts (masked for password/secret/token/key fields).
+    The resolved credentials dict is passed INTO the login callable.
     """
     secret_keywords = SECRET_KEYWORDS
 
@@ -127,12 +128,15 @@ def make_login_body(
             is_secret = any(kw in field_name.lower() for kw in secret_keywords)
             envvar = envvar_overrides.get(field_name, f"{site_prefix}_{field_name.upper()}")
 
-            env_value = os.environ.get(envvar)
+            # env -> workstation file, via the single precedence-owning
+            # lookup() (empty-string env counts as a miss and falls through
+            # to the file tier — deliberate change from the old
+            # login_envvar_empty behavior). Command values (e.g.
+            # $(op read ...)) execute here, at login time only.
+            env_value = workstation_env.load().lookup(envvar)
             if env_value:
                 credentials[field_name] = env_value
             else:
-                if env_value is not None:
-                    LOG.debug("login_envvar_empty", field=field_name, envvar=envvar)
                 credentials[field_name] = typer.prompt(
                     field_name.replace("_", " ").title(),
                     hide_input=is_secret,
