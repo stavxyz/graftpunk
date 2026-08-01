@@ -270,6 +270,11 @@ def _build_lazy_field_map() -> dict[str, str]:
 
 
 # Global settings instance
+# NOTE: this singleton (including a LazySettings proxy's per-field _resolved
+# cache) is intentionally NOT invalidated by workstation-env writes
+# (set_entry()/unset_entry()) -- only workstation_env's own load()/lookup()
+# guarantee write-then-lookup coherence. Call reset_settings() explicitly to
+# see a workstation-env write reflected in settings (tests already do this).
 _settings: "GraftpunkSettings | LazySettings | None" = None
 
 
