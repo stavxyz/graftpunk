@@ -8,7 +8,6 @@ YAML plugins are discovered from ~/.config/graftpunk/plugins/*.yaml (and *.yml)
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -124,6 +123,9 @@ class YAMLDiscoveryResult:
 def expand_env_vars(value: str) -> str:
     """Expand ${VAR} patterns in a string with environment variables.
 
+    Resolves variables through workstation env lookup, which checks the
+    environment first, then the workstation env file.
+
     Args:
         value: String potentially containing ${VAR} patterns.
 
@@ -131,12 +133,15 @@ def expand_env_vars(value: str) -> str:
         String with environment variables expanded.
 
     Raises:
-        PluginError: If referenced environment variable is not set.
+        PluginError: if the variable is neither in the environment nor
+            resolvable from the workstation env file.
     """
 
     def replacer(match: re.Match[str]) -> str:
+        from graftpunk import workstation_env
+
         var_name = match.group(1)
-        var_value = os.environ.get(var_name)
+        var_value = workstation_env.load().lookup(var_name)
         if var_value is None:
             raise PluginError(
                 f"Environment variable ${var_name} is not set. Set it before using this plugin."
