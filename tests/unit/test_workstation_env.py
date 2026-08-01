@@ -94,6 +94,40 @@ class TestParser:
             workstation_env.load()
         assert any(e["event"] == "workstation_env_permissive_mode" for e in cap)
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses permission bits")
+    def test_unreadable_file_degrades_to_empty_with_warning(self, env_file):
+        _write(env_file, "K=v\n")
+        os.chmod(env_file, 0o000)
+        try:
+            with capture_logs() as cap:
+                entries = workstation_env.load().entries()
+        finally:
+            os.chmod(env_file, 0o600)
+        assert entries == []
+        assert any(e["event"] == "workstation_env_unreadable" for e in cap)
+
+    def test_non_utf8_file_degrades_to_empty_with_warning(self, env_file):
+        env_file.write_bytes(b"K=\xff\xfe\n")
+        with capture_logs() as cap:
+            entries = workstation_env.load().entries()
+        assert entries == []
+        assert any(e["event"] == "workstation_env_unreadable" for e in cap)
+
+    def test_adjacent_command_substitutions_warn_but_still_classify_as_command(self, env_file):
+        # _COMMAND_RE's greedy DOTALL `.*` matches $(a)$(b) as ONE command
+        # whose inner text is "a)$(b" -- almost certainly a mistake. Still
+        # classified (and executed) as a command; a warning makes the
+        # resulting mangled-command failure diagnosable.
+        _write(env_file, "K=$(a)$(b)\n")
+        with capture_logs() as cap:
+            entry = workstation_env.load().get("K")
+        assert entry.kind == "command"
+        assert entry.command == "a)$(b"
+        assert any(
+            e["event"] == "workstation_env_suspicious_substitution" and e.get("name") == "K"
+            for e in cap
+        )
+
 
 class TestLookup:
     def test_real_env_beats_file(self, env_file, monkeypatch):
@@ -192,6 +226,18 @@ class TestLookup:
 
 
 class TestBootstrap:
+    @pytest.fixture(autouse=True)
+    def _no_injected_env_leak(self):
+        # inject_static() writes straight into os.environ, bypassing
+        # monkeypatch bookkeeping -- monkeypatch.delenv(..., raising=False)
+        # registers no undo when the var was already absent (pytest only
+        # records undo for keys that existed at delenv-time). Without this,
+        # a leaked INJ_* survives into later, unrelated tests in the same
+        # worker process (same pattern as test_lazy_settings.py:25-33).
+        yield
+        for name in ("INJ_A", "INJ_B", "INJ_C", "INJ_D"):
+            os.environ.pop(name, None)
+
     def test_inject_static_sets_absent_only(self, env_file, monkeypatch):
         _write(env_file, "INJ_A=filevalue\nINJ_B=filevalue\nINJ_C=$(echo never)\n")
         monkeypatch.setenv("INJ_B", "envwins")
@@ -236,7 +282,12 @@ class TestWriter:
             workstation_env.set_entry("K", "third")
         lines = env_file.read_text().splitlines()
         assert lines == ["K=first", "K=third"]
-        assert any(e["event"] == "workstation_env_duplicate_entries" for e in cap)
+        dup_events = [e for e in cap if e["event"] == "workstation_env_duplicate_entries"]
+        assert dup_events
+        # Line 2 ("K=second") is the occurrence that got overwritten; line 1
+        # ("K=first") is the "other" stale duplicate left behind -- the
+        # warning names it so the operator knows what to clean up.
+        assert dup_events[0]["lines"] == [1]
 
     def test_set_creates_parent_dir_and_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path / "deep" / "cfg"))

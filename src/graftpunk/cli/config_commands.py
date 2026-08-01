@@ -6,6 +6,7 @@ the old root-level command); the verbs manage the workstation env file
 """
 
 import os
+import shlex
 import subprocess
 
 import typer
@@ -106,7 +107,19 @@ def get_cmd(
     if value is None:
         stderr = env.last_resolve_error(name)
         if stderr:
-            err_console.print(f"[red]command for {name} failed:[/red] {stderr}")
+            # markup=False: stderr is arbitrary foreign-process output, not
+            # ours to interpret as Rich markup -- a literal "[flags]" token
+            # would otherwise vanish, and an unbalanced "[/...]" token would
+            # raise MarkupError. highlight=False: Rich's automatic repr
+            # highlighter would otherwise still wrap bracketed substrings
+            # in ANSI styling of its own. style="red" keeps the visual
+            # treatment without touching the text itself.
+            err_console.print(
+                f"command for {name} failed: {stderr}",
+                style="red",
+                markup=False,
+                highlight=False,
+            )
         else:
             err_console.print(f"[red]command for {name} failed (see log output)[/red]")
         raise typer.Exit(1)
@@ -136,7 +149,10 @@ def unset_cmd(name: str) -> None:
     """Remove NAME (all occurrences). Idempotent."""
     try:
         workstation_env.unset_entry(name)
-    except OSError as exc:
+    except (ValueError, OSError) as exc:
+        # ValueError covers UnicodeDecodeError: unset_entry() reads the
+        # file directly (it must diff line-by-line, unlike load(), which
+        # already degrades a non-UTF-8 file to "empty" via its own guard).
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
@@ -144,14 +160,28 @@ def unset_cmd(name: str) -> None:
 @config_app.command("edit")
 def edit_cmd() -> None:
     """Open the workstation env file in $VISUAL, else $EDITOR, else vi."""
-    workstation_env.ensure_file()
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
     env_path = paths.workstation_env_path()
-    exit_code = subprocess.call([editor, str(env_path)])  # noqa: S603
-    # Some editors write via a temp-file-then-rename (replace-on-write),
-    # which leaves the new inode with the process umask's permissions
-    # rather than preserving the original 0600 -- re-assert it here so
-    # every write path (not just workstation_env's own writers) honors the
-    # spec's "every CLI write is 0600" invariant.
-    os.chmod(env_path, 0o600)
+    try:
+        workstation_env.ensure_file()
+        # shlex.split: $EDITOR/$VISUAL commonly carry flags (e.g.
+        # `EDITOR="code --wait"`) -- passing the whole string as argv[0]
+        # would exec a binary literally named "code --wait" and fail.
+        argv = [*shlex.split(editor), str(env_path)]
+        exit_code = subprocess.call(argv)  # noqa: S603
+        # Some editors write via a temp-file-then-rename (replace-on-write),
+        # which leaves the new inode with the process umask's permissions
+        # rather than preserving the original 0600 -- re-assert it here so
+        # every write path (not just workstation_env's own writers) honors
+        # the spec's "every CLI write is 0600" invariant. An editor that
+        # deleted the file outright isn't our error to report -- skip the
+        # chmod and propagate the editor's own exit code below.
+        if env_path.is_file():
+            os.chmod(env_path, 0o600)
+    except OSError as exc:
+        # Covers ensure_file()/chmod failures and, notably, the editor
+        # binary itself being missing (subprocess.call raises
+        # FileNotFoundError rather than returning a nonzero exit code).
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     raise typer.Exit(exit_code)

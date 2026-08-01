@@ -12,6 +12,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 
 def _run_child(tmp_path, script: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
@@ -100,6 +102,35 @@ def test_bootstrap_warning_goes_to_stderr_not_stdout(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(path)  # stdout carries ONLY the path
     assert "workstation_env_permissive_mode" in result.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses permission bits")
+def test_unreadable_env_file_does_not_crash_gp(tmp_path):
+    # Reviewer finding (A1): load()'s unguarded stat()/read_text() used to
+    # let an unreadable file crash EVERY `gp` invocation (via
+    # ensure_bootstrap() at cli/main.py module scope) with a raw
+    # PermissionError traceback and no in-tool recovery -- including `gp
+    # config path`, which needs no file access at all. Same rationale as
+    # test_bootstrap_warning_goes_to_stderr_not_stdout above for spawning a
+    # real subprocess rather than using CliRunner.
+    path = tmp_path / "env"
+    path.write_text("K=v\n")
+    path.chmod(0o000)
+    try:
+        result = _run_child(
+            tmp_path,
+            "import sys\n"
+            "from graftpunk.cli.main import app\n"
+            "try:\n"
+            "    app(['config', 'path'])\n"
+            "except SystemExit as e:\n"
+            "    sys.exit(e.code or 0)\n",
+        )
+    finally:
+        path.chmod(0o600)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(path)  # stdout carries ONLY the path
+    assert "workstation_env_unreadable" in result.stderr
 
 
 def test_library_reach_without_cli_import(tmp_path):

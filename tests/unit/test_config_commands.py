@@ -112,13 +112,65 @@ def test_get_resolve_failed_command_surfaces_stderr(_isolated):
     assert "custom-error-message" in (result.stderr or "")
 
 
-def test_edit_uses_visual_then_editor(monkeypatch, _isolated):
+def test_get_resolve_failed_command_stderr_survives_rich_markup(_isolated):
+    # Reviewer finding: interpolating foreign stderr into a "[red]...[/red]"
+    # markup string ate "[flags]"-style tokens (and raised MarkupError on
+    # unbalanced "[/...]" tokens). markup=False must let it through verbatim.
+    runner.invoke(app, ["config", "set", "K", "$(echo '[flags] boom' 1>&2; exit 3)"])
+    result = runner.invoke(app, ["config", "get", "K", "--resolve"])
+    assert result.exit_code == 1
+    assert "[flags] boom" in (result.stderr or "")
+
+
+def test_edit_uses_visual_over_editor_when_both_set(monkeypatch, _isolated):
     calls = []
     monkeypatch.setenv("VISUAL", "visual-editor")
     monkeypatch.setenv("EDITOR", "other-editor")
     monkeypatch.setattr("subprocess.call", lambda argv: calls.append(argv) or 0)
-    runner.invoke(app, ["config", "edit"])
-    assert calls and calls[0][0] == "visual-editor"
+    result = runner.invoke(app, ["config", "edit"])
+    assert result.exit_code == 0
+    assert calls == [["visual-editor", str(_isolated / "env")]]
+
+
+def test_edit_uses_editor_when_visual_unset(monkeypatch, _isolated):
+    # Reviewer finding (A2/B1): a multi-word $EDITOR like "code --wait" was
+    # exec'd as one literal binary name (FileNotFoundError). shlex.split
+    # must break it into ["code", "--wait", path].
+    calls = []
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", "code --wait")
+    monkeypatch.setattr("subprocess.call", lambda argv: calls.append(argv) or 0)
+    result = runner.invoke(app, ["config", "edit"])
+    assert result.exit_code == 0
+    assert calls == [["code", "--wait", str(_isolated / "env")]]
+
+
+def test_edit_defaults_to_vi_when_neither_set(monkeypatch, _isolated):
+    calls = []
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.setattr("subprocess.call", lambda argv: calls.append(argv) or 0)
+    result = runner.invoke(app, ["config", "edit"])
+    assert result.exit_code == 0
+    assert calls == [["vi", str(_isolated / "env")]]
+
+
+def test_edit_missing_editor_binary_exits_1_with_message(monkeypatch, _isolated):
+    # Reviewer finding (A2/B1): subprocess.call raises FileNotFoundError
+    # (rather than returning a nonzero exit code) when the editor binary
+    # doesn't exist -- edit_cmd must turn that into a clean CLI error, not
+    # an uncaught traceback.
+    monkeypatch.setenv("EDITOR", "definitely-not-a-real-editor-binary")
+    monkeypatch.delenv("VISUAL", raising=False)
+
+    def _raise(argv):
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+    monkeypatch.setattr("subprocess.call", _raise)
+    result = runner.invoke(app, ["config", "edit"])
+    assert result.exit_code == 1
+    assert result.stderr
+    assert not isinstance(result.exception, FileNotFoundError)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses permission bits")
@@ -162,3 +214,36 @@ def test_edit_reasserts_0600_after_editor_exits(monkeypatch, _isolated):
     result = runner.invoke(app, ["config", "edit"])
     assert result.exit_code == 0
     assert stat.S_IMODE((_isolated / "env").stat().st_mode) == 0o600
+
+
+def test_unset_non_utf8_file_exits_1_clean(_isolated):
+    # Reviewer finding (A6): unset_entry() reads the file directly (unlike
+    # load(), which already degrades a non-UTF-8 file to "empty"), so
+    # unset_cmd must catch ValueError (UnicodeDecodeError) too, not just
+    # OSError -- otherwise this is an uncaught traceback.
+    (_isolated / "env").write_bytes(b"K=\xff\xfevalue\n")
+    result = runner.invoke(app, ["config", "unset", "K"])
+    assert result.exit_code == 1
+    assert result.stderr
+    assert not isinstance(result.exception, UnicodeDecodeError)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses permission bits")
+def test_config_path_survives_unreadable_env_file(_isolated):
+    # Reviewer finding (A1): load() (run via ensure_bootstrap() in
+    # main_callback for EVERY command) used to let stat()/read_text()
+    # crash the whole CLI on an unreadable file -- including `gp config
+    # path`, which needs no file access at all. (The stdout-stays-clean /
+    # warning-goes-to-stderr half of this claim is covered by a spawned-
+    # process test in test_workstation_env_lifecycle.py, matching how
+    # test_bootstrap_warning_goes_to_stderr_not_stdout there already
+    # covers the analogous permissive-mode warning -- CliRunner captures
+    # stdout/stderr in a way that doesn't reflect real structlog routing.)
+    (_isolated / "env").write_text("K=v\n")
+    (_isolated / "env").chmod(0o000)
+    try:
+        result = runner.invoke(app, ["config", "path"])
+    finally:
+        (_isolated / "env").chmod(0o600)
+    assert result.exit_code == 0
+    assert str(_isolated / "env") in result.stdout

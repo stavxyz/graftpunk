@@ -179,6 +179,19 @@ def _parse(text: str, source: str) -> dict[str, Entry]:
                 name=name,
                 source=f"{source}:{line_no}",
             )
+        if classified.kind == COMMAND and classified.command and ")$(" in classified.command:
+            # _COMMAND_RE's `.*` is greedy and DOTALL, so adjacent
+            # substitutions like $(a)$(b) still match as ONE command whose
+            # inner text is "a)$(b" -- almost certainly not what the
+            # operator meant. The regex stays normative (still classified
+            # as a command, and still executed as such); this warning just
+            # makes the resulting mangled-command failure diagnosable
+            # instead of a silent surprise.
+            LOG.warning(
+                "workstation_env_suspicious_substitution",
+                name=name,
+                source=f"{source}:{line_no}",
+            )
         entries[name] = Entry(
             name=name,
             raw_value=classified.cleaned,
@@ -196,7 +209,19 @@ def load() -> WorkstationEnv:
     """Parse the workstation env file (absent file -> empty), cached per-process.
 
     Cache coherence: set_entry()/unset_entry() invalidate this cache, so a
-    write-then-lookup in one process always sees fresh entries.
+    write-then-resolve of a FILE-tier entry (resolve_file_value(), or
+    lookup() when the real environment doesn't shadow that name) in one
+    process always sees fresh entries. That claim covers the file tier
+    only: inject_static() copies statics into os.environ at bootstrap, and
+    lookup()'s env tier then shadows a same-process rewrite of that same
+    name (os.environ isn't touched by set_entry()/unset_entry()) until the
+    process restarts.
+
+    An unreadable file (permission error) or one that isn't valid UTF-8
+    text degrades the same way as an absent file — a warning is logged and
+    every lookup behaves as if the file were empty — rather than crashing
+    every `gp` invocation, including ones like `gp config path` that need
+    no file access at all.
     """
     global _cached
     if _cached is not None:
@@ -205,15 +230,23 @@ def load() -> WorkstationEnv:
     if not path.is_file():
         _cached = WorkstationEnv({})
         return _cached
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o077:
-        LOG.warning(
-            "workstation_env_permissive_mode",
-            path=str(path),
-            mode=oct(mode),
-            hint="expected 0600 file permissions",
-        )
-    _cached = WorkstationEnv(_parse(path.read_text(encoding="utf-8"), str(path)))
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode & 0o077:
+            LOG.warning(
+                "workstation_env_permissive_mode",
+                path=str(path),
+                mode=oct(mode),
+                hint="expected 0600 file permissions",
+            )
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        # ValueError covers UnicodeDecodeError (a non-UTF-8 file); OSError
+        # covers permission errors and the like.
+        LOG.warning("workstation_env_unreadable", path=str(path), error=str(exc))
+        _cached = WorkstationEnv({})
+        return _cached
+    _cached = WorkstationEnv(_parse(text, str(path)))
     return _cached
 
 
@@ -282,7 +315,14 @@ def set_entry(name: str, value: str) -> None:
     pattern = _entry_line_pattern(name)
     hits = [i for i, line in enumerate(lines) if pattern.match(line)]
     if len(hits) > 1:
-        LOG.warning("workstation_env_duplicate_entries", name=name, count=len(hits))
+        # hits[-1] is the occurrence that gets overwritten below; the rest
+        # are stale duplicates left in the file — name them so the warning
+        # tells the operator exactly which lines to go clean up.
+        LOG.warning(
+            "workstation_env_duplicate_entries",
+            name=name,
+            lines=[h + 1 for h in hits[:-1]],
+        )
     if hits:
         lines[hits[-1]] = f"{name}={value}\n"
     else:
