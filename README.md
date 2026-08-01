@@ -397,11 +397,13 @@ gp config list
 ```
 
 Static values load at startup; `$(…)` values run only when a command
-actually needs them (login, or first access of an allowlisted setting) —
-`gp --help` never triggers your secret manager. Real environment variables
-always win over the file. Single-quote command values so your shell doesn't
-evaluate them at `set` time. See `docs/rfcs/2026-07-28-workstation-env.md`
-for the full design.
+actually needs them (login, first access of an allowlisted setting, or a
+YAML plugin's `${VAR}` header expansion) — `gp --help` never triggers your
+secret manager. Real environment variables always win over the file — a
+variable set to the empty string counts as unset, so an accidental
+`export FOO=` doesn't shadow a workstation-file value. Single-quote command
+values so your shell doesn't evaluate them at `set` time. See
+`docs/rfcs/2026-07-28-workstation-env.md` for the full design.
 
 ## Browser Backends
 

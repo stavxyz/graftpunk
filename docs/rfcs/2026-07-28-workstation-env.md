@@ -104,9 +104,28 @@ Precedence, owned by a single lookup function (see Components):
   `PluginError` ("Environment variable $X is not set"), resolved
   through the same single `lookup()` entry point.
 
+> **Known limitation (case sensitivity):** pydantic-settings matches env
+> var names **case-insensitively**, so `graftpunk_browser_executable_path`
+> (lowercase, in the real environment) satisfies the model directly. But
+> `lookup()` and the lazy proxy's source-aware gate (`_build_lazy_field_map`)
+> both check `os.environ` **case-sensitively** against the derived
+> `GRAFTPUNK_*` uppercase name — so a lowercase real-env var loses to a
+> workstation-file command value instead of winning, contradicting "real
+> env always wins." Nobody hits this today because the documented naming
+> convention is the derived uppercase name; use that. A behavioral fix
+> would mean either lookup() also probing case-insensitively (touches its
+> contract for every consumer, not just this one) or normalizing names at
+> the file-parsing boundary — deferred until a real workstation-env
+> operator actually sets a lowercase name.
+
 Other env reads exist and are **not** instrumented — by the laziness
 contract they work with static values (via bootstrap injection) but not
-command values. Static-only is also the rule for `GRAFTPUNK_*` fields
+command values. Un-instrumented but command-time (statics work; these are
+plain `os.environ.get()` calls inside a function body, evaluated whenever
+that function actually runs — not at import time): `GRAFTPUNK_SESSION`
+(`session_context.py:27`, inside `get_active_session()`) and
+`GP_DOWNLOADS_DIR` (`plugins/export.py:35`, inside `get_downloads_dir()`).
+Static-only is also the rule for `GRAFTPUNK_*` fields
 consumed by **model-internal** methods/properties (`supabase_url`,
 `supabase_service_key`, `s3_bucket` via `get_storage_config()`;
 `config_dir` via the `sessions_dir` property) — internal reads bind to
@@ -116,8 +135,7 @@ secrets via the real environment. Known import-time accesses
 (static-only, documented):
 `GRAFTPUNK_LOG_LEVEL` / `GRAFTPUNK_LOG_FORMAT` (`cli/main.py`, read at
 module scope for early logging — bootstrap injection precedes them, so
-file *statics* do work), `GRAFTPUNK_SESSION` (`session_context.py:27`),
-`GP_DOWNLOADS_DIR` (`plugins/export.py:35`), and `settings.config_dir`
+file *statics* do work), and `settings.config_dir`
 (accessed during import-time plugin discovery, which reads
 `settings.config_dir / "plugins"` — `yaml_loader.py:453`,
 `python_loader.py:128`; there is no separate `plugins_dir` setting, and
