@@ -192,14 +192,14 @@ class LazySettings:
     holds for both value kinds and is decided here alone.
     """
 
-    def __init__(self, model: GraftpunkSettings, lazy_fields: dict[str, str]):
+    def __init__(self, model: GraftpunkSettings, lazy_fields: dict[str, str]) -> None:
         # lazy_fields: field name -> env var name (derived from model config,
         # pydantic stays the single authority for the mapping)
         object.__setattr__(self, "_model", model)
         object.__setattr__(self, "_lazy_fields", lazy_fields)
         object.__setattr__(self, "_resolved", {})
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Any:
         lazy_fields = object.__getattribute__(self, "_lazy_fields")
         if name in lazy_fields:
             resolved = object.__getattribute__(self, "_resolved")
@@ -214,6 +214,14 @@ class LazySettings:
                     resolved[name] = getattr(model, name)
                 else:
                     adapter = TypeAdapter(GraftpunkSettings.model_fields[name].annotation)
+                    # NOTE: a command's output that fails this field's
+                    # TypeAdapter coercion raises a raw pydantic
+                    # ValidationError here, with no workstation-file
+                    # context (which entry, which line) attached.
+                    # Unreachable today -- browser_executable_path accepts
+                    # any str, so coercion can't fail -- but a trap the
+                    # moment PROXY_SAFE_FIELDS grows to include a field
+                    # whose type isn't just "any string".
                     resolved[name] = adapter.validate_python(raw)
             return resolved[name]
         return getattr(object.__getattribute__(self, "_model"), name)

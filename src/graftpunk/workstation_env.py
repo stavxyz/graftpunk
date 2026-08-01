@@ -13,6 +13,7 @@ import re
 import stat
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 # Importing graftpunk.paths inits the graftpunk package, whose __init__
@@ -69,7 +70,7 @@ def _classify(value: str) -> _Classified:
 
 
 class WorkstationEnv:
-    def __init__(self, entries: dict[str, Entry]):
+    def __init__(self, entries: dict[str, Entry]) -> None:
         self._entries = entries
         self._memo: dict[str, str | None] = {}
         # Companion to _memo, populated only on command failure. Kept
@@ -88,10 +89,11 @@ class WorkstationEnv:
         """FILE-tier resolution only — never consults os.environ.
 
         Statics return their value; commands execute via /bin/sh once per
-        process (results AND failures memoized). This is the single owner
-        of command-execution mechanics, and the public primitive behind
-        `gp config get --resolve` (which deliberately bypasses the env
-        tier: it answers "what does the FILE say").
+        WorkstationEnv instance (results AND failures memoized; a fresh
+        instance — e.g. after _invalidate_cache() — re-runs them). This is
+        the single owner of command-execution mechanics, and the public
+        primitive behind `gp config get --resolve` (which deliberately
+        bypasses the env tier: it answers "what does the FILE say").
         """
         entry = self._entries.get(name)
         if entry is None:
@@ -100,8 +102,18 @@ class WorkstationEnv:
             return entry.raw_value
         if name in self._memo:
             return self._memo[name]
+        command = entry.command
+        if command is None:
+            # Defensive: _classify() only ever produces kind==COMMAND
+            # together with a non-None command string, so this should be
+            # unreachable. Narrows the type for the subprocess.run() call
+            # below and fails loudly (a logged miss) instead of crashing
+            # subprocess.run() on a None argv element if that invariant is
+            # ever violated.
+            LOG.warning("workstation_env_command_entry_missing_command", name=name)
+            return None
         result = subprocess.run(  # noqa: S603
-            ["/bin/sh", "-c", entry.command],
+            ["/bin/sh", "-c", command],
             capture_output=True,
             text=True,
         )
@@ -283,7 +295,7 @@ def ensure_bootstrap() -> None:
     _bootstrapped = True
 
 
-def _atomic_write(path, lines: list[str]) -> None:
+def _atomic_write(path: Path, lines: list[str]) -> None:
     import tempfile
 
     path.parent.mkdir(parents=True, exist_ok=True)
