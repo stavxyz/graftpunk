@@ -72,6 +72,11 @@ class WorkstationEnv:
     def __init__(self, entries: dict[str, Entry]):
         self._entries = entries
         self._memo: dict[str, str | None] = {}
+        # Companion to _memo, populated only on command failure. Kept
+        # private/separate rather than folded into _memo's value type so
+        # lookup()'s public contract (Optional[str]) never changes; only
+        # last_resolve_error() (the CLI's --resolve path) reads it.
+        self._memo_stderr: dict[str, str] = {}
 
     def entries(self) -> list[Entry]:
         return sorted(self._entries.values(), key=lambda e: e.line_no)
@@ -101,19 +106,31 @@ class WorkstationEnv:
             text=True,
         )
         if result.returncode != 0:
+            stderr = result.stderr.strip()
             LOG.error(
                 "workstation_env_command_failed",
                 name=name,
                 returncode=result.returncode,
-                stderr=result.stderr.strip(),
+                stderr=stderr,
             )
             self._memo[name] = None
+            self._memo_stderr[name] = stderr
             return None
         value = result.stdout
         if value.endswith("\n"):
             value = value[:-1]
         self._memo[name] = value
         return value
+
+    def last_resolve_error(self, name: str) -> str | None:
+        """Stderr text from NAME's most recent failed command resolution.
+
+        None if NAME has never failed (or hasn't been resolved yet). A
+        narrow companion to resolve_file_value()'s memoized None, for the
+        CLI's `--resolve` path (get_cmd) to show the user WHY a command
+        failed — lookup()'s own contract stays a plain Optional[str].
+        """
+        return self._memo_stderr.get(name)
 
     def lookup(self, name: str) -> str | None:
         """THE precedence rule: real env -> file -> None.

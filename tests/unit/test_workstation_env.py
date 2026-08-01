@@ -157,6 +157,22 @@ class TestLookup:
         assert len(calls) == 1  # failure memoized, never re-run
         assert any(e["event"] == "workstation_env_command_failed" for e in cap)
 
+    def test_last_resolve_error_none_before_and_after_success(self, env_file, monkeypatch):
+        _write(env_file, "K=$(echo hi)\n")
+        monkeypatch.delenv("K", raising=False)
+        env = workstation_env.load()
+        assert env.last_resolve_error("K") is None
+        assert env.lookup("K") == "hi"
+        assert env.last_resolve_error("K") is None
+
+    def test_last_resolve_error_captures_stderr_on_failure(self, env_file, monkeypatch):
+        _write(env_file, "K=$(echo custom-error-message 1>&2; exit 3)\n")
+        monkeypatch.delenv("K", raising=False)
+        env = workstation_env.load()
+        with capture_logs():
+            assert env.resolve_file_value("K") is None
+        assert env.last_resolve_error("K") == "custom-error-message"
+
     def test_unknown_name_is_none(self, env_file, monkeypatch):
         _write(env_file, "K=v\n")
         monkeypatch.delenv("MISSING", raising=False)

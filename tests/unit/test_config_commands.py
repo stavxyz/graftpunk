@@ -105,6 +105,13 @@ def test_get_resolve_failed_command_exits_1(_isolated):
     assert result.exit_code == 1
 
 
+def test_get_resolve_failed_command_surfaces_stderr(_isolated):
+    runner.invoke(app, ["config", "set", "K", "$(echo custom-error-message 1>&2; exit 3)"])
+    result = runner.invoke(app, ["config", "get", "K", "--resolve"])
+    assert result.exit_code == 1
+    assert "custom-error-message" in (result.stderr or "")
+
+
 def test_edit_uses_visual_then_editor(monkeypatch, _isolated):
     calls = []
     monkeypatch.setenv("VISUAL", "visual-editor")

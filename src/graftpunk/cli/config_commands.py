@@ -101,9 +101,14 @@ def get_cmd(
         return
     # File-tier resolution via the module's primitive — command-execution
     # mechanics stay with their single owner (workstation_env).
-    value = workstation_env.load().resolve_file_value(name)
+    env = workstation_env.load()
+    value = env.resolve_file_value(name)
     if value is None:
-        err_console.print(f"[red]command for {name} failed (see log output)[/red]")
+        stderr = env.last_resolve_error(name)
+        if stderr:
+            err_console.print(f"[red]command for {name} failed:[/red] {stderr}")
+        else:
+            err_console.print(f"[red]command for {name} failed (see log output)[/red]")
         raise typer.Exit(1)
     typer.echo(value)
 
