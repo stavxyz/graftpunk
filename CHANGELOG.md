@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-08-01
+
+### Added
+
+- **Workstation env file + `gp config` family** ([#142](https://github.com/stavxyz/graftpunk/pull/142)). Persist per-machine environment for `gp` in `~/.config/graftpunk/env`: static values (e.g. `GRAFTPUNK_BROWSER_EXECUTABLE_PATH`, a store name) inject at process bootstrap; `$(…)` command values (e.g. `$(op read "op://…")`) resolve lazily at the moment something actually needs them — login credential resolution, first access of an allowlisted settings field (via a bounded `LazySettings` proxy), or YAML plugin `${VAR}` header expansion. `gp --help` and unrelated commands never execute a command value. One precedence rule, owned by a single `lookup()`: real environment → workstation file (an empty-string value counts as unset at both tiers). Managed with git-config-style verbs: `gp config` (settings panel, unchanged), `show`, `path`, `list`, `get [--resolve]`, `set`, `unset`, `edit`. The file is created and kept `0600`; command strings live on disk, secrets never do; resolved values are memoized per-process only. New modules `graftpunk.paths` and `graftpunk.workstation_env`; library consumers get identical bootstrap behavior through `get_settings()` without importing the CLI. Design doc: `docs/rfcs/2026-07-28-workstation-env.md`.
+
+### Fixed
+
+- An unreadable or non-UTF-8 workstation env file degrades to "no file" with a warning instead of crashing every `gp` invocation; `gp config edit` handles multi-word `$EDITOR`/`$VISUAL` values (`code --wait`, `emacsclient -nw`) and re-asserts `0600` after replace-on-write editors.
+
 ## [1.11.0] - 2026-07-29
 
 ### Changed
