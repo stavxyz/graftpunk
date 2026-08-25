@@ -130,6 +130,34 @@ def _wall_time_to_iso(wall_time: float | None) -> str:
     return datetime.datetime.fromtimestamp(wall_time, tz=datetime.UTC).isoformat()
 
 
+def _finalize_redirect_hop(
+    request_map: dict[str, dict[str, Any]],
+    request_id: str,
+    redirect_response: dict[str, Any],
+    next_url: str,
+) -> None:
+    """Move the in-flight request for ``request_id`` aside as a completed redirect hop.
+
+    CDP reuses ``requestId`` across a redirect chain: each hop arrives as a
+    new ``Network.requestWillBeSent`` carrying ``redirectResponse`` for the
+    request it replaces. Overwriting the map entry dropped every hop but the
+    last -- for a server-rendered login, the ``POST /login`` itself (issue
+    #153). HAR 1.2 wants one entry per hop, linked by ``response.redirectURL``.
+
+    The finished hop is re-keyed as ``"<id>:redirect:<n>"`` (a synthetic key,
+    not a CDP request id) and flagged ``_redirect_hop`` so body fetches skip
+    it: a 3xx has no body worth fetching, and CDP would reject the key anyway.
+    The caller then records the announced request under ``request_id``.
+    """
+    previous = request_map.pop(request_id, None)
+    if previous is None:
+        return  # capture started mid-chain; nothing to finalize
+    hop_index = 1 + sum(1 for key in request_map if key.startswith(f"{request_id}:redirect:"))
+    previous["response"] = {**redirect_response, "redirectURL": next_url}
+    previous["_redirect_hop"] = True
+    request_map[f"{request_id}:redirect:{hop_index}"] = previous
+
+
 def _build_har_entry(request_data: dict[str, Any], request_id: str) -> dict[str, Any]:
     """Build a HAR 1.2 entry dict from correlated request/response data."""
     response = request_data.get("response", {})
@@ -150,6 +178,7 @@ def _build_har_entry(request_data: dict[str, Any], request_id: str) -> dict[str,
             "statusText": response.get("statusText", ""),
             "headers": [{"name": k, "value": v} for k, v in response.get("headers", {}).items()],
             "cookies": [],
+            "redirectURL": response.get("redirectURL", ""),
             "content": {
                 "mimeType": response.get("mimeType", ""),
                 "size": response.get("bodySize", 0),
@@ -296,8 +325,20 @@ class SeleniumCaptureBackend:
             if method == "Network.requestWillBeSent":
                 request = params.get("request", {})
                 rid = params.get("requestId", "")
-                # Note: CDP reuses request_id for redirect chains. We
-                # intentionally capture only the final destination request data.
+                redirect = params.get("redirectResponse")
+                if redirect:
+                    # One HAR entry per redirect hop (see _finalize_redirect_hop).
+                    _finalize_redirect_hop(
+                        self._request_map,
+                        rid,
+                        {
+                            "status": redirect.get("status", 0),
+                            "statusText": redirect.get("statusText", ""),
+                            "headers": redirect.get("headers", {}),
+                            "mimeType": redirect.get("mimeType", ""),
+                        },
+                        request.get("url", ""),
+                    )
                 self._request_map[rid] = {
                     "url": request.get("url", ""),
                     "method": request.get("method", "GET"),
@@ -336,6 +377,8 @@ class SeleniumCaptureBackend:
 
         # Fetch bodies for all captured requests
         for request_id, data in list(self._request_map.items()):
+            if data.get("_redirect_hop"):
+                continue  # 3xx: no body, and the key is not a CDP request id
             # Fetch POST body if hasPostData but no inline postData
             if data.get("has_post_data") and not data.get("post_data"):
                 try:
@@ -649,6 +692,8 @@ class NodriverCaptureBackend:
             )
 
         for request_id, data in list(self._request_map.items()):
+            if data.get("_redirect_hop"):
+                continue  # 3xx: no body, and the key is not a CDP request id
             # Fetch POST body if has_post_data but no inline post_data
             if data.get("has_post_data") and not data.get("post_data"):
                 try:
@@ -712,9 +757,22 @@ class NodriverCaptureBackend:
     def _on_request(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSent event."""
         try:
-            # Note: CDP reuses request_id for redirect chains. We intentionally
-            # capture only the final destination request data.
-            self._request_map[str(event.request_id)] = {
+            rid = str(event.request_id)
+            redirect = getattr(event, "redirect_response", None)
+            if redirect is not None:
+                # One HAR entry per redirect hop (see _finalize_redirect_hop).
+                _finalize_redirect_hop(
+                    self._request_map,
+                    rid,
+                    {
+                        "status": redirect.status,
+                        "statusText": getattr(redirect, "status_text", "") or "",
+                        "headers": dict(redirect.headers) if redirect.headers else {},
+                        "mimeType": getattr(redirect, "mime_type", "") or "",
+                    },
+                    event.request.url,
+                )
+            self._request_map[rid] = {
                 "url": event.request.url,
                 "method": event.request.method,
                 "headers": (dict(event.request.headers) if event.request.headers else {}),

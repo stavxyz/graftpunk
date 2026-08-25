@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Observe HAR now records every hop of a redirect chain** ([#153](https://github.com/stavxyz/graftpunk/issues/153)). CDP reuses the request id across redirects and both capture backends kept only the final request, so a login `POST` that answered with a `302` was absent from the HAR entirely — the one request an observed login exists to show. Each hop is now its own HAR 1.2 entry with the redirect's status and headers and a `redirectURL` link to the next hop; redirect hops are skipped by body fetching.
 - **`NoDriverBackend.delete_all_cookies()` raised `TypeError` on every nodriver version** ([#152](https://github.com/stavxyz/graftpunk/issues/152)). It passed the method name as a string to `tab.send()`, which expects the CDP generator; the `TypeError` escaped the best-effort `except` instead of returning `False`. Now sends `Network.clearBrowserCookies` properly and is covered by a test that executes the coroutine against a nodriver-faithful `send()`. The method is also now best-effort for **every** failure: CDP-level errors (nodriver's `ProtocolException`, a plain `Exception` subclass) previously escaped the transport-only `except` tuple and propagated; they now log a warning and return `False`, matching the documented contract. The same transport-only `except` was on `current_url`, `page_title`, `page_source`, `get_cookies`, `get_user_agent` and `set_cookies`; each now honours its documented fallback for every failure.
 
 ## [1.13.0] - 2026-08-24
