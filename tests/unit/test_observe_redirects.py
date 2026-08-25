@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -77,7 +77,7 @@ def _nodriver_login_chain(backend: NodriverCaptureBackend) -> None:
         _will_be_sent(
             "r1",
             _request(HOME),
-            redirect_response=_response(LOGIN, 302, {"Location": "/", "Set-Cookie": "session=abc"}),
+            redirect_response=_response(LOGIN, 302, {"Location": "/"}, mime="text/html"),
         )
     )
     backend._on_response(_response_received("r1", _response(HOME, 200, mime="text/html")))
@@ -96,9 +96,7 @@ class TestNodriverRedirectHops:
         post, final = entries
         assert post["response"]["status"] == 302
         assert post["response"]["redirectURL"] == HOME
-        assert {h["name"]: h["value"] for h in post["response"]["headers"]}[
-            "Set-Cookie"
-        ] == "session=abc"
+        assert {h["name"]: h["value"] for h in post["response"]["headers"]}["Location"] == "/"
         assert post["request"]["postData"]["text"] == "u=alice&p=hunter2"
         assert final["response"]["status"] == 200
         assert final["response"]["redirectURL"] == ""
@@ -120,6 +118,26 @@ class TestNodriverRedirectHops:
         ]
         assert urls == [(LOGIN, 302, HOME), (HOME, 302, DASH), (DASH, 200, "")]
 
+    def test_entries_are_chronological_even_with_a_concurrent_request(self) -> None:
+        """The finalized hop is re-inserted at the end of the map; HAR output must
+        still be ordered by start time so readers see POST before GET."""
+        backend = NodriverCaptureBackend(MagicMock())
+        post = _will_be_sent("r4", _request(LOGIN, "POST", "x=1"))
+        post.wall_time = 100.0
+        backend._on_request(post)
+        asset = _will_be_sent("r5", _request(HOME + "static/a.css"))
+        asset.wall_time = 100.5
+        backend._on_request(asset)
+        hop = _will_be_sent("r4", _request(HOME), _response(LOGIN, 302))
+        hop.wall_time = 101.0
+        backend._on_request(hop)
+
+        assert [e["request"]["url"] for e in backend.get_har_entries()] == [
+            LOGIN,
+            HOME + "static/a.css",
+            HOME,
+        ]
+
     def test_redirect_without_prior_request_is_not_invented(self) -> None:
         """A redirect continuation whose first hop was never seen (capture started
         mid-chain) records only the request it announces."""
@@ -131,7 +149,10 @@ class TestNodriverRedirectHops:
 
     @pytest.mark.asyncio
     async def test_stop_capture_does_not_fetch_bodies_for_redirect_hops(self) -> None:
-        """A 302 has no body and the hop's synthetic key is not a CDP request id."""
+        """A 302 has no body and the hop's synthetic key is not a CDP request id.
+
+        The hop's 302 is text/html (as Chromium reports it), so without the
+        skip the late fetch would try getResponseBody under the hop key."""
         tab = MagicMock()
         tab.send = AsyncMock(return_value=("<html/>", False))
         backend = NodriverCaptureBackend(MagicMock(), get_tab=lambda: tab)
@@ -139,11 +160,35 @@ class TestNodriverRedirectHops:
 
         await backend.stop_capture_async()
 
-        # Only the final GET / (text/html) body is fetched; the POST hop is skipped.
+        # Only the final GET / body is fetched; the POST hop is skipped.
         assert tab.send.await_count == 1
         entries = backend.get_har_entries()
         assert entries[0]["response"]["content"]["text"] is None
         assert entries[1]["response"]["content"]["text"] == "<html/>"
+
+    @pytest.mark.asyncio
+    async def test_hop_post_body_not_inlined_is_not_fetched_by_the_real_id(self) -> None:
+        """After the redirect, getRequestPostData(id) refers to the final hop; the
+        hop's body is lost and must be reported, not fetched under the wrong id."""
+        tab = MagicMock()
+        tab.send = AsyncMock(return_value="u=wrong-hop")
+        backend = NodriverCaptureBackend(MagicMock(), get_tab=lambda: tab)
+        big = _request(LOGIN, "POST")
+        big.post_data = None
+        big.has_post_data = True
+        backend._on_request(_will_be_sent("r9", big))
+        backend._on_request(
+            _will_be_sent("r9", _request(HOME), _response(LOGIN, 302, {"Location": "/"}))
+        )
+        backend._on_response(_response_received("r9", _response(HOME, 200)))
+
+        with patch("graftpunk.observe.capture.LOG") as mock_log:
+            await backend.stop_capture_async()
+
+        assert tab.send.await_count == 0
+        events = [c.args[0] for c in mock_log.warning.call_args_list]
+        assert "redirect_hop_post_data_unavailable" in events
+        assert backend.get_har_entries()[0]["request"].get("postData") is None
 
     @pytest.mark.asyncio
     async def test_eager_fetch_ignores_hop_keys(self) -> None:
@@ -200,7 +245,7 @@ def _selenium_login_chain() -> list[dict[str, Any]]:
                     "url": LOGIN,
                     "status": 302,
                     "statusText": "Found",
-                    "headers": {"Location": "/", "Set-Cookie": "session=abc"},
+                    "headers": {"Location": "/"},
                     "mimeType": "text/html",
                 },
                 "wallTime": 1700000000.5,
