@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import datetime
+import inspect
 import json
 import os
 import tempfile
@@ -443,6 +444,30 @@ class SeleniumCaptureBackend:
         self.start_capture()
 
 
+def _eager_send_kwargs(tab: Any) -> dict[str, Any]:
+    """Internal kwargs for the eager body fetch, adapted to the installed nodriver.
+
+    nodriver <= 0.48 exposes ``Connection.send(cdp_obj, _is_update=False)``;
+    passing ``_is_update=True`` skips ``_register_handlers()`` on every fetch
+    (issue #64 Fix 2). nodriver >= 0.50.1 renamed the flag to ``_attach`` (which
+    also suppresses ``sessionId`` -- different semantics) and merges any unknown
+    kwargs straight into the CDP message, so a stale ``_is_update=True`` puts a
+    top-level property on the wire and Chrome rejects the whole command with
+    ``-32600`` (issue #146). 0.50's ``send()`` no longer re-registers handlers,
+    so there is nothing to skip there.
+
+    Only pass ``_is_update`` when ``send()`` actually declares it. If the
+    signature cannot be introspected, pass nothing rather than guess.
+    """
+    try:
+        params = inspect.signature(tab.send).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "_is_update" in params:
+        return {"_is_update": True}
+    return {}
+
+
 class NodriverCaptureBackend:
     """Capture backend for nodriver (async Chrome DevTools Protocol).
 
@@ -570,7 +595,11 @@ class NodriverCaptureBackend:
             network.enable(  # type: ignore[attr-defined]
                 max_total_buffer_size=100 * 1024 * 1024,  # 100 MB total buffer
                 max_resource_buffer_size=10 * 1024 * 1024,  # 10 MB per resource
-                enable_durable_messages=True,  # hint to keep bodies longer (best-effort)
+                # Keeps bodies fetchable longer. Load-bearing on nodriver >= 0.50
+                # (flattened sessions): measured on 0.50.3, getResponseBody
+                # returns -32000 for every request without it and succeeds for
+                # nearly all with it. See issue #146.
+                enable_durable_messages=True,
             )
         )
         tab.add_handler(network.RequestWillBeSent, self._on_request)  # type: ignore[attr-defined]
@@ -723,7 +752,7 @@ class NodriverCaptureBackend:
 
             body, base64_encoded = await tab.send(
                 cdp_net.get_response_body(cdp_net.RequestId(rid)),  # type: ignore[attr-defined]
-                _is_update=True,  # nodriver internal: skip _register_handlers() re-registration
+                **_eager_send_kwargs(tab),
             )
             _process_response_body(
                 response=response,

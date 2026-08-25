@@ -1893,11 +1893,21 @@ class TestNodriverHARCapture:
         )
 
     @pytest.mark.asyncio
-    async def test_on_loading_finished_passes_is_update_true(self) -> None:
-        """Eager fetch uses _is_update=True to skip _register_handlers() overhead."""
+    async def test_on_loading_finished_passes_is_update_on_legacy_send(self) -> None:
+        """nodriver <= 0.48: send() has a real ``_is_update`` param; pass it to skip
+        _register_handlers() overhead (issue #64 Fix 2)."""
         browser = MagicMock()
-        tab = MagicMock()
-        tab.send = AsyncMock(return_value=('{"ok": true}', False))
+
+        class LegacyTab:
+            """Real async method so inspect.signature() sees the 0.48 signature."""
+
+            calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+            async def send(self, cdp_obj: Any, _is_update: bool = False) -> Any:
+                self.calls.append(((cdp_obj,), {"_is_update": _is_update}))
+                return ('{"ok": true}', False)
+
+        tab = LegacyTab()
 
         with _patch_cdp_modules():
             backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
@@ -1907,10 +1917,66 @@ class TestNodriverHARCapture:
             event.request_id = "req-fast"
             await backend._on_loading_finished(event)
 
-        # Verify _is_update=True was passed to tab.send()
-        tab.send.assert_called_once()
+        assert len(tab.calls) == 1
+        assert tab.calls[0][1] == {"_is_update": True}
+        assert "req-fast" in backend._bodies_fetched
+
+    @pytest.mark.asyncio
+    async def test_on_loading_finished_omits_is_update_on_nodriver_050(self) -> None:
+        """nodriver >= 0.50.1 renamed ``_is_update`` to ``_attach`` and merges unknown
+        kwargs into the CDP message, which Chrome rejects with -32600 (issue #146).
+        The eager fetch must not pass ``_is_update`` to such a send()."""
+        browser = MagicMock()
+
+        class ModernTab:
+            """Real async method mirroring nodriver 0.50.3's Connection.send()."""
+
+            calls: list[dict[str, Any]] = []
+
+            async def send(self, cdp_obj: Any, _attach: bool = False, **kwargs: Any) -> Any:
+                self.calls.append(kwargs)
+                if kwargs:
+                    raise RuntimeError(
+                        "Message has property other than 'id', 'method', 'sessionId', "
+                        "'params' [code: -32600]"
+                    )
+                return ('{"ok": true}', False)
+
+        tab = ModernTab()
+
+        with _patch_cdp_modules():
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            backend._request_map["req-050"] = _make_request_entry()
+
+            event = MagicMock()
+            event.request_id = "req-050"
+            await backend._on_loading_finished(event)
+
+        assert tab.calls == [{}]
+        assert "req-050" in backend._bodies_fetched
+        assert backend._request_map["req-050"]["response"]["body"] == '{"ok": true}'
+
+    @pytest.mark.asyncio
+    async def test_on_loading_finished_omits_is_update_when_signature_unknown(self) -> None:
+        """If send() cannot be introspected, do not guess: pass no internal kwargs."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(return_value=('{"ok": true}', False))
+
+        with (
+            _patch_cdp_modules(),
+            patch("graftpunk.observe.capture.inspect.signature", side_effect=ValueError("no sig")),
+        ):
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            backend._request_map["req-nosig"] = _make_request_entry()
+
+            event = MagicMock()
+            event.request_id = "req-nosig"
+            await backend._on_loading_finished(event)
+
         _, kwargs = tab.send.call_args
-        assert kwargs.get("_is_update") is True
+        assert kwargs == {}
+        assert "req-nosig" in backend._bodies_fetched
 
 
 # ---------------------------------------------------------------------------
