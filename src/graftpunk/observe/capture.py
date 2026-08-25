@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -130,7 +130,111 @@ def _wall_time_to_iso(wall_time: float | None) -> str:
     return datetime.datetime.fromtimestamp(wall_time, tz=datetime.UTC).isoformat()
 
 
-def _build_har_entry(request_data: dict[str, Any], request_id: str) -> dict[str, Any]:
+def _response_summary(
+    status: int,
+    status_text: str | None,
+    headers: Mapping[str, Any] | None,
+    mime_type: str | None,
+) -> dict[str, Any]:
+    """The response fields kept per request, in one shape for both backends."""
+    return {
+        "status": status,
+        "statusText": status_text or "",
+        "headers": dict(headers) if headers else {},
+        "mimeType": mime_type or "",
+    }
+
+
+def _ordered_request_items(
+    request_map: dict[str, dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """``request_map`` items in chronological order.
+
+    A finalized redirect hop is re-inserted at the end of the map, so plain
+    insertion order would list it after requests that started later. Sort by
+    wall time (stable, so ties keep insertion order). Entries without a wall
+    time sort last: ``_build_har_entry`` renders their ``startedDateTime`` as
+    "now", so last is the only order consistent with what they say.
+    """
+    return sorted(
+        request_map.items(),
+        key=lambda item: (
+            item[1].get("timestamp") is None,
+            item[1].get("timestamp") or 0.0,
+        ),
+    )
+
+
+def _header_roles_in_order(request_map: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """Header roles extracted in the same chronological order the HAR uses."""
+    from graftpunk.observe.headers import extract_header_roles
+
+    return extract_header_roles(dict(_ordered_request_items(request_map)))
+
+
+def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """HAR entries in chronological order (see ``_ordered_request_items``)."""
+    return [_build_har_entry(data) for _rid, data in _ordered_request_items(request_map)]
+
+
+def _is_redirect_hop(data: dict[str, Any]) -> bool:
+    """True if ``data`` is a finalized redirect hop; body fetching must skip it.
+
+    A 3xx has no response body, and the synthetic key is not a CDP id.
+    """
+    return bool(data.get("_redirect_hop"))
+
+
+def _note_lost_hop_body(request_id: str, data: dict[str, Any]) -> None:
+    """Warn once if a redirect hop's POST body was never captured.
+
+    A hop's POST body that CDP did not inline is not retrievable by request id
+    after the redirect (the id now addresses the final hop), so say so rather
+    than drop it silently. One-shot per entry, so a second drain of the same
+    map cannot repeat it.
+    """
+    if data.get("has_post_data") and not data.get("post_data") and not data.get("_hop_warned"):
+        data["_hop_warned"] = True
+        LOG.warning(
+            "redirect_hop_post_data_unavailable",
+            request_id=request_id,
+            url=data.get("url"),
+            hint="Request body was not inlined by CDP and is lost across the redirect",
+        )
+
+
+def _finalize_redirect_hop(
+    request_map: dict[str, dict[str, Any]],
+    request_id: str,
+    redirect_response: dict[str, Any],
+    next_url: str,
+) -> None:
+    """Move the in-flight request for ``request_id`` aside as a completed redirect hop.
+
+    CDP reuses ``requestId`` across a redirect chain: each hop arrives as a
+    new ``Network.requestWillBeSent`` carrying ``redirectResponse`` for the
+    request it replaces. Overwriting the map entry dropped every hop but the
+    last -- for a server-rendered login, the ``POST /login`` itself (issue
+    #153). HAR 1.2 wants one entry per hop, linked by ``response.redirectURL``.
+
+    The finished hop is re-keyed as ``"<id>:redirect:<n>"`` (a synthetic key,
+    not a CDP request id) and flagged ``_redirect_hop`` so body fetches skip
+    it: a 3xx has no body worth fetching, and CDP would reject the key anyway.
+    The caller then records the announced request under ``request_id``. That
+    order -- hop re-inserted first, successor written second -- is what keeps
+    a hop ahead of its successor when their wall times tie, since
+    ``_ordered_request_items`` relies on a stable sort.
+    """
+    previous = request_map.pop(request_id, None)
+    if previous is None:
+        return  # capture started mid-chain; nothing to finalize
+    hop_index = 1 + sum(1 for key in request_map if key.startswith(f"{request_id}:redirect:"))
+    previous["response"] = {**redirect_response, "redirectURL": next_url}
+    previous["_redirect_hop"] = True
+    request_map[f"{request_id}:redirect:{hop_index}"] = previous
+
+
+def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
     """Build a HAR 1.2 entry dict from correlated request/response data."""
     response = request_data.get("response", {})
     entry: dict[str, Any] = {
@@ -150,6 +254,7 @@ def _build_har_entry(request_data: dict[str, Any], request_id: str) -> dict[str,
             "statusText": response.get("statusText", ""),
             "headers": [{"name": k, "value": v} for k, v in response.get("headers", {}).items()],
             "cookies": [],
+            "redirectURL": response.get("redirectURL", ""),
             "content": {
                 "mimeType": response.get("mimeType", ""),
                 "size": response.get("bodySize", 0),
@@ -296,8 +401,20 @@ class SeleniumCaptureBackend:
             if method == "Network.requestWillBeSent":
                 request = params.get("request", {})
                 rid = params.get("requestId", "")
-                # Note: CDP reuses request_id for redirect chains. We
-                # intentionally capture only the final destination request data.
+                redirect = params.get("redirectResponse")
+                if redirect is not None:
+                    # One HAR entry per redirect hop (see _finalize_redirect_hop).
+                    _finalize_redirect_hop(
+                        self._request_map,
+                        rid,
+                        _response_summary(
+                            redirect.get("status", 0),
+                            redirect.get("statusText"),
+                            redirect.get("headers"),
+                            redirect.get("mimeType"),
+                        ),
+                        request.get("url", ""),
+                    )
                 self._request_map[rid] = {
                     "url": request.get("url", ""),
                     "method": request.get("method", "GET"),
@@ -314,16 +431,18 @@ class SeleniumCaptureBackend:
                         "url": response.get("url", ""),
                         "method": "GET",
                         "headers": {},
-                        "timestamp": None,
+                        # Perf log is replayed at stop time: this is stop time, not
+                        # arrival. responseReceived carries no wallTime; orphans sort last.
+                        "timestamp": time.time(),
                         "has_post_data": False,
                         "post_data": None,
                     }
-                self._request_map[rid]["response"] = {
-                    "status": response.get("status", 0),
-                    "statusText": response.get("statusText", ""),
-                    "headers": response.get("headers", {}),
-                    "mimeType": response.get("mimeType", ""),
-                }
+                self._request_map[rid]["response"] = _response_summary(
+                    response.get("status", 0),
+                    response.get("statusText"),
+                    response.get("headers"),
+                    response.get("mimeType"),
+                )
             elif method == "Runtime.consoleAPICalled":
                 args = params.get("args", [])
                 self._console_logs.append(
@@ -336,6 +455,9 @@ class SeleniumCaptureBackend:
 
         # Fetch bodies for all captured requests
         for request_id, data in list(self._request_map.items()):
+            if _is_redirect_hop(data):
+                _note_lost_hop_body(request_id, data)
+                continue
             # Fetch POST body if hasPostData but no inline postData
             if data.get("has_post_data") and not data.get("post_data"):
                 try:
@@ -414,7 +536,7 @@ class SeleniumCaptureBackend:
         Returns:
             List of HAR entry dicts.
         """
-        return [_build_har_entry(data, rid) for rid, data in self._request_map.items()]
+        return _har_entries_in_order(self._request_map)
 
     def get_console_logs(self) -> list[dict[str, Any]]:
         """Return collected browser console logs.
@@ -426,9 +548,8 @@ class SeleniumCaptureBackend:
 
     def get_header_roles(self) -> dict[str, dict[str, str]]:
         """Return header roles classified from captured network requests."""
-        from graftpunk.observe.headers import extract_header_roles
 
-        return extract_header_roles(self._request_map)
+        return _header_roles_in_order(self._request_map)
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously (wraps sync method)."""
@@ -534,7 +655,7 @@ class NodriverCaptureBackend:
         Returns:
             List of HAR entry dicts.
         """
-        return [_build_har_entry(data, rid) for rid, data in self._request_map.items()]
+        return _har_entries_in_order(self._request_map)
 
     def get_console_logs(self) -> list[dict[str, Any]]:
         """Return collected browser console logs.
@@ -546,9 +667,8 @@ class NodriverCaptureBackend:
 
     def get_header_roles(self) -> dict[str, dict[str, str]]:
         """Return header roles classified from captured network requests."""
-        from graftpunk.observe.headers import extract_header_roles
 
-        return extract_header_roles(self._request_map)
+        return _header_roles_in_order(self._request_map)
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously via nodriver.
@@ -649,6 +769,9 @@ class NodriverCaptureBackend:
             )
 
         for request_id, data in list(self._request_map.items()):
+            if _is_redirect_hop(data):
+                _note_lost_hop_body(request_id, data)
+                continue
             # Fetch POST body if has_post_data but no inline post_data
             if data.get("has_post_data") and not data.get("post_data"):
                 try:
@@ -712,9 +835,19 @@ class NodriverCaptureBackend:
     def _on_request(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSent event."""
         try:
-            # Note: CDP reuses request_id for redirect chains. We intentionally
-            # capture only the final destination request data.
-            self._request_map[str(event.request_id)] = {
+            rid = str(event.request_id)
+            redirect = getattr(event, "redirect_response", None)
+            if redirect is not None:
+                # One HAR entry per redirect hop (see _finalize_redirect_hop).
+                _finalize_redirect_hop(
+                    self._request_map,
+                    rid,
+                    _response_summary(
+                        redirect.status, redirect.status_text, redirect.headers, redirect.mime_type
+                    ),
+                    event.request.url,
+                )
+            self._request_map[rid] = {
                 "url": event.request.url,
                 "method": event.request.method,
                 "headers": (dict(event.request.headers) if event.request.headers else {}),
@@ -734,16 +867,16 @@ class NodriverCaptureBackend:
                     "url": event.response.url,
                     "method": "GET",
                     "headers": {},
-                    "timestamp": None,
+                    "timestamp": time.time(),  # arrival time; the request was never seen
                     "has_post_data": False,
                     "post_data": None,
                 }
-            self._request_map[rid]["response"] = {
-                "status": event.response.status,
-                "statusText": getattr(event.response, "status_text", "") or "",
-                "headers": (dict(event.response.headers) if event.response.headers else {}),
-                "mimeType": event.response.mime_type or "",
-            }
+            self._request_map[rid]["response"] = _response_summary(
+                event.response.status,
+                event.response.status_text,
+                event.response.headers,
+                event.response.mime_type,
+            )
         except Exception:
             LOG.exception("nodriver_on_response_failed")
 
