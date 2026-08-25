@@ -884,3 +884,86 @@ class TestConsoleTimestamp:
         logs = backend.get_console_logs()
         assert logs[1]["timestamp"] == 1700000000.0
         assert len(backend.get_har_entries()) == 1  # drain continued past the bad timestamp
+
+
+class TestRound4Hardening:
+    def test_orphan_entry_accepts_request_extra_info_despite_guessed_method(self) -> None:
+        """An entry synthesized from responseReceived has a guessed method and the
+        final URL; matching against them can only reject, so it must not."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request_extra_info(
+            _extra_request(
+                "o1",
+                {
+                    ":method": "POST",
+                    ":path": "/login",
+                    ":authority": "shop.example.com",
+                    "cookie": "sess=abc",
+                },
+            )
+        )
+        backend._on_response(_received("o1", _response(HOME + "home", 200)))
+        (entry,) = backend.get_har_entries()
+        assert entry["request"]["cookies"] == [{"name": "sess", "value": "abc"}]
+
+    def test_authority_with_default_port_and_host_case_still_matches(self) -> None:
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(_will_be_sent("n1", _request(LOGIN, "POST")))
+        backend._on_request_extra_info(
+            _extra_request(
+                "n1",
+                {
+                    ":method": "POST",
+                    ":path": "/login",
+                    ":authority": "SHOP.example.com:443",
+                    "cookie": "a=1",
+                },
+            )
+        )
+        (entry,) = backend.get_har_entries()
+        assert entry["request"]["cookies"] == [{"name": "a", "value": "1"}]
+
+    def test_status_mismatch_falls_back_at_drain_when_unambiguous(self) -> None:
+        """A 304 ExtraInfo against a 200 entry (if Chrome ever reports them apart)
+        must not vanish: one buffered event + one entry lacking its own -> attach."""
+        import asyncio
+
+        tab = MagicMock()
+        backend = NodriverCaptureBackend(MagicMock(), get_tab=lambda: tab)
+        backend._on_request(_will_be_sent("f1", _request(HOME)))
+        backend._on_response_extra_info(_extra_response("f1", {"set-cookie": "kept=1"}, 304))
+        backend._on_response(_received("f1", _response(HOME, 200)))
+        with patch("graftpunk.observe.capture.LOG") as mock_log:
+            asyncio.run(backend.stop_capture_async())
+        (entry,) = backend.get_har_entries()
+        assert entry["response"]["cookies"] == [{"name": "kept", "value": "1"}]
+        unmatched = {c.args[0]: c.kwargs for c in mock_log.debug.call_args_list}[
+            "extra_info_unmatched"
+        ]
+        assert unmatched["fallback"] == 1 and unmatched["response_events"] == 0
+
+    def test_http1_late_hop_request_extra_info_is_the_documented_swap(self) -> None:
+        """Pins the residual ambiguity stated on the correlator: Host-only headers,
+        hop's event after the continuation, then the successor's -> swapped."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(_will_be_sent("h1", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_request(
+            _will_be_sent(
+                "h1", _request(HOME), _response(LOGIN, 302), wall=2.0, redirect_has_extra_info=True
+            )
+        )
+        backend._on_request_extra_info(
+            _extra_request("h1", {"host": "shop.example.com", "cookie": "late=hop"})
+        )
+        backend._on_request_extra_info(
+            _extra_request("h1", {"host": "shop.example.com", "cookie": "real=succ"})
+        )
+        hop, final = backend.get_har_entries()
+        assert final["request"]["cookies"] == [{"name": "late", "value": "hop"}]
+        assert hop["request"]["cookies"] == [{"name": "real", "value": "succ"}]
+
+    def test_newline_joined_cookie_header_parses_all_pairs(self) -> None:
+        entry = _build_har_entry(
+            {"url": HOME, "method": "GET", "headers": {"cookie": "a=1\nb=2; c=3"}, "response": {}}
+        )
+        assert [c["name"] for c in entry["request"]["cookies"]] == ["a", "b", "c"]

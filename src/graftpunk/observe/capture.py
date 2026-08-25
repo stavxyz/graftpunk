@@ -292,25 +292,31 @@ def _header_values(headers: Mapping[str, str], name: str) -> list[str]:
     return [v for k, v in headers.items() if k.lower() == wanted and v]
 
 
-def _chain_entries(
-    request_map: dict[str, dict[str, Any]], request_id: str
-) -> list[tuple[str, dict[str, Any]]]:
-    """Every entry for a CDP request id, redirect hops first, then the live one."""
-    prefix = f"{request_id}:redirect:"
-    hops = sorted(
-        ((k, v) for k, v in request_map.items() if k.startswith(prefix)),
-        key=lambda item: int(item[0].rsplit(":", 1)[1]),
-    )
-    live = request_map.get(request_id)
-    return hops + ([(request_id, live)] if live is not None else [])
+def _normalized_netloc(netloc: str, scheme: str) -> str:
+    """Host (lowercased) plus port, with userinfo and the scheme's default port dropped."""
+    host = netloc.rsplit("@", 1)[-1].lower()
+    default = {"http": "80", "https": "443"}.get(scheme.lower())
+    if ":" in host and not host.endswith("]"):
+        name, port = host.rsplit(":", 1)
+        if port == default:
+            return name
+    return host
 
 
 def _same_url(a: str | None, b: str | None, base: str | None = None) -> bool:
+    """Compare two URLs (relative ones resolved against ``base``) ignoring host
+    case, default ports, userinfo and a trailing slash on the path."""
     if not a or not b:
         return False
     if base:
         a, b = urllib.parse.urljoin(base, a), urllib.parse.urljoin(base, b)
-    return a.rstrip("/") == b.rstrip("/")
+    pa, pb = urllib.parse.urlsplit(a), urllib.parse.urlsplit(b)
+    return (
+        pa.scheme.lower() == pb.scheme.lower()
+        and _normalized_netloc(pa.netloc, pa.scheme) == _normalized_netloc(pb.netloc, pb.scheme)
+        and (pa.path.rstrip("/") or "/") == (pb.path.rstrip("/") or "/")
+        and pa.query == pb.query
+    )
 
 
 def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) -> bool | None:
@@ -318,8 +324,12 @@ def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) ->
 
     HTTP/2 wire headers carry ``:method``/``:authority``/``:path``; HTTP/1.1
     carries only ``Host``. Compare whatever is present against the entry's URL
-    and method; with nothing to compare, return None.
+    and method; with nothing to compare, return None. An entry synthesized from
+    a response alone (``_from_response_only``) has a guessed method and the
+    final URL, so nothing about it can be compared: also None.
     """
+    if entry.get("_from_response_only"):
+        return None
     lower = {k.lower(): v for k, v in headers.items()}
     parsed = urllib.parse.urlsplit(entry.get("url", ""))
     checks: list[bool] = []
@@ -330,7 +340,10 @@ def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) ->
         checks.append(lower[":path"] == (path or "/"))
     authority = lower.get(":authority") or lower.get("host")
     if authority:
-        checks.append(authority.lower() == parsed.netloc.lower())
+        checks.append(
+            _normalized_netloc(authority, parsed.scheme)
+            == _normalized_netloc(parsed.netloc, parsed.scheme)
+        )
     if not checks:
         return None
     return all(checks)
@@ -368,9 +381,16 @@ class _ExtraInfoCorrelator:
       fits (every candidate already has its own: the successor is not yet
       announced), the event is buffered and applied when the next entry for
       the id is created. This is the residual ambiguity: on HTTP/1.1, a hop's
-      request ExtraInfo arriving late is attributed to the successor.
-    - Whatever is still buffered or waiting at drain is counted in
-      ``extra_info_unmatched``.
+      request ExtraInfo arriving late swaps with the successor's (each lands on
+      the other) -- an order never observed. Likewise a redirect loop (two hops
+      with the same status *and* ``Location``) with one dropped event cannot
+      be told apart.
+    - At drain, anything still buffered whose id has exactly one entry lacking
+      that kind is attached as a last resort (counted as ``fallback``), so a
+      guard false negative degrades to a plausible attachment rather than a
+      silently missing ``Set-Cookie``; the rest is counted in
+      ``extra_info_unmatched`` together with redirect hops that never received
+      theirs.
 
     Raw headers are kept beside the entry (``_request_extra_headers`` /
     ``_response_extra_headers``) and merged only when the HAR is built, so
@@ -383,6 +403,15 @@ class _ExtraInfoCorrelator:
     def __init__(self) -> None:
         self._pending_request: dict[str, list[dict[str, Any]]] = {}
         self._pending_response: dict[str, list[tuple[dict[str, Any], int | None]]] = {}
+        self._hops: dict[str, list[str]] = {}  # request id -> finalized hop keys, in order
+
+    def _chain(
+        self, request_map: dict[str, dict[str, Any]], request_id: str
+    ) -> list[dict[str, Any]]:
+        """Every entry for a CDP request id, redirect hops first, then the live one."""
+        entries = [request_map[k] for k in self._hops.get(request_id, []) if k in request_map]
+        live = request_map.get(request_id)
+        return entries + ([live] if live is not None else [])
 
     @staticmethod
     def _attach(entry: dict[str, Any], kind: str, headers: Mapping[str, Any]) -> None:
@@ -393,14 +422,21 @@ class _ExtraInfoCorrelator:
 
     # -- resolution points -------------------------------------------------
 
-    @staticmethod
     def hop_finalized(
-        request_map: dict[str, dict[str, Any]], hop_key: str | None, redirect_has_extra_info: bool
+        self,
+        request_map: dict[str, dict[str, Any]],
+        request_id: str,
+        hop_key: str | None,
+        redirect_has_extra_info: bool,
     ) -> None:
-        """``redirectHasExtraInfo`` false: no ExtraInfo of either kind will ever
-        come for this hop, so it must not absorb a later status-less event."""
+        """Record the hop for ``request_id``. ``redirectHasExtraInfo`` false means
+        no ExtraInfo of either kind will ever come for it, so it must not absorb
+        a later status-less event."""
         hop = request_map.get(hop_key) if hop_key else None
-        if hop is not None and not redirect_has_extra_info:
+        if hop is None or hop_key is None:
+            return
+        self._hops.setdefault(request_id, []).append(hop_key)
+        if not redirect_has_extra_info:
             hop["_request_extra_seen"] = True
             hop["_response_extra_seen"] = True
 
@@ -425,21 +461,19 @@ class _ExtraInfoCorrelator:
     ) -> None:
         headers = dict(headers or {})
         candidates = [
-            (k, e)
-            for k, e in _chain_entries(request_map, request_id)
-            if not e.get("_request_extra_seen")
+            e for e in self._chain(request_map, request_id) if not e.get("_request_extra_seen")
         ]
         if not candidates:
             self._pending_request.setdefault(request_id, []).append(headers)
             return
-        matched = [(k, e) for k, e in candidates if _request_headers_match(headers, e)]
-        undeterminable = all(_request_headers_match(headers, e) is None for _k, e in candidates)
+        verdicts = [_request_headers_match(headers, e) for e in candidates]
+        matched = [e for e, ok in zip(candidates, verdicts, strict=True) if ok]
         if matched:
             # Several equal matches (HTTP/1.1, same host) are undeterminable too:
             # candidates are in chain order, so the last match is the live request.
-            self._attach(matched[-1][1], "request", headers)
-        elif undeterminable:
-            self._attach(candidates[-1][1], "request", headers)  # prefer the live request
+            self._attach(matched[-1], "request", headers)
+        elif all(v is None for v in verdicts):
+            self._attach(candidates[-1], "request", headers)  # prefer the live request
         else:
             self._pending_request.setdefault(request_id, []).append(headers)  # none of these
 
@@ -452,18 +486,16 @@ class _ExtraInfoCorrelator:
     ) -> None:
         headers = dict(headers or {})
         candidates = [
-            (k, e)
-            for k, e in _chain_entries(request_map, request_id)
-            if not e.get("_response_extra_seen")
+            e for e in self._chain(request_map, request_id) if not e.get("_response_extra_seen")
         ]
         if status_code is None:
             if candidates:
-                self._attach(candidates[0][1], "response", headers)
+                self._attach(candidates[0], "response", headers)
             else:
                 self._pending_response.setdefault(request_id, []).append((headers, None))
             return
         location = next((v for k, v in headers.items() if k.lower() == "location"), None)
-        for _key, entry in candidates:
+        for entry in candidates:
             response = entry.get("response") or {}
             if response.get("status") != status_code:
                 continue
@@ -480,18 +512,39 @@ class _ExtraInfoCorrelator:
             return
         self._pending_response.setdefault(request_id, []).append((headers, status_code))
 
+    def _fallback(self, request_map: dict[str, dict[str, Any]], kind: str) -> int:
+        """Last resort at drain: a buffered event whose id has exactly one entry
+        still lacking that kind is attached there. Returns how many were."""
+        pending: dict[str, list[Any]] = (
+            self._pending_request if kind == "request" else self._pending_response
+        )
+        attached = 0
+        for request_id in list(pending):
+            lacking = [
+                e for e in self._chain(request_map, request_id) if not e.get(f"_{kind}_extra_seen")
+            ]
+            if len(lacking) == 1 and len(pending[request_id]) == 1:
+                item = pending.pop(request_id)[0]
+                headers = item[0] if kind == "response" else item
+                self._attach(lacking[0], kind, headers)
+                attached += 1
+        return attached
+
     def log_unmatched(self, request_map: dict[str, dict[str, Any]]) -> None:
-        """At drain time, report ExtraInfo that never found its entry, and redirect
-        hops that never received theirs (a dropped event; measured on nodriver
-        0.48.1 for the request side)."""
+        """At drain time, attach what can still be attached as a last resort, then
+        report ExtraInfo that never found its entry and redirect hops that never
+        received theirs (a dropped event; measured on nodriver 0.48.1 for the
+        request side)."""
+        fallback = self._fallback(request_map, "request") + self._fallback(request_map, "response")
         req = sum(len(v) for v in self._pending_request.values())
         resp = sum(len(v) for v in self._pending_response.values())
         hops = [e for e in request_map.values() if e.get("_redirect_hop")]
         hops_no_req = sum(1 for e in hops if not e.get("_request_extra_seen"))
         hops_no_resp = sum(1 for e in hops if not e.get("_response_extra_seen"))
-        if req or resp or hops_no_req or hops_no_resp:
+        if fallback or req or resp or hops_no_req or hops_no_resp:
             LOG.debug(
                 "extra_info_unmatched",
+                fallback=fallback,
                 request_events=req,
                 response_events=resp,
                 hops_without_request_extra=hops_no_req,
@@ -516,7 +569,12 @@ def _parse_cookie_pairs(fragments: list[str]) -> list[dict[str, str]]:
 
 def _request_cookies(headers: Mapping[str, str]) -> list[dict[str, str]]:
     """HAR ``request.cookies`` from every raw ``Cookie`` header value."""
-    fragments = [f for value in _header_values(headers, "cookie") for f in value.split(";")]
+    fragments = [
+        f
+        for value in _header_values(headers, "cookie")
+        for line in value.split("\n")
+        for f in line.split(";")
+    ]
     return _parse_cookie_pairs(fragments)
 
 
@@ -744,7 +802,7 @@ class SeleniumCaptureBackend:
                         request.get("url", ""),
                     )
                     self._extra_info.hop_finalized(
-                        self._request_map, hop_key, bool(params.get("redirectHasExtraInfo"))
+                        self._request_map, rid, hop_key, bool(params.get("redirectHasExtraInfo"))
                     )
                 self._request_map[rid] = {
                     "url": request.get("url", ""),
@@ -770,6 +828,7 @@ class SeleniumCaptureBackend:
                         "timestamp": time.time(),
                         "has_post_data": False,
                         "post_data": None,
+                        "_from_response_only": True,  # method/URL are guesses
                     }
                     self._extra_info.entry_created(self._request_map, rid)
                 self._request_map[rid]["response"] = _response_summary(
@@ -1221,6 +1280,7 @@ class NodriverCaptureBackend:
                 )
                 self._extra_info.hop_finalized(
                     self._request_map,
+                    rid,
                     hop_key,
                     bool(getattr(event, "redirect_has_extra_info", False)),
                 )
@@ -1269,6 +1329,7 @@ class NodriverCaptureBackend:
                     "timestamp": time.time(),  # arrival time; the request was never seen
                     "has_post_data": False,
                     "post_data": None,
+                    "_from_response_only": True,  # method/URL are guesses
                 }
                 self._extra_info.entry_created(self._request_map, rid)
             self._request_map[rid]["response"] = _response_summary(
