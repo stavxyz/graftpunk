@@ -895,7 +895,7 @@ class TestSeleniumHARCapture:
                     "args": [
                         {"type": "string", "value": "hello world"},
                     ],
-                    "timestamp": 1700000000.0,
+                    "timestamp": 1700000000000.0,  # CDP Runtime.Timestamp: milliseconds
                 },
             ),
             self._make_perf_entry(
@@ -905,7 +905,7 @@ class TestSeleniumHARCapture:
                     "args": [
                         {"type": "string", "value": "something broke"},
                     ],
-                    "timestamp": 1700000001.0,
+                    "timestamp": 1700000001000.0,
                 },
             ),
         ]
@@ -1031,8 +1031,10 @@ class TestNodriverCaptureBackend:
         await backend.start_capture_async()
         # network.enable() and runtime.enable()
         assert tab.send.call_count == 2
-        # RequestWillBeSent, ResponseReceived, LoadingFinished, ConsoleAPICalled
-        assert tab.add_handler.call_count == 4
+        # RequestWillBeSent, ResponseReceived, LoadingFinished,
+        # RequestWillBeSentExtraInfo, ResponseReceivedExtraInfo (raw headers,
+        # issue #157), ConsoleAPICalled
+        assert tab.add_handler.call_count == 6
 
     @pytest.mark.asyncio
     async def test_start_capture_async_passes_buffer_params(self) -> None:
@@ -2063,7 +2065,7 @@ class TestNodriverConsoleCapture:
         arg1 = MagicMock()
         arg1.value = "hello world"
         event.args = [arg1]
-        event.timestamp = 1700000000.0
+        event.timestamp = 1700000000000.0  # CDP Runtime.Timestamp: milliseconds
 
         backend._on_console(event)
 
@@ -2071,7 +2073,7 @@ class TestNodriverConsoleCapture:
         assert len(logs) == 1
         assert logs[0]["level"] == "log"
         assert logs[0]["args"] == ["hello world"]
-        assert logs[0]["timestamp"] == 1700000000.0
+        assert logs[0]["timestamp"] == 1700000000.0  # stored in seconds
 
     def test_on_console_handles_missing_args(self) -> None:
         browser = MagicMock()
