@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graftpunk.exceptions import PluginError
+from graftpunk.observe.capture import create_capture_backend as _real_create_capture_backend
 from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin
 from graftpunk.plugins.login_engine import generate_login_method
 
@@ -88,7 +89,7 @@ def _selenium_session_mock() -> tuple[MagicMock, MagicMock]:
     instance.__exit__ = MagicMock(return_value=False)
     instance.driver = MagicMock()
     instance.driver.page_source = "<html>Bad login.</html>"
-    instance._capture = None
+    instance.capture = None
     return mock_bs, instance
 
 
@@ -263,6 +264,9 @@ class TestEngineObserve:
         assert label == "login"
         assert storage.run_dir.parent.parent == tmp_path
         assert storage.run_dir.parent.name == "hl-session"
+        # Credentials are scrubbed from the HAR, and the run dir is shown to the user.
+        assert sorted(save.await_args.kwargs["redact"]) == ["p", "u"]
+        assert save.await_args.kwargs["console"] is not None
         # Full capture: bodies go to the run dir, not the header-only capture.
         assert ccb.call_args.kwargs["bodies_dir"] == storage.run_dir / "bodies"
 
@@ -293,7 +297,7 @@ class TestEngineObserve:
         mock_bs, instance = _selenium_session_mock()
         session_capture = MagicMock()
         session_capture.get_header_roles = MagicMock(return_value={"x": {}})
-        instance._capture = session_capture
+        instance.capture = session_capture
         login = generate_login_method(_make_plugin("selenium"))
 
         with (
@@ -304,8 +308,82 @@ class TestEngineObserve:
             login({"username": "u", "password": "p"}, observe_mode="full")
 
         assert mock_bs.call_args.kwargs["observe_mode"] == "full"
-        assert instance._session_name == "hl-session"
+        assert instance.session_name == "hl-session"
+        # The observe HAR carries the login POST; the credentials are scrubbed.
+        assert sorted(instance.observe_redact) == ["p", "u"]
         ccb.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_save_failure_does_not_mask_login_outcome(self, tmp_path: Path) -> None:
+        tab = _nodriver_tab("<html>Bad login.</html>")
+        mock_bs, _ = _nodriver_session_mock(tab)
+        login = generate_login_method(_make_plugin("nodriver"))
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path),
+            patch(
+                "graftpunk.observe.run.save_observe_run",
+                new_callable=AsyncMock,
+                side_effect=OSError("disk full"),
+            ),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await login({"username": "u", "password": "p"}, observe_mode="full")
+
+        assert result is False
+        assert mock_log.error.call_args.args[0] == "login_observe_save_failed"
+
+    def test_start_login_capture_builds_real_full_backend(self, tmp_path: Path) -> None:
+        """No factory mock: the real backend receives bodies_dir under the run dir."""
+        from graftpunk.observe import capture as capture_mod
+        from graftpunk.observe.capture import NodriverCaptureBackend
+        from graftpunk.plugins.login_engine import _start_login_capture
+
+        plugin = _make_plugin("nodriver")
+        with (
+            patch("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path),
+            patch.object(capture_mod, "create_capture_backend", _real_create_capture_backend),
+        ):
+            capture, storage = _start_login_capture(
+                plugin, "nodriver", MagicMock(), "full", get_tab=lambda: None
+            )
+
+        assert isinstance(capture, NodriverCaptureBackend)
+        assert storage is not None
+        assert capture._bodies_dir == storage.run_dir / "bodies"
+        assert storage.run_dir.parent == tmp_path / "hl-session"
+
+    def test_start_login_capture_slugifies_session_name(self, tmp_path: Path) -> None:
+        from graftpunk.plugins.login_engine import _start_login_capture
+
+        plugin = _make_plugin("nodriver")
+        type(plugin).session_name = "My Bank"  # type: ignore[assignment]
+        with patch("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path):
+            _, storage = _start_login_capture(plugin, "nodriver", MagicMock(), "full")
+
+        assert storage is not None
+        assert storage.run_dir.parent == tmp_path / "my-bank"
+
+    def test_start_login_capture_storage_error_falls_back_to_header_capture(
+        self, tmp_path: Path
+    ) -> None:
+        """An observe request must never break the login it is observing."""
+        from graftpunk.plugins.login_engine import _start_login_capture
+
+        plugin = _make_plugin("nodriver")
+        with (
+            patch("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.observe.storage.ObserveStorage", side_effect=OSError("read-only fs")),
+            patch("graftpunk.plugins.login_engine.gp_console.warn") as warn,
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            capture, storage = _start_login_capture(plugin, "nodriver", MagicMock(), "full")
+
+        assert storage is None
+        assert capture is not None
+        assert mock_log.warning.call_args.args[0] == "login_observe_unavailable"
+        assert "read-only fs" in warn.call_args.args[0]
 
 
 # ---------------------------------------------------------------------------

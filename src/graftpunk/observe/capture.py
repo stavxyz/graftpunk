@@ -244,9 +244,11 @@ class SeleniumCaptureBackend:
         self._bodies_dir = bodies_dir
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
+        self._stopped: bool = False
 
     def start_capture(self) -> None:
         """Begin capturing browser data."""
+        self._stopped = False
         LOG.debug("selenium_capture_started")
 
     def stop_capture(self) -> None:
@@ -255,7 +257,16 @@ class SeleniumCaptureBackend:
         Parses Network.requestWillBeSent, Network.responseReceived, and
         Runtime.consoleAPICalled events from the performance log. Then fetches
         POST bodies and response bodies via CDP commands.
+
+        Idempotent: the performance log is drained on the first call and a
+        second call (e.g. the login engine extracting header roles, then
+        BrowserSession.__exit__ flushing observe data) must not re-fetch every
+        body and log one eviction warning per request.
         """
+        if self._stopped:
+            LOG.debug("selenium_capture_already_stopped")
+            return
+        self._stopped = True
         # Parse performance log for network and console events
         try:
             perf_log = self._driver.get_log("performance")

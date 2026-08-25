@@ -35,6 +35,7 @@ from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
 from graftpunk.logging import configure_logging, enable_network_debug, get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
+from graftpunk.observe.run import make_run_id, save_observe_run
 from graftpunk.plugins import (
     discover_keepalive_handlers,
     discover_site_plugins,
@@ -450,7 +451,6 @@ async def _setup_observe_session(
         Tuple of (browser, tab, storage, backend) or None on failure.
         The returned tab is the post-navigation tab.
     """
-    import datetime
 
     import nodriver
 
@@ -530,7 +530,7 @@ async def _setup_observe_session(
             msg += "[/dim]"
             console.print(msg)
 
-        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
+        run_id = make_run_id()
         storage = ObserveStorage(OBSERVE_BASE_DIR, namespace, run_id)
         bodies_dir = storage.run_dir / "bodies"
         backend = NodriverCaptureBackend(
@@ -548,17 +548,6 @@ async def _setup_observe_session(
         raise
 
 
-async def _save_observe_results(
-    storage: Any,
-    backend: Any,
-    screenshot_label: str,
-) -> None:
-    """Save screenshot, page source, HAR, and console logs."""
-    from graftpunk.observe.run import save_observe_run
-
-    await save_observe_run(storage, backend, screenshot_label, console=console)
-
-
 async def _run_observe_go(
     namespace: str, url: str, wait: float, max_body_size: int, *, session_name: str | None = None
 ) -> None:
@@ -573,7 +562,7 @@ async def _run_observe_go(
 
     try:
         await tab.sleep(wait)
-        await _save_observe_results(storage, backend, "observe-go")
+        await save_observe_run(storage, backend, "observe-go", console=console)
     finally:
         browser.stop()
 
@@ -615,7 +604,7 @@ async def _run_observe_interactive(
             loop.remove_signal_handler(signal.SIGINT)
 
         console.print("\n[dim]Recording stopped. Saving capture...[/dim]")
-        await _save_observe_results(storage, backend, "interactive-final")
+        await save_observe_run(storage, backend, "interactive-final", console=console)
     finally:
         browser.stop()
 

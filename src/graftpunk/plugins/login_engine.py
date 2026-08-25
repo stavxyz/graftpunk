@@ -15,6 +15,7 @@ import urllib.parse
 from typing import TYPE_CHECKING, Any
 
 from graftpunk import cache_session
+from graftpunk import console as gp_console
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 
@@ -383,11 +384,32 @@ def _start_login_capture(
     if observe_mode == "off":
         return create_capture_backend(backend_type, driver, get_tab=get_tab), None
 
+    # Why the login engine owns this for nodriver instead of handing
+    # observe_mode to BrowserSession like the selenium path: the nodriver
+    # capture needs a get_tab callable for the tab that the login opens, and
+    # its eager body fetch only runs from start_capture_async(), neither of
+    # which BrowserSession's sync _start_observe can provide.
+    import slugify as slugify_lib
+
     from graftpunk.observe import OBSERVE_BASE_DIR
     from graftpunk.observe.run import make_run_id
     from graftpunk.observe.storage import ObserveStorage
 
-    storage = ObserveStorage(OBSERVE_BASE_DIR, plugin.session_name, make_run_id())
+    # Opt-in diagnostics must never break the login: an unsafe session name or
+    # an unwritable base dir degrades to the header-only capture with a warning.
+    session_slug = slugify_lib.slugify(plugin.session_name) or "default"
+    try:
+        storage = ObserveStorage(OBSERVE_BASE_DIR, session_slug, make_run_id())
+    except (ValueError, OSError) as exc:
+        LOG.warning(
+            "login_observe_unavailable",
+            plugin=plugin.site_name,
+            session_name=session_slug,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        gp_console.warn(f"Observability capture unavailable for this login: {exc}")
+        return create_capture_backend(backend_type, driver, get_tab=get_tab), None
     capture = create_capture_backend(
         backend_type,
         driver,
@@ -682,7 +704,24 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                 if observe_storage is not None:
                     from graftpunk.observe.run import save_observe_run
 
-                    await save_observe_run(observe_storage, _header_capture, "login")
+                    # Never let a storage problem replace the login outcome
+                    # (or the PluginError being unwound) with a disk error.
+                    try:
+                        await save_observe_run(
+                            observe_storage,
+                            _header_capture,
+                            "login",
+                            console=gp_console.err_console,
+                            redact=credentials.values(),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — diagnostics are best-effort
+                        LOG.error(
+                            "login_observe_save_failed",
+                            plugin=plugin.site_name,
+                            run_dir=str(observe_storage.run_dir),
+                            error=str(exc),
+                            exc_type=type(exc).__name__,
+                        )
 
     return login
 
@@ -840,11 +879,13 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         browser_session = BrowserSession(
             backend="selenium", headless=run_headless, observe_mode=observe_mode
         )
-        browser_session._session_name = plugin.session_name
+        browser_session.session_name = plugin.session_name
+        # The observe HAR carries the login POST; scrub the credentials.
+        browser_session.observe_redact = credentials.values()
         with browser_session as session:
             # Header capture for role extraction: reuse the session's observe
             # capture when it has one, else start a lightweight one.
-            _header_capture = getattr(session, "_capture", None) if observe_mode != "off" else None
+            _header_capture = session.capture if observe_mode != "off" else None
             if _header_capture is None:
                 from graftpunk.observe.capture import create_capture_backend
 

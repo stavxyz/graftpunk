@@ -2155,3 +2155,34 @@ class TestNodriverConsoleCapture:
         response = backend._request_map["r1"]["response"]
         assert response.get("body") is None
         assert response.get("_bodyFile") is None
+
+
+class TestSeleniumStopCaptureIdempotent:
+    def test_second_stop_does_not_redrain_or_refetch(self) -> None:
+        """The login engine stops the session's capture to read header roles, then
+        BrowserSession.__exit__ stops it again; the second call must be a no-op."""
+        from graftpunk.observe.capture import SeleniumCaptureBackend
+
+        driver = MagicMock()
+        driver.get_log = MagicMock(return_value=[])
+        backend = SeleniumCaptureBackend(driver)
+        backend.start_capture()
+
+        backend.stop_capture()
+        backend.stop_capture()
+
+        perf_drains = [c for c in driver.get_log.call_args_list if c.args == ("performance",)]
+        assert len(perf_drains) == 1
+
+    def test_start_capture_resets_the_guard(self) -> None:
+        from graftpunk.observe.capture import SeleniumCaptureBackend
+
+        driver = MagicMock()
+        driver.get_log = MagicMock(return_value=[])
+        backend = SeleniumCaptureBackend(driver)
+        backend.stop_capture()
+        backend.start_capture()
+        backend.stop_capture()
+
+        perf_drains = [c for c in driver.get_log.call_args_list if c.args == ("performance",)]
+        assert len(perf_drains) == 2

@@ -21,7 +21,6 @@ Example:
 """
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -114,6 +113,7 @@ class BrowserSession(requestium.Session):
         self._observe_mode = observe_mode
         self._capture: Any = None
         self._observe_storage: ObserveStorage | None = None
+        self._observe_redact: tuple[str, ...] = ()
 
         if backend == "nodriver":
             # Use nodriver backend directly (CDP-based, no ChromeDriver)
@@ -223,6 +223,20 @@ class BrowserSession(requestium.Session):
             value: Session name to set.
         """
         self._session_name = value
+
+    @property
+    def capture(self) -> Any | None:
+        """The observe capture backend, or None when observe is off / not started."""
+        return self._capture
+
+    @property
+    def observe_redact(self) -> tuple[str, ...]:
+        """Secret values scrubbed from the observe HAR before it is written."""
+        return self._observe_redact
+
+    @observe_redact.setter
+    def observe_redact(self, values: Any) -> None:
+        self._observe_redact = tuple(str(v) for v in values if v)
 
     @property
     def driver(self) -> Any:
@@ -351,11 +365,25 @@ class BrowserSession(requestium.Session):
                 f"Requested mode '{self._observe_mode}' will have no effect."
             )
             return
-        import datetime
+        from graftpunk.observe.run import make_run_id
 
-        run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-        session_name = getattr(self, "_session_name", "default")
-        self._observe_storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+        run_id = make_run_id()
+        # Storage requires a filesystem-safe name; a plugin's session_name is
+        # only validated non-empty. Opt-in diagnostics must never break the
+        # primary operation, so slugify and fall back to no capture on error.
+        session_name = slugify_lib.slugify(getattr(self, "_session_name", "default")) or "default"
+        try:
+            self._observe_storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+        except (ValueError, OSError) as exc:
+            LOG.warning(
+                "observe_start_skipped_storage_error",
+                session_name=session_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            gp_console.warn(f"Observability capture unavailable: {exc}")
+            self._observe_storage = None
+            return
         self._capture = create_capture_backend(self._backend_type, driver)
         self._capture.start_capture()
         LOG.info("observe_capture_started", mode=self._observe_mode, run_id=run_id)
@@ -377,8 +405,16 @@ class BrowserSession(requestium.Session):
         """Write HAR and console logs to storage."""
         if self._observe_storage is None or self._capture is None:
             return
+        from graftpunk.observe.run import redact_har_entries
+
         try:
-            self._observe_storage.write_har(self._capture.get_har_entries())
+            # getattr: sessions restored via __setstate__ or built without
+            # __init__ (tests) may predate the attribute.
+            self._observe_storage.write_har(
+                redact_har_entries(
+                    self._capture.get_har_entries(), getattr(self, "_observe_redact", ())
+                )
+            )
         except Exception as exc:
             LOG.error("observe_har_write_failed", error=str(exc), exc_type=type(exc).__name__)
         try:
