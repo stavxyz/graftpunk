@@ -1909,7 +1909,8 @@ class TestNodriverHARCapture:
         class LegacyTab:
             """Real async method so inspect.signature() sees the 0.48 signature."""
 
-            calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+            def __init__(self) -> None:
+                self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
             async def send(self, cdp_obj: Any, _is_update: bool = False) -> Any:
                 self.calls.append(((cdp_obj,), {"_is_update": _is_update}))
@@ -1928,6 +1929,7 @@ class TestNodriverHARCapture:
         assert len(tab.calls) == 1
         assert tab.calls[0][1] == {"_is_update": True}
         assert "req-fast" in backend._bodies_fetched
+        assert backend._request_map["req-fast"]["response"]["body"] == '{"ok": true}'
 
     @pytest.mark.asyncio
     async def test_on_loading_finished_omits_is_update_on_nodriver_050(self) -> None:
@@ -1939,7 +1941,8 @@ class TestNodriverHARCapture:
         class ModernTab:
             """Real async method mirroring nodriver 0.50.3's Connection.send()."""
 
-            calls: list[dict[str, Any]] = []
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
 
             async def send(self, cdp_obj: Any, _attach: bool = False, **kwargs: Any) -> Any:
                 self.calls.append(kwargs)
@@ -1966,15 +1969,24 @@ class TestNodriverHARCapture:
 
     @pytest.mark.asyncio
     async def test_on_loading_finished_omits_is_update_when_signature_unknown(self) -> None:
-        """If send() cannot be introspected, do not guess: pass no internal kwargs."""
+        """If send() cannot be introspected, do not guess: pass no internal kwargs.
+
+        A bogus ``__signature__`` makes ``inspect.signature`` raise TypeError
+        (the arm a C-implemented callable would hit) without patching the stdlib
+        module process-wide.
+        """
         browser = MagicMock()
         tab = MagicMock()
-        tab.send = AsyncMock(return_value=('{"ok": true}', False))
+        calls: list[dict[str, Any]] = []
 
-        with (
-            _patch_cdp_modules(),
-            patch("graftpunk.observe.capture.inspect.signature", side_effect=ValueError("no sig")),
-        ):
+        async def send(cdp_obj: Any, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return ('{"ok": true}', False)
+
+        send.__signature__ = "not a signature"  # type: ignore[attr-defined]
+        tab.send = send
+
+        with _patch_cdp_modules():
             backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
             backend._request_map["req-nosig"] = _make_request_entry()
 
@@ -1982,9 +1994,55 @@ class TestNodriverHARCapture:
             event.request_id = "req-nosig"
             await backend._on_loading_finished(event)
 
-        _, kwargs = tab.send.call_args
-        assert kwargs == {}
+        assert calls == [{}]
         assert "req-nosig" in backend._bodies_fetched
+
+    @pytest.mark.asyncio
+    async def test_stop_capture_logs_eager_fetch_summary_when_failures(self) -> None:
+        """A systematic eager-fetch failure surfaces once, with counts, at stop time."""
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(side_effect=RuntimeError("[code: -32600]"))
+
+        with _patch_cdp_modules(), patch("graftpunk.observe.capture.LOG") as mock_log:
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            for rid in ("a", "b", "c"):
+                backend._request_map[rid] = _make_request_entry()
+                event = MagicMock()
+                event.request_id = rid
+                await backend._on_loading_finished(event)
+            # Late path should not raise either; bodies are simply absent.
+            tab.send = AsyncMock(side_effect=RuntimeError("[code: -32000]"))
+            await backend.stop_capture_async()
+
+        summaries = [
+            c
+            for c in mock_log.warning.call_args_list
+            if c.args[0] == "nodriver_eager_body_fetch_summary"
+        ]
+        assert len(summaries) == 1
+        assert summaries[0].kwargs["failed"] == 3
+        assert summaries[0].kwargs["attempted"] == 3
+
+    @pytest.mark.asyncio
+    async def test_stop_capture_no_summary_when_all_eager_fetches_succeed(self) -> None:
+        browser = MagicMock()
+        tab = MagicMock()
+        tab.send = AsyncMock(return_value=('{"ok": true}', False))
+
+        with _patch_cdp_modules(), patch("graftpunk.observe.capture.LOG") as mock_log:
+            backend = NodriverCaptureBackend(browser, get_tab=lambda: tab)
+            backend._request_map["a"] = _make_request_entry()
+            event = MagicMock()
+            event.request_id = "a"
+            await backend._on_loading_finished(event)
+            await backend.stop_capture_async()
+
+        assert not [
+            c
+            for c in mock_log.warning.call_args_list
+            if c.args[0] == "nodriver_eager_body_fetch_summary"
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -490,6 +490,8 @@ class NodriverCaptureBackend:
         self._console_logs: list[dict[str, Any]] = []
         self._warned_no_screenshots: bool = False
         self._bodies_fetched: set[str] = set()  # request IDs with eagerly-fetched bodies
+        self._eager_fetch_attempts: int = 0
+        self._eager_fetch_failures: int = 0
 
     @property
     def _tab(self) -> Any | None:
@@ -619,6 +621,21 @@ class NodriverCaptureBackend:
             return
 
         import nodriver.cdp.network as cdp_net
+
+        # One aggregate line so a systematic eager-fetch failure (e.g. a
+        # nodriver internals change, issue #146) is visible at a glance rather
+        # than buried in per-request warnings that read as ordinary eviction.
+        if self._eager_fetch_failures:
+            LOG.warning(
+                "nodriver_eager_body_fetch_summary",
+                failed=self._eager_fetch_failures,
+                attempted=self._eager_fetch_attempts,
+                hint=(
+                    "Bodies not fetched eagerly are retried below while the browser "
+                    "is alive; a 100% failure rate points at a nodriver/CDP mismatch, "
+                    "not eviction."
+                ),
+            )
 
         for request_id, data in list(self._request_map.items()):
             # Fetch POST body if has_post_data but no inline post_data
@@ -750,6 +767,7 @@ class NodriverCaptureBackend:
             if tab is None:
                 return
 
+            self._eager_fetch_attempts += 1
             body, base64_encoded = await tab.send(
                 cdp_net.get_response_body(cdp_net.RequestId(rid)),  # type: ignore[attr-defined]
                 **_eager_send_kwargs(tab),
@@ -765,6 +783,7 @@ class NodriverCaptureBackend:
             )
             self._bodies_fetched.add(rid)
         except Exception as exc:  # noqa: BLE001 — best-effort; stop_capture_async retries non-connection errors
+            self._eager_fetch_failures += 1
             url = data.get("url", "unknown") if data is not None else "unknown"
             LOG.warning(
                 "nodriver_eager_body_fetch_failed",
