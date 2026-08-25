@@ -630,9 +630,15 @@ def generate_login_method(plugin: SitePlugin) -> Any:
     # removes duplication between the two generators.
     backend = getattr(plugin, "backend", "selenium")
 
-    if backend == "nodriver":
-        return _generate_nodriver_login(plugin)
-    return _generate_selenium_login(plugin)
+    login = (
+        _generate_nodriver_login(plugin)
+        if backend == "nodriver"
+        else _generate_selenium_login(plugin)
+    )
+    # Lets the CLI tell a generated login from a plugin's hand-written one
+    # (help text, which options to offer) without inspecting docstrings.
+    login._gp_generated_login = True
+    return login
 
 
 def _generate_nodriver_login(plugin: SitePlugin) -> Any:

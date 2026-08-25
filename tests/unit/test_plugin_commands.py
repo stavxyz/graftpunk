@@ -659,10 +659,11 @@ class TestAutoLoginCommand:
         assert fn.__name__ == "login"
         assert "Log in to testlogin site" in fn.__doc__
 
-        # Only --headless beyond ctx -- credentials are gathered via
-        # prompts/envvars at runtime (include_builtin_options=False).
+        # A hand-written login(credentials) takes no headless kwarg, so no
+        # flags are offered -- credentials are gathered via prompts/envvars
+        # at runtime (include_builtin_options=False).
         params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
-        assert params == ["headless"]
+        assert params == []
 
     def test_login_command_envvar_resolution(self) -> None:
         """Test that environment variables are resolved at runtime."""

@@ -392,12 +392,34 @@ class TestEngineObserve:
 
 
 class TestLoginCommandPlumbing:
-    def test_login_command_exposes_headless_flag(self) -> None:
+    def test_generated_login_exposes_headless_and_headful_flags(self) -> None:
         from graftpunk.cli.login_commands import create_login_fn
 
         plugin = _make_plugin("nodriver")
         fn = create_login_fn(plugin, generate_login_method(plugin), {"username": "#u"})
-        assert "headless" in inspect.signature(fn).parameters
+        params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
+        assert params == ["headless", "headful"]
+
+    def test_generated_login_help_names_the_site_not_the_engine(self) -> None:
+        from graftpunk.cli.login_commands import create_login_fn
+
+        plugin = _make_plugin("nodriver")
+        fn = create_login_fn(plugin, generate_login_method(plugin), {"username": "#u"})
+        assert fn.__doc__ == "Log in to hl"
+
+    def test_hand_written_login_gets_no_flags_it_cannot_honour(self) -> None:
+        from graftpunk.cli.login_commands import create_login_fn
+
+        plugin = _make_plugin("nodriver")
+
+        def login(credentials: dict[str, str]) -> bool:
+            """Sign in to Example."""
+            return True
+
+        fn = create_login_fn(plugin, login, {"username": "#u"})
+        params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
+        assert params == []
+        assert fn.__doc__ == "Sign in to Example."
 
     def _run_body(self, login: Any, ctx: Any, **kwargs: Any) -> None:
         from graftpunk.cli.login_commands import make_login_body
@@ -405,37 +427,53 @@ class TestLoginCommandPlumbing:
         body = make_login_body(SimpleNamespace(site_name="acme"), login, {"username": "#u"})
         body(ctx, **kwargs)
 
+    @staticmethod
+    def _recording_login(seen: dict[str, Any]) -> Any:
+        def login(
+            credentials: dict[str, str], *, headless: bool | None = None, observe_mode: str = "off"
+        ) -> bool:
+            seen.update(headless=headless, observe_mode=observe_mode)
+            return True
+
+        return login
+
     def test_passes_headless_and_observe_to_declarative_login(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("ACME_USERNAME", "u")
         seen: dict[str, Any] = {}
-
-        def login(
-            credentials: dict[str, str], *, headless: bool | None = None, observe_mode: str = "off"
-        ) -> bool:
-            seen.update(headless=headless, observe_mode=observe_mode)
-            return True
-
         root = SimpleNamespace(obj={"observe_mode": "full"})
         ctx = SimpleNamespace(find_root=lambda: root)
-        self._run_body(login, ctx, headless=True)
+
+        self._run_body(self._recording_login(seen), ctx, headless=True, headful=False)
 
         assert seen == {"headless": True, "observe_mode": "full"}
 
-    def test_flag_unset_means_use_config(self, monkeypatch: Any) -> None:
+    def test_headful_forces_a_window(self, monkeypatch: Any) -> None:
+        """A plugin with headless: true still needs an escape hatch for CAPTCHA/2FA."""
         monkeypatch.setenv("ACME_USERNAME", "u")
         seen: dict[str, Any] = {}
+        ctx = SimpleNamespace(find_root=lambda: SimpleNamespace(obj={}))
 
-        def login(
-            credentials: dict[str, str], *, headless: bool | None = None, observe_mode: str = "off"
-        ) -> bool:
-            seen.update(headless=headless, observe_mode=observe_mode)
-            return True
+        self._run_body(self._recording_login(seen), ctx, headless=False, headful=True)
 
-        root = SimpleNamespace(obj={})
-        ctx = SimpleNamespace(find_root=lambda: root)
-        self._run_body(login, ctx, headless=False)
+        assert seen["headless"] is False
+
+    def test_no_flag_means_use_config(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("ACME_USERNAME", "u")
+        seen: dict[str, Any] = {}
+        ctx = SimpleNamespace(find_root=lambda: SimpleNamespace(obj={}))
+
+        self._run_body(self._recording_login(seen), ctx, headless=False, headful=False)
 
         assert seen == {"headless": None, "observe_mode": "off"}
+
+    def test_both_flags_is_a_usage_error(self, monkeypatch: Any) -> None:
+        import typer
+
+        monkeypatch.setenv("ACME_USERNAME", "u")
+        ctx = SimpleNamespace(find_root=lambda: SimpleNamespace(obj={}))
+
+        with pytest.raises(typer.BadParameter):
+            self._run_body(self._recording_login({}), ctx, headless=True, headful=True)
 
     def test_user_defined_login_without_kwargs_still_works(self, monkeypatch: Any) -> None:
         """A plugin's own login(credentials) must not receive kwargs it never declared."""
@@ -448,9 +486,28 @@ class TestLoginCommandPlumbing:
 
         root = SimpleNamespace(obj={"observe_mode": "full"})
         ctx = SimpleNamespace(find_root=lambda: root)
-        self._run_body(login, ctx, headless=True)
+        self._run_body(login, ctx)
 
         assert calls == [{"username": "u"}]
+
+    def test_required_positional_of_same_name_is_not_fed_the_flag(self) -> None:
+        from graftpunk.cli.login_commands import _accepted_login_kwargs
+
+        def login(credentials: dict[str, str], headless: bool) -> bool:
+            return True
+
+        assert _accepted_login_kwargs(login, headless=None, observe_mode="off") == {}
+
+    def test_var_keyword_accepts_everything(self) -> None:
+        from graftpunk.cli.login_commands import _accepted_login_kwargs
+
+        def login(credentials: dict[str, str], **kw: Any) -> bool:
+            return True
+
+        assert _accepted_login_kwargs(login, headless=None, observe_mode="off") == {
+            "headless": None,
+            "observe_mode": "off",
+        }
 
 
 # ---------------------------------------------------------------------------
