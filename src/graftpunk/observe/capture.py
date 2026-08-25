@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import datetime
+import inspect
 import json
 import os
 import tempfile
@@ -443,6 +444,30 @@ class SeleniumCaptureBackend:
         self.start_capture()
 
 
+def _eager_send_kwargs(tab: Any) -> dict[str, Any]:
+    """Internal kwargs for the eager body fetch, adapted to the installed nodriver.
+
+    nodriver <= 0.48 exposes ``Connection.send(cdp_obj, _is_update=False)``;
+    passing ``_is_update=True`` skips ``_register_handlers()`` on every fetch
+    (issue #64 Fix 2). nodriver >= 0.50.1 renamed the flag to ``_attach`` (which
+    also suppresses ``sessionId`` -- different semantics) and merges any unknown
+    kwargs straight into the CDP message, so a stale ``_is_update=True`` puts a
+    top-level property on the wire and Chrome rejects the whole command with
+    ``-32600`` (issue #146). 0.50's ``send()`` no longer re-registers handlers,
+    so there is nothing to skip there.
+
+    Only pass ``_is_update`` when ``send()`` actually declares it. If the
+    signature cannot be introspected, pass nothing rather than guess.
+    """
+    try:
+        params = inspect.signature(tab.send).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "_is_update" in params:
+        return {"_is_update": True}
+    return {}
+
+
 class NodriverCaptureBackend:
     """Capture backend for nodriver (async Chrome DevTools Protocol).
 
@@ -465,6 +490,8 @@ class NodriverCaptureBackend:
         self._console_logs: list[dict[str, Any]] = []
         self._warned_no_screenshots: bool = False
         self._bodies_fetched: set[str] = set()  # request IDs with eagerly-fetched bodies
+        self._eager_fetch_attempts: int = 0
+        self._eager_fetch_failures: int = 0
 
     @property
     def _tab(self) -> Any | None:
@@ -570,7 +597,11 @@ class NodriverCaptureBackend:
             network.enable(  # type: ignore[attr-defined]
                 max_total_buffer_size=100 * 1024 * 1024,  # 100 MB total buffer
                 max_resource_buffer_size=10 * 1024 * 1024,  # 10 MB per resource
-                enable_durable_messages=True,  # hint to keep bodies longer (best-effort)
+                # Keeps bodies fetchable longer. Load-bearing on nodriver >= 0.50
+                # (flattened sessions): measured on 0.50.3, getResponseBody
+                # returns -32000 for every request without it and succeeds for
+                # nearly all with it. See issue #146.
+                enable_durable_messages=True,
             )
         )
         tab.add_handler(network.RequestWillBeSent, self._on_request)  # type: ignore[attr-defined]
@@ -590,6 +621,21 @@ class NodriverCaptureBackend:
             return
 
         import nodriver.cdp.network as cdp_net
+
+        # One aggregate line so a systematic eager-fetch failure (e.g. a
+        # nodriver internals change, issue #146) is visible at a glance rather
+        # than buried in per-request warnings that read as ordinary eviction.
+        if self._eager_fetch_failures:
+            LOG.warning(
+                "nodriver_eager_body_fetch_summary",
+                failed=self._eager_fetch_failures,
+                attempted=self._eager_fetch_attempts,
+                hint=(
+                    "Bodies not fetched eagerly are retried below while the browser "
+                    "is alive; a 100% failure rate points at a nodriver/CDP mismatch, "
+                    "not eviction."
+                ),
+            )
 
         for request_id, data in list(self._request_map.items()):
             # Fetch POST body if has_post_data but no inline post_data
@@ -721,9 +767,10 @@ class NodriverCaptureBackend:
             if tab is None:
                 return
 
+            self._eager_fetch_attempts += 1
             body, base64_encoded = await tab.send(
                 cdp_net.get_response_body(cdp_net.RequestId(rid)),  # type: ignore[attr-defined]
-                _is_update=True,  # nodriver internal: skip _register_handlers() re-registration
+                **_eager_send_kwargs(tab),
             )
             _process_response_body(
                 response=response,
@@ -736,6 +783,7 @@ class NodriverCaptureBackend:
             )
             self._bodies_fetched.add(rid)
         except Exception as exc:  # noqa: BLE001 — best-effort; stop_capture_async retries non-connection errors
+            self._eager_fetch_failures += 1
             url = data.get("url", "unknown") if data is not None else "unknown"
             LOG.warning(
                 "nodriver_eager_body_fetch_failed",
