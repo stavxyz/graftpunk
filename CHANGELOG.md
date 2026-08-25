@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Response-body capture on nodriver >= 0.50.1** ([#146](https://github.com/stavxyz/graftpunk/issues/146)). nodriver 0.50 renamed `Connection.send(..., _is_update)` to `_attach` and merges unknown kwargs into the CDP message, so the eager body fetch put `_is_update: true` on the wire and Chrome rejected every `Network.getResponseBody` with `-32600`; capture silently reverted to the eviction-limited late path. The eager fetch now passes `_is_update=True` only when the installed `send()` declares it (nodriver <= 0.48) and nothing otherwise. Measured on 0.50.3 with `gp --observe=full observe go https://www.python.org/`: 0 × `-32600`, 23 of 32 HAR entries with bodies.
+
 ## [1.12.0] - 2026-08-01
 
 ### Added
