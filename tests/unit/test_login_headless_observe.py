@@ -7,6 +7,7 @@ override, and ``--observe=full`` produced no observe run for ``<plugin> login``.
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -61,8 +62,20 @@ def _nodriver_session_mock(tab: MagicMock) -> tuple[MagicMock, MagicMock]:
 
 
 def _nodriver_tab(page: str = "<html>Bad login.</html>") -> MagicMock:
+    """Tab with a stateful fake field: send_keys appends, clear_input empties,
+    evaluate reads back what the field holds, so _fill_field's verification
+    runs for real instead of silently taking the "unverifiable" branch."""
+    state = {"value": ""}
+    element = AsyncMock()
+    element.send_keys = AsyncMock(
+        side_effect=lambda v: state.__setitem__("value", state["value"] + v)
+    )
+    element.clear_input = AsyncMock(side_effect=lambda: state.__setitem__("value", ""))
     tab = MagicMock()
-    tab.select = AsyncMock(return_value=AsyncMock())
+    tab.select = AsyncMock(return_value=element)
+    tab.evaluate = AsyncMock(
+        side_effect=lambda *a, **k: json.dumps({"found": True, "value": state["value"]})
+    )
     tab.get_content = AsyncMock(return_value=page)
     return tab
 

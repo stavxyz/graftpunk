@@ -195,28 +195,60 @@ async def _read_field_value(tab: Any, selector: str) -> str | None:
     that was typed into: if the page swapped the form, the handle points at a
     detached node whose value is meaningless.
 
+    The page-side expression always returns a JSON string, so nodriver's
+    ``evaluate(return_by_value=True)`` quirk (a falsy value comes back as the
+    RemoteObject itself) never applies.
+
     Returns:
-        The value as a string, or None if it could not be determined (selector
-        matched nothing, evaluate failed, non-string result). None means
-        "cannot verify", not "empty".
+        The value as a string. ``""`` when the selector matches nothing in the
+        live document (the field is not there to hold a value). ``None`` only
+        when the read itself failed (evaluate raised, JS threw, unparseable
+        result) -- "cannot verify", which callers must not confuse with
+        "empty".
     """
     js = (
         f"(() => {{ const el = document.querySelector({json.dumps(selector)}); "
-        "return el ? el.value : null; })()"
+        "return JSON.stringify({found: !!el, value: el ? String(el.value) : null}); })()"
     )
     try:
         result = await tab.evaluate(js, return_by_value=True)
     except Exception as exc:  # noqa: BLE001 — verification is best-effort
         LOG.debug("login_field_readback_failed", selector=selector, error=str(exc))
         return None
-    if isinstance(result, str):
-        return result
-    # nodriver's evaluate(return_by_value=True) returns the RemoteObject itself
-    # when the value is falsy, so an empty string arrives wrapped.
-    value = getattr(result, "value", None)
-    if isinstance(value, str):
-        return value
-    return None
+    if not isinstance(result, str):
+        # nodriver returns ExceptionDetails when the JS throws.
+        LOG.debug(
+            "login_field_readback_unparseable",
+            selector=selector,
+            result_type=type(result).__name__,
+            detail=getattr(result, "text", None),
+        )
+        return None
+    try:
+        data = json.loads(result)
+    except ValueError:
+        LOG.debug("login_field_readback_unparseable", selector=selector, result_type="str")
+        return None
+    if not isinstance(data, dict) or not data.get("found"):
+        LOG.debug("login_field_selector_vanished", selector=selector)
+        return ""
+    value = data.get("value")
+    return value if isinstance(value, str) else None
+
+
+async def _clear_field(element: Any, tab: Any, selector: str) -> None:
+    """Empty the field and make sure it stayed empty.
+
+    Keystrokes from a previous attempt can flush after the renderer lag that
+    the settle delay exists for; if the read-back is non-empty right after
+    clearing, clear once more so nothing is doubled (issue #148 measured that
+    doubled text is a worse failure than an empty field).
+    """
+    await element.clear_input()
+    current = await _read_field_value(tab, selector)
+    if current:
+        LOG.debug("login_field_clear_repeated", selector=selector, residual_len=len(current))
+        await element.clear_input()
 
 
 async def _fill_field(
@@ -234,16 +266,27 @@ async def _fill_field(
     from ``_select_with_retry`` can be detached by the time ``send_keys`` runs,
     the key events dispatch fine, and the characters go nowhere (issue #148).
 
-    After typing, wait ``_FIELD_SETTLE_DELAY`` (Input.dispatchKeyEvent is
-    acknowledged before the renderer updates the value, so an immediate read
-    sees an empty field even on success), then read the value back from the
-    live DOM by selector. On mismatch, re-select, clear, and retype, up to
-    ``_FIELD_FILL_ATTEMPTS`` times. If the value cannot be read back at all,
-    the single fill stands (best-effort verification).
+    Each attempt re-selects the element, clears it, types, waits
+    ``_FIELD_SETTLE_DELAY`` (Input.dispatchKeyEvent is acknowledged before the
+    renderer updates the value, so an immediate read sees an empty field even
+    on success), then reads the value back from the live DOM by selector.
+    Interacting with a detached handle can also raise (click/clear resolve the
+    backend node); that counts as a failed attempt, not a terminal error.
+
+    Outcomes after ``_FIELD_FILL_ATTEMPTS``:
+
+    - value read back equals ``value``: done.
+    - read-back is non-empty but different: the site normalises input
+      (lowercasing, masks, autocomplete). Warn and proceed; the browser's own
+      validation still guards a genuinely empty required field.
+    - read-back is empty (or the selector no longer matches anything): the
+      typed value never reached the live element. Raise.
+    - read-back impossible: the single fill stands (best-effort verification).
 
     Raises:
         PluginError: If the field cannot be found, or never accepts the value.
     """
+    last_actual: str | None = None
     for attempt in range(1, _FIELD_FILL_ATTEMPTS + 1):
         element = await _select_with_retry(tab, selector)
         if element is None:
@@ -252,11 +295,23 @@ async def _fill_field(
                 f"using selector '{selector}'. "
                 "Check your plugin's login step configuration."
             )
-        await element.click()
-        if attempt > 1:
-            # A late-arriving fill from the previous attempt must not be doubled.
-            await element.clear_input()
-        await element.send_keys(value)
+        try:
+            await element.click()
+            await _clear_field(element, tab, selector)
+            await element.send_keys(value)
+        except Exception as exc:
+            if attempt == _FIELD_FILL_ATTEMPTS:
+                raise
+            LOG.warning(
+                "login_field_interaction_failed",
+                field=field_name,
+                selector=selector,
+                attempt=attempt,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                hint="Element handle may be detached (page re-rendered the form?); re-selecting",
+            )
+            continue
         if not value:
             return
 
@@ -274,6 +329,7 @@ async def _fill_field(
                     attempt=attempt,
                 )
             return
+        last_actual = actual
         LOG.warning(
             "login_field_value_mismatch",
             field=field_name,
@@ -283,6 +339,20 @@ async def _fill_field(
             actual_len=len(actual),
             hint="Typed into a detached node (page re-rendered the form?); re-selecting",
         )
+
+    if last_actual:
+        LOG.warning(
+            "login_field_value_normalized",
+            field=field_name,
+            selector=selector,
+            expected_len=len(value),
+            actual_len=len(last_actual),
+            hint=(
+                "The field holds a non-empty value that differs from what was typed; "
+                "the site appears to normalise input. Proceeding with the fill."
+            ),
+        )
+        return
 
     raise PluginError(
         f"Step {step_idx}: Login field '{field_name}' (selector '{selector}') "
