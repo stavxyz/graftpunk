@@ -36,6 +36,9 @@ _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
 _LOGIN_NAV_TIMEOUT = 60  # seconds — login page may redirect through SSO/IdP chains
 _FIELD_SETTLE_DELAY = 0.4  # seconds between send_keys and value read-back (see _fill_field)
 _FIELD_FILL_ATTEMPTS = 3  # select+type attempts before giving up on a field
+# Page text that identifies a rate-limited response (HTTP 429 body) rather than
+# a login outcome. Matched case-insensitively against the post-submit page.
+_RATE_LIMIT_MARKERS = ("too many requests",)
 
 
 def _resolve_url(base_url: str, url: str) -> str:
@@ -320,8 +323,31 @@ def _check_login_result(
     Returns:
         True if login appears successful, False if it failed.
     """
-    if failure_text and failure_text.lower() in page_text.lower():
-        LOG.warning("login_failure_text_detected", plugin=site_name, text=failure_text)
+    lowered = page_text.lower()
+
+    # Checked first: a rate-limited response is a page from the site's limiter,
+    # not a verdict on the credentials, and it never contains the success element.
+    if any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+        LOG.warning(
+            "login_rate_limited",
+            plugin=site_name,
+            hint=(
+                "The site returned a 'Too Many Requests' page. This is not a "
+                "credentials problem; wait before retrying."
+            ),
+        )
+        return False
+
+    if failure_text and failure_text.lower() in lowered:
+        LOG.warning(
+            "login_failure_text_detected",
+            plugin=site_name,
+            text=failure_text,
+            hint=(
+                "The configured failure text is on the page. Sites show it for "
+                "wrong credentials, but also for an empty or malformed submission."
+            ),
+        )
         return False
 
     if success_found is False:
@@ -329,6 +355,10 @@ def _check_login_result(
             "login_success_element_not_found",
             plugin=site_name,
             selector=success_selector,
+            hint=(
+                "The page never showed the configured success element. The login "
+                "may still be on the form, or the site may have redirected elsewhere."
+            ),
         )
         return False
 

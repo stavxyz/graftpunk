@@ -158,8 +158,13 @@ def make_login_body(
                     result = login_method(credentials)
 
             if result is False:
+                # The engine logged what it actually detected (failure text,
+                # missing success element, rate limiting, a field that never
+                # accepted input). Do not name a cause that was not measured.
                 gp_console.error(
-                    f"Login failed for {plugin.site_name}. Check your credentials and try again."
+                    f"Login did not complete for {plugin.site_name}: the page did not "
+                    "reach the expected post-login state. See the warning above for "
+                    "what was detected. Re-run with --observe=full to capture the flow."
                 )
                 raise SystemExit(1)
             if result is not True:
