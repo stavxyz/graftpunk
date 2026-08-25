@@ -95,6 +95,9 @@ class ObserveStorage:
     def write_console_logs(self, logs: list[dict[str, Any]]) -> None:
         """Append console log entries to the console JSONL file.
 
+        ``timestamp`` on each entry is seconds since epoch (CDP's millisecond
+        ``Runtime.Timestamp`` is normalised at capture; issue #158).
+
         Args:
             logs: List of console log entry dicts.
         """

@@ -208,7 +208,7 @@ def _finalize_redirect_hop(
     request_id: str,
     redirect_response: dict[str, Any],
     next_url: str,
-) -> None:
+) -> str | None:
     """Move the in-flight request for ``request_id`` aside as a completed redirect hop.
 
     CDP reuses ``requestId`` across a redirect chain: each hop arrives as a
@@ -224,14 +224,18 @@ def _finalize_redirect_hop(
     order -- hop re-inserted first, successor written second -- is what keeps
     a hop ahead of its successor when their wall times tie, since
     ``_ordered_request_items`` relies on a stable sort.
+
+    Returns the hop's new key, or None if there was nothing to finalize.
     """
     previous = request_map.pop(request_id, None)
     if previous is None:
-        return  # capture started mid-chain; nothing to finalize
+        return None  # capture started mid-chain; nothing to finalize
     hop_index = 1 + sum(1 for key in request_map if key.startswith(f"{request_id}:redirect:"))
     previous["response"] = {**redirect_response, "redirectURL": next_url}
     previous["_redirect_hop"] = True
-    request_map[f"{request_id}:redirect:{hop_index}"] = previous
+    hop_key = f"{request_id}:redirect:{hop_index}"
+    request_map[hop_key] = previous
+    return hop_key
 
 
 def _console_timestamp(raw: Any) -> float:
@@ -239,46 +243,130 @@ def _console_timestamp(raw: Any) -> float:
 
     CDP's ``Runtime.Timestamp`` is *milliseconds* since epoch; the fallback
     when an event carries none is ``time.time()`` (seconds). Storing both as-is
-    mixed units in ``console.jsonl`` (issue #158).
+    mixed units in ``console.jsonl`` (issue #158). Missing, zero or
+    non-numeric values fall back to now rather than aborting the capture.
     """
-    if raw is None:
+    try:
+        value = float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
         return time.time()
-    return float(raw) / 1000.0
+    return value / 1000.0 if value else time.time()
 
 
-def _merge_request_extra_headers(
-    request_map: dict[str, dict[str, Any]], request_id: str, headers: Mapping[str, Any] | None
-) -> None:
-    """Fold ``Network.requestWillBeSentExtraInfo`` headers into the live request.
+def _merge_headers_ci(
+    base: Mapping[str, Any] | None, override: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """``base`` updated by ``override``, matching header names case-insensitively.
 
-    ``requestWillBeSent`` carries the headers the renderer *asked* for; the
-    ExtraInfo event carries what actually went on the wire, including the raw
-    ``Cookie`` header. It always follows ``requestWillBeSent`` for its hop, so
-    the live entry under ``request_id`` is the right one (a redirect
-    continuation has already moved the previous hop aside).
+    ``responseReceived`` reports canonical casing (``Content-Type``) while the
+    ExtraInfo events report wire casing (``content-type`` on HTTP/2); a plain
+    dict merge kept both and the "raw wins" rule silently failed.
     """
-    entry = request_map.get(request_id)
-    if entry is None or not headers:
-        return
-    entry["headers"] = {**entry.get("headers", {}), **dict(headers)}
+    override = dict(override or {})
+    shadowed = {name.lower() for name in override}
+    merged = {k: v for k, v in (base or {}).items() if k.lower() not in shadowed}
+    merged.update(override)
+    return merged
 
 
-def _store_response_extra_headers(
-    request_map: dict[str, dict[str, Any]], request_id: str, headers: Mapping[str, Any] | None
-) -> None:
-    """Keep ``Network.responseReceivedExtraInfo`` headers for the live request.
+def _header_values(headers: Mapping[str, str], name: str) -> list[str]:
+    """Every value of header ``name`` (case-insensitive), in order."""
+    wanted = name.lower()
+    return [v for k, v in headers.items() if k.lower() == wanted and v]
 
-    Chromium delivers only filtered headers on ``responseReceived`` and
-    ``redirectResponse``; ``Set-Cookie`` arrives only here (issue #157). The
-    event may fire before *or* after ``responseReceived``, so the headers are
-    stored beside the entry and merged when the HAR is built. For a redirect
-    hop the ExtraInfo precedes the continuation's ``requestWillBeSent``, so it
-    lands on the hop before ``_finalize_redirect_hop`` moves it aside.
+
+class _ExtraInfoCorrelator:
+    """Attach ``Network.*ExtraInfo`` headers to the right request entry.
+
+    CDP guarantees neither that ``requestWillBeSentExtraInfo`` follows
+    ``requestWillBeSent`` nor that ``responseReceivedExtraInfo`` precedes
+    ``responseReceived`` (both dataclass docstrings say so). Measured on a real
+    redirecting login with nodriver 0.48.1 and 0.50.3 the order was always
+    ``requestWillBeSent -> requestWillBeSentExtraInfo ->
+    responseReceivedExtraInfo(3xx) -> requestWillBeSent(continuation)``, but
+    the code must not depend on it: headers for an entry that does not exist
+    yet are buffered and applied when it is created, and a finalized redirect
+    hop whose ExtraInfo has not arrived (``redirectHasExtraInfo`` set) is
+    queued so the next response ExtraInfo for that id lands on the hop, not on
+    its successor. Raw headers are kept beside the entry
+    (``_request_extra_headers`` / ``_response_extra_headers``) and merged only
+    when the HAR is built, so header-role extraction keeps seeing the renderer
+    headers it was designed for.
     """
-    entry = request_map.get(request_id)
-    if entry is None or not headers:
-        return
-    entry["_response_extra_headers"] = {**entry.get("_response_extra_headers", {}), **dict(headers)}
+
+    def __init__(self) -> None:
+        self._pending_request: dict[str, list[dict[str, Any]]] = {}
+        self._pending_response: dict[str, list[dict[str, Any]]] = {}
+        self._awaiting_hops: dict[str, list[str]] = {}
+
+    @staticmethod
+    def _attach(entry: dict[str, Any], key: str, headers: Mapping[str, Any]) -> None:
+        entry[key] = _merge_headers_ci(entry.get(key), headers)
+
+    def entry_created(self, request_map: dict[str, dict[str, Any]], request_id: str) -> None:
+        """Apply anything buffered for ``request_id`` now that its entry exists."""
+        for headers in self._pending_request.pop(request_id, []):
+            self._attach(request_map[request_id], "_request_extra_headers", headers)
+        for headers in self._pending_response.pop(request_id, []):
+            self.response_extra(request_map, request_id, headers)
+
+    def hop_finalized(
+        self,
+        request_map: dict[str, dict[str, Any]],
+        request_id: str,
+        hop_key: str | None,
+        redirect_has_extra_info: bool,
+    ) -> None:
+        """A redirect hop was moved aside; queue it if its ExtraInfo is still to come."""
+        if hop_key is None or not redirect_has_extra_info:
+            return
+        hop = request_map.get(hop_key)
+        if hop is not None and "_response_extra_headers" not in hop:
+            self._awaiting_hops.setdefault(request_id, []).append(hop_key)
+
+    def request_extra(
+        self,
+        request_map: dict[str, dict[str, Any]],
+        request_id: str,
+        headers: Mapping[str, Any] | None,
+    ) -> None:
+        if not headers:
+            return
+        entry = request_map.get(request_id)
+        if entry is None:
+            self._pending_request.setdefault(request_id, []).append(dict(headers))
+            return
+        self._attach(entry, "_request_extra_headers", headers)
+
+    def response_extra(
+        self,
+        request_map: dict[str, dict[str, Any]],
+        request_id: str,
+        headers: Mapping[str, Any] | None,
+    ) -> None:
+        if not headers:
+            return
+        awaiting = self._awaiting_hops.get(request_id)
+        if awaiting:
+            hop_key = awaiting.pop(0)
+            if not awaiting:
+                del self._awaiting_hops[request_id]
+            hop = request_map.get(hop_key)
+            if hop is not None:
+                self._attach(hop, "_response_extra_headers", headers)
+                return
+        entry = request_map.get(request_id)
+        if entry is None:
+            self._pending_response.setdefault(request_id, []).append(dict(headers))
+            return
+        self._attach(entry, "_response_extra_headers", headers)
+
+    def log_unmatched(self) -> None:
+        """At drain time, say how many ExtraInfo events never found an entry."""
+        req = sum(len(v) for v in self._pending_request.values())
+        resp = sum(len(v) for v in self._pending_response.values())
+        if req or resp:
+            LOG.debug("extra_info_unmatched", request_events=req, response_events=resp)
 
 
 def _parse_cookie_pairs(fragments: list[str]) -> list[dict[str, str]]:
@@ -292,30 +380,53 @@ def _parse_cookie_pairs(fragments: list[str]) -> list[dict[str, str]]:
 
 
 def _request_cookies(headers: Mapping[str, str]) -> list[dict[str, str]]:
-    """HAR ``request.cookies`` from the raw ``Cookie`` header."""
-    for name, value in headers.items():
-        if name.lower() == "cookie" and value:
-            return _parse_cookie_pairs(value.split(";"))
-    return []
+    """HAR ``request.cookies`` from every raw ``Cookie`` header value."""
+    fragments = [f for value in _header_values(headers, "cookie") for f in value.split(";")]
+    return _parse_cookie_pairs(fragments)
 
 
-def _response_cookies(headers: Mapping[str, str]) -> list[dict[str, str]]:
-    """HAR ``response.cookies`` from ``Set-Cookie`` (one cookie per line)."""
-    for name, value in headers.items():
-        if name.lower() == "set-cookie" and value:
-            return _parse_cookie_pairs([line.split(";", 1)[0] for line in value.split("\n")])
-    return []
+_COOKIE_FLAG_ATTRS = {"httponly": "httpOnly", "secure": "secure"}
+_COOKIE_VALUE_ATTRS = {"path": "path", "domain": "domain", "expires": "expires"}
+
+
+def _response_cookies(headers: Mapping[str, str]) -> list[dict[str, Any]]:
+    """HAR ``response.cookies`` from every ``Set-Cookie`` line.
+
+    Chromium joins multiple ``Set-Cookie`` headers with newlines. Each line's
+    first ``name=value`` is the cookie; ``Path``/``Domain``/``Expires`` and the
+    ``HttpOnly``/``Secure`` flags map onto the HAR 1.2 cookie fields. A quoted
+    value containing ``;`` is not supported (it is split like any other).
+    """
+    cookies: list[dict[str, Any]] = []
+    lines = [line for value in _header_values(headers, "set-cookie") for line in value.split("\n")]
+    for line in lines:
+        first, *attrs = line.split(";")
+        parsed = _parse_cookie_pairs([first])
+        if not parsed:
+            continue
+        cookie: dict[str, Any] = parsed[0]
+        for attr in attrs:
+            key, _, val = attr.strip().partition("=")
+            lowered = key.strip().lower()
+            if lowered in _COOKIE_FLAG_ATTRS:
+                cookie[_COOKIE_FLAG_ATTRS[lowered]] = True
+            elif lowered in _COOKIE_VALUE_ATTRS and val:
+                cookie[_COOKIE_VALUE_ATTRS[lowered]] = val.strip()
+        cookies.append(cookie)
+    return cookies
 
 
 def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
     """Build a HAR 1.2 entry dict from correlated request/response data."""
     response = request_data.get("response", {})
-    request_headers: dict[str, str] = request_data.get("headers", {})
-    # Raw wire headers (ExtraInfo) win over the filtered ones of the same name.
-    response_headers: dict[str, str] = {
-        **response.get("headers", {}),
-        **request_data.get("_response_extra_headers", {}),
-    }
+    # Raw wire headers (ExtraInfo) win over the renderer/filtered ones of the
+    # same name, matched case-insensitively (see _merge_headers_ci).
+    request_headers = _merge_headers_ci(
+        request_data.get("headers"), request_data.get("_request_extra_headers")
+    )
+    response_headers = _merge_headers_ci(
+        response.get("headers"), request_data.get("_response_extra_headers")
+    )
     entry: dict[str, Any] = {
         "startedDateTime": _wall_time_to_iso(request_data.get("timestamp")),
         "time": 0,
@@ -426,6 +537,7 @@ class SeleniumCaptureBackend:
         self._bodies_dir = bodies_dir
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
+        self._extra_info = _ExtraInfoCorrelator()
         self._stopped: bool = False
 
     def start_capture(self) -> None:
@@ -481,7 +593,7 @@ class SeleniumCaptureBackend:
                 redirect = params.get("redirectResponse")
                 if redirect is not None:
                     # One HAR entry per redirect hop (see _finalize_redirect_hop).
-                    _finalize_redirect_hop(
+                    hop_key = _finalize_redirect_hop(
                         self._request_map,
                         rid,
                         _response_summary(
@@ -492,6 +604,9 @@ class SeleniumCaptureBackend:
                         ),
                         request.get("url", ""),
                     )
+                    self._extra_info.hop_finalized(
+                        self._request_map, rid, hop_key, bool(params.get("redirectHasExtraInfo"))
+                    )
                 self._request_map[rid] = {
                     "url": request.get("url", ""),
                     "method": request.get("method", "GET"),
@@ -500,6 +615,7 @@ class SeleniumCaptureBackend:
                     "has_post_data": request.get("hasPostData", False),
                     "timestamp": params.get("wallTime"),
                 }
+                self._extra_info.entry_created(self._request_map, rid)
             elif method == "Network.responseReceived":
                 response = params.get("response", {})
                 rid = params.get("requestId", "")
@@ -514,6 +630,7 @@ class SeleniumCaptureBackend:
                         "has_post_data": False,
                         "post_data": None,
                     }
+                    self._extra_info.entry_created(self._request_map, rid)
                 self._request_map[rid]["response"] = _response_summary(
                     response.get("status", 0),
                     response.get("statusText"),
@@ -521,11 +638,11 @@ class SeleniumCaptureBackend:
                     response.get("mimeType"),
                 )
             elif method == "Network.requestWillBeSentExtraInfo":
-                _merge_request_extra_headers(
+                self._extra_info.request_extra(
                     self._request_map, params.get("requestId", ""), params.get("headers")
                 )
             elif method == "Network.responseReceivedExtraInfo":
-                _store_response_extra_headers(
+                self._extra_info.response_extra(
                     self._request_map, params.get("requestId", ""), params.get("headers")
                 )
             elif method == "Runtime.consoleAPICalled":
@@ -537,6 +654,8 @@ class SeleniumCaptureBackend:
                         "timestamp": _console_timestamp(params.get("timestamp")),
                     }
                 )
+
+        self._extra_info.log_unmatched()
 
         # Fetch bodies for all captured requests
         for request_id, data in list(self._request_map.items()):
@@ -705,6 +824,7 @@ class NodriverCaptureBackend:
         self._bodies_dir = bodies_dir
         self._request_map: dict[str, dict[str, Any]] = {}
         self._console_logs: list[dict[str, Any]] = []
+        self._extra_info = _ExtraInfoCorrelator()
         self._warned_no_screenshots: bool = False
         self._bodies_fetched: set[str] = set()  # request IDs with eagerly-fetched bodies
         self._eager_fetch_attempts: int = 0
@@ -824,9 +944,18 @@ class NodriverCaptureBackend:
         tab.add_handler(network.ResponseReceived, self._on_response)  # type: ignore[attr-defined]
         tab.add_handler(network.LoadingFinished, self._on_loading_finished)  # type: ignore[attr-defined]
         # Raw wire headers (Cookie / Set-Cookie) only arrive on the ExtraInfo
-        # events; the filtered ones above never carry them (issue #157).
-        tab.add_handler(network.RequestWillBeSentExtraInfo, self._on_request_extra_info)  # type: ignore[attr-defined]
-        tab.add_handler(network.ResponseReceivedExtraInfo, self._on_response_extra_info)  # type: ignore[attr-defined]
+        # events; the filtered ones above never carry them (issue #157). The
+        # classes exist on 0.48.1 and 0.50.3; guard so an older codegen
+        # degrades to filtered headers instead of breaking capture.
+        for name, handler in (
+            ("RequestWillBeSentExtraInfo", self._on_request_extra_info),
+            ("ResponseReceivedExtraInfo", self._on_response_extra_info),
+        ):
+            event_cls = getattr(network, name, None)
+            if event_cls is None:
+                LOG.debug("nodriver_extra_info_event_unavailable", event_name=name)
+                continue
+            tab.add_handler(event_cls, handler)
 
         # Console log capture
         await tab.send(cdp_runtime.enable())  # type: ignore[attr-defined]
@@ -841,6 +970,8 @@ class NodriverCaptureBackend:
             return
 
         import nodriver.cdp.network as cdp_net
+
+        self._extra_info.log_unmatched()
 
         # One aggregate line so a systematic eager-fetch failure (e.g. a
         # nodriver internals change, issue #146) is visible at a glance rather
@@ -928,13 +1059,19 @@ class NodriverCaptureBackend:
             redirect = getattr(event, "redirect_response", None)
             if redirect is not None:
                 # One HAR entry per redirect hop (see _finalize_redirect_hop).
-                _finalize_redirect_hop(
+                hop_key = _finalize_redirect_hop(
                     self._request_map,
                     rid,
                     _response_summary(
                         redirect.status, redirect.status_text, redirect.headers, redirect.mime_type
                     ),
                     event.request.url,
+                )
+                self._extra_info.hop_finalized(
+                    self._request_map,
+                    rid,
+                    hop_key,
+                    bool(getattr(event, "redirect_has_extra_info", False)),
                 )
             self._request_map[rid] = {
                 "url": event.request.url,
@@ -944,20 +1081,21 @@ class NodriverCaptureBackend:
                 "has_post_data": getattr(event.request, "has_post_data", False),
                 "timestamp": getattr(event, "wall_time", None),
             }
+            self._extra_info.entry_created(self._request_map, rid)
         except Exception:
             LOG.exception("nodriver_on_request_failed")
 
     def _on_request_extra_info(self, event: Any) -> None:
         """Handle a CDP RequestWillBeSentExtraInfo event (raw request headers)."""
         try:
-            _merge_request_extra_headers(self._request_map, str(event.request_id), event.headers)
+            self._extra_info.request_extra(self._request_map, str(event.request_id), event.headers)
         except Exception:
             LOG.exception("nodriver_on_request_extra_info_failed")
 
     def _on_response_extra_info(self, event: Any) -> None:
         """Handle a CDP ResponseReceivedExtraInfo event (raw response headers)."""
         try:
-            _store_response_extra_headers(self._request_map, str(event.request_id), event.headers)
+            self._extra_info.response_extra(self._request_map, str(event.request_id), event.headers)
         except Exception:
             LOG.exception("nodriver_on_response_extra_info_failed")
 
@@ -974,6 +1112,7 @@ class NodriverCaptureBackend:
                     "has_post_data": False,
                     "post_data": None,
                 }
+                self._extra_info.entry_created(self._request_map, rid)
             self._request_map[rid]["response"] = _response_summary(
                 event.response.status,
                 event.response.status_text,

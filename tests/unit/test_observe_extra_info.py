@@ -2,8 +2,9 @@
 
 Chromium delivers only filtered headers on ``Network.responseReceived`` /
 ``redirectResponse``; ``Set-Cookie`` (and the raw ``Cookie`` request header)
-arrive on ``Network.responseReceivedExtraInfo`` / ``requestWillBeSentExtraInfo``.
-``Runtime.consoleAPICalled.timestamp`` is milliseconds since epoch.
+arrive on ``Network.responseReceivedExtraInfo`` / ``requestWillBeSentExtraInfo``,
+in an order CDP does not guarantee. ``Runtime.consoleAPICalled.timestamp`` is
+milliseconds since epoch.
 """
 
 from __future__ import annotations
@@ -11,13 +12,14 @@ from __future__ import annotations
 import json
 import time
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from graftpunk.observe.capture import (
     NodriverCaptureBackend,
     SeleniumCaptureBackend,
     _build_har_entry,
     _console_timestamp,
+    _merge_headers_ci,
 )
 
 LOGIN = "https://shop.example.com/login"
@@ -29,15 +31,10 @@ HOME = "https://shop.example.com/"
 # ---------------------------------------------------------------------------
 
 
-def _request(url: str, method: str = "GET") -> MagicMock:
+def _request(url: str, method: str = "GET", headers: dict[str, str] | None = None) -> MagicMock:
     r = MagicMock()
-    r.url, r.method, r.headers, r.post_data, r.has_post_data = (
-        url,
-        method,
-        {"Accept": "text/html"},
-        None,
-        False,
-    )
+    r.url, r.method, r.post_data, r.has_post_data = url, method, None, False
+    r.headers = headers if headers is not None else {"Accept": "text/html"}
     return r
 
 
@@ -54,10 +51,15 @@ def _response(url: str, status: int, headers: dict[str, str] | None = None) -> M
 
 
 def _will_be_sent(
-    rid: str, request: MagicMock, redirect: MagicMock | None = None, wall: float = 1.0
+    rid: str,
+    request: MagicMock,
+    redirect: MagicMock | None = None,
+    wall: float = 1.0,
+    redirect_has_extra_info: bool = False,
 ) -> MagicMock:
     ev = MagicMock()
     ev.request_id, ev.request, ev.redirect_response, ev.wall_time = rid, request, redirect, wall
+    ev.redirect_has_extra_info = redirect_has_extra_info
     return ev
 
 
@@ -67,9 +69,9 @@ def _extra_request(rid: str, headers: dict[str, str]) -> MagicMock:
     return ev
 
 
-def _extra_response(rid: str, headers: dict[str, str], status_code: int = 200) -> MagicMock:
+def _extra_response(rid: str, headers: dict[str, str]) -> MagicMock:
     ev = MagicMock()
-    ev.request_id, ev.headers, ev.status_code = rid, headers, status_code
+    ev.request_id, ev.headers = rid, headers
     return ev
 
 
@@ -77,6 +79,10 @@ def _received(rid: str, response: MagicMock) -> MagicMock:
     ev = MagicMock()
     ev.request_id, ev.response = rid, response
     return ev
+
+
+def _names(headers: list[dict[str, str]]) -> list[str]:
+    return [h["name"] for h in headers]
 
 
 class TestNodriverExtraInfo:
@@ -92,7 +98,9 @@ class TestNodriverExtraInfo:
         headers = {h["name"].lower(): h["value"] for h in entry["response"]["headers"]}
         assert headers["set-cookie"] == "session=abc; Path=/; HttpOnly"
         assert headers["content-type"] == "text/html"  # filtered headers kept too
-        assert entry["response"]["cookies"] == [{"name": "session", "value": "abc"}]
+        assert entry["response"]["cookies"] == [
+            {"name": "session", "value": "abc", "path": "/", "httpOnly": True}
+        ]
 
     def test_extra_info_after_response_received_also_works(self) -> None:
         """CDP documents ExtraInfo may fire before OR after responseReceived."""
@@ -104,59 +112,184 @@ class TestNodriverExtraInfo:
         (entry,) = backend.get_har_entries()
         assert entry["response"]["cookies"] == [{"name": "a", "value": "1"}]
 
-    def test_multiple_set_cookie_lines(self) -> None:
+    def test_multiple_set_cookie_lines_with_attributes(self) -> None:
         backend = NodriverCaptureBackend(MagicMock())
         backend._on_request(_will_be_sent("r3", _request(HOME)))
         backend._on_response_extra_info(
-            _extra_response("r3", {"set-cookie": "a=1; Path=/\nb=2; Secure"})
+            _extra_response(
+                "r3",
+                {
+                    "set-cookie": (
+                        "a=1; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT\n"
+                        "b=2; Secure; Domain=.example.com"
+                    )
+                },
+            )
         )
         backend._on_response(_received("r3", _response(HOME, 200)))
 
         (entry,) = backend.get_har_entries()
         assert entry["response"]["cookies"] == [
-            {"name": "a", "value": "1"},
-            {"name": "b", "value": "2"},
+            {"name": "a", "value": "1", "path": "/", "expires": "Wed, 21 Oct 2026 07:28:00 GMT"},
+            {"name": "b", "value": "2", "secure": True, "domain": ".example.com"},
         ]
 
-    def test_raw_cookie_request_header_and_request_cookies(self) -> None:
+    def test_raw_cookie_header_wins_and_no_case_duplicates(self) -> None:
+        """Renderer headers (canonical case) and wire headers (lowercase on h2)
+        must merge into one row per name, raw winning."""
         backend = NodriverCaptureBackend(MagicMock())
-        backend._on_request(_will_be_sent("r4", _request(HOME)))
+        backend._on_request(
+            _will_be_sent(
+                "r4", _request(HOME, headers={"Accept": "text/html", "Cookie": "stale=1"})
+            )
+        )
         backend._on_request_extra_info(
             _extra_request("r4", {"cookie": "session=abc; theme=dark", "accept": "text/html"})
         )
 
         (entry,) = backend.get_har_entries()
-        headers = {h["name"].lower(): h["value"] for h in entry["request"]["headers"]}
-        assert headers["cookie"] == "session=abc; theme=dark"
+        names = _names(entry["request"]["headers"])
+        assert sorted(n.lower() for n in names) == ["accept", "cookie"]
+        assert len(names) == 2
+        assert {h["name"]: h["value"] for h in entry["request"]["headers"]}[
+            "cookie"
+        ] == "session=abc; theme=dark"
         assert entry["request"]["cookies"] == [
             {"name": "session", "value": "abc"},
             {"name": "theme", "value": "dark"},
         ]
 
-    def test_redirect_hop_keeps_its_own_set_cookie(self) -> None:
-        """The 302's ExtraInfo arrives before the continuation's requestWillBeSent;
-        it must stay on the hop, and the successor's ExtraInfo on the successor."""
+    def test_raw_set_cookie_beats_filtered_one(self) -> None:
         backend = NodriverCaptureBackend(MagicMock())
-        backend._on_request(_will_be_sent("r5", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_request(_will_be_sent("r5", _request(HOME)))
+        backend._on_response(
+            _received(
+                "r5",
+                _response(HOME, 200, {"Set-Cookie": "filtered=1", "Content-Type": "text/html"}),
+            )
+        )
         backend._on_response_extra_info(
-            _extra_response("r5", {"set-cookie": "session=minted"}, 302)
+            _extra_response(
+                "r5", {"set-cookie": "session=real; Path=/", "content-type": "text/html"}
+            )
         )
+
+        (entry,) = backend.get_har_entries()
+        names = _names(entry["response"]["headers"])
+        assert len(names) == len({n.lower() for n in names})  # no case duplicates
+        assert entry["response"]["cookies"] == [{"name": "session", "value": "real", "path": "/"}]
+
+    def test_request_extra_info_before_request_is_buffered(self) -> None:
+        """CDP: 'no guarantee whether requestWillBeSent or requestWillBeSentExtraInfo
+        will be fired first'."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request_extra_info(_extra_request("r6", {"cookie": "session=abc"}))
+        backend._on_request(_will_be_sent("r6", _request(HOME)))
+
+        (entry,) = backend.get_har_entries()
+        assert entry["request"]["cookies"] == [{"name": "session", "value": "abc"}]
+
+    def test_response_extra_info_before_orphan_response_is_buffered(self) -> None:
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_response_extra_info(_extra_response("r7", {"set-cookie": "x=1"}))
+        backend._on_response(_received("r7", _response(HOME, 200)))  # request never seen
+
+        (entry,) = backend.get_har_entries()
+        assert entry["response"]["cookies"] == [{"name": "x", "value": "1"}]
+
+    def test_redirect_hop_keeps_its_own_set_cookie_in_measured_order(self) -> None:
+        """Measured order on nodriver 0.48.1 and 0.50.3: the 302's ExtraInfo arrives
+        before the continuation's requestWillBeSent."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(_will_be_sent("r8", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_response_extra_info(_extra_response("r8", {"set-cookie": "session=minted"}))
         backend._on_request(
-            _will_be_sent("r5", _request(HOME), _response(LOGIN, 302, {"Location": "/"}), wall=2.0)
+            _will_be_sent(
+                "r8",
+                _request(HOME),
+                _response(LOGIN, 302, {"Location": "/"}),
+                wall=2.0,
+                redirect_has_extra_info=True,
+            )
         )
-        backend._on_response_extra_info(_extra_response("r5", {"set-cookie": "seen=1"}))
-        backend._on_response(_received("r5", _response(HOME, 200)))
+        backend._on_response_extra_info(_extra_response("r8", {"set-cookie": "seen=1"}))
+        backend._on_response(_received("r8", _response(HOME, 200)))
 
         hop, final = backend.get_har_entries()
-        assert hop["response"]["status"] == 302
         assert hop["response"]["cookies"] == [{"name": "session", "value": "minted"}]
         assert final["response"]["cookies"] == [{"name": "seen", "value": "1"}]
 
-    def test_extra_info_for_unknown_request_is_ignored(self) -> None:
+    def test_late_hop_extra_info_still_lands_on_the_hop(self) -> None:
+        """Unguaranteed order: the 302's ExtraInfo arrives AFTER the continuation's
+        requestWillBeSent (which flags redirectHasExtraInfo). It must land on the
+        hop, not on the successor -- otherwise the HAR says the 200 minted the cookie."""
         backend = NodriverCaptureBackend(MagicMock())
-        backend._on_response_extra_info(_extra_response("ghost", {"set-cookie": "x=1"}))
+        backend._on_request(_will_be_sent("r9", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_request(
+            _will_be_sent(
+                "r9",
+                _request(HOME),
+                _response(LOGIN, 302, {"Location": "/"}),
+                wall=2.0,
+                redirect_has_extra_info=True,
+            )
+        )
+        backend._on_response_extra_info(
+            _extra_response("r9", {"set-cookie": "session=minted"})
+        )  # late, for the hop
+        backend._on_response_extra_info(
+            _extra_response("r9", {"set-cookie": "seen=1"})
+        )  # for the successor
+        backend._on_response(_received("r9", _response(HOME, 200)))
+
+        hop, final = backend.get_har_entries()
+        assert hop["response"]["cookies"] == [{"name": "session", "value": "minted"}]
+        assert final["response"]["cookies"] == [{"name": "seen", "value": "1"}]
+
+    def test_hop_without_extra_info_does_not_steal_the_successors(self) -> None:
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(_will_be_sent("r10", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_request(
+            _will_be_sent(
+                "r10",
+                _request(HOME),
+                _response(LOGIN, 302),
+                wall=2.0,
+                redirect_has_extra_info=False,
+            )
+        )
+        backend._on_response_extra_info(_extra_response("r10", {"set-cookie": "seen=1"}))
+        backend._on_response(_received("r10", _response(HOME, 200)))
+
+        hop, final = backend.get_har_entries()
+        assert hop["response"]["cookies"] == []
+        assert final["response"]["cookies"] == [{"name": "seen", "value": "1"}]
+
+    def test_header_roles_still_see_renderer_headers_only(self) -> None:
+        """Raw wire headers stay beside the entry; role extraction (persisted to
+        the session cache) keeps the renderer headers it was designed for."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(
+            _will_be_sent("r11", _request(HOME, headers={"Accept": "text/html", "X-App": "1"}))
+        )
+        backend._on_request_extra_info(
+            _extra_request("r11", {"accept": "text/html", "x-app": "1", "cookie": "s=1"})
+        )
+
+        assert backend._request_map["r11"]["headers"] == {"Accept": "text/html", "X-App": "1"}
+        assert backend.get_header_roles()["navigation"] == {"Accept": "text/html", "X-App": "1"}
+
+    def test_unmatched_extra_info_is_logged_at_drain(self) -> None:
+        import asyncio
+
+        tab = MagicMock()
+        backend = NodriverCaptureBackend(MagicMock(), get_tab=lambda: tab)
         backend._on_request_extra_info(_extra_request("ghost", {"cookie": "x=1"}))
-        assert backend.get_har_entries() == []
+        backend._on_response_extra_info(_extra_response("ghost", {"set-cookie": "x=1"}))
+        with patch("graftpunk.observe.capture.LOG") as mock_log:
+            asyncio.run(backend.stop_capture_async())
+        debug_events = {c.args[0]: c.kwargs for c in mock_log.debug.call_args_list}
+        assert debug_events["extra_info_unmatched"] == {"request_events": 1, "response_events": 1}
 
     def test_start_capture_registers_extra_info_handlers(self) -> None:
         import asyncio
@@ -171,6 +304,37 @@ class TestNodriverExtraInfo:
         asyncio.run(backend.start_capture_async())
         registered = {c.args[1].__name__ for c in tab.add_handler.call_args_list}
         assert {"_on_request_extra_info", "_on_response_extra_info"} <= registered
+
+    def test_start_capture_tolerates_codegen_without_extra_info_classes(self) -> None:
+        import asyncio
+        import sys
+        from types import SimpleNamespace
+
+        network = SimpleNamespace(
+            enable=lambda **k: None,
+            RequestWillBeSent=object,
+            ResponseReceived=object,
+            LoadingFinished=object,
+        )
+        runtime = SimpleNamespace(enable=lambda: None, ConsoleAPICalled=object)
+        fake = {
+            "nodriver": SimpleNamespace(cdp=SimpleNamespace(network=network, runtime=runtime)),
+            "nodriver.cdp": SimpleNamespace(network=network, runtime=runtime),
+            "nodriver.cdp.network": network,
+            "nodriver.cdp.runtime": runtime,
+        }
+        tab = MagicMock()
+
+        async def send(*a: Any, **k: Any) -> None:
+            return None
+
+        tab.send = send
+        backend = NodriverCaptureBackend(MagicMock(), get_tab=lambda: tab)
+        with patch.dict(sys.modules, fake):
+            asyncio.run(backend.start_capture_async())
+        registered = {c.args[1].__name__ for c in tab.add_handler.call_args_list}
+        assert "_on_request_extra_info" not in registered
+        assert "_on_request" in registered
 
 
 # ---------------------------------------------------------------------------
@@ -192,104 +356,137 @@ def _driver(perf: list[dict[str, Any]]) -> MagicMock:
     return driver
 
 
+def _req(
+    rid: str,
+    url: str,
+    method: str = "GET",
+    *,
+    redirect: dict[str, Any] | None = None,
+    wall: float = 1.0,
+    has_extra: bool = False,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "requestId": rid,
+        "request": {"url": url, "method": method, "headers": {"Accept": "text/html"}},
+        "wallTime": wall,
+    }
+    if redirect is not None:
+        params["redirectResponse"] = redirect
+        params["redirectHasExtraInfo"] = has_extra
+    return _perf("Network.requestWillBeSent", params)
+
+
+def _resp(rid: str, url: str, status: int = 200) -> dict[str, Any]:
+    return _perf(
+        "Network.responseReceived",
+        {
+            "requestId": rid,
+            "response": {
+                "url": url,
+                "status": status,
+                "headers": {"Content-Type": "text/html"},
+                "mimeType": "text/html",
+            },
+        },
+    )
+
+
 class TestSeleniumExtraInfo:
     def test_set_cookie_and_cookie_headers_land_in_har(self) -> None:
         perf = [
-            _perf(
-                "Network.requestWillBeSent",
-                {
-                    "requestId": "s1",
-                    "request": {"url": HOME, "method": "GET", "headers": {}},
-                    "wallTime": 1.0,
-                },
-            ),
+            _req("s1", HOME),
             _perf(
                 "Network.requestWillBeSentExtraInfo",
-                {"requestId": "s1", "headers": {"cookie": "session=abc"}},
+                {"requestId": "s1", "headers": {"cookie": "session=abc", "accept": "text/html"}},
             ),
             _perf(
                 "Network.responseReceivedExtraInfo",
                 {
                     "requestId": "s1",
-                    "headers": {"set-cookie": "session=new; Path=/"},
-                    "statusCode": 200,
+                    "headers": {"set-cookie": "session=new; Path=/", "content-type": "text/html"},
                 },
             ),
-            _perf(
-                "Network.responseReceived",
-                {
-                    "requestId": "s1",
-                    "response": {
-                        "url": HOME,
-                        "status": 200,
-                        "headers": {"Content-Type": "text/html"},
-                        "mimeType": "text/html",
-                    },
-                },
-            ),
+            _resp("s1", HOME),
         ]
         backend = SeleniumCaptureBackend(_driver(perf))
         backend.stop_capture()
 
         (entry,) = backend.get_har_entries()
         assert entry["request"]["cookies"] == [{"name": "session", "value": "abc"}]
-        assert entry["response"]["cookies"] == [{"name": "session", "value": "new"}]
-        assert {h["name"].lower() for h in entry["response"]["headers"]} >= {
-            "set-cookie",
-            "content-type",
-        }
+        assert entry["response"]["cookies"] == [{"name": "session", "value": "new", "path": "/"}]
+        for side in ("request", "response"):
+            names = _names(entry[side]["headers"])
+            assert len(names) == len({n.lower() for n in names})
 
-    def test_redirect_hop_keeps_its_own_set_cookie(self) -> None:
+    def test_extra_info_before_request_is_buffered(self) -> None:
         perf = [
             _perf(
-                "Network.requestWillBeSent",
-                {
-                    "requestId": "s2",
-                    "request": {
-                        "url": LOGIN,
-                        "method": "POST",
-                        "headers": {},
-                        "postData": "u=x",
-                        "hasPostData": True,
-                    },
-                    "wallTime": 1.0,
-                },
+                "Network.requestWillBeSentExtraInfo",
+                {"requestId": "s2", "headers": {"cookie": "session=abc"}},
+            ),
+            _req("s2", HOME),
+            _resp("s2", HOME),
+        ]
+        backend = SeleniumCaptureBackend(_driver(perf))
+        backend.stop_capture()
+        assert backend.get_har_entries()[0]["request"]["cookies"] == [
+            {"name": "session", "value": "abc"}
+        ]
+
+    def test_late_hop_extra_info_lands_on_the_hop(self) -> None:
+        perf = [
+            _req("s3", LOGIN, "POST", wall=1.0),
+            _req(
+                "s3",
+                HOME,
+                redirect={"url": LOGIN, "status": 302, "headers": {"Location": "/"}},
+                wall=2.0,
+                has_extra=True,
             ),
             _perf(
                 "Network.responseReceivedExtraInfo",
-                {"requestId": "s2", "headers": {"set-cookie": "session=minted"}, "statusCode": 302},
+                {"requestId": "s3", "headers": {"set-cookie": "session=minted"}},
             ),
             _perf(
-                "Network.requestWillBeSent",
-                {
-                    "requestId": "s2",
-                    "request": {"url": HOME, "method": "GET", "headers": {}},
-                    "redirectResponse": {"url": LOGIN, "status": 302, "headers": {"Location": "/"}},
-                    "wallTime": 2.0,
-                },
+                "Network.responseReceivedExtraInfo",
+                {"requestId": "s3", "headers": {"set-cookie": "seen=1"}},
             ),
-            _perf(
-                "Network.responseReceived",
-                {
-                    "requestId": "s2",
-                    "response": {"url": HOME, "status": 200, "headers": {}, "mimeType": ""},
-                },
-            ),
+            _resp("s3", HOME),
         ]
         backend = SeleniumCaptureBackend(_driver(perf))
         backend.stop_capture()
 
         hop, final = backend.get_har_entries()
         assert hop["response"]["cookies"] == [{"name": "session", "value": "minted"}]
-        assert final["response"]["cookies"] == []
+        assert final["response"]["cookies"] == [{"name": "seen", "value": "1"}]
+
+    def test_unmatched_extra_info_logged_at_drain(self) -> None:
+        perf = [
+            _perf(
+                "Network.responseReceivedExtraInfo",
+                {"requestId": "ghost", "headers": {"set-cookie": "x=1"}},
+            )
+        ]
+        backend = SeleniumCaptureBackend(_driver(perf))
+        with patch("graftpunk.observe.capture.LOG") as mock_log:
+            backend.stop_capture()
+        assert any(c.args[0] == "extra_info_unmatched" for c in mock_log.debug.call_args_list)
 
 
 # ---------------------------------------------------------------------------
-# HAR builder cookie parsing
+# helpers
 # ---------------------------------------------------------------------------
 
 
-class TestHarCookies:
+class TestHelpers:
+    def test_merge_headers_ci_raw_wins_and_dedupes(self) -> None:
+        merged = _merge_headers_ci({"Content-Type": "a", "X-Keep": "k"}, {"content-type": "b"})
+        assert merged == {"X-Keep": "k", "content-type": "b"}
+
+    def test_merge_headers_ci_handles_none(self) -> None:
+        assert _merge_headers_ci(None, None) == {}
+        assert _merge_headers_ci({"A": "1"}, None) == {"A": "1"}
+
     def test_malformed_cookie_fragments_are_skipped(self) -> None:
         entry = _build_har_entry(
             {
@@ -301,21 +498,19 @@ class TestHarCookies:
             }
         )
         assert entry["request"]["cookies"] == [{"name": "good", "value": "1"}]
-        assert entry["response"]["cookies"] == [{"name": "ok", "value": "2"}]
+        assert entry["response"]["cookies"] == [{"name": "ok", "value": "2", "path": "/"}]
 
-    def test_extra_headers_override_filtered_ones_of_same_name(self) -> None:
+    def test_value_containing_equals_is_kept_whole(self) -> None:
         entry = _build_har_entry(
             {
                 "url": HOME,
                 "method": "GET",
                 "headers": {},
-                "response": {"status": 200, "headers": {"content-length": "1"}},
-                "_response_extra_headers": {"content-length": "2"},
+                "response": {"status": 200},
+                "_response_extra_headers": {"set-cookie": "tok=a=b=c; Secure"},
             }
         )
-        assert [
-            h["value"] for h in entry["response"]["headers"] if h["name"] == "content-length"
-        ] == ["2"]
+        assert entry["response"]["cookies"] == [{"name": "tok", "value": "a=b=c", "secure": True}]
 
 
 # ---------------------------------------------------------------------------
@@ -327,9 +522,10 @@ class TestConsoleTimestamp:
     def test_cdp_milliseconds_become_seconds(self) -> None:
         assert _console_timestamp(1700000000000.0) == 1700000000.0
 
-    def test_missing_falls_back_to_now(self) -> None:
-        before = time.time()
-        assert before <= _console_timestamp(None) <= time.time()
+    def test_missing_zero_or_garbage_fall_back_to_now(self) -> None:
+        for raw in (None, 0, "abc", object()):
+            before = time.time()
+            assert before <= _console_timestamp(raw) <= time.time()
 
     def test_nodriver_console_event_normalised(self) -> None:
         backend = NodriverCaptureBackend(MagicMock())
@@ -340,13 +536,17 @@ class TestConsoleTimestamp:
         backend._on_console(event)
         assert backend.get_console_logs()[0]["timestamp"] == 1700000000.0
 
-    def test_selenium_console_event_normalised(self) -> None:
+    def test_selenium_console_event_normalised_and_garbage_does_not_abort_drain(self) -> None:
         perf = [
+            _perf("Runtime.consoleAPICalled", {"type": "log", "args": [], "timestamp": "garbage"}),
             _perf(
                 "Runtime.consoleAPICalled",
                 {"type": "log", "args": [], "timestamp": 1700000000000.0},
-            )
+            ),
+            _req("s9", HOME),
         ]
         backend = SeleniumCaptureBackend(_driver(perf))
         backend.stop_capture()
-        assert backend.get_console_logs()[0]["timestamp"] == 1700000000.0
+        logs = backend.get_console_logs()
+        assert logs[1]["timestamp"] == 1700000000.0
+        assert len(backend.get_har_entries()) == 1  # drain continued past the bad timestamp
