@@ -1,10 +1,19 @@
 """Tests for NoDriverBackend property accessors and cookie operations."""
 
-from unittest.mock import MagicMock, patch
+from collections.abc import Callable, Coroutine, Iterator
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from graftpunk.backends.nodriver import NoDriverBackend
 
 from .conftest import close_coro_and_raise, close_coro_and_return
+
+# The backend module itself imports nodriver only under TYPE_CHECKING, so this
+# file must stay collectable on a browser-free install (repo convention:
+# tests/unit/test_storage_s3.py).
+ProtocolException = pytest.importorskip("nodriver.core.connection").ProtocolException
 
 
 class TestNoDriverBackendProperties:
@@ -162,3 +171,117 @@ class TestNoDriverBackendCookies:
         backend = NoDriverBackend()
         result = backend.delete_all_cookies()
         assert result is True
+
+
+class TestDeleteAllCookiesAsync:
+    """_delete_all_cookies_async must hand send() a CDP generator (issue #152).
+
+    Both nodriver lineages call ``next(cdp_obj)`` on the argument; a method-name
+    string raises TypeError, which the best-effort except tuple does not
+    catch, so delete_all_cookies() propagated instead of returning False.
+    The mocked-asyncio.run tests above never execute this coroutine, hence
+    the direct tests here.
+    """
+
+    @staticmethod
+    def _nodriver_like_send(sent: list[str]) -> Callable[..., Coroutine[Any, Any, dict[str, Any]]]:
+        async def send(
+            cdp_obj: Iterator[dict[str, Any]], *args: Any, **kwargs: Any
+        ) -> dict[str, Any]:
+            method, *params = next(cdp_obj).values()  # what nodriver does
+            sent.append(method)
+            return {}
+
+        return send
+
+    @pytest.mark.asyncio
+    async def test_sends_cdp_generator_for_clear_browser_cookies(self) -> None:
+        backend = NoDriverBackend()
+        backend._page = MagicMock()
+        sent: list[str] = []
+        backend._page.send = self._nodriver_like_send(sent)
+
+        assert await backend._delete_all_cookies_async() is True
+        assert sent == ["Network.clearBrowserCookies"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ConnectionError("browser gone"),
+            ProtocolException("Message has property other than ... [code: -32600]"),
+            TypeError("programming error"),
+        ],
+        ids=["ConnectionError", "ProtocolException", "TypeError"],
+    )
+    async def test_cdp_failure_returns_false(self, exc: BaseException) -> None:
+        """Best-effort contract: any failure logs a warning and returns False --
+        including nodriver's ProtocolException, which is a plain Exception subclass
+        and escaped the old transport-only tuple."""
+        backend = NoDriverBackend()
+        backend._page = MagicMock()
+        backend._page.send = AsyncMock(side_effect=exc)
+
+        with patch("graftpunk.backends.nodriver.LOG") as mock_log:
+            assert await backend._delete_all_cookies_async() is False
+
+        assert mock_log.warning.call_args.args[0] == "nodriver_clear_cookies_cdp_failed"
+        assert mock_log.warning.call_args.kwargs["exc_type"] == type(exc).__name__
+
+    def test_public_delete_all_cookies_returns_false_on_protocol_error(self) -> None:
+        """The issue's symptom was at the public boundary: run the coroutine for
+        real through _run_async and confirm the sync wrapper returns False."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+        backend._page.send = AsyncMock(side_effect=ProtocolException("[code: -32600]"))
+
+        assert backend.delete_all_cookies() is False
+
+    @pytest.mark.asyncio
+    async def test_no_page_is_a_noop_success(self) -> None:
+        backend = NoDriverBackend()
+        backend._page = None
+        assert await backend._delete_all_cookies_async() is True
+
+
+class TestBestEffortGettersOnProtocolError:
+    """Every documented-fallback async method returns its fallback on a CDP-level
+    error (#152 review sweep: six sibling sites shared delete_all_cookies' bug)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "page_attr", "fallback"),
+        [
+            ("_get_current_url_async", "evaluate", ""),
+            ("_get_page_title_async", "evaluate", ""),
+            ("_get_page_source_async", "get_content", ""),
+            ("_get_cookies_async", "get_cookies", []),
+            ("_get_user_agent_async", "evaluate", ""),
+        ],
+    )
+    async def test_getter_returns_fallback(
+        self, method: str, page_attr: str, fallback: Any
+    ) -> None:
+        backend = NoDriverBackend()
+        backend._page = MagicMock()
+        setattr(
+            backend._page, page_attr, AsyncMock(side_effect=ProtocolException("[code: -32000]"))
+        )
+
+        with patch("graftpunk.backends.nodriver.LOG") as mock_log:
+            assert await getattr(backend, method)() == fallback
+
+        assert mock_log.warning.call_args.kwargs["exc_type"] == "ProtocolException"
+
+    @pytest.mark.asyncio
+    async def test_set_cookies_returns_false_instead_of_raising(self) -> None:
+        backend = NoDriverBackend()
+        backend._page = MagicMock()
+        backend._page.set_cookies = AsyncMock(side_effect=ProtocolException("[code: -32602]"))
+
+        with patch("graftpunk.backends.nodriver.LOG") as mock_log:
+            assert await backend._set_cookies_async([{"name": "a", "value": "b"}]) is False
+
+        assert mock_log.warning.call_args.args[0] == "nodriver_set_cookies_failed"

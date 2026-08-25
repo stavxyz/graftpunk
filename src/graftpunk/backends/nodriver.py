@@ -538,9 +538,12 @@ class NoDriverBackend:
         try:
             result = await self._page.evaluate("window.location.href")
             return str(result) if result else ""
-        except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # CDP operations can fail; warn user
-            LOG.warning("nodriver_get_current_url_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is the fallback + warning
+            # nodriver raises ProtocolException (a plain Exception subclass) for
+            # CDP-level errors; a transport-only tuple let it escape (#152).
+            LOG.warning(
+                "nodriver_get_current_url_failed", error=str(exc), exc_type=type(exc).__name__
+            )
             return ""
 
     @property
@@ -569,9 +572,12 @@ class NoDriverBackend:
         try:
             result = await self._page.evaluate("document.title")
             return str(result) if result else ""
-        except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # CDP operations can fail; warn user
-            LOG.warning("nodriver_get_page_title_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is the fallback + warning
+            # nodriver raises ProtocolException (a plain Exception subclass) for
+            # CDP-level errors; a transport-only tuple let it escape (#152).
+            LOG.warning(
+                "nodriver_get_page_title_failed", error=str(exc), exc_type=type(exc).__name__
+            )
             return ""
 
     @property
@@ -599,9 +605,12 @@ class NoDriverBackend:
             return ""
         try:
             return await self._page.get_content() or ""
-        except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # CDP operations can fail; warn user
-            LOG.warning("nodriver_get_page_source_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is the fallback + warning
+            # nodriver raises ProtocolException (a plain Exception subclass) for
+            # CDP-level errors; a transport-only tuple let it escape (#152).
+            LOG.warning(
+                "nodriver_get_page_source_failed", error=str(exc), exc_type=type(exc).__name__
+            )
             return ""
 
     @property
@@ -647,9 +656,10 @@ class NoDriverBackend:
         try:
             cookies = await self._page.get_cookies()
             return cookies or []
-        except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # CDP operations can fail; warn user
-            LOG.warning("nodriver_get_cookies_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is the fallback + warning
+            # nodriver raises ProtocolException (a plain Exception subclass) for
+            # CDP-level errors; a transport-only tuple let it escape (#152).
+            LOG.warning("nodriver_get_cookies_failed", error=str(exc), exc_type=type(exc).__name__)
             return []
 
     def get_cookies(self) -> list[Cookie]:
@@ -677,11 +687,16 @@ class NoDriverBackend:
         """Async implementation of cookie setting.
 
         Returns:
-            True if cookies were set, False if page was not available.
+            True if cookies were set, False if the page was not available or
+            the CDP call failed (logged at warning level).
         """
         if self._page is None:
             return False
-        await self._page.set_cookies(cookies)
+        try:
+            await self._page.set_cookies(cookies)
+        except Exception as exc:  # noqa: BLE001 — best-effort: set_cookies() documents no exception
+            LOG.warning("nodriver_set_cookies_failed", error=str(exc), exc_type=type(exc).__name__)
+            return False
         return True
 
     def set_cookies(self, cookies: list[Cookie]) -> int:
@@ -728,20 +743,27 @@ class NoDriverBackend:
         """Async implementation of cookie deletion.
 
         Returns:
-            True if cookies were successfully deleted, False if an error occurred.
+            True if cookies were deleted or there was no page (nothing to
+            delete), False if the CDP call failed (logged at warning level).
         """
         if self._page is None:
             LOG.debug("nodriver_delete_cookies_no_page")
             return True  # No page = no cookies to delete
-        # nodriver doesn't have delete_all_cookies, so use CDP directly
+        # nodriver doesn't have delete_all_cookies, so use CDP directly.
+        # send() takes the CDP generator, not a method-name string: nodriver
+        # calls next() on it, so a string raised TypeError (issue #152).
         try:
-            await self._page.send(
-                "Network.clearBrowserCookies",  # type: ignore[arg-type]
-            )
+            import nodriver.cdp.network as cdp_network
+
+            await self._page.send(cdp_network.clear_browser_cookies())  # type: ignore[attr-defined]
             return True
-        except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # CDP operations can fail; warn user
-            LOG.warning("nodriver_clear_cookies_cdp_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is False + warning
+            # nodriver raises ProtocolException (a plain Exception subclass)
+            # for CDP-level errors, which the old transport-only tuple let
+            # escape (issue #152).
+            LOG.warning(
+                "nodriver_clear_cookies_cdp_failed", error=str(exc), exc_type=type(exc).__name__
+            )
             return False
 
     def delete_all_cookies(self) -> bool:
@@ -757,7 +779,11 @@ class NoDriverBackend:
             return self._run_async(self._delete_all_cookies_async())
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # asyncio.run() can fail if browser crashed; best-effort operation
-            LOG.warning("nodriver_backend_delete_cookies_failed", error=str(exc))
+            LOG.warning(
+                "nodriver_backend_delete_cookies_failed",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
             return False
 
     async def _get_user_agent_async(self) -> str:
@@ -767,9 +793,12 @@ class NoDriverBackend:
         try:
             result = await self._page.evaluate("navigator.userAgent")
             return str(result) if result else ""
-        except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # CDP operations can fail; warn user
-            LOG.warning("nodriver_get_user_agent_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is the fallback + warning
+            # nodriver raises ProtocolException (a plain Exception subclass) for
+            # CDP-level errors; a transport-only tuple let it escape (#152).
+            LOG.warning(
+                "nodriver_get_user_agent_failed", error=str(exc), exc_type=type(exc).__name__
+            )
             return ""
 
     def get_user_agent(self) -> str:
