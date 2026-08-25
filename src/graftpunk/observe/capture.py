@@ -234,26 +234,103 @@ def _finalize_redirect_hop(
     request_map[f"{request_id}:redirect:{hop_index}"] = previous
 
 
+def _console_timestamp(raw: Any) -> float:
+    """Normalise a ``Runtime.consoleAPICalled`` timestamp to seconds since epoch.
+
+    CDP's ``Runtime.Timestamp`` is *milliseconds* since epoch; the fallback
+    when an event carries none is ``time.time()`` (seconds). Storing both as-is
+    mixed units in ``console.jsonl`` (issue #158).
+    """
+    if raw is None:
+        return time.time()
+    return float(raw) / 1000.0
+
+
+def _merge_request_extra_headers(
+    request_map: dict[str, dict[str, Any]], request_id: str, headers: Mapping[str, Any] | None
+) -> None:
+    """Fold ``Network.requestWillBeSentExtraInfo`` headers into the live request.
+
+    ``requestWillBeSent`` carries the headers the renderer *asked* for; the
+    ExtraInfo event carries what actually went on the wire, including the raw
+    ``Cookie`` header. It always follows ``requestWillBeSent`` for its hop, so
+    the live entry under ``request_id`` is the right one (a redirect
+    continuation has already moved the previous hop aside).
+    """
+    entry = request_map.get(request_id)
+    if entry is None or not headers:
+        return
+    entry["headers"] = {**entry.get("headers", {}), **dict(headers)}
+
+
+def _store_response_extra_headers(
+    request_map: dict[str, dict[str, Any]], request_id: str, headers: Mapping[str, Any] | None
+) -> None:
+    """Keep ``Network.responseReceivedExtraInfo`` headers for the live request.
+
+    Chromium delivers only filtered headers on ``responseReceived`` and
+    ``redirectResponse``; ``Set-Cookie`` arrives only here (issue #157). The
+    event may fire before *or* after ``responseReceived``, so the headers are
+    stored beside the entry and merged when the HAR is built. For a redirect
+    hop the ExtraInfo precedes the continuation's ``requestWillBeSent``, so it
+    lands on the hop before ``_finalize_redirect_hop`` moves it aside.
+    """
+    entry = request_map.get(request_id)
+    if entry is None or not headers:
+        return
+    entry["_response_extra_headers"] = {**entry.get("_response_extra_headers", {}), **dict(headers)}
+
+
+def _parse_cookie_pairs(fragments: list[str]) -> list[dict[str, str]]:
+    """``name=value`` pairs from cookie fragments; malformed fragments are skipped."""
+    cookies: list[dict[str, str]] = []
+    for fragment in fragments:
+        name, sep, value = fragment.strip().partition("=")
+        if sep and name:
+            cookies.append({"name": name.strip(), "value": value.strip()})
+    return cookies
+
+
+def _request_cookies(headers: Mapping[str, str]) -> list[dict[str, str]]:
+    """HAR ``request.cookies`` from the raw ``Cookie`` header."""
+    for name, value in headers.items():
+        if name.lower() == "cookie" and value:
+            return _parse_cookie_pairs(value.split(";"))
+    return []
+
+
+def _response_cookies(headers: Mapping[str, str]) -> list[dict[str, str]]:
+    """HAR ``response.cookies`` from ``Set-Cookie`` (one cookie per line)."""
+    for name, value in headers.items():
+        if name.lower() == "set-cookie" and value:
+            return _parse_cookie_pairs([line.split(";", 1)[0] for line in value.split("\n")])
+    return []
+
+
 def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
     """Build a HAR 1.2 entry dict from correlated request/response data."""
     response = request_data.get("response", {})
+    request_headers: dict[str, str] = request_data.get("headers", {})
+    # Raw wire headers (ExtraInfo) win over the filtered ones of the same name.
+    response_headers: dict[str, str] = {
+        **response.get("headers", {}),
+        **request_data.get("_response_extra_headers", {}),
+    }
     entry: dict[str, Any] = {
         "startedDateTime": _wall_time_to_iso(request_data.get("timestamp")),
         "time": 0,
         "request": {
             "method": request_data.get("method", "GET"),
             "url": request_data.get("url", ""),
-            "headers": [
-                {"name": k, "value": v} for k, v in request_data.get("headers", {}).items()
-            ],
-            "cookies": [],
+            "headers": [{"name": k, "value": v} for k, v in request_headers.items()],
+            "cookies": _request_cookies(request_headers),
             "queryString": [],
         },
         "response": {
             "status": response.get("status", 0),
             "statusText": response.get("statusText", ""),
-            "headers": [{"name": k, "value": v} for k, v in response.get("headers", {}).items()],
-            "cookies": [],
+            "headers": [{"name": k, "value": v} for k, v in response_headers.items()],
+            "cookies": _response_cookies(response_headers),
             "redirectURL": response.get("redirectURL", ""),
             "content": {
                 "mimeType": response.get("mimeType", ""),
@@ -443,13 +520,21 @@ class SeleniumCaptureBackend:
                     response.get("headers"),
                     response.get("mimeType"),
                 )
+            elif method == "Network.requestWillBeSentExtraInfo":
+                _merge_request_extra_headers(
+                    self._request_map, params.get("requestId", ""), params.get("headers")
+                )
+            elif method == "Network.responseReceivedExtraInfo":
+                _store_response_extra_headers(
+                    self._request_map, params.get("requestId", ""), params.get("headers")
+                )
             elif method == "Runtime.consoleAPICalled":
                 args = params.get("args", [])
                 self._console_logs.append(
                     {
                         "level": params.get("type", "log"),
                         "args": [arg.get("value", str(arg)) for arg in args],
-                        "timestamp": params.get("timestamp", time.time()),
+                        "timestamp": _console_timestamp(params.get("timestamp")),
                     }
                 )
 
@@ -738,6 +823,10 @@ class NodriverCaptureBackend:
         tab.add_handler(network.RequestWillBeSent, self._on_request)  # type: ignore[attr-defined]
         tab.add_handler(network.ResponseReceived, self._on_response)  # type: ignore[attr-defined]
         tab.add_handler(network.LoadingFinished, self._on_loading_finished)  # type: ignore[attr-defined]
+        # Raw wire headers (Cookie / Set-Cookie) only arrive on the ExtraInfo
+        # events; the filtered ones above never carry them (issue #157).
+        tab.add_handler(network.RequestWillBeSentExtraInfo, self._on_request_extra_info)  # type: ignore[attr-defined]
+        tab.add_handler(network.ResponseReceivedExtraInfo, self._on_response_extra_info)  # type: ignore[attr-defined]
 
         # Console log capture
         await tab.send(cdp_runtime.enable())  # type: ignore[attr-defined]
@@ -858,6 +947,20 @@ class NodriverCaptureBackend:
         except Exception:
             LOG.exception("nodriver_on_request_failed")
 
+    def _on_request_extra_info(self, event: Any) -> None:
+        """Handle a CDP RequestWillBeSentExtraInfo event (raw request headers)."""
+        try:
+            _merge_request_extra_headers(self._request_map, str(event.request_id), event.headers)
+        except Exception:
+            LOG.exception("nodriver_on_request_extra_info_failed")
+
+    def _on_response_extra_info(self, event: Any) -> None:
+        """Handle a CDP ResponseReceivedExtraInfo event (raw response headers)."""
+        try:
+            _store_response_extra_headers(self._request_map, str(event.request_id), event.headers)
+        except Exception:
+            LOG.exception("nodriver_on_response_extra_info_failed")
+
     def _on_response(self, event: Any) -> None:
         """Handle a CDP ResponseReceived event and correlate with request data."""
         try:
@@ -946,7 +1049,7 @@ class NodriverCaptureBackend:
                         event.type_.value if hasattr(event.type_, "value") else str(event.type_)
                     ),
                     "args": [getattr(arg, "value", str(arg)) for arg in (event.args or [])],
-                    "timestamp": getattr(event, "timestamp", None) or time.time(),
+                    "timestamp": _console_timestamp(getattr(event, "timestamp", None)),
                 }
             )
         except Exception:
