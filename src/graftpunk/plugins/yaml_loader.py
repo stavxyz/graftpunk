@@ -388,12 +388,18 @@ def parse_yaml_plugin(
                     f"Plugin '{filepath}': login step #{i + 1} is invalid: {exc}"
                 ) from exc
 
+        headless = login_block.get("headless", False)
+        if not isinstance(headless, bool):
+            raise PluginError(
+                f"Plugin '{filepath}': login.headless must be true or false, got {headless!r}."
+            )
         login_config = LoginConfig(
             steps=steps,
             url=login_block.get("url", ""),
             wait_for=login_block.get("wait_for", ""),
             failure=login_block.get("failure", ""),
             success=login_block.get("success", ""),
+            headless=headless,
         )
 
     # Parse token config

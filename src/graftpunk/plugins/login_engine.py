@@ -293,6 +293,46 @@ async def _fill_field(
     )
 
 
+def _start_login_capture(
+    plugin: SitePlugin,
+    backend_type: str,
+    driver: Any,
+    observe_mode: str,
+    get_tab: Any = None,
+) -> tuple[Any, Any]:
+    """Create the capture backend for a login run.
+
+    Returns ``(capture, storage)``. With ``observe_mode == "off"`` the capture
+    is the lightweight header-only one used for role extraction and storage is
+    None. Otherwise it is a full capture (bodies streamed to the run dir) and
+    storage is an ``ObserveStorage`` under the plugin's session name, so
+    ``gp --observe=full <plugin> login`` records a run like ``observe go`` does.
+    """
+    from graftpunk.observe.capture import create_capture_backend
+
+    if observe_mode == "off":
+        return create_capture_backend(backend_type, driver, get_tab=get_tab), None
+
+    from graftpunk.observe import OBSERVE_BASE_DIR
+    from graftpunk.observe.run import make_run_id
+    from graftpunk.observe.storage import ObserveStorage
+
+    storage = ObserveStorage(OBSERVE_BASE_DIR, plugin.session_name, make_run_id())
+    capture = create_capture_backend(
+        backend_type,
+        driver,
+        get_tab=get_tab,
+        bodies_dir=storage.run_dir / "bodies",
+    )
+    LOG.info(
+        "login_observe_capture_started",
+        plugin=plugin.site_name,
+        mode=observe_mode,
+        run_dir=str(storage.run_dir),
+    )
+    return capture, storage
+
+
 def _warn_no_login_validation(site_name: str) -> None:
     """Log a warning when no login validation is configured."""
     LOG.warning(
@@ -503,7 +543,22 @@ def generate_login_method(plugin: SitePlugin) -> Any:
 def _generate_nodriver_login(plugin: SitePlugin) -> Any:
     """Generate async login method for nodriver backend."""
 
-    async def login(credentials: dict[str, str]) -> bool:
+    async def login(
+        credentials: dict[str, str],
+        *,
+        headless: bool | None = None,
+        observe_mode: str = "off",
+    ) -> bool:
+        """Log in with a nodriver browser.
+
+        Args:
+            credentials: Field name -> value.
+            headless: Override ``LoginConfig.headless`` for this call; None
+                means use the config value.
+            observe_mode: "off" or "full". "full" records an observe run
+                (screenshot, page source, HAR with bodies, console) under the
+                plugin's session name, whether or not the login succeeds.
+        """
         if plugin.login_config is None:
             raise PluginError(
                 f"Plugin '{plugin.site_name}' has no login configuration. "
@@ -513,10 +568,11 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
         login_url = plugin.login_config.url
         login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
+        run_headless = plugin.login_config.headless if headless is None else headless
 
         from graftpunk import BrowserSession  # lazy: browser stack ([browser] extra)
 
-        async with BrowserSession(backend="nodriver", headless=False) as session:
+        async with BrowserSession(backend="nodriver", headless=run_headless) as session:
             try:
                 async with asyncio.timeout(_LOGIN_NAV_TIMEOUT):
                     tab = await session.driver.get(login_target)
@@ -533,115 +589,141 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                     f"URL: {login_target}"
                 ) from None
 
-            # Start header capture for role extraction (lightweight, no body fetching)
-            from graftpunk.observe.capture import create_capture_backend
-
-            _header_capture = create_capture_backend(
-                "nodriver", session.driver, get_tab=lambda: tab
+            # Header capture for role extraction; a full observe run when requested.
+            _header_capture, observe_storage = _start_login_capture(
+                plugin, "nodriver", session.driver, observe_mode, get_tab=lambda: tab
             )
             await _header_capture.start_capture_async()
-
-            # Top-level wait_for: wait for a specific element before any steps
-            # (e.g., a form that appears after a redirect completes)
-            if plugin.login_config.wait_for:
-                await _wait_for_element(tab, plugin.login_config.wait_for, "Login page")
-
-            # Execute each step in sequence: wait_for -> fill fields -> submit -> delay
-            for step_idx, step in enumerate(plugin.login_config.steps, start=1):
-                # Step-level wait_for: wait for element before this step
-                if step.wait_for:
-                    await _wait_for_element(tab, step.wait_for, f"Step {step_idx}")
-
-                # Fill fields, verifying each value landed (see _fill_field)
-                for field_name, selector in step.fields.items():
-                    value = credentials.get(field_name, "")
-                    try:
-                        await _fill_field(
-                            tab, selector, value, field_name=field_name, step_idx=step_idx
-                        )
-                    except PluginError:
-                        raise
-                    except Exception as exc:
-                        raise PluginError(
-                            f"Step {step_idx}: Failed to fill login field '{field_name}' "
-                            f"(selector: '{selector}'): {exc}"
-                        ) from exc
-
-                # Click submit if specified for this step
-                if step.submit:
-                    try:
-                        submit = await _select_with_retry(tab, step.submit)
-                        if submit is None:
-                            raise PluginError(
-                                f"Step {step_idx}: Submit button not found "
-                                f"using selector '{step.submit}'. "
-                                "Check your plugin's login step configuration."
-                            )
-                        await submit.click()
-                    except PluginError:
-                        raise
-                    except Exception as exc:
-                        raise PluginError(
-                            f"Step {step_idx}: Failed to click submit button "
-                            f"(selector: '{step.submit}'): {exc}"
-                        ) from exc
-
-                # Step-level delay after submit
-                if step.delay > 0:
-                    await asyncio.sleep(step.delay)
-
-            # Fixed delay to allow page to settle after all steps complete
-            await asyncio.sleep(_POST_SUBMIT_DELAY)
-
-            # Check success/failure
-            page_text = await tab.get_content()
-            success_selector = plugin.login_config.success
-            success_found: bool | None = None
-            if success_selector:
-                # Bare select (no retry): page has settled after submit delay;
-                # retrying here would mask genuine login failures.
-                success_element = await tab.select(success_selector)
-                success_found = success_element is not None
-
-            if not _check_login_result(
-                page_text=page_text,
-                failure_text=failure_text,
-                success_found=success_found,
-                success_selector=success_selector or "",
-                site_name=plugin.site_name,
-            ):
-                return False
-
-            # Capture current URL before caching (used for domain display)
             try:
-                if tab and hasattr(tab, "url"):
-                    session.current_url = tab.url or login_target
-                else:
-                    session.current_url = login_target
-            except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
-                LOG.debug("login_url_capture_failed", error=str(exc), backend="nodriver")
-                session.current_url = login_target
-
-            # Extract header roles from captured network requests
-            session._gp_header_roles = _header_capture.get_header_roles()
-
-            # Transfer cookies and cache
-            await session.transfer_nodriver_cookies_to_session()
-
-            # Extract tokens using the already-open browser (avoids separate launch)
-            try:
-                await _extract_and_cache_tokens_nodriver(plugin, session, tab, base_url)
-            except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
-                LOG.warning(
-                    "login_token_extraction_failed",
-                    plugin=plugin.site_name,
-                    error=str(exc),
+                return await _run_nodriver_steps(
+                    plugin=plugin,
+                    session=session,
+                    tab=tab,
+                    credentials=credentials,
+                    login_target=login_target,
+                    failure_text=failure_text,
+                    base_url=base_url,
+                    header_capture=_header_capture,
                 )
+            finally:
+                if observe_storage is not None:
+                    from graftpunk.observe.run import save_observe_run
 
-            cache_session(session, plugin.session_name)
-            return True
+                    await save_observe_run(observe_storage, _header_capture, "login")
 
     return login
+
+
+async def _run_nodriver_steps(
+    *,
+    plugin: SitePlugin,
+    session: Any,
+    tab: Any,
+    credentials: dict[str, str],
+    login_target: str,
+    failure_text: str,
+    base_url: str,
+    header_capture: Any,
+) -> bool:
+    """Execute the configured login steps on an open tab and cache on success."""
+    assert plugin.login_config is not None  # noqa: S101 — checked by caller
+    # Top-level wait_for: wait for a specific element before any steps
+    # (e.g., a form that appears after a redirect completes)
+    if plugin.login_config.wait_for:
+        await _wait_for_element(tab, plugin.login_config.wait_for, "Login page")
+
+    # Execute each step in sequence: wait_for -> fill fields -> submit -> delay
+    for step_idx, step in enumerate(plugin.login_config.steps, start=1):
+        # Step-level wait_for: wait for element before this step
+        if step.wait_for:
+            await _wait_for_element(tab, step.wait_for, f"Step {step_idx}")
+
+        # Fill fields, verifying each value landed (see _fill_field)
+        for field_name, selector in step.fields.items():
+            value = credentials.get(field_name, "")
+            try:
+                await _fill_field(tab, selector, value, field_name=field_name, step_idx=step_idx)
+            except PluginError:
+                raise
+            except Exception as exc:
+                raise PluginError(
+                    f"Step {step_idx}: Failed to fill login field '{field_name}' "
+                    f"(selector: '{selector}'): {exc}"
+                ) from exc
+
+        # Click submit if specified for this step
+        if step.submit:
+            try:
+                submit = await _select_with_retry(tab, step.submit)
+                if submit is None:
+                    raise PluginError(
+                        f"Step {step_idx}: Submit button not found "
+                        f"using selector '{step.submit}'. "
+                        "Check your plugin's login step configuration."
+                    )
+                await submit.click()
+            except PluginError:
+                raise
+            except Exception as exc:
+                raise PluginError(
+                    f"Step {step_idx}: Failed to click submit button "
+                    f"(selector: '{step.submit}'): {exc}"
+                ) from exc
+
+        # Step-level delay after submit
+        if step.delay > 0:
+            await asyncio.sleep(step.delay)
+
+    # Fixed delay to allow page to settle after all steps complete
+    await asyncio.sleep(_POST_SUBMIT_DELAY)
+
+    # Check success/failure
+    page_text = await tab.get_content()
+    success_selector = plugin.login_config.success
+    success_found: bool | None = None
+    if success_selector:
+        # Bare select (no retry): page has settled after submit delay;
+        # retrying here would mask genuine login failures.
+        success_element = await tab.select(success_selector)
+        success_found = success_element is not None
+
+    if not _check_login_result(
+        page_text=page_text,
+        failure_text=failure_text,
+        success_found=success_found,
+        success_selector=success_selector or "",
+        site_name=plugin.site_name,
+    ):
+        return False
+
+    # Capture current URL before caching (used for domain display)
+    try:
+        if tab and hasattr(tab, "url"):
+            session.current_url = tab.url or login_target
+        else:
+            session.current_url = login_target
+    except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
+        LOG.debug("login_url_capture_failed", error=str(exc), backend="nodriver")
+        session.current_url = login_target
+
+    # Extract header roles from captured network requests
+    session._gp_header_roles = header_capture.get_header_roles()
+
+    # Transfer cookies and cache
+    await session.transfer_nodriver_cookies_to_session()
+
+    # Extract tokens using the already-open browser (avoids separate launch)
+    try:
+        await _extract_and_cache_tokens_nodriver(plugin, session, tab, base_url)
+    except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
+        LOG.warning(
+            "login_token_extraction_failed",
+            plugin=plugin.site_name,
+            error=str(exc),
+        )
+
+    cache_session(session, plugin.session_name)
+    return True
 
 
 def _generate_selenium_login(plugin: SitePlugin) -> Any:
@@ -649,7 +731,22 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
     import selenium.common.exceptions
     from selenium.common.exceptions import NoSuchElementException
 
-    def login(credentials: dict[str, str]) -> bool:
+    def login(
+        credentials: dict[str, str],
+        *,
+        headless: bool | None = None,
+        observe_mode: str = "off",
+    ) -> bool:
+        """Log in with a selenium browser.
+
+        Args:
+            credentials: Field name -> value.
+            headless: Override ``LoginConfig.headless`` for this call; None
+                means use the config value.
+            observe_mode: "off" or "full". "full" makes the BrowserSession
+                record an observe run (HAR, console, error screenshot) under
+                the plugin's session name.
+        """
         if plugin.login_config is None:
             raise PluginError(
                 f"Plugin '{plugin.site_name}' has no login configuration. "
@@ -660,15 +757,26 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
         success_selector = plugin.login_config.success
+        run_headless = plugin.login_config.headless if headless is None else headless
 
         from graftpunk import BrowserSession  # lazy: browser stack ([browser] extra)
 
-        with BrowserSession(backend="selenium", headless=False) as session:
-            # Start header capture for role extraction
-            from graftpunk.observe.capture import create_capture_backend
+        # BrowserSession owns observe for selenium (its capture drains Chrome's
+        # performance log, which is single-consumer), so hand it the mode and
+        # the session name the run should be filed under.
+        browser_session = BrowserSession(
+            backend="selenium", headless=run_headless, observe_mode=observe_mode
+        )
+        browser_session._session_name = plugin.session_name
+        with browser_session as session:
+            # Header capture for role extraction: reuse the session's observe
+            # capture when it has one, else start a lightweight one.
+            _header_capture = getattr(session, "_capture", None) if observe_mode != "off" else None
+            if _header_capture is None:
+                from graftpunk.observe.capture import create_capture_backend
 
-            _header_capture = create_capture_backend("selenium", session.driver)
-            _header_capture.start_capture()
+                _header_capture = create_capture_backend("selenium", session.driver)
+                _header_capture.start_capture()
 
             session.driver.get(login_target)
 

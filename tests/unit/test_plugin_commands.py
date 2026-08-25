@@ -659,10 +659,10 @@ class TestAutoLoginCommand:
         assert fn.__name__ == "login"
         assert "Log in to testlogin site" in fn.__doc__
 
-        # No params beyond ctx -- credentials are gathered via prompts/envvars
-        # at runtime (include_builtin_options=False, zero param_specs).
+        # Only --headless beyond ctx -- credentials are gathered via
+        # prompts/envvars at runtime (include_builtin_options=False).
         params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
-        assert params == []
+        assert params == ["headless"]
 
     def test_login_command_envvar_resolution(self) -> None:
         """Test that environment variables are resolved at runtime."""
