@@ -359,6 +359,19 @@ The top-level login configuration includes:
 - **`wait_for`** — Optional top-level wait for element before any steps begin.
 - **`failure`** — Optional text that indicates login failure.
 - **`success`** — Optional CSS selector that indicates login success.
+- **`headless`** — Run the login browser headless (default `false`, so a human can solve a CAPTCHA or 2FA prompt). `gp <plugin> login --headless` / `--headful` override it for one invocation in either direction; the flags are offered only on declarative logins (a plugin's own `login()` method cannot honour them).
+
+#### Field filling is verified
+
+Some server-rendered sites re-render their login form shortly after load (jQuery/select2 and friends). The element handle resolved for a field can be detached from the DOM by the time keys are sent; the keystrokes then go nowhere and the browser refuses to submit the empty `required` field. The nodriver engine guards against this: each attempt re-selects the element, clears it, types, waits briefly (the browser acknowledges key events before the DOM value updates — reading back immediately makes things worse), and reads the field's value back from the live DOM by selector. An empty read-back means the value never reached the live element: it retries up to 3 times and then fails with an error naming the field rather than the credentials. A non-empty read-back that differs from what was typed (sites that lowercase, trim or mask input) is logged and accepted.
+
+#### Diagnosing a failed login
+
+`login` reporting a failure means the page did not reach the expected post-login state. The engine logs what it actually detected — the configured `failure` text, a missing `success` element, or a `Too Many Requests` (rate-limit) page — so read the warning before assuming bad credentials. To capture the whole flow, run `gp --observe=full <plugin> login`: it records an observe run under the plugin's session name whether or not the login succeeds, and prints the run directory. `gp observe list` shows it. With the nodriver backend the run holds a screenshot, the page source, a HAR with response bodies, and console logs; with the selenium backend `BrowserSession` owns the capture, which yields the HAR, console logs, and a screenshot only if the login raised.
+
+**One current gap:** the capture keeps only the final hop of a redirect chain, so a login form whose `POST` answers with a redirect is recorded as the redirect target only — the POST itself is absent from the HAR (XHR/JSON logins are captured in full). Tracked in [#153](https://github.com/stavxyz/graftpunk/issues/153).
+
+**The run is sensitive.** The credentials you submitted are scrubbed from the HAR (raw, URL-encoded, JSON-escaped and base64 forms), but the exchange still contains the session cookies the login minted, and response bodies streamed to the run's `bodies/` directory are not scanned. Treat the run directory like a cached session, and delete it when you are done.
 
 #### Single-Step Login (Traditional Form)
 
@@ -436,6 +449,7 @@ login:
   url: /login
   wait_for: "#login-form"
   failure: "Invalid credentials"
+  headless: false  # default; true for sites that need no CAPTCHA/2FA
   steps:
     - fields:
         username: "input#signInName"
@@ -1113,7 +1127,7 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `CommandSpec` | `plugins.cli_plugin` | Yes | Command spec: `name`, `handler`, `help_text`, `params`, `timeout`, `max_retries`, `rate_limit`, `requires_session`, `group` |
 | `CommandMetadata` | `plugins.cli_plugin` | Yes | Metadata stored by `@command` decorator on methods |
 | `CommandGroupMeta` | `plugins.cli_plugin` | Yes | Metadata stored by `@command` decorator on classes (command groups) |
-| `LoginConfig` | `plugins.cli_plugin` | Yes | Declarative browser login configuration: `steps`, `url`, `wait_for`, `failure`, `success` |
+| `LoginConfig` | `plugins.cli_plugin` | Yes | Declarative browser login configuration: `steps`, `url`, `wait_for`, `failure`, `success`, `headless` |
 | `LoginStep` | `plugins.cli_plugin` | Yes | Single step in a login flow: `fields`, `submit`, `wait_for`, `delay` |
 | `PluginConfig` | `plugins.cli_plugin` | Yes | Canonical config: `site_name`, `session_name`, `help_text`, `base_url`, `requires_session`, `backend`, `api_version`, `username_envvar`, `password_envvar`, `login_config`, `plugin_version`, `plugin_author`, `plugin_url` |
 | `PluginParamSpec` | `plugins.cli_plugin` | Yes | CLI parameter specification |

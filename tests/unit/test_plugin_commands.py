@@ -659,8 +659,9 @@ class TestAutoLoginCommand:
         assert fn.__name__ == "login"
         assert "Log in to testlogin site" in fn.__doc__
 
-        # No params beyond ctx -- credentials are gathered via prompts/envvars
-        # at runtime (include_builtin_options=False, zero param_specs).
+        # A hand-written login(credentials) takes no headless kwarg, so no
+        # flags are offered -- credentials are gathered via prompts/envvars
+        # at runtime (include_builtin_options=False).
         params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
         assert params == []
 

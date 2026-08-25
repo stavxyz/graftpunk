@@ -5,6 +5,7 @@ for integration tests. These unit tests focus on testable components that
 don't require actual browser instantiation.
 """
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1923,3 +1924,75 @@ class TestNodriverBrowserExecutablePath:
         _, kwargs = gb.call_args
         assert "browser_executable_path" not in kwargs
         reset_settings()
+
+
+class TestObserveStartHardening:
+    """BrowserSession._start_observe: unsafe names are slugified; storage errors
+    degrade to no capture; the HAR is redacted on write."""
+
+    def _make_session(self, observe_mode: str = "full", session_name: str = "My Bank") -> Any:
+        from graftpunk.session import BrowserSession
+
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+            session._backend_type = "selenium"
+            session._backend_instance = None
+            session._observe_mode = observe_mode
+            session._capture = None
+            session._observe_storage = None
+            session._observe_redact = ()
+            session._session_name = session_name
+            session._webdriver = MagicMock()
+            return session
+
+    def test_unsafe_session_name_is_slugified(self, tmp_path: Path) -> None:
+        session = self._make_session()
+        with (
+            patch("graftpunk.session.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.session.create_capture_backend") as ccb,
+        ):
+            session._start_observe()
+
+        assert session._observe_storage is not None
+        assert session._observe_storage.run_dir.parent == tmp_path / "my-bank"
+        ccb.return_value.start_capture.assert_called_once()
+
+    def test_storage_error_skips_capture_with_warning(self, tmp_path: Path) -> None:
+        session = self._make_session()
+        with (
+            patch("graftpunk.session.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.session.ObserveStorage", side_effect=OSError("read-only")),
+            patch("graftpunk.session.gp_console.warn") as warn,
+            patch("graftpunk.session.create_capture_backend") as ccb,
+        ):
+            session._start_observe()
+
+        assert session._capture is None
+        assert session._observe_storage is None
+        ccb.assert_not_called()
+        assert "read-only" in warn.call_args.args[0]
+
+    def test_write_observe_data_redacts_secrets(self, tmp_path: Path) -> None:
+        from graftpunk.observe.run import REDACTED
+        from graftpunk.observe.storage import ObserveStorage
+
+        session = self._make_session(session_name="bank")
+        session.observe_redact = ["hunter2", ""]
+        session._observe_storage = ObserveStorage(tmp_path, "bank", "run1")
+        session._capture = MagicMock()
+        session._capture.get_har_entries = MagicMock(
+            return_value=[{"request": {"postData": {"text": "p=hunter2"}}, "response": {}}]
+        )
+        session._capture.get_console_logs = MagicMock(return_value=[])
+
+        session._write_observe_data()
+
+        har = (tmp_path / "bank" / "run1" / "network.har").read_text()
+        assert "hunter2" not in har
+        assert REDACTED in har
+
+    def test_public_accessors(self) -> None:
+        session = self._make_session()
+        assert session.capture is None
+        session.observe_redact = ["a", None, "b"]
+        assert session.observe_redact == ("a", "b")

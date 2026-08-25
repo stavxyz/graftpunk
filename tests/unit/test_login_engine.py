@@ -726,6 +726,67 @@ class TestNodriverLoginValidationPaths:
 class TestCheckLoginResult:
     """Direct tests for _check_login_result()."""
 
+    def test_rate_limited_page_returns_false_and_logs_rate_limit(self) -> None:
+        """A 'Too Many Requests' page is not a credentials failure (issue #148 item 2)."""
+        from graftpunk.plugins.login_engine import _check_login_result
+
+        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+            result = _check_login_result(
+                page_text="<html><title>429 Too Many Requests</title></html>",
+                failure_text="These credentials do not match",
+                success_found=False,
+                success_selector="#dashboard",
+                site_name="test",
+            )
+        assert result is False
+        events = [c.args[0] for c in mock_log.warning.call_args_list]
+        assert events == ["login_rate_limited"]
+
+    def test_rate_limit_marker_never_vetoes_a_found_success_element(self) -> None:
+        """page_text is raw HTML; a post-login page's inlined JS can contain the
+        marker. A found success element is the stronger signal."""
+        from graftpunk.plugins.login_engine import _check_login_result
+
+        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+            result = _check_login_result(
+                page_text='<script>i18n={"e429":"Too many requests"}</script><div id=dash>',
+                failure_text="Bad login.",
+                success_found=True,
+                success_selector="#dash",
+                site_name="test",
+            )
+        assert result is True
+        mock_log.warning.assert_not_called()
+
+    def test_rate_limit_detection_is_case_insensitive(self) -> None:
+        from graftpunk.plugins.login_engine import _check_login_result
+
+        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+            result = _check_login_result(
+                page_text="<h1>TOO MANY REQUESTS</h1>",
+                failure_text="",
+                success_found=None,
+                success_selector="",
+                site_name="test",
+            )
+        assert result is False
+        assert mock_log.warning.call_args.args[0] == "login_rate_limited"
+
+    def test_failure_warning_carries_still_on_login_page_hint(self) -> None:
+        """The failure-text warning must not read as a credentials verdict."""
+        from graftpunk.plugins.login_engine import _check_login_result
+
+        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+            _check_login_result(
+                page_text="<html>Bad login.</html>",
+                failure_text="Bad login.",
+                success_found=None,
+                success_selector="",
+                site_name="test",
+            )
+        kwargs = mock_log.warning.call_args.kwargs
+        assert "hint" in kwargs
+
     def test_failure_text_present_returns_false(self) -> None:
         """Returns False when failure text is found in page text (case-insensitive)."""
         from graftpunk.plugins.login_engine import _check_login_result
@@ -1710,10 +1771,11 @@ class TestNodriverMultiStepLogin:
             result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Exactly two sleep calls: step delay (0.5) and post-submit delay (patched to 0)
+        # Four sleep calls: one settle per filled field (2, from _fill_field),
+        # the step delay (0.5), and the post-submit delay (patched to ~0).
         from graftpunk.plugins.login_engine import _POST_SUBMIT_DELAY
 
-        assert mock_sleep.call_count == 2
+        assert mock_sleep.call_count == 4
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
         assert _POST_SUBMIT_DELAY in sleep_calls

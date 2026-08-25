@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`LoginConfig.headless` and `gp <plugin> login --headless` / `--headful`** ([#148](https://github.com/stavxyz/graftpunk/issues/148)). Declarative login no longer hardcodes a visible browser window: set `headless: true` on sites that need no CAPTCHA/2FA, and override either way per invocation. The flags are offered only on declarative logins.
+- **`--observe=full` now covers `gp <plugin> login`** ([#148](https://github.com/stavxyz/graftpunk/issues/148)). An observed login records a run under the plugin's session name — screenshot, page source, HAR with bodies and console logs on nodriver; HAR, console logs and an error screenshot on selenium — whether or not the login succeeds, and prints the run directory. Submitted credentials are scrubbed from the HAR before it is written (`graftpunk.observe.run.redact_har_entries`); session cookies are not, so treat the run as sensitive.
+
 ### Fixed
 
+- **Declarative login typed into a detached DOM node and blamed the credentials** ([#148](https://github.com/stavxyz/graftpunk/issues/148)). On sites that re-render the login form after load, the element handle could be stale by the time keys were sent; the browser then refused to submit the empty required field and the CLI reported "Check your credentials". The nodriver engine now re-selects, clears, types, waits for the renderer, and reads the value back from the live DOM by selector, retrying up to 3 times and failing with an error that names the field. The CLI message is cause-neutral, a `Too Many Requests` page is reported as rate limiting rather than a login failure, and the failure-text / success-element warnings say what was measured.
 - **Response-body capture on nodriver >= 0.50.1** ([#146](https://github.com/stavxyz/graftpunk/issues/146)). nodriver 0.50 renamed `Connection.send(..., _is_update)` to `_attach` and merges unknown kwargs into the CDP message, so the eager body fetch put `_is_update: true` on the wire and Chrome rejected every `Network.getResponseBody` with `-32600`; capture silently reverted to the eviction-limited late path. The eager fetch now passes `_is_update=True` only when the installed `send()` declares it (nodriver <= 0.48) and nothing otherwise. Measured on 0.50.3 with `gp --observe=full observe go https://www.python.org/`: 0 × `-32600`, 23 of 32 HAR entries with bodies.
 
 ## [1.12.0] - 2026-08-01

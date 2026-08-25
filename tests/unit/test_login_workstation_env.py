@@ -83,3 +83,29 @@ def test_envvar_override_resolves_from_file(_fresh, monkeypatch):
     body = make_login_body(plugin, login, {"username": "#u", "password": "#p"})
     body(SimpleNamespace())
     assert captured["username"] == "overridden-user"
+
+
+def test_false_result_message_is_cause_neutral(_fresh, monkeypatch):
+    """login() returning False means 'did not complete', not 'bad credentials'.
+
+    The engine already logged what it detected (failure text, missing success
+    element, rate limiting, empty field); the CLI must not name a cause it did
+    not measure (issue #148 item 2).
+    """
+    monkeypatch.setenv("ACME_USERNAME", "u")
+    monkeypatch.setenv("ACME_PASSWORD", "p")
+
+    body = make_login_body(
+        _plugin(), lambda credentials: False, {"username": "#u", "password": "#p"}
+    )
+    with (
+        patch("graftpunk.cli.login_commands.gp_console.error") as mock_error,
+        pytest.raises(SystemExit),
+    ):
+        body(SimpleNamespace())
+
+    message = mock_error.call_args.args[0]
+    assert "acme" in message
+    assert "did not complete" in message
+    assert "credentials" not in message.lower()
+    assert "--observe=full" in message

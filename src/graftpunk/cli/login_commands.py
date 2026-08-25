@@ -96,6 +96,45 @@ def resolve_login_fields(plugin: CLIPluginProtocol) -> dict[str, str]:
     return {"username": "", "password": ""}
 
 
+def _observe_mode_from_ctx(ctx: Any) -> str:
+    """Read ``--observe`` from the root Typer context; "off" when unavailable."""
+    try:
+        return str((ctx.find_root().obj or {}).get("observe_mode", "off"))
+    except AttributeError:
+        return "off"
+
+
+def _accepted_login_kwargs(login_callable: Callable[..., Any], **candidates: Any) -> dict[str, Any]:
+    """Keep only the kwargs ``login_callable`` declares as optional (or ``**kwargs``).
+
+    Generated declarative logins accept ``headless`` and ``observe_mode``; a
+    plugin's hand-written ``login(credentials)`` usually does not, and must
+    not receive arguments it never asked for. A same-named *required*
+    positional parameter does not count either: it would receive ``None``
+    for an unset flag, which is not what such a signature means.
+    """
+    try:
+        params = inspect.signature(login_callable).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(candidates)
+    return {
+        k: v
+        for k, v in candidates.items()
+        if k in params
+        and (
+            params[k].kind is inspect.Parameter.KEYWORD_ONLY
+            or params[k].default is not inspect.Parameter.empty
+        )
+    }
+
+
+def _supports_headless(login_callable: Callable[..., Any]) -> bool:
+    """True when the login callable takes a ``headless`` kwarg (generated logins do)."""
+    return "headless" in _accepted_login_kwargs(login_callable, headless=None)
+
+
 def make_login_body(
     plugin: CLIPluginProtocol,
     login_callable: Callable[..., Any],
@@ -119,8 +158,21 @@ def make_login_body(
     if password_envvar:
         envvar_overrides["password"] = password_envvar
 
-    def body(ctx: typer.Context, **kwargs: Any) -> None:  # noqa: ARG001 — zero params by design
+    def body(ctx: typer.Context, **kwargs: Any) -> None:
         login_method = login_callable
+        # --headless -> True, --headful -> False, neither -> None (LoginConfig decides).
+        want_headless = bool(kwargs.pop("headless", False))
+        want_headful = bool(kwargs.pop("headful", False))
+        if want_headless and want_headful:
+            raise typer.BadParameter("--headless and --headful are mutually exclusive")
+        headless_override: bool | None = (
+            True if want_headless else (False if want_headful else None)
+        )
+        login_kwargs = _accepted_login_kwargs(
+            login_method,
+            headless=headless_override,
+            observe_mode=_observe_mode_from_ctx(ctx),
+        )
         credentials: dict[str, str] = {}
         site_prefix = plugin.site_name.upper().replace("-", "_").replace(" ", "_")
 
@@ -153,13 +205,18 @@ def make_login_body(
                     from graftpunk.logging import suppress_asyncio_noise
 
                     with suppress_asyncio_noise():
-                        result = asyncio.run(login_method(credentials))
+                        result = asyncio.run(login_method(credentials, **login_kwargs))
                 else:
-                    result = login_method(credentials)
+                    result = login_method(credentials, **login_kwargs)
 
             if result is False:
+                # The engine logged what it actually detected (failure text,
+                # missing success element, rate limiting, a field that never
+                # accepted input). Do not name a cause that was not measured.
                 gp_console.error(
-                    f"Login failed for {plugin.site_name}. Check your credentials and try again."
+                    f"Login did not complete for {plugin.site_name}: the page did not "
+                    "reach the expected post-login state. See the warning above for "
+                    "what was detected. Re-run with --observe=full to capture the flow."
                 )
                 raise SystemExit(1)
             if result is not True:
@@ -190,14 +247,44 @@ def create_login_fn(
     login_callable: Callable[..., Any],
     fields: dict[str, str],
 ) -> Callable[..., None]:
-    """Synthesize the zero-parameter ``login`` command function."""
-    from graftpunk.cli.command_factory import synthesize_command_fn
+    """Synthesize the ``login`` command function.
 
-    help_text = inspect.getdoc(login_callable) or f"Log in to {plugin.site_name}"
-    help_text = help_text.split("\n")[0]
+    Credentials are gathered at runtime (env, workstation file, prompts), so
+    the only parameters are ``--headless`` / ``--headful``, and those only
+    when the login callable can honour them (generated declarative logins;
+    a hand-written ``login(credentials)`` gets neither, rather than an
+    advertised flag that silently does nothing).
+    """
+    from graftpunk.cli.command_factory import synthesize_command_fn
+    from graftpunk.plugins.cli_plugin import PluginParamSpec
+
+    if getattr(login_callable, "_gp_generated_login", False):
+        # The generated login's docstring describes the engine, not the site.
+        help_text = f"Log in to {plugin.site_name}"
+    else:
+        help_text = inspect.getdoc(login_callable) or f"Log in to {plugin.site_name}"
+        help_text = help_text.split("\n")[0]
+
+    param_specs: list[PluginParamSpec] = []
+    if _supports_headless(login_callable):
+        param_specs = [
+            PluginParamSpec.option(
+                "headless",
+                type=bool,
+                default=False,
+                help="Run the login browser headless (overrides LoginConfig.headless).",
+            ),
+            PluginParamSpec.option(
+                "headful",
+                type=bool,
+                default=False,
+                help="Show the browser window even if LoginConfig.headless is true "
+                "(e.g. to solve a CAPTCHA or 2FA prompt).",
+            ),
+        ]
     return synthesize_command_fn(
         name="login",
-        param_specs=[],
+        param_specs=param_specs,
         body=make_login_body(plugin, login_callable, fields),
         plugin_name=plugin.site_name,
         include_builtin_options=False,

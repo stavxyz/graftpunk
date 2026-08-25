@@ -505,6 +505,10 @@ class LoginConfig:
         success: CSS selector for an element indicating login success.
         wait_for: CSS selector to wait for before any steps execute.
             Empty string (default) means no explicit wait.
+        headless: Run the login browser headless. Defaults to False (a visible
+            window) so a human can solve a CAPTCHA or 2FA prompt; set True for
+            sites that need neither. ``gp <plugin> login --headless`` overrides
+            this per invocation.
     """
 
     steps: tuple[LoginStep, ...] | list[LoginStep]  # Always tuple after __post_init__
@@ -512,6 +516,7 @@ class LoginConfig:
     failure: str = ""
     success: str = ""
     wait_for: str = ""
+    headless: bool = False
 
     def __post_init__(self) -> None:
         # Convert list to tuple for immutability and validate each element
@@ -537,6 +542,10 @@ class LoginConfig:
         # Validate success non-whitespace when non-empty
         if self.success and not self.success.strip():
             raise ValueError("LoginConfig.success must not be whitespace")
+        if not isinstance(self.headless, bool):
+            raise TypeError(
+                f"LoginConfig.headless must be bool, got {type(self.headless).__name__}"
+            )
 
 
 @dataclass(frozen=True)
