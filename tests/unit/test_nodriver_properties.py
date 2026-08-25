@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from nodriver.core.connection import ProtocolException
 
 from graftpunk.backends.nodriver import NoDriverBackend
 
@@ -193,7 +194,7 @@ class TestDeleteAllCookiesAsync:
     async def test_sends_cdp_generator_for_clear_browser_cookies(self) -> None:
         backend = NoDriverBackend()
         backend._page = MagicMock()
-        sent: list = []
+        sent: list[str] = []
         backend._page.send = self._nodriver_like_send(sent)
 
         assert await backend._delete_all_cookies_async() is True
@@ -204,23 +205,35 @@ class TestDeleteAllCookiesAsync:
         "exc",
         [
             ConnectionError("browser gone"),
-            pytest.param(None, id="ProtocolException"),  # filled in below
+            ProtocolException("Message has property other than ... [code: -32600]"),
             TypeError("programming error"),
         ],
+        ids=["ConnectionError", "ProtocolException", "TypeError"],
     )
-    async def test_cdp_failure_returns_false(self, exc: BaseException | None) -> None:
+    async def test_cdp_failure_returns_false(self, exc: BaseException) -> None:
         """Best-effort contract: any failure logs a warning and returns False --
         including nodriver's ProtocolException, which is a plain Exception subclass
         and escaped the old transport-only tuple."""
-        if exc is None:
-            from nodriver.core.connection import ProtocolException
-
-            exc = ProtocolException("Message has property other than ... [code: -32600]")
         backend = NoDriverBackend()
         backend._page = MagicMock()
         backend._page.send = AsyncMock(side_effect=exc)
 
-        assert await backend._delete_all_cookies_async() is False
+        with patch("graftpunk.backends.nodriver.LOG") as mock_log:
+            assert await backend._delete_all_cookies_async() is False
+
+        assert mock_log.warning.call_args.args[0] == "nodriver_clear_cookies_cdp_failed"
+        assert mock_log.warning.call_args.kwargs["exc_type"] == type(exc).__name__
+
+    def test_public_delete_all_cookies_returns_false_on_protocol_error(self) -> None:
+        """The issue's symptom was at the public boundary: run the coroutine for
+        real through _run_async and confirm the sync wrapper returns False."""
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = MagicMock()
+        backend._page = MagicMock()
+        backend._page.send = AsyncMock(side_effect=ProtocolException("[code: -32600]"))
+
+        assert backend.delete_all_cookies() is False
 
     @pytest.mark.asyncio
     async def test_no_page_is_a_noop_success(self) -> None:

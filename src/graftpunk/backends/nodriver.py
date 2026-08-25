@@ -736,9 +736,9 @@ class NoDriverBackend:
         # nodriver doesn't have delete_all_cookies, so use CDP directly.
         # send() takes the CDP generator, not a method-name string: nodriver
         # calls next() on it, so a string raised TypeError (issue #152).
-        import nodriver.cdp.network as cdp_network
-
         try:
+            import nodriver.cdp.network as cdp_network
+
             await self._page.send(cdp_network.clear_browser_cookies())  # type: ignore[attr-defined]
             return True
         except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is False + warning
