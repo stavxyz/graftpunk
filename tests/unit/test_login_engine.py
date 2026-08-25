@@ -1710,10 +1710,11 @@ class TestNodriverMultiStepLogin:
             result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Exactly two sleep calls: step delay (0.5) and post-submit delay (patched to 0)
+        # Four sleep calls: one settle per filled field (2, from _fill_field),
+        # the step delay (0.5), and the post-submit delay (patched to ~0).
         from graftpunk.plugins.login_engine import _POST_SUBMIT_DELAY
 
-        assert mock_sleep.call_count == 2
+        assert mock_sleep.call_count == 4
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
         assert _POST_SUBMIT_DELAY in sleep_calls

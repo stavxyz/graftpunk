@@ -8,6 +8,7 @@ and session caching automatically.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import urllib.parse
@@ -33,6 +34,8 @@ _POST_SUBMIT_DELAY = 3  # seconds to wait after form submission for page to sett
 _ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transitions
 _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
 _LOGIN_NAV_TIMEOUT = 60  # seconds — login page may redirect through SSO/IdP chains
+_FIELD_SETTLE_DELAY = 0.4  # seconds between send_keys and value read-back (see _fill_field)
+_FIELD_FILL_ATTEMPTS = 3  # select+type attempts before giving up on a field
 
 
 def _resolve_url(base_url: str, url: str) -> str:
@@ -180,6 +183,111 @@ async def _wait_for_element(
         raise PluginError(error_msg) from exc
     if element is None:
         raise PluginError(error_msg)
+
+
+async def _read_field_value(tab: Any, selector: str) -> str | None:
+    """Read an input's current value from the live DOM, by selector.
+
+    Deliberately re-queries the document rather than using the element handle
+    that was typed into: if the page swapped the form, the handle points at a
+    detached node whose value is meaningless.
+
+    Returns:
+        The value as a string, or None if it could not be determined (selector
+        matched nothing, evaluate failed, non-string result). None means
+        "cannot verify", not "empty".
+    """
+    js = (
+        f"(() => {{ const el = document.querySelector({json.dumps(selector)}); "
+        "return el ? el.value : null; })()"
+    )
+    try:
+        result = await tab.evaluate(js, return_by_value=True)
+    except Exception as exc:  # noqa: BLE001 — verification is best-effort
+        LOG.debug("login_field_readback_failed", selector=selector, error=str(exc))
+        return None
+    if isinstance(result, str):
+        return result
+    # nodriver's evaluate(return_by_value=True) returns the RemoteObject itself
+    # when the value is falsy, so an empty string arrives wrapped.
+    value = getattr(result, "value", None)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+async def _fill_field(
+    tab: Any,
+    selector: str,
+    value: str,
+    *,
+    field_name: str,
+    step_idx: int,
+) -> None:
+    """Type ``value`` into the field at ``selector``, verifying it landed.
+
+    Server-rendered sites that re-render the login form shortly after load
+    (jQuery/select2 and friends) turn field filling into a race: the handle
+    from ``_select_with_retry`` can be detached by the time ``send_keys`` runs,
+    the key events dispatch fine, and the characters go nowhere (issue #148).
+
+    After typing, wait ``_FIELD_SETTLE_DELAY`` (Input.dispatchKeyEvent is
+    acknowledged before the renderer updates the value, so an immediate read
+    sees an empty field even on success), then read the value back from the
+    live DOM by selector. On mismatch, re-select, clear, and retype, up to
+    ``_FIELD_FILL_ATTEMPTS`` times. If the value cannot be read back at all,
+    the single fill stands (best-effort verification).
+
+    Raises:
+        PluginError: If the field cannot be found, or never accepts the value.
+    """
+    for attempt in range(1, _FIELD_FILL_ATTEMPTS + 1):
+        element = await _select_with_retry(tab, selector)
+        if element is None:
+            raise PluginError(
+                f"Step {step_idx}: Login field '{field_name}' not found "
+                f"using selector '{selector}'. "
+                "Check your plugin's login step configuration."
+            )
+        await element.click()
+        if attempt > 1:
+            # A late-arriving fill from the previous attempt must not be doubled.
+            await element.clear_input()
+        await element.send_keys(value)
+        if not value:
+            return
+
+        await asyncio.sleep(_FIELD_SETTLE_DELAY)
+        actual = await _read_field_value(tab, selector)
+        if actual is None:
+            LOG.debug("login_field_unverifiable", field=field_name, selector=selector)
+            return
+        if actual == value:
+            if attempt > 1:
+                LOG.info(
+                    "login_field_fill_recovered",
+                    field=field_name,
+                    selector=selector,
+                    attempt=attempt,
+                )
+            return
+        LOG.warning(
+            "login_field_value_mismatch",
+            field=field_name,
+            selector=selector,
+            attempt=attempt,
+            expected_len=len(value),
+            actual_len=len(actual),
+            hint="Typed into a detached node (page re-rendered the form?); re-selecting",
+        )
+
+    raise PluginError(
+        f"Step {step_idx}: Login field '{field_name}' (selector '{selector}') "
+        f"did not accept input after {_FIELD_FILL_ATTEMPTS} attempts. "
+        "The page appears to replace the form after load; the typed value never "
+        "reached the live element. Try a step-level wait_for on the form, or a "
+        "more specific selector."
+    )
 
 
 def _warn_no_login_validation(site_name: str) -> None:
@@ -414,19 +522,13 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                 if step.wait_for:
                     await _wait_for_element(tab, step.wait_for, f"Step {step_idx}")
 
-                # Fill fields (click before send_keys to prevent keystroke loss)
+                # Fill fields, verifying each value landed (see _fill_field)
                 for field_name, selector in step.fields.items():
                     value = credentials.get(field_name, "")
                     try:
-                        element = await _select_with_retry(tab, selector)
-                        if element is None:
-                            raise PluginError(
-                                f"Step {step_idx}: Login field '{field_name}' not found "
-                                f"using selector '{selector}'. "
-                                "Check your plugin's login step configuration."
-                            )
-                        await element.click()
-                        await element.send_keys(value)
+                        await _fill_field(
+                            tab, selector, value, field_name=field_name, step_idx=step_idx
+                        )
                     except PluginError:
                         raise
                     except Exception as exc:
