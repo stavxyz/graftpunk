@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -131,7 +131,10 @@ def _wall_time_to_iso(wall_time: float | None) -> str:
 
 
 def _response_summary(
-    status: int, status_text: str | None, headers: Any, mime_type: str | None
+    status: int,
+    status_text: str | None,
+    headers: Mapping[str, Any] | None,
+    mime_type: str | None,
 ) -> dict[str, Any]:
     """The response fields kept per request, in one shape for both backends."""
     return {
@@ -162,29 +165,42 @@ def _ordered_request_items(
     )
 
 
+def _header_roles_in_order(request_map: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """Header roles extracted in the same chronological order the HAR uses."""
+    from graftpunk.observe.headers import extract_header_roles
+
+    return extract_header_roles(dict(_ordered_request_items(request_map)))
+
+
 def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """HAR entries in chronological order (see ``_ordered_request_items``)."""
-    return [_build_har_entry(data, rid) for rid, data in _ordered_request_items(request_map)]
+    return [_build_har_entry(data) for _rid, data in _ordered_request_items(request_map)]
 
 
-def _is_redirect_hop(request_id: str, data: dict[str, Any]) -> bool:
+def _is_redirect_hop(data: dict[str, Any]) -> bool:
     """True if ``data`` is a finalized redirect hop; body fetching must skip it.
 
-    A 3xx has no response body, and the synthetic key is not a CDP id. A hop's
-    POST body that CDP did not inline is not retrievable by request id after
-    the redirect either (the id now addresses the final hop), so say so rather
-    than drop it silently.
+    A 3xx has no response body, and the synthetic key is not a CDP id.
     """
-    if not data.get("_redirect_hop"):
-        return False
-    if data.get("has_post_data") and not data.get("post_data"):
+    return bool(data.get("_redirect_hop"))
+
+
+def _note_lost_hop_body(request_id: str, data: dict[str, Any]) -> None:
+    """Warn once if a redirect hop's POST body was never captured.
+
+    A hop's POST body that CDP did not inline is not retrievable by request id
+    after the redirect (the id now addresses the final hop), so say so rather
+    than drop it silently. One-shot per entry, so a second drain of the same
+    map cannot repeat it.
+    """
+    if data.get("has_post_data") and not data.get("post_data") and not data.get("_hop_warned"):
+        data["_hop_warned"] = True
         LOG.warning(
             "redirect_hop_post_data_unavailable",
             request_id=request_id,
             url=data.get("url"),
             hint="Request body was not inlined by CDP and is lost across the redirect",
         )
-    return True
 
 
 def _finalize_redirect_hop(
@@ -204,7 +220,10 @@ def _finalize_redirect_hop(
     The finished hop is re-keyed as ``"<id>:redirect:<n>"`` (a synthetic key,
     not a CDP request id) and flagged ``_redirect_hop`` so body fetches skip
     it: a 3xx has no body worth fetching, and CDP would reject the key anyway.
-    The caller then records the announced request under ``request_id``.
+    The caller then records the announced request under ``request_id``. That
+    order -- hop re-inserted first, successor written second -- is what keeps
+    a hop ahead of its successor when their wall times tie, since
+    ``_ordered_request_items`` relies on a stable sort.
     """
     previous = request_map.pop(request_id, None)
     if previous is None:
@@ -215,7 +234,7 @@ def _finalize_redirect_hop(
     request_map[f"{request_id}:redirect:{hop_index}"] = previous
 
 
-def _build_har_entry(request_data: dict[str, Any], request_id: str) -> dict[str, Any]:
+def _build_har_entry(request_data: dict[str, Any]) -> dict[str, Any]:
     """Build a HAR 1.2 entry dict from correlated request/response data."""
     response = request_data.get("response", {})
     entry: dict[str, Any] = {
@@ -412,7 +431,9 @@ class SeleniumCaptureBackend:
                         "url": response.get("url", ""),
                         "method": "GET",
                         "headers": {},
-                        "timestamp": time.time(),  # request never seen; best we know
+                        # Perf log is replayed at stop time: this is stop time, not
+                        # arrival. responseReceived carries no wallTime; orphans sort last.
+                        "timestamp": time.time(),
                         "has_post_data": False,
                         "post_data": None,
                     }
@@ -434,7 +455,8 @@ class SeleniumCaptureBackend:
 
         # Fetch bodies for all captured requests
         for request_id, data in list(self._request_map.items()):
-            if _is_redirect_hop(request_id, data):
+            if _is_redirect_hop(data):
+                _note_lost_hop_body(request_id, data)
                 continue
             # Fetch POST body if hasPostData but no inline postData
             if data.get("has_post_data") and not data.get("post_data"):
@@ -526,9 +548,8 @@ class SeleniumCaptureBackend:
 
     def get_header_roles(self) -> dict[str, dict[str, str]]:
         """Return header roles classified from captured network requests."""
-        from graftpunk.observe.headers import extract_header_roles
 
-        return extract_header_roles(dict(_ordered_request_items(self._request_map)))
+        return _header_roles_in_order(self._request_map)
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously (wraps sync method)."""
@@ -646,9 +667,8 @@ class NodriverCaptureBackend:
 
     def get_header_roles(self) -> dict[str, dict[str, str]]:
         """Return header roles classified from captured network requests."""
-        from graftpunk.observe.headers import extract_header_roles
 
-        return extract_header_roles(dict(_ordered_request_items(self._request_map)))
+        return _header_roles_in_order(self._request_map)
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously via nodriver.
@@ -749,7 +769,8 @@ class NodriverCaptureBackend:
             )
 
         for request_id, data in list(self._request_map.items()):
-            if _is_redirect_hop(request_id, data):
+            if _is_redirect_hop(data):
+                _note_lost_hop_body(request_id, data)
                 continue
             # Fetch POST body if has_post_data but no inline post_data
             if data.get("has_post_data") and not data.get("post_data"):
@@ -846,7 +867,7 @@ class NodriverCaptureBackend:
                     "url": event.response.url,
                     "method": "GET",
                     "headers": {},
-                    "timestamp": time.time(),  # request never seen; best we know
+                    "timestamp": time.time(),  # arrival time; the request was never seen
                     "has_post_data": False,
                     "post_data": None,
                 }

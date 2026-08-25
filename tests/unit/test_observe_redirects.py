@@ -8,6 +8,7 @@ server-rendered login that is the ``POST /login`` itself.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -52,14 +53,20 @@ def _response(
     return r
 
 
+_CLOCK = {"t": 1700000000.0}
+
+
 def _will_be_sent(
     rid: str, request: MagicMock, redirect_response: MagicMock | None = None
 ) -> MagicMock:
+    """Each event gets a later wall time than the previous one, so ordering
+    assertions exercise the sort rather than map insertion order."""
     ev = MagicMock()
     ev.request_id = rid
     ev.request = request
     ev.redirect_response = redirect_response
-    ev.wall_time = 1700000000.0
+    _CLOCK["t"] += 0.5
+    ev.wall_time = _CLOCK["t"]
     return ev
 
 
@@ -409,9 +416,42 @@ class TestOrdering:
     def test_orphan_entry_gets_a_real_timestamp(self) -> None:
         """A response for a never-seen request is stamped when it is seen, so its
         order and its startedDateTime agree by construction."""
+        import time
+
         backend = NodriverCaptureBackend(MagicMock())
+        earlier = _will_be_sent("r7", _request(LOGIN, "POST", "x=1"))
+        earlier.wall_time = 1700000000.0
+        backend._on_request(earlier)
+        before = time.time()
         backend._on_response(_response_received("orphan2", _response(HOME, 200)))
-        assert isinstance(backend._request_map["orphan2"]["timestamp"], float)
+        stamp = backend._request_map["orphan2"]["timestamp"]
+        assert before <= stamp <= time.time()
+        assert [e["request"]["url"] for e in backend.get_har_entries()] == [LOGIN, HOME]
+
+    def test_selenium_orphan_entry_is_stamped_and_sorts_last(self) -> None:
+        perf = [
+            _perf(
+                "Network.responseReceived",
+                {
+                    "requestId": "s9",
+                    "response": {
+                        "url": HOME + "late",
+                        "status": 200,
+                        "headers": {},
+                        "mimeType": "",
+                    },
+                },
+            ),
+            _sel_request("s8", LOGIN, "POST", post="x=1", wall=1700000000.0),
+        ]
+        driver = MagicMock()
+        driver.get_log = MagicMock(side_effect=lambda kind: perf if kind == "performance" else [])
+        driver.execute_cdp_cmd = MagicMock(return_value={"body": "", "base64Encoded": False})
+        backend = SeleniumCaptureBackend(driver)
+        backend.stop_capture()
+
+        assert isinstance(backend._request_map["s9"]["timestamp"], float)
+        assert [e["request"]["url"] for e in backend.get_har_entries()] == [LOGIN, HOME + "late"]
 
     def test_header_roles_see_the_same_order_as_the_har(self) -> None:
         """The POST hop is re-inserted at the end of the map; header-role
@@ -425,6 +465,20 @@ class TestOrdering:
         ):
             backend.get_header_roles()
         assert seen == [LOGIN, HOME]
+
+    def test_header_roles_include_the_post_hop_headers(self) -> None:
+        """Real extract_header_roles: the POST hop's request headers were previously
+        invisible; now the hop is part of the map role extraction sees."""
+        backend = NodriverCaptureBackend(MagicMock())
+        post = _request(LOGIN, "POST", "u=alice")
+        post.headers = {"Content-Type": "application/x-www-form-urlencoded", "X-Shop-Client": "web"}
+        backend._on_request(_will_be_sent("r10", post))
+        backend._on_request(_will_be_sent("r10", _request(HOME), _response(LOGIN, 302)))
+
+        roles = backend.get_header_roles()
+        # The POST hop classifies as the "form" role; its custom header survives
+        # (Content-Type itself is in EXCLUDED_HEADERS).
+        assert roles["form"]["X-Shop-Client"] == "web"
 
 
 class TestRealCdpDataclasses:
@@ -462,20 +516,26 @@ class TestRealCdpDataclasses:
             post_data=post,
             has_post_data=post is not None,
         )
-        return n.RequestWillBeSent(
-            request_id=n.RequestId(rid),
-            loader_id=n.LoaderId("L"),
-            document_url=url,
-            request=request,
-            timestamp=n.MonotonicTime(1.0),
-            wall_time=n.TimeSinceEpoch(1700000000.0),
-            initiator=n.Initiator(type_="other"),
-            redirect_has_extra_info=False,
-            redirect_response=redirect,
-            type_=None,
-            frame_id=None,
-            has_user_gesture=None,
-        )
+        explicit = {
+            "request_id": n.RequestId(rid),
+            "loader_id": n.LoaderId("L"),
+            "document_url": url,
+            "request": request,
+            "timestamp": n.MonotonicTime(1.0),
+            "wall_time": n.TimeSinceEpoch(1700000000.0),
+            "initiator": n.Initiator(type_="other"),
+            "redirect_has_extra_info": False,
+            "redirect_response": redirect,
+        }
+        # nodriver adds required fields as the CDP spec grows (0.50.x added
+        # render_blocking_behavior); pass None for any we do not care about so
+        # the test pins attribute names on every supported version.
+        required = {
+            f.name: None
+            for f in dataclasses.fields(n.RequestWillBeSent)
+            if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
+        }
+        return n.RequestWillBeSent(**{**required, **explicit})
 
     def test_login_chain_with_real_dataclasses(self) -> None:
         backend = NodriverCaptureBackend(MagicMock())
@@ -508,7 +568,7 @@ class TestRealCdpDataclasses:
 class TestHarEntryRedirectUrl:
     def test_redirect_url_present_and_empty_by_default(self) -> None:
         entry = _build_har_entry(
-            {"url": HOME, "method": "GET", "headers": {}, "response": {"status": 200}}, "x"
+            {"url": HOME, "method": "GET", "headers": {}, "response": {"status": 200}}
         )
         assert entry["response"]["redirectURL"] == ""
 
@@ -520,6 +580,5 @@ class TestHarEntryRedirectUrl:
                 "headers": {},
                 "response": {"status": 302, "redirectURL": HOME},
             },
-            "x",
         )
         assert entry["response"]["redirectURL"] == HOME

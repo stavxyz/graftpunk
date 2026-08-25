@@ -1390,7 +1390,7 @@ class TestSharedHARHelpers:
                 "body": '{"ok": true}',
             },
         }
-        entry = _build_har_entry(data, "req-1")
+        entry = _build_har_entry(data)
         assert entry["request"]["method"] == "GET"
         assert entry["request"]["url"] == "https://example.com/api"
         assert entry["response"]["status"] == 200
@@ -1405,14 +1405,14 @@ class TestSharedHARHelpers:
             "post_data": "user=foo&pass=bar",
             "timestamp": None,
         }
-        entry = _build_har_entry(data, "req-2")
+        entry = _build_har_entry(data)
         assert entry["request"]["method"] == "POST"
         assert "postData" in entry["request"]
         assert entry["request"]["postData"]["text"] == "user=foo&pass=bar"
 
     def test_build_har_entry_no_response(self) -> None:
         data = {"url": "https://example.com", "method": "GET", "headers": {}}
-        entry = _build_har_entry(data, "req-3")
+        entry = _build_har_entry(data)
         assert entry["response"]["status"] == 0
 
     def test_build_har_entry_body_file(self) -> None:
@@ -1429,7 +1429,7 @@ class TestSharedHARHelpers:
                 "_bodyFile": "bodies/req-4.png",
             },
         }
-        entry = _build_har_entry(data, "req-4")
+        entry = _build_har_entry(data)
         assert entry["response"]["content"]["_bodyFile"] == "bodies/req-4.png"
         assert entry["response"]["content"]["text"] is None
 
