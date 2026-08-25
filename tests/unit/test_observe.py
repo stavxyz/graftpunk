@@ -1015,6 +1015,14 @@ class TestNodriverCaptureBackend:
 
     @pytest.mark.asyncio
     async def test_start_capture_async_enables_network_and_runtime(self) -> None:
+        """Pins the Network.enable arguments.
+
+        ``enable_durable_messages=True`` looks like a no-op hint on nodriver
+        0.48 but is load-bearing on >= 0.50 (flattened sessions): measured on
+        0.50.3, without it every Network.getResponseBody returns -32000, even
+        inside the LoadingFinished handler, and body capture silently dies
+        (issue #146). Do not remove it because a local test shows no effect.
+        """
         browser = MagicMock()
         tab = MagicMock()
         tab.send = AsyncMock()
