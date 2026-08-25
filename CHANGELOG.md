@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`NoDriverBackend.delete_all_cookies()` raised `TypeError` on every nodriver version** ([#152](https://github.com/stavxyz/graftpunk/issues/152)). It passed the method name as a string to `tab.send()`, which expects the CDP generator; the `TypeError` escaped the best-effort `except` instead of returning `False`. Now sends `Network.clearBrowserCookies` properly and is covered by a test that executes the coroutine against a nodriver-faithful `send()`.
+
 ## [1.13.0] - 2026-08-24
 
 ### Added

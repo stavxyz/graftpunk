@@ -1,6 +1,8 @@
 """Tests for NoDriverBackend property accessors and cookie operations."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from graftpunk.backends.nodriver import NoDriverBackend
 
@@ -162,3 +164,47 @@ class TestNoDriverBackendCookies:
         backend = NoDriverBackend()
         result = backend.delete_all_cookies()
         assert result is True
+
+
+class TestDeleteAllCookiesAsync:
+    """_delete_all_cookies_async must hand send() a CDP generator (issue #152).
+
+    Both nodriver lineages call ``next(cdp_obj)`` on the argument; a method-name
+    string raises TypeError, which the best-effort except tuple does not
+    catch, so delete_all_cookies() propagated instead of returning False.
+    The mocked-asyncio.run tests above never execute this coroutine, hence
+    the direct tests here.
+    """
+
+    @staticmethod
+    def _nodriver_like_send(sent: list) -> object:
+        async def send(cdp_obj, *args, **kwargs):  # noqa: ANN001, ANN202
+            method, *params = next(cdp_obj).values()  # what nodriver does
+            sent.append(method)
+            return {}
+
+        return send
+
+    @pytest.mark.asyncio
+    async def test_sends_cdp_generator_for_clear_browser_cookies(self) -> None:
+        backend = NoDriverBackend()
+        backend._page = MagicMock()
+        sent: list = []
+        backend._page.send = self._nodriver_like_send(sent)
+
+        assert await backend._delete_all_cookies_async() is True
+        assert sent == ["Network.clearBrowserCookies"]
+
+    @pytest.mark.asyncio
+    async def test_cdp_failure_returns_false(self) -> None:
+        backend = NoDriverBackend()
+        backend._page = MagicMock()
+        backend._page.send = AsyncMock(side_effect=ConnectionError("browser gone"))
+
+        assert await backend._delete_all_cookies_async() is False
+
+    @pytest.mark.asyncio
+    async def test_no_page_is_a_noop_success(self) -> None:
+        backend = NoDriverBackend()
+        backend._page = None
+        assert await backend._delete_all_cookies_async() is True

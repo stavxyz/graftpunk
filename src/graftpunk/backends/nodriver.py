@@ -733,11 +733,13 @@ class NoDriverBackend:
         if self._page is None:
             LOG.debug("nodriver_delete_cookies_no_page")
             return True  # No page = no cookies to delete
-        # nodriver doesn't have delete_all_cookies, so use CDP directly
+        # nodriver doesn't have delete_all_cookies, so use CDP directly.
+        # send() takes the CDP generator, not a method-name string: nodriver
+        # calls next() on it, so a string raised TypeError (issue #152).
+        import nodriver.cdp.network as cdp_network
+
         try:
-            await self._page.send(
-                "Network.clearBrowserCookies",  # type: ignore[arg-type]
-            )
+            await self._page.send(cdp_network.clear_browser_cookies())  # type: ignore[attr-defined]
             return True
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # CDP operations can fail; warn user
