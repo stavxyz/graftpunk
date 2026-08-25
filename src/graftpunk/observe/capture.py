@@ -241,16 +241,22 @@ def _finalize_redirect_hop(
 def _console_timestamp(raw: Any) -> float:
     """Normalise a ``Runtime.consoleAPICalled`` timestamp to seconds since epoch.
 
-    CDP's ``Runtime.Timestamp`` is *milliseconds* since epoch; the fallback
-    when an event carries none is ``time.time()`` (seconds). Storing both as-is
-    mixed units in ``console.jsonl`` (issue #158). Missing, zero or
+    CDP's ``Runtime.Timestamp`` is *milliseconds* since epoch and Selenium's
+    browser-log entries carry a millisecond epoch as well, while the fallback
+    when an event carries none is ``time.time()`` (seconds). Storing them as-is
+    mixed units in ``console.jsonl`` (issue #158). Rather than trusting each
+    producer's unit, treat any value above ``1e11`` as milliseconds (``1e11``
+    seconds is the year 5138; ``1e11`` milliseconds is 1973), so both producers
+    and any already-normalised value land in seconds. Missing, zero or
     non-numeric values fall back to now rather than aborting the capture.
     """
     try:
         value = float(raw) if raw is not None else 0.0
     except (TypeError, ValueError):
         return time.time()
-    return value / 1000.0 if value else time.time()
+    if not value:
+        return time.time()
+    return value / 1000.0 if value > 1e11 else value
 
 
 def _merge_headers_ci(
@@ -262,10 +268,15 @@ def _merge_headers_ci(
     ExtraInfo events report wire casing (``content-type`` on HTTP/2); a plain
     dict merge kept both and the "raw wins" rule silently failed.
     """
-    override = dict(override or {})
-    shadowed = {name.lower() for name in override}
-    merged = {k: v for k, v in (base or {}).items() if k.lower() not in shadowed}
-    merged.update(override)
+    folded: dict[str, str] = {}  # lowercase name -> raw name as first seen in override
+    override_ci: dict[str, Any] = {}
+    for name, value in (override or {}).items():
+        raw = folded.setdefault(name.lower(), name)
+        # Two override names differing only in case: join like Chromium joins
+        # repeated headers, so nothing is dropped and no duplicate row appears.
+        override_ci[raw] = f"{override_ci[raw]}\n{value}" if raw in override_ci else value
+    merged = {k: v for k, v in (base or {}).items() if k.lower() not in folded}
+    merged.update(override_ci)
     return merged
 
 
@@ -280,35 +291,53 @@ class _ExtraInfoCorrelator:
 
     CDP guarantees neither that ``requestWillBeSentExtraInfo`` follows
     ``requestWillBeSent`` nor that ``responseReceivedExtraInfo`` precedes
-    ``responseReceived`` (both dataclass docstrings say so). Measured on a real
-    redirecting login with nodriver 0.48.1 and 0.50.3 the order was always
-    ``requestWillBeSent -> requestWillBeSentExtraInfo ->
-    responseReceivedExtraInfo(3xx) -> requestWillBeSent(continuation)``, but
-    the code must not depend on it: headers for an entry that does not exist
-    yet are buffered and applied when it is created, and a finalized redirect
-    hop whose ExtraInfo has not arrived (``redirectHasExtraInfo`` set) is
-    queued so the next response ExtraInfo for that id lands on the hop, not on
-    its successor. Raw headers are kept beside the entry
-    (``_request_extra_headers`` / ``_response_extra_headers``) and merged only
-    when the HAR is built, so header-role extraction keeps seeing the renderer
-    headers it was designed for.
+    ``responseReceived`` (both dataclass docstrings say so), and a redirect
+    continuation's ``redirectHasExtraInfo`` covers both kinds for the hop it
+    replaces. Measured on a real redirecting login with nodriver 0.48.1 and
+    0.50.3 the order was always ``requestWillBeSent ->
+    requestWillBeSentExtraInfo -> responseReceivedExtraInfo(3xx) ->
+    requestWillBeSent(continuation)``, but the code must not depend on it:
+
+    - headers for an entry that does not exist yet are buffered and applied
+      when it is created;
+    - a finalized redirect hop flagged ``redirectHasExtraInfo`` that has not
+      received its own ExtraInfo is queued per kind. A late *response*
+      ExtraInfo is handed to the queued hop only when its ``statusCode``
+      matches the hop's 3xx (the successor's 200 cannot be mistaken for it);
+      a late *request* ExtraInfo has no such discriminator, so it goes to the
+      queued hop only once the live entry already has its own (first wins,
+      never overwritten). Residual ambiguity: if a hop's request ExtraInfo
+      arrives late *and* the successor's never arrives, the hop's lands on the
+      successor -- both events were measured to arrive in order, and the
+      counts logged at drain (``extra_info_unmatched``) show when a hop is
+      still waiting.
+
+    Raw headers are kept beside the entry (``_request_extra_headers`` /
+    ``_response_extra_headers``) and merged only when the HAR is built, so
+    header-role extraction keeps seeing the renderer headers it was designed
+    for. ``_request_extra_seen`` / ``_response_extra_seen`` record that an
+    entry received its *own* event (buffered predecessors do not count).
     """
 
     def __init__(self) -> None:
         self._pending_request: dict[str, list[dict[str, Any]]] = {}
-        self._pending_response: dict[str, list[dict[str, Any]]] = {}
-        self._awaiting_hops: dict[str, list[str]] = {}
+        self._pending_response: dict[str, list[tuple[dict[str, Any], int | None]]] = {}
+        self._awaiting_request: dict[str, list[str]] = {}
+        self._awaiting_response: dict[str, list[str]] = {}
 
     @staticmethod
-    def _attach(entry: dict[str, Any], key: str, headers: Mapping[str, Any]) -> None:
-        entry[key] = _merge_headers_ci(entry.get(key), headers)
+    def _attach(entry: dict[str, Any], kind: str, headers: Mapping[str, Any]) -> None:
+        entry[f"_{kind}_extra_headers"] = _merge_headers_ci(
+            entry.get(f"_{kind}_extra_headers"), headers
+        )
+        entry[f"_{kind}_extra_seen"] = True
 
     def entry_created(self, request_map: dict[str, dict[str, Any]], request_id: str) -> None:
         """Apply anything buffered for ``request_id`` now that its entry exists."""
         for headers in self._pending_request.pop(request_id, []):
-            self._attach(request_map[request_id], "_request_extra_headers", headers)
-        for headers in self._pending_response.pop(request_id, []):
-            self.response_extra(request_map, request_id, headers)
+            self._attach(request_map[request_id], "request", headers)
+        for headers, status in self._pending_response.pop(request_id, []):
+            self.response_extra(request_map, request_id, headers, status)
 
     def hop_finalized(
         self,
@@ -317,12 +346,22 @@ class _ExtraInfoCorrelator:
         hop_key: str | None,
         redirect_has_extra_info: bool,
     ) -> None:
-        """A redirect hop was moved aside; queue it if its ExtraInfo is still to come."""
+        """A redirect hop was moved aside; queue it for whichever ExtraInfo is still to come."""
         if hop_key is None or not redirect_has_extra_info:
             return
         hop = request_map.get(hop_key)
-        if hop is not None and "_response_extra_headers" not in hop:
-            self._awaiting_hops.setdefault(request_id, []).append(hop_key)
+        if hop is None:
+            return
+        if not hop.get("_request_extra_seen"):
+            self._awaiting_request.setdefault(request_id, []).append(hop_key)
+        if not hop.get("_response_extra_seen"):
+            self._awaiting_response.setdefault(request_id, []).append(hop_key)
+
+    @staticmethod
+    def _pop_slot(queue: dict[str, list[str]], request_id: str) -> None:
+        queue[request_id].pop(0)
+        if not queue[request_id]:
+            del queue[request_id]
 
     def request_extra(
         self,
@@ -330,47 +369,70 @@ class _ExtraInfoCorrelator:
         request_id: str,
         headers: Mapping[str, Any] | None,
     ) -> None:
-        if not headers:
-            return
+        headers = dict(headers or {})
         entry = request_map.get(request_id)
         if entry is None:
-            self._pending_request.setdefault(request_id, []).append(dict(headers))
+            self._pending_request.setdefault(request_id, []).append(headers)
             return
-        self._attach(entry, "_request_extra_headers", headers)
+        awaiting = self._awaiting_request.get(request_id)
+        if awaiting and entry.get("_request_extra_seen"):
+            # The live entry already has its own; this one is the hop's, late.
+            hop = request_map.get(awaiting[0])
+            self._pop_slot(self._awaiting_request, request_id)
+            if hop is not None:
+                self._attach(hop, "request", headers)
+                return
+        if entry.get("_request_extra_seen"):
+            return  # first wins: a request has exactly one ExtraInfo of its own
+        self._attach(entry, "request", headers)
 
     def response_extra(
         self,
         request_map: dict[str, dict[str, Any]],
         request_id: str,
         headers: Mapping[str, Any] | None,
+        status_code: int | None = None,
     ) -> None:
-        if not headers:
-            return
-        awaiting = self._awaiting_hops.get(request_id)
+        headers = dict(headers or {})
+        awaiting = self._awaiting_response.get(request_id)
         if awaiting:
-            hop_key = awaiting.pop(0)
-            if not awaiting:
-                del self._awaiting_hops[request_id]
-            hop = request_map.get(hop_key)
-            if hop is not None:
-                self._attach(hop, "_response_extra_headers", headers)
+            hop = request_map.get(awaiting[0])
+            hop_status = (hop or {}).get("response", {}).get("status")
+            if hop is not None and (status_code is None or status_code == hop_status):
+                self._pop_slot(self._awaiting_response, request_id)
+                self._attach(hop, "response", headers)
                 return
+            # Status does not match the waiting hop: this is the successor's
+            # (or a later hop's). Leave the slot armed; it is counted at drain.
         entry = request_map.get(request_id)
         if entry is None:
-            self._pending_response.setdefault(request_id, []).append(dict(headers))
+            self._pending_response.setdefault(request_id, []).append((headers, status_code))
             return
-        self._attach(entry, "_response_extra_headers", headers)
+        self._attach(entry, "response", headers)
 
     def log_unmatched(self) -> None:
-        """At drain time, say how many ExtraInfo events never found an entry."""
+        """At drain time, report ExtraInfo that never found an entry and hops still waiting."""
         req = sum(len(v) for v in self._pending_request.values())
         resp = sum(len(v) for v in self._pending_response.values())
-        if req or resp:
-            LOG.debug("extra_info_unmatched", request_events=req, response_events=resp)
+        awaiting_req = sum(len(v) for v in self._awaiting_request.values())
+        awaiting_resp = sum(len(v) for v in self._awaiting_response.values())
+        if req or resp or awaiting_req or awaiting_resp:
+            LOG.debug(
+                "extra_info_unmatched",
+                request_events=req,
+                response_events=resp,
+                awaiting_request_hops=awaiting_req,
+                awaiting_response_hops=awaiting_resp,
+                hint="A hop still waiting means its raw headers (e.g. Set-Cookie) never arrived",
+            )
 
 
 def _parse_cookie_pairs(fragments: list[str]) -> list[dict[str, str]]:
-    """``name=value`` pairs from cookie fragments; malformed fragments are skipped."""
+    """``name=value`` pairs from cookie fragments.
+
+    Fragments without ``=`` or with an empty name are skipped (RFC 6265 lets a
+    server send a nameless ``=value``; HAR has no representation for it).
+    """
     cookies: list[dict[str, str]] = []
     for fragment in fragments:
         name, sep, value = fragment.strip().partition("=")
@@ -394,8 +456,11 @@ def _response_cookies(headers: Mapping[str, str]) -> list[dict[str, Any]]:
 
     Chromium joins multiple ``Set-Cookie`` headers with newlines. Each line's
     first ``name=value`` is the cookie; ``Path``/``Domain``/``Expires`` and the
-    ``HttpOnly``/``Secure`` flags map onto the HAR 1.2 cookie fields. A quoted
-    value containing ``;`` is not supported (it is split like any other).
+    ``HttpOnly``/``Secure`` flags map onto the HAR 1.2 cookie fields.
+    ``expires`` is kept as the raw HTTP-date. ``Max-Age`` and ``SameSite`` have
+    no HAR 1.2 field and are dropped (the raw header line is still in
+    ``response.headers``). A quoted value containing ``;`` is not supported
+    (it is split like any other).
     """
     cookies: list[dict[str, Any]] = []
     lines = [line for value in _header_values(headers, "set-cookie") for line in value.split("\n")]
@@ -543,6 +608,7 @@ class SeleniumCaptureBackend:
     def start_capture(self) -> None:
         """Begin capturing browser data."""
         self._stopped = False
+        self._extra_info = _ExtraInfoCorrelator()  # never carry slots across captures
         LOG.debug("selenium_capture_started")
 
     def stop_capture(self) -> None:
@@ -643,7 +709,10 @@ class SeleniumCaptureBackend:
                 )
             elif method == "Network.responseReceivedExtraInfo":
                 self._extra_info.response_extra(
-                    self._request_map, params.get("requestId", ""), params.get("headers")
+                    self._request_map,
+                    params.get("requestId", ""),
+                    params.get("headers"),
+                    params.get("statusCode"),
                 )
             elif method == "Runtime.consoleAPICalled":
                 args = params.get("args", [])
@@ -707,7 +776,12 @@ class SeleniumCaptureBackend:
         # entries (e.g. network errors) that Selenium surfaces separately.
         try:
             browser_logs = self._driver.get_log("browser")
-            self._console_logs.extend(browser_logs)
+            # Same unit rule as the CDP console events (issue #158); entries
+            # without a timestamp pass through untouched.
+            self._console_logs.extend(
+                {**e, "timestamp": _console_timestamp(e["timestamp"])} if "timestamp" in e else e
+                for e in browser_logs
+            )
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.error(
                 "console_log_collection_failed",
@@ -837,6 +911,7 @@ class NodriverCaptureBackend:
 
     def start_capture(self) -> None:
         """Begin capturing browser data."""
+        self._extra_info = _ExtraInfoCorrelator()  # never carry slots across captures
         LOG.debug("nodriver_capture_started")
 
     def stop_capture(self) -> None:
@@ -1095,7 +1170,12 @@ class NodriverCaptureBackend:
     def _on_response_extra_info(self, event: Any) -> None:
         """Handle a CDP ResponseReceivedExtraInfo event (raw response headers)."""
         try:
-            self._extra_info.response_extra(self._request_map, str(event.request_id), event.headers)
+            self._extra_info.response_extra(
+                self._request_map,
+                str(event.request_id),
+                event.headers,
+                getattr(event, "status_code", None),
+            )
         except Exception:
             LOG.exception("nodriver_on_response_extra_info_failed")
 
