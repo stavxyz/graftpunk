@@ -742,6 +742,22 @@ class TestCheckLoginResult:
         events = [c.args[0] for c in mock_log.warning.call_args_list]
         assert events == ["login_rate_limited"]
 
+    def test_rate_limit_marker_never_vetoes_a_found_success_element(self) -> None:
+        """page_text is raw HTML; a post-login page's inlined JS can contain the
+        marker. A found success element is the stronger signal."""
+        from graftpunk.plugins.login_engine import _check_login_result
+
+        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+            result = _check_login_result(
+                page_text='<script>i18n={"e429":"Too many requests"}</script><div id=dash>',
+                failure_text="Bad login.",
+                success_found=True,
+                success_selector="#dash",
+                site_name="test",
+            )
+        assert result is True
+        mock_log.warning.assert_not_called()
+
     def test_rate_limit_detection_is_case_insensitive(self) -> None:
         from graftpunk.plugins.login_engine import _check_login_result
 

@@ -435,9 +435,12 @@ def _check_login_result(
     """
     lowered = page_text.lower()
 
-    # Checked first: a rate-limited response is a page from the site's limiter,
-    # not a verdict on the credentials, and it never contains the success element.
-    if any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+    # A rate-limited response is a page from the site's limiter, not a verdict
+    # on the credentials. It never contains the success element, so a found
+    # success element always wins: page_text is raw HTML, and an inlined i18n
+    # bundle or error catalogue on a real post-login page can contain the
+    # marker text. Only refine a failure, never veto a success.
+    if success_found is not True and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
         LOG.warning(
             "login_rate_limited",
             plugin=site_name,
