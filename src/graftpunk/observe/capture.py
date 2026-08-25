@@ -7,9 +7,11 @@ import contextlib
 import datetime
 import inspect
 import json
+import math
 import os
 import tempfile
 import time
+import urllib.parse
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -254,7 +256,7 @@ def _console_timestamp(raw: Any) -> float:
         value = float(raw) if raw is not None else 0.0
     except (TypeError, ValueError):
         return time.time()
-    if not value:
+    if not value or not math.isfinite(value):
         return time.time()
     return value / 1000.0 if value > 1e11 else value
 
@@ -274,7 +276,11 @@ def _merge_headers_ci(
         raw = folded.setdefault(name.lower(), name)
         # Two override names differing only in case: join like Chromium joins
         # repeated headers, so nothing is dropped and no duplicate row appears.
-        override_ci[raw] = f"{override_ci[raw]}\n{value}" if raw in override_ci else value
+        if raw in override_ci:
+            joiner = "; " if raw.lower() == "cookie" else "\n"
+            override_ci[raw] = f"{override_ci[raw]}{joiner}{value}"
+        else:
+            override_ci[raw] = value
     merged = {k: v for k, v in (base or {}).items() if k.lower() not in folded}
     merged.update(override_ci)
     return merged
@@ -286,44 +292,97 @@ def _header_values(headers: Mapping[str, str], name: str) -> list[str]:
     return [v for k, v in headers.items() if k.lower() == wanted and v]
 
 
+def _chain_entries(
+    request_map: dict[str, dict[str, Any]], request_id: str
+) -> list[tuple[str, dict[str, Any]]]:
+    """Every entry for a CDP request id, redirect hops first, then the live one."""
+    prefix = f"{request_id}:redirect:"
+    hops = sorted(
+        ((k, v) for k, v in request_map.items() if k.startswith(prefix)),
+        key=lambda item: int(item[0].rsplit(":", 1)[1]),
+    )
+    live = request_map.get(request_id)
+    return hops + ([(request_id, live)] if live is not None else [])
+
+
+def _same_url(a: str | None, b: str | None, base: str | None = None) -> bool:
+    if not a or not b:
+        return False
+    if base:
+        a, b = urllib.parse.urljoin(base, a), urllib.parse.urljoin(base, b)
+    return a.rstrip("/") == b.rstrip("/")
+
+
+def _request_headers_match(headers: Mapping[str, str], entry: dict[str, Any]) -> bool | None:
+    """Does a request ExtraInfo belong to ``entry``? None when undeterminable.
+
+    HTTP/2 wire headers carry ``:method``/``:authority``/``:path``; HTTP/1.1
+    carries only ``Host``. Compare whatever is present against the entry's URL
+    and method; with nothing to compare, return None.
+    """
+    lower = {k.lower(): v for k, v in headers.items()}
+    parsed = urllib.parse.urlsplit(entry.get("url", ""))
+    checks: list[bool] = []
+    if ":method" in lower:
+        checks.append(lower[":method"].upper() == str(entry.get("method", "GET")).upper())
+    if ":path" in lower:
+        path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        checks.append(lower[":path"] == (path or "/"))
+    authority = lower.get(":authority") or lower.get("host")
+    if authority:
+        checks.append(authority.lower() == parsed.netloc.lower())
+    if not checks:
+        return None
+    return all(checks)
+
+
 class _ExtraInfoCorrelator:
     """Attach ``Network.*ExtraInfo`` headers to the right request entry.
 
     CDP guarantees neither that ``requestWillBeSentExtraInfo`` follows
     ``requestWillBeSent`` nor that ``responseReceivedExtraInfo`` precedes
-    ``responseReceived`` (both dataclass docstrings say so), and a redirect
-    continuation's ``redirectHasExtraInfo`` covers both kinds for the hop it
-    replaces. Measured on a real redirecting login with nodriver 0.48.1 and
-    0.50.3 the order was always ``requestWillBeSent ->
-    requestWillBeSentExtraInfo -> responseReceivedExtraInfo(3xx) ->
-    requestWillBeSent(continuation)``, but the code must not depend on it:
+    ``responseReceived`` (both dataclass docstrings say so); across a redirect
+    chain every hop shares one request id, and ``redirectHasExtraInfo`` on the
+    continuation says whether the hop it replaces has ExtraInfo of both kinds.
+    Measured on a real redirecting login with nodriver 0.48.1 and 0.50.3 the
+    order was always ``requestWillBeSent -> requestWillBeSentExtraInfo ->
+    responseReceivedExtraInfo(3xx) -> requestWillBeSent(continuation)``, and
+    0.48.1 was measured to drop most request-side ExtraInfo events. Nothing
+    here depends on order; events are matched, buffered, or reported:
 
-    - headers for an entry that does not exist yet are buffered and applied
-      when it is created;
-    - a finalized redirect hop flagged ``redirectHasExtraInfo`` that has not
-      received its own ExtraInfo is queued per kind. A late *response*
-      ExtraInfo is handed to the queued hop only when its ``statusCode``
-      matches the hop's 3xx (the successor's 200 cannot be mistaken for it);
-      a late *request* ExtraInfo has no such discriminator, so it goes to the
-      queued hop only once the live entry already has its own (first wins,
-      never overwritten). Residual ambiguity: if a hop's request ExtraInfo
-      arrives late *and* the successor's never arrives, the hop's lands on the
-      successor -- both events were measured to arrive in order, and the
-      counts logged at drain (``extra_info_unmatched``) show when a hop is
-      still waiting.
+    - A **response** ExtraInfo attaches to the entry for its id whose known
+      response status equals the event's ``statusCode`` (and whose redirect
+      ``Location`` matches the event's, when both are present, so same-status
+      chains stay apart) and which has not yet received its own. If no entry
+      has a matching status yet -- the live request has not been answered, or
+      a continuation has not been announced -- the event is buffered and
+      re-resolved whenever a status becomes known. Without a ``statusCode``
+      (Selenium perf logs may omit it) it goes to the first entry lacking its own.
+    - A **request** ExtraInfo attaches to the entry for its id whose URL and
+      method match the wire headers (``:method``/``:path``/``:authority`` on
+      HTTP/2, ``Host`` on HTTP/1.1) and which has not received its own. When
+      the headers cannot discriminate (HTTP/1.1, same host), the live request
+      is preferred over a hop still waiting: a hop's event was measured to
+      arrive before the continuation, so an undeterminable event after it is
+      far more likely the successor's than a late one for the hop. If nothing
+      fits (every candidate already has its own: the successor is not yet
+      announced), the event is buffered and applied when the next entry for
+      the id is created. This is the residual ambiguity: on HTTP/1.1, a hop's
+      request ExtraInfo arriving late is attributed to the successor.
+    - Whatever is still buffered or waiting at drain is counted in
+      ``extra_info_unmatched``.
 
     Raw headers are kept beside the entry (``_request_extra_headers`` /
     ``_response_extra_headers``) and merged only when the HAR is built, so
     header-role extraction keeps seeing the renderer headers it was designed
-    for. ``_request_extra_seen`` / ``_response_extra_seen`` record that an
-    entry received its *own* event (buffered predecessors do not count).
+    for. ``_request_extra_seen`` / ``_response_extra_seen`` mark an entry that
+    has been given an event (directly or from the buffer); an entry takes at
+    most one of each kind.
     """
 
     def __init__(self) -> None:
         self._pending_request: dict[str, list[dict[str, Any]]] = {}
         self._pending_response: dict[str, list[tuple[dict[str, Any], int | None]]] = {}
-        self._awaiting_request: dict[str, list[str]] = {}
-        self._awaiting_response: dict[str, list[str]] = {}
 
     @staticmethod
     def _attach(entry: dict[str, Any], kind: str, headers: Mapping[str, Any]) -> None:
@@ -332,36 +391,31 @@ class _ExtraInfoCorrelator:
         )
         entry[f"_{kind}_extra_seen"] = True
 
+    # -- resolution points -------------------------------------------------
+
+    @staticmethod
+    def hop_finalized(
+        request_map: dict[str, dict[str, Any]], hop_key: str | None, redirect_has_extra_info: bool
+    ) -> None:
+        """``redirectHasExtraInfo`` false: no ExtraInfo of either kind will ever
+        come for this hop, so it must not absorb a later status-less event."""
+        hop = request_map.get(hop_key) if hop_key else None
+        if hop is not None and not redirect_has_extra_info:
+            hop["_request_extra_seen"] = True
+            hop["_response_extra_seen"] = True
+
     def entry_created(self, request_map: dict[str, dict[str, Any]], request_id: str) -> None:
-        """Apply anything buffered for ``request_id`` now that its entry exists."""
+        """A new entry exists for ``request_id``: give it buffered request headers."""
         for headers in self._pending_request.pop(request_id, []):
-            self._attach(request_map[request_id], "request", headers)
+            self.request_extra(request_map, request_id, headers)
+
+    def status_known(self, request_map: dict[str, dict[str, Any]], request_id: str) -> None:
+        """A response status became known for ``request_id`` (a hop was finalized
+        or the live request was answered): retry buffered response headers."""
         for headers, status in self._pending_response.pop(request_id, []):
             self.response_extra(request_map, request_id, headers, status)
 
-    def hop_finalized(
-        self,
-        request_map: dict[str, dict[str, Any]],
-        request_id: str,
-        hop_key: str | None,
-        redirect_has_extra_info: bool,
-    ) -> None:
-        """A redirect hop was moved aside; queue it for whichever ExtraInfo is still to come."""
-        if hop_key is None or not redirect_has_extra_info:
-            return
-        hop = request_map.get(hop_key)
-        if hop is None:
-            return
-        if not hop.get("_request_extra_seen"):
-            self._awaiting_request.setdefault(request_id, []).append(hop_key)
-        if not hop.get("_response_extra_seen"):
-            self._awaiting_response.setdefault(request_id, []).append(hop_key)
-
-    @staticmethod
-    def _pop_slot(queue: dict[str, list[str]], request_id: str) -> None:
-        queue[request_id].pop(0)
-        if not queue[request_id]:
-            del queue[request_id]
+    # -- events -------------------------------------------------------------
 
     def request_extra(
         self,
@@ -370,21 +424,24 @@ class _ExtraInfoCorrelator:
         headers: Mapping[str, Any] | None,
     ) -> None:
         headers = dict(headers or {})
-        entry = request_map.get(request_id)
-        if entry is None:
+        candidates = [
+            (k, e)
+            for k, e in _chain_entries(request_map, request_id)
+            if not e.get("_request_extra_seen")
+        ]
+        if not candidates:
             self._pending_request.setdefault(request_id, []).append(headers)
             return
-        awaiting = self._awaiting_request.get(request_id)
-        if awaiting and entry.get("_request_extra_seen"):
-            # The live entry already has its own; this one is the hop's, late.
-            hop = request_map.get(awaiting[0])
-            self._pop_slot(self._awaiting_request, request_id)
-            if hop is not None:
-                self._attach(hop, "request", headers)
-                return
-        if entry.get("_request_extra_seen"):
-            return  # first wins: a request has exactly one ExtraInfo of its own
-        self._attach(entry, "request", headers)
+        matched = [(k, e) for k, e in candidates if _request_headers_match(headers, e)]
+        undeterminable = all(_request_headers_match(headers, e) is None for _k, e in candidates)
+        if matched:
+            # Several equal matches (HTTP/1.1, same host) are undeterminable too:
+            # candidates are in chain order, so the last match is the live request.
+            self._attach(matched[-1][1], "request", headers)
+        elif undeterminable:
+            self._attach(candidates[-1][1], "request", headers)  # prefer the live request
+        else:
+            self._pending_request.setdefault(request_id, []).append(headers)  # none of these
 
     def response_extra(
         self,
@@ -394,36 +451,52 @@ class _ExtraInfoCorrelator:
         status_code: int | None = None,
     ) -> None:
         headers = dict(headers or {})
-        awaiting = self._awaiting_response.get(request_id)
-        if awaiting:
-            hop = request_map.get(awaiting[0])
-            hop_status = (hop or {}).get("response", {}).get("status")
-            if hop is not None and (status_code is None or status_code == hop_status):
-                self._pop_slot(self._awaiting_response, request_id)
-                self._attach(hop, "response", headers)
-                return
-            # Status does not match the waiting hop: this is the successor's
-            # (or a later hop's). Leave the slot armed; it is counted at drain.
-        entry = request_map.get(request_id)
-        if entry is None:
-            self._pending_response.setdefault(request_id, []).append((headers, status_code))
+        candidates = [
+            (k, e)
+            for k, e in _chain_entries(request_map, request_id)
+            if not e.get("_response_extra_seen")
+        ]
+        if status_code is None:
+            if candidates:
+                self._attach(candidates[0][1], "response", headers)
+            else:
+                self._pending_response.setdefault(request_id, []).append((headers, None))
             return
-        self._attach(entry, "response", headers)
+        location = next((v for k, v in headers.items() if k.lower() == "location"), None)
+        for _key, entry in candidates:
+            response = entry.get("response") or {}
+            if response.get("status") != status_code:
+                continue
+            hop_location = next(
+                (v for k, v in response.get("headers", {}).items() if k.lower() == "location"), None
+            )
+            if (
+                location
+                and hop_location
+                and not _same_url(location, hop_location, entry.get("url"))
+            ):
+                continue
+            self._attach(entry, "response", headers)
+            return
+        self._pending_response.setdefault(request_id, []).append((headers, status_code))
 
-    def log_unmatched(self) -> None:
-        """At drain time, report ExtraInfo that never found an entry and hops still waiting."""
+    def log_unmatched(self, request_map: dict[str, dict[str, Any]]) -> None:
+        """At drain time, report ExtraInfo that never found its entry, and redirect
+        hops that never received theirs (a dropped event; measured on nodriver
+        0.48.1 for the request side)."""
         req = sum(len(v) for v in self._pending_request.values())
         resp = sum(len(v) for v in self._pending_response.values())
-        awaiting_req = sum(len(v) for v in self._awaiting_request.values())
-        awaiting_resp = sum(len(v) for v in self._awaiting_response.values())
-        if req or resp or awaiting_req or awaiting_resp:
+        hops = [e for e in request_map.values() if e.get("_redirect_hop")]
+        hops_no_req = sum(1 for e in hops if not e.get("_request_extra_seen"))
+        hops_no_resp = sum(1 for e in hops if not e.get("_response_extra_seen"))
+        if req or resp or hops_no_req or hops_no_resp:
             LOG.debug(
                 "extra_info_unmatched",
                 request_events=req,
                 response_events=resp,
-                awaiting_request_hops=awaiting_req,
-                awaiting_response_hops=awaiting_resp,
-                hint="A hop still waiting means its raw headers (e.g. Set-Cookie) never arrived",
+                hops_without_request_extra=hops_no_req,
+                hops_without_response_extra=hops_no_resp,
+                hint="Raw wire headers (e.g. Set-Cookie) for these are not in the HAR",
             )
 
 
@@ -671,7 +744,7 @@ class SeleniumCaptureBackend:
                         request.get("url", ""),
                     )
                     self._extra_info.hop_finalized(
-                        self._request_map, rid, hop_key, bool(params.get("redirectHasExtraInfo"))
+                        self._request_map, hop_key, bool(params.get("redirectHasExtraInfo"))
                     )
                 self._request_map[rid] = {
                     "url": request.get("url", ""),
@@ -682,6 +755,8 @@ class SeleniumCaptureBackend:
                     "timestamp": params.get("wallTime"),
                 }
                 self._extra_info.entry_created(self._request_map, rid)
+                if redirect is not None:
+                    self._extra_info.status_known(self._request_map, rid)
             elif method == "Network.responseReceived":
                 response = params.get("response", {})
                 rid = params.get("requestId", "")
@@ -703,6 +778,7 @@ class SeleniumCaptureBackend:
                     response.get("headers"),
                     response.get("mimeType"),
                 )
+                self._extra_info.status_known(self._request_map, rid)
             elif method == "Network.requestWillBeSentExtraInfo":
                 self._extra_info.request_extra(
                     self._request_map, params.get("requestId", ""), params.get("headers")
@@ -724,7 +800,7 @@ class SeleniumCaptureBackend:
                     }
                 )
 
-        self._extra_info.log_unmatched()
+        self._extra_info.log_unmatched(self._request_map)
 
         # Fetch bodies for all captured requests
         for request_id, data in list(self._request_map.items()):
@@ -996,6 +1072,7 @@ class NodriverCaptureBackend:
 
     async def start_capture_async(self) -> None:
         """Begin capturing browser data asynchronously (CDP event listeners)."""
+        self.start_capture()  # resets per-capture correlator state
         tab = self._tab
         if tab is None:
             LOG.warning("nodriver_start_capture_async_no_tab")
@@ -1046,7 +1123,7 @@ class NodriverCaptureBackend:
 
         import nodriver.cdp.network as cdp_net
 
-        self._extra_info.log_unmatched()
+        self._extra_info.log_unmatched(self._request_map)
 
         # One aggregate line so a systematic eager-fetch failure (e.g. a
         # nodriver internals change, issue #146) is visible at a glance rather
@@ -1144,7 +1221,6 @@ class NodriverCaptureBackend:
                 )
                 self._extra_info.hop_finalized(
                     self._request_map,
-                    rid,
                     hop_key,
                     bool(getattr(event, "redirect_has_extra_info", False)),
                 )
@@ -1157,6 +1233,8 @@ class NodriverCaptureBackend:
                 "timestamp": getattr(event, "wall_time", None),
             }
             self._extra_info.entry_created(self._request_map, rid)
+            if redirect is not None:
+                self._extra_info.status_known(self._request_map, rid)
         except Exception:
             LOG.exception("nodriver_on_request_failed")
 
@@ -1199,6 +1277,7 @@ class NodriverCaptureBackend:
                 event.response.headers,
                 event.response.mime_type,
             )
+            self._extra_info.status_known(self._request_map, rid)
         except Exception:
             LOG.exception("nodriver_on_response_failed")
 

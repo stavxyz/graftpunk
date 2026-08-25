@@ -311,7 +311,7 @@ class TestNodriverExtraInfo:
         unmatched = {c.args[0]: c.kwargs for c in mock_log.debug.call_args_list}[
             "extra_info_unmatched"
         ]
-        assert unmatched["awaiting_response_hops"] == 1
+        assert unmatched["hops_without_response_extra"] == 1
 
     def test_empty_hop_extra_info_still_consumes_its_slot(self) -> None:
         backend = NodriverCaptureBackend(MagicMock())
@@ -329,20 +329,155 @@ class TestNodriverExtraInfo:
         assert hop["response"]["cookies"] == []
         assert final["response"]["cookies"] == [{"name": "seen", "value": "1"}]
 
-    def test_late_hop_request_extra_info_lands_on_the_hop_once_successor_has_its_own(self) -> None:
+    def test_late_hop_request_extra_info_matched_by_h2_pseudo_headers(self) -> None:
+        """HTTP/2 wire headers carry :method/:path/:authority, so a hop's request
+        ExtraInfo arriving after the continuation still finds the hop -- in
+        either arrival order."""
+        for order in ("hop-first", "successor-first"):
+            backend = NodriverCaptureBackend(MagicMock())
+            backend._on_request(_will_be_sent("r15", _request(LOGIN, "POST"), wall=1.0))
+            backend._on_request(
+                _will_be_sent(
+                    "r15",
+                    _request(HOME),
+                    _response(LOGIN, 302),
+                    wall=2.0,
+                    redirect_has_extra_info=True,
+                )
+            )
+            hop_ev = _extra_request(
+                "r15",
+                {
+                    ":method": "POST",
+                    ":path": "/login",
+                    ":authority": "shop.example.com",
+                    "cookie": "late=hop",
+                },
+            )
+            succ_ev = _extra_request(
+                "r15",
+                {
+                    ":method": "GET",
+                    ":path": "/",
+                    ":authority": "shop.example.com",
+                    "cookie": "real=successor",
+                },
+            )
+            for ev in (hop_ev, succ_ev) if order == "hop-first" else (succ_ev, hop_ev):
+                backend._on_request_extra_info(ev)
+
+            hop, final = backend.get_har_entries()
+            assert hop["request"]["cookies"] == [{"name": "late", "value": "hop"}], order
+            assert final["request"]["cookies"] == [{"name": "real", "value": "successor"}], order
+
+    def test_undeterminable_request_extra_info_prefers_the_live_request(self) -> None:
+        """HTTP/1.1 (Host only, same host): a hop's dropped event must not make the
+        successor's land on the hop; the documented residual ambiguity is the
+        reverse (a late hop event lands on the successor)."""
         backend = NodriverCaptureBackend(MagicMock())
-        backend._on_request(_will_be_sent("r15", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_request(_will_be_sent("r18", _request(LOGIN, "POST"), wall=1.0))
         backend._on_request(
             _will_be_sent(
-                "r15", _request(HOME), _response(LOGIN, 302), wall=2.0, redirect_has_extra_info=True
+                "r18", _request(HOME), _response(LOGIN, 302), wall=2.0, redirect_has_extra_info=True
             )
         )
-        backend._on_request_extra_info(_extra_request("r15", {"cookie": "real=successor"}))
-        backend._on_request_extra_info(_extra_request("r15", {"cookie": "late=hop"}))
+        backend._on_request_extra_info(
+            _extra_request("r18", {"host": "shop.example.com", "cookie": "real=successor"})
+        )
 
         hop, final = backend.get_har_entries()
         assert final["request"]["cookies"] == [{"name": "real", "value": "successor"}]
-        assert hop["request"]["cookies"] == [{"name": "late", "value": "hop"}]
+        assert hop["request"]["cookies"] == []
+
+    def test_request_extra_info_for_unannounced_successor_is_buffered(self) -> None:
+        """Every entry already has its own: the event belongs to a continuation not
+        yet announced. It must be kept and applied when the entry appears."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(_will_be_sent("r19", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_request_extra_info(_extra_request("r19", {"cookie": "hop=1"}))
+        backend._on_request_extra_info(
+            _extra_request("r19", {"cookie": "succ=2"})
+        )  # before continuation
+        backend._on_request(
+            _will_be_sent(
+                "r19", _request(HOME), _response(LOGIN, 302), wall=2.0, redirect_has_extra_info=True
+            )
+        )
+
+        hop, final = backend.get_har_entries()
+        assert hop["request"]["cookies"] == [{"name": "hop", "value": "1"}]
+        assert final["request"]["cookies"] == [{"name": "succ", "value": "2"}]
+
+    def test_successor_response_extra_info_before_continuation_is_buffered(self) -> None:
+        """The 200's ExtraInfo arrives while the live entry is still the hop and no
+        status is known for either: it must wait, not land on the hop."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(_will_be_sent("r20", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_response_extra_info(
+            _extra_response("r20", {"set-cookie": "seen=1"}, 200)
+        )  # too early
+        backend._on_request(
+            _will_be_sent(
+                "r20", _request(HOME), _response(LOGIN, 302), wall=2.0, redirect_has_extra_info=True
+            )
+        )
+        backend._on_response_extra_info(
+            _extra_response("r20", {"set-cookie": "session=minted"}, 302)
+        )
+        backend._on_response(_received("r20", _response(HOME, 200)))
+
+        hop, final = backend.get_har_entries()
+        assert hop["response"]["cookies"] == [{"name": "session", "value": "minted"}]
+        assert final["response"]["cookies"] == [{"name": "seen", "value": "1"}]
+
+    def test_same_status_chain_with_dropped_event_uses_location(self) -> None:
+        """302 -> 302 -> 200 with hop1's ExtraInfo dropped: hop2's must land on hop2,
+        told apart by Location."""
+        dash = HOME + "dashboard"
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(_will_be_sent("r21", _request(LOGIN, "POST"), wall=1.0))
+        backend._on_request(
+            _will_be_sent(
+                "r21",
+                _request(HOME),
+                _response(LOGIN, 302, {"Location": "/"}),
+                wall=2.0,
+                redirect_has_extra_info=True,
+            )
+        )
+        backend._on_request(
+            _will_be_sent(
+                "r21",
+                _request(dash),
+                _response(HOME, 302, {"Location": "/dashboard"}),
+                wall=3.0,
+                redirect_has_extra_info=True,
+            )
+        )
+        backend._on_response_extra_info(
+            _extra_response("r21", {"set-cookie": "hop2=2", "location": "/dashboard"}, 302)
+        )
+        backend._on_response_extra_info(_extra_response("r21", {"set-cookie": "final=3"}, 200))
+        backend._on_response(_received("r21", _response(dash, 200)))
+
+        cookies = [[c["name"] for c in e["response"]["cookies"]] for e in backend.get_har_entries()]
+        assert cookies == [[], ["hop2"], ["final"]]
+
+    def test_async_start_resets_correlator_state(self) -> None:
+        import asyncio
+
+        tab = MagicMock()
+
+        async def send(*a: Any, **k: Any) -> None:
+            return None
+
+        tab.send = send
+        backend = NodriverCaptureBackend(MagicMock(), get_tab=lambda: tab)
+        backend._on_request_extra_info(_extra_request("stale2", {"cookie": "x=1"}))
+        asyncio.run(backend.start_capture_async())
+        backend._on_request(_will_be_sent("stale2", _request(HOME)))
+        (entry,) = backend.get_har_entries()
+        assert entry["request"]["cookies"] == []
 
     def test_request_extra_info_never_overwrites_an_entry_that_has_its_own(self) -> None:
         backend = NodriverCaptureBackend(MagicMock())
@@ -641,6 +776,8 @@ class TestHelpers:
             {"Set-Cookie": "f=1"}, {"set-cookie": "a=1", "Set-Cookie": "b=2"}
         )
         assert merged == {"set-cookie": "a=1\nb=2"}
+        merged = _merge_headers_ci({}, {"cookie": "a=1", "Cookie": "b=2"})
+        assert merged == {"cookie": "a=1; b=2"}
 
     def test_merge_headers_ci_handles_none(self) -> None:
         assert _merge_headers_ci(None, None) == {}
@@ -720,7 +857,7 @@ class TestConsoleTimestamp:
         assert _console_timestamp(1700000000.5) == 1700000000.5
 
     def test_missing_zero_or_garbage_fall_back_to_now(self) -> None:
-        for raw in (None, 0, "abc", object()):
+        for raw in (None, 0, "abc", object(), float("nan"), float("inf")):
             before = time.time()
             assert before <= _console_timestamp(raw) <= time.time()
 
