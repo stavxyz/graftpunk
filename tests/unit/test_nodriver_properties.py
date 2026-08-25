@@ -1,5 +1,7 @@
 """Tests for NoDriverBackend property accessors and cookie operations."""
 
+from collections.abc import Callable, Coroutine, Iterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -177,8 +179,10 @@ class TestDeleteAllCookiesAsync:
     """
 
     @staticmethod
-    def _nodriver_like_send(sent: list) -> object:
-        async def send(cdp_obj, *args, **kwargs):  # noqa: ANN001, ANN202
+    def _nodriver_like_send(sent: list[str]) -> Callable[..., Coroutine[Any, Any, dict[str, Any]]]:
+        async def send(
+            cdp_obj: Iterator[dict[str, Any]], *args: Any, **kwargs: Any
+        ) -> dict[str, Any]:
             method, *params = next(cdp_obj).values()  # what nodriver does
             sent.append(method)
             return {}
@@ -196,10 +200,25 @@ class TestDeleteAllCookiesAsync:
         assert sent == ["Network.clearBrowserCookies"]
 
     @pytest.mark.asyncio
-    async def test_cdp_failure_returns_false(self) -> None:
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ConnectionError("browser gone"),
+            pytest.param(None, id="ProtocolException"),  # filled in below
+            TypeError("programming error"),
+        ],
+    )
+    async def test_cdp_failure_returns_false(self, exc: BaseException | None) -> None:
+        """Best-effort contract: any failure logs a warning and returns False --
+        including nodriver's ProtocolException, which is a plain Exception subclass
+        and escaped the old transport-only tuple."""
+        if exc is None:
+            from nodriver.core.connection import ProtocolException
+
+            exc = ProtocolException("Message has property other than ... [code: -32600]")
         backend = NoDriverBackend()
         backend._page = MagicMock()
-        backend._page.send = AsyncMock(side_effect=ConnectionError("browser gone"))
+        backend._page.send = AsyncMock(side_effect=exc)
 
         assert await backend._delete_all_cookies_async() is False
 

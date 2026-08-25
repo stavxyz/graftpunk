@@ -741,9 +741,13 @@ class NoDriverBackend:
         try:
             await self._page.send(cdp_network.clear_browser_cookies())  # type: ignore[attr-defined]
             return True
-        except (RuntimeError, ConnectionError, TimeoutError) as exc:
-            # CDP operations can fail; warn user
-            LOG.warning("nodriver_clear_cookies_cdp_failed", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is False + warning
+            # nodriver raises ProtocolException (a plain Exception subclass)
+            # for CDP-level errors, which the old transport-only tuple let
+            # escape (issue #152).
+            LOG.warning(
+                "nodriver_clear_cookies_cdp_failed", error=str(exc), exc_type=type(exc).__name__
+            )
             return False
 
     def delete_all_cookies(self) -> bool:
