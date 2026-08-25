@@ -142,15 +142,49 @@ def _response_summary(
     }
 
 
-def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """HAR entries in chronological order.
+def _ordered_request_items(
+    request_map: dict[str, dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """``request_map`` items in chronological order.
 
     A finalized redirect hop is re-inserted at the end of the map, so plain
     insertion order would list it after requests that started later. Sort by
-    wall time (stable, so ties keep insertion order; missing times sort first).
+    wall time (stable, so ties keep insertion order). Entries without a wall
+    time sort last: ``_build_har_entry`` renders their ``startedDateTime`` as
+    "now", so last is the only order consistent with what they say.
     """
-    ordered = sorted(request_map.items(), key=lambda item: item[1].get("timestamp") or 0)
-    return [_build_har_entry(data, rid) for rid, data in ordered]
+    return sorted(
+        request_map.items(),
+        key=lambda item: (
+            item[1].get("timestamp") is None,
+            item[1].get("timestamp") or 0.0,
+        ),
+    )
+
+
+def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """HAR entries in chronological order (see ``_ordered_request_items``)."""
+    return [_build_har_entry(data, rid) for rid, data in _ordered_request_items(request_map)]
+
+
+def _is_redirect_hop(request_id: str, data: dict[str, Any]) -> bool:
+    """True if ``data`` is a finalized redirect hop; body fetching must skip it.
+
+    A 3xx has no response body, and the synthetic key is not a CDP id. A hop's
+    POST body that CDP did not inline is not retrievable by request id after
+    the redirect either (the id now addresses the final hop), so say so rather
+    than drop it silently.
+    """
+    if not data.get("_redirect_hop"):
+        return False
+    if data.get("has_post_data") and not data.get("post_data"):
+        LOG.warning(
+            "redirect_hop_post_data_unavailable",
+            request_id=request_id,
+            url=data.get("url"),
+            hint="Request body was not inlined by CDP and is lost across the redirect",
+        )
+    return True
 
 
 def _finalize_redirect_hop(
@@ -349,7 +383,7 @@ class SeleniumCaptureBackend:
                 request = params.get("request", {})
                 rid = params.get("requestId", "")
                 redirect = params.get("redirectResponse")
-                if redirect:
+                if redirect is not None:
                     # One HAR entry per redirect hop (see _finalize_redirect_hop).
                     _finalize_redirect_hop(
                         self._request_map,
@@ -378,7 +412,7 @@ class SeleniumCaptureBackend:
                         "url": response.get("url", ""),
                         "method": "GET",
                         "headers": {},
-                        "timestamp": None,
+                        "timestamp": time.time(),  # request never seen; best we know
                         "has_post_data": False,
                         "post_data": None,
                     }
@@ -400,18 +434,7 @@ class SeleniumCaptureBackend:
 
         # Fetch bodies for all captured requests
         for request_id, data in list(self._request_map.items()):
-            if data.get("_redirect_hop"):
-                # 3xx: no response body, and the synthetic key is not a CDP id.
-                # A hop's POST body that CDP did not inline cannot be fetched
-                # either: getRequestPostData by the real id now refers to the
-                # final hop. Say so rather than drop it silently.
-                if data.get("has_post_data") and not data.get("post_data"):
-                    LOG.warning(
-                        "redirect_hop_post_data_unavailable",
-                        request_id=request_id,
-                        url=data.get("url"),
-                        hint="Request body was not inlined by CDP and is lost across the redirect",
-                    )
+            if _is_redirect_hop(request_id, data):
                 continue
             # Fetch POST body if hasPostData but no inline postData
             if data.get("has_post_data") and not data.get("post_data"):
@@ -505,7 +528,7 @@ class SeleniumCaptureBackend:
         """Return header roles classified from captured network requests."""
         from graftpunk.observe.headers import extract_header_roles
 
-        return extract_header_roles(self._request_map)
+        return extract_header_roles(dict(_ordered_request_items(self._request_map)))
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously (wraps sync method)."""
@@ -625,7 +648,7 @@ class NodriverCaptureBackend:
         """Return header roles classified from captured network requests."""
         from graftpunk.observe.headers import extract_header_roles
 
-        return extract_header_roles(self._request_map)
+        return extract_header_roles(dict(_ordered_request_items(self._request_map)))
 
     async def take_screenshot(self) -> bytes | None:
         """Take a screenshot asynchronously via nodriver.
@@ -726,18 +749,7 @@ class NodriverCaptureBackend:
             )
 
         for request_id, data in list(self._request_map.items()):
-            if data.get("_redirect_hop"):
-                # 3xx: no response body, and the synthetic key is not a CDP id.
-                # A hop's POST body that CDP did not inline cannot be fetched
-                # either: getRequestPostData by the real id now refers to the
-                # final hop. Say so rather than drop it silently.
-                if data.get("has_post_data") and not data.get("post_data"):
-                    LOG.warning(
-                        "redirect_hop_post_data_unavailable",
-                        request_id=request_id,
-                        url=data.get("url"),
-                        hint="Request body was not inlined by CDP and is lost across the redirect",
-                    )
+            if _is_redirect_hop(request_id, data):
                 continue
             # Fetch POST body if has_post_data but no inline post_data
             if data.get("has_post_data") and not data.get("post_data"):
@@ -810,10 +822,7 @@ class NodriverCaptureBackend:
                     self._request_map,
                     rid,
                     _response_summary(
-                        redirect.status,
-                        getattr(redirect, "status_text", None),
-                        redirect.headers,
-                        getattr(redirect, "mime_type", None),
+                        redirect.status, redirect.status_text, redirect.headers, redirect.mime_type
                     ),
                     event.request.url,
                 )
@@ -837,13 +846,13 @@ class NodriverCaptureBackend:
                     "url": event.response.url,
                     "method": "GET",
                     "headers": {},
-                    "timestamp": None,
+                    "timestamp": time.time(),  # request never seen; best we know
                     "has_post_data": False,
                     "post_data": None,
                 }
             self._request_map[rid]["response"] = _response_summary(
                 event.response.status,
-                getattr(event.response, "status_text", None),
+                event.response.status_text,
                 event.response.headers,
                 event.response.mime_type,
             )

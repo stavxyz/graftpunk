@@ -220,21 +220,19 @@ def _perf(method: str, params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _selenium_login_chain() -> list[dict[str, Any]]:
+def _selenium_login_chain(*, inline_post_data: bool = True) -> list[dict[str, Any]]:
+    first_request: dict[str, Any] = {
+        "url": LOGIN,
+        "method": "POST",
+        "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+        "hasPostData": True,
+    }
+    if inline_post_data:
+        first_request["postData"] = "u=alice&p=hunter2"
     return [
         _perf(
             "Network.requestWillBeSent",
-            {
-                "requestId": "s1",
-                "request": {
-                    "url": LOGIN,
-                    "method": "POST",
-                    "headers": {"Content-Type": "application/x-www-form-urlencoded"},
-                    "postData": "u=alice&p=hunter2",
-                    "hasPostData": True,
-                },
-                "wallTime": 1700000000.0,
-            },
+            {"requestId": "s1", "request": first_request, "wallTime": 1700000000.0},
         ),
         _perf(
             "Network.requestWillBeSent",
@@ -267,14 +265,100 @@ def _selenium_login_chain() -> list[dict[str, Any]]:
     ]
 
 
+def _sel_request(
+    rid: str,
+    url: str,
+    method: str = "GET",
+    *,
+    post: str | None = None,
+    redirect: dict[str, Any] | None = None,
+    wall: float = 1.0,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {"url": url, "method": method, "headers": {}}
+    if post is not None:
+        request.update(postData=post, hasPostData=True)
+    params: dict[str, Any] = {"requestId": rid, "request": request, "wallTime": wall}
+    if redirect is not None:
+        params["redirectResponse"] = redirect
+    return _perf("Network.requestWillBeSent", params)
+
+
 class TestSeleniumRedirectHops:
-    def _driver(self) -> MagicMock:
+    def _driver(self, perf: list[dict[str, Any]] | None = None) -> MagicMock:
+        chain = perf if perf is not None else _selenium_login_chain()
         driver = MagicMock()
-        driver.get_log = MagicMock(
-            side_effect=lambda kind: _selenium_login_chain() if kind == "performance" else []
-        )
+        driver.get_log = MagicMock(side_effect=lambda kind: chain if kind == "performance" else [])
         driver.execute_cdp_cmd = MagicMock(return_value={"body": "<html/>", "base64Encoded": False})
         return driver
+
+    def test_hop_post_body_not_inlined_warns_and_is_not_fetched(self) -> None:
+        """Mirror of the nodriver case: the hop's body is gone; never ask for it by
+        the real id (which now addresses the final hop)."""
+        driver = self._driver(_selenium_login_chain(inline_post_data=False))
+        backend = SeleniumCaptureBackend(driver)
+
+        with patch("graftpunk.observe.capture.LOG") as mock_log:
+            backend.stop_capture()
+
+        post_fetches = [
+            c
+            for c in driver.execute_cdp_cmd.call_args_list
+            if c.args[0] == "Network.getRequestPostData"
+        ]
+        assert post_fetches == []
+        assert "redirect_hop_post_data_unavailable" in [
+            c.args[0] for c in mock_log.warning.call_args_list
+        ]
+        assert backend.get_har_entries()[0]["request"].get("postData") is None
+
+    def test_multi_hop_chain_yields_one_entry_per_hop(self) -> None:
+        perf = [
+            _sel_request("s2", LOGIN, "POST", post="x=1", wall=1.0),
+            _sel_request(
+                "s2",
+                HOME,
+                redirect={"url": LOGIN, "status": 302, "headers": {"Location": "/"}},
+                wall=2.0,
+            ),
+            _sel_request(
+                "s2",
+                DASH,
+                redirect={"url": HOME, "status": 302, "headers": {"Location": "/dashboard"}},
+                wall=3.0,
+            ),
+            _perf(
+                "Network.responseReceived",
+                {
+                    "requestId": "s2",
+                    "response": {"url": DASH, "status": 200, "headers": {}, "mimeType": ""},
+                },
+            ),
+        ]
+        backend = SeleniumCaptureBackend(self._driver(perf))
+        backend.stop_capture()
+
+        hops = [
+            (e["request"]["url"], e["response"]["status"], e["response"]["redirectURL"])
+            for e in backend.get_har_entries()
+        ]
+        assert hops == [(LOGIN, 302, HOME), (HOME, 302, DASH), (DASH, 200, "")]
+
+    def test_entries_are_chronological_even_with_a_concurrent_request(self) -> None:
+        perf = [
+            _sel_request("s3", LOGIN, "POST", post="x=1", wall=100.0),
+            _sel_request("s4", HOME + "static/a.css", wall=100.5),
+            _sel_request(
+                "s3", HOME, redirect={"url": LOGIN, "status": 302, "headers": {}}, wall=101.0
+            ),
+        ]
+        backend = SeleniumCaptureBackend(self._driver(perf))
+        backend.stop_capture()
+
+        assert [e["request"]["url"] for e in backend.get_har_entries()] == [
+            LOGIN,
+            HOME + "static/a.css",
+            HOME,
+        ]
 
     def test_login_post_survives_the_redirect(self) -> None:
         driver = self._driver()
@@ -302,6 +386,118 @@ class TestSeleniumRedirectHops:
             if c.args[0] == "Network.getResponseBody"
         ]
         assert fetched == ["s1"]
+
+
+# ---------------------------------------------------------------------------
+# ordering + fidelity
+# ---------------------------------------------------------------------------
+
+
+class TestOrdering:
+    def test_entries_without_wall_time_sort_last(self) -> None:
+        """An entry with no wall time renders startedDateTime as 'now'; it must not
+        lead the HAR -- detect_auth_flow reads list order as chronology."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_response(_response_received("orphan", _response(HOME + "late", 200)))
+        first = _will_be_sent("r6", _request(LOGIN, "POST", "x=1"))
+        first.wall_time = 10.0
+        backend._on_request(first)
+        backend._request_map["orphan"]["timestamp"] = None  # legacy/no-time entry
+
+        assert [e["request"]["url"] for e in backend.get_har_entries()] == [LOGIN, HOME + "late"]
+
+    def test_orphan_entry_gets_a_real_timestamp(self) -> None:
+        """A response for a never-seen request is stamped when it is seen, so its
+        order and its startedDateTime agree by construction."""
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_response(_response_received("orphan2", _response(HOME, 200)))
+        assert isinstance(backend._request_map["orphan2"]["timestamp"], float)
+
+    def test_header_roles_see_the_same_order_as_the_har(self) -> None:
+        """The POST hop is re-inserted at the end of the map; header-role
+        extraction must still see it before the request it redirected to."""
+        backend = NodriverCaptureBackend(MagicMock())
+        _nodriver_login_chain(backend)
+        seen: list[str] = []
+        with patch(
+            "graftpunk.observe.headers.extract_header_roles",
+            side_effect=lambda m: seen.extend(d["url"] for d in m.values()) or {},
+        ):
+            backend.get_header_roles()
+        assert seen == [LOGIN, HOME]
+
+
+class TestRealCdpDataclasses:
+    """Pin the production code's attribute names against nodriver's real types."""
+
+    @staticmethod
+    def _real_response(url: str, status: int, headers: dict[str, str]) -> Any:
+        import nodriver.cdp.network as n
+
+        return n.Response(
+            url=url,
+            status=status,
+            status_text="Found" if status == 302 else "OK",
+            headers=n.Headers(headers),
+            mime_type="text/html",
+            charset="utf-8",
+            connection_reused=False,
+            connection_id=1,
+            encoded_data_length=0,
+            security_state="secure",
+        )
+
+    @staticmethod
+    def _real_event(
+        rid: str, url: str, method: str, redirect: Any = None, post: str | None = None
+    ) -> Any:
+        import nodriver.cdp.network as n
+
+        request = n.Request(
+            url=url,
+            method=method,
+            headers=n.Headers({}),
+            initial_priority="High",
+            referrer_policy="no-referrer",
+            post_data=post,
+            has_post_data=post is not None,
+        )
+        return n.RequestWillBeSent(
+            request_id=n.RequestId(rid),
+            loader_id=n.LoaderId("L"),
+            document_url=url,
+            request=request,
+            timestamp=n.MonotonicTime(1.0),
+            wall_time=n.TimeSinceEpoch(1700000000.0),
+            initiator=n.Initiator(type_="other"),
+            redirect_has_extra_info=False,
+            redirect_response=redirect,
+            type_=None,
+            frame_id=None,
+            has_user_gesture=None,
+        )
+
+    def test_login_chain_with_real_dataclasses(self) -> None:
+        backend = NodriverCaptureBackend(MagicMock())
+        backend._on_request(self._real_event("real1", LOGIN, "POST", post="u=alice"))
+        backend._on_request(
+            self._real_event(
+                "real1", HOME, "GET", redirect=self._real_response(LOGIN, 302, {"Location": "/"})
+            )
+        )
+
+        entries = backend.get_har_entries()
+        assert [
+            (e["request"]["method"], e["request"]["url"], e["response"]["status"]) for e in entries
+        ] == [
+            ("POST", LOGIN, 302),
+            ("GET", HOME, 0),
+        ]
+        assert entries[0]["response"]["redirectURL"] == HOME
+        assert entries[0]["response"]["statusText"] == "Found"
+        assert {h["name"]: h["value"] for h in entries[0]["response"]["headers"]} == {
+            "Location": "/"
+        }
 
 
 # ---------------------------------------------------------------------------
