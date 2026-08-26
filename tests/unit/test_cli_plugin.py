@@ -273,7 +273,7 @@ class TestCommandDecorator:
 
         meta = get_item._command_meta  # type: ignore[attr-defined]
         assert len(meta.params) == 1
-        assert meta.params[0].name == "item-id"
+        assert meta.params[0].name == "item_id"
 
     def test_decorator_preserves_function_name(self) -> None:
         """@command preserves the original function name via functools.wraps."""
@@ -379,7 +379,7 @@ class TestGetCommandsWithMetadata:
 
         plugin = MyPlugin()
         commands = {c.name: c for c in plugin.get_commands()}
-        assert commands["item"].params[0].name == "item-id"
+        assert commands["item"].params[0].name == "item_id"
         assert commands["item"].params[0].is_option is False
 
     def test_introspection_used_when_no_explicit_params(self) -> None:
@@ -923,7 +923,7 @@ class TestCommandDecoratorRequiresSession:
         plugin = MyPlugin()
         commands = {c.name: c for c in plugin.get_commands()}
 
-        assert commands["public_cmd"].requires_session is False
+        assert commands["public-cmd"].requires_session is False
         assert commands["private_cmd"].requires_session is True
         assert commands["default_cmd"].requires_session is None
 
