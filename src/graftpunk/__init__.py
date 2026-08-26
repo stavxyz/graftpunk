@@ -131,8 +131,10 @@ except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0+unknown"
 
 __all__ = [
-    # Version
+    # Version and description
     "__version__",
+    "DESCRIPTION",
+    "LONG_DESCRIPTION",
     # Python API
     "GraftpunkClient",
     # Session management

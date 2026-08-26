@@ -122,9 +122,10 @@ packages = ["src/graftpunk"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# ruff >= 0.16 formats fenced Python in Markdown; design docs and plans quote
-# code fragments on purpose, so Markdown is out of scope for lint/format.
-extend-exclude = ["**/*.md"]
+# ruff >= 0.16 formats fenced Python in Markdown. Specs and plans under
+# docs/superpowers quote code fragments on purpose; README and other docs
+# stay covered so a broken snippet cannot ship.
+extend-exclude = ["docs/superpowers/**/*.md"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "S"]
