@@ -34,7 +34,13 @@ from graftpunk.cli.keepalive_commands import keepalive_app
 from graftpunk.cli.plugin_commands import resolve_session_name
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
-from graftpunk.logging import configure_logging, enable_network_debug, get_logger
+from graftpunk.console import err_console
+from graftpunk.logging import (
+    configure_logging,
+    configured_by_consumer,
+    enable_network_debug,
+    get_logger,
+)
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.run import make_run_id, save_observe_run
 from graftpunk.plugins import (
@@ -54,10 +60,22 @@ from graftpunk.session_context import resolve_session
 # calling get_settings() here because GraftpunkSettings.__init__ creates
 # directories as a side effect, which breaks test isolation; env vars are
 # read directly instead.
-configure_logging(
-    level=os.environ.get("GRAFTPUNK_LOG_LEVEL", "WARNING"),
-    json_output=os.environ.get("GRAFTPUNK_LOG_FORMAT", "console") == "json",
-)
+#
+# A host program that embeds this Typer app and configured structlog itself
+# keeps its configuration: only the -v/--log-format flags in main_callback()
+# (an explicit CLI invocation) reconfigure over it.
+
+
+def _configure_cli_logging_from_env() -> None:
+    if configured_by_consumer():
+        return
+    configure_logging(
+        level=os.environ.get("GRAFTPUNK_LOG_LEVEL", "WARNING"),
+        json_output=os.environ.get("GRAFTPUNK_LOG_FORMAT", "console") == "json",
+    )
+
+
+_configure_cli_logging_from_env()
 
 workstation_env.ensure_bootstrap()
 
@@ -67,10 +85,7 @@ workstation_env.ensure_bootstrap()
 # is idempotent, so this is a no-op unless the file actually changed one of
 # those two vars.
 # The -v/-vv and --log-format flags in main_callback() may reconfigure later.
-configure_logging(
-    level=os.environ.get("GRAFTPUNK_LOG_LEVEL", "WARNING"),
-    json_output=os.environ.get("GRAFTPUNK_LOG_FORMAT", "console") == "json",
-)
+_configure_cli_logging_from_env()
 
 LOG = get_logger(__name__)
 
@@ -784,7 +799,8 @@ except (SystemExit, KeyboardInterrupt):
 except Exception as exc:
     LOG.exception("plugin_registration_failed", error=str(exc))
     # Notify user - plugins are optional but they should know if they fail
-    console.print(f"[yellow]Warning: Plugin registration failed: {exc}[/yellow]")
+    # stderr: gp's stdout may be a piped JSON/CSV stream.
+    err_console.print(f"[yellow]Warning: Plugin registration failed: {exc}[/yellow]")
 
 if __name__ == "__main__":
     app()

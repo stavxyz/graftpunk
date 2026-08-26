@@ -41,8 +41,10 @@ try:
 
     _jmespath = jmespath
     HAS_JMESPATH = True
-except ImportError as _jmespath_err:
-    LOG.debug("jmespath_import_failed", error=str(_jmespath_err))
+except ImportError:
+    # Reported at the use site (jmespath_not_installed) so that importing the
+    # module never logs; library consumers may not have configured logging.
+    pass
 
 
 def _convert_params(cmd_def: YAMLCommandDef) -> list[PluginParamSpec]:

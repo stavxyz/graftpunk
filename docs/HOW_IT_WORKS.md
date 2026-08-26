@@ -939,7 +939,9 @@ Structured logging via `structlog`. Quiet by default (`WARNING` level). Controll
 - `GRAFTPUNK_LOG_FORMAT` environment variable (`json` or `console`)
 - `--network-debug` flag (enables wire-level HTTP tracing via `http.client`, `urllib3`, `httpx`, `httpcore`)
 
-Logging is configured early (before plugin registration) so that plugin load messages respect the configured level. The `--network-debug` flag is independent of verbosity level — it enables stdlib DEBUG logging on network libraries and sets `HTTPConnection.debuglevel = 1` for raw HTTP traffic output.
+Logging is configured early (before plugin registration) so that plugin load messages respect the configured level.
+
+As a library, graftpunk never writes log lines to stdout. Importing `graftpunk` applies a stderr/`WARNING` structlog configuration only if structlog is not already configured, so a host program's own `structlog.configure(...)` — made before or after the import — is respected, and importing `graftpunk.cli.main` (to embed the Typer app) does not override it either; only an actual CLI invocation with `-v`/`-vv`/`--log-format` reconfigures. Nothing logs at import time. The `--network-debug` flag is independent of verbosity level — it enables stdlib DEBUG logging on network libraries and sets `HTTPConnection.debuglevel = 1` for raw HTTP traffic output.
 
 ---
 
