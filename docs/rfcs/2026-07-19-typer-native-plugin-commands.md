@@ -24,15 +24,15 @@ validated:
 graftpunk's `gp <site> …` plugin CLI is broken under **typer ≥ 0.26**. On a fresh install that resolves a modern typer:
 
 - `gp <site>` reports **"No such command"** — plugin subcommands don't mount.
-- Running a mounted command (e.g. `gp shopkeep export list`) **crashes during argument parsing** (an `AttributeError` on the context in the current click 8.4.x line; with click 8.3.x, options instead silently arrive as `None` with their declared defaults dropped). *(Verified 2026-07-19: was incorrect — 8.3.x is not the current click line; grocerbot's installed click is 8.4.2, where the symptom is the crash.)*
+- Running a mounted command (e.g. `gp myshop export list`) **crashes during argument parsing** (an `AttributeError` on the context in the current click 8.4.x line; with click 8.3.x, options instead silently arrive as `None` with their declared defaults dropped). *(Verified 2026-07-19: was incorrect — 8.3.x is not the current click line; a downstream project's installed click is 8.4.2, where the symptom is the crash.)*
 
-typer < 0.26 (what `uv.lock` currently pins: 0.21.1) is unaffected, so graftpunk's own CI never sees the break — but any consumer resolving typer ≥ 0.26 (e.g. grocerbot, whose environment resolves typer 0.26.8) gets a broken `gp`.
+typer < 0.26 (what `uv.lock` currently pins: 0.21.1) is unaffected, so graftpunk's own CI never sees the break — but any consumer resolving typer ≥ 0.26 (e.g. a downstream project whose environment resolves typer 0.26.8) gets a broken `gp`.
 
 ## Root cause (source-verified)
 
 typer 0.26 **vendored its own copy of Click** into `typer._click` (self-documented as "adapted from Click 8.3.1" — `typer/_click/__init__.py:1-3`). graftpunk's CLI **hand-builds external `click.Option`/`click.Argument`/`click.Group` objects and hands them to Typer's runtime**, which now parses them with its *vendored* Click. Click's parse path assumes the `Parameter` and the `Context` come from **one** Click implementation — it reads per-instance context state that only that Click's `Context.__init__` establishes:
 
-- **Crash:** external `Parameter.handle_parse_result` reads context state the vendored `Context.__init__` never set (`_param_default_explicit` in click 8.4.x — grocerbot's installed 8.4.2 initializes it at `click/core.py:509` and reads it at `:2683`; the `UNSET`-sentinel machinery in 8.3.x). Cross-implementation `Parameter`↔`Context` is an unsupported contract. *(Verified 2026-07-19: was incorrect — `_param_default_explicit` was introduced in click 8.4.0, not 8.2.x.)*
+- **Crash:** external `Parameter.handle_parse_result` reads context state the vendored `Context.__init__` never set (`_param_default_explicit` in click 8.4.x — the downstream project's installed 8.4.2 initializes it at `click/core.py:509` and reads it at `:2683`; the `UNSET`-sentinel machinery in 8.3.x). Cross-implementation `Parameter`↔`Context` is an unsupported contract. *(Verified 2026-07-19: was incorrect — `_param_default_explicit` was introduced in click 8.4.0, not 8.2.x.)*
 - **Dropped defaults (reproducible in the current 8.3.1 / typer 0.27 pair):** external Click's missing-value ladder uses an `UNSET` sentinel (`click/_utils.py:22`, `click/core.py:2308-2333`); Typer's vendored `Context.lookup_default` returns **`None`** (`typer/_click/core.py:445`). External Click tests `None is not UNSET` → true → binds the value to `None` (source mislabeled `DEFAULT_MAP`) and **skips the block that would apply the Option's real default**.
 - **Context / ParameterSource:** external `click.get_current_context()` and Typer's live context use **two different thread-local stacks** (`click/globals.py` vs `typer/_click/globals.py`), and `ParameterSource` is **two distinct enum classes**. External-Click lookups from inside a Typer callback see nothing / never compare equal.
 
@@ -41,7 +41,7 @@ The three symptoms are one thing: **a cross-Click-boundary.** They are not Typer
 ## Goals
 
 - `gp <site> <command>` mounts and executes correctly on **typer 0.21 through the latest** (0.27+), verified in CI on both generations.
-- The plugin author contract is **unchanged**: `SitePlugin`, `CommandSpec`, `PluginParamSpec`, `@command`, `LoginConfig`, `get_commands()` — real plugins (`graftpunk-plugins-grocerbot` shopkeep, `surety`) work untouched.
+- The plugin author contract is **unchanged**: `SitePlugin`, `CommandSpec`, `PluginParamSpec`, `@command`, `LoginConfig`, `get_commands()` — real plugins (the private `myshop` package and `surety`) work untouched.
 - **Zero external-Click objects enter Typer's runtime** anywhere under `cli/`.
 - Remove the accumulated boundary workarounds rather than add more.
 
@@ -139,7 +139,7 @@ Sweep every module under `cli/` for external-Click usage and route it through Ty
 
 - **Permanent typer-version CI matrix.** Add a CI dimension that installs `typer==0.21.*` and `typer` latest (≥0.26) and runs the plugin CLI suite under each. This is the guard that would have caught the original break (the pinned `uv.lock` hides it).
 - **Version-agnostic unit tests** that assert the invariants regardless of installed typer (a command's declared default is applied when the flag is absent; `--format`-explicit detection; nested-group mounting; required option vs argument; variadic arg; param-less login).
-- **Real-plugin end-to-end**, on both typer generations: `gp shopkeep {login, export list/get, reorder, import run}` and `gp surety <commands>` — mount, parse, and execute (read-only where live).
+- **Real-plugin end-to-end**, on both typer generations: `gp myshop {login, export list/get, reorder, import run}` and `gp surety <commands>` — mount, parse, and execute (read-only where live).
 - **Import-ban guard test** — `cli/` contains no external-Click imports (the §7 invariant, enforced permanently).
 - Green on the existing 3.11/3.12/3.13 matrix.
 
@@ -157,7 +157,7 @@ Sweep every module under `cli/` for external-Click usage and route it through Ty
 
    > **Design note (2026-07-19):** per SOLID review — `>=0.9.0` claimed 0.9–0.20 compatibility that nothing tests (the same metadata/reality gap that hid the original break, mirrored). A floor raise is not an upper pin; it aligns metadata with the CI matrix.
 3. Release as graftpunk **1.10.0** (behavior fix + internal refactor; no public API change) via the existing tag-push Trusted-Publishing pipeline.
-4. grocerbot picks it up by bumping its floor to `graftpunk>=1.10.0` and re-locking; `gp shopkeep …` then works under grocerbot's typer 0.26.8.
+4. The downstream project picks it up by bumping its floor to `graftpunk>=1.10.0` and re-locking; `gp myshop …` then works under its typer 0.26.8.
 
 ## References (source)
 

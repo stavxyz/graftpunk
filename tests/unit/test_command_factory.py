@@ -46,7 +46,7 @@ class TestMapParamSpec:
     def test_bool_default_false_is_bare_flag(self) -> None:
         # PluginParamSpec.option auto-sets is_flag=True for bool+default False
         spec = PluginParamSpec.option("no_wait", type=bool, default=False)
-        param, ann = map_param_spec("shopkeep", "run", spec)
+        param, ann = map_param_spec("myshop", "run", spec)
         assert ann is bool
         assert param.default.default is False
         # explicit positive-only decl -> bare --no-wait flag, no --no-no-wait pair
@@ -66,7 +66,7 @@ class TestMapParamSpec:
 
     def test_required_argument(self) -> None:
         spec = PluginParamSpec.argument("export_id", type=str)  # required=True default
-        param, ann = map_param_spec("shopkeep", "get", spec)
+        param, ann = map_param_spec("myshop", "get", spec)
         assert param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
         assert isinstance(param.default, typer.models.ArgumentInfo)
         assert param.default.default is ...

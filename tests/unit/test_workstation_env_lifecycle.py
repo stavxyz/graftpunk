@@ -60,7 +60,7 @@ def test_laziness_regression_help_runs_zero_commands(tmp_path):
     # Each command value would create a sentinel file if it ever ran.
     _write_env_file(
         tmp_path,
-        f"SHOPKEEP_PASSWORD=$(touch {tmp_path}/CRED_EVALUATED; echo secret)\n"
+        f"MYSHOP_PASSWORD=$(touch {tmp_path}/CRED_EVALUATED; echo secret)\n"
         f"GRAFTPUNK_BROWSER_EXECUTABLE_PATH=$(touch {tmp_path}/SETTING_EVALUATED; echo /lazy)\n",
     )
     result = _run_child(
@@ -135,7 +135,7 @@ def test_unreadable_env_file_does_not_crash_gp(tmp_path):
 
 def test_library_reach_without_cli_import(tmp_path):
     # Spec Testing #11: a consumer that never imports graftpunk.cli (e.g.
-    # grocerbot's in-process GraftpunkClient) sees file statics identically —
+    # a downstream project's in-process GraftpunkClient) sees file statics identically —
     # ensure_bootstrap() lives inside get_settings(), not in the CLI.
     # (Match exactly graftpunk.cli / graftpunk.cli.* — a bare startswith
     # would false-positive on graftpunk.client, which the package __init__

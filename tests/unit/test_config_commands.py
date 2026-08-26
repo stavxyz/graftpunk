@@ -58,14 +58,14 @@ def test_config_path(_isolated):
 
 def test_set_get_list_unset_roundtrip(_isolated):
     assert (
-        runner.invoke(app, ["config", "set", "SHOPKEEP_STORE_NAME", "the-french-co"]).exit_code == 0
+        runner.invoke(app, ["config", "set", "MYSHOP_STORE_NAME", "example-store"]).exit_code == 0
     )
-    got = runner.invoke(app, ["config", "get", "SHOPKEEP_STORE_NAME"])
-    assert got.stdout.strip() == "the-french-co"
+    got = runner.invoke(app, ["config", "get", "MYSHOP_STORE_NAME"])
+    assert got.stdout.strip() == "example-store"
     listed = runner.invoke(app, ["config", "list"])
-    assert "SHOPKEEP_STORE_NAME=the-french-co" in listed.stdout
-    assert runner.invoke(app, ["config", "unset", "SHOPKEEP_STORE_NAME"]).exit_code == 0
-    assert runner.invoke(app, ["config", "get", "SHOPKEEP_STORE_NAME"]).exit_code == 1
+    assert "MYSHOP_STORE_NAME=example-store" in listed.stdout
+    assert runner.invoke(app, ["config", "unset", "MYSHOP_STORE_NAME"]).exit_code == 0
+    assert runner.invoke(app, ["config", "get", "MYSHOP_STORE_NAME"]).exit_code == 1
 
 
 def test_set_stores_command_verbatim_and_get_resolve_evaluates(_isolated):
