@@ -30,14 +30,14 @@ def _write(env_file: Path, content: str) -> None:
 
 class TestParser:
     def test_static_value_verbatim(self, env_file):
-        _write(env_file, "SHOPKEEP_STORE_NAME=the-french-co\n")
-        entry = workstation_env.load().get("SHOPKEEP_STORE_NAME")
+        _write(env_file, "MYSHOP_STORE_NAME=example-store\n")
+        entry = workstation_env.load().get("MYSHOP_STORE_NAME")
         assert entry.kind == "static"
-        assert entry.raw_value == "the-french-co"
+        assert entry.raw_value == "example-store"
 
     def test_whole_value_command_substitution(self, env_file):
-        _write(env_file, 'SHOPKEEP_PASSWORD=$(op read "op://v/i/password")\n')
-        entry = workstation_env.load().get("SHOPKEEP_PASSWORD")
+        _write(env_file, 'MYSHOP_PASSWORD=$(op read "op://v/i/password")\n')
+        entry = workstation_env.load().get("MYSHOP_PASSWORD")
         assert entry.kind == "command"
         assert entry.command == 'op read "op://v/i/password"'
 

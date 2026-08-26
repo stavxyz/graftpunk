@@ -18,13 +18,13 @@ validated:
 ## Problem
 
 graftpunk resolves login credentials from environment variables — the
-derived `{SITE}_{FIELD}` names (e.g. `SHOPKEEP_USERNAME`), or per-plugin
+derived `{SITE}_{FIELD}` names (e.g. `MYSHOP_USERNAME`), or per-plugin
 `username_envvar`/`password_envvar` overrides (`cli/login_commands.py:108-123`)
 — and its own settings from `GRAFTPUNK_*` variables (pydantic-settings,
 `config.py`). Credentials are not persisted anywhere; settings can only be
 persisted in a **cwd-relative** `.env` file (pydantic-settings
 `env_file=".env"`, `config.py:94`), which fails "works from any cwd." In
-practice `export SHOPKEEP_PASSWORD=$(op read "op://…")` is retyped per
+practice `export MYSHOP_PASSWORD=$(op read "op://…")` is retyped per
 shell, and on a machine with no system Chrome, forgetting
 `GRAFTPUNK_BROWSER_EXECUTABLE_PATH` fails login with "could not find a
 valid chrome browser binary."
@@ -191,14 +191,14 @@ an in-file `GRAFTPUNK_CONFIG_DIR` is already unsupported per § The file).
 # graftpunk workstation environment — managed by `gp config`
 GRAFTPUNK_BROWSER_EXECUTABLE_PATH=/Users/me/Library/Caches/ms-playwright/chromium-1232/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing
 
-SHOPKEEP_USERNAME=$(op read "op://grocerbot/lightspeed-backoffice-grocerbot/username")
-SHOPKEEP_PASSWORD=$(op read "op://grocerbot/lightspeed-backoffice-grocerbot/password")
-SHOPKEEP_STORE_NAME=the-french-co
+MYSHOP_USERNAME=$(op read "op://vault/item/username")
+MYSHOP_PASSWORD=$(op read "op://vault/item/password")
+MYSHOP_STORE_NAME=example-store
 ```
 
 File keys for login fields must match the **derived** env var names —
-`{SITE}_{FIELD}` (so shopkeep's `store_name` field is
-`SHOPKEEP_STORE_NAME`), or, for plugins that define
+`{SITE}_{FIELD}` (so myshop's `store_name` field is
+`MYSHOP_STORE_NAME`), or, for plugins that define
 `username_envvar`/`password_envvar`, those override names. The design
 handles overrides automatically because resolution is keyed on the final
 computed envvar.
@@ -271,8 +271,8 @@ statics, mark done), and `get_settings()` calls it as its first
 statement — *before* first model construction. The ordering invariant
 ("statics precede the singleton") is thereby owned structurally at the
 one chokepoint every consumer goes through: the CLI, and equally
-in-process **library consumers** (grocerbot drives
-`GraftpunkClient("shopkeep")` without ever importing `graftpunk.cli`)
+in-process **library consumers** (a downstream project drives
+`GraftpunkClient("myshop")` without ever importing `graftpunk.cli`)
 get identical behavior for statics and command values alike. No mixed
 reach: both mechanisms live at the same depth.
 

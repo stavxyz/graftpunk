@@ -1472,8 +1472,8 @@ class TestResolveObserveContext:
             "observe_session": None,  # After fix: observe_callback sets this to None
             "observe_no_session": True,
         }
-        namespace, session_name = _resolve_observe_context(ctx, "https://www.myunfi.com/")
-        assert namespace == "myunfi"
+        namespace, session_name = _resolve_observe_context(ctx, "https://www.myportal.com/")
+        assert namespace == "myportal"
         assert session_name is None
 
 
