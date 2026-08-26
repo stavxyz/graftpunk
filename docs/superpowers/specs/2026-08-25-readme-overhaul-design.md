@@ -57,9 +57,9 @@ Two README sections share the register problem without using the sentence:
 
 ### The two replacement lines
 
-**Subtitle (locations 1, 4, 5, 6, 7, 8, 9):** the owner's repo description, verbatim:
+**Subtitle (locations 1, 4, 5, 6, 7, 8, 9):** an original sentence in the register of the owner's repo description (that description is a style reference, not copied):
 
-> Encrypted browser session persistence with stealth automation and pluggable storage backends.
+> Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
 
 **Second line (locations 2, 5, 7 — wherever the current second sentence appears):** what it does, mechanically:
 
@@ -118,6 +118,6 @@ Add `"har"`, `"cdp"`, `"nodriver"`, `"csrf"` to `keywords`; drop nothing. They d
 - No wording changes in `docs/HOW_IT_WORKS.md` or the RFCs.
 - No behaviour changes anywhere.
 
-## Assumption to confirm
+## Resolved question
 
-The subtitle is the owner's repo-description sentence **verbatim**. If the owner would rather have a pass taken at it, the only line that changes is that one, in every location listed above.
+The owner's repo description is a **style reference only**, not the subtitle text (decided 2026-08-25). The subtitle above is original prose in that register; it composes after `🔌 graftpunk —` in the banner without a second em dash.

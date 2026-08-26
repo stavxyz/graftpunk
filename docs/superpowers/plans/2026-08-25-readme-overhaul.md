@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Subtitle, verbatim, everywhere:** `Encrypted browser session persistence with stealth automation and pluggable storage backends.`
+- **Subtitle, verbatim, everywhere:** `Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`
 - **Second line, verbatim, where the old second sentence lived:** `Log in through a real browser once; graftpunk captures the authenticated session — cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON endpoints become scriptable without a WebDriver in the loop.`
 - The old sentences must not survive anywhere in `src/`, `README.md`, `pyproject.toml`: `turn any website into an api` (any case), `Graft scriptable access`, `Log in once, script forever`. The one permitted survivor is the historical quote at `docs/rfcs/RFC-001-stealth-architecture-evolution.md:48` — do not touch the RFC.
 - Keep the `🔌` emoji in the README H1 and the `gp --help` banner.
@@ -53,8 +53,8 @@ from graftpunk.cli.main import app
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SUBTITLE = (
-    "Encrypted browser session persistence with stealth automation "
-    "and pluggable storage backends."
+    "Authenticated browser sessions, captured once and replayed over plain HTTP: "
+    "stealth login, encrypted at rest, pluggable storage."
 )
 
 # Sentences that must not survive anywhere the project describes itself.
@@ -125,7 +125,7 @@ git commit -m "test: pin the project description across README, PyPI metadata, p
 
 **Interfaces:**
 - Consumes: nothing from other tasks.
-- Produces: `app.info.help` whose first non-blank line is `🔌 graftpunk — Encrypted browser session persistence with stealth automation and pluggable storage backends.` — Task 4 pastes exactly that line into the README.
+- Produces: `app.info.help` whose first non-blank line is `🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.` — Task 4 pastes exactly that line into the README.
 
 - [ ] **Step 1: Replace the package docstring**
 
@@ -141,7 +141,7 @@ Log in once, script forever.
 Replace those four lines with:
 
 ```python
-"""graftpunk - Encrypted browser session persistence with stealth automation and pluggable storage backends.
+"""graftpunk - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
 
 Log in through a real browser once; graftpunk captures the authenticated session —
 cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and
@@ -156,7 +156,7 @@ Leave the rest of the docstring (`This package provides:` onward) untouched.
 `src/graftpunk/cli/main.py:1` currently reads `"""graftpunk CLI - turn any website into an API.`. Change that line to:
 
 ```python
-"""graftpunk CLI - Encrypted browser session persistence with stealth automation and pluggable storage backends.
+"""graftpunk CLI - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
 ```
 
 (Only the first line changes; the docstring's remaining lines stay.)
@@ -180,7 +180,7 @@ Replace the first five lines of that string (banner line, blank, two sentences, 
 
 ```python
     help="""
-    🔌 graftpunk — Encrypted browser session persistence with stealth automation and pluggable storage backends.
+    🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
 
     Log in through a real browser once; graftpunk captures the authenticated session —
     cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and
@@ -198,7 +198,7 @@ Everything from `\b` / `Quick start:` down is unchanged.
 `src/graftpunk/cli/main.py:140` currently reads `    """graftpunk - turn any website into an API."""`. Typer does not render it (the explicit `help=` above takes precedence) but it must not contradict the banner. Change it to:
 
 ```python
-    """graftpunk - Encrypted browser session persistence with stealth automation and pluggable storage backends."""
+    """graftpunk - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage."""
 ```
 
 - [ ] **Step 5: Replace the `gp version` panel title**
@@ -206,7 +206,7 @@ Everything from `\b` / `Quick start:` down is unchanged.
 `src/graftpunk/cli/main.py:167` currently reads `            title="Turn any website into an API",`. Change it to:
 
 ```python
-            title="Encrypted browser session persistence with stealth automation and pluggable storage backends",
+            title="Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage",
 ```
 
 (No trailing period inside a panel title.)
@@ -227,7 +227,7 @@ Expected: ruff clean (the banner line is inside a string, so E501 does not apply
 
 Run: `NO_COLOR=1 uv run gp --help | head -12` and `NO_COLOR=1 uv run gp version`
 
-Expected: the banner's first line is `🔌 graftpunk — Encrypted browser session persistence with stealth automation and pluggable storage backends.`, followed by the four-line second paragraph, then `Quick start:`. The version panel's top border carries the subtitle as its title.
+Expected: the banner's first line is `🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`, followed by the four-line second paragraph, then `Quick start:`. The version panel's top border carries the subtitle as its title.
 
 - [ ] **Step 9: Commit**
 
@@ -259,7 +259,7 @@ description = "Turn any website into an API. Graft scriptable access onto authen
 Change it to:
 
 ```toml
-description = "Encrypted browser session persistence with stealth automation and pluggable storage backends."
+description = "Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage."
 ```
 
 - [ ] **Step 2: Extend `keywords`**
@@ -304,7 +304,7 @@ git commit -m "docs(pyproject): subtitle as the PyPI description; add har/cdp/no
 - Test: `tests/unit/test_project_description.py`
 
 **Interfaces:**
-- Consumes: the first banner line produced by Task 2 (`🔌 graftpunk — Encrypted browser session persistence with stealth automation and pluggable storage backends.`).
+- Consumes: the first banner line produced by Task 2 (`🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`).
 - Produces: a README with no old sentences and the exact banner line at `README.md:300`.
 
 - [ ] **Step 1: Replace the H1 subtitle and second line**
@@ -320,7 +320,7 @@ git commit -m "docs(pyproject): subtitle as the PyPI description; add har/cdp/no
 Replace with:
 
 ```markdown
-**Encrypted browser session persistence with stealth automation and pluggable storage backends.**
+**Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.**
 
 *Log in through a real browser once; graftpunk captures the authenticated session — cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON endpoints become scriptable without a WebDriver in the loop.*
 ```
@@ -375,12 +375,12 @@ The five example commands under it are unchanged.
 
 Run: `NO_COLOR=1 uv run gp --help | sed 's/[[:space:]]*$//' | grep -n "🔌 graftpunk"`
 
-Expected output (one line): `4: 🔌 graftpunk — Encrypted browser session persistence with stealth automation and pluggable storage backends.`
+Expected output (one line): `4: 🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`
 
 `README.md:300` currently reads ` 🔌 graftpunk - turn any website into an API` (inside the ```` ``` ```` block under `## CLI Reference`). Replace that one line with the live line, keeping its single leading space:
 
 ```text
- 🔌 graftpunk — Encrypted browser session persistence with stealth automation and pluggable storage backends.
+ 🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
 ```
 
 The README block deliberately keeps its trimmed shape — one banner line, then the `Commands:` list — rather than the full `gp --help` output (the second paragraph and Quick-start list are already covered elsewhere in the README). This is the decision the spec's fact-check asked to be stated.
@@ -429,7 +429,7 @@ git commit -m "docs(readme): engineer-facing framing; subtitle from the repo des
 
 ### Changed
 
-- **README, PyPI description and `gp --help` describe the project as it is** — encrypted browser session persistence with stealth automation and pluggable storage backends — instead of the "Turn any website into an API" tagline. The framing sections now name the mechanism (browser login once; session, header fingerprint and tokens captured and encrypted; replayed over plain HTTP from Python or a generated CLI). `pyproject.toml` keywords gain `har`, `cdp`, `nodriver`, `csrf`. No behaviour change; a new test pins the description across every surface.
+- **README, PyPI description and `gp --help` describe the project as it is** — authenticated browser sessions captured once and replayed over plain HTTP (stealth login, encrypted at rest, pluggable storage) — instead of the "Turn any website into an API" tagline. The framing sections now name the mechanism (browser login once; session, header fingerprint and tokens captured and encrypted; replayed over plain HTTP from Python or a generated CLI). `pyproject.toml` keywords gain `har`, `cdp`, `nodriver`, `csrf`. No behaviour change; a new test pins the description across every surface.
 
 ```
 
@@ -446,7 +446,7 @@ NO_COLOR=1 uv run gp version
 uv build >/dev/null && uvx twine check dist/* && rm -rf dist/
 ```
 
-Expected: ruff clean; the suite passes with 4 more tests than before this branch (2412 → 2416 on the current `main`); the docstring line prints `graftpunk - Encrypted browser session persistence with stealth automation and pluggable storage backends.`; help and version show the new text; `twine check` PASSED.
+Expected: ruff clean; the suite passes with 4 more tests than before this branch (2412 → 2416 on the current `main`); the docstring line prints `graftpunk - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`; help and version show the new text; `twine check` PASSED.
 
 - [ ] **Step 3: Commit**
 
@@ -462,7 +462,7 @@ git log --format="%H" $(git merge-base origin/main HEAD)..HEAD | while read sha;
 git push -u origin docs/readme-overhaul
 gh pr create --base main --title "docs: describe graftpunk as encrypted session persistence, not an API generator" --body-file - <<'EOF'
 ## Summary
-Replaces the "Turn any website into an API" tagline everywhere the project describes itself — README H1, PyPI `description`, package docstring, `gp --help` banner, the Typer callback docstring, the `gp version` panel — with the repo description verbatim (*Encrypted browser session persistence with stealth automation and pluggable storage backends.*) and a one-sentence mechanical description of what the tool does. "The Problem" / "The Solution" / "What You Can Build" are rewritten in the same register; the diagram, feature bullets and examples are unchanged. Keywords gain `har`, `cdp`, `nodriver`, `csrf`.
+Replaces the "Turn any website into an API" tagline everywhere the project describes itself — README H1, PyPI `description`, package docstring, `gp --help` banner, the Typer callback docstring, the `gp version` panel — with an original subtitle in the register of the repo description (*Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.*) and a one-sentence mechanical description of what the tool does. "The Problem" / "The Solution" / "What You Can Build" are rewritten in the same register; the diagram, feature bullets and examples are unchanged. Keywords gain `har`, `cdp`, `nodriver`, `csrf`.
 
 Spec: `docs/superpowers/specs/2026-08-25-readme-overhaul-design.md` (validated). Plan: `docs/superpowers/plans/2026-08-25-readme-overhaul.md`.
 
