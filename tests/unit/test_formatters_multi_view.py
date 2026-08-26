@@ -21,7 +21,7 @@ from graftpunk.plugins.formatters import (
 
 def _parse_csv_output(console: MagicMock) -> list[list[str]]:
     """Extract and parse CSV output from a mock console."""
-    output = console.print.call_args[0][0]
+    output = console.file.write.call_args[0][0]
     return list(csv.reader(io.StringIO(output)))
 
 

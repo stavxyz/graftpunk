@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import requests
 import typer
+from rich.markup import escape
 
 if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
@@ -365,7 +366,7 @@ def _print_response(
     status_color = "green" if response.ok else "red"
     gp_console.err_console.print(
         f"[{status_color}]HTTP {response.status_code}[/{status_color}]"
-        f" [dim]{response.reason}[/dim]"
+        f" [dim]{escape(str(response.reason))}[/dim]"
         f" [dim]({response.elapsed.total_seconds():.2f}s)[/dim]"
     )
     sys.stdout.write(response.text)

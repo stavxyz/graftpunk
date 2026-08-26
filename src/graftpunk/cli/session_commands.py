@@ -21,6 +21,7 @@ from graftpunk.exceptions import (
     SessionNotFoundError,
     StorageError,
 )
+from graftpunk.plugins.formatters import write_raw
 from graftpunk.session_context import clear_active_session, set_active_session
 
 if TYPE_CHECKING:
@@ -82,7 +83,7 @@ def session_list(
     if json_output:
         import json
 
-        console.print(json.dumps(sessions, indent=2, default=str))
+        write_raw(json.dumps(sessions, indent=2, default=str) + "\n", console)
         return
 
     table = Table(
@@ -161,7 +162,7 @@ def show(
     if json_output:
         import json
 
-        console.print(json.dumps(metadata, indent=2, default=str))
+        write_raw(json.dumps(metadata, indent=2, default=str) + "\n", console)
         return
 
     status = metadata.get("status", "unknown")

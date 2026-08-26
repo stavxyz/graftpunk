@@ -258,3 +258,24 @@ class TestClearErrorHandling:
         output = strip_ansi(result.output)
         assert "Storage backend error" in output
         assert "S3 connection refused" in output
+
+
+class TestJsonOutputIsMachineReadable:
+    """--json must be valid JSON regardless of terminal width (#145 sibling)."""
+
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_list_json_long_values_are_not_wrapped(self, mock_list) -> None:
+        long_value = "https://example.com/" + "p" * 300
+        mock_list.return_value = [_make_session(name="mysite", storage_location=long_value)]
+        result = runner.invoke(session_app, ["list", "--json"], env={"COLUMNS": "80"})
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)[0]["storage_location"] == long_value
+
+    @patch("graftpunk.cli.session_commands.get_session_metadata")
+    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    def test_show_json_long_values_are_not_wrapped(self, _mock_resolve, mock_get) -> None:
+        long_value = "https://example.com/" + "p" * 300
+        mock_get.return_value = _make_session(name="mysite", storage_location=long_value)
+        result = runner.invoke(session_app, ["show", "mysite", "--json"], env={"COLUMNS": "80"})
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["storage_location"] == long_value

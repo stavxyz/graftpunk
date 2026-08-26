@@ -28,7 +28,7 @@ from graftpunk.plugins.formatters import (
 
 def _parse_csv_output(console: MagicMock) -> list[list[str]]:
     """Extract and parse CSV output from a mock console."""
-    output = console.print.call_args[0][0]
+    output = console.file.write.call_args[0][0]
     return list(csv.reader(io.StringIO(output)))
 
 
@@ -90,13 +90,13 @@ class TestFormatOutput:
     def test_dispatches_to_raw_formatter(self) -> None:
         console = MagicMock(spec=Console)
         format_output("hello", "raw", console)
-        console.print.assert_called_once_with("hello")
+        console.file.write.assert_called_once_with("hello\n")
 
     def test_dispatches_to_csv_formatter(self) -> None:
         console = MagicMock(spec=Console)
         data = [{"name": "Alice", "age": "30"}]
         format_output(data, "csv", console)
-        console.print.assert_called_once()
+        console.file.write.assert_called_once()
         rows = _parse_csv_output(console)
         assert rows[0] == ["name", "age"]
 
@@ -138,8 +138,8 @@ class TestTableFormatter:
         table = console.print.call_args[0][0]
         assert isinstance(table, Table)
         assert len(table.columns) == 2
-        assert table.columns[0].header == "name"
-        assert table.columns[1].header == "age"
+        assert str(table.columns[0].header) == "name"
+        assert str(table.columns[1].header) == "age"
         assert table.row_count == 2
 
     def test_single_dict_creates_key_value_table(self) -> None:
@@ -207,24 +207,24 @@ class TestRawFormatter:
     def test_string_data_printed_directly(self) -> None:
         console = MagicMock(spec=Console)
         RawFormatter().format("hello world", console)
-        console.print.assert_called_once_with("hello world")
+        console.file.write.assert_called_once_with("hello world\n")
 
     def test_non_string_data_json_dumped(self) -> None:
         console = MagicMock(spec=Console)
         data = {"key": "value"}
         RawFormatter().format(data, console)
-        console.print.assert_called_once_with(json.dumps(data, default=str))
+        console.file.write.assert_called_once_with(json.dumps(data, default=str) + "\n")
 
     def test_list_data_json_dumped(self) -> None:
         console = MagicMock(spec=Console)
         data = [1, 2, 3]
         RawFormatter().format(data, console)
-        console.print.assert_called_once_with(json.dumps(data, default=str))
+        console.file.write.assert_called_once_with(json.dumps(data, default=str) + "\n")
 
     def test_integer_data_json_dumped(self) -> None:
         console = MagicMock(spec=Console)
         RawFormatter().format(42, console)
-        console.print.assert_called_once_with(json.dumps(42, default=str))
+        console.file.write.assert_called_once_with(json.dumps(42, default=str) + "\n")
 
 
 class TestCsvFormatter:
@@ -232,20 +232,19 @@ class TestCsvFormatter:
         console = MagicMock(spec=Console)
         data = [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
         CsvFormatter().format(data, console)
-        console.print.assert_called_once()
+        console.file.write.assert_called_once()
         rows = _parse_csv_output(console)
         assert rows[0] == ["name", "age"]
         assert rows[1] == ["Alice", "30"]
         assert rows[2] == ["Bob", "25"]
         assert len(rows) == 3
-        # Verify end="" is passed to avoid double-newlining
-        assert console.print.call_args[1].get("end") == ""
+        assert console.file.write.call_args[0][0].endswith("Bob,25\n")
 
     def test_single_dict_produces_single_row_csv(self) -> None:
         console = MagicMock(spec=Console)
         data = {"name": "Alice", "age": "30"}
         CsvFormatter().format(data, console)
-        console.print.assert_called_once()
+        console.file.write.assert_called_once()
         rows = _parse_csv_output(console)
         assert rows[0] == ["name", "age"]
         assert rows[1] == ["Alice", "30"]
@@ -255,7 +254,7 @@ class TestCsvFormatter:
         console = MagicMock(spec=Console)
         csv_str = "name,age\nAlice,30\n"
         CsvFormatter().format(csv_str, console)
-        console.print.assert_called_once_with(csv_str)
+        console.file.write.assert_called_once_with(csv_str)
 
     def test_nested_dict_json_serialized(self) -> None:
         console = MagicMock(spec=Console)
@@ -279,19 +278,19 @@ class TestCsvFormatter:
     def test_non_dict_non_list_non_string_falls_back(self) -> None:
         console = MagicMock(spec=Console)
         CsvFormatter().format(42, console)
-        console.print.assert_called_once_with(json.dumps(42, default=str))
+        console.file.write.assert_called_once_with(json.dumps(42, default=str) + "\n")
 
     def test_list_of_non_dicts_falls_back_to_raw(self) -> None:
         console = MagicMock(spec=Console)
         CsvFormatter().format([1, 2, 3], console)
-        console.print.assert_called_once_with(json.dumps([1, 2, 3], default=str))
+        console.file.write.assert_called_once_with(json.dumps([1, 2, 3], default=str) + "\n")
 
     def test_mixed_type_list_falls_back_to_raw(self) -> None:
         """A list mixing dicts and non-dicts falls back rather than crashing."""
         console = MagicMock(spec=Console)
         data = [{"name": "Alice"}, "not a dict", {"name": "Bob"}]
         CsvFormatter().format(data, console)
-        console.print.assert_called_once_with(json.dumps(data, default=str))
+        console.file.write.assert_called_once_with(json.dumps(data, default=str) + "\n")
 
     def test_list_of_dicts_with_missing_keys(self) -> None:
         console = MagicMock(spec=Console)
@@ -348,7 +347,7 @@ class TestCommandResultUnwrapping:
         console = MagicMock(spec=Console)
         result = CommandResult(data=[{"name": "Alice"}])
         format_output(result, "csv", console)
-        console.print.assert_called_once()
+        console.file.write.assert_called_once()
         rows = _parse_csv_output(console)
         assert rows[0] == ["name"]
         assert rows[1] == ["Alice"]
@@ -358,7 +357,7 @@ class TestCommandResultUnwrapping:
         console = MagicMock(spec=Console)
         result = CommandResult(data="hello world")
         format_output(result, "raw", console)
-        console.print.assert_called_once_with("hello world")
+        console.file.write.assert_called_once_with("hello world\n")
 
     def test_raw_data_still_works(self) -> None:
         """Non-CommandResult data passes through unchanged."""
@@ -499,7 +498,7 @@ class TestFormatPrecedence:
         console = MagicMock(spec=Console)
         result = CommandResult(data=[{"a": "1"}], format_hint="csv")
         format_output(result, "json", console, user_explicit=False)
-        console.print.assert_called_once()
+        console.file.write.assert_called_once()
         rows = _parse_csv_output(console)
         assert rows[0] == ["a"]
         assert rows[1] == ["1"]
@@ -509,7 +508,7 @@ class TestFormatPrecedence:
         console = MagicMock(spec=Console)
         result = CommandResult(data="hello", format_hint="table")
         format_output(result, "raw", console, user_explicit=True)
-        console.print.assert_called_once_with("hello")
+        console.file.write.assert_called_once_with("hello\n")
 
     def test_no_hint_uses_requested_format(self) -> None:
         """Without a format_hint, the requested format is used as-is."""
@@ -1074,3 +1073,119 @@ class TestFormatOverrides:
         )
         format_output(result, "json", console, user_explicit=False)
         console.print.assert_called_once_with("# markdown output")
+
+
+class TestRawOutputBypassesRich:
+    """Raw, CSV and JSON payloads must reach stdout/files byte-for-byte.
+
+    Regression for #145 (Rich markup parsing crashed on ``[/LB]`` in item names)
+    and #144 (``--output`` files carried ANSI codes; long rows were wrapped at
+    the file console's 200-column width, silently corrupting CSV).
+    """
+
+    # Two rows; the second is far longer than 200 columns and carries markup-like
+    # text, a tab, an emoji shortcode and a Rich highlight target (a URL).
+    PAYLOAD = (
+        "sku,name,url\n"
+        "1,BRAND - DESC [1/25 LB] :smile:\tx," + "https://example.com/" + "p" * 260 + "\n"
+    )
+
+    @pytest.fixture(autouse=True)
+    def _force_color(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Reproduce the environment #144 was reported from.
+        monkeypatch.setenv("FORCE_COLOR", "3")
+        monkeypatch.delenv("NO_COLOR", raising=False)
+
+    @staticmethod
+    def _console(width: int = 80) -> Console:
+        return Console(file=io.StringIO(), width=width)
+
+    def test_raw_string_to_console_is_verbatim(self) -> None:
+        console = self._console()
+        RawFormatter().format(self.PAYLOAD, console)
+        assert console.file.getvalue() == self.PAYLOAD
+
+    def test_raw_string_to_file_is_verbatim(self, tmp_path: Path) -> None:
+        out = tmp_path / "export.csv"
+        RawFormatter().format(self.PAYLOAD, self._console(), output_path=str(out))
+        text = out.read_text()
+        assert text == self.PAYLOAD
+        assert text.count("\n") == 2  # header + one row: nothing wrapped
+        assert "\x1b[" not in text
+
+    def test_csv_string_passthrough_to_file_is_verbatim(self, tmp_path: Path) -> None:
+        out = tmp_path / "export.csv"
+        CsvFormatter().format(self.PAYLOAD, self._console(), output_path=str(out))
+        assert out.read_text() == self.PAYLOAD
+
+    def test_csv_rows_to_console_are_not_wrapped_or_parsed(self) -> None:
+        console = self._console()
+        rows = [{"name": "[1/25 LB]", "note": "n" * 300}]
+        CsvFormatter().format(rows, console)
+        parsed = list(csv.reader(io.StringIO(console.file.getvalue())))
+        assert parsed == [["name", "note"], ["[1/25 LB]", "n" * 300]]
+
+    def test_json_to_file_is_plain_parseable_json(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.json"
+        data = {"name": "[1/25 LB]", "blob": "b" * 300}
+        JsonFormatter().format(data, self._console(), output_path=str(out))
+        text = out.read_text()
+        assert "\x1b[" not in text
+        assert json.loads(text) == data
+
+    def test_json_to_non_terminal_console_is_parseable(self) -> None:
+        console = self._console(width=40)
+        data = {"name": "[1/25 LB]", "blob": "b" * 300}
+        JsonFormatter().format(data, console)
+        assert json.loads(console.file.getvalue()) == data
+
+    def test_table_to_file_has_no_ansi(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.txt"
+        TableFormatter().format([{"a": "[1/25 LB]", "b": 2}], self._console(), output_path=str(out))
+        text = out.read_text()
+        assert "\x1b[" not in text
+        assert "[1/25 LB]" in text
+
+
+class TestTableCellsAreData:
+    """Table cells, headers and keys are response data, never Rich markup (#145)."""
+
+    def test_list_of_dicts_with_bracketed_values_and_headers(self) -> None:
+        console = Console(file=io.StringIO(), width=120)
+        TableFormatter().format([{"name [/x]": "BRAND [1/25 LB]", "note": "x [bold] y"}], console)
+        out = console.file.getvalue()
+        assert "[1/25 LB]" in out and "[bold]" in out and "name [/x]" in out
+
+    def test_single_dict_with_bracketed_key_and_value(self) -> None:
+        console = Console(file=io.StringIO(), width=120)
+        TableFormatter().format({"k [/x]": "v [/LB]"}, console)
+        out = console.file.getvalue()
+        assert "k [/x]" in out and "v [/LB]" in out
+
+
+class TestFilesAreUtf8:
+    def test_raw_output_file_is_utf8_under_c_locale(self, tmp_path: Path) -> None:
+        import os
+        import subprocess
+        import sys
+
+        out = tmp_path / "out.csv"
+        code = (
+            "from rich.console import Console\n"
+            "from graftpunk.plugins.formatters import RawFormatter\n"
+            "payload = 'caf\\u00e9 \\u2615 [1/25 LB]\\n'\n"
+            f"RawFormatter().format(payload, Console(), output_path={str(out)!r})\n"
+        )
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0"}
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env, check=False
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert out.read_bytes() == "café ☕ [1/25 LB]\n".encode()
+
+    def test_csv_file_uses_lf_and_utf8(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.csv"
+        CsvFormatter().format(
+            [{"a": "é", "b": "[/LB]"}], Console(file=io.StringIO()), output_path=str(out)
+        )
+        assert out.read_bytes() == b"a,b\n\xc3\xa9,[/LB]\n"

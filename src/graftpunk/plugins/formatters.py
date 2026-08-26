@@ -18,8 +18,10 @@ from rich.console import Console
 from rich.json import JSON
 from rich.rule import Rule
 from rich.table import Table
+from rich.text import Text
 
 from graftpunk import console as gp_console
+from graftpunk.console import _stream_is_tty, write_raw
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.export import get_downloads_dir, ordered_keys
@@ -101,16 +103,17 @@ def _write_to_file(
     output_path: str,
     render_fn: Callable[[Console], None],
 ) -> None:
-    """Redirect console-based rendering to a file.
+    """Redirect Rich rendering (tables) to a file.
 
-    Creates parent directories, renders into a StringIO-backed Console,
-    and writes the captured text to *output_path*.
+    Renders into a StringIO-backed, colour-less Console so the file never
+    carries ANSI escapes even under FORCE_COLOR (#144). Only for output that
+    is *meant* to be rendered; data payloads go through :func:`write_raw`.
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     buf = io.StringIO()
-    file_console = Console(file=buf, width=200)
+    file_console = Console(file=buf, width=200, color_system=None, force_terminal=False)
     render_fn(file_console)
-    Path(output_path).write_text(buf.getvalue())
+    Path(output_path).write_text(buf.getvalue(), encoding="utf-8")
 
 
 def _resolve_output_filepath(output_path: str, extension: str) -> Path:
@@ -134,7 +137,7 @@ def _resolve_output_filepath(output_path: str, extension: str) -> Path:
 
 
 class JsonFormatter:
-    """Output as formatted JSON with syntax highlighting."""
+    """Output as JSON: syntax-highlighted on a terminal, plain text otherwise."""
 
     name = "json"
     binary = False
@@ -147,10 +150,11 @@ class JsonFormatter:
         output_path: str = "",
     ) -> None:
         json_str = json.dumps(data, indent=2, default=str)
-        if output_path:
-            _write_to_file(output_path, lambda c: c.print(JSON(json_str)))
+        if output_path or not _stream_is_tty(console):
+            # A file or a pipe wants parseable JSON, not a wrapped, highlighted render.
+            write_raw(json_str + "\n", console, output_path)
             return
-        console.print(JSON(json_str))
+        console.print(JSON(json_str), soft_wrap=True)  # never break a string across lines
 
 
 class TableFormatter:
@@ -225,10 +229,11 @@ class TableFormatter:
         if isinstance(data, list) and data and isinstance(data[0], dict):
             headers = list(data[0].keys())
             table = Table(header_style="bold cyan", border_style="dim")
+            # Cells are data: wrap in Text so Rich never markup-parses "[/LB]" (#145).
             for header in headers:
-                table.add_column(header)  # type: ignore[arg-type]
+                table.add_column(Text(str(header)))
             for row in data:
-                table.add_row(*[str(row.get(h, "")) for h in headers])
+                table.add_row(*[Text(str(row.get(h, ""))) for h in headers])
             console.print(table)
         elif isinstance(data, dict):
             table = Table(show_header=False, border_style="dim")
@@ -237,14 +242,14 @@ class TableFormatter:
             for key, value in data.items():
                 if isinstance(value, (dict, list)):
                     value = json.dumps(value, default=str)
-                table.add_row(str(key), str(value))
+                table.add_row(Text(str(key)), Text(str(value)))
             console.print(table)
         else:
             JsonFormatter().format(data, console)
 
 
 class RawFormatter:
-    """Output raw string representation."""
+    """Output the payload verbatim (strings as-is, anything else as compact JSON)."""
 
     name = "raw"
     binary = False
@@ -256,16 +261,10 @@ class RawFormatter:
         output_config: OutputConfig | None = None,
         output_path: str = "",
     ) -> None:
-        def render(c: Console) -> None:
-            if isinstance(data, str):
-                c.print(data)
-            else:
-                c.print(json.dumps(data, default=str))
-
-        if output_path:
-            _write_to_file(output_path, render)
-            return
-        render(console)
+        text = data if isinstance(data, str) else json.dumps(data, default=str)
+        if not output_path and not text.endswith("\n"):
+            text += "\n"  # a file gets the exact payload; a terminal gets a line
+        write_raw(text, console, output_path)
 
 
 class CsvFormatter:
@@ -338,7 +337,7 @@ class CsvFormatter:
 
         headers = ordered_keys(data)
         buf = io.StringIO()
-        writer = csv.writer(buf)
+        writer = csv.writer(buf, lineterminator="\n")
         writer.writerow(headers)
         for row in data:
             writer.writerow(
@@ -348,11 +347,10 @@ class CsvFormatter:
                 ]
             )
         if output_path:
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(output_path).write_text(buf.getvalue())
+            write_raw(buf.getvalue(), console, output_path)
             gp_console.info(f"Saved: {output_path}")
             return
-        console.print(buf.getvalue(), end="")
+        write_raw(buf.getvalue(), console)
 
 
 class XlsxFormatter:
