@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graftpunk"
-version = "1.13.1"
+version = "1.14.0"
 description = "Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage."
 readme = "README.md"
 license = "MIT"
