@@ -2,6 +2,7 @@
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from graftpunk.keepalive.state import read_keepalive_pid, read_keepalive_state
@@ -39,12 +40,12 @@ def keepalive_status() -> None:
         elif status == "stopped":
             status_display = "[red]○ stopped[/red]"
         else:
-            status_display = f"[yellow]? {status}[/yellow]"
+            status_display = f"[yellow]? {escape(str(status))}[/yellow]"
 
         info = f"""
 {status_display}  PID {pid}
 
-[dim]Session:[/dim]     {state.current_session or "(searching...)"}
+[dim]Session:[/dim]     {escape(str(state.current_session or "(searching...)"))}
 [dim]Interval:[/dim]    {state.interval} minutes
 [dim]Watch mode:[/dim]  {"yes" if state.watch else "no"}
 [dim]Max switches:[/dim] {state.max_switches or "unlimited"}"""
@@ -74,5 +75,5 @@ def keepalive_stop() -> None:
         console.print(f"[red]✗ Permission denied (PID {pid})[/red]")
         raise typer.Exit(1) from None
     except OSError as exc:
-        console.print(f"[red]✗ Failed to stop daemon: {exc}[/red]")
+        console.print(f"[red]✗ Failed to stop daemon: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None

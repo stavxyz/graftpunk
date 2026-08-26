@@ -11,8 +11,10 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from graftpunk.config import get_settings
 from graftpunk.har import (
@@ -97,19 +99,21 @@ def import_har(
     # Validate format_type
     valid_formats = {"python", "yaml"}
     if format_type not in valid_formats:
-        console.print(f"[red]Invalid format '{format_type}'. Valid formats: python, yaml[/red]")
+        console.print(
+            f"[red]Invalid format '{escape(str(format_type))}'. Valid formats: python, yaml[/red]"
+        )
         raise typer.Exit(1)
 
     # Parse HAR file
-    console.print(f"[dim]Parsing HAR file:[/dim] {har_file}")
+    console.print(f"[dim]Parsing HAR file:[/dim] {escape(str(har_file))}")
 
     try:
         result: HARParseResult = parse_har_file(har_file)
     except HARParseError as exc:
-        console.print(f"[red]Failed to parse HAR file: {exc}[/red]")
+        console.print(f"[red]Failed to parse HAR file: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
     except FileNotFoundError:
-        console.print(f"[red]File not found: {har_file}[/red]")
+        console.print(f"[red]File not found: {escape(str(har_file))}[/red]")
         raise typer.Exit(1) from None
 
     entries = result.entries
@@ -119,7 +123,7 @@ def import_har(
         console.print(f"[yellow]Warning: {len(result.errors)} entries failed to parse[/yellow]")
         # Show first few errors for context
         for error in result.errors[:3]:
-            console.print(f"  [dim]Entry {error.index}: {error.error}[/dim]")
+            console.print(f"  [dim]Entry {error.index}: {escape(str(error.error))}[/dim]")
         if len(result.errors) > 3:
             console.print(f"  [dim]... and {len(result.errors) - 3} more[/dim]")
         console.print()
@@ -138,7 +142,7 @@ def import_har(
 
     # Use provided name or infer from domain
     site_name = name or infer_site_name(domain)
-    console.print(f"[bold]Site:[/bold] {site_name} ({domain})\n")
+    console.print(f"[bold]Site:[/bold] {escape(str(site_name))} ({escape(str(domain))})\n")
 
     # Detect auth flow
     console.print("[dim]Analyzing authentication flow...[/dim]")
@@ -186,29 +190,29 @@ def import_har(
     if dry_run:
         console.print(
             Panel(
-                plugin_code,
-                title=f"[cyan]Generated Plugin ({format_type})[/cyan]",
+                Text(plugin_code),  # generated code is data, not markup
+                title=f"[cyan]Generated Plugin ({escape(str(format_type))})[/cyan]",
                 border_style="cyan",
             )
         )
-        console.print(f"\n[dim]Would write to: {output_path}[/dim]")
+        console.print(f"\n[dim]Would write to: {escape(str(output_path))}[/dim]")
         return
 
     # Write the file
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(plugin_code)
-        console.print(f"\n[green]Generated plugin:[/green] {output_path}")
+        console.print(f"\n[green]Generated plugin:[/green] {escape(str(output_path))}")
 
         # Show next steps
         console.print("\n[bold]Next steps:[/bold]")
-        console.print(f"  1. Review and edit: [cyan]{output_path}[/cyan]")
+        console.print(f"  1. Review and edit: [cyan]{escape(str(output_path))}[/cyan]")
         if format_type == "python":
             console.print("  2. Register as entry point or move to plugins directory")
-        console.print(f"  3. Test: [cyan]gp {site_name} --help[/cyan]")
+        console.print(f"  3. Test: [cyan]gp {escape(str(site_name))} --help[/cyan]")
 
     except OSError as exc:
-        console.print(f"[red]Failed to write plugin: {exc}[/red]")
+        console.print(f"[red]Failed to write plugin: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
 
@@ -228,15 +232,15 @@ def _format_auth_flow(auth_flow: AuthFlow) -> str:
             "oauth": "🔑",
         }.get(step.step_type, "•")
 
-        lines.append(f"  {i}. {step_icon} {step.description}")
+        lines.append(f"  {i}. {step_icon} {escape(str(step.description))}")
 
     if auth_flow.session_cookies:
         cookies = ", ".join(auth_flow.session_cookies[:5])
         if len(auth_flow.session_cookies) > 5:
             cookies += f" (+{len(auth_flow.session_cookies) - 5} more)"
-        lines.append(f"\n[dim]Session cookies:[/dim] {cookies}")
+        lines.append(f"\n[dim]Session cookies:[/dim] {escape(str(cookies))}")
 
-    lines.append(f"[dim]Auth type:[/dim] {auth_flow.auth_type}")
+    lines.append(f"[dim]Auth type:[/dim] {escape(str(auth_flow.auth_type))}")
 
     return "\n".join(lines)
 
@@ -256,7 +260,7 @@ def _print_endpoints_table(endpoints: list[APIEndpoint]) -> None:
     # Show first 15 endpoints
     for endpoint in endpoints[:15]:
         params = ", ".join(endpoint.params) if endpoint.params else "—"
-        table.add_row(endpoint.method, endpoint.path, params)
+        table.add_row(Text(endpoint.method), Text(endpoint.path), Text(params))
 
     if len(endpoints) > 15:
         table.add_row("...", f"(+{len(endpoints) - 15} more)", "")

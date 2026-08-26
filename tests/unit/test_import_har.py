@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import re
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+from rich.console import Console
+from rich.panel import Panel
 from typer.testing import CliRunner
 
 from graftpunk.cli.import_har import _format_auth_flow, _print_endpoints_table
@@ -326,6 +329,28 @@ class TestImportHarCommand:
         assert "generated plugin code" in output
         assert "Would write to" in output
 
+    def test_dry_run_generated_code_is_not_markup(self, tmp_path):
+        """Generated code carries bracketed HAR paths/type hints; the panel must not parse them."""
+        har = tmp_path / "test.har"
+        har.write_text("{}")
+        code = 'def items(self) -> list[str]:\n    return self.get("/api?filter[status]=active")'
+        with (
+            patch(
+                f"{MODULE}.parse_har_file",
+                return_value=HARParseResult(entries=[_make_entry()], errors=[]),
+            ),
+            patch(f"{MODULE}.extract_domain", return_value="example.com"),
+            patch(f"{MODULE}.detect_auth_flow", return_value=None),
+            patch(f"{MODULE}.discover_api_endpoints", return_value=[]),
+            patch(f"{MODULE}.generate_plugin_code", return_value=code),
+        ):
+            result = runner.invoke(
+                app, ["import-har", str(har), "--dry-run"], env={"COLUMNS": "200"}
+            )
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "list[str]" in output and "filter[status]=active" in output
+
     def test_dry_run_yaml(self, tmp_path):
         """Dry run with yaml format."""
         har = tmp_path / "test.har"
@@ -474,3 +499,19 @@ class TestImportHarCommand:
 
         assert result.exit_code == 0
         mock_discover.assert_not_called()
+
+
+def test_auth_flow_step_descriptions_are_not_markup(tmp_path):
+    """Step descriptions carry HAR paths and cookie names; the panel must not parse them."""
+    from graftpunk.cli.import_har import _format_auth_flow
+    from graftpunk.har.analyzer import AuthFlow, AuthStep
+
+    step = AuthStep(
+        entry=MagicMock(), step_type="login_submit", description="POST /login?next=[/x] sets sid[0]"
+    )
+    flow = AuthFlow(steps=[step], session_cookies=["sid[0]"])
+    rendered = _format_auth_flow(flow)
+    assert "[/x]" in rendered and "sid[0]" in rendered
+    console = Console(file=io.StringIO(), width=200)
+    console.print(Panel(rendered))  # must not raise MarkupError
+    assert "[/x]" in console.file.getvalue()

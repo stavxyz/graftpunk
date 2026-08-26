@@ -5,8 +5,10 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from graftpunk import (
     clear_session_cache,
@@ -52,6 +54,11 @@ def session_callback(
         console.print(ctx.get_help())
 
 
+def _cell(value: object) -> Text | str:
+    """A table cell for session metadata: data is never markup-parsed; empty shows a dash."""
+    return Text(str(value)) if value else "[dim]—[/dim]"
+
+
 @session_app.command("list")
 def session_list(
     ctx: typer.Context,
@@ -65,7 +72,7 @@ def session_list(
     try:
         sessions = list_sessions_with_metadata(backend_override=backend_override)
     except (ValueError, StorageError) as exc:
-        console.print(f"[red]✗ Storage backend error: {exc}[/red]")
+        console.print(f"[red]✗ Storage backend error: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
     if not sessions:
@@ -107,20 +114,20 @@ def session_list(
         elif status == "logged_out":
             status_display = "[red]○ logged out[/red]"
         else:
-            status_display = f"[yellow]? {status}[/yellow]"
+            status_display = f"[yellow]? {escape(str(status))}[/yellow]"
 
         modified = session.get("modified_at", "")
         if modified:
             modified = modified[:16].replace("T", " ")
 
         table.add_row(
-            session.get("name", ""),
-            session.get("domain") or "[dim]—[/dim]",
+            Text(str(session.get("name", ""))),
+            _cell(session.get("domain")),
             status_display,
-            str(session.get("cookie_count", 0)),
-            modified or "[dim]—[/dim]",
-            session.get("storage_backend") or "[dim]—[/dim]",
-            session.get("storage_location") or "[dim]—[/dim]",
+            Text(str(session.get("cookie_count", 0))),
+            _cell(modified),
+            _cell(session.get("storage_backend")),
+            _cell(session.get("storage_location")),
         )
 
     console.print(table)
@@ -152,11 +159,11 @@ def show(
     try:
         metadata = get_session_metadata(name, backend_override=backend_override)
     except (ValueError, StorageError) as exc:
-        console.print(f"[red]✗ Storage backend error: {exc}[/red]")
+        console.print(f"[red]✗ Storage backend error: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
     if not metadata:
-        console.print(f"[red]✗ Session '{name}' not found[/red]")
+        console.print(f"[red]✗ Session '{escape(str(name))}' not found[/red]")
         raise typer.Exit(1)
 
     if json_output:
@@ -174,7 +181,7 @@ def show(
         status_text = "[red]logged out[/red]"
     else:
         status_icon = "[yellow]?[/yellow]"
-        status_text = f"[yellow]{status}[/yellow]"
+        status_text = f"[yellow]{escape(str(status))}[/yellow]"
 
     created = metadata.get("created_at", "—")
     modified = metadata.get("modified_at", "—")
@@ -191,21 +198,21 @@ def show(
     location = metadata.get("storage_location") or "—"
 
     info = f"""
-{status_icon} [bold]{name}[/bold]  {status_text}
+{status_icon} [bold]{escape(str(name))}[/bold]  {status_text}
 
-[dim]Domain:[/dim]     {metadata.get("domain") or "—"}
+[dim]Domain:[/dim]     {escape(str(metadata.get("domain") or "—"))}
 [dim]Cookies:[/dim]    {metadata.get("cookie_count", 0)}
-[dim]Created:[/dim]    {created}
-[dim]Modified:[/dim]   {modified}
-[dim]Expires:[/dim]    {expires}
-[dim]Backend:[/dim]    {backend}
-[dim]Location:[/dim]   {location}"""
+[dim]Created:[/dim]    {escape(str(created))}
+[dim]Modified:[/dim]   {escape(str(modified))}
+[dim]Expires:[/dim]    {escape(str(expires))}
+[dim]Backend:[/dim]    {escape(str(backend))}
+[dim]Location:[/dim]   {escape(str(location))}"""
 
     if metadata.get("cookie_domains"):
         domains = ", ".join(metadata["cookie_domains"][:5])
         if len(metadata["cookie_domains"]) > 5:
             domains += f" (+{len(metadata['cookie_domains']) - 5} more)"
-        info += f"\n[dim]Domains:[/dim]    {domains}"
+        info += f"\n[dim]Domains:[/dim]    {escape(str(domains))}"
 
     console.print(Panel(info.strip(), border_style="cyan"))
 
@@ -238,24 +245,24 @@ def export(
     try:
         session = load_session(name)
     except SessionNotFoundError:
-        console.print(f"[red]✗ Session '{name}' not found[/red]")
+        console.print(f"[red]✗ Session '{escape(str(name))}' not found[/red]")
         raise typer.Exit(1) from None
     except SessionExpiredError as exc:
-        console.print(f"[red]✗ Session expired: {exc}[/red]")
+        console.print(f"[red]✗ Session expired: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
     except GraftpunkError as exc:
-        console.print(f"[red]✗ Failed to load: {exc}[/red]")
+        console.print(f"[red]✗ Failed to load: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
     try:
         browser_session = cast("BrowserSession", session)
         httpie_path = browser_session.save_httpie_session(name)
 
-        console.print(f"[green]✓ Exported to:[/green] {httpie_path}\n")
+        console.print(f"[green]✓ Exported to:[/green] {escape(str(httpie_path))}\n")
         console.print("[dim]Usage:[/dim]")
-        console.print(f"  http --session={name} https://example.com/api")
+        console.print(f"  http --session={escape(str(name))} https://example.com/api")
     except (OSError, AttributeError) as exc:
-        console.print(f"[red]✗ Export failed: {exc}[/red]")
+        console.print(f"[red]✗ Export failed: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
 
@@ -297,7 +304,7 @@ def session_clear(
             backend_override=backend_override,
         )
     except (ValueError, StorageError) as exc:
-        console.print(f"[red]✗ Storage backend error: {exc}[/red]")
+        console.print(f"[red]✗ Storage backend error: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
     if all_sessions:
@@ -308,7 +315,9 @@ def session_clear(
         if not force:
             console.print(f"[yellow]This will remove {len(all_metadata)} session(s):[/yellow]")
             for s in all_metadata:
-                console.print(f"  - {s['name']} ({s.get('domain') or 'no domain'})")
+                console.print(
+                    f"  - {escape(str(s['name']))} ({escape(str(s.get('domain') or 'no domain'))})"
+                )
             if not typer.confirm("Remove all sessions?"):
                 console.print("[dim]Cancelled[/dim]")
                 return
@@ -331,14 +340,15 @@ def session_clear(
     if is_domain:
         matches = [s for s in all_metadata if s.get("domain") == target]
         if not matches:
-            console.print(f"[red]No sessions found for domain '{target}'[/red]")
+            console.print(f"[red]No sessions found for domain '{escape(str(target))}'[/red]")
             raise typer.Exit(1)
 
         if not force:
-            msg = f"[yellow]Found {len(matches)} session(s) for domain '{target}':[/yellow]"
+            shown = escape(str(target))
+            msg = f"[yellow]Found {len(matches)} session(s) for domain '{shown}':[/yellow]"
             console.print(msg)
             for s in matches:
-                console.print(f"  - {s['name']} ({s.get('cookie_count', 0)} cookies)")
+                console.print(f"  - {escape(str(s['name']))} ({s.get('cookie_count', 0)} cookies)")
             if not typer.confirm(f"Remove {len(matches)} session(s)?"):
                 console.print("[dim]Cancelled[/dim]")
                 return
@@ -358,12 +368,13 @@ def session_clear(
         match = next((s for s in all_metadata if s["name"] == target), None)
 
         if not match:
-            console.print(f"[red]Session '{target}' not found[/red]")
+            console.print(f"[red]Session '{escape(str(target))}' not found[/red]")
             raise typer.Exit(1)
 
         if not force:
             console.print("[yellow]Session to remove:[/yellow]")
-            console.print(f"  - {match['name']} ({match.get('domain') or 'no domain'})")
+            domain = escape(str(match.get("domain") or "no domain"))
+            console.print(f"  - {escape(str(match['name']))} ({domain})")
             if not typer.confirm("Remove this session?"):
                 console.print("[dim]Cancelled[/dim]")
                 return
@@ -386,10 +397,10 @@ def session_use(
     """
     resolved = resolve_session_name(name)
     path = set_active_session(resolved)
-    console.print(f"[green]Active session set to '{resolved}'[/green]")
+    console.print(f"[green]Active session set to '{escape(str(resolved))}'[/green]")
     if resolved != name:
-        console.print(f"[dim](resolved from plugin '{name}')[/dim]")
-    console.print(f"[dim]Written to: {path}[/dim]")
+        console.print(f"[dim](resolved from plugin '{escape(str(name))}')[/dim]")
+    console.print(f"[dim]Written to: {escape(str(path))}[/dim]")
 
 
 @session_app.command("unset")
@@ -410,4 +421,5 @@ def _print_removed(removed: list[dict]) -> None:
 
     console.print(f"\n[green]Removed {len(removed)} session(s):[/green]")
     for s in removed:
-        console.print(f"  - {s.get('name', '?')} ({s.get('domain') or 'no domain'})")
+        domain = escape(str(s.get("domain") or "no domain"))
+        console.print(f"  - {escape(str(s.get('name', '?')))} ({domain})")

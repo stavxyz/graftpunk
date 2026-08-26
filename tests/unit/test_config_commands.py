@@ -247,3 +247,10 @@ def test_config_path_survives_unreadable_env_file(_isolated):
         (_isolated / "env").chmod(0o600)
     assert result.exit_code == 0
     assert str(_isolated / "env") in result.stdout
+
+
+def test_get_missing_key_message_keeps_name_verbatim(_isolated):
+    """The key name is user input, not markup (#166)."""
+    got = runner.invoke(app, ["config", "get", "WEIRD [/x]"])
+    assert got.exit_code == 1
+    assert "WEIRD [/x] is not set" in got.output

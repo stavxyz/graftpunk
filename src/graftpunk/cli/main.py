@@ -178,8 +178,8 @@ def version() -> None:
         Panel(
             f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n"
             f"{escape(graftpunk.DESCRIPTION)}\n\n"
-            f"[dim]Config:[/dim]  {settings.config_dir}\n"
-            f"[dim]Storage:[/dim] {settings.storage_backend}",
+            f"[dim]Config:[/dim]  {escape(str(settings.config_dir))}\n"
+            f"[dim]Storage:[/dim] {escape(str(settings.storage_backend))}",
             title="graftpunk",
             border_style="cyan",
         )
@@ -695,7 +695,7 @@ def plugins() -> None:
 
     def _fmt_section(title: str, names: set[str] | Mapping[str, object]) -> str:
         if names:
-            items = "\n".join(f"  [green]✓[/green] {n}" for n in sorted(names))
+            items = "\n".join(f"  [green]✓[/green] {escape(str(n))}" for n in sorted(names))
             return f"[bold]{title}[/bold]\n{items}"
         return f"[bold]{title}[/bold]\n  [dim](none installed)[/dim]"
 
