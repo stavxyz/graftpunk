@@ -24,8 +24,8 @@ jobs:
           filters: |
             python:
               - '**/*.py'
-            - '**/*.pyi'
-            - 'typings/**'
+              - '**/*.pyi'
+              - 'typings/**'
               - '.github/workflows/python-quality.yml'
               - 'pyproject.toml'
               - 'uv.lock'
