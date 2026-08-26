@@ -1561,3 +1561,31 @@ class TestResolveSessionNameIntegration:
 
         assert result.exit_code == 0
         mock_resolve.assert_called_once_with("literal-session-name")
+
+
+class TestObserveNamesAreNotMarkup:
+    """Session and run names come from disk/user input; Rich must not parse them (#145)."""
+
+    def test_observe_show_and_list_with_bracketed_names(self, tmp_path, monkeypatch) -> None:
+        from typer.testing import CliRunner
+
+        from graftpunk.cli import main as cli_main
+
+        base = tmp_path / "observe"
+        run_dir = base / "evil [bold]" / "run [red]"
+        run_dir.mkdir(parents=True)
+        (run_dir / "network [dim].har").write_text("{}")
+        monkeypatch.setattr(cli_main, "OBSERVE_BASE_DIR", base)
+        runner = CliRunner()
+
+        result = runner.invoke(cli_main.app, ["observe", "list"])
+        assert result.exit_code == 0, result.output
+        assert "evil [bold]" in result.output
+
+        result = runner.invoke(cli_main.app, ["observe", "show", "evil [bold]"])
+        assert result.exit_code == 0, result.output
+        assert "run [red]" in result.output and "network [dim].har" in result.output
+
+        result = runner.invoke(cli_main.app, ["observe", "show", "evil [bold]", "nope [/z]"])
+        assert result.exit_code != 0
+        assert "nope [/z]" in result.output

@@ -289,7 +289,7 @@ def observe_show(
         raise typer.Exit(1)
     session_dir = OBSERVE_BASE_DIR / session_name
     if not session_dir.exists() or not session_dir.is_dir():
-        console.print(f"[red]No runs found for session '{session_name}'[/red]")
+        console.print(f"[red]No runs found for session '{escape(session_name)}'[/red]")
         raise typer.Exit(1)
 
     if run_id is None:
@@ -299,17 +299,19 @@ def observe_show(
             key=lambda d: d.name,
         )
         if not run_dirs:
-            console.print(f"[red]No runs found for session '{session_name}'[/red]")
+            console.print(f"[red]No runs found for session '{escape(session_name)}'[/red]")
             raise typer.Exit(1)
         run_dir = run_dirs[-1]
     else:
         run_dir = session_dir / run_id
         if not run_dir.exists():
-            console.print(f"[red]Run '{run_id}' not found for session '{session_name}'[/red]")
+            console.print(
+                f"[red]Run '{escape(run_id)}' not found for session '{escape(session_name)}'[/red]"
+            )
             raise typer.Exit(1)
 
-    info = f"[bold]{session_name}[/bold] / {run_dir.name}\n"
-    info += f"[dim]Path:[/dim] {run_dir}\n"
+    info = f"[bold]{escape(session_name)}[/bold] / {escape(run_dir.name)}\n"
+    info += f"[dim]Path:[/dim] {escape(str(run_dir))}\n"
 
     # List files in the run directory
     files = sorted(run_dir.iterdir())
@@ -350,7 +352,7 @@ def observe_clean(
     if session_name:
         target = OBSERVE_BASE_DIR / session_name
         if not target.exists():
-            console.print(f"[dim]No data for session '{session_name}'[/dim]")
+            console.print(f"[dim]No data for session '{escape(session_name)}'[/dim]")
             return
         if not force:
             confirm = typer.confirm(f"Remove observe data for '{session_name}'?")
@@ -358,7 +360,7 @@ def observe_clean(
                 console.print("[dim]Cancelled[/dim]")
                 return
         shutil.rmtree(target)
-        console.print(f"[green]Removed observe data for '{session_name}'[/green]")
+        console.print(f"[green]Removed observe data for '{escape(session_name)}'[/green]")
     else:
         if not force:
             confirm = typer.confirm("Remove all observe data?")
@@ -482,21 +484,23 @@ async def _setup_observe_session(
             session = load_session(session_name)
         except SessionNotFoundError:
             console.print(
-                f"[red]Session '{session_name}' not found.[/red]\n"
+                f"[red]Session '{escape(session_name)}' not found.[/red]\n"
                 f"[dim]Run 'gp session list' to see available sessions, "
                 f"or use --no-session to proceed without cookies.[/dim]"
             )
             return None
         except SessionExpiredError as exc:
             console.print(
-                f"[red]Session '{session_name}' is expired or corrupted.[/red]\n"
+                f"[red]Session '{escape(session_name)}' is expired or corrupted.[/red]\n"
                 f"[dim]{exc}[/dim]\n"
                 f"[dim]Use --no-session to proceed without cookies.[/dim]"
             )
             return None
         except Exception as exc:  # noqa: BLE001 — CLI boundary: user-friendly error
             LOG.error("session_load_failed", session_name=session_name, error=str(exc))
-            console.print(f"[red]Failed to load session '{session_name}': {exc}[/red]")
+            console.print(
+                f"[red]Failed to load session '{escape(session_name)}': {escape(str(exc))}[/red]"
+            )
             return None
     else:
         console.print("[dim]No session — opening browser without cookies[/dim]")
