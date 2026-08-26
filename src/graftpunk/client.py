@@ -319,7 +319,10 @@ class GraftpunkClient:
             SessionNotFoundError: If the session cannot be loaded.
             requests.exceptions.HTTPError: On non-403 HTTP errors, or
                 403 errors when no ``token_config`` is set.
-            ValueError: If ``prepare_session`` fails to extract tokens.
+            TokenExtractionError: If ``prepare_session`` fails to extract tokens (a
+                ``ValueError`` subclass). ``SessionInvalidatedError`` means re-login;
+                ``TokenPatternMismatchError`` means the Token config no longer matches
+                the site.
         """
         plugin = self._plugin
         base_url: str = getattr(plugin, "base_url", "")

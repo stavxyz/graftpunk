@@ -18,7 +18,14 @@ from rich.console import Console
 from graftpunk import console as gp_console
 from graftpunk.cache import update_session_cookies
 from graftpunk.cli.command_factory import BUILTIN_OPTIONS
-from graftpunk.exceptions import BrowserError, CommandError, PluginError, SessionNotFoundError
+from graftpunk.exceptions import (
+    BrowserError,
+    CommandError,
+    PluginError,
+    SessionInvalidatedError,
+    SessionNotFoundError,
+    TokenPatternMismatchError,
+)
 from graftpunk.logging import get_logger
 from graftpunk.observe import build_observe_context
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, CommandSpec
@@ -129,6 +136,16 @@ def run_plugin_command(
         base_url = getattr(plugin, "base_url", "")
         try:
             _prepare_tokens(session, token_config, base_url)
+        except SessionInvalidatedError as exc:
+            gp_console.error(f"Token extraction failed: {exc}")
+            gp_console.info(
+                f"The session is no longer authenticated; run: gp {plugin.site_name} login"
+            )
+            raise SystemExit(1) from exc
+        except TokenPatternMismatchError as exc:
+            gp_console.error(f"Token extraction failed: {exc}")
+            gp_console.info("The site's response no longer matches the Token config; update it.")
+            raise SystemExit(1) from exc
         except ValueError as exc:
             gp_console.error(f"Token extraction failed: {exc}")
             raise SystemExit(1) from exc

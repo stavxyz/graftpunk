@@ -846,6 +846,16 @@ When a plugin has `token_config`, the command executor:
 
 ---
 
+### Failure Modes
+
+Extraction failures are typed so callers can react without parsing messages. All of them subclass `TokenExtractionError`, which is also a `ValueError` (earlier releases raised plain `ValueError`; that base is permanent):
+
+- `SessionInvalidatedError` — a cookie-source token's cookie is absent. The session is no longer authenticated: log in again (`gp <site> login`).
+- `TokenPatternMismatchError` — a page pattern or response header did not match in HTTP mode. The site changed: update the Token config.
+- `TokenExtractionError` (base) — browser-mode extraction returned nothing; the cause is not distinguishable without inspecting the page.
+
+This is distinct from `SessionExpiredError`, which means the *cached* session failed to load (TTL, decrypt, deserialize) before any request was made.
+
 ## Ad-hoc HTTP Requests (`gp http`)
 
 The `gp http` command makes authenticated HTTP requests using cached session cookies and browser headers, without writing a plugin:
