@@ -64,9 +64,13 @@ def ensure_library_defaults() -> None:
     ``PrintLogger`` on **stdout** with no level filter — so a stray debug line could
     corrupt machine-readable output (#163). If the consumer has already configured
     structlog, their configuration is left exactly as it is.
+
+    Note: this marks structlog as configured, so a consumer's later
+    ``structlog.configure_once()`` is a no-op; call ``structlog.configure()`` to
+    replace the default, or configure before importing graftpunk.
     """
     if not structlog.is_configured():
-        configure_logging(level="WARNING")
+        configure_logging()
 
 
 ensure_library_defaults()
