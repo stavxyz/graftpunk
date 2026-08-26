@@ -11,6 +11,7 @@ import subprocess
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from graftpunk import paths, workstation_env
@@ -34,9 +35,9 @@ def render_settings_panel(target_console: Console) -> None:
 
     storage_display = settings.storage_backend
     if settings.storage_backend == "supabase":
-        storage_display = f"{settings.storage_backend} [dim](cloud)[/dim]"
+        storage_display = f"{escape(str(settings.storage_backend))} [dim](cloud)[/dim]"
     elif settings.storage_backend == "local":
-        storage_display = f"{settings.storage_backend} [dim](filesystem)[/dim]"
+        storage_display = f"{escape(str(settings.storage_backend))} [dim](filesystem)[/dim]"
 
     info = f"""
 [dim]Config directory:[/dim]   {settings.config_dir}
@@ -95,7 +96,8 @@ def get_cmd(
     """Print the raw stored value for NAME (or resolve it with --resolve)."""
     entry = workstation_env.load().get(name)
     if entry is None:
-        err_console.print(f"[red]{name} is not set in {paths.workstation_env_path()}[/red]")
+        env_path = escape(str(paths.workstation_env_path()))
+        err_console.print(f"[red]{escape(str(name))} is not set in {env_path}[/red]")
         raise typer.Exit(1)
     if not resolve:
         typer.echo(entry.raw_value)
@@ -121,7 +123,7 @@ def get_cmd(
                 highlight=False,
             )
         else:
-            err_console.print(f"[red]command for {name} failed (see log output)[/red]")
+            err_console.print(f"[red]command for {escape(str(name))} failed (see log output)[/red]")
         raise typer.Exit(1)
     typer.echo(value)
 
@@ -132,12 +134,12 @@ def set_cmd(name: str, value: str) -> None:
     try:
         workstation_env.set_entry(name, value)
     except (ValueError, OSError) as exc:
-        err_console.print(f"[red]{exc}[/red]")
+        err_console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
     is_secret_name = any(kw in name.lower() for kw in SECRET_KEYWORDS)
     if is_secret_name and "$(" not in value:
         err_console.print(
-            f"[yellow]warning:[/yellow] {name} looks secret but the value is a "
+            f"[yellow]warning:[/yellow] {escape(str(name))} looks secret but the value is a "
             "literal — if you meant a command, single-quote it: "
             f"gp config set {name} '$(op read ...)'. A plaintext secret is now "
             "on disk (0600)."
@@ -153,7 +155,7 @@ def unset_cmd(name: str) -> None:
         # ValueError covers UnicodeDecodeError: unset_entry() reads the
         # file directly (it must diff line-by-line, unlike load(), which
         # already degrades a non-UTF-8 file to "empty" via its own guard).
-        err_console.print(f"[red]{exc}[/red]")
+        err_console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
 
 
@@ -182,6 +184,6 @@ def edit_cmd() -> None:
         # Covers ensure_file()/chmod failures and, notably, the editor
         # binary itself being missing (subprocess.call raises
         # FileNotFoundError rather than returning a nonzero exit code).
-        err_console.print(f"[red]{exc}[/red]")
+        err_console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
     raise typer.Exit(exit_code)

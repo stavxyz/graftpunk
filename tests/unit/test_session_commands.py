@@ -279,3 +279,35 @@ class TestJsonOutputIsMachineReadable:
         result = runner.invoke(session_app, ["show", "mysite", "--json"], env={"COLUMNS": "80"})
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["storage_location"] == long_value
+
+
+class TestNamesAreNotMarkup:
+    """Session names, domains and backends are data; Rich must not parse them (#166)."""
+
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_list_renders_bracketed_values_verbatim(self, mock_list) -> None:
+        mock_list.return_value = [
+            _make_session(name="evil [bold]", domain="[red]x.example", storage_backend="s3 [/x]")
+        ]
+        result = runner.invoke(session_app, ["list"], env={"COLUMNS": "200"})
+        assert result.exit_code == 0, result.output
+        for literal in ("evil [bold]", "[red]x.example", "s3 [/x]"):
+            assert literal in result.stdout
+
+    @patch("graftpunk.cli.session_commands.get_session_metadata")
+    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    def test_show_renders_bracketed_values_verbatim(self, _mock_resolve, mock_get) -> None:
+        mock_get.return_value = _make_session(
+            name="evil [bold]", domain="[red]x.example", cookie_domains=["a [/y].example"]
+        )
+        result = runner.invoke(session_app, ["show", "evil [bold]"], env={"COLUMNS": "200"})
+        assert result.exit_code == 0, result.output
+        for literal in ("evil [bold]", "[red]x.example", "a [/y].example"):
+            assert literal in result.stdout
+
+    @patch("graftpunk.cli.session_commands.get_session_metadata", return_value=None)
+    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    def test_show_not_found_message_keeps_name_verbatim(self, _mock_resolve, _mock_get) -> None:
+        result = runner.invoke(session_app, ["show", "nope [/z]"])
+        assert result.exit_code != 0
+        assert "nope [/z]" in result.output
