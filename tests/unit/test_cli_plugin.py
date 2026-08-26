@@ -273,7 +273,7 @@ class TestCommandDecorator:
 
         meta = get_item._command_meta  # type: ignore[attr-defined]
         assert len(meta.params) == 1
-        assert meta.params[0].name == "item_id"
+        assert meta.params[0].name == "item-id"
 
     def test_decorator_preserves_function_name(self) -> None:
         """@command preserves the original function name via functools.wraps."""
@@ -379,7 +379,7 @@ class TestGetCommandsWithMetadata:
 
         plugin = MyPlugin()
         commands = {c.name: c for c in plugin.get_commands()}
-        assert commands["item"].params[0].name == "item_id"
+        assert commands["item"].params[0].name == "item-id"
         assert commands["item"].params[0].is_option is False
 
     def test_introspection_used_when_no_explicit_params(self) -> None:
@@ -725,7 +725,7 @@ class TestCommandDecoratorSimplified:
 
         assert hasattr(do_stuff, "_command_meta")
         meta = do_stuff._command_meta  # type: ignore[attr-defined]
-        assert meta.name == "do_stuff"
+        assert meta.name == "do-stuff"
         assert meta.help_text == "Do stuff"
 
     def test_preserves_function_identity(self) -> None:
@@ -1207,7 +1207,7 @@ class TestCommandDecoratorSavesSession:
 
         plugin = TestPlugin()
         specs = plugin.get_commands()
-        my_spec = next(s for s in specs if s.name == "my_cmd")
+        my_spec = next(s for s in specs if s.name == "my-cmd")
         assert my_spec.saves_session is True
 
 

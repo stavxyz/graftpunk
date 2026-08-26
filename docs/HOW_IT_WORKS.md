@@ -248,6 +248,8 @@ Plugins define CLI command groups for specific sites. Each plugin has a `site_na
 
 Subclass `SitePlugin` and use the `@command` decorator:
 
+Command names are the kebab-cased Python names (`by_parcel` becomes `gp <site> by-parcel`, a class `AccountStatements` becomes the group `account-statements`); pass `@command(name="...")` to choose a different CLI name.
+
 ```python
 from graftpunk.plugins import CommandContext, SitePlugin, command
 
