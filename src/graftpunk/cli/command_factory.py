@@ -53,7 +53,7 @@ def _reject_unsupported(
 
 def map_param_spec(
     plugin_name: str, command_name: str, spec: PluginParamSpec
-) -> tuple[inspect.Parameter, type]:
+) -> tuple[inspect.Parameter, Any]:
     """Map one ``PluginParamSpec`` to an ``inspect.Parameter`` Typer understands.
 
     Returns ``(parameter, annotation)``. The parameter's ``default`` is a
@@ -96,7 +96,7 @@ def map_param_spec(
             show_default=kw.get("show_default", False),
             envvar=kw.get("envvar") or None,
         )
-        annotation: type = base_type
+        annotation: Any = base_type
         param = inspect.Parameter(
             spec.name,
             inspect.Parameter.KEYWORD_ONLY,
@@ -124,7 +124,7 @@ def map_param_spec(
     if nargs == -1:
         # A runtime alias (list[<base_type>]) for Typer; built explicitly because
         # base_type is a value here, not a type expression.
-        annotation: Any = types.GenericAlias(list, (base_type,))
+        annotation = types.GenericAlias(list, (base_type,))
         info = typer.Argument(None if not required else ...)
     else:
         annotation = base_type
