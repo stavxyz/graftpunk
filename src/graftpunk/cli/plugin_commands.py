@@ -228,6 +228,7 @@ def _build_site_app(plugin: CLIPluginProtocol, result: PluginDiscoveryResult) ->
                 body=_make_body(cmd_spec),
                 plugin_name=plugin.site_name,
                 help_text=help_text,
+                extra_formats=list(getattr(plugin, "format_overrides", None) or {}),
             )
             target.command(name=cmd_spec.name, help=help_text, **cmd_kw)(fn)
             registered_names[group_path].add(cmd_spec.name)

@@ -157,8 +157,19 @@ def _available_formats() -> str:
     return ", ".join(discover_formatters().keys())
 
 
-def _builtin_option_params() -> list[tuple[inspect.Parameter, type]]:
-    available = _available_formats()
+def _format_help(extra_formats: Sequence[str] = ()) -> str:
+    """Help text for ``--format``: the built-in names, then any the plugin adds."""
+    text = f"Output format (built-in: {_available_formats()}"
+    builtin = set(_available_formats().split(", "))
+    plugin_only = sorted(name for name in extra_formats if name not in builtin)
+    if plugin_only:
+        text += f"; plugin: {', '.join(plugin_only)}"
+    return text + ")"
+
+
+def _builtin_option_params(
+    extra_formats: Sequence[str] = (),
+) -> list[tuple[inspect.Parameter, type]]:
     fmt = inspect.Parameter(
         "format",
         inspect.Parameter.KEYWORD_ONLY,
@@ -166,7 +177,7 @@ def _builtin_option_params() -> list[tuple[inspect.Parameter, type]]:
             BUILTIN_OPTIONS["format"],
             "--format",
             "-f",
-            help=f"Output format (built-in: {available})",
+            help=_format_help(extra_formats),
         ),
         annotation=str,
     )
@@ -208,13 +219,15 @@ def synthesize_command_fn(
     plugin_name: str = "",
     include_builtin_options: bool = True,
     help_text: str | None = None,
+    extra_formats: Sequence[str] = (),
 ) -> Callable[..., None]:
     """Synthesize a function Typer can register as a command.
 
     The function's ``__signature__``/``__annotations__`` declare
     ``ctx: typer.Context`` plus one parameter per spec (positional arguments
     first, then options), plus the ``--format/--view/--output`` built-ins when
-    ``include_builtin_options``. Typer introspects the synthesized signature
+    ``include_builtin_options``; ``extra_formats`` names formatter overrides the
+    plugin registers so ``--format``'s help lists them. Typer introspects the synthesized signature
     and builds every parameter with its own Click. At call time the function
     forwards ``body(ctx, **parsed_kwargs)`` (built-ins included; the body pops
     them). ``view`` is normalized to ``[]`` when absent.
@@ -250,7 +263,7 @@ def synthesize_command_fn(
         annotations[spec.name] = annotation
 
     if include_builtin_options:
-        for param, annotation in _builtin_option_params():
+        for param, annotation in _builtin_option_params(extra_formats):
             params.append(param)
             annotations[param.name] = annotation
 
