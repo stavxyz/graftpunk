@@ -49,7 +49,10 @@ from graftpunk.exceptions import (
     EncryptionError,
     GraftpunkError,
     SessionExpiredError,
+    SessionInvalidatedError,
     SessionNotFoundError,
+    TokenExtractionError,
+    TokenPatternMismatchError,
 )
 from graftpunk.graftpunk_session import get_role_headers, list_roles, register_role
 from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
@@ -174,6 +177,9 @@ __all__ = [
     "GraftpunkError",
     "BrowserError",
     "SessionExpiredError",
+    "SessionInvalidatedError",
+    "TokenExtractionError",
+    "TokenPatternMismatchError",
     "SessionNotFoundError",
     "EncryptionError",
 ]

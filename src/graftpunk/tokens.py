@@ -11,6 +11,11 @@ from typing import Any, Literal, cast
 
 import requests
 
+from graftpunk.exceptions import (
+    SessionInvalidatedError,
+    TokenExtractionError,
+    TokenPatternMismatchError,
+)
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -429,7 +434,11 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
         Extracted token value.
 
     Raises:
-        ValueError: If token cannot be extracted via HTTP.
+        SessionInvalidatedError: The cookie the token comes from is absent, so the
+            session is no longer authenticated.
+        TokenPatternMismatchError: The configured header or pattern is not present
+            in the response.
+        ValueError: The Token configuration itself is invalid.
         _BrowserExtractionNeeded: If token needs browser extraction
             (extraction="browser", or extraction="auto" after HTTP failure).
         requests.RequestException: If HTTP extraction fails and
@@ -438,7 +447,7 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
     if token.source == "cookie":
         value = session.cookies.get(token.cookie_name)
         if not value:
-            raise ValueError(f"Cookie '{token.cookie_name}' not found in session")
+            raise SessionInvalidatedError(f"Cookie '{token.cookie_name}' not found in session")
         return value
 
     # Browser-only: skip HTTP entirely
@@ -455,7 +464,9 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
             raise
         value = resp.headers.get(token.response_header)
         if not value:
-            raise ValueError(f"Header '{token.response_header}' not found in response from {url}")
+            raise TokenPatternMismatchError(
+                f"Header '{token.response_header}' not found in response from {url}"
+            )
         return value
 
     if token.source == "page":
@@ -473,7 +484,7 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
         if not match:
             if token.extraction == "auto":
                 raise _BrowserExtractionNeeded(token.name)
-            raise ValueError(f"Token pattern not found in {url}: {token.pattern}")
+            raise TokenPatternMismatchError(f"Token pattern not found in {url}: {token.pattern}")
         return match.group(1)
 
     raise ValueError(f"Unknown token source: {token.source}")
@@ -563,7 +574,7 @@ def prepare_session(
         for token in browser_needed:
             value = results.get(token.name)
             if value is None:
-                raise ValueError(f"Browser extraction failed for token '{token.name}'")
+                raise TokenExtractionError(f"Browser extraction failed for token '{token.name}'")
             cache[token.name] = CachedToken(
                 name=token.name,
                 value=value,

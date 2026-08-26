@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Typed token-extraction exceptions** ([#131](https://github.com/stavxyz/graftpunk/issues/131)) — `TokenExtractionError` with subtypes `SessionInvalidatedError` (a required cookie is gone; re-login) and `TokenPatternMismatchError` (the header or pattern no longer matches; fix the Token config), exported from `graftpunk`. All three also subclass `ValueError`, so existing `except ValueError` code keeps working.
+
 ### Changed
 
 - **`ty` type-checking is blocking in CI again, pinned to 0.0.75** ([#130](https://github.com/stavxyz/graftpunk/issues/130)) — the same pinned command runs in `just lint` and `CONTRIBUTING.md`. The nodriver "false positives" were ty failing to read `nodriver/cdp/network.py` at all (the generated file carries a Latin-1 byte), so a partial stub under `typings/` (not shipped in the wheel or sdist) covers that one module and the twelve `type: ignore` comments that had been papering over it are gone; an unused `type: ignore` is now itself an error. The remaining diagnostics were real typing gaps and are fixed in code.

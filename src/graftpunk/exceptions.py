@@ -74,3 +74,32 @@ class MFARequiredError(GraftpunkError):
         super().__init__(message)
         self.mfa_type = mfa_type
         self.message = message
+
+
+class TokenExtractionError(GraftpunkError, ValueError):
+    """A token could not be extracted from the page, response or cookie jar.
+
+    Also a ``ValueError`` so code written against earlier releases (which
+    raised plain ``ValueError`` here) keeps working. Catch the subtypes to
+    tell a stale session from configuration drift:
+
+    - :class:`SessionInvalidatedError` — re-login and retry.
+    - :class:`TokenPatternMismatchError` — the site changed; fix the Token config.
+    """
+
+
+class SessionInvalidatedError(TokenExtractionError):
+    """The session is no longer authenticated against the target site.
+
+    A required cookie is absent, or the server no longer serves the
+    authenticated page. Recoverable by a fresh login, not by retrying with
+    the same session.
+    """
+
+
+class TokenPatternMismatchError(TokenExtractionError):
+    """The configured pattern (or header) no longer matches what the site returns.
+
+    Re-login will not help: the site's HTML or headers changed and the
+    Token configuration needs an update.
+    """
