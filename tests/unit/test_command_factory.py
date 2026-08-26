@@ -9,7 +9,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from graftpunk.cli.command_factory import map_param_spec, synthesize_command_fn
+from graftpunk.cli.command_factory import _format_help, map_param_spec, synthesize_command_fn
 from graftpunk.exceptions import PluginError
 from graftpunk.plugins.cli_plugin import PluginParamSpec
 
@@ -304,21 +304,15 @@ class TestFormatHelpListsPluginFormats:
     """--format help names the formats a plugin adds (#116)."""
 
     def test_help_without_extras_lists_builtins_only(self) -> None:
-        from graftpunk.cli.command_factory import _format_help
-
         text = _format_help()
         assert text.startswith("Output format (built-in: ")
         assert "json" in text and "plugin:" not in text
 
     def test_help_with_extras_appends_plugin_formats(self) -> None:
-        from graftpunk.cli.command_factory import _format_help
-
         text = _format_help(["html", "json", "pdf"])
         assert text.endswith("; plugin: html)")  # json/pdf are built-in, not repeated
 
     def test_synthesized_command_carries_plugin_formats_in_help(self) -> None:
-        from graftpunk.cli.command_factory import synthesize_command_fn
-
         fn = synthesize_command_fn(
             name="run", param_specs=[], body=lambda ctx, **kw: None, extra_formats=["html"]
         )

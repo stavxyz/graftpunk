@@ -3502,3 +3502,32 @@ class TestFormatExplicitFlag:
             assert result.exit_code == 0
             mock_fmt.assert_called_once()
             assert mock_fmt.call_args[1]["user_explicit"] is False
+
+
+class TestFormatHelpEndToEnd:
+    """A plugin's format_overrides appear in the rendered --format help (#116)."""
+
+    def test_plugin_format_listed_in_command_help(self, isolated_config: Path) -> None:
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+        from graftpunk.plugins.formatters import RawFormatter
+
+        app = typer.Typer()
+
+        class FmtPlugin(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            help_text = "Plugin with a custom format"
+            format_overrides = {"html": RawFormatter()}
+
+            @command(help="List items")
+            def items(self, ctx: Any) -> dict:  # noqa: ARG002
+                return {}
+
+        with patch(DISCOVER_ALL, return_value=(FmtPlugin(),)):
+            register_plugin_commands(app, notify_errors=False)
+
+        result = TyperCliRunner().invoke(
+            app, ["fmtsite", "items", "--help"], env={"COLUMNS": "200"}
+        )
+        assert result.exit_code == 0, result.output
+        assert "plugin: html" in result.output

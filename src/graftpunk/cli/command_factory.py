@@ -159,8 +159,10 @@ def _available_formats() -> str:
 
 def _format_help(extra_formats: Sequence[str] = ()) -> str:
     """Help text for ``--format``: the built-in names, then any the plugin adds."""
-    text = f"Output format (built-in: {_available_formats()}"
-    builtin = set(_available_formats().split(", "))
+    from graftpunk.plugins.formatters import discover_formatters
+
+    builtin = discover_formatters()  # built-ins plus entry-point formatters
+    text = f"Output format (built-in: {', '.join(builtin)}"
     plugin_only = sorted(name for name in extra_formats if name not in builtin)
     if plugin_only:
         text += f"; plugin: {', '.join(plugin_only)}"
@@ -226,8 +228,9 @@ def synthesize_command_fn(
     The function's ``__signature__``/``__annotations__`` declare
     ``ctx: typer.Context`` plus one parameter per spec (positional arguments
     first, then options), plus the ``--format/--view/--output`` built-ins when
-    ``include_builtin_options``; ``extra_formats`` names formatter overrides the
-    plugin registers so ``--format``'s help lists them. Typer introspects the synthesized signature
+    ``include_builtin_options``; ``extra_formats`` names formatter overrides
+    the plugin registers so ``--format``'s help lists them. Typer introspects
+    the synthesized signature
     and builds every parameter with its own Click. At call time the function
     forwards ``body(ctx, **parsed_kwargs)`` (built-ins included; the body pops
     them). ``view`` is normalized to ``[]`` when absent.
