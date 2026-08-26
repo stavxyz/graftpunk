@@ -1,4 +1,4 @@
-"""graftpunk CLI - turn any website into an API.
+"""graftpunk CLI.
 
 Manage encrypted browser sessions from the terminal.
 """
@@ -14,6 +14,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -75,11 +76,10 @@ LOG = get_logger(__name__)
 
 app = typer.Typer(
     name="graftpunk",
-    help="""
-    🔌 graftpunk - turn any website into an API
+    help=f"""
+    🔌 graftpunk — {escape(graftpunk.DESCRIPTION)}
 
-    Graft scriptable access onto authenticated web services.
-    Log in once, script forever.
+    {escape(graftpunk.LONG_DESCRIPTION)}
 
     \b
     Quick start:
@@ -137,7 +137,7 @@ def main_callback(
         ),
     ] = ObserveMode.off,
 ) -> None:
-    """graftpunk - turn any website into an API."""
+    """graftpunk CLI entry point; the help text lives on the ``typer.Typer(help=...)`` above."""
     settings = get_settings()
     json_output = (log_format or settings.log_format) == "json"
 
@@ -161,10 +161,11 @@ def version() -> None:
     settings = get_settings()
     console.print(
         Panel(
-            f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n\n"
+            f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n"
+            f"{escape(graftpunk.DESCRIPTION)}\n\n"
             f"[dim]Config:[/dim]  {settings.config_dir}\n"
             f"[dim]Storage:[/dim] {settings.storage_backend}",
-            title="Turn any website into an API",
+            title="graftpunk",
             border_style="cyan",
         )
     )
