@@ -55,9 +55,10 @@ from graftpunk.graftpunk_session import get_role_headers, list_roles, register_r
 from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
 
 # The one owner of how graftpunk describes itself inside the package. The gp --help
-# banner and the gp version panel derive from these; the module docstrings above
-# restate them in prose; pyproject.toml and README.md carry the only file-based
+# banner and the gp version panel derive from these; the module docstring above
+# restates them in prose; pyproject.toml and README.md carry the only file-based
 # copies, and tests/unit/test_project_description.py pins every surface to them.
+# Both are interpolated into Rich-markup help text, so keep them free of "[...]".
 DESCRIPTION = (
     "Authenticated browser sessions, captured once and replayed over plain HTTP: "
     "stealth login, encrypted at rest, pluggable storage."

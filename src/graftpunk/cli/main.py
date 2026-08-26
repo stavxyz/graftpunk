@@ -1,5 +1,4 @@
-"""graftpunk CLI - Authenticated browser sessions, captured once and replayed over plain
-HTTP: stealth login, encrypted at rest, pluggable storage.
+"""graftpunk CLI.
 
 Manage encrypted browser sessions from the terminal.
 """
@@ -161,10 +160,11 @@ def version() -> None:
     settings = get_settings()
     console.print(
         Panel(
-            f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n\n"
+            f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n"
+            f"{graftpunk.DESCRIPTION}\n\n"
             f"[dim]Config:[/dim]  {settings.config_dir}\n"
             f"[dim]Storage:[/dim] {settings.storage_backend}",
-            title=graftpunk.DESCRIPTION.rstrip("."),
+            title="graftpunk",
             border_style="cyan",
         )
     )
