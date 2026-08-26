@@ -232,7 +232,7 @@ def _format_auth_flow(auth_flow: AuthFlow) -> str:
             "oauth": "🔑",
         }.get(step.step_type, "•")
 
-        lines.append(f"  {i}. {step_icon} {step.description}")
+        lines.append(f"  {i}. {step_icon} {escape(str(step.description))}")
 
     if auth_flow.session_cookies:
         cookies = ", ".join(auth_flow.session_cookies[:5])

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import re
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+from rich.console import Console
+from rich.panel import Panel
 from typer.testing import CliRunner
 
 from graftpunk.cli.import_har import _format_auth_flow, _print_endpoints_table
@@ -496,3 +499,19 @@ class TestImportHarCommand:
 
         assert result.exit_code == 0
         mock_discover.assert_not_called()
+
+
+def test_auth_flow_step_descriptions_are_not_markup(tmp_path):
+    """Step descriptions carry HAR paths and cookie names; the panel must not parse them."""
+    from graftpunk.cli.import_har import _format_auth_flow
+    from graftpunk.har.analyzer import AuthFlow, AuthStep
+
+    step = AuthStep(
+        entry=MagicMock(), step_type="login_submit", description="POST /login?next=[/x] sets sid[0]"
+    )
+    flow = AuthFlow(steps=[step], session_cookies=["sid[0]"])
+    rendered = _format_auth_flow(flow)
+    assert "[/x]" in rendered and "sid[0]" in rendered
+    console = Console(file=io.StringIO(), width=200)
+    console.print(Panel(rendered))  # must not raise MarkupError
+    assert "[/x]" in console.file.getvalue()
