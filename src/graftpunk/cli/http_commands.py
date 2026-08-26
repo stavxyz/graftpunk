@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import requests
 import typer
+from rich.markup import escape
 
 if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
