@@ -104,7 +104,12 @@ def _stream_is_tty(console: Console) -> bool:
     FORCE_COLOR is set, including for a pipe — the environment #144 came from.
     """
     isatty = getattr(console.file, "isatty", None)
-    return bool(isatty()) if callable(isatty) else False
+    if not callable(isatty):
+        return False
+    try:
+        return bool(isatty())
+    except ValueError:  # closed stream (e.g. at interpreter/pytest teardown)
+        return False
 
 
 def write_raw(text: str, console: Console, output_path: str = "") -> None:
@@ -115,6 +120,9 @@ def write_raw(text: str, console: Console, output_path: str = "") -> None:
     ``--format raw``, #145), highlights, expands tabs, converts emoji shortcodes
     and word-wraps to the console width (a file console wrapped rows over 200
     columns, #144). Writing to the underlying stream keeps the bytes intact.
+
+    Because it bypasses ``Console.print``, the text is invisible to
+    ``Console.capture()`` and ``record=True``; do not pass a capturing console.
     """
     if output_path:
         path = Path(output_path)
