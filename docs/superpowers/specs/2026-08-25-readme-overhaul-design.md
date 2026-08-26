@@ -71,8 +71,9 @@ Rules for applying them:
 - Locations 8 and 9 take the subtitle only (a callback docstring that Typer does not render because the app has an explicit `help=`, and a panel title — one sentence each).
 - Location 3 is not edited by hand: it is a copy of the banner (location 7) and must be regenerated from actual `gp --help` output after the change, so the README never shows a banner the CLI does not print.
 - Keep the 🔌 emoji in the banner and the H1; it is the project's mark, not copy.
+- **One owner inside the package (decided at plan validation, 2026-08-25):** the subtitle and the second line are defined once, as `graftpunk.DESCRIPTION` and `graftpunk.LONG_DESCRIPTION` (implicitly concatenated string literals, each physical line under the repo's `line-length = 100`), and the in-package surfaces derive from them: the `gp --help` banner is an f-string over the constants, the `gp version` panel title is `DESCRIPTION` without its period, and the two module docstrings wrap the text over several lines. ruff's E501 applies inside strings and docstrings, so no single physical line may carry the 120-character subtitle — and `# noqa: E501` is not the fix. Location 8 (the Typer callback docstring, which Typer does not render because the app has an explicit `help=`) becomes a short one-line docstring rather than a fourth copy. `pyproject.toml` and `README.md` remain the two file-based copies; the pinning test compares every surface after whitespace normalisation so wrapped docstrings still match.
 
-> **Design note (2026-08-25):** the subtitle is hand-duplicated across six in-package/config sites (`__init__` docstring, `typer.Typer(help=...)`, callback docstring, `gp version` panel title, `pyproject.toml`), which is why this change is a nine-location sweep. This PR re-copies deliberately — a docs PR is not the place to restructure — but the in-package copies could later derive from one module-level constant so the tagline has a single owner inside the package; `pyproject.toml` and the README stay the two unavoidable external copies. Optional follow-up, not part of this PR.
+> **Design note (2026-08-25):** the subtitle was hand-duplicated across six in-package/config sites (`__init__` docstring, `typer.Typer(help=...)`, callback docstring, `gp version` panel title, `pyproject.toml`), which is why this change is a nine-location sweep. Plan validation turned the single-owner refactor from a follow-up into scope, because the repo's 100-column `line-length` (which ruff applies inside strings) makes a verbatim one-line copy impossible without `# noqa`: the in-package copies now derive from `graftpunk.DESCRIPTION` / `graftpunk.LONG_DESCRIPTION`, and only `pyproject.toml` and the README remain file-based copies, pinned by the test.
 
 ### The two framing sections
 
@@ -114,7 +115,7 @@ Add `"har"`, `"cdp"`, `"nodriver"`, `"csrf"` to `keywords`; drop nothing. They d
 
 ## Non-goals
 
-- No restructuring of README sections; no changes to Features, Plugins, CLI Reference, Configuration, Security, Development, or Acknowledgments.
+- No restructuring of README sections beyond the sentences named above; no changes to Features, Plugins, CLI Reference, Configuration, Security, Development, or Acknowledgments.
 - No wording changes in `docs/HOW_IT_WORKS.md` or the RFCs.
 - No behaviour changes anywhere.
 

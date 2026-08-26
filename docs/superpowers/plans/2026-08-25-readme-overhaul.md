@@ -1,3 +1,20 @@
+---
+type: plan
+validated:
+  sha: a437d58514976e5481fc17b1716e4c7f70e5cf01
+  date: 2026-08-26T01:09:06Z
+  reviewers: [fact-check, solid-hygiene]
+  findings:
+    critical: 2
+    important: 3
+    medium: 3
+    low: 3
+    nitpick: 0
+  net_negative_raised: 0
+  net_negative_addressed: 0
+  net_negative_remaining: 0
+---
+
 # README Overhaul Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -17,6 +34,7 @@
 - The old sentences must not survive anywhere in `src/`, `README.md`, `pyproject.toml`: `turn any website into an api` (any case), `Graft scriptable access`, `Log in once, script forever`. The one permitted survivor is the historical quote at `docs/rfcs/RFC-001-stealth-architecture-evolution.md:48` (`turn any website into an API`) — do not touch the RFC.
 - Keep the `🔌` emoji in the README H1 and the `gp --help` banner.
 - `pyproject.toml` `description` gets the subtitle only (no second line).
+- **One owner in the package:** the subtitle and second line are defined once as `graftpunk.DESCRIPTION` / `graftpunk.LONG_DESCRIPTION` (implicit string concatenation, every physical line ≤ 100 columns); the banner, the `gp version` title and the docstrings derive from or wrap them. ruff's E501 applies inside strings and docstrings — never add `# noqa: E501`; wrap or derive instead.
 - Every commit message is a normal human commit: no `Co-Authored-By: Claude`, no `Generated with Claude Code` footer.
 - Run tests as `NO_COLOR=1 FORCE_COLOR= uv run pytest …` — this environment exports `FORCE_COLOR=3`, which breaks 7 unrelated output-format tests.
 - Work on branch `docs/readme-overhaul` in the worktree `/Users/stavxyz/src/graftpunk/.claude/worktrees/aug-fixes` (already exists; `git rev-parse --show-toplevel` must end in `aug-fixes` before any git command). Never operate on `/Users/stavxyz/src/graftpunk`.
@@ -31,6 +49,8 @@
 **Interfaces:**
 - Consumes: `graftpunk.__doc__`, `graftpunk.cli.main.app` (a `typer.Typer`; its help text is `app.info.help`), `pyproject.toml` at the repo root, `README.md` at the repo root.
 - Produces: the constants `SUBTITLE` and `OLD_SENTENCES` that Tasks 2–5 make true. Later tasks do not import from this file; they make it pass.
+
+> **Design note (2026-08-25):** this test deliberately reads two repository files (`README.md`, `pyproject.toml`) because they are surfaces being pinned; it locates the repo root by searching upward for `pyproject.toml` rather than a fixed `parents[2]`, so moving the file does not silently re-scope it. It is a repo-hygiene test and cannot run against an installed wheel — acceptable, since the in-package surfaces are covered by `graftpunk.DESCRIPTION` itself.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -50,12 +70,27 @@ from pathlib import Path
 import graftpunk
 from graftpunk.cli.main import app
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _repo_root() -> Path:
+    """Walk up from this file to the directory holding pyproject.toml, so the test
+    does not depend on its own depth under tests/ (it reads repo files on purpose:
+    README.md and pyproject.toml are two of the surfaces being pinned)."""
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    raise RuntimeError("pyproject.toml not found above this test file")
+
+
+REPO_ROOT = _repo_root()
 
 SUBTITLE = (
     "Authenticated browser sessions, captured once and replayed over plain HTTP: "
     "stealth login, encrypted at rest, pluggable storage."
 )
+
+
+def _flat(text: str) -> str:
+    """Collapse whitespace so a docstring that wraps the subtitle still matches."""
+    return " ".join(text.split())
 
 # Sentences that must not survive anywhere the project describes itself.
 OLD_SENTENCES = (
@@ -77,7 +112,13 @@ def _surfaces() -> dict[str, str]:
 
 def test_subtitle_is_verbatim_on_every_surface() -> None:
     for name, text in _surfaces().items():
-        assert SUBTITLE in text, f"subtitle missing from {name}"
+        assert SUBTITLE in _flat(text), f"subtitle missing from {name}"
+
+
+def test_package_constants_are_the_single_owner() -> None:
+    assert graftpunk.DESCRIPTION == SUBTITLE
+    assert "Log in through a real browser once;" in graftpunk.LONG_DESCRIPTION
+    assert "\n" not in graftpunk.DESCRIPTION and "\n" not in graftpunk.LONG_DESCRIPTION
 
 
 def test_old_tagline_is_gone_from_every_surface() -> None:
@@ -92,8 +133,9 @@ def test_pyproject_description_is_the_subtitle_only() -> None:
 
 
 def test_readme_cli_banner_matches_live_help() -> None:
-    """README's CLI Reference block quotes the first banner line; it must be the
-    line the app actually prints (spec: location 3 is regenerated, never hand-edited)."""
+    """README's CLI Reference block quotes the first banner line; it must be the first
+    non-blank line of the Typer app's help= string (spec: location 3 is regenerated from
+    the source, never hand-edited — rendered output wraps at the terminal width)."""
     readme = (REPO_ROOT / "README.md").read_text()
     first_banner_line = next(
         line.strip() for line in (app.info.help or "").splitlines() if line.strip()
@@ -105,7 +147,7 @@ def test_readme_cli_banner_matches_live_help() -> None:
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_project_description.py -v`
 
-Expected: 4 tests, all FAIL. `test_subtitle_is_verbatim_on_every_surface` fails with `subtitle missing from graftpunk.__doc__`; `test_old_tagline_is_gone_from_every_surface` fails with `'turn any website into an api' still in graftpunk.__doc__`; the other two fail on `pyproject description` / the banner line.
+Expected: 5 tests, 4 FAIL, 1 PASS. `test_subtitle_is_verbatim_on_every_surface` fails with `subtitle missing from graftpunk.__doc__`; `test_old_tagline_is_gone_from_every_surface` fails with `'turn any website into an api' still in graftpunk.__doc__`; `test_pyproject_description_is_the_subtitle_only` fails; `test_package_constants_are_the_single_owner` fails with `AttributeError: module 'graftpunk' has no attribute 'DESCRIPTION'`. `test_readme_cli_banner_matches_live_help` PASSES at HEAD — `./README.md:300` (`turn any website into an API`) already quotes the current banner — and only starts failing after Task 2 changes the banner, until Task 4 updates the README.
 
 - [ ] **Step 3: Commit the failing test**
 
@@ -116,18 +158,20 @@ git commit -m "test: pin the project description across README, PyPI metadata, p
 
 ---
 
-### Task 2: Package docstring, `gp --help` banner, callback docstring, `gp version` panel
+### Task 2: One description constant; package docstring, `gp --help` banner, callback docstring, `gp version` panel derive from it
 
 **Files:**
-- Modify: `src/graftpunk/__init__.py:1-4` (`Turn any website into an API`)
+- Modify: `src/graftpunk/__init__.py:1-4` (`Turn any website into an API`) and add two module-level constants after the docstring
 - Modify: `src/graftpunk/cli/main.py:1` (`graftpunk CLI - turn any website`); `src/graftpunk/cli/main.py:76-95` (`Quick start:`) — the `typer.Typer(help=...)` string; `src/graftpunk/cli/main.py:140` (`"""graftpunk - turn any website into an API."""`) — callback docstring; `src/graftpunk/cli/main.py:167` (`title="Turn any website into an API"`) — panel title
 - Test: `tests/unit/test_project_description.py`
 
 **Interfaces:**
 - Consumes: nothing from other tasks.
-- Produces: `app.info.help` whose first non-blank line is `🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.` — Task 4 pastes exactly that line into the README.
+- Produces: `graftpunk.DESCRIPTION: str` (the subtitle, one logical line, with its period) and `graftpunk.LONG_DESCRIPTION: str` (the second line); `app.info.help` whose first non-blank line is `🔌 graftpunk — ` + `graftpunk.DESCRIPTION` — Task 4 pastes exactly that line into the README.
 
-- [ ] **Step 1: Replace the package docstring**
+> **Design note (2026-08-25):** the SOLID review flagged that pasting the subtitle into six sites leaves the "one description everywhere" invariant owned by a test. This task is the response: the in-package sites derive from `DESCRIPTION` / `LONG_DESCRIPTION` (the same pattern `__version__` uses for the version), so only `pyproject.toml` and `README.md` remain file-based copies for the test to pin.
+
+- [ ] **Step 1: Replace the package docstring and add the constants**
 
 `src/graftpunk/__init__.py` lines 1–4 currently read:
 
@@ -138,30 +182,51 @@ Graft scriptable access onto authenticated web services.
 Log in once, script forever.
 ```
 
-Replace those four lines with:
+Replace those four lines with (the docstring wraps the subtitle; every physical line stays under 100 columns):
 
 ```python
-"""graftpunk - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
+"""graftpunk - Authenticated browser sessions, captured once and replayed over plain
+HTTP: stealth login, encrypted at rest, pluggable storage.
 
-Log in through a real browser once; graftpunk captures the authenticated session —
-cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and
+Log in through a real browser once; graftpunk captures the authenticated session -
+cookies, browser-fingerprinted headers, CSRF/API tokens - encrypts it at rest, and
 replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON
 endpoints become scriptable without a WebDriver in the loop.
 ```
 
-Leave the rest of the docstring (`This package provides:` onward) untouched.
+Leave the rest of the docstring (`This package provides:` onward) untouched. Then, immediately after the closing `"""` of the module docstring and before the first `import`, add:
+
+```python
+# The one owner of how graftpunk describes itself inside the package. The gp --help
+# banner, the gp version panel and the module docstrings above derive from or wrap
+# these; pyproject.toml and README.md carry the only file-based copies, and
+# tests/unit/test_project_description.py pins every surface to them.
+DESCRIPTION = (
+    "Authenticated browser sessions, captured once and replayed over plain HTTP: "
+    "stealth login, encrypted at rest, pluggable storage."
+)
+LONG_DESCRIPTION = (
+    "Log in through a real browser once; graftpunk captures the authenticated session "
+    "\u2014 cookies, browser-fingerprinted headers, CSRF/API tokens \u2014 encrypts it at rest, "
+    "and replays it over plain HTTP from Python or a generated CLI, so a site's own "
+    "XHR/JSON endpoints become scriptable without a WebDriver in the loop."
+)
+```
+
+(`\u2014` is the em dash; writing it as an escape keeps the source ASCII-safe. The docstring above uses a plain hyphen for the same dashes because a docstring cannot use an escape without becoming a raw-string mess — the test normalises whitespace, not punctuation, and only asserts `SUBTITLE`, which contains no dash.)
 
 - [ ] **Step 2: Replace the CLI module docstring**
 
-`src/graftpunk/cli/main.py:1` (`graftpunk CLI - turn any website`) currently reads `"""graftpunk CLI - turn any website into an API.`. Change that line to:
+`src/graftpunk/cli/main.py:1` (`graftpunk CLI - turn any website`) currently reads `"""graftpunk CLI - turn any website into an API.`. Change that first line (wrapping, so no physical line exceeds 100 columns) to:
 
 ```python
-"""graftpunk CLI - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
+"""graftpunk CLI - Authenticated browser sessions, captured once and replayed over plain
+HTTP: stealth login, encrypted at rest, pluggable storage.
 ```
 
-(Only the first line changes; the docstring's remaining lines stay.)
+The docstring's remaining lines stay.
 
-- [ ] **Step 3: Replace the `gp --help` banner**
+- [ ] **Step 3: Make the `gp --help` banner an f-string over the constants**
 
 In `src/graftpunk/cli/main.py` the `typer.Typer(...)` call's `help=` string begins:
 
@@ -176,64 +241,61 @@ In `src/graftpunk/cli/main.py` the `typer.Typer(...)` call's `help=` string begi
     Quick start:
 ```
 
-Replace the first five lines of that string (banner line, blank, two sentences, blank) so it begins:
+Replace the first five lines of that string (banner line, blank, two sentences, blank) so it begins — note the `f` prefix and that the file already does `import graftpunk`:
 
 ```python
-    help="""
-    🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
+    help=f"""
+    🔌 graftpunk — {graftpunk.DESCRIPTION}
 
-    Log in through a real browser once; graftpunk captures the authenticated session —
-    cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and
-    replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON
-    endpoints become scriptable without a WebDriver in the loop.
+    {graftpunk.LONG_DESCRIPTION}
 
     \b
     Quick start:
 ```
 
-Everything from `\b` / `Quick start:` down is unchanged.
+Everything from `\b` / `Quick start:` down is unchanged. Rich reflows the single-line `LONG_DESCRIPTION` to the terminal width, so it no longer renders raggedly. Confirm nothing else in the string contains `{` or `}` (it does not today), otherwise those braces would need doubling.
 
-- [ ] **Step 4: Replace the callback docstring**
+- [ ] **Step 4: Shorten the callback docstring**
 
-`src/graftpunk/cli/main.py:140` (`"""graftpunk - turn any website into an API."""`) currently reads `    """graftpunk - turn any website into an API."""`. Typer does not render it (the explicit `help=` above takes precedence) but it must not contradict the banner. Change it to:
+`src/graftpunk/cli/main.py:140` (`"""graftpunk - turn any website into an API."""`) currently reads `    """graftpunk - turn any website into an API."""`. Typer does not render it (the explicit `help=` above takes precedence), so it must not be a fourth copy. Change it to:
 
 ```python
-    """graftpunk - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage."""
+    """graftpunk CLI entry point; the help text lives on the ``typer.Typer(help=...)`` above."""
 ```
 
-- [ ] **Step 5: Replace the `gp version` panel title**
+- [ ] **Step 5: Derive the `gp version` panel title**
 
 `src/graftpunk/cli/main.py:167` (`title="Turn any website into an API"`) currently reads `            title="Turn any website into an API",`. Change it to:
 
 ```python
-            title="Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage",
+            title=graftpunk.DESCRIPTION.rstrip("."),
 ```
 
 (No trailing period inside a panel title.)
 
-- [ ] **Step 6: Run the new test — two of four should now pass**
+- [ ] **Step 6: Run the new test — the package and CLI surfaces now pass, the rest still fail**
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_project_description.py -v`
 
-Expected: `test_readme_cli_banner_matches_live_help` FAILS (README not updated yet), `test_pyproject_description_is_the_subtitle_only` FAILS, the other two still FAIL only on the `pyproject description` and `README.md` surfaces — confirm the failure messages no longer mention `graftpunk.__doc__` or `gp --help banner`.
+Expected: `test_package_constants_are_the_single_owner` PASSES. The two "every surface" tests still FAIL, but only on `pyproject description` and `README.md` (confirm the failure messages no longer mention `graftpunk.__doc__` or `gp --help banner`). `test_pyproject_description_is_the_subtitle_only` still FAILS. `test_readme_cli_banner_matches_live_help` now FAILS (the banner changed; `./README.md:300` (`turn any website into an API`) has not). So: 1 PASS, 4 FAIL.
 
 - [ ] **Step 7: Lint and run the whole suite**
 
 Run: `uvx ruff format src tests && uvx ruff check src tests && NO_COLOR=1 FORCE_COLOR= uv run pytest tests/ -q`
 
-Expected: ruff clean (the banner line is inside a string, so E501 does not apply; if ruff format re-wraps anything else, keep its output). Suite: everything passes except the 3 still-failing tests in `test_project_description.py`.
+Expected: ruff clean — no physical line added in this task exceeds 100 columns (the constants are implicitly concatenated, the docstrings wrap, the banner and title are expressions), so E501 has nothing to report and no `# noqa` is needed. Suite: everything passes except the 4 still-failing tests in `test_project_description.py`.
 
 - [ ] **Step 8: Eyeball the live help and version panel**
 
-Run: `NO_COLOR=1 uv run gp --help | head -12` and `NO_COLOR=1 uv run gp version`
+Run: `NO_COLOR=1 uv run gp --help | head -20` and `NO_COLOR=1 uv run gp version`
 
-Expected: the banner's first line is `🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`, followed by the four-line second paragraph, then `Quick start:`. The version panel's top border carries the subtitle as its title.
+Expected (80-column pipe): the banner line starts `🔌 graftpunk — Authenticated browser sessions, captured once and replayed over` and wraps onto a second line ending `pluggable storage.` (Rich wraps at 80 columns when stdout is not a TTY; in a wide terminal it is one line). The second paragraph follows, reflowed by Rich, then `Quick start:`. The version panel's top border carries the subtitle (without its period) as its title.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add src/graftpunk/__init__.py src/graftpunk/cli/main.py
-git commit -m "docs(cli): describe graftpunk as encrypted session persistence, not an API generator"
+git commit -m "docs(cli): one DESCRIPTION constant; help, version and docstrings derive from it"
 ```
 
 ---
@@ -280,7 +342,7 @@ keywords = ["browser", "session", "automation", "api", "scraping", "selenium", "
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_project_description.py -v`
 
-Expected: `test_pyproject_description_is_the_subtitle_only` PASSES. The two "every surface" tests still FAIL, now only on `README.md`. `test_readme_cli_banner_matches_live_help` still FAILS.
+Expected: `test_pyproject_description_is_the_subtitle_only` PASSES (2 PASS total). The two "every surface" tests still FAIL, now only on `README.md`. `test_readme_cli_banner_matches_live_help` still FAILS.
 
 - [ ] **Step 4: Confirm the metadata still builds and renders**
 
@@ -373,9 +435,11 @@ The five example commands under it are unchanged.
 
 - [ ] **Step 5: Regenerate the CLI Reference banner line from live output**
 
-Run: `NO_COLOR=1 uv run gp --help | sed 's/[[:space:]]*$//' | grep -n "🔌 graftpunk"`
+Rendered `gp --help` wraps at 80 columns when piped, so do not paste rendered output. Take the first non-blank line of the app's `help=` source — the exact string `test_readme_cli_banner_matches_live_help` compares against:
 
-Expected output (one line): `4: 🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`
+Run: `NO_COLOR=1 uv run python -c "from graftpunk.cli.main import app; print(next(l.strip() for l in app.info.help.splitlines() if l.strip()))"`
+
+Expected output (one line): `🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`
 
 `./README.md:300` (`turn any website into an API`) currently reads ` 🔌 graftpunk - turn any website into an API` (inside the ```` ``` ```` block under `## CLI Reference`). Replace that one line with the live line, keeping its single leading space:
 
@@ -385,11 +449,11 @@ Expected output (one line): `4: 🔌 graftpunk — Authenticated browser session
 
 The README block deliberately keeps its trimmed shape — one banner line, then the `Commands:` list — rather than the full `gp --help` output (the second paragraph and Quick-start list are already covered elsewhere in the README). This is the decision the spec's fact-check asked to be stated.
 
-- [ ] **Step 6: Run the pinning test — all four should pass**
+- [ ] **Step 6: Run the pinning test — all five should pass**
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_project_description.py -v`
 
-Expected: 4 PASSED.
+Expected: 5 PASSED.
 
 - [ ] **Step 7: Grep for survivors**
 
@@ -429,7 +493,7 @@ git commit -m "docs(readme): engineer-facing framing; subtitle from the repo des
 
 ### Changed
 
-- **README, PyPI description and `gp --help` describe the project as it is** — authenticated browser sessions captured once and replayed over plain HTTP (stealth login, encrypted at rest, pluggable storage) — instead of the "Turn any website into an API" tagline. The framing sections now name the mechanism (browser login once; session, header fingerprint and tokens captured and encrypted; replayed over plain HTTP from Python or a generated CLI). `pyproject.toml` keywords gain `har`, `cdp`, `nodriver`, `csrf`. No behaviour change; a new test pins the description across every surface.
+- **README, PyPI description and `gp --help` describe the project as it is** — authenticated browser sessions captured once and replayed over plain HTTP (stealth login, encrypted at rest, pluggable storage) — instead of the "Turn any website into an API" tagline. Inside the package the text has one owner, `graftpunk.DESCRIPTION` / `graftpunk.LONG_DESCRIPTION`, which the banner, the `gp version` panel and the docstrings derive from. The framing sections now name the mechanism (browser login once; session, header fingerprint and tokens captured and encrypted; replayed over plain HTTP from Python or a generated CLI). `pyproject.toml` keywords gain `har`, `cdp`, `nodriver`, `csrf`. No behaviour change; a new test pins the description across every surface.
 
 ```
 
@@ -446,7 +510,7 @@ NO_COLOR=1 uv run gp version
 uv build >/dev/null && uvx twine check dist/* && rm -rf dist/
 ```
 
-Expected: ruff clean; the suite passes with 4 more tests than before this branch (2412 → 2416 on the current `main`); the docstring line prints `graftpunk - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`; help and version show the new text; `twine check` PASSED.
+Expected: ruff clean with no `# noqa` anywhere in the diff (`git diff origin/main -- src | grep -c noqa` prints `0`); the suite passes with 5 more tests than before this branch (2412 → 2417 on the current `main`); the docstring line prints `graftpunk - Authenticated browser sessions, captured once and replayed over plain` (the first physical line — the docstring wraps); help and version show the new text; `twine check` PASSED (the exact `uv build` filenames are illustrative).
 
 - [ ] **Step 3: Commit**
 
@@ -467,7 +531,7 @@ Replaces the "Turn any website into an API" tagline everywhere the project descr
 Spec: `docs/superpowers/specs/2026-08-25-readme-overhaul-design.md` (validated). Plan: `docs/superpowers/plans/2026-08-25-readme-overhaul.md`.
 
 ## Test plan
-- [x] New `tests/unit/test_project_description.py` pins the subtitle on every surface, asserts the old sentences are gone, checks the PyPI description is the subtitle only, and checks the README's CLI banner line is the one `gp --help` actually prints.
+- [x] New `tests/unit/test_project_description.py` pins the subtitle on every surface (whitespace-normalised, so wrapped docstrings count), asserts the old sentences are gone, checks `graftpunk.DESCRIPTION` is the single in-package owner, checks the PyPI description is the subtitle only, and checks the README's CLI banner line is the first line of the app's `help=` source.
 - [x] `NO_COLOR=1 uv run pytest tests/` green; ruff clean; `uv build` + `twine check` PASSED (README renders as the PyPI long description).
 - [x] `gp --help` and `gp version` eyeballed.
 - [ ] `[manual, post-merge]` After the next bump, the PyPI project page shows the new description and README.
@@ -482,8 +546,8 @@ Expected: the sweep prints nothing; the push succeeds; `gh pr create` prints the
 
 ## Self-review
 
-**Spec coverage.** Locations 1–9 → Tasks 2, 3, 4 (1, 2, 3 in Task 4; 4 in Task 3; 5–9 in Task 2). Third sentence ("Log in once, script forever.") → Task 2 Steps 1 and 3, Task 4 Step 3, and the grep in Task 4 Step 7. Framing sections and "What You Can Build" → Task 4 Steps 2–4. Keywords → Task 3 Step 2. Changelog (new `[Unreleased]` section) → Task 5 Step 1. Verification list (pytest, regenerated banner, docstring check, `uv build`/`twine check`, survivor greps) → Task 4 Steps 5–7 and Task 5 Step 2. RFC-001 untouched → Global Constraints and Task 4 Step 7. Spec design notes (six-site duplication; banner drift) → addressed by the pinning test in Task 1 (`test_readme_cli_banner_matches_live_help` is the drift guard the second note asked for); the single-constant refactor stays a non-goal.
+**Spec coverage.** Locations 1–9 → Tasks 2, 3, 4 (1, 2, 3 in Task 4; 4 in Task 3; 5–9 in Task 2, where 5–7 and 9 derive from `graftpunk.DESCRIPTION` / `LONG_DESCRIPTION` and 8 becomes a short non-rendered docstring, per the spec's one-owner rule). Third sentence ("Log in once, script forever.") → Task 2 Steps 1 and 3, Task 4 Step 3, and the grep in Task 4 Step 7. Framing sections and "What You Can Build" → Task 4 Steps 2–4. Keywords → Task 3 Step 2. Changelog (new `[Unreleased]` section) → Task 5 Step 1. Verification list (pytest, regenerated banner, docstring check, `uv build`/`twine check`, survivor greps) → Task 4 Steps 5–7 and Task 5 Step 2. RFC-001 untouched → Global Constraints and Task 4 Step 7. Spec design notes (six-site duplication; banner drift) → addressed by the pinning test in Task 1 (`test_readme_cli_banner_matches_live_help` is the drift guard the second note asked for); the single-constant refactor stays a non-goal.
 
 **Placeholders.** None: every step shows the exact before/after text or the exact command and expected output.
 
-**Consistency.** `SUBTITLE` in Task 1 equals the string used in Tasks 2, 3, 4 (with the period; the panel title in Task 2 Step 5 and the banner line both derive from it — the panel drops the period, the banner keeps it, and the test only asserts the subtitle *with* its period appears on the four surfaces it reads, none of which is the panel). The banner's first line in Task 2 Step 3 is byte-identical to the line pasted in Task 4 Step 5 (em dash, trailing period).
+**Consistency.** `SUBTITLE` in Task 1 equals `graftpunk.DESCRIPTION` in Task 2 (asserted by `test_package_constants_are_the_single_owner`) and the `pyproject.toml` description in Task 3. The banner's first line is `🔌 graftpunk — ` + `DESCRIPTION` (Task 2 Step 3) and Task 4 Step 5 reads that exact line back from `app.info.help`, so the README copy cannot diverge from the source. The panel title drops the period; the test does not read the panel. `_flat()` in the test is what lets the wrapped docstrings (Task 2 Steps 1–2) satisfy the verbatim check.
