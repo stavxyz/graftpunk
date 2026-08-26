@@ -924,8 +924,8 @@ class TestCommandDecoratorRequiresSession:
         commands = {c.name: c for c in plugin.get_commands()}
 
         assert commands["public-cmd"].requires_session is False
-        assert commands["private_cmd"].requires_session is True
-        assert commands["default_cmd"].requires_session is None
+        assert commands["private-cmd"].requires_session is True
+        assert commands["default-cmd"].requires_session is None
 
 
 class TestPluginConfigMetadata:
