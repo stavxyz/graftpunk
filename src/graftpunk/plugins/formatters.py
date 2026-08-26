@@ -97,18 +97,47 @@ def _resolve_view_data(data: Any, view: ViewConfig) -> Any | None:
     return view_data
 
 
+def _stream_is_tty(console: Console) -> bool:
+    """Whether the console's stream is an interactive terminal.
+
+    Deliberately not ``console.is_terminal``: Rich reports a terminal whenever
+    FORCE_COLOR is set, including for a pipe — the environment #144 came from.
+    """
+    isatty = getattr(console.file, "isatty", None)
+    return bool(isatty()) if callable(isatty) else False
+
+
+def write_raw(text: str, console: Console, output_path: str = "") -> None:
+    """Emit *text* exactly as given: to *output_path* if set, else to the console's stream.
+
+    Data payloads (raw responses, CSV, JSON) must never pass through Rich's
+    ``print``: it parses ``[...]`` as markup (a ``[/LB]`` pack size crashed
+    ``--format raw``, #145), highlights, expands tabs, converts emoji shortcodes
+    and word-wraps to the console width (a file console wrapped rows over 200
+    columns, #144). Writing to the underlying stream keeps the bytes intact.
+    """
+    if output_path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return
+    console.file.write(text)
+    console.file.flush()
+
+
 def _write_to_file(
     output_path: str,
     render_fn: Callable[[Console], None],
 ) -> None:
-    """Redirect console-based rendering to a file.
+    """Redirect Rich rendering (tables) to a file.
 
-    Creates parent directories, renders into a StringIO-backed Console,
-    and writes the captured text to *output_path*.
+    Renders into a StringIO-backed, colour-less Console so the file never
+    carries ANSI escapes even under FORCE_COLOR (#144). Only for output that
+    is *meant* to be rendered; data payloads go through :func:`write_raw`.
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     buf = io.StringIO()
-    file_console = Console(file=buf, width=200)
+    file_console = Console(file=buf, width=200, color_system=None, force_terminal=False)
     render_fn(file_console)
     Path(output_path).write_text(buf.getvalue())
 
@@ -134,7 +163,7 @@ def _resolve_output_filepath(output_path: str, extension: str) -> Path:
 
 
 class JsonFormatter:
-    """Output as formatted JSON with syntax highlighting."""
+    """Output as JSON: syntax-highlighted on a terminal, plain text otherwise."""
 
     name = "json"
     binary = False
@@ -147,8 +176,9 @@ class JsonFormatter:
         output_path: str = "",
     ) -> None:
         json_str = json.dumps(data, indent=2, default=str)
-        if output_path:
-            _write_to_file(output_path, lambda c: c.print(JSON(json_str)))
+        if output_path or not _stream_is_tty(console):
+            # A file or a pipe wants parseable JSON, not a wrapped, highlighted render.
+            write_raw(json_str + "\n", console, output_path)
             return
         console.print(JSON(json_str))
 
@@ -244,7 +274,7 @@ class TableFormatter:
 
 
 class RawFormatter:
-    """Output raw string representation."""
+    """Output the payload verbatim (strings as-is, anything else as compact JSON)."""
 
     name = "raw"
     binary = False
@@ -256,16 +286,10 @@ class RawFormatter:
         output_config: OutputConfig | None = None,
         output_path: str = "",
     ) -> None:
-        def render(c: Console) -> None:
-            if isinstance(data, str):
-                c.print(data)
-            else:
-                c.print(json.dumps(data, default=str))
-
-        if output_path:
-            _write_to_file(output_path, render)
-            return
-        render(console)
+        text = data if isinstance(data, str) else json.dumps(data, default=str)
+        if not output_path and not text.endswith("\n"):
+            text += "\n"  # a file gets the exact payload; a terminal gets a line
+        write_raw(text, console, output_path)
 
 
 class CsvFormatter:
@@ -352,7 +376,7 @@ class CsvFormatter:
             Path(output_path).write_text(buf.getvalue())
             gp_console.info(f"Saved: {output_path}")
             return
-        console.print(buf.getvalue(), end="")
+        write_raw(buf.getvalue(), console)
 
 
 class XlsxFormatter:
