@@ -291,7 +291,14 @@ See [examples/](examples/README.md) for working plugins and templates.
 ```
 $ gp --help
 
- 🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
+ 🔌 graftpunk — Authenticated browser sessions, captured once and replayed over
+ plain HTTP: stealth login, encrypted at rest, pluggable storage.
+
+ Log in through a real browser once; graftpunk captures the authenticated
+ session — cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts
+ it at rest, and replays it over plain HTTP from Python or a generated CLI, so
+ a site's own XHR/JSON endpoints become scriptable without a WebDriver in the
+ loop.
 
 Commands:
   session     Manage encrypted browser sessions

@@ -69,7 +69,7 @@ def test_package_constants_are_the_single_owner() -> None:
 def test_old_tagline_is_gone_from_every_surface() -> None:
     for name, text in _surfaces().items():
         for pattern in OLD_SENTENCES:
-            assert not pattern.search(text), f"{pattern.pattern!r} still in {name}"
+            assert not pattern.search(_flat(text)), f"{pattern.pattern!r} still in {name}"
 
 
 def test_pyproject_description_is_the_subtitle_only() -> None:
@@ -78,11 +78,13 @@ def test_pyproject_description_is_the_subtitle_only() -> None:
 
 
 def test_readme_cli_banner_matches_live_help() -> None:
-    """README's CLI Reference block quotes the first banner line; it must be the first
-    non-blank line of the Typer app's help= string (spec: location 3 is regenerated from
-    the source, never hand-edited — rendered output wraps at the terminal width)."""
-    readme = (REPO_ROOT / "README.md").read_text()
-    first_banner_line = next(
-        line.strip() for line in (app.info.help or "").splitlines() if line.strip()
+    """README's CLI Reference block quotes the banner and the description paragraph as
+    gp --help prints them at 80 columns (spec: location 3 is pasted from live output,
+    never hand-edited). Compare whitespace-flattened so terminal wrapping is irrelevant."""
+    readme = _flat((REPO_ROOT / "README.md").read_text())
+    banner_lines = [line.strip() for line in (app.info.help or "").splitlines() if line.strip()]
+    assert banner_lines, "gp --help banner (app.info.help) is empty"
+    assert _flat(banner_lines[0]) in readme, "README CLI Reference banner is stale"
+    assert _flat(graftpunk.LONG_DESCRIPTION) in readme, (
+        "README CLI Reference block lacks the description paragraph gp --help prints"
     )
-    assert first_banner_line in readme
