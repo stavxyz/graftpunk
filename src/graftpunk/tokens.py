@@ -534,6 +534,15 @@ def prepare_session(
 
     Returns:
         The same session with tokens ready for method-scoped injection.
+
+    Raises:
+        SessionInvalidatedError: A cookie-source token's cookie is absent (re-login).
+        TokenPatternMismatchError: A page pattern or response header did not match
+            in HTTP mode (update the Token config).
+        TokenExtractionError: Browser-mode extraction returned nothing for a token.
+        ValueError: The token configuration itself is invalid.
+        requests.RequestException: HTTP extraction failed and extraction="http"
+            (no browser fallback).
     """
     cache: dict[str, CachedToken] = getattr(session, _CACHE_ATTR, {})
     browser_needed: list[Token] = []
@@ -574,7 +583,11 @@ def prepare_session(
         for token in browser_needed:
             value = results.get(token.name)
             if value is None:
-                raise TokenExtractionError(f"Browser extraction failed for token '{token.name}'")
+                raise TokenExtractionError(
+                    f"Browser extraction failed for token '{token.name}': the page may have "
+                    "redirected to login (re-login) or the pattern no longer matches (update "
+                    "the Token config); see the token_extraction_* log lines for the URL result"
+                )
             cache[token.name] = CachedToken(
                 name=token.name,
                 value=value,

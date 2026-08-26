@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Typed token-extraction exceptions** ([#131](https://github.com/stavxyz/graftpunk/issues/131)) — `TokenExtractionError` with subtypes `SessionInvalidatedError` (a required cookie is gone; re-login) and `TokenPatternMismatchError` (the header or pattern no longer matches; fix the Token config), exported from `graftpunk`. All three also subclass `ValueError`, so existing `except ValueError` code keeps working.
+- **Typed token-extraction exceptions** ([#131](https://github.com/stavxyz/graftpunk/issues/131)) — `TokenExtractionError` with subtypes `SessionInvalidatedError` (a required cookie is gone; re-login) and `TokenPatternMismatchError` (the header or pattern no longer matches; fix the Token config), exported from `graftpunk`. Browser-mode failures raise the base class, since the cause is not distinguishable from an empty result. All three also subclass `ValueError` (permanently), so existing `except ValueError` code keeps working; `gp` now tells you whether to re-login or fix the config.
 
 ### Changed
 

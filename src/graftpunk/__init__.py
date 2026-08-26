@@ -177,9 +177,9 @@ __all__ = [
     "GraftpunkError",
     "BrowserError",
     "SessionExpiredError",
-    "SessionInvalidatedError",
-    "TokenExtractionError",
-    "TokenPatternMismatchError",
     "SessionNotFoundError",
     "EncryptionError",
+    "TokenExtractionError",
+    "SessionInvalidatedError",
+    "TokenPatternMismatchError",
 ]

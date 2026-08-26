@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from graftpunk import console as gp_console
 from graftpunk.cache import load_session_for_api
+from graftpunk.exceptions import SessionInvalidatedError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import ObserveStorage
@@ -256,6 +257,10 @@ def _make_request(
         base_url = getattr(plugin, "base_url", "")
         try:
             _prepare_retry(session, token_config, base_url)
+        except SessionInvalidatedError as exc:
+            gp_console.error(f"Token refresh failed: {exc}")
+            gp_console.info("The session is no longer authenticated; log in again.")
+            return response  # Return the original 403 response
         except ValueError as exc:
             gp_console.error(f"Token refresh failed: {exc}")
             return response  # Return the original 403 response

@@ -14,7 +14,11 @@ class ChromeDriverError(BrowserError):
 
 
 class SessionExpiredError(GraftpunkError):
-    """Raised when a saved session has expired or become invalid."""
+    """A *cached* session could not be loaded: expired TTL, or it failed to decrypt/deserialize.
+
+    Raised by the cache and storage layers. For a session that loads fine but is
+    no longer authenticated against the site, see :class:`SessionInvalidatedError`.
+    """
 
 
 class SessionNotFoundError(GraftpunkError):
@@ -79,27 +83,39 @@ class MFARequiredError(GraftpunkError):
 class TokenExtractionError(GraftpunkError, ValueError):
     """A token could not be extracted from the page, response or cookie jar.
 
-    Also a ``ValueError`` so code written against earlier releases (which
-    raised plain ``ValueError`` here) keeps working. Catch the subtypes to
-    tell a stale session from configuration drift:
+    Also a ``ValueError``, permanently: earlier releases raised plain
+    ``ValueError`` here, and dropping the base would be a fresh breaking change
+    with nothing to gain. Catch the subtypes to tell a stale session from
+    configuration drift:
 
     - :class:`SessionInvalidatedError` — re-login and retry.
     - :class:`TokenPatternMismatchError` — the site changed; fix the Token config.
+
+    Browser-mode extraction failures raise this base class: by the time the
+    batch comes back empty the cause (a redirect to the login page, or a
+    pattern that no longer matches the rendered page) is not distinguishable
+    without inspecting the page, so neither subtype would be honest.
     """
 
 
 class SessionInvalidatedError(TokenExtractionError):
-    """The session is no longer authenticated against the target site.
+    """A cookie the token is read from is absent from the session.
 
-    A required cookie is absent, or the server no longer serves the
-    authenticated page. Recoverable by a fresh login, not by retrying with
-    the same session.
+    Raised for ``source="cookie"`` tokens. That is the one extraction failure
+    graftpunk can attribute to the session itself; it is recoverable by a
+    fresh login, not by retrying with the same session. (A mistyped
+    ``cookie_name`` produces the same signal — check the Token config if a
+    re-login does not help.) Distinct from :class:`SessionExpiredError`, which
+    is about the *cached* session failing to load at all.
     """
 
 
 class TokenPatternMismatchError(TokenExtractionError):
-    """The configured pattern (or header) no longer matches what the site returns.
+    """The configured page pattern or response header is not in what the site returned.
 
-    Re-login will not help: the site's HTML or headers changed and the
-    Token configuration needs an update.
+    Raised for ``source="page"`` and ``source="response_header"`` tokens in
+    HTTP mode. The most likely cause is that the site changed and the Token
+    configuration needs an update; a missing header can occasionally mean the
+    server no longer serves the authenticated response, so if updating the
+    config does not help, try a fresh login.
     """
