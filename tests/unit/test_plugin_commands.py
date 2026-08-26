@@ -3559,6 +3559,12 @@ class TestCommandNaming:
         assert AccountStatements._command_group_meta.name == "account-statements"
         assert AccountStatements.list_recent._command_meta.name == "list-recent"
 
+    def test_name_must_be_a_single_word(self) -> None:
+        with pytest.raises(ValueError, match="single non-blank word"):
+            command(help="x", name="foo bar")
+        with pytest.raises(ValueError, match="single non-blank word"):
+            command(help="x", name="  ")
+
     def test_group_name_override(self) -> None:
         @command(help="g", name="acct")
         class AccountStatements:

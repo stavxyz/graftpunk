@@ -29,6 +29,7 @@ from typing import Any
 import requests
 
 from graftpunk.cache import load_session_for_api, update_session_cookies
+from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext
 from graftpunk.plugins import get_plugin
@@ -37,6 +38,7 @@ from graftpunk.plugins.cli_plugin import (
     CommandContext,
     CommandResult,
     CommandSpec,
+    _to_cli_name,
 )
 from graftpunk.tokens import clear_cached_tokens, prepare_session
 
@@ -224,10 +226,18 @@ class GraftpunkClient:
         self._groups: dict[str, dict[str, CommandSpec]] = {}
 
         for spec in self._plugin.get_commands():
-            if spec.group is None:
-                self._top_commands[spec.name] = spec
-            else:
-                self._groups.setdefault(spec.group, {})[spec.name] = spec
+            table = (
+                self._top_commands
+                if spec.group is None
+                else self._groups.setdefault(spec.group, {})
+            )
+            if spec.name in table:
+                raise PluginError(
+                    f"Plugin '{self._plugin.site_name}' defines command '{spec.name}' twice"
+                    + (f" in group '{spec.group}'" if spec.group else "")
+                    + " (two Python names kebab-case to the same CLI name?)"
+                )
+            table[spec.name] = spec
 
     # -- attribute-based dispatch ------------------------------------------
 
@@ -239,10 +249,13 @@ class GraftpunkClient:
         """
         if name.startswith("_"):
             raise AttributeError(name)
-        if name in self._top_commands:
-            return _CommandCallable(self, self._top_commands[name])
-        if name in self._groups:
-            return _GroupProxy(self, self._groups[name])
+        # Commands are registered under their CLI (kebab-case) name; attribute access
+        # necessarily uses the Python spelling, so normalise before looking up.
+        key = _to_cli_name(name)
+        if key in self._top_commands:
+            return _CommandCallable(self, self._top_commands[key])
+        if key in self._groups:
+            return _GroupProxy(self, self._groups[key])
         raise AttributeError(f"Plugin '{self._plugin.site_name}' has no command or group '{name}'")
 
     # -- string dispatch ---------------------------------------------------
@@ -276,19 +289,21 @@ class GraftpunkClient:
             AttributeError: If the command or group is unknown.
             ValueError: If the wrong number of args is provided.
         """
+        # Either spelling resolves: "by_parcel" and "by-parcel" name the same command.
         if len(args) == 1:
             name = args[0]
-            if name in self._top_commands:
-                return self._top_commands[name]
+            key = _to_cli_name(name)
+            if key in self._top_commands:
+                return self._top_commands[key]
             raise AttributeError(f"Plugin '{self._plugin.site_name}' has no command '{name}'")
         if len(args) == 2:
             group_name, cmd_name = args
-            group = self._groups.get(group_name)
+            group = self._groups.get(_to_cli_name(group_name))
             if group is None:
                 raise AttributeError(
                     f"Plugin '{self._plugin.site_name}' has no group '{group_name}'"
                 )
-            spec = group.get(cmd_name)
+            spec = group.get(_to_cli_name(cmd_name))
             if spec is None:
                 raise AttributeError(f"Group '{group_name}' has no command '{cmd_name}'")
             return spec
@@ -467,7 +482,7 @@ class _GroupProxy:
         Raises:
             AttributeError: If *name* is not a command in this group.
         """
-        spec = self._commands.get(name)
+        spec = self._commands.get(_to_cli_name(name))
         if spec is None:
             raise AttributeError(
                 f"Group has no command '{name}'. Available: {', '.join(sorted(self._commands))}"

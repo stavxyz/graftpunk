@@ -1186,3 +1186,55 @@ class TestReprMethods:
         client = GraftpunkClient("testsite")
         cmd = client.login
         assert repr(cmd) == "_CommandCallable('login')"
+
+
+class TestKebabCaseNamesThroughTheClient:
+    """A real @command method reaches the client under both spellings (#147)."""
+
+    def _plugin(self):  # noqa: ANN202
+        from graftpunk.plugins.cli_plugin import SitePlugin, command
+
+        class KebabPlugin(SitePlugin):
+            site_name = "kebab"
+            base_url = "https://kebab.example.com"
+
+            @command(help="multi-word")
+            def by_parcel(self, ctx):  # noqa: ANN001, ANN202
+                return {"ok": True}
+
+        return KebabPlugin()
+
+    def test_both_spellings_resolve(self) -> None:
+        plugin = self._plugin()
+        real_specs = plugin.get_commands()  # by-parcel, via the real @command decorator
+        grouped = _make_spec(name="list-recent", group="account-statements")
+        plugin.get_commands = lambda: [*real_specs, grouped]  # type: ignore[method-assign]
+        with patch("graftpunk.client.get_plugin", return_value=plugin):
+            client = GraftpunkClient("kebab")
+        assert client._resolve_command("by_parcel").name == "by-parcel"
+        assert client._resolve_command("by-parcel").name == "by-parcel"
+        assert client.by_parcel._spec.name == "by-parcel"
+        assert client._resolve_command("account_statements", "list_recent") is grouped
+        assert client.account_statements.list_recent._spec is grouped
+
+    def test_kebab_collision_is_an_error(self) -> None:
+        from graftpunk.exceptions import PluginError
+        from graftpunk.plugins.cli_plugin import SitePlugin, command
+
+        class Colliding(SitePlugin):
+            site_name = "collide"
+            base_url = "https://collide.example.com"
+
+            @command(help="a")
+            def get_data(self, ctx):  # noqa: ANN001, ANN202
+                return {}
+
+            @command(help="b")
+            def getData(self, ctx):  # noqa: ANN001, ANN202, N802
+                return {}
+
+        with (
+            patch("graftpunk.client.get_plugin", return_value=Colliding()),
+            pytest.raises(PluginError, match="twice"),
+        ):
+            GraftpunkClient("collide")

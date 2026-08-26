@@ -741,7 +741,8 @@ def command(
         name: Explicit CLI name. By default the Python name is kebab-cased
             (``by_parcel`` -> ``by-parcel``, ``AccountStatements`` ->
             ``account-statements``); pass ``name="by_parcel"`` to pin a
-            different spelling.
+            different spelling. ``GraftpunkClient`` accepts either spelling
+            (``client.by_parcel()`` and ``execute("by-parcel")`` both work).
 
     Returns:
         Decorated function or class with _command_meta or _command_group_meta attached.
@@ -751,6 +752,13 @@ def command(
         def accounts(self, ctx: CommandContext) -> dict:
             return ctx.session.get("https://api.example.com/accounts").json()
 
+        @command(help="Look up by parcel", name="parcel")  # CLI: gp <site> parcel
+        def by_parcel(self, ctx: CommandContext, parcel_id: str) -> dict:
+            ...
+
+    Note: runs of capitals are not split (``getHTTPStatus`` -> ``get-httpstatus``);
+    use ``name=`` when the default spelling is not what you want.
+
     Example (class / command group):
         @command(help="Account management")
         class Accounts:
@@ -758,6 +766,9 @@ def command(
             def statements(self, ctx: CommandContext) -> dict:
                 ...
     """
+
+    if name is not None and (not name.strip() or any(ch.isspace() for ch in name)):
+        raise ValueError(f"@command(name=...) must be a single non-blank word, got {name!r}")
 
     def decorator(target: Any) -> Any:
         if isinstance(target, type):
