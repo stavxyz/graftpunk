@@ -102,7 +102,9 @@ async def _poll_for_tokens(
         still_unmatched = []
 
         for token in unmatched:
-            match = re.search(token.pattern, content)  # type: ignore[arg-type]
+            if token.pattern is None:  # validated for page tokens; keeps the type honest
+                continue
+            match = re.search(token.pattern, content)
             if match:
                 results[token.name] = match.group(1)
                 LOG.info(f"{log_prefix}_extracted", name=token.name, url=url)
@@ -465,7 +467,9 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
             if token.extraction == "auto":
                 raise _BrowserExtractionNeeded(token.name) from None
             raise
-        match = re.search(token.pattern, resp.text)  # type: ignore[arg-type]
+        if token.pattern is None:
+            raise ValueError(f"Token '{token.name}' has source='page' but no pattern")
+        match = re.search(token.pattern, resp.text)
         if not match:
             if token.extraction == "auto":
                 raise _BrowserExtractionNeeded(token.name)

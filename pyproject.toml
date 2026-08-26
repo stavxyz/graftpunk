@@ -149,6 +149,8 @@ unused-type-ignore-comment = "ignore"
 
 [tool.ty.environment]
 python-version = "3.11"
+# typings/ holds a partial stub for nodriver.cdp.network; see the .pyi docstring.
+extra-paths = ["typings"]
 
 [tool.ty.analysis]
 # nodriver generates CDP types at build time; ty cannot resolve them statically.

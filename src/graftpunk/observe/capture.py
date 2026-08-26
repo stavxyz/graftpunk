@@ -19,9 +19,15 @@ from typing import Any, Protocol, runtime_checkable
 from graftpunk.logging import get_logger
 
 try:
-    import selenium.common.exceptions
-except ImportError:
-    selenium = None  # type: ignore[assignment]
+    from selenium.common.exceptions import WebDriverException as _WebDriverError
+
+    _HAS_SELENIUM = True
+except ImportError:  # selenium is an optional extra
+    _HAS_SELENIUM = False
+
+    class _WebDriverError(Exception):  # type: ignore[no-redef]
+        """Stand-in so `except _WebDriverError` stays valid without selenium."""
+
 
 LOG = get_logger(__name__)
 
@@ -761,7 +767,7 @@ class SeleniumCaptureBackend:
         # Parse performance log for network and console events
         try:
             perf_log = self._driver.get_log("performance")
-        except selenium.common.exceptions.WebDriverException as exc:
+        except _WebDriverError as exc:
             LOG.error(
                 "performance_log_collection_failed",
                 error=str(exc),
@@ -917,7 +923,7 @@ class SeleniumCaptureBackend:
                 {**e, "timestamp": _console_timestamp(e["timestamp"])} if "timestamp" in e else e
                 for e in browser_logs
             )
-        except selenium.common.exceptions.WebDriverException as exc:
+        except _WebDriverError as exc:
             LOG.error(
                 "console_log_collection_failed",
                 error=str(exc),
@@ -935,7 +941,7 @@ class SeleniumCaptureBackend:
         """
         try:
             return self._driver.get_screenshot_as_png()
-        except selenium.common.exceptions.WebDriverException as exc:
+        except _WebDriverError as exc:
             LOG.error(
                 "screenshot_failed",
                 error=str(exc),
@@ -972,7 +978,7 @@ class SeleniumCaptureBackend:
         """Get the current page HTML source asynchronously."""
         try:
             return self._driver.page_source
-        except selenium.common.exceptions.WebDriverException as exc:
+        except _WebDriverError as exc:
             LOG.error(
                 "selenium_get_page_source_failed",
                 error=str(exc),
@@ -1442,7 +1448,7 @@ def create_capture_backend(
             bodies_dir=bodies_dir,
         )
     if backend_type == "selenium":
-        if selenium is None:
+        if not _HAS_SELENIUM:
             msg = "Selenium is not installed. Install it with: pip install selenium"
             raise ImportError(msg)
         return SeleniumCaptureBackend(

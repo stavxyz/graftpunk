@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import os
 import sys
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import requests
@@ -290,13 +291,15 @@ def _save_observe_data(
         run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
         storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
 
-        # Build minimal HAR entry
+        # Build minimal HAR entry. A Response built by requests always carries
+        # its PreparedRequest, but the attribute is typed Optional.
+        sent_headers = response.request.headers if response.request is not None else {}
         har_entry: dict[str, object] = {
             "startedDateTime": datetime.datetime.now(tz=datetime.UTC).isoformat(),
             "request": {
                 "method": method.upper(),
                 "url": url,
-                "headers": [{"name": k, "value": v} for k, v in response.request.headers.items()],  # type: ignore[union-attribute]
+                "headers": [{"name": k, "value": v} for k, v in sent_headers.items()],
                 "bodySize": len(request_body) if request_body else 0,
             },
             "response": {
@@ -317,7 +320,7 @@ def _save_observe_data(
             har_entry["request"] = {
                 **har_entry["request"],
                 "postData": {
-                    "mimeType": response.request.headers.get("Content-Type", ""),  # type: ignore[union-attribute]
+                    "mimeType": sent_headers.get("Content-Type", ""),
                     "text": request_body,
                 },
             }
@@ -374,7 +377,7 @@ def _print_response(
         sys.stdout.write("\n")
 
 
-def _http_command(method: str) -> typer.models.CommandFunctionType:
+def _http_command(method: str) -> Callable[..., None]:
     """Factory that creates a Typer command for the given HTTP method.
 
     Args:
@@ -476,7 +479,7 @@ def _http_command(method: str) -> typer.models.CommandFunctionType:
         _print_response(response, body_only=body_only, verbose=verbose)
 
     command.__doc__ = f"Make an HTTP {method.upper()} request."
-    return command  # type: ignore[invalid-return-type]
+    return command
 
 
 # Register HTTP method commands

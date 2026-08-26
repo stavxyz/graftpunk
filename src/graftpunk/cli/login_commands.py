@@ -60,9 +60,11 @@ def resolve_login_callable(plugin: CLIPluginProtocol) -> Callable[..., Any] | No
         A callable that accepts a credentials dict, or None.
     """
     if has_login_method(plugin):
-        return plugin.login  # type: ignore[union-attr]
+        login: Callable[..., Any] | None = getattr(plugin, "login", None)
+        assert callable(login)  # has_login_method checked this
+        return login
     if has_declarative_login(plugin):
-        login_func = generate_login_method(plugin)  # type: ignore[arg-type]
+        login_func = generate_login_method(plugin)
         LOG.debug("declarative_login_generated", plugin=plugin.site_name)
         return login_func
     return None

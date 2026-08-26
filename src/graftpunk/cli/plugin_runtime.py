@@ -97,7 +97,7 @@ def run_plugin_command(
 
     backend_type = plugin.backend
     try:
-        driver = session.driver  # type: ignore[attr-defined]
+        driver = getattr(session, "driver", None)
     except (BrowserError, AttributeError):
         driver = None
         LOG.debug(

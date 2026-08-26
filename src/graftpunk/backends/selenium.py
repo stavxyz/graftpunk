@@ -14,7 +14,7 @@ Example:
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import selenium.common.exceptions
 import webdriver_manager.chrome
@@ -369,7 +369,7 @@ class SeleniumBackend:
         try:
             assert self._driver is not None  # Type narrowing for mypy
             # Selenium returns list[dict], cast to list[Cookie] for type safety
-            cookies: list[Cookie] = self._driver.get_cookies() or []  # type: ignore[assignment]
+            cookies = cast("list[Cookie]", self._driver.get_cookies() or [])
             return cookies
         except selenium.common.exceptions.WebDriverException as exc:
             LOG.warning("selenium_get_cookies_failed", error=str(exc))

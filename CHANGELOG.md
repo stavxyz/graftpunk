@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`ty` type-checking is blocking in CI again, pinned to 0.0.75** ([#130](https://github.com/stavxyz/graftpunk/issues/130)) — matching the local `just lint`. The nodriver "false positives" were ty failing to read `nodriver/cdp/network.py` at all (the generated file carries a Latin-1 byte), so a PEP 561 partial stub under `typings/` covers that one module; the remaining diagnostics were real typing gaps and are fixed in code, with no new suppressions.
+
 ### Fixed
 
 - **Status messages treat names as data** ([#166](https://github.com/stavxyz/graftpunk/issues/166)) — session names, domains, storage backends, config keys, HAR paths and error text are escaped before Rich renders them, so a value containing a bracket sequence no longer raises `MarkupError` or disappears from `gp session list/show/export/clear/use`, `gp keepalive`, `gp config` and `gp import-har` output (including the generated-code preview of `--dry-run`).
