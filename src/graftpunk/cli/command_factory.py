@@ -15,7 +15,6 @@ Typer's runtime, which is the root fix for the vendored-Click breakage.
 
 from __future__ import annotations
 
-import functools
 import inspect
 import types
 from collections.abc import Callable, Sequence
@@ -143,18 +142,6 @@ def map_param_spec(
 # pops them against the same mapping -- a rename or default change cannot
 # silently diverge between construction and execution.
 BUILTIN_OPTIONS: dict[str, Any] = {"format": "json", "view": (), "output": ""}
-
-
-@functools.lru_cache(maxsize=1)
-def _available_formats() -> str:
-    """Comma-joined formatter names for the ``--format`` help text.
-
-    Cached: entry points don't change within a process, and this is
-    recomputed once per synthesized command otherwise.
-    """
-    from graftpunk.plugins.formatters import discover_formatters
-
-    return ", ".join(discover_formatters().keys())
 
 
 def _format_help(extra_formats: Sequence[str] = ()) -> str:
