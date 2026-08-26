@@ -14,6 +14,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -76,9 +77,9 @@ LOG = get_logger(__name__)
 app = typer.Typer(
     name="graftpunk",
     help=f"""
-    🔌 graftpunk — {graftpunk.DESCRIPTION}
+    🔌 graftpunk — {escape(graftpunk.DESCRIPTION)}
 
-    {graftpunk.LONG_DESCRIPTION}
+    {escape(graftpunk.LONG_DESCRIPTION)}
 
     \b
     Quick start:
@@ -161,7 +162,7 @@ def version() -> None:
     console.print(
         Panel(
             f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n"
-            f"{graftpunk.DESCRIPTION}\n\n"
+            f"{escape(graftpunk.DESCRIPTION)}\n\n"
             f"[dim]Config:[/dim]  {settings.config_dir}\n"
             f"[dim]Storage:[/dim] {settings.storage_backend}",
             title="graftpunk",

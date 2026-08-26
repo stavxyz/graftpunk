@@ -1,8 +1,8 @@
 """graftpunk - Authenticated browser sessions, captured once and replayed over plain
 HTTP: stealth login, encrypted at rest, pluggable storage.
 
-Log in through a real browser once; graftpunk captures the authenticated session -
-cookies, browser-fingerprinted headers, CSRF/API tokens - encrypts it at rest, and
+Log in through a real browser once; graftpunk captures the authenticated session —
+cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and
 replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON
 endpoints become scriptable without a WebDriver in the loop.
 
@@ -58,14 +58,13 @@ from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
 # banner and the gp version panel derive from these; the module docstring above
 # restates them in prose; pyproject.toml and README.md carry the only file-based
 # copies, and tests/unit/test_project_description.py pins every surface to them.
-# Both are interpolated into Rich-markup help text, so keep them free of "[...]".
 DESCRIPTION = (
     "Authenticated browser sessions, captured once and replayed over plain HTTP: "
     "stealth login, encrypted at rest, pluggable storage."
 )
 LONG_DESCRIPTION = (
     "Log in through a real browser once; graftpunk captures the authenticated session "
-    "\u2014 cookies, browser-fingerprinted headers, CSRF/API tokens \u2014 encrypts it at rest, "
+    "— cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, "
     "and replays it over plain HTTP from Python or a generated CLI, so a site's own "
     "XHR/JSON endpoints become scriptable without a WebDriver in the loop."
 )
