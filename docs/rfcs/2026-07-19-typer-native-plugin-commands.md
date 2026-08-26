@@ -24,7 +24,7 @@ validated:
 graftpunk's `gp <site> …` plugin CLI is broken under **typer ≥ 0.26**. On a fresh install that resolves a modern typer:
 
 - `gp <site>` reports **"No such command"** — plugin subcommands don't mount.
-- Running a mounted command (e.g. `gp myshop export list`) **crashes during argument parsing** (an `AttributeError` on the context in the current click 8.4.x line; with click 8.3.x, options instead silently arrive as `None` with their declared defaults dropped). *(Verified 2026-07-19: was incorrect — 8.3.x is not the current click line; the downstream project's installed click is 8.4.2, where the symptom is the crash.)*
+- Running a mounted command (e.g. `gp myshop export list`) **crashes during argument parsing** (an `AttributeError` on the context in the current click 8.4.x line; with click 8.3.x, options instead silently arrive as `None` with their declared defaults dropped). *(Verified 2026-07-19: was incorrect — 8.3.x is not the current click line; a downstream project's installed click is 8.4.2, where the symptom is the crash.)*
 
 typer < 0.26 (what `uv.lock` currently pins: 0.21.1) is unaffected, so graftpunk's own CI never sees the break — but any consumer resolving typer ≥ 0.26 (e.g. a downstream project whose environment resolves typer 0.26.8) gets a broken `gp`.
 
@@ -41,7 +41,7 @@ The three symptoms are one thing: **a cross-Click-boundary.** They are not Typer
 ## Goals
 
 - `gp <site> <command>` mounts and executes correctly on **typer 0.21 through the latest** (0.27+), verified in CI on both generations.
-- The plugin author contract is **unchanged**: `SitePlugin`, `CommandSpec`, `PluginParamSpec`, `@command`, `LoginConfig`, `get_commands()` — real plugins (a private plugin package and `surety`) work untouched.
+- The plugin author contract is **unchanged**: `SitePlugin`, `CommandSpec`, `PluginParamSpec`, `@command`, `LoginConfig`, `get_commands()` — real plugins (the private `myshop` package and `surety`) work untouched.
 - **Zero external-Click objects enter Typer's runtime** anywhere under `cli/`.
 - Remove the accumulated boundary workarounds rather than add more.
 
@@ -157,7 +157,7 @@ Sweep every module under `cli/` for external-Click usage and route it through Ty
 
    > **Design note (2026-07-19):** per SOLID review — `>=0.9.0` claimed 0.9–0.20 compatibility that nothing tests (the same metadata/reality gap that hid the original break, mirrored). A floor raise is not an upper pin; it aligns metadata with the CI matrix.
 3. Release as graftpunk **1.10.0** (behavior fix + internal refactor; no public API change) via the existing tag-push Trusted-Publishing pipeline.
-4. The downstream consumer picks it up by bumping its floor to `graftpunk>=1.10.0` and re-locking; `gp myshop …` then works under the downstream project's typer 0.26.8.
+4. The downstream project picks it up by bumping its floor to `graftpunk>=1.10.0` and re-locking; `gp myshop …` then works under its typer 0.26.8.
 
 ## References (source)
 
