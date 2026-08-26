@@ -586,7 +586,7 @@ def prepare_session(
                 raise TokenExtractionError(
                     f"Browser extraction failed for token '{token.name}': the page may have "
                     "redirected to login (re-login) or the pattern no longer matches (update "
-                    "the Token config); see the token_extraction_* log lines for the URL result"
+                    "the Token config); see the browser_token_* log lines for the per-URL result"
                 )
             cache[token.name] = CachedToken(
                 name=token.name,
