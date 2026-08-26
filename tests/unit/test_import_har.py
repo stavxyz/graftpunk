@@ -326,6 +326,28 @@ class TestImportHarCommand:
         assert "generated plugin code" in output
         assert "Would write to" in output
 
+    def test_dry_run_generated_code_is_not_markup(self, tmp_path):
+        """Generated code carries bracketed HAR paths/type hints; the panel must not parse them."""
+        har = tmp_path / "test.har"
+        har.write_text("{}")
+        code = 'def items(self) -> list[str]:\n    return self.get("/api?filter[status]=active")'
+        with (
+            patch(
+                f"{MODULE}.parse_har_file",
+                return_value=HARParseResult(entries=[_make_entry()], errors=[]),
+            ),
+            patch(f"{MODULE}.extract_domain", return_value="example.com"),
+            patch(f"{MODULE}.detect_auth_flow", return_value=None),
+            patch(f"{MODULE}.discover_api_endpoints", return_value=[]),
+            patch(f"{MODULE}.generate_plugin_code", return_value=code),
+        ):
+            result = runner.invoke(
+                app, ["import-har", str(har), "--dry-run"], env={"COLUMNS": "200"}
+            )
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "list[str]" in output and "filter[status]=active" in output
+
     def test_dry_run_yaml(self, tmp_path):
         """Dry run with yaml format."""
         har = tmp_path / "test.har"

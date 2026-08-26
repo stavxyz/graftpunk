@@ -311,3 +311,19 @@ class TestNamesAreNotMarkup:
         result = runner.invoke(session_app, ["show", "nope [/z]"])
         assert result.exit_code != 0
         assert "nope [/z]" in result.output
+
+    @patch("graftpunk.cli.session_commands.clear_session_cache", return_value=True)
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_clear_all_summary_keeps_names_verbatim(self, mock_list, _mock_clear) -> None:
+        mock_list.return_value = [_make_session(name="evil [/x]", domain="[red]x.example")]
+        result = runner.invoke(session_app, ["clear", "--all", "--force"])
+        assert result.exit_code == 0, result.output
+        assert "evil [/x]" in result.output and "[red]x.example" in result.output
+
+    @patch("graftpunk.cli.session_commands.load_session")
+    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    def test_export_usage_hint_keeps_name_verbatim(self, _mock_resolve, mock_load) -> None:
+        mock_load.return_value.save_httpie_session.return_value = "x.json"
+        result = runner.invoke(session_app, ["export", "evil [/x]"])
+        assert result.exit_code == 0, result.output
+        assert "http --session=evil [/x]" in result.output

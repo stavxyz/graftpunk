@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Status messages treat names as data** ([#166](https://github.com/stavxyz/graftpunk/issues/166)) — session names, domains, storage backends, config keys, HAR paths and error text are escaped before Rich renders them, so a value containing a bracket sequence no longer raises `MarkupError` or disappears from `gp session list/show/clear/use`, `gp keepalive`, `gp config` and `gp import-har` output.
+- **Status messages treat names as data** ([#166](https://github.com/stavxyz/graftpunk/issues/166)) — session names, domains, storage backends, config keys, HAR paths and error text are escaped before Rich renders them, so a value containing a bracket sequence no longer raises `MarkupError` or disappears from `gp session list/show/export/clear/use`, `gp keepalive`, `gp config` and `gp import-har` output (including the generated-code preview of `--dry-run`).
 
 ## [1.14.0] - 2026-08-26
 

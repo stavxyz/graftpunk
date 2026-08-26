@@ -54,6 +54,11 @@ def session_callback(
         console.print(ctx.get_help())
 
 
+def _cell(value: object) -> Text | str:
+    """A table cell for session metadata: data is never markup-parsed; empty shows a dash."""
+    return Text(str(value)) if value else "[dim]—[/dim]"
+
+
 @session_app.command("list")
 def session_list(
     ctx: typer.Context,
@@ -115,18 +120,14 @@ def session_list(
         if modified:
             modified = modified[:16].replace("T", " ")
 
-        # Session metadata is data, not markup: Text() cells are never parsed.
-        def cell(value: object) -> Text | str:
-            return Text(str(value)) if value else "[dim]—[/dim]"
-
         table.add_row(
             Text(str(session.get("name", ""))),
-            cell(session.get("domain")),
+            _cell(session.get("domain")),
             status_display,
-            str(session.get("cookie_count", 0)),
-            cell(modified),
-            cell(session.get("storage_backend")),
-            cell(session.get("storage_location")),
+            Text(str(session.get("cookie_count", 0))),
+            _cell(modified),
+            _cell(session.get("storage_backend")),
+            _cell(session.get("storage_location")),
         )
 
     console.print(table)
@@ -259,7 +260,7 @@ def export(
 
         console.print(f"[green]✓ Exported to:[/green] {escape(str(httpie_path))}\n")
         console.print("[dim]Usage:[/dim]")
-        console.print(f"  http --session={name} https://example.com/api")
+        console.print(f"  http --session={escape(str(name))} https://example.com/api")
     except (OSError, AttributeError) as exc:
         console.print(f"[red]✗ Export failed: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
@@ -420,4 +421,5 @@ def _print_removed(removed: list[dict]) -> None:
 
     console.print(f"\n[green]Removed {len(removed)} session(s):[/green]")
     for s in removed:
-        console.print(f"  - {s.get('name', '?')} ({s.get('domain') or 'no domain'})")
+        domain = escape(str(s.get("domain") or "no domain"))
+        console.print(f"  - {escape(str(s.get('name', '?')))} ({domain})")

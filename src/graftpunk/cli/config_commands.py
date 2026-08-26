@@ -40,8 +40,8 @@ def render_settings_panel(target_console: Console) -> None:
         storage_display = f"{escape(str(settings.storage_backend))} [dim](filesystem)[/dim]"
 
     info = f"""
-[dim]Config directory:[/dim]   {settings.config_dir}
-[dim]Sessions directory:[/dim] {settings.sessions_dir}
+[dim]Config directory:[/dim]   {escape(str(settings.config_dir))}
+[dim]Sessions directory:[/dim] {escape(str(settings.sessions_dir))}
 [dim]Storage backend:[/dim]    {storage_display}
 [dim]Session TTL:[/dim]        {settings.session_ttl_hours}h ({settings.session_ttl_hours // 24}d)
 [dim]Log level:[/dim]          {settings.log_level}
@@ -141,7 +141,7 @@ def set_cmd(name: str, value: str) -> None:
         err_console.print(
             f"[yellow]warning:[/yellow] {escape(str(name))} looks secret but the value is a "
             "literal — if you meant a command, single-quote it: "
-            f"gp config set {name} '$(op read ...)'. A plaintext secret is now "
+            f"gp config set {escape(str(name))} '$(op read ...)'. A plaintext secret is now "
             "on disk (0600)."
         )
 

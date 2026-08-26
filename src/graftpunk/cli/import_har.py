@@ -190,7 +190,7 @@ def import_har(
     if dry_run:
         console.print(
             Panel(
-                plugin_code,
+                Text(plugin_code),  # generated code is data, not markup
                 title=f"[cyan]Generated Plugin ({escape(str(format_type))})[/cyan]",
                 border_style="cyan",
             )
