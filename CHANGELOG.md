@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.14.0] - 2026-08-26
 
+Minor rather than patch: every entry is a fix, but three of them change observable
+defaults that a consumer may have been relying on. **Changed behaviour:** as a
+library, graftpunk now logs to stderr at WARNING when structlog is unconfigured
+(previously stdout, unfiltered); CSV written to stdout uses `\n` line endings
+(previously `\r\n`); `gp version` puts the project description in the panel body
+rather than the title.
+
 ### Fixed
 
 - **The sdist ships only the package** — `tests/`, `docs/`, `examples/`, CI config and scratch directories no longer go to PyPI; the source distribution is an explicit allowlist (`src/graftpunk`, `README.md`, `LICENSE`, `CHANGELOG.md`, `pyproject.toml`).

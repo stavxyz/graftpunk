@@ -10,7 +10,7 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Typed](https://img.shields.io/badge/typed-ty-blue.svg)](https://github.com/astral-sh/ty)
 
-[Installation](#installation) • [Quick Start](#quick-start) • [Plugins](#plugins) • [CLI Reference](#cli-reference) • [Examples](examples/README.md) • [Architecture](docs/HOW_IT_WORKS.md)
+[Installation](#installation) • [Quick Start](#quick-start) • [Plugins](#plugins) • [CLI Reference](#cli-reference) • [Examples](https://github.com/stavxyz/graftpunk/blob/main/examples/README.md) • [Architecture](https://github.com/stavxyz/graftpunk/blob/main/docs/HOW_IT_WORKS.md)
 
 </div>
 
@@ -284,7 +284,7 @@ Plugins are discovered from three sources:
 
 If two plugins share the same `site_name`, registration fails with an error showing both sources. No silent shadowing.
 
-See [examples/](examples/README.md) for working plugins and templates.
+See [examples/](https://github.com/stavxyz/graftpunk/blob/main/examples/README.md) for working plugins and templates.
 
 ## CLI Reference
 
