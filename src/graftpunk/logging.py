@@ -56,6 +56,22 @@ def configure_logging(
     )
 
 
+def ensure_library_defaults() -> None:
+    """Give library consumers a quiet, stderr-only logger without touching theirs.
+
+    Only the ``gp`` CLI calls :func:`configure_logging`. A program that merely
+    imports graftpunk would otherwise get structlog's built-in defaults — a
+    ``PrintLogger`` on **stdout** with no level filter — so a stray debug line could
+    corrupt machine-readable output (#163). If the consumer has already configured
+    structlog, their configuration is left exactly as it is.
+    """
+    if not structlog.is_configured():
+        configure_logging(level="WARNING")
+
+
+ensure_library_defaults()
+
+
 @contextmanager
 def suppress_asyncio_noise():
     """Suppress asyncio 'Loop is closed' warnings during event loop shutdown.
