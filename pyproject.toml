@@ -119,6 +119,12 @@ Issues = "https://github.com/stavxyz/graftpunk/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/graftpunk"]
 
+# The sdist is an allowlist: the package plus the files PyPI renders. Tests, docs,
+# RFCs, examples, CI config and scratch directories live in the repository and
+# must not ship — they have carried private example data before.
+[tool.hatch.build.targets.sdist]
+only-include = ["src/graftpunk", "README.md", "LICENSE", "CHANGELOG.md", "pyproject.toml"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
