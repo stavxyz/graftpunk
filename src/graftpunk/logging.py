@@ -1,5 +1,6 @@
 """Structured logging configuration using structlog."""
 
+import os
 import sys
 from contextlib import contextmanager
 from typing import Any
@@ -18,6 +19,29 @@ def add_log_level(logger: WrappedLogger, method_name: str, event_dict: EventDict
     return event_dict
 
 
+# The logger factory graftpunk last installed. Lets configured_by_consumer()
+# tell "structlog is configured because graftpunk configured it" apart from
+# "the host program configured structlog itself".
+_owned_factory: object | None = None
+
+
+def _stderr_wants_color() -> bool:
+    """Mirror rich's rule: FORCE_COLOR (non-empty) wins, then NO_COLOR, then a TTY."""
+    force = os.environ.get("FORCE_COLOR")
+    if force is not None:
+        return force != ""
+    if os.environ.get("NO_COLOR"):
+        return False
+    return sys.stderr.isatty()
+
+
+def configured_by_consumer() -> bool:
+    """True when structlog carries a configuration graftpunk did not install."""
+    if not structlog.is_configured():
+        return False
+    return structlog.get_config().get("logger_factory") is not _owned_factory
+
+
 def configure_logging(
     level: str = "WARNING",
     json_output: bool = False,
@@ -27,7 +51,11 @@ def configure_logging(
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
         json_output: If True, output JSON format. If False, use console-friendly format.
+
+    Console output is coloured only when stderr is a TTY (or FORCE_COLOR is set)
+    and NO_COLOR is unset.
     """
+    global _owned_factory
     processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         add_log_level,
@@ -41,17 +69,18 @@ def configure_logging(
     if json_output:
         processors.append(structlog.processors.JSONRenderer())
     else:
-        processors.append(structlog.dev.ConsoleRenderer(colors=True))
+        processors.append(structlog.dev.ConsoleRenderer(colors=_stderr_wants_color()))
 
     import logging as stdlib_logging
 
+    _owned_factory = structlog.PrintLoggerFactory(file=sys.stderr)
     structlog.configure(
         processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(stdlib_logging, level.upper(), stdlib_logging.INFO)
         ),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        logger_factory=_owned_factory,
         cache_logger_on_first_use=False,
     )
 
@@ -67,7 +96,9 @@ def ensure_library_defaults() -> None:
 
     Note: this marks structlog as configured, so a consumer's later
     ``structlog.configure_once()`` is a no-op; call ``structlog.configure()`` to
-    replace the default, or configure before importing graftpunk.
+    replace the default, or configure before importing graftpunk. It runs once,
+    at import: a later ``structlog.reset_defaults()`` restores structlog's stdout
+    builtins and graftpunk does not re-arm the default.
     """
     if not structlog.is_configured():
         configure_logging()
