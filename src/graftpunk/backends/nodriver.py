@@ -123,7 +123,7 @@ def _patch_nodriver_cookie_parsing() -> None:
         return
 
     try:
-        from nodriver.cdp.network import Cookie  # type: ignore[attr-defined]
+        from nodriver.cdp.network import Cookie
     except ImportError:
         return
 
@@ -755,7 +755,7 @@ class NoDriverBackend:
         try:
             import nodriver.cdp.network as cdp_network
 
-            await self._page.send(cdp_network.clear_browser_cookies())  # type: ignore[attr-defined]
+            await self._page.send(cdp_network.clear_browser_cookies())
             return True
         except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is False + warning
             # nodriver raises ProtocolException (a plain Exception subclass)

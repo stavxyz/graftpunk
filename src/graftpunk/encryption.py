@@ -18,6 +18,7 @@ Thread Safety:
 
 import binascii
 import os
+from typing import cast
 
 from cryptography.fernet import Fernet
 
@@ -156,12 +157,12 @@ def _get_key_from_supabase_vault() -> bytes:
         if isinstance(secret_value, list) and len(secret_value) > 0:
             first = secret_value[0]
             if isinstance(first, dict):
-                row: dict[str, str] = first  # type: ignore[assignment]
+                row = cast("dict[str, str]", first)
                 secret_value = row.get("decrypted_secret", "")
             else:
                 secret_value = ""
         elif isinstance(secret_value, dict):
-            row_d: dict[str, str] = secret_value  # type: ignore[assignment]
+            row_d = cast("dict[str, str]", secret_value)
             secret_value = row_d.get("decrypted_secret", "")
 
         if not secret_value:

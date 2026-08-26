@@ -76,7 +76,7 @@ Be respectful, inclusive, and constructive. We're all here to build something us
    # Or run individually:
    uvx ruff check .
    uvx ruff format .
-   uvx ty check src/
+   uvx ty@0.0.75 check src/
    ```
 
 6. **Commit your changes** with a descriptive message

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import types
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -52,7 +53,7 @@ def _reject_unsupported(
 
 def map_param_spec(
     plugin_name: str, command_name: str, spec: PluginParamSpec
-) -> tuple[inspect.Parameter, type]:
+) -> tuple[inspect.Parameter, Any]:
     """Map one ``PluginParamSpec`` to an ``inspect.Parameter`` Typer understands.
 
     Returns ``(parameter, annotation)``. The parameter's ``default`` is a
@@ -95,7 +96,7 @@ def map_param_spec(
             show_default=kw.get("show_default", False),
             envvar=kw.get("envvar") or None,
         )
-        annotation: type = base_type
+        annotation: Any = base_type
         param = inspect.Parameter(
             spec.name,
             inspect.Parameter.KEYWORD_ONLY,
@@ -121,7 +122,9 @@ def map_param_spec(
             "(an absent variadic argument collects as an empty list)."
         )
     if nargs == -1:
-        annotation = list[base_type]  # type: ignore[valid-type]
+        # A runtime alias (list[<base_type>]) for Typer; built explicitly because
+        # base_type is a value here, not a type expression.
+        annotation = types.GenericAlias(list, (base_type,))
         info = typer.Argument(None if not required else ...)
     else:
         annotation = base_type
@@ -257,9 +260,12 @@ def synthesize_command_fn(
             kwargs["view"] = []
         return body(ctx, **kwargs)
 
-    _command.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
-    _command.__annotations__ = annotations
-    _command.__name__ = name.replace("-", "_")
+    # Typer introspects these dunders; a function object has no declared
+    # __signature__, so assign through an Any-typed alias.
+    command_obj: Any = _command
+    command_obj.__signature__ = inspect.Signature(params)
+    command_obj.__annotations__ = annotations
+    command_obj.__name__ = name.replace("-", "_")
     if help_text:
         _command.__doc__ = help_text
     return _command

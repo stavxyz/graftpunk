@@ -44,7 +44,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeGuard, runtime_checkable
 
 import requests
 
@@ -1134,7 +1134,7 @@ class SitePlugin:
         return load_session_for_api(self.session_name)
 
 
-def has_declarative_login(plugin: CLIPluginProtocol) -> bool:
+def has_declarative_login(plugin: CLIPluginProtocol) -> TypeGuard[SitePlugin]:
     """Check if a plugin has declarative login configuration.
 
     Args:
@@ -1144,4 +1144,4 @@ def has_declarative_login(plugin: CLIPluginProtocol) -> bool:
         True if the plugin has a valid LoginConfig, False otherwise.
     """
     login = getattr(plugin, "login_config", None)
-    return login is not None and isinstance(login, LoginConfig)
+    return isinstance(plugin, SitePlugin) and isinstance(login, LoginConfig)

@@ -24,6 +24,8 @@ jobs:
           filters: |
             python:
               - '**/*.py'
+              - '**/*.pyi'
+              - 'typings/**'
               - '.github/workflows/python-quality.yml'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -61,10 +63,9 @@ jobs:
         run: uvx ruff format --check .
 
       - name: Type check with ty
-        # TODO: Re-enable blocking mode once ty reaches 1.0 or nodriver ships
-        # proper type stubs. Current false positives are from nodriver's
-        # auto-generated CDP types that ty cannot resolve statically.
-        run: uvx ty check src/ || echo "::warning::ty found type errors (non-blocking while ty is pre-1.0)"
+        # Blocking, and pinned: ty is pre-1.0 and its diagnostics move between
+        # releases. Bump the pin here, in the justfile and in CONTRIBUTING.md together.
+        run: uvx ty@0.0.75 check src/
 
       - name: Security scan
         run: |

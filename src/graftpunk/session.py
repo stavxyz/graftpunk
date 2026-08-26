@@ -22,7 +22,7 @@ Example:
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import httpie.context
@@ -468,12 +468,10 @@ class BrowserSession(requestium.Session):
         self._start_observe()
         return self
 
-    def __exit__(  # type: ignore[override]  # requests.Session uses *args
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: Any,
-    ) -> None:
+    def __exit__(self, *args: object) -> None:
+        # Same shape as requests.Session.__exit__(self, *args); the first
+        # positional is the exception type (or None).
+        exc_type = cast("type[BaseException] | None", args[0] if args else None)
         self._stop_observe(exc_type)
         self.quit()
 
@@ -818,7 +816,7 @@ async def inject_cookies_to_nodriver(
             skipped += 1
             continue
         cookie_params.append(
-            cdp_net.CookieParam(  # type: ignore[attr-defined]
+            cdp_net.CookieParam(
                 name=cookie.name,
                 value=cookie.value,
                 domain=cookie.domain,
