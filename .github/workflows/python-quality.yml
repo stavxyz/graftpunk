@@ -24,6 +24,8 @@ jobs:
           filters: |
             python:
               - '**/*.py'
+            - '**/*.pyi'
+            - 'typings/**'
               - '.github/workflows/python-quality.yml'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -62,7 +64,7 @@ jobs:
 
       - name: Type check with ty
         # Blocking, and pinned: ty is pre-1.0 and its diagnostics move between
-        # releases. Bump the pin here and in the justfile together.
+        # releases. Bump the pin here, in the justfile and in CONTRIBUTING.md together.
         run: uvx ty@0.0.75 check src/
 
       - name: Security scan

@@ -816,7 +816,7 @@ async def inject_cookies_to_nodriver(
             skipped += 1
             continue
         cookie_params.append(
-            cdp_net.CookieParam(  # type: ignore[attr-defined]
+            cdp_net.CookieParam(
                 name=cookie.name,
                 value=cookie.value,
                 domain=cookie.domain,

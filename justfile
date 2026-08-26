@@ -30,7 +30,7 @@ check: lint test
 lint:
     uvx ruff check .
     uvx ruff format --check .
-    uvx ty@0.0.75 check src/  # keep in sync with .github/workflows/python-quality.yml
+    uvx ty@0.0.75 check src/  # keep in sync with python-quality.yml and CONTRIBUTING.md
 
 # Auto-format code
 format:

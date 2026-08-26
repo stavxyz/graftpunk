@@ -23,6 +23,7 @@ from graftpunk.logging import get_logger
 from graftpunk.observe import build_observe_context
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, CommandSpec
 from graftpunk.plugins.formatters import format_output
+from graftpunk.session import BrowserSession
 
 LOG = get_logger(__name__)
 _format_console = Console()
@@ -97,7 +98,8 @@ def run_plugin_command(
 
     backend_type = plugin.backend
     try:
-        driver = getattr(session, "driver", None)
+        # Only a browser-backed session has a driver; a plain requests.Session does not.
+        driver = session.driver if isinstance(session, BrowserSession) else None
     except (BrowserError, AttributeError):
         driver = None
         LOG.debug(

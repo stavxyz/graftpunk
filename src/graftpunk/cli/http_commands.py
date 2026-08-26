@@ -293,6 +293,8 @@ def _save_observe_data(
 
         # Build minimal HAR entry. A Response built by requests always carries
         # its PreparedRequest, but the attribute is typed Optional.
+        if response.request is None:
+            LOG.warning("observe_har_missing_request", url=url)
         sent_headers = response.request.headers if response.request is not None else {}
         har_entry: dict[str, object] = {
             "startedDateTime": datetime.datetime.now(tz=datetime.UTC).isoformat(),

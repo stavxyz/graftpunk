@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`ty` type-checking is blocking in CI again, pinned to 0.0.75** ([#130](https://github.com/stavxyz/graftpunk/issues/130)) — matching the local `just lint`. The nodriver "false positives" were ty failing to read `nodriver/cdp/network.py` at all (the generated file carries a Latin-1 byte), so a PEP 561 partial stub under `typings/` covers that one module; the remaining diagnostics were real typing gaps and are fixed in code, with no new suppressions.
+- **`ty` type-checking is blocking in CI again, pinned to 0.0.75** ([#130](https://github.com/stavxyz/graftpunk/issues/130)) — the same pinned command runs in `just lint` and `CONTRIBUTING.md`. The nodriver "false positives" were ty failing to read `nodriver/cdp/network.py` at all (the generated file carries a Latin-1 byte), so a partial stub under `typings/` (not shipped in the wheel or sdist) covers that one module and the twelve `type: ignore` comments that had been papering over it are gone; an unused `type: ignore` is now itself an error. The remaining diagnostics were real typing gaps and are fixed in code.
 
 ### Fixed
 

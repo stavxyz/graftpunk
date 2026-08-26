@@ -1144,4 +1144,4 @@ def has_declarative_login(plugin: CLIPluginProtocol) -> TypeGuard[SitePlugin]:
         True if the plugin has a valid LoginConfig, False otherwise.
     """
     login = getattr(plugin, "login_config", None)
-    return login is not None and isinstance(login, LoginConfig)
+    return isinstance(plugin, SitePlugin) and isinstance(login, LoginConfig)

@@ -25,7 +25,7 @@ try:
 except ImportError:  # selenium is an optional extra
     _HAS_SELENIUM = False
 
-    class _WebDriverError(Exception):  # type: ignore[no-redef]
+    class _WebDriverError(Exception):
         """Stand-in so `except _WebDriverError` stays valid without selenium."""
 
 
@@ -1147,7 +1147,7 @@ class NodriverCaptureBackend:
         import nodriver.cdp.runtime as cdp_runtime
 
         await tab.send(
-            network.enable(  # type: ignore[attr-defined]
+            network.enable(
                 max_total_buffer_size=100 * 1024 * 1024,  # 100 MB total buffer
                 max_resource_buffer_size=10 * 1024 * 1024,  # 10 MB per resource
                 # Keeps bodies fetchable longer. Load-bearing on nodriver >= 0.50
@@ -1157,9 +1157,9 @@ class NodriverCaptureBackend:
                 enable_durable_messages=True,
             )
         )
-        tab.add_handler(network.RequestWillBeSent, self._on_request)  # type: ignore[attr-defined]
-        tab.add_handler(network.ResponseReceived, self._on_response)  # type: ignore[attr-defined]
-        tab.add_handler(network.LoadingFinished, self._on_loading_finished)  # type: ignore[attr-defined]
+        tab.add_handler(network.RequestWillBeSent, self._on_request)
+        tab.add_handler(network.ResponseReceived, self._on_response)
+        tab.add_handler(network.LoadingFinished, self._on_loading_finished)
         # Raw wire headers (Cookie / Set-Cookie) only arrive on the ExtraInfo
         # events; the filtered ones above never carry them (issue #157). The
         # classes exist on 0.48.1 and 0.50.3; guard so an older codegen
@@ -1175,8 +1175,8 @@ class NodriverCaptureBackend:
             tab.add_handler(event_cls, handler)
 
         # Console log capture
-        await tab.send(cdp_runtime.enable())  # type: ignore[attr-defined]
-        tab.add_handler(cdp_runtime.ConsoleAPICalled, self._on_console)  # type: ignore[attr-defined]
+        await tab.send(cdp_runtime.enable())
+        tab.add_handler(cdp_runtime.ConsoleAPICalled, self._on_console)
 
         LOG.debug("nodriver_capture_async_started")
 
@@ -1213,7 +1213,7 @@ class NodriverCaptureBackend:
             if data.get("has_post_data") and not data.get("post_data"):
                 try:
                     result = await tab.send(
-                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id))  # type: ignore[attr-defined]
+                        cdp_net.get_request_post_data(cdp_net.RequestId(request_id))
                     )
                     data["post_data"] = result
                 except ConnectionError as exc:
@@ -1242,7 +1242,7 @@ class NodriverCaptureBackend:
             if _is_text_mime(mime) or _is_binary_mime(mime):
                 try:
                     body, base64_encoded = await tab.send(
-                        cdp_net.get_response_body(cdp_net.RequestId(request_id))  # type: ignore[attr-defined]
+                        cdp_net.get_response_body(cdp_net.RequestId(request_id))
                     )
                     _process_response_body(
                         response=response,
@@ -1381,7 +1381,7 @@ class NodriverCaptureBackend:
 
             self._eager_fetch_attempts += 1
             body, base64_encoded = await tab.send(
-                cdp_net.get_response_body(cdp_net.RequestId(rid)),  # type: ignore[attr-defined]
+                cdp_net.get_response_body(cdp_net.RequestId(rid)),
                 **_eager_send_kwargs(tab),
             )
             _process_response_body(

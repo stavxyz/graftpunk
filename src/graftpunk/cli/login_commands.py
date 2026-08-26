@@ -32,18 +32,22 @@ LOG = get_logger(__name__)
 SECRET_KEYWORDS = frozenset({"password", "secret", "token", "key"})
 
 
-def has_login_method(plugin: CLIPluginProtocol) -> bool:
-    """Check if plugin has a login method that's not a CLI command.
+def login_method(plugin: CLIPluginProtocol) -> Callable[..., Any] | None:
+    """Return the plugin's user-defined ``login()`` method, or None.
 
-    Returns True if the plugin has a 'login' attribute that is callable
-    and NOT decorated with @command (i.e., not already exposed as CLI).
+    A plugin's 'login' attribute counts only when it is callable and NOT
+    decorated with @command (i.e., not already exposed as a CLI command).
     After the login_config rename, 'login' on a plugin is only ever a method.
     """
     login_attr = getattr(plugin, "login", None)
-    if not callable(login_attr):
-        return False
-    # Skip if already decorated as a CLI command
-    return not hasattr(login_attr, "_command_meta")
+    if not callable(login_attr) or hasattr(login_attr, "_command_meta"):
+        return None
+    return login_attr
+
+
+def has_login_method(plugin: CLIPluginProtocol) -> bool:
+    """Check if plugin has a login method that's not a CLI command."""
+    return login_method(plugin) is not None
 
 
 def resolve_login_callable(plugin: CLIPluginProtocol) -> Callable[..., Any] | None:
@@ -59,9 +63,8 @@ def resolve_login_callable(plugin: CLIPluginProtocol) -> Callable[..., Any] | No
     Returns:
         A callable that accepts a credentials dict, or None.
     """
-    if has_login_method(plugin):
-        login: Callable[..., Any] | None = getattr(plugin, "login", None)
-        assert callable(login)  # has_login_method checked this
+    login = login_method(plugin)
+    if login is not None:
         return login
     if has_declarative_login(plugin):
         login_func = generate_login_method(plugin)

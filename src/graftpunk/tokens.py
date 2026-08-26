@@ -102,8 +102,8 @@ async def _poll_for_tokens(
         still_unmatched = []
 
         for token in unmatched:
-            if token.pattern is None:  # validated for page tokens; keeps the type honest
-                continue
+            if token.pattern is None:
+                raise ValueError(f"Token '{token.name}' has source='page' but no pattern")
             match = re.search(token.pattern, content)
             if match:
                 results[token.name] = match.group(1)

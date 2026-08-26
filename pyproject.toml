@@ -142,19 +142,14 @@ ignore = ["S101"]  # Allow assert in tests
 quote-style = "double"
 
 [tool.ty.rules]
-# nodriver CDP stubs resolve on some Python/nodriver versions but not others,
-# so type: ignore[attr-defined] comments may appear unused locally.
-# See also [tool.ty.analysis] for allowed-unresolved-imports.
-unused-type-ignore-comment = "ignore"
+# A type: ignore that suppresses nothing is a stale claim about the code; fail on it.
+unused-type-ignore-comment = "error"
 
 [tool.ty.environment]
 python-version = "3.11"
-# typings/ holds a partial stub for nodriver.cdp.network; see the .pyi docstring.
+# typings/ holds a partial stub for nodriver.cdp.network (unreadable upstream file);
+# see the .pyi docstring. Not shipped: the wheel and sdist are explicit allowlists.
 extra-paths = ["typings"]
-
-[tool.ty.analysis]
-# nodriver generates CDP types at build time; ty cannot resolve them statically.
-allowed-unresolved-imports = ["nodriver.cdp.**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
