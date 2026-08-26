@@ -492,7 +492,7 @@ async def _setup_observe_session(
         except SessionExpiredError as exc:
             console.print(
                 f"[red]Session '{escape(session_name)}' is expired or corrupted.[/red]\n"
-                f"[dim]{exc}[/dim]\n"
+                f"[dim]{escape(str(exc))}[/dim]\n"
                 f"[dim]Use --no-session to proceed without cookies.[/dim]"
             )
             return None
@@ -804,7 +804,7 @@ except Exception as exc:
     LOG.exception("plugin_registration_failed", error=str(exc))
     # Notify user - plugins are optional but they should know if they fail
     # stderr: gp's stdout may be a piped JSON/CSV stream.
-    err_console.print(f"[yellow]Warning: Plugin registration failed: {exc}[/yellow]")
+    err_console.print(f"[yellow]Warning: Plugin registration failed: {escape(str(exc))}[/yellow]")
 
 if __name__ == "__main__":
     app()

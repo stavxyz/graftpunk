@@ -365,7 +365,7 @@ def _print_response(
     status_color = "green" if response.ok else "red"
     gp_console.err_console.print(
         f"[{status_color}]HTTP {response.status_code}[/{status_color}]"
-        f" [dim]{response.reason}[/dim]"
+        f" [dim]{escape(str(response.reason))}[/dim]"
         f" [dim]({response.elapsed.total_seconds():.2f}s)[/dim]"
     )
     sys.stdout.write(response.text)
