@@ -1,4 +1,5 @@
-"""graftpunk CLI - turn any website into an API.
+"""graftpunk CLI - Authenticated browser sessions, captured once and replayed over plain
+HTTP: stealth login, encrypted at rest, pluggable storage.
 
 Manage encrypted browser sessions from the terminal.
 """
@@ -75,11 +76,10 @@ LOG = get_logger(__name__)
 
 app = typer.Typer(
     name="graftpunk",
-    help="""
-    🔌 graftpunk - turn any website into an API
+    help=f"""
+    🔌 graftpunk — {graftpunk.DESCRIPTION}
 
-    Graft scriptable access onto authenticated web services.
-    Log in once, script forever.
+    {graftpunk.LONG_DESCRIPTION}
 
     \b
     Quick start:
@@ -137,7 +137,7 @@ def main_callback(
         ),
     ] = ObserveMode.off,
 ) -> None:
-    """graftpunk - turn any website into an API."""
+    """graftpunk CLI entry point; the help text lives on the ``typer.Typer(help=...)`` above."""
     settings = get_settings()
     json_output = (log_format or settings.log_format) == "json"
 
@@ -164,7 +164,7 @@ def version() -> None:
             f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n\n"
             f"[dim]Config:[/dim]  {settings.config_dir}\n"
             f"[dim]Storage:[/dim] {settings.storage_backend}",
-            title="Turn any website into an API",
+            title=graftpunk.DESCRIPTION.rstrip("."),
             border_style="cyan",
         )
     )

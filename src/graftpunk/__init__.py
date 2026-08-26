@@ -1,7 +1,10 @@
-"""graftpunk - Turn any website into an API.
+"""graftpunk - Authenticated browser sessions, captured once and replayed over plain
+HTTP: stealth login, encrypted at rest, pluggable storage.
 
-Graft scriptable access onto authenticated web services.
-Log in once, script forever.
+Log in through a real browser once; graftpunk captures the authenticated session -
+cookies, browser-fingerprinted headers, CSRF/API tokens - encrypts it at rest, and
+replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON
+endpoints become scriptable without a WebDriver in the loop.
 
 This package provides:
 - Encrypted browser session persistence
@@ -50,6 +53,21 @@ from graftpunk.exceptions import (
 )
 from graftpunk.graftpunk_session import get_role_headers, list_roles, register_role
 from graftpunk.storage.base import SessionMetadata, SessionStorageBackend
+
+# The one owner of how graftpunk describes itself inside the package. The gp --help
+# banner, the gp version panel and the module docstrings above derive from or wrap
+# these; pyproject.toml and README.md carry the only file-based copies, and
+# tests/unit/test_project_description.py pins every surface to them.
+DESCRIPTION = (
+    "Authenticated browser sessions, captured once and replayed over plain HTTP: "
+    "stealth login, encrypted at rest, pluggable storage."
+)
+LONG_DESCRIPTION = (
+    "Log in through a real browser once; graftpunk captures the authenticated session "
+    "\u2014 cookies, browser-fingerprinted headers, CSRF/API tokens \u2014 encrypts it at rest, "
+    "and replays it over plain HTTP from Python or a generated CLI, so a site's own "
+    "XHR/JSON endpoints become scriptable without a WebDriver in the loop."
+)
 
 # Browser-only symbols, resolved lazily by __getattr__ below. Declared here so
 # type checkers and IDEs still see them (PEP 562 lazy attributes are invisible to
