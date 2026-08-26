@@ -4,8 +4,6 @@
 
 **Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.**
 
-*Log in through a real browser once; graftpunk captures the authenticated session — cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON endpoints become scriptable without a WebDriver in the loop.*
-
 [![PyPI](https://img.shields.io/pypi/v/graftpunk.svg)](https://pypi.org/project/graftpunk/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -15,6 +13,8 @@
 [Installation](#installation) • [Quick Start](#quick-start) • [Plugins](#plugins) • [CLI Reference](#cli-reference) • [Examples](examples/README.md) • [Architecture](docs/HOW_IT_WORKS.md)
 
 </div>
+
+Log in through a real browser once; graftpunk captures the authenticated session — cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON endpoints become scriptable without a WebDriver in the loop.
 
 ---
 
@@ -291,6 +291,8 @@ See [examples/](examples/README.md) for working plugins and templates.
 ```
 $ gp --help
 
+ Usage: gp [OPTIONS] COMMAND [ARGS]...
+
  🔌 graftpunk — Authenticated browser sessions, captured once and replayed over
  plain HTTP: stealth login, encrypted at rest, pluggable storage.
 
@@ -301,15 +303,17 @@ $ gp --help
  loop.
 
 Commands:
-  session     Manage encrypted browser sessions
-  http        Make ad-hoc HTTP requests with cached session cookies
-  observe     Capture and view browser observability data
-  plugins     List discovered plugins
-  import-har  Import HAR file and generate a plugin
-  config      Show current configuration
-  keepalive   Manage the session keepalive daemon
-  version     Show version info
+  version     Show graftpunk version and installation info.
+  plugins     List discovered plugins (storage, handlers, sites, CLI).
+  import-har  Import HAR file and generate a graftpunk plugin.
+  observe     View and manage observability data (HAR, screenshots, logs).
+  session     Manage encrypted browser sessions.
+  keepalive   Manage the session keepalive daemon.
+  http        Make ad-hoc HTTP requests with cached session cookies.
+  config      Show configuration; manage the workstation env file.
 ```
+
+(Options and the Quick-start block are elided; the full text is `gp --help`.)
 
 ### Session Management
 
@@ -392,8 +396,8 @@ credentials as lazy 1Password (or any) command values, settings as statics:
 
 ```bash
 gp config set GRAFTPUNK_BROWSER_EXECUTABLE_PATH "/path/to/chrome"
-gp config set SHOPKEEP_USERNAME '$(op read "op://vault/item/username")'
-gp config set SHOPKEEP_PASSWORD '$(op read "op://vault/item/password")'
+gp config set MYSHOP_USERNAME '$(op read "op://vault/item/username")'
+gp config set MYSHOP_PASSWORD '$(op read "op://vault/item/password")'
 gp config list
 ```
 

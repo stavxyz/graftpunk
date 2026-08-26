@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **README, PyPI description and `gp --help` describe the project as it is** — authenticated browser sessions captured once and replayed over plain HTTP (stealth login, encrypted at rest, pluggable storage) — instead of the "Turn any website into an API" tagline. Inside the package the text has one owner, `graftpunk.DESCRIPTION` / `graftpunk.LONG_DESCRIPTION`, which the banner, the `gp version` panel and the docstrings derive from. The framing sections now name the mechanism (browser login once; session, header fingerprint and tokens captured and encrypted; replayed over plain HTTP from Python or a generated CLI). `pyproject.toml` keywords gain `har`, `cdp`, `nodriver`, `csrf`. No behaviour change; a new test pins the description across every surface.
+- **README, PyPI description and `gp --help` describe the project as it is** ([#161](https://github.com/stavxyz/graftpunk/pull/161)) — authenticated browser sessions captured once and replayed over plain HTTP (stealth login, encrypted at rest, pluggable storage) — instead of the "Turn any website into an API" tagline. Inside the package the text has one owner, `graftpunk.DESCRIPTION` / `graftpunk.LONG_DESCRIPTION`, which the banner, the `gp version` panel and the docstrings derive from. The framing sections now name the mechanism (browser login once; session, header fingerprint and tokens captured and encrypted; replayed over plain HTTP from Python or a generated CLI). `pyproject.toml` keywords gain `har`, `cdp`, `nodriver`, `csrf`. No behaviour change; a new test pins the description across every surface.
 
 ## [1.13.1] - 2026-08-25
 
