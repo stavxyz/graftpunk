@@ -12,7 +12,7 @@ graftpunk captures authenticated browser sessions and exposes them as CLI comman
 2. **Cache** — The session (cookies + headers) is encrypted and stored locally.
 3. **Use** — CLI commands or `GraftpunkClient` load the cached session into a plain `requests.Session` and make API calls without a browser.
 
-Plugins define both the login flow and the commands available for a site. The same plugins work with both the CLI (`gp mysite cmd`) and the Python API (`GraftpunkClient("mysite").cmd()`).
+Plugins define both the login flow and the commands available for a site. The same plugins work with both the CLI (`gp mysite cmd`) and the Python API (`GraftpunkClient("mysite").cmd()`); multi-word commands are `gp mysite by-parcel` on the CLI and `client.by_parcel()` / `client.execute("by-parcel")` in Python — the client accepts either spelling.
 
 ---
 
@@ -247,6 +247,8 @@ Plugins define CLI command groups for specific sites. Each plugin has a `site_na
 #### Python Plugins
 
 Subclass `SitePlugin` and use the `@command` decorator:
+
+Command names are the kebab-cased Python names (`by_parcel` becomes `gp <site> by-parcel`, a class `AccountStatements` becomes the group `account-statements`); pass `@command(name="...")` to choose a different CLI name.
 
 ```python
 from graftpunk.plugins import CommandContext, SitePlugin, command

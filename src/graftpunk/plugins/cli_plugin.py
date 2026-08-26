@@ -722,6 +722,7 @@ def command(
     parent: type | None = None,
     requires_session: bool | None = None,
     saves_session: bool = False,
+    name: str | None = None,
 ) -> Callable[..., Any]:
     """Decorator to mark a function as a CLI command or a class as a command group.
 
@@ -737,6 +738,11 @@ def command(
         requires_session: Override plugin-level requires_session (functions only).
             None means inherit from the plugin's requires_session attribute.
         saves_session: If True, mark session dirty after execution to persist cookies.
+        name: Explicit CLI name. By default the Python name is kebab-cased
+            (``by_parcel`` -> ``by-parcel``, ``AccountStatements`` ->
+            ``account-statements``); pass ``name="by_parcel"`` to pin a
+            different spelling. ``GraftpunkClient`` accepts either spelling
+            (``client.by_parcel()`` and ``execute("by-parcel")`` both work).
 
     Returns:
         Decorated function or class with _command_meta or _command_group_meta attached.
@@ -746,6 +752,13 @@ def command(
         def accounts(self, ctx: CommandContext) -> dict:
             return ctx.session.get("https://api.example.com/accounts").json()
 
+        @command(help="Look up by parcel", name="parcel")  # CLI: gp <site> parcel
+        def by_parcel(self, ctx: CommandContext, parcel_id: str) -> dict:
+            ...
+
+    Note: runs of capitals are not split (``getHTTPStatus`` -> ``get-httpstatus``);
+    use ``name=`` when the default spelling is not what you want.
+
     Example (class / command group):
         @command(help="Account management")
         class Accounts:
@@ -754,11 +767,14 @@ def command(
                 ...
     """
 
+    if name is not None and (not name.strip() or any(ch.isspace() for ch in name)):
+        raise ValueError(f"@command(name=...) must be a single non-blank word, got {name!r}")
+
     def decorator(target: Any) -> Any:
         if isinstance(target, type):
             # Class -> command group
             target._command_group_meta = CommandGroupMeta(
-                name=_to_cli_name(target.__name__),
+                name=name or _to_cli_name(target.__name__),
                 help_text=help,
                 parent=parent,
             )
@@ -769,7 +785,7 @@ def command(
                 attr = getattr(target, attr_name, None)
                 if callable(attr) and not hasattr(attr, "_command_meta"):
                     attr._command_meta = CommandMetadata(
-                        name=attr_name,
+                        name=_to_cli_name(attr_name),
                         params=(),
                         parent=None,
                         requires_session=None,
@@ -781,7 +797,7 @@ def command(
             if help:
                 click_kw["help"] = help
             target._command_meta = CommandMetadata(
-                name=target.__name__,
+                name=name or _to_cli_name(target.__name__),
                 params=tuple(params) if params else (),
                 parent=parent,
                 requires_session=requires_session,

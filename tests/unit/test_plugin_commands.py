@@ -3531,3 +3531,43 @@ class TestFormatHelpEndToEnd:
         )
         assert result.exit_code == 0, result.output
         assert "plugin: html" in result.output
+
+
+class TestCommandNaming:
+    """Function commands are kebab-cased like groups; name= pins a spelling (#147)."""
+
+    def test_function_name_is_kebab_cased_by_default(self) -> None:
+        @command(help="x")
+        def by_parcel(self, ctx):  # noqa: ANN001, ANN202
+            return None
+
+        assert by_parcel._command_meta.name == "by-parcel"
+
+    def test_name_override_wins(self) -> None:
+        @command(help="x", name="by_parcel")
+        def by_parcel(self, ctx):  # noqa: ANN001, ANN202
+            return None
+
+        assert by_parcel._command_meta.name == "by_parcel"
+
+    def test_group_methods_and_group_name_follow_the_same_rule(self) -> None:
+        @command(help="g")
+        class AccountStatements:
+            def list_recent(self, ctx):  # noqa: ANN001, ANN202
+                return None
+
+        assert AccountStatements._command_group_meta.name == "account-statements"
+        assert AccountStatements.list_recent._command_meta.name == "list-recent"
+
+    def test_name_must_be_a_single_word(self) -> None:
+        with pytest.raises(ValueError, match="single non-blank word"):
+            command(help="x", name="foo bar")
+        with pytest.raises(ValueError, match="single non-blank word"):
+            command(help="x", name="  ")
+
+    def test_group_name_override(self) -> None:
+        @command(help="g", name="acct")
+        class AccountStatements:
+            pass
+
+        assert AccountStatements._command_group_meta.name == "acct"

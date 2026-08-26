@@ -725,7 +725,7 @@ class TestCommandDecoratorSimplified:
 
         assert hasattr(do_stuff, "_command_meta")
         meta = do_stuff._command_meta  # type: ignore[attr-defined]
-        assert meta.name == "do_stuff"
+        assert meta.name == "do-stuff"
         assert meta.help_text == "Do stuff"
 
     def test_preserves_function_identity(self) -> None:
@@ -923,9 +923,9 @@ class TestCommandDecoratorRequiresSession:
         plugin = MyPlugin()
         commands = {c.name: c for c in plugin.get_commands()}
 
-        assert commands["public_cmd"].requires_session is False
-        assert commands["private_cmd"].requires_session is True
-        assert commands["default_cmd"].requires_session is None
+        assert commands["public-cmd"].requires_session is False
+        assert commands["private-cmd"].requires_session is True
+        assert commands["default-cmd"].requires_session is None
 
 
 class TestPluginConfigMetadata:
@@ -1207,7 +1207,7 @@ class TestCommandDecoratorSavesSession:
 
         plugin = TestPlugin()
         specs = plugin.get_commands()
-        my_spec = next(s for s in specs if s.name == "my_cmd")
+        my_spec = next(s for s in specs if s.name == "my-cmd")
         assert my_spec.saves_session is True
 
 
