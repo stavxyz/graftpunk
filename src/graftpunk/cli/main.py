@@ -263,7 +263,7 @@ def observe_list(ctx: typer.Context) -> None:
     table.add_column("Run ID", style="white")
 
     for session_name, run_id in runs:
-        table.add_row(session_name, run_id)
+        table.add_row(escape(session_name), escape(run_id))
 
     console.print(table)
     console.print(f"\n[dim]{len(runs)} run(s)[/dim]")
@@ -317,10 +317,10 @@ def observe_show(
     for f in files:
         if f.is_dir():
             subfiles = list(f.iterdir())
-            file_list.append(f"  {f.name}/ ({len(subfiles)} files)")
+            file_list.append(f"  {escape(f.name)}/ ({len(subfiles)} files)")
         else:
             size = f.stat().st_size
-            file_list.append(f"  {f.name} ({size} bytes)")
+            file_list.append(f"  {escape(f.name)} ({size} bytes)")
 
     if file_list:
         info += "[dim]Contents:[/dim]\n" + "\n".join(file_list)

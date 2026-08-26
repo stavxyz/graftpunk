@@ -18,8 +18,10 @@ from rich.console import Console
 from rich.json import JSON
 from rich.rule import Rule
 from rich.table import Table
+from rich.text import Text
 
 from graftpunk import console as gp_console
+from graftpunk.console import _stream_is_tty, write_raw
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import CommandResult
 from graftpunk.plugins.export import get_downloads_dir, ordered_keys
@@ -97,42 +99,6 @@ def _resolve_view_data(data: Any, view: ViewConfig) -> Any | None:
     return view_data
 
 
-def _stream_is_tty(console: Console) -> bool:
-    """Whether the console's stream is an interactive terminal.
-
-    Deliberately not ``console.is_terminal``: Rich reports a terminal whenever
-    FORCE_COLOR is set, including for a pipe — the environment #144 came from.
-    """
-    isatty = getattr(console.file, "isatty", None)
-    if not callable(isatty):
-        return False
-    try:
-        return bool(isatty())
-    except ValueError:  # closed stream (e.g. at interpreter/pytest teardown)
-        return False
-
-
-def write_raw(text: str, console: Console, output_path: str = "") -> None:
-    """Emit *text* exactly as given: to *output_path* if set, else to the console's stream.
-
-    Data payloads (raw responses, CSV, JSON) must never pass through Rich's
-    ``print``: it parses ``[...]`` as markup (a ``[/LB]`` pack size crashed
-    ``--format raw``, #145), highlights, expands tabs, converts emoji shortcodes
-    and word-wraps to the console width (a file console wrapped rows over 200
-    columns, #144). Writing to the underlying stream keeps the bytes intact.
-
-    Because it bypasses ``Console.print``, the text is invisible to
-    ``Console.capture()`` and ``record=True``; do not pass a capturing console.
-    """
-    if output_path:
-        path = Path(output_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        return
-    console.file.write(text)
-    console.file.flush()
-
-
 def _write_to_file(
     output_path: str,
     render_fn: Callable[[Console], None],
@@ -147,7 +113,7 @@ def _write_to_file(
     buf = io.StringIO()
     file_console = Console(file=buf, width=200, color_system=None, force_terminal=False)
     render_fn(file_console)
-    Path(output_path).write_text(buf.getvalue())
+    Path(output_path).write_text(buf.getvalue(), encoding="utf-8")
 
 
 def _resolve_output_filepath(output_path: str, extension: str) -> Path:
@@ -188,7 +154,7 @@ class JsonFormatter:
             # A file or a pipe wants parseable JSON, not a wrapped, highlighted render.
             write_raw(json_str + "\n", console, output_path)
             return
-        console.print(JSON(json_str))
+        console.print(JSON(json_str), soft_wrap=True)  # never break a string across lines
 
 
 class TableFormatter:
@@ -263,10 +229,11 @@ class TableFormatter:
         if isinstance(data, list) and data and isinstance(data[0], dict):
             headers = list(data[0].keys())
             table = Table(header_style="bold cyan", border_style="dim")
+            # Cells are data: wrap in Text so Rich never markup-parses "[/LB]" (#145).
             for header in headers:
-                table.add_column(header)  # type: ignore[arg-type]
+                table.add_column(Text(str(header)))
             for row in data:
-                table.add_row(*[str(row.get(h, "")) for h in headers])
+                table.add_row(*[Text(str(row.get(h, ""))) for h in headers])
             console.print(table)
         elif isinstance(data, dict):
             table = Table(show_header=False, border_style="dim")
@@ -275,7 +242,7 @@ class TableFormatter:
             for key, value in data.items():
                 if isinstance(value, (dict, list)):
                     value = json.dumps(value, default=str)
-                table.add_row(str(key), str(value))
+                table.add_row(Text(str(key)), Text(str(value)))
             console.print(table)
         else:
             JsonFormatter().format(data, console)
@@ -370,7 +337,7 @@ class CsvFormatter:
 
         headers = ordered_keys(data)
         buf = io.StringIO()
-        writer = csv.writer(buf)
+        writer = csv.writer(buf, lineterminator="\n")
         writer.writerow(headers)
         for row in data:
             writer.writerow(
@@ -380,8 +347,7 @@ class CsvFormatter:
                 ]
             )
         if output_path:
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(output_path).write_text(buf.getvalue())
+            write_raw(buf.getvalue(), console, output_path)
             gp_console.info(f"Saved: {output_path}")
             return
         write_raw(buf.getvalue(), console)

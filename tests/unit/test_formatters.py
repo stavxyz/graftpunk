@@ -138,8 +138,8 @@ class TestTableFormatter:
         table = console.print.call_args[0][0]
         assert isinstance(table, Table)
         assert len(table.columns) == 2
-        assert table.columns[0].header == "name"
-        assert table.columns[1].header == "age"
+        assert str(table.columns[0].header) == "name"
+        assert str(table.columns[1].header) == "age"
         assert table.row_count == 2
 
     def test_single_dict_creates_key_value_table(self) -> None:
@@ -238,8 +238,7 @@ class TestCsvFormatter:
         assert rows[1] == ["Alice", "30"]
         assert rows[2] == ["Bob", "25"]
         assert len(rows) == 3
-        # Verify end="" is passed to avoid double-newlining
-        assert not console.file.write.call_args[0][0].endswith("\n\n")
+        assert console.file.write.call_args[0][0].endswith("Bob,25\n")
 
     def test_single_dict_produces_single_row_csv(self) -> None:
         console = MagicMock(spec=Console)
@@ -1146,3 +1145,47 @@ class TestRawOutputBypassesRich:
         text = out.read_text()
         assert "\x1b[" not in text
         assert "[1/25 LB]" in text
+
+
+class TestTableCellsAreData:
+    """Table cells, headers and keys are response data, never Rich markup (#145)."""
+
+    def test_list_of_dicts_with_bracketed_values_and_headers(self) -> None:
+        console = Console(file=io.StringIO(), width=120)
+        TableFormatter().format([{"name [/x]": "BRAND [1/25 LB]", "note": "x [bold] y"}], console)
+        out = console.file.getvalue()
+        assert "[1/25 LB]" in out and "[bold]" in out and "name [/x]" in out
+
+    def test_single_dict_with_bracketed_key_and_value(self) -> None:
+        console = Console(file=io.StringIO(), width=120)
+        TableFormatter().format({"k [/x]": "v [/LB]"}, console)
+        out = console.file.getvalue()
+        assert "k [/x]" in out and "v [/LB]" in out
+
+
+class TestFilesAreUtf8:
+    def test_raw_output_file_is_utf8_under_c_locale(self, tmp_path: Path) -> None:
+        import os
+        import subprocess
+        import sys
+
+        out = tmp_path / "out.csv"
+        code = (
+            "from rich.console import Console\n"
+            "from graftpunk.plugins.formatters import RawFormatter\n"
+            "payload = 'caf\\u00e9 \\u2615 [1/25 LB]\\n'\n"
+            f"RawFormatter().format(payload, Console(), output_path={str(out)!r})\n"
+        )
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0"}
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env, check=False
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert out.read_bytes() == "café ☕ [1/25 LB]\n".encode()
+
+    def test_csv_file_uses_lf_and_utf8(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.csv"
+        CsvFormatter().format(
+            [{"a": "é", "b": "[/LB]"}], Console(file=io.StringIO()), output_path=str(out)
+        )
+        assert out.read_bytes() == b"a,b\n\xc3\xa9,[/LB]\n"

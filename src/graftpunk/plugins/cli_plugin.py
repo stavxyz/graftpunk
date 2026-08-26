@@ -392,7 +392,7 @@ class CommandResult:
 
         # --- Text format, no output path: return str ---
         buf = io.StringIO()
-        buf_console = Console(file=buf, width=200)
+        buf_console = Console(file=buf, width=200, color_system=None, force_terminal=False)
         formatter.format(
             self.data,
             buf_console,
