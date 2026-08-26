@@ -5,10 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.14.0] - 2026-08-26
+
+Minor rather than patch: every entry is a fix, but three of them change observable
+defaults that a consumer may have been relying on. **Changed behaviour:** as a
+library, graftpunk now logs to stderr at WARNING when structlog is unconfigured
+(previously stdout, unfiltered); CSV written to stdout uses `\n` line endings
+(previously `\r\n`); `gp version` puts the project description in the panel body
+rather than the title.
 
 ### Fixed
 
+- **The sdist ships only the package** — `tests/`, `docs/`, `examples/`, CI config and scratch directories no longer go to PyPI; the source distribution is an explicit allowlist (`src/graftpunk`, `README.md`, `LICENSE`, `CHANGELOG.md`, `pyproject.toml`).
 - **Raw, CSV and JSON output bypass Rich** ([#145](https://github.com/stavxyz/graftpunk/issues/145), [#144](https://github.com/stavxyz/graftpunk/issues/144)) — data payloads were printed through Rich's markup parser and word-wrapper: an item name containing `[/LB]` crashed `--format raw` with a MarkupError, `--output` files carried ANSI codes under FORCE_COLOR and had rows over 200 columns broken across lines, and `gp session list/show --json` was invalid JSON at narrow terminal widths. Payloads are now written byte-for-byte (UTF-8) to the file or to stdout; JSON is syntax-highlighted only on an interactive terminal and never wrapped; table cells, headers, `gp` status lines (`Saved: …`) and `observe` names are treated as data rather than markup; table files and `CommandResult.export()` render without colour. CSV output now uses `\n` line endings on every platform.
 - **Library use no longer logs to stdout** ([#163](https://github.com/stavxyz/graftpunk/issues/163)) — importing graftpunk without the `gp` CLI left structlog unconfigured (stdout, no level filter), so a stray import-time debug line could corrupt a consumer's machine-readable output. graftpunk now applies a stderr/WARNING default when structlog is not already configured, and nothing logs at import time.
 
