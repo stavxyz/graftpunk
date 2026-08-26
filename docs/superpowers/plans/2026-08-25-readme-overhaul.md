@@ -14,7 +14,7 @@
 
 - **Subtitle, verbatim, everywhere:** `Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`
 - **Second line, verbatim, where the old second sentence lived:** `Log in through a real browser once; graftpunk captures the authenticated session — cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON endpoints become scriptable without a WebDriver in the loop.`
-- The old sentences must not survive anywhere in `src/`, `README.md`, `pyproject.toml`: `turn any website into an api` (any case), `Graft scriptable access`, `Log in once, script forever`. The one permitted survivor is the historical quote at `docs/rfcs/RFC-001-stealth-architecture-evolution.md:48` — do not touch the RFC.
+- The old sentences must not survive anywhere in `src/`, `README.md`, `pyproject.toml`: `turn any website into an api` (any case), `Graft scriptable access`, `Log in once, script forever`. The one permitted survivor is the historical quote at `docs/rfcs/RFC-001-stealth-architecture-evolution.md:48` (`turn any website into an API`) — do not touch the RFC.
 - Keep the `🔌` emoji in the README H1 and the `gp --help` banner.
 - `pyproject.toml` `description` gets the subtitle only (no second line).
 - Every commit message is a normal human commit: no `Co-Authored-By: Claude`, no `Generated with Claude Code` footer.
@@ -119,8 +119,8 @@ git commit -m "test: pin the project description across README, PyPI metadata, p
 ### Task 2: Package docstring, `gp --help` banner, callback docstring, `gp version` panel
 
 **Files:**
-- Modify: `src/graftpunk/__init__.py:1-4`
-- Modify: `src/graftpunk/cli/main.py:1`, `:76-95` (the `typer.Typer(help=...)` string), `:140` (callback docstring), `:167` (panel title)
+- Modify: `src/graftpunk/__init__.py:1-4` (`Turn any website into an API`)
+- Modify: `src/graftpunk/cli/main.py:1` (`graftpunk CLI - turn any website`); `src/graftpunk/cli/main.py:76-95` (`Quick start:`) — the `typer.Typer(help=...)` string; `src/graftpunk/cli/main.py:140` (`"""graftpunk - turn any website into an API."""`) — callback docstring; `src/graftpunk/cli/main.py:167` (`title="Turn any website into an API"`) — panel title
 - Test: `tests/unit/test_project_description.py`
 
 **Interfaces:**
@@ -153,7 +153,7 @@ Leave the rest of the docstring (`This package provides:` onward) untouched.
 
 - [ ] **Step 2: Replace the CLI module docstring**
 
-`src/graftpunk/cli/main.py:1` currently reads `"""graftpunk CLI - turn any website into an API.`. Change that line to:
+`src/graftpunk/cli/main.py:1` (`graftpunk CLI - turn any website`) currently reads `"""graftpunk CLI - turn any website into an API.`. Change that line to:
 
 ```python
 """graftpunk CLI - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
@@ -195,7 +195,7 @@ Everything from `\b` / `Quick start:` down is unchanged.
 
 - [ ] **Step 4: Replace the callback docstring**
 
-`src/graftpunk/cli/main.py:140` currently reads `    """graftpunk - turn any website into an API."""`. Typer does not render it (the explicit `help=` above takes precedence) but it must not contradict the banner. Change it to:
+`src/graftpunk/cli/main.py:140` (`"""graftpunk - turn any website into an API."""`) currently reads `    """graftpunk - turn any website into an API."""`. Typer does not render it (the explicit `help=` above takes precedence) but it must not contradict the banner. Change it to:
 
 ```python
     """graftpunk - Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage."""
@@ -203,7 +203,7 @@ Everything from `\b` / `Quick start:` down is unchanged.
 
 - [ ] **Step 5: Replace the `gp version` panel title**
 
-`src/graftpunk/cli/main.py:167` currently reads `            title="Turn any website into an API",`. Change it to:
+`src/graftpunk/cli/main.py:167` (`title="Turn any website into an API"`) currently reads `            title="Turn any website into an API",`. Change it to:
 
 ```python
             title="Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage",
@@ -250,7 +250,7 @@ git commit -m "docs(cli): describe graftpunk as encrypted session persistence, n
 
 - [ ] **Step 1: Replace `description`**
 
-`pyproject.toml:8` currently reads:
+`pyproject.toml:8` (`description`) currently reads:
 
 ```toml
 description = "Turn any website into an API. Graft scriptable access onto authenticated web services."
@@ -264,7 +264,7 @@ description = "Authenticated browser sessions, captured once and replayed over p
 
 - [ ] **Step 2: Extend `keywords`**
 
-`pyproject.toml:15` currently reads:
+`pyproject.toml:15` (`keywords`) currently reads:
 
 ```toml
 keywords = ["browser", "session", "automation", "api", "scraping", "selenium", "requests"]
@@ -300,16 +300,16 @@ git commit -m "docs(pyproject): subtitle as the PyPI description; add har/cdp/no
 ### Task 4: README — subtitle, framing sections, "What You Can Build", CLI banner block
 
 **Files:**
-- Modify: `README.md:5-7`, `:21-33`, `:60`, `:300`
+- Modify: `./README.md:5-7` (`Turn any website into an API`); `./README.md:21-33` (`## The Problem`); `./README.md:60` (`terminal-based interface`); `./README.md:300` (`turn any website into an API`)
 - Test: `tests/unit/test_project_description.py`
 
 **Interfaces:**
 - Consumes: the first banner line produced by Task 2 (`🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`).
-- Produces: a README with no old sentences and the exact banner line at `README.md:300`.
+- Produces: a README with no old sentences and the exact banner line at `./README.md:300` (`turn any website into an API`).
 
 - [ ] **Step 1: Replace the H1 subtitle and second line**
 
-`README.md:5-7` currently read:
+`./README.md:5-7` (`Turn any website into an API`) currently read:
 
 ```markdown
 **Turn any website into an API.**
@@ -327,7 +327,7 @@ Replace with:
 
 - [ ] **Step 2: Rewrite "The Problem"**
 
-`README.md:23-29` are four paragraphs:
+`./README.md:23-29` (`That service has your data`) are four paragraphs:
 
 ```markdown
 That service has your data—but no API.
@@ -347,7 +347,7 @@ Plenty of services you have an account with expose no API — an ISP portal, a s
 
 - [ ] **Step 3: Rewrite the one sentence under "The Solution"**
 
-`README.md:33` currently reads `Log in once, script forever.` (directly under `## The Solution`, above the ASCII diagram). Replace that line with:
+`./README.md:33` (`Log in once, script forever.`) currently reads `Log in once, script forever.` (directly under `## The Solution`, above the ASCII diagram). Replace that line with:
 
 ```markdown
 graftpunk does the login in a real browser (yours, or a declaratively scripted one), captures the resulting session and header fingerprint, stores it encrypted, and hands it back as a `requests`-compatible session — locally, or from S3/Supabase when the same session needs to be shared.
@@ -357,7 +357,7 @@ The ASCII diagram and the "Once your session is cached, you can:" list below it 
 
 - [ ] **Step 4: Rewrite the "What You Can Build" intro**
 
-`README.md:60` currently reads:
+`./README.md:60` (`terminal-based interface`) currently reads:
 
 ```markdown
 With graftpunk as your foundation, you can turn any authenticated website into a terminal-based interface:
@@ -377,7 +377,7 @@ Run: `NO_COLOR=1 uv run gp --help | sed 's/[[:space:]]*$//' | grep -n "🔌 graf
 
 Expected output (one line): `4: 🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.`
 
-`README.md:300` currently reads ` 🔌 graftpunk - turn any website into an API` (inside the ```` ``` ```` block under `## CLI Reference`). Replace that one line with the live line, keeping its single leading space:
+`./README.md:300` (`turn any website into an API`) currently reads ` 🔌 graftpunk - turn any website into an API` (inside the ```` ``` ```` block under `## CLI Reference`). Replace that one line with the live line, keeping its single leading space:
 
 ```text
  🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
@@ -414,7 +414,7 @@ git commit -m "docs(readme): engineer-facing framing; subtitle from the repo des
 ### Task 5: Changelog, full verification, push, PR
 
 **Files:**
-- Modify: `CHANGELOG.md:8` (insert a new section above `## [1.13.1] - 2026-08-25`)
+- Modify: `CHANGELOG.md:8` (`## [1.13.1]`) — insert a new section above it
 
 **Interfaces:**
 - Consumes: everything above.
