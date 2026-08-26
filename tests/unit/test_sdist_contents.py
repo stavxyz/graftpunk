@@ -29,10 +29,14 @@ EXPECTED_TOP_LEVEL = {
 }
 
 
-@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is needed to build the sdist")
+UV = shutil.which("uv")
+
+
+@pytest.mark.skipif(UV is None, reason="uv is needed to build the sdist")
 def test_sdist_contains_only_the_allowlist(tmp_path: Path) -> None:
+    assert UV is not None
     subprocess.run(  # noqa: S603
-        ["uv", "build", "--sdist", "--out-dir", str(tmp_path)],
+        [UV, "build", "--sdist", "--out-dir", str(tmp_path)],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
