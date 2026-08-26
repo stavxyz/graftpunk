@@ -2,9 +2,9 @@
 
 # 🔌 graftpunk
 
-**Turn any website into an API.**
+**Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.**
 
-*Graft scriptable access onto authenticated web services.*
+*Log in through a real browser once; graftpunk captures the authenticated session — cookies, browser-fingerprinted headers, CSRF/API tokens — encrypts it at rest, and replays it over plain HTTP from Python or a generated CLI, so a site's own XHR/JSON endpoints become scriptable without a WebDriver in the loop.*
 
 [![PyPI](https://img.shields.io/pypi/v/graftpunk.svg)](https://pypi.org/project/graftpunk/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -20,17 +20,11 @@
 
 ## The Problem
 
-That service has your data—but no API.
-
-Your ISP account. Your kid's school portal. Your local library. That niche e-commerce site you order from. Your medical records. They all have data that belongs to *you*, locked behind a login page with no API in sight.
-
-You're left with two options: click through the UI manually every time, or give up.
-
-**graftpunk gives you a third option.**
+Plenty of services you have an account with expose no API — an ISP portal, a school or medical portal, a niche shop, a municipal records site. The data is yours and it is one login away, but every request has to look like it came from a browser that already signed in: the right cookies, the browser's own headers, whatever CSRF or bearer token the page minted. Reproducing that by hand for every script is the actual chore.
 
 ## The Solution
 
-Log in once, script forever.
+graftpunk does the login in a real browser (yours, or a declaratively scripted one), captures the resulting session and header fingerprint, stores it encrypted, and hands it back as a `requests`-compatible session — locally, or from S3/Supabase when the same session needs to be shared.
 
 ```
   1. LOG IN              2. CACHE               3. SCRIPT
@@ -57,7 +51,7 @@ Once your session is cached, you can:
 
 ## What You Can Build
 
-With graftpunk as your foundation, you can turn any authenticated website into a terminal-based interface:
+Each of these is a plugin command backed by the cached session; graftpunk generates the CLI, injects the session and tokens, and formats the output:
 
 ```bash
 # Pull your kid's grades and assignments
@@ -297,7 +291,7 @@ See [examples/](examples/README.md) for working plugins and templates.
 ```
 $ gp --help
 
- 🔌 graftpunk - turn any website into an API
+ 🔌 graftpunk — Authenticated browser sessions, captured once and replayed over plain HTTP: stealth login, encrypted at rest, pluggable storage.
 
 Commands:
   session     Manage encrypted browser sessions
