@@ -17,7 +17,7 @@ validated:
 
 # README overhaul — replace the marketing tagline with precise, nerd-facing prose
 
-**Status:** design, awaiting validation
+**Status:** validated (see frontmatter); implemented in PR #161
 **Scope:** docs-only + the strings the CLI/package echo; no behaviour change
 **Ships in:** its own PR, before the next version bump (PyPI renders `README.md` and the `description` field, so the bump picks it up)
 
