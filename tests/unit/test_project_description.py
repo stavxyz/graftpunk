@@ -10,14 +10,19 @@ import re
 import tomllib
 from pathlib import Path
 
+import pytest
+
 import graftpunk
 from graftpunk.cli.main import app
 
 
 def _repo_root() -> Path:
-    """Walk up from this file to the directory holding pyproject.toml, so the test
-    does not depend on its own depth under tests/ (it reads repo files on purpose:
-    README.md and pyproject.toml are two of the surfaces being pinned)."""
+    """Return the directory holding pyproject.toml.
+
+    Walking up from this file keeps the test independent of its own depth under
+    tests/; it reads repo files on purpose (README.md and pyproject.toml are two of
+    the surfaces being pinned).
+    """
     for candidate in Path(__file__).resolve().parents:
         if (candidate / "pyproject.toml").is_file():
             return candidate
@@ -46,6 +51,11 @@ OLD_SENTENCES = (
 
 
 def _surfaces() -> dict[str, str]:
+    """Every place the project describes itself, keyed by a human-readable name.
+
+    app.info.help is the raw help= string handed to typer.Typer; reading it (rather
+    than rendering through CliRunner) keeps the check independent of terminal width.
+    """
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     return {
         "graftpunk.__doc__": graftpunk.__doc__ or "",
@@ -55,9 +65,12 @@ def _surfaces() -> dict[str, str]:
     }
 
 
-def test_subtitle_is_verbatim_on_every_surface() -> None:
-    for name, text in _surfaces().items():
-        assert SUBTITLE in _flat(text), f"subtitle missing from {name}"
+SURFACE_NAMES = list(_surfaces())
+
+
+@pytest.mark.parametrize("name", SURFACE_NAMES)
+def test_subtitle_is_verbatim_on_every_surface(name: str) -> None:
+    assert SUBTITLE in _flat(_surfaces()[name]), f"subtitle missing from {name}"
 
 
 def test_package_constants_are_the_single_owner() -> None:
@@ -66,10 +79,11 @@ def test_package_constants_are_the_single_owner() -> None:
     assert "\n" not in graftpunk.DESCRIPTION and "\n" not in graftpunk.LONG_DESCRIPTION
 
 
-def test_old_tagline_is_gone_from_every_surface() -> None:
-    for name, text in _surfaces().items():
-        for pattern in OLD_SENTENCES:
-            assert not pattern.search(_flat(text)), f"{pattern.pattern!r} still in {name}"
+@pytest.mark.parametrize("name", SURFACE_NAMES)
+def test_old_tagline_is_gone_from_every_surface(name: str) -> None:
+    text = _flat(_surfaces()[name])
+    for pattern in OLD_SENTENCES:
+        assert not pattern.search(text), f"{pattern.pattern!r} still in {name}"
 
 
 def test_pyproject_description_is_the_subtitle_only() -> None:
