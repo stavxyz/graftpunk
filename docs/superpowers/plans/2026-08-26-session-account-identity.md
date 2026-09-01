@@ -27,7 +27,7 @@
 
 **Files:**
 - Create: `src/graftpunk/session_identity.py`
-- Modify: `src/graftpunk/exceptions.py` (append), `src/graftpunk/cache.py:55-85` (validation delegates), `src/graftpunk/__init__.py` (export the error)
+- Modify: `src/graftpunk/exceptions.py` (append), `src/graftpunk/cache.py:55` (`_SESSION_NAME_RE = re.compile`) through `src/graftpunk/cache.py:63` (`def validate_session_name`) (validation delegates), `src/graftpunk/__init__.py` (export the error)
 - Test: `tests/unit/test_session_identity.py`
 
 **Interfaces:**
@@ -306,7 +306,7 @@ git commit -m "feat(identity): session_identity module — name@label grammar, d
 ### Task 2: `account_identifier` in metadata + pickle whitelist + backend conformance
 
 **Files:**
-- Modify: `src/graftpunk/storage/base.py:46-135` (field, serializers, protocol docstring), `src/graftpunk/cache.py:177-220` (`_extract_session_metadata`), `src/graftpunk/cache.py:294-308` (metadata construction in `cache_session`), `src/graftpunk/session.py:554-670` (`__getstate__`/`__setstate__`, both paths)
+- Modify: `src/graftpunk/storage/base.py:46` (`class SessionMetadata`) through `src/graftpunk/storage/base.py:135` (`class SessionStorageBackend`) (field, serializers, protocol docstring), `src/graftpunk/cache.py:177` (`def _extract_session_metadata`), the `SessionMetadata(...)` construction inside `src/graftpunk/cache.py:260` (`def cache_session`), `src/graftpunk/session.py:554` (`def __getstate__`) and `src/graftpunk/session.py:619` (`def __setstate__`) (both backend paths)
 - Test: `tests/unit/test_account_metadata.py`
 
 **Interfaces:**
@@ -578,7 +578,7 @@ git commit -m "feat(identity): compute_operating_session_name owns the precedenc
 ### Task 4: CLI resolution wiring + shared renderer + Account column
 
 **Files:**
-- Modify: `src/graftpunk/cli/plugin_commands.py:364-386` (`get_plugin_for_session`, `resolve_session_name`), `src/graftpunk/console.py` (append renderer), `src/graftpunk/cli/session_commands.py:63-135` (Account column, show fields), `src/graftpunk/cli/main.py:215-230` (observe boundary renders the error), `src/graftpunk/cli/plugin_runtime.py` (error boundary renders it — the same `except GraftpunkError` block that prints friendly errors)
+- Modify: `src/graftpunk/cli/plugin_commands.py:364` (`def get_plugin_for_session`) and `src/graftpunk/cli/plugin_commands.py:379` (`def resolve_session_name`), `src/graftpunk/console.py` (append renderer), `src/graftpunk/cli/session_commands.py:63` (`def session_list`) and the show command (Account column, show fields), `src/graftpunk/cli/main.py:34` (`from graftpunk.cli.plugin_commands import resolve_session_name`) (observe boundary renders the error), `src/graftpunk/cli/plugin_runtime.py` (error boundary renders it — the same `except GraftpunkError` block that prints friendly errors)
 - Test: `tests/unit/test_session_commands.py` (append), `tests/unit/test_plugin_commands.py` (append)
 
 **Interfaces:**
@@ -732,7 +732,7 @@ git commit -m "feat(cli): account-aware resolution, shared ambiguity renderer, A
 ### Task 5: Plugin-command path — `--session` builtin + operating name for load and store
 
 **Files:**
-- Modify: `src/graftpunk/cli/command_factory.py:144-200` (`BUILTIN_OPTIONS` + option param), `src/graftpunk/cli/plugin_runtime.py:50-90,160-215` (operating name; load; ctx; write-back)
+- Modify: `src/graftpunk/cli/command_factory.py:144` (`BUILTIN_OPTIONS: dict`) and `_builtin_option_params` (`BUILTIN_OPTIONS` + option param), `src/graftpunk/cli/plugin_runtime.py:79` (`session = plugin.get_session() if needs_session else requests.Session()`), `src/graftpunk/cli/plugin_runtime.py:163` (`_session_name=(plugin.session_name if needs_session else "")`) and `src/graftpunk/cli/plugin_runtime.py:207` (`update_session_cookies(session, plugin.session_name)`) (operating name; load; ctx; write-back)
 - Test: `tests/unit/test_plugin_runtime_session.py` (new)
 
 **Interfaces:**
@@ -855,7 +855,7 @@ sess = inspect.Parameter(
 )
 ```
 
-Note the reserved-name check at `command_factory.py:229` already covers new builtin names via `set(BUILTIN_OPTIONS)` — a plugin param named `session` now raises `PluginError` at registration, which is the correct collision behaviour (add one test for it in the existing reserved-names test class).
+Note the reserved-name check at `src/graftpunk/cli/command_factory.py:232` (`reserved = {"ctx"} | (set(BUILTIN_OPTIONS) if include_builtin_options else set())`) already covers new builtin names via `set(BUILTIN_OPTIONS)` — a plugin param named `session` now raises `PluginError` at registration, which is the correct collision behaviour (add one test for it in the existing reserved-names test class).
 
 In `src/graftpunk/cli/plugin_runtime.py`: pop the option (`explicit_session: str = kwargs.pop("session", BUILTIN_OPTIONS["session"])` beside the other pops at :54-57); replace the load at :79 and the write-back at :207:
 
@@ -892,7 +892,7 @@ git commit -m "feat(cli): plugin commands take --session; operating name keys lo
 ### Task 6: `GraftpunkClient(session=...)` and client write-backs
 
 **Files:**
-- Modify: `src/graftpunk/client.py:200-240,395-435`
+- Modify: `src/graftpunk/client.py:200` (`class GraftpunkClient`), `src/graftpunk/client.py:402` (`update_session_cookies(session, plugin.session_name)`) and `src/graftpunk/client.py:431` (`update_session_cookies(self._session, self._plugin.session_name)`)
 - Test: `tests/unit/test_client.py` (append)
 
 **Interfaces:**
@@ -974,7 +974,7 @@ git commit -m "feat(client): session= pin; operating name keys client load and w
 ---### Task 7: Login flow — `--as`, derivation, stamp, funnel, boundary warning
 
 **Files:**
-- Modify: `src/graftpunk/cli/login_commands.py:143-300` (derivation, stamp context manager, warning, `--as` param, post-login print), `src/graftpunk/plugins/login_engine.py:735-1000` (two cache sites → funnel), `src/graftpunk/plugins/cli_plugin.py:1066-1140` (two `browser_session` cache sites → funnel; funnel helper lives here beside them)
+- Modify: `src/graftpunk/cli/login_commands.py:143` (`def make_login_body`) and the login-command registration (derivation, stamp context manager, warning, `--as` param, post-login print), `src/graftpunk/plugins/login_engine.py:735` (`async def _run_nodriver_steps`) and `src/graftpunk/plugins/login_engine.py:847` (`def _generate_selenium_login`) (two cache sites → funnel), `src/graftpunk/plugins/cli_plugin.py:1066` (`async def browser_session`) and `src/graftpunk/plugins/cli_plugin.py:1105` (`def browser_session_sync`) (two `browser_session` cache sites → funnel; funnel helper lives here beside them)
 - Test: `tests/unit/test_login_identity.py` (new)
 
 **Interfaces:**
@@ -1098,7 +1098,7 @@ def _cache_login_session(plugin: "SitePlugin", session: Any) -> str:
     return plugin.session_name
 ```
 
-Replace the four cache sites — `login_engine.py:843`, `login_engine.py:999`, and the two in `browser_session`/`browser_session_sync` (`cli_plugin.py:1097`, `:1136`) — with `_cache_login_session(plugin, session)` (in `login_engine.py`, import it from `graftpunk.plugins.cli_plugin`; that direction already exists).
+Replace the four cache sites — both `cache_session(session, plugin.session_name)` calls in the generated login flows, and the two inside `browser_session`/`browser_session_sync` — with `_cache_login_session(plugin, session)` (in `login_engine.py`, import it from `graftpunk.plugins.cli_plugin`; that direction already exists).
 
 In `src/graftpunk/cli/login_commands.py`:
 
