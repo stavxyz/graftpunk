@@ -119,3 +119,17 @@ class TokenPatternMismatchError(TokenExtractionError):
     server no longer serves the authenticated response, so if updating the
     config does not help, try a fresh login.
     """
+
+
+class AmbiguousSessionError(GraftpunkError):
+    """Several cached sessions match a plugin and none was selected.
+
+    Pick one with ``--session``, the ``GRAFTPUNK_SESSION`` env var, or
+    ``gp session use``.
+    """
+
+    def __init__(self, base_name: str, candidates: list[str]) -> None:
+        self.base_name = base_name
+        self.candidates = candidates
+        names = ", ".join(candidates)
+        super().__init__(f"Several sessions cached for '{base_name}': {names}. Pick one.")

@@ -16,7 +16,6 @@ Thread Safety:
 
 import hashlib
 import io
-import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 from urllib.parse import urlparse
@@ -28,6 +27,7 @@ from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data
 from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
+from graftpunk.session_identity import validate_session_name  # noqa: F401  (public re-export)
 from graftpunk.storage.base import SessionMetadata
 
 if TYPE_CHECKING:
@@ -52,35 +52,10 @@ LOG = get_logger(__name__)
 
 T = TypeVar("T")
 
-_SESSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-
 # Ephemeral security headers that should not be copied from browser sessions
 # to API sessions.  These are per-request tokens (e.g. WAF sensor blobs) that
 # would cause stale-blob rejections if replayed.
 _EPHEMERAL_HEADERS: frozenset[str] = frozenset({"x-csrf-token"})
-
-
-def validate_session_name(name: str) -> None:
-    """Validate a session name.
-
-    Session names must be lowercase alphanumeric with hyphens/underscores,
-    starting with a letter or digit. Dots are not allowed (they indicate domains).
-
-    Raises:
-        ValueError: If name is invalid.
-    """
-    if not name:
-        raise ValueError("Session name must be non-empty")
-    if "." in name:
-        raise ValueError(
-            f"Session name {name!r} cannot contain dots. "
-            "Dots are reserved for domain matching in 'gp session clear'."
-        )
-    if not _SESSION_NAME_RE.match(name):
-        raise ValueError(
-            f"Session name {name!r} must match pattern [a-z0-9][a-z0-9_-]* "
-            "(lowercase alphanumeric, hyphens, underscores)"
-        )
 
 
 # Global session storage backend (lazy-loaded)
