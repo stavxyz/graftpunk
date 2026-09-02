@@ -663,10 +663,11 @@ class TestAutoLoginCommand:
         assert "Log in to testlogin site" in fn.__doc__
 
         # A hand-written login(credentials) takes no headless kwarg, so no
-        # flags are offered -- credentials are gathered via prompts/envvars
-        # at runtime (include_builtin_options=False).
+        # browser flags are offered -- credentials are gathered via
+        # prompts/envvars at runtime (include_builtin_options=False). --as is
+        # the CLI's own option (it names the cached session), so it stays.
         params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
-        assert params == []
+        assert params == ["as_label"]
 
     def test_login_command_envvar_resolution(self) -> None:
         """Test that environment variables are resolved at runtime."""
@@ -1013,7 +1014,7 @@ class TestBrowserSessionContextManager:
 
         with (
             patch("graftpunk.BrowserSession") as mock_bs,
-            patch("graftpunk.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
         ):
             instance = mock_bs.return_value
             instance.start_async = AsyncMock()
@@ -1044,7 +1045,7 @@ class TestBrowserSessionContextManager:
 
         with (
             patch("graftpunk.BrowserSession") as mock_bs,
-            patch("graftpunk.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
         ):
             instance = mock_bs.return_value
             instance.driver = MagicMock()
@@ -1747,7 +1748,7 @@ class TestBrowserSessionErrorPaths:
 
         with (
             patch("graftpunk.BrowserSession") as mock_bs,
-            patch("graftpunk.cache_session") as mock_cache,
+            patch("graftpunk.plugins.cli_plugin.cache_session") as mock_cache,
         ):
             instance = mock_bs.return_value
             instance.start_async = AsyncMock()
@@ -1780,7 +1781,7 @@ class TestBrowserSessionErrorPaths:
 
         with (
             patch("graftpunk.BrowserSession") as mock_bs,
-            patch("graftpunk.cache_session") as mock_cache,
+            patch("graftpunk.plugins.cli_plugin.cache_session") as mock_cache,
         ):
             instance = mock_bs.return_value
             instance.driver = MagicMock()

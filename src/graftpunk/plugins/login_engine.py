@@ -14,10 +14,10 @@ import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
-from graftpunk import cache_session
 from graftpunk import console as gp_console
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
+from graftpunk.plugins.cli_plugin import _cache_login_session
 
 if TYPE_CHECKING:
     from graftpunk.plugins.cli_plugin import SitePlugin
@@ -649,6 +649,8 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
         *,
         headless: bool | None = None,
         observe_mode: str = "off",
+        session_name: str | None = None,
+        account_identifier: str | None = None,
     ) -> bool:
         """Log in with a nodriver browser.
 
@@ -659,6 +661,11 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             observe_mode: "off" or "full". "full" records an observe run
                 (screenshot, page source, HAR with bodies, console) under the
                 plugin's session name, whether or not the login succeeds.
+            session_name: The operating session name to cache under; None
+                falls back to ``plugin.session_name``. The CLI passes the
+                account-qualified name it computed (``base@label``).
+            account_identifier: The unslugified login identifier to record in
+                the cached session's metadata; None records nothing.
         """
         if plugin.login_config is None:
             raise PluginError(
@@ -705,6 +712,8 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                     failure_text=failure_text,
                     base_url=base_url,
                     header_capture=_header_capture,
+                    session_name=session_name,
+                    account_identifier=account_identifier,
                 )
             finally:
                 if observe_storage is not None:
@@ -742,8 +751,15 @@ async def _run_nodriver_steps(
     failure_text: str,
     base_url: str,
     header_capture: Any,
+    session_name: str | None = None,
+    account_identifier: str | None = None,
 ) -> bool:
-    """Execute the configured login steps on an open tab and cache on success."""
+    """Execute the configured login steps on an open tab and cache on success.
+
+    *session_name* and *account_identifier* are the operating identity the CLI
+    computed; both default to None, which caches under ``plugin.session_name``
+    with no recorded identifier.
+    """
     assert plugin.login_config is not None  # noqa: S101 — checked by caller
     # Top-level wait_for: wait for a specific element before any steps
     # (e.g., a form that appears after a redirect completes)
@@ -840,7 +856,7 @@ async def _run_nodriver_steps(
             error=str(exc),
         )
 
-    cache_session(session, plugin.session_name)
+    _cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
     return True
 
 
@@ -854,6 +870,8 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         *,
         headless: bool | None = None,
         observe_mode: str = "off",
+        session_name: str | None = None,
+        account_identifier: str | None = None,
     ) -> bool:
         """Log in with a selenium browser.
 
@@ -864,6 +882,11 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             observe_mode: "off" or "full". "full" makes the BrowserSession
                 record an observe run (HAR, console, error screenshot) under
                 the plugin's session name.
+            session_name: The operating session name to cache under; None
+                falls back to ``plugin.session_name``. The CLI passes the
+                account-qualified name it computed (``base@label``).
+            account_identifier: The unslugified login identifier to record in
+                the cached session's metadata; None records nothing.
         """
         if plugin.login_config is None:
             raise PluginError(
@@ -996,7 +1019,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     error=str(exc),
                 )
 
-            cache_session(session, plugin.session_name)
+            _cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
             return True
 
     return login

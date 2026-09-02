@@ -28,7 +28,7 @@ from graftpunk.plugins.cli_plugin import PluginParamSpec
 # The supported click_kwargs surface (the RFC's documented contract).
 # Anything outside these sets fails loudly at registration -- no silent drift.
 OPTION_KEYS = frozenset(
-    {"type", "required", "default", "help", "is_flag", "show_default", "envvar"}
+    {"type", "required", "default", "help", "is_flag", "show_default", "envvar", "flag"}
 )
 ARGUMENT_KEYS = frozenset({"type", "required", "default", "nargs"})
 
@@ -87,7 +87,9 @@ def map_param_spec(
             )
         # Explicit positive-only decl: bare flag for bools (no --no-* pair),
         # and immune to typer-version differences in derived flag names.
-        flag = f"--{spec.name.replace('_', '-')}"
+        # "flag" overrides the derived name for the cases a Python parameter
+        # name cannot spell (login's --as: "as" is a reserved keyword).
+        flag = kw.get("flag") or f"--{spec.name.replace('_', '-')}"
         info = typer.Option(
             ... if required else default,
             flag,

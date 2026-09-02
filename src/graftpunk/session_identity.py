@@ -72,6 +72,21 @@ def validate_session_name(name: str) -> None:
             )
 
 
+def validate_account_label(label: str) -> None:
+    """Validate one account label (the ``@label`` half), on its own terms.
+
+    A label-specific entry point so a bad ``gp <site> login --as <label>``
+    names the label the user typed rather than a synthetic session name.
+
+    Raises:
+        ValueError: If the label is empty or malformed.
+    """
+    if not label:
+        raise ValueError("Account label must be non-empty")
+    if not _PART_RE.match(label):
+        raise ValueError(f"Account label {label!r} must match [a-z0-9][a-z0-9_-]*")
+
+
 def resolve_account_session(base_name: str, existing_names: Iterable[str]) -> str:
     """Pick the session for *base_name* among *existing_names*.
 

@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from graftpunk.plugins.output_config import OutputConfig
     from graftpunk.tokens import TokenConfig
 
-from graftpunk.cache import load_session_for_api
+from graftpunk.cache import cache_session, load_session_for_api
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
@@ -1080,7 +1080,7 @@ class SitePlugin:
                 await tab.get(f"{self.base_url}/login")
                 # ... custom login logic ...
         """
-        from graftpunk import BrowserSession, cache_session
+        from graftpunk import BrowserSession
 
         session = BrowserSession(backend="nodriver", headless=False)
         await session.start_async()
@@ -1094,7 +1094,9 @@ class SitePlugin:
                 session.current_url = f"{self.base_url}/"
             # Success path: transfer cookies and cache
             await session.transfer_nodriver_cookies_to_session()
-            cache_session(session, self.session_name)
+            # No explicit name/identifier: the instance state (the login
+            # stamp, when a CLI login drove us here) IS this path's contract.
+            _cache_login_session(self, session)
         finally:
             try:
                 session.driver.stop()
@@ -1121,7 +1123,7 @@ class SitePlugin:
                 driver.get(f"{self.base_url}/login")
                 # ... custom login logic ...
         """
-        from graftpunk import BrowserSession, cache_session
+        from graftpunk import BrowserSession
 
         session = BrowserSession(backend="selenium", headless=False)
         try:
@@ -1133,7 +1135,8 @@ class SitePlugin:
                 session.current_url = f"{self.base_url}/"
             # Success path: transfer cookies and cache
             session.transfer_driver_cookies_to_session()
-            cache_session(session, self.session_name)
+            # Instance fallback by contract -- see browser_session() above.
+            _cache_login_session(self, session)
         finally:
             try:
                 session.quit()
@@ -1157,6 +1160,33 @@ class SitePlugin:
         if not self.requires_session:
             return requests.Session()
         return load_session_for_api(self.session_name)
+
+
+def _cache_login_session(
+    plugin: SitePlugin,
+    session: Any,
+    *,
+    name: str | None = None,
+    identifier: str | None = None,
+) -> str:
+    """The one login-flow cache funnel. Explicit arguments first.
+
+    Callers that hold the operating name and identifier pass them explicitly --
+    the generated login flows receive both from ``make_login_body``. The
+    instance fallback exists ONLY for the author-facing paths (hand-written
+    logins caching through ``browser_session``/``browser_session_sync``),
+    whose API shape reads ``self.session_name``; the login stamp covers those.
+    The identifier rides the session object so ``_extract_session_metadata``
+    records it. Returns the session name used.
+    """
+    from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+    session_name = name or plugin.session_name
+    account = identifier if identifier is not None else getattr(plugin, GP_ACCOUNT_ATTR, None)
+    if account is not None:
+        setattr(session, GP_ACCOUNT_ATTR, account)
+    cache_session(session, session_name)
+    return session_name
 
 
 def has_declarative_login(plugin: CLIPluginProtocol) -> TypeGuard[SitePlugin]:

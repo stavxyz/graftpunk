@@ -130,7 +130,7 @@ class TestDeclarativeLoginEngine:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
         ):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -199,7 +199,7 @@ class TestDeclarativeLoginEngine:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -233,7 +233,7 @@ class TestDeclarativeLoginEngine:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -301,7 +301,7 @@ class TestSeleniumFailureTextPath:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             result = login_method({"username": "user", "password": "correct"})  # noqa: S106
@@ -652,7 +652,7 @@ class TestNodriverLoginValidationPaths:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
         ):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -710,7 +710,7 @@ class TestNodriverLoginValidationPaths:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.LOG") as mock_log,
         ):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -993,7 +993,7 @@ class TestLoginEngineHeaderCapture:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1026,7 +1026,7 @@ class TestLoginEngineHeaderCapture:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1062,7 +1062,7 @@ class TestSeleniumLoginValidationPaths:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -1087,7 +1087,7 @@ class TestSeleniumLoginValidationPaths:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
         ):
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -1149,7 +1149,7 @@ class TestLoginTimeTokenExtraction:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1198,7 +1198,7 @@ class TestLoginTimeTokenExtraction:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1260,7 +1260,7 @@ class TestSeleniumTokenExtraction:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1298,7 +1298,7 @@ class TestSeleniumTokenExtraction:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -1547,7 +1547,7 @@ class TestNodriverMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1596,7 +1596,7 @@ class TestNodriverMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1758,7 +1758,7 @@ class TestNodriverMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1832,7 +1832,7 @@ class TestNodriverMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1875,7 +1875,7 @@ class TestNodriverMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1980,7 +1980,7 @@ class TestSeleniumMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -2095,7 +2095,7 @@ class TestSeleniumMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time.sleep") as mock_sleep,
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
@@ -2169,7 +2169,7 @@ class TestSeleniumMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.time"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",

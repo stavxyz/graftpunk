@@ -398,7 +398,9 @@ class TestLoginCommandPlumbing:
         plugin = _make_plugin("nodriver")
         fn = create_login_fn(plugin, generate_login_method(plugin), {"username": "#u"})
         params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
-        assert params == ["headless", "headful"]
+        # --as is offered by every login command; the browser flags only by
+        # callables that can honour them.
+        assert params == ["as_label", "headless", "headful"]
 
     def test_generated_login_help_names_the_site_not_the_engine(self) -> None:
         from graftpunk.cli.login_commands import create_login_fn
@@ -418,13 +420,17 @@ class TestLoginCommandPlumbing:
 
         fn = create_login_fn(plugin, login, {"username": "#u"})
         params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
-        assert params == []
+        # No browser flags it cannot honour -- but --as is the CLI's own
+        # option (it names the cached session), so it is still offered.
+        assert params == ["as_label"]
         assert fn.__doc__ == "Sign in to Example."
 
     def _run_body(self, login: Any, ctx: Any, **kwargs: Any) -> None:
         from graftpunk.cli.login_commands import make_login_body
 
-        body = make_login_body(SimpleNamespace(site_name="acme"), login, {"username": "#u"})
+        body = make_login_body(
+            SimpleNamespace(site_name="acme", session_name="acme"), login, {"username": "#u"}
+        )
         body(ctx, **kwargs)
 
     @staticmethod

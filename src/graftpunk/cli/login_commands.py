@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any
 
 import typer
@@ -16,6 +17,7 @@ from rich.status import Status
 
 from graftpunk import console as gp_console
 from graftpunk import workstation_env
+from graftpunk.cache import get_session_metadata
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
@@ -23,6 +25,12 @@ from graftpunk.plugins.cli_plugin import (
     has_declarative_login,
 )
 from graftpunk.plugins.login_engine import generate_login_method
+from graftpunk.session_identity import (
+    GP_ACCOUNT_ATTR,
+    derive_account_identity,
+    join_session_name,
+    validate_account_label,
+)
 
 LOG = get_logger(__name__)
 
@@ -30,6 +38,10 @@ LOG = get_logger(__name__)
 # make_login_body masks prompts with it, and gp config's set guardrail
 # (cli/config_commands.py) warns on literal values for such names.
 SECRET_KEYWORDS = frozenset({"password", "secret", "token", "key"})
+
+# "attribute absent" sentinel for the login stamp's save/restore (None is a
+# legitimate stored value, so it cannot mark absence).
+_MISSING = object()
 
 
 def login_method(plugin: CLIPluginProtocol) -> Callable[..., Any] | None:
@@ -140,6 +152,70 @@ def _supports_headless(login_callable: Callable[..., Any]) -> bool:
     return "headless" in _accepted_login_kwargs(login_callable, headless=None)
 
 
+@contextmanager
+def _stamp_login_identity(plugin, label, identifier):  # noqa: ANN001, ANN201
+    """Stamp the plugin instance for the duration of one login flow.
+
+    Confined transport: only the author-facing paths read this state --
+    hand-written ``login(credentials)`` methods and the ``browser_session``
+    helpers, whose API shape reads ``self.session_name``. Engine-controlled
+    paths receive the name and identifier as explicit arguments and never
+    depend on the stamp. Instance attributes shadow the class attributes;
+    on exit the prior state is restored, so a plugin instance held across a
+    login cannot leak the stamped identity into later reads.
+    """
+    if not label:
+        yield
+        return
+    # Capture BEFORE mutating, with a missing-sentinel: a plugin that set
+    # self.session_name in __init__ gets its own value back, not the class's.
+    prior_name = plugin.__dict__.get("session_name", _MISSING)
+    prior_attr = plugin.__dict__.get(GP_ACCOUNT_ATTR, _MISSING)
+    base = plugin.session_name
+    plugin.session_name = join_session_name(base, label)
+    if identifier is not None:
+        setattr(plugin, GP_ACCOUNT_ATTR, identifier)
+    try:
+        yield
+    finally:
+        if prior_name is _MISSING:
+            plugin.__dict__.pop("session_name", None)
+        else:
+            plugin.session_name = prior_name
+        if prior_attr is _MISSING:
+            plugin.__dict__.pop(GP_ACCOUNT_ATTR, None)
+        else:
+            setattr(plugin, GP_ACCOUNT_ATTR, prior_attr)
+
+
+def _warn_if_slot_changes_hands_post(
+    stored: dict | None, incoming_identifier: str | None, session_name: str
+) -> None:
+    """Warn when a successful login overwrote a slot recorded for another account.
+
+    The pure compare/emit half: ``make_login_body`` performs the ONE metadata
+    fetch before the login attempt and calls this only after success, so the
+    fetch/emit split is the final shape from the start. Both identifiers must
+    be present and unequal; a missing identifier on either side never warns
+    (legacy slots, refresh writes). Note ``get_session_metadata`` returns
+    ``dict | None`` (cache.py:222) -- read with ``.get``, never ``getattr``.
+    """
+    if not incoming_identifier:
+        return
+    stored_id = stored.get("account_identifier") if stored else None
+    if stored_id and stored_id != incoming_identifier:
+        LOG.warning(
+            "session_slot_changing_account",
+            session=session_name,
+            stored=stored_id,
+            incoming=incoming_identifier,
+        )
+        gp_console.warn(
+            f"Session '{session_name}' was recorded for {stored_id}; this login "
+            f"replaces it as {incoming_identifier}."
+        )
+
+
 def make_login_body(
     plugin: CLIPluginProtocol,
     login_callable: Callable[..., Any],
@@ -173,11 +249,14 @@ def make_login_body(
         headless_override: bool | None = (
             True if want_headless else (False if want_headful else None)
         )
-        login_kwargs = _accepted_login_kwargs(
-            login_method,
-            headless=headless_override,
-            observe_mode=_observe_mode_from_ctx(ctx),
-        )
+        # Validate before any prompting: a typo in --as must not cost the
+        # user a password entry first.
+        as_label: str = kwargs.pop("as_label", "") or ""
+        if as_label:
+            try:
+                validate_account_label(as_label)
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
         credentials: dict[str, str] = {}
         site_prefix = plugin.site_name.upper().replace("-", "_").replace(" ", "_")
 
@@ -199,8 +278,39 @@ def make_login_body(
                     hide_input=is_secret,
                 )
 
+        # The operating identity: derived from the RESOLVED credentials, so
+        # the kwarg filter runs here rather than before the loop.
+        identifier, derived_label = derive_account_identity(credentials, secret_keywords)
+        label = as_label or derived_label
+        target_name = (
+            join_session_name(plugin.session_name, label) if label else plugin.session_name
+        )
+        login_kwargs = _accepted_login_kwargs(
+            login_method,
+            headless=headless_override,
+            observe_mode=_observe_mode_from_ctx(ctx),
+            session_name=target_name,
+            account_identifier=identifier,
+        )
+        # The ONE metadata fetch, before the attempt; the comparison and the
+        # emission happen only after a successful login. A storage hiccup
+        # must not stop a login over an advisory warning.
         try:
-            with Status("Logging in...", console=gp_console.err_console):
+            stored_before = get_session_metadata(target_name)
+        except Exception as exc:  # noqa: BLE001 — advisory read; never blocks login
+            LOG.warning(
+                "session_metadata_lookup_failed",
+                session=target_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            stored_before = None
+
+        try:
+            with (
+                Status("Logging in...", console=gp_console.err_console),
+                _stamp_login_identity(plugin, label, identifier),
+            ):
                 if asyncio.iscoroutinefunction(login_method):
                     # Suppress asyncio "Loop ... is closed" warning that fires when
                     # asyncio.run() closes the event loop while nodriver's subprocess
@@ -232,6 +342,18 @@ def make_login_body(
                     result=repr(result),
                 )
             gp_console.success(f"Logged in to {plugin.site_name} (session cached)")
+            # Only after a SUCCESSFUL login: compare and warn (single emission
+            # path; the fetch happened before the callable ran).
+            _warn_if_slot_changes_hands_post(stored_before, identifier, target_name)
+            gp_console.info(f"Cached session: {target_name}")
+            from graftpunk.session_context import get_active_session
+
+            current = get_active_session()
+            if current and current != target_name:
+                gp_console.info(
+                    f"This shell is pinned to {current} — "
+                    f"run: gp session use {target_name} to switch"
+                )
         except (SystemExit, KeyboardInterrupt):
             raise
         except Exception as exc:  # noqa: BLE001 — CLI boundary: present user-friendly error instead of traceback
@@ -270,9 +392,21 @@ def create_login_fn(
         help_text = inspect.getdoc(login_callable) or f"Log in to {plugin.site_name}"
         help_text = help_text.split("\n")[0]
 
-    param_specs: list[PluginParamSpec] = []
+    # --as is offered by EVERY generated login command: the label names the
+    # cached session, which the CLI (not the login callable) decides, so a
+    # hand-written login(credentials) honours it just as a generated one does.
+    param_specs: list[PluginParamSpec] = [
+        PluginParamSpec.option(
+            "as_label",
+            type=str,
+            default="",
+            help="Account label for the cached session "
+            "(default: derived from the login identifier)",
+            click_kwargs={"flag": "--as"},
+        )
+    ]
     if _supports_headless(login_callable):
-        param_specs = [
+        param_specs += [
             PluginParamSpec.option(
                 "headless",
                 type=bool,

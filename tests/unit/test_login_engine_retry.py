@@ -228,7 +228,7 @@ class TestLoginRetryIntegration:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
         ):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -266,7 +266,7 @@ class TestLoginWaitFor:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
         ):
             result = await login_method({"username": "user"})
@@ -349,7 +349,7 @@ class TestLoginWaitFor:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.cache_session"),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_engine.asyncio.sleep", new_callable=AsyncMock),
         ):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106

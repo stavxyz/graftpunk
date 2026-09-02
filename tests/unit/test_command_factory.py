@@ -52,6 +52,16 @@ class TestMapParamSpec:
         # explicit positive-only decl -> bare --no-wait flag, no --no-no-wait pair
         assert param.default.param_decls == ("--no-wait",)
 
+    def test_explicit_flag_overrides_the_derived_name(self) -> None:
+        # The "flag" key lets a spec name a flag its param name cannot derive
+        # (login's --as, whose param is as_label because "as" is a keyword).
+        spec = PluginParamSpec.option(
+            "as_label", type=str, default="", click_kwargs={"flag": "--as"}
+        )
+        param, _ = map_param_spec("fmtsite", "login", spec)
+        assert param.name == "as_label"
+        assert param.default.param_decls == ("--as",)
+
     def test_envvar_and_show_default_pass_through(self) -> None:
         spec = PluginParamSpec.option(
             "token", type=str, default="", click_kwargs={"envvar": "MY_TOKEN"}
