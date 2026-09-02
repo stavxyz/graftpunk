@@ -1238,3 +1238,45 @@ class TestKebabCaseNamesThroughTheClient:
             pytest.raises(PluginError, match="twice"),
         ):
             GraftpunkClient("collide")
+
+
+class TestClientOperatingSession:
+    def test_pin_is_used_for_load_and_store(self) -> None:
+        plugin = MagicMock()
+        plugin.session_name = "myshop"
+        plugin.get_commands.return_value = [_make_spec(name="items", requires_session=True)]
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch("graftpunk.client.list_sessions") as mock_list,
+        ):
+            client = GraftpunkClient("fmtsite", session="myshop@bob")
+        assert client._session_name == "myshop@bob"
+        mock_list.assert_not_called()  # a pinned client pays no listing
+
+    def test_unpinned_resolves_ignoring_ambient(self, monkeypatch) -> None:  # noqa: ANN001
+        monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@env")
+        plugin = MagicMock()
+        plugin.session_name = "myshop"
+        plugin.get_commands.return_value = []
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch("graftpunk.client.list_sessions", return_value=["myshop@alice"]),
+        ):
+            client = GraftpunkClient("fmtsite")
+        assert client._session_name == "myshop@alice"  # env deliberately ignored
+
+    def test_unpinned_ambiguous_raises(self) -> None:
+        from graftpunk.exceptions import AmbiguousSessionError
+
+        plugin = MagicMock()
+        plugin.session_name = "myshop"
+        plugin.get_commands.return_value = []
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch(
+                "graftpunk.client.list_sessions",
+                return_value=["myshop@alice", "myshop@bob"],
+            ),
+            pytest.raises(AmbiguousSessionError),
+        ):
+            GraftpunkClient("fmtsite")
