@@ -271,6 +271,16 @@ class TestSynthesizeCommandFn:
                 body=_capture_body({}),
             )
 
+    def test_reserved_param_name_session_rejected(self) -> None:
+        # `session` is a built-in option (--session) since #151; a plugin
+        # param sharing that name must fail loudly, not collide silently.
+        with pytest.raises(PluginError, match="reserved"):
+            synthesize_command_fn(
+                name="c",
+                param_specs=[PluginParamSpec.option("session", type=str, default="x")],
+                body=_capture_body({}),
+            )
+
     def test_reserved_param_name_allowed_without_builtins(self) -> None:
         # `format` is only reserved because the built-in options are
         # injected; with include_builtin_options=False (e.g. login commands)

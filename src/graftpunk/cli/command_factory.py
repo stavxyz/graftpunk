@@ -141,7 +141,12 @@ def map_param_spec(
 # declares these options from this mapping and the runtime (plugin_runtime)
 # pops them against the same mapping -- a rename or default change cannot
 # silently diverge between construction and execution.
-BUILTIN_OPTIONS: dict[str, Any] = {"format": "json", "view": (), "output": ""}
+BUILTIN_OPTIONS: dict[str, Any] = {
+    "format": "json",
+    "view": (),
+    "output": "",
+    "session": "",
+}
 
 
 def _format_help(extra_formats: Sequence[str] = ()) -> str:
@@ -197,7 +202,17 @@ def _builtin_option_params(
         ),
         annotation=str,
     )
-    return [(fmt, str), (view, list[str]), (out, str)]
+    sess = inspect.Parameter(
+        "session",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=typer.Option(
+            BUILTIN_OPTIONS["session"],
+            "--session",
+            help="Session name to use (base or base@label); overrides env and .gp-session",
+        ),
+        annotation=str,
+    )
+    return [(fmt, str), (view, list[str]), (out, str), (sess, str)]
 
 
 def synthesize_command_fn(

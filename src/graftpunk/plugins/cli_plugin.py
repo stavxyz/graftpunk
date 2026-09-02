@@ -1144,6 +1144,15 @@ class SitePlugin:
         """Load the graftpunk session for API calls.
 
         If requires_session is False, returns a plain requests.Session.
+
+        Note: the CLI runtime (``plugin_runtime.run_plugin_command``) no
+        longer calls this method -- it resolves the operating account name
+        first (``--session`` / env / ``.gp-session`` / resolution) and loads
+        directly via ``load_session_for_api``. This method still loads by
+        the bare base name (``self.session_name``), so it can differ from
+        the CLI's resolved session under multiple cached accounts. Plugins
+        calling this directly should be aware of the gap; see the follow-up
+        issue filed for aligning ``get_session`` with account resolution.
         """
         if not self.requires_session:
             return requests.Session()

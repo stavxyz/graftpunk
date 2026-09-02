@@ -298,9 +298,6 @@ class TestCommandExecution:
         """Test command execution with mocked session."""
         mock_session = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -315,10 +312,16 @@ class TestCommandExecution:
         # build_command_app is parse->body forwarding only (no help_text) --
         # help text is a registration-level concern, covered by
         # TestClickKwargsPassthrough through _build_site_app. Here, verify
-        # the mocked session is actually used to execute the command.
-        result = TyperCliRunner().invoke(app, [])
-        assert result.exit_code == 0
-        mock_plugin.get_session.assert_called_once()
+        # the mocked session is actually used to execute the command. The
+        # runtime loads by operating name (resolved from plugin.session_name)
+        # via load_session_for_api, not plugin.get_session() (#151).
+        with patch(
+            "graftpunk.cli.plugin_runtime.load_session_for_api",
+            return_value=mock_session,
+        ) as mock_load:
+            result = TyperCliRunner().invoke(app, [])
+            assert result.exit_code == 0
+            mock_load.assert_called_once_with("mocksession")
 
     def test_command_with_params(self, isolated_config: Path) -> None:
         """Test command with parameters."""
@@ -872,9 +875,6 @@ class TestCommandOutputConsole:
         from graftpunk.exceptions import SessionNotFoundError
 
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            side_effect=SessionNotFoundError("mocksession")
-        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -884,7 +884,13 @@ class TestCommandOutputConsole:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.gp_console") as mock_con:
+        with (
+            patch("graftpunk.cli.plugin_runtime.gp_console") as mock_con,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                side_effect=SessionNotFoundError("mocksession"),
+            ),
+        ):
             runner = TyperCliRunner()
             runner.invoke(app, [])
             mock_con.error.assert_called_once()
@@ -1975,15 +1981,16 @@ class TestPluginMounting:
         from graftpunk.cli.plugin_commands import register_plugin_commands
 
         plugin = MockPlugin()
-        plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=requests.Session()
-        )
         app = typer.Typer()
 
         with patch(DISCOVER_ALL, return_value=(plugin,)):
             register_plugin_commands(app, notify_errors=False)
 
-        result = TyperCliRunner().invoke(app, ["mocksite", "items"])
+        with patch(
+            "graftpunk.cli.plugin_runtime.load_session_for_api",
+            return_value=requests.Session(),
+        ):
+            result = TyperCliRunner().invoke(app, ["mocksite", "items"])
         assert result.exit_code == 0
 
     def test_unknown_subcommand_exits_with_code_2(self, isolated_config: Path) -> None:
@@ -2003,11 +2010,8 @@ class TestSynthesizedCommandCallback:
     """Tests for run_plugin_command's error paths, driven via a synthesized command."""
 
     def test_plugin_error_during_session_load_exits_1(self, isolated_config: Path) -> None:
-        """PluginError during get_session exits with code 1."""
+        """PluginError during session load exits with code 1."""
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            side_effect=PluginError("session corrupted")
-        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -2017,7 +2021,13 @@ class TestSynthesizedCommandCallback:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console:
+        with (
+            patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                side_effect=PluginError("session corrupted"),
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -2028,11 +2038,8 @@ class TestSynthesizedCommandCallback:
     def test_generic_exception_during_session_load_exits_1_and_logs(
         self, isolated_config: Path
     ) -> None:
-        """Generic Exception during get_session exits with code 1 and logs."""
+        """Generic Exception during session load exits with code 1 and logs."""
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            side_effect=RuntimeError("unexpected db error")
-        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -2045,6 +2052,10 @@ class TestSynthesizedCommandCallback:
         with (
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
             patch("graftpunk.cli.plugin_runtime.LOG") as mock_log,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                side_effect=RuntimeError("unexpected db error"),
+            ),
         ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
@@ -2058,9 +2069,6 @@ class TestSynthesizedCommandCallback:
         """A plain requests.Session (no .driver attr) should not crash the callback."""
         plain_session = requests.Session()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=plain_session
-        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -2070,7 +2078,13 @@ class TestSynthesizedCommandCallback:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.build_observe_context") as mock_build:
+        with (
+            patch("graftpunk.cli.plugin_runtime.build_observe_context") as mock_build,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=plain_session,
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -2089,9 +2103,6 @@ class TestSynthesizedCommandCallback:
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
 
         def failing_handler(ctx: Any, **kwargs: Any) -> None:
             raise RuntimeError("handler blew up")
@@ -2108,6 +2119,10 @@ class TestSynthesizedCommandCallback:
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
             patch("graftpunk.cli.plugin_runtime.LOG") as mock_log,
             patch("graftpunk.cli.plugin_runtime.build_observe_context"),
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
         ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
@@ -2478,9 +2493,6 @@ class TestCommandContextPopulation:
 
         mock_plugin = MockPlugin()
         mock_plugin.base_url = "https://example.com"  # type: ignore[attr-defined]
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=requests.Session()
-        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -2490,8 +2502,12 @@ class TestCommandContextPopulation:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        runner = TyperCliRunner()
-        result = runner.invoke(app, [])
+        with patch(
+            "graftpunk.cli.plugin_runtime.load_session_for_api",
+            return_value=requests.Session(),
+        ):
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
         assert result.exit_code == 0
         assert len(captured_ctx) == 1
         assert captured_ctx[0].base_url == "https://example.com"
@@ -2509,9 +2525,6 @@ class TestCommandErrorCatch:
             raise CommandError("Amount must be positive")
 
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=requests.Session()
-        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -2521,7 +2534,13 @@ class TestCommandErrorCatch:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console:
+        with (
+            patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=requests.Session(),
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -2535,9 +2554,6 @@ class TestCommandErrorCatch:
             raise PluginError("something broke")
 
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=requests.Session()
-        )
 
         cmd_spec = CommandSpec(
             name="test",
@@ -2547,7 +2563,13 @@ class TestCommandErrorCatch:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console:
+        with (
+            patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=requests.Session(),
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -2594,9 +2616,6 @@ class TestPerCommandRequiresSession:
         """Command with requires_session=None inherits plugin.requires_session."""
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
 
         captured_sessions: list[Any] = []
 
@@ -2614,11 +2633,15 @@ class TestPerCommandRequiresSession:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        runner = TyperCliRunner()
-        result = runner.invoke(app, [])
+        with patch(
+            "graftpunk.cli.plugin_runtime.load_session_for_api",
+            return_value=mock_session,
+        ) as mock_load:
+            runner = TyperCliRunner()
+            result = runner.invoke(app, [])
 
-        assert result.exit_code == 0
-        mock_plugin.get_session.assert_called_once()
+            assert result.exit_code == 0
+            mock_load.assert_called_once_with("mocksession")
         assert captured_sessions[0] is mock_session
 
 
@@ -2853,9 +2876,6 @@ class TestTokenAutoInjection:
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
         # Attach a token_config to trigger injection
         mock_plugin.token_config = MagicMock()  # type: ignore[attr-defined]
         mock_plugin.base_url = "https://example.com"  # type: ignore[attr-defined]
@@ -2874,7 +2894,13 @@ class TestTokenAutoInjection:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.tokens.prepare_session") as mock_prepare:
+        with (
+            patch("graftpunk.tokens.prepare_session") as mock_prepare,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
+        ):
             mock_prepare.return_value = mock_session
 
             runner = TyperCliRunner()
@@ -2892,9 +2918,6 @@ class TestTokenAutoInjection:
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
         # No token_config attribute — default MockPlugin has none
 
         cmd_spec = CommandSpec(
@@ -2905,7 +2928,13 @@ class TestTokenAutoInjection:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.tokens.prepare_session") as mock_prepare:
+        with (
+            patch("graftpunk.tokens.prepare_session") as mock_prepare,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -2918,9 +2947,6 @@ class TestTokenAutoInjection:
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
         mock_plugin.token_config = MagicMock()  # type: ignore[attr-defined]
 
         cmd_spec = CommandSpec(
@@ -2937,6 +2963,10 @@ class TestTokenAutoInjection:
                 side_effect=ValueError("CSRF token not found in response"),
             ),
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
         ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
@@ -2961,7 +2991,6 @@ class TestTokenRefreshOn403:
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(return_value=mock_session)  # type: ignore[method-assign]
         mock_plugin.token_config = MagicMock()  # type: ignore[attr-defined]
         mock_plugin.base_url = "https://example.com"  # type: ignore[attr-defined]
 
@@ -2986,6 +3015,10 @@ class TestTokenRefreshOn403:
         with (
             patch("graftpunk.tokens.prepare_session") as mock_prepare,
             patch("graftpunk.tokens.clear_cached_tokens") as mock_clear,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
         ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
@@ -3002,7 +3035,6 @@ class TestTokenRefreshOn403:
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(return_value=mock_session)  # type: ignore[method-assign]
         # No token_config — default MockPlugin has none
 
         def handler(ctx: Any, **kwargs: Any) -> dict[str, str]:
@@ -3016,7 +3048,13 @@ class TestTokenRefreshOn403:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.gp_console"):
+        with (
+            patch("graftpunk.cli.plugin_runtime.gp_console"),
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -3029,7 +3067,6 @@ class TestTokenRefreshOn403:
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(return_value=mock_session)  # type: ignore[method-assign]
         mock_plugin.token_config = MagicMock()  # type: ignore[attr-defined]
         mock_plugin.base_url = "https://example.com"  # type: ignore[attr-defined]
 
@@ -3054,6 +3091,10 @@ class TestTokenRefreshOn403:
             patch("graftpunk.tokens.prepare_session"),
             patch("graftpunk.tokens.clear_cached_tokens"),
             patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
         ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
@@ -3068,7 +3109,6 @@ class TestTokenRefreshOn403:
         mock_session = MagicMock()
         mock_session.driver = MagicMock()
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(return_value=mock_session)  # type: ignore[method-assign]
         mock_plugin.token_config = MagicMock()  # type: ignore[attr-defined]
         mock_plugin.base_url = "https://example.com"  # type: ignore[attr-defined]
 
@@ -3087,6 +3127,10 @@ class TestTokenRefreshOn403:
             patch("graftpunk.tokens.prepare_session"),
             patch("graftpunk.tokens.clear_cached_tokens"),
             patch("graftpunk.cli.plugin_runtime.gp_console"),
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
         ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
@@ -3103,9 +3147,6 @@ class TestSessionPersistence:
 
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
 
         def handler(ctx: CommandContext, **kwargs: Any) -> dict[str, str]:
             return {"ok": True}
@@ -3119,7 +3160,13 @@ class TestSessionPersistence:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update:
+        with (
+            patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -3131,9 +3178,6 @@ class TestSessionPersistence:
 
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
 
         def handler(ctx: CommandContext, **kwargs: Any) -> dict[str, str]:
             ctx.save_session()
@@ -3147,7 +3191,13 @@ class TestSessionPersistence:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update:
+        with (
+            patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -3159,9 +3209,6 @@ class TestSessionPersistence:
 
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
 
         def handler(ctx: CommandContext, **kwargs: Any) -> dict[str, str]:
             return {"ok": True}
@@ -3174,7 +3221,13 @@ class TestSessionPersistence:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update:
+        with (
+            patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -3186,9 +3239,6 @@ class TestSessionPersistence:
 
         mock_session = MagicMock(spec=requests.Session)
         mock_plugin = MockPlugin()
-        mock_plugin.get_session = MagicMock(  # type: ignore[method-assign]
-            return_value=mock_session
-        )
 
         def handler(ctx: CommandContext, **kwargs: Any) -> dict[str, str]:
             raise RuntimeError("something went wrong")
@@ -3202,7 +3252,13 @@ class TestSessionPersistence:
         )
         app = build_command_app(mock_plugin, cmd_spec)
 
-        with patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update:
+        with (
+            patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
+            patch(
+                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                return_value=mock_session,
+            ),
+        ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
@@ -3455,7 +3511,6 @@ class TestFormatExplicitFlag:
         """Passing -f on the CLI sets user_explicit=True in format_output."""
 
         plugin = _make_minimal_plugin()
-        plugin.get_session = MagicMock(return_value=requests.Session())
         plugin.requires_session = False
 
         cmd_spec = CommandSpec(
@@ -3481,7 +3536,6 @@ class TestFormatExplicitFlag:
         """Omitting -f on the CLI sets user_explicit=False in format_output."""
 
         plugin = _make_minimal_plugin()
-        plugin.get_session = MagicMock(return_value=requests.Session())
         plugin.requires_session = False
 
         cmd_spec = CommandSpec(
