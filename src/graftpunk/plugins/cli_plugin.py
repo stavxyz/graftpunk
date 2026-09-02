@@ -1154,8 +1154,8 @@ class SitePlugin:
         directly via ``load_session_for_api``. This method still loads by
         the bare base name (``self.session_name``), so it can differ from
         the CLI's resolved session under multiple cached accounts. Plugins
-        calling this directly should be aware of the gap; see the follow-up
-        issue filed for aligning ``get_session`` with account resolution.
+        calling this directly should be aware of the gap; tracked in
+        https://github.com/stavxyz/graftpunk/issues/174.
         """
         if not self.requires_session:
             return requests.Session()

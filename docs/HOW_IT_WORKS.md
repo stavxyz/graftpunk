@@ -100,6 +100,23 @@ Sessions have a configurable TTL (`GRAFTPUNK_SESSION_TTL_HOURS`). Metadata track
 
 An HTTPie-compatible session file can also be exported alongside the cache, falling back gracefully (with a warning log) if cookie extraction fails due to browser state issues.
 
+### Multi-Account Sessions
+
+Sessions are keyed by plugin **and** account: `gp myshop login` as alice caches
+`myshop@alice`; a second login as bob caches `myshop@bob` beside it, and logging
+in never evicts another account's session. The label defaults to the slugified
+login identifier; `gp myshop login --as work` pins a label. Metadata records the
+identifier (what was typed at login, not server-verified), shown in
+`gp session list`'s Account column.
+
+Which session a command uses is resolved once per invocation:
+`--session` > `GRAFTPUNK_SESSION` > `.gp-session` in the working directory >
+the plugin's cached sessions (exactly one → used; several → the command refuses
+and lists them — never "most recent wins"). The same resolved name keys every
+write-back, so a refresh can never fork into another slot. `GraftpunkClient`
+resolves the same way but deliberately ignores the ambient env/file tiers; pass
+`GraftpunkClient("site", session="myshop@alice")` to pin.
+
 ### Loading
 
 For CLI commands, sessions are loaded without a browser:
