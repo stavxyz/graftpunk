@@ -172,6 +172,7 @@ class TestMetadataConversion:
             "status",
             "storage_backend",
             "storage_location",
+            "account_identifier",
         }
         assert set(data.keys()) == expected_keys
 

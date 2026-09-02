@@ -5,6 +5,22 @@ from typing import Any
 import pytest
 
 
+@pytest.fixture()
+def fresh_backend(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
+    """A private tmp cache dir + a reset of cache.py's backend singleton.
+
+    ``isolated_config`` (autouse) isolates GRAFTPUNK_CONFIG_DIR, but the
+    module-global storage-backend singleton survives across tests; reset it
+    on both sides so each test builds its backend from this test's env.
+    """
+    from graftpunk import cache as cache_mod
+
+    monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+    cache_mod._reset_session_storage_backend()
+    yield
+    cache_mod._reset_session_storage_backend()
+
+
 def close_coro_and_return(return_value: Any = None) -> Any:
     """Create a side_effect function that closes coroutines to avoid RuntimeWarnings.
 

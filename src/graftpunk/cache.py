@@ -27,8 +27,11 @@ from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data
 from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
-from graftpunk.session_identity import validate_session_name  # noqa: F401  (public re-export)
-from graftpunk.storage.base import SessionMetadata
+from graftpunk.session_identity import (
+    GP_ACCOUNT_ATTR,
+    validate_session_name,  # noqa: F401  (public re-export)
+)
+from graftpunk.storage.base import SessionMetadata, metadata_to_dict
 
 if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
@@ -160,6 +163,7 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
         Dictionary with extracted metadata
     """
     metadata: dict[str, Any] = {"name": session_name}
+    metadata["account_identifier"] = getattr(session, GP_ACCOUNT_ATTR, None)
 
     # Extract domain from current_url
     current_url = getattr(session, "current_url", None)
@@ -216,20 +220,7 @@ def get_session_metadata(
         return None
 
     # Convert SessionMetadata to dict for API compatibility
-    return {
-        "name": metadata.name,
-        "checksum": metadata.checksum,
-        "created_at": metadata.created_at.isoformat(),
-        "modified_at": metadata.modified_at.isoformat(),
-        "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
-        "domain": metadata.domain,
-        "current_url": metadata.current_url,
-        "cookie_count": metadata.cookie_count,
-        "cookie_domains": metadata.cookie_domains,
-        "status": metadata.status,
-        "storage_backend": metadata.storage_backend,
-        "storage_location": metadata.storage_location,
-    }
+    return metadata_to_dict(metadata)
 
 
 def cache_session(session: T, session_name: str | None = None) -> str:
@@ -279,6 +270,7 @@ def cache_session(session: T, session_name: str | None = None) -> str:
             cookie_count=raw_metadata.get("cookie_count", 0),
             cookie_domains=raw_metadata.get("cookie_domains", []),
             status="active",
+            account_identifier=raw_metadata.get("account_identifier"),
         )
 
         # Save to backend
@@ -645,6 +637,14 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         csrf_tokens = getattr(api_session, _CSRF_TOKENS_ATTR, None)
         if csrf_tokens is not None:
             setattr(original, _CSRF_TOKENS_ATTR, dict(csrf_tokens))
+        # A BrowserSession round-trips GP_ACCOUNT_ATTR through pickle on its own
+        # (session.py's __getstate__/__setstate__); a plain requests.Session
+        # does not (it pickles via its __attrs__ whitelist). Fall back to the
+        # previously stored metadata so identity survives this refresh either way.
+        if getattr(original, GP_ACCOUNT_ATTR, None) is None:
+            stored_metadata = get_session_metadata(session_name)
+            if stored_metadata is not None and stored_metadata.get("account_identifier"):
+                setattr(original, GP_ACCOUNT_ATTR, stored_metadata["account_identifier"])
         cache_session(original, session_name)
         LOG.info("session_cookies_updated", session_name=session_name)
     except Exception as exc:  # noqa: BLE001 — best-effort save
@@ -687,22 +687,7 @@ def list_sessions_with_metadata(
     for name in names:
         metadata = backend.get_session_metadata(name)
         if metadata is not None:
-            results.append(
-                {
-                    "name": metadata.name,
-                    "checksum": metadata.checksum,
-                    "created_at": metadata.created_at.isoformat(),
-                    "modified_at": metadata.modified_at.isoformat(),
-                    "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
-                    "domain": metadata.domain,
-                    "current_url": metadata.current_url,
-                    "cookie_count": metadata.cookie_count,
-                    "cookie_domains": metadata.cookie_domains,
-                    "status": metadata.status,
-                    "storage_backend": metadata.storage_backend,
-                    "storage_location": metadata.storage_location,
-                }
-            )
+            results.append(metadata_to_dict(metadata))
 
     return sorted(results, key=lambda x: x.get("modified_at", ""), reverse=True)
 

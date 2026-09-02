@@ -41,6 +41,7 @@ from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage
+from graftpunk.session_identity import GP_ACCOUNT_ATTR
 
 LOG = get_logger(__name__)
 
@@ -567,7 +568,8 @@ class BrowserSession(requestium.Session):
 
         if backend_type == "nodriver":
             # For nodriver, we only need minimal state (cookies from requests.Session).
-            # requests.Session has no custom __getstate__, so we build state manually.
+            # requests.Session pickles via its __attrs__ whitelist, so we build
+            # nodriver state manually.
             state: dict[str, Any] = {}
             state["_backend_type"] = backend_type
             state["_use_stealth"] = getattr(self, "_use_stealth", False)
@@ -586,6 +588,7 @@ class BrowserSession(requestium.Session):
             state["current_url"] = current_url
             state["_gp_header_roles"] = getattr(self, "_gp_header_roles", {})
             state[_GP_CACHED_TOKENS] = getattr(self, _GP_CACHED_TOKENS, {})
+            state[GP_ACCOUNT_ATTR] = getattr(self, GP_ACCOUNT_ATTR, None)
             return state
 
         # Selenium/requestium path
@@ -614,6 +617,7 @@ class BrowserSession(requestium.Session):
         state["_use_stealth"] = getattr(self, "_use_stealth", True)
         state["_gp_header_roles"] = getattr(self, "_gp_header_roles", {})
         state[_GP_CACHED_TOKENS] = getattr(self, _GP_CACHED_TOKENS, {})
+        state[GP_ACCOUNT_ATTR] = getattr(self, GP_ACCOUNT_ATTR, None)
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -655,6 +659,9 @@ class BrowserSession(requestium.Session):
             self._backend_instance = None  # No browser restored
             self._gp_header_roles = state.get("_gp_header_roles", {})
             self._gp_cached_tokens = state.get(_GP_CACHED_TOKENS, {})
+            account = state.get(GP_ACCOUNT_ATTR)
+            if account is not None:
+                setattr(self, GP_ACCOUNT_ATTR, account)
         else:
             # Selenium/requestium path
             # requestium/requests don't define __setstate__, so this resolves
@@ -666,6 +673,9 @@ class BrowserSession(requestium.Session):
             self.__dict__.update(state)
             self._gp_header_roles = state.get("_gp_header_roles", {})
             self._gp_cached_tokens = state.get(_GP_CACHED_TOKENS, {})
+            account = state.get(GP_ACCOUNT_ATTR)
+            if account is not None:
+                setattr(self, GP_ACCOUNT_ATTR, account)
 
             # Only transfer cookies to driver if we have one
             # (for API-only usage, _driver will be None)
