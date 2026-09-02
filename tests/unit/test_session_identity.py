@@ -108,3 +108,50 @@ class TestDerivation:
             None,
             None,
         )
+
+
+class TestOperatingName:
+    def test_explicit_flag_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@env")
+        got = compute_operating_session_name("myshop@flag", "myshop", ["myshop@a", "myshop@b"])
+        assert got == "myshop@flag"
+
+    def test_env_beats_file_and_resolution(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@env")
+        (tmp_path / ".gp-session").write_text("myshop@file")
+        monkeypatch.chdir(tmp_path)
+        got = compute_operating_session_name(None, "myshop", ["myshop@a", "myshop@b"])
+        assert got == "myshop@env"
+
+    def test_file_beats_resolution(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+        (tmp_path / ".gp-session").write_text("myshop@file")
+        monkeypatch.chdir(tmp_path)
+        got = compute_operating_session_name(None, "myshop", ["myshop@a", "myshop@b"])
+        assert got == "myshop@file"
+
+    def test_falls_through_to_account_resolution(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+        monkeypatch.chdir(tmp_path)
+        assert compute_operating_session_name(None, "myshop", ["myshop@a"]) == "myshop@a"
+
+    def test_use_ambient_false_skips_env_and_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@env")
+        (tmp_path / ".gp-session").write_text("myshop@file")
+        monkeypatch.chdir(tmp_path)
+        got = compute_operating_session_name(None, "myshop", ["myshop@a"], use_ambient=False)
+        assert got == "myshop@a"

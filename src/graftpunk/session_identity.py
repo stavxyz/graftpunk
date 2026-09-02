@@ -3,6 +3,12 @@
 This module owns everything about what a session name *means*. It imports
 nothing from ``graftpunk.cache`` (callers hand it data), so naming/identity
 policy sits above storage mechanism and stays cycle-free (#151).
+
+**Contract for future contributors:** This is a pure-policy core plus ONE
+composition function that reads ambient state (:func:`compute_operating_session_name`);
+new functions here take data as arguments. If the precedence chain ever grows a
+second axis — another tier, another skip-flag — split it into named entry points
+or have callers pass the ambient value in, rather than adding a second boolean.
 """
 
 from __future__ import annotations
@@ -119,3 +125,28 @@ def derive_account_identity(
         return (None, None)
     label = slugify(identifier)
     return (identifier, label or None)
+
+
+def compute_operating_session_name(
+    explicit: str | None,
+    base_name: str,
+    existing_names: Iterable[str],
+    *,
+    use_ambient: bool = True,
+) -> str:
+    """The one home of the precedence chain: flag > env > .gp-session > resolution.
+
+    ``use_ambient=False`` (the Python API's deliberate mode) skips the env and
+    per-directory tiers: library code is not steered by ambient shell state.
+    Raises :class:`AmbiguousSessionError` when nothing selects and several
+    sessions are cached for *base_name*.
+    """
+    if explicit:
+        return explicit
+    if use_ambient:
+        from graftpunk.session_context import get_active_session
+
+        ambient = get_active_session()
+        if ambient:
+            return ambient
+    return resolve_account_session(base_name, existing_names)
