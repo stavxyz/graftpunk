@@ -96,3 +96,15 @@ class TestDerivation:
 
     def test_attr_name_constant(self) -> None:
         assert GP_ACCOUNT_ATTR == "_gp_account_identifier"
+
+    def test_secret_field_skipped_even_when_identifier_keyword_matches(self) -> None:
+        fields = {"login_token": "tok-abc", "username": "alice@example.com", "password": "x"}
+        identifier, label = derive_account_identity(fields, SECRETS)
+        assert identifier == "alice@example.com"
+        assert label == "alice-example-com"
+
+    def test_all_fields_secret_yields_none(self) -> None:
+        assert derive_account_identity({"api_token": "t", "password": "x"}, SECRETS) == (
+            None,
+            None,
+        )

@@ -89,20 +89,28 @@ def derive_account_identity(
 ) -> tuple[str | None, str | None]:
     """Derive ``(identifier, label)`` from resolved login fields.
 
-    The identifier is the value of the first field whose name contains an
-    identifier keyword (keyword-major order); failing that, the first field
-    that is not secret per *secret_keywords*. The label is the slugified
-    identifier. Returns ``(None, None)`` when nothing usable exists — the
-    session then keeps its bare legacy name.
+    The identifier is the value of the first non-secret field whose name
+    contains an identifier keyword (keyword-major order); failing that, the
+    first field that is not secret per *secret_keywords*. A field name
+    matching a secret keyword is never picked as the identifier — even when
+    it also matches an identifier keyword (e.g. ``login_token`` matches both
+    "login" and "token") — because the identifier becomes a persisted,
+    human-visible session label. The label is the slugified identifier.
+    Returns ``(None, None)`` when nothing usable exists — the session then
+    keeps its bare legacy name.
     """
+
+    def is_secret(field_name: str) -> bool:
+        lowered = field_name.lower()
+        return any(k in lowered for k in secret_keywords)
 
     def pick() -> str | None:
         for keyword in _IDENTIFIER_KEYWORDS:
             for field_name, value in fields.items():
-                if keyword in field_name.lower() and value:
+                if keyword in field_name.lower() and value and not is_secret(field_name):
                     return value
         for field_name, value in fields.items():
-            if not any(k in field_name.lower() for k in secret_keywords) and value:
+            if value and not is_secret(field_name):
                 return value
         return None
 
