@@ -331,6 +331,17 @@ class TestLoginWrapperOrchestration:
         assert "was recorded for bob@example.com" in result.output
         assert "replaces it as alice" in result.output
 
+    def test_advisory_failure_never_fails_a_successful_login(self) -> None:
+        """The verdict is sealed before the advisory block: a raise there is a hint lost."""
+        with patch(
+            "graftpunk.cli.login_commands.get_active_session",
+            side_effect=FileNotFoundError("cwd was removed"),
+        ):
+            result = _invoke(_hand_written_login_plugin(), ["fmtsite", "login"], **_CREDS)
+        assert result.exit_code == 0, result.output
+        assert "Logged in to fmtsite (session cached)" in result.output
+        assert "Login failed" not in result.output
+
     def test_command_decorated_login_bypasses_derivation(self) -> None:
         plugin = _command_login_plugin()
         rejected = _invoke(plugin, ["fmtsite", "login", "--as", "work"], **_CREDS)

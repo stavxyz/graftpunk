@@ -25,6 +25,7 @@ from graftpunk.plugins.cli_plugin import (
     has_declarative_login,
 )
 from graftpunk.plugins.login_engine import generate_login_method
+from graftpunk.session_context import get_active_session
 from graftpunk.session_identity import (
     GP_ACCOUNT_ATTR,
     derive_account_identity,
@@ -342,18 +343,6 @@ def make_login_body(
                     result=repr(result),
                 )
             gp_console.success(f"Logged in to {plugin.site_name} (session cached)")
-            # Only after a SUCCESSFUL login: compare and warn (single emission
-            # path; the fetch happened before the callable ran).
-            _warn_if_slot_changes_hands_post(stored_before, identifier, target_name)
-            gp_console.info(f"Cached session: {target_name}")
-            from graftpunk.session_context import get_active_session
-
-            current = get_active_session()
-            if current and current != target_name:
-                gp_console.info(
-                    f"This shell is pinned to {current} — "
-                    f"run: gp session use {target_name} to switch"
-                )
         except (SystemExit, KeyboardInterrupt):
             raise
         except Exception as exc:  # noqa: BLE001 — CLI boundary: present user-friendly error instead of traceback
@@ -365,6 +354,29 @@ def make_login_body(
             )
             gp_console.error(f"Login failed: {exc}")
             raise SystemExit(1) from exc
+
+        # Advisory only, and only after a SUCCESSFUL login: the verdict above is
+        # already sealed (a failure exited), so nothing here can turn a cached
+        # login into "Login failed". get_active_session() reads the environment
+        # (cwd, .gp-session) and can raise on a removed cwd or an unreadable
+        # file; that must cost the user a hint, not the login.
+        try:
+            _warn_if_slot_changes_hands_post(stored_before, identifier, target_name)
+            gp_console.info(f"Cached session: {target_name}")
+            current = get_active_session()
+            if current and current != target_name:
+                gp_console.info(
+                    f"This shell is pinned to {current} — "
+                    f"run: gp session use {target_name} to switch"
+                )
+        except Exception as exc:  # noqa: BLE001 — advisory output; the login already succeeded
+            LOG.warning(
+                "post_login_advisory_failed",
+                plugin=plugin.site_name,
+                session=target_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
 
     return body
 
