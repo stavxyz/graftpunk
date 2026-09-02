@@ -15,6 +15,22 @@ LOG = get_logger(__name__)
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
 
+def session_dirname(session_name: str) -> str:
+    """Map a session name to its observe run-dir name.
+
+    The single source of truth for that mapping: a session name like
+    ``myshop@alice`` is not a safe directory component (``@`` fails
+    :data:`_SAFE_NAME_RE`), so the opt-in login capture slugifies it before
+    handing it to :class:`ObserveStorage` (e.g. ``myshop@alice`` ->
+    ``myshop-alice``). Every lookup site (``gp observe ls/show/clean``) must
+    apply this exact same transformation to a user-supplied name, or
+    labelled runs become undiscoverable (#151).
+    """
+    from slugify import slugify
+
+    return slugify(session_name) or "default"
+
+
 class ObserveStorage:
     """File-based storage for observability data.
 

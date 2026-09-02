@@ -1084,6 +1084,31 @@ class TestObserveCLICommands:
         output = strip_ansi(result.output)
         assert "No observe data" in output or "no observe" in output.lower()
 
+    def test_observe_show_finds_slugified_labelled_session_dir(self, tmp_path):
+        """A labelled session ("myshop@alice") is written by the login capture
+        under its slugified name ("myshop-alice"); the lookup must apply the
+        same transformation or the run is undiscoverable (#151)."""
+        run_dir = tmp_path / "myshop-alice" / "20260101-120000"
+        run_dir.mkdir(parents=True)
+        (run_dir / "events.jsonl").write_text("")
+
+        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+            result = runner.invoke(app, ["observe", "show", "myshop@alice"])
+
+        assert result.exit_code == 0, result.output
+        assert "myshop-alice" in strip_ansi(result.output)
+
+    def test_observe_show_bare_name_still_finds_unlabelled_dir(self, tmp_path):
+        """A bare (unlabelled) session name keeps finding its own dir unchanged."""
+        run_dir = tmp_path / "myshop" / "20260101-120000"
+        run_dir.mkdir(parents=True)
+        (run_dir / "events.jsonl").write_text("")
+
+        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+            result = runner.invoke(app, ["observe", "show", "myshop"])
+
+        assert result.exit_code == 0, result.output
+
 
 class TestObserveSessionFlag:
     """Tests for --session flag on observe command group."""
@@ -1572,9 +1597,22 @@ class TestObserveNamesAreNotMarkup:
         from graftpunk.cli import main as cli_main
 
         base = tmp_path / "observe"
-        run_dir = base / "evil [bold]" / "run [red]"
-        run_dir.mkdir(parents=True)
-        (run_dir / "network [dim].har").write_text("{}")
+        # A directory literally named with markup, as if it predates (or
+        # bypassed) the writer's slugify — `observe list` enumerates disk
+        # entries directly (no lookup transform), so its raw name must
+        # still render escaped rather than as Rich markup.
+        list_run_dir = base / "evil [bold]" / "run [red]"
+        list_run_dir.mkdir(parents=True)
+        (list_run_dir / "network [dim].har").write_text("{}")
+
+        # `observe show` slugifies the user-typed name to find the run dir,
+        # matching the writer's transformation (#151) — so the discoverable
+        # dir sits at the slugified path. The user-typed name is still
+        # echoed back unslugified and must render escaped.
+        show_run_dir = base / "evil-bold" / "run [red]"
+        show_run_dir.mkdir(parents=True)
+        (show_run_dir / "network [dim].har").write_text("{}")
+
         monkeypatch.setattr(cli_main, "OBSERVE_BASE_DIR", base)
         runner = CliRunner()
 

@@ -155,3 +155,23 @@ class TestOperatingName:
         monkeypatch.chdir(tmp_path)
         got = compute_operating_session_name(None, "myshop", ["myshop@a"], use_ambient=False)
         assert got == "myshop@a"
+
+    def test_foreign_base_ambient_is_ignored(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@alice")
+        monkeypatch.chdir(tmp_path)
+        got = compute_operating_session_name(None, "othersite", ["othersite@bob"])
+        assert got == "othersite@bob"
+
+    def test_matching_base_ambient_still_pins(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@alice")
+        monkeypatch.chdir(tmp_path)
+        got = compute_operating_session_name(None, "myshop", ["myshop@alice", "myshop@bob"])
+        assert got == "myshop@alice"

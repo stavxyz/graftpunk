@@ -389,15 +389,13 @@ def _start_login_capture(
     # capture needs a get_tab callable for the tab that the login opens, and
     # its eager body fetch only runs from start_capture_async(), neither of
     # which BrowserSession's sync _start_observe can provide.
-    import slugify as slugify_lib
-
     from graftpunk.observe import OBSERVE_BASE_DIR
     from graftpunk.observe.run import make_run_id
-    from graftpunk.observe.storage import ObserveStorage
+    from graftpunk.observe.storage import ObserveStorage, session_dirname
 
     # Opt-in diagnostics must never break the login: an unsafe session name or
     # an unwritable base dir degrades to the header-only capture with a warning.
-    session_slug = slugify_lib.slugify(plugin.session_name) or "default"
+    session_slug = session_dirname(plugin.session_name)
     try:
         storage = ObserveStorage(OBSERVE_BASE_DIR, session_slug, make_run_id())
     except (ValueError, OSError) as exc:

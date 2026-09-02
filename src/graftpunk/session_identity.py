@@ -151,6 +151,15 @@ def compute_operating_session_name(
 ) -> str:
     """The one home of the precedence chain: flag > env > .gp-session > resolution.
 
+    The ambient tier (env ``GRAFTPUNK_SESSION`` / ``.gp-session``, read via
+    :func:`graftpunk.session_context.get_active_session`) is base-scoped: it
+    applies only when the ambient name belongs to *base_name*
+    (``split_session_name(ambient)[0] == base_name``). An ambient name for a
+    different base is ignored and resolution falls through to
+    :func:`resolve_account_session`. The *explicit* argument is NOT
+    base-scoped: an explicit ``--session`` always wins outright, whatever its
+    base.
+
     ``use_ambient=False`` (the Python API's deliberate mode) skips the env and
     per-directory tiers: library code is not steered by ambient shell state.
     Raises :class:`AmbiguousSessionError` when nothing selects and several
@@ -162,6 +171,6 @@ def compute_operating_session_name(
         from graftpunk.session_context import get_active_session
 
         ambient = get_active_session()
-        if ambient:
+        if ambient and split_session_name(ambient)[0] == base_name:
             return ambient
     return resolve_account_session(base_name, existing_names)

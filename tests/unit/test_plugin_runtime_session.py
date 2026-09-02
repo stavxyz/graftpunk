@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import requests
 
+from graftpunk.exceptions import SessionNotFoundError
 from tests.unit.cli_harness import invoke_plugin_app as _invoke
 
 
@@ -68,3 +69,25 @@ class TestOperatingNameOnPluginPath:
         result = _invoke(_plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="myshop@alice")
         assert result.exit_code == 0, result.output
         assert mock_load.call_args[0][0] == "myshop@alice"
+
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions", return_value=["myshop@alice"])
+    def test_foreign_base_env_var_does_not_steer(self, _ls, mock_load) -> None:  # noqa: ANN001
+        """A GRAFTPUNK_SESSION for a different base is ignored (#151); the
+        plugin resolves normally against its own cached sessions."""
+        mock_load.return_value = requests.Session()
+        result = _invoke(
+            _plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="othersite@someone-else"
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_load.call_args[0][0] == "myshop@alice"
+
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions", return_value=[])
+    def test_not_found_names_the_operating_session(self, _ls, mock_load) -> None:  # noqa: ANN001
+        """The not-found error names the flagged/computed operating session
+        (myshop@wronglabel), not the plugin's bare base name (#151)."""
+        mock_load.side_effect = SessionNotFoundError("Session not found")
+        result = _invoke(_plugin(), ["fmtsite", "items", "--session", "myshop@wronglabel"])
+        assert result.exit_code != 0
+        assert "myshop@wronglabel" in result.output

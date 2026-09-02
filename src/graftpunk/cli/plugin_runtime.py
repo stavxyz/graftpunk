@@ -33,7 +33,8 @@ from graftpunk.observe import build_observe_context
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, CommandSpec
 from graftpunk.plugins.formatters import format_output
 from graftpunk.session import BrowserSession
-from graftpunk.session_identity import compute_operating_session_name
+from graftpunk.session_context import get_active_session
+from graftpunk.session_identity import compute_operating_session_name, split_session_name
 
 LOG = get_logger(__name__)
 _format_console = Console()
@@ -82,6 +83,17 @@ def run_plugin_command(
     operating_name = ""
     try:
         if needs_session:
+            # Session-identity policy stays logging-free (#151); log the
+            # base-scoped ambient-ignore decision here, at the one CLI call
+            # site, instead of importing graftpunk.logging into that module.
+            if not explicit_session:
+                ambient = get_active_session()
+                if ambient and split_session_name(ambient)[0] != plugin.session_name:
+                    LOG.debug(
+                        "ambient_session_ignored_foreign_base",
+                        ambient=ambient,
+                        base=plugin.session_name,
+                    )
             operating_name = compute_operating_session_name(
                 explicit_session or None, plugin.session_name, list_sessions()
             )
@@ -89,9 +101,7 @@ def run_plugin_command(
         else:
             session = requests.Session()
     except SessionNotFoundError:
-        gp_console.error(
-            f"Session '{plugin.session_name}' not found. Please create a session first."
-        )
+        gp_console.error(f"Session '{operating_name}' not found. Please create a session first.")
         raise SystemExit(1) from None
     except PluginError as exc:
         gp_console.error(f"Plugin error: {exc}")
