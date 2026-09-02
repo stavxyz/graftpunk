@@ -1041,10 +1041,10 @@ class TestUpdateSessionCookies:
         api_session.cookies.set("new_cookie", "new_value")
 
         with (
-            patch("graftpunk.cache.load_session") as mock_load,
+            patch("graftpunk.cache._load_session_with_metadata") as mock_load,
             patch("graftpunk.cache.cache_session") as mock_cache,
         ):
-            mock_load.return_value = cached_session
+            mock_load.return_value = (cached_session, MagicMock())
             update_session_cookies(api_session, "testsession")
             mock_load.assert_called_once_with("testsession")
             mock_cache.assert_called_once_with(cached_session, "testsession")
@@ -1054,7 +1054,7 @@ class TestUpdateSessionCookies:
         import requests
 
         api_session = requests.Session()
-        with patch("graftpunk.cache.load_session", side_effect=Exception("corrupt")):
+        with patch("graftpunk.cache._load_session_with_metadata", side_effect=Exception("corrupt")):
             update_session_cookies(api_session, "badsession")  # Should not raise
 
     def test_cache_failure_logs_warning_and_returns(self) -> None:
@@ -1066,7 +1066,10 @@ class TestUpdateSessionCookies:
         api_session = requests.Session()
 
         with (
-            patch("graftpunk.cache.load_session", return_value=cached_session),
+            patch(
+                "graftpunk.cache._load_session_with_metadata",
+                return_value=(cached_session, MagicMock()),
+            ),
             patch("graftpunk.cache.cache_session", side_effect=OSError("disk full")),
         ):
             update_session_cookies(api_session, "testsession")  # Should not raise
@@ -1087,7 +1090,10 @@ class TestUpdateSessionCookies:
         setattr(api_session, _CACHE_ATTR, token_cache)
 
         with (
-            patch("graftpunk.cache.load_session", return_value=cached_session) as mock_load,
+            patch(
+                "graftpunk.cache._load_session_with_metadata",
+                return_value=(cached_session, MagicMock()),
+            ) as mock_load,
             patch("graftpunk.cache.cache_session") as mock_cache,
         ):
             update_session_cookies(api_session, "testsession")
@@ -1111,7 +1117,10 @@ class TestUpdateSessionCookies:
         setattr(api_session, _CSRF_TOKENS_ATTR, csrf_tokens)
 
         with (
-            patch("graftpunk.cache.load_session", return_value=cached_session),
+            patch(
+                "graftpunk.cache._load_session_with_metadata",
+                return_value=(cached_session, MagicMock()),
+            ),
             patch("graftpunk.cache.cache_session"),
         ):
             update_session_cookies(api_session, "testsession")

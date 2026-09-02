@@ -313,6 +313,21 @@ def load_session(name: str) -> SessionLike:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be decrypted or has invalid structure.
     """
+    session, _metadata = _load_session_with_metadata(name)
+    return session
+
+
+def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata]:
+    """Load a cached session together with the SessionMetadata already fetched
+    during that same backend read.
+
+    ``load_session`` delegates here and discards the metadata half; callers
+    that need both (e.g. ``update_session_cookies``, which must recover
+    ``account_identifier`` when the unpickled session dropped it) call this
+    directly instead of pairing ``load_session`` with a second metadata read.
+
+    Args/Returns/Raises: see ``load_session``; returns ``(session, metadata)``.
+    """
     backend = _get_session_storage_backend()
     settings = get_settings()
 
@@ -364,7 +379,7 @@ def load_session(name: str) -> SessionLike:
             )
 
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
-        return session
+        return session, metadata
 
     except (SessionNotFoundError, SessionExpiredError):
         raise
@@ -617,7 +632,7 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         session_name: Name of the cached session to update.
     """
     try:
-        original = load_session(session_name)
+        original, stored_metadata = _load_session_with_metadata(session_name)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
             "session_save_skipped_load_failed",
@@ -640,11 +655,11 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         # A BrowserSession round-trips GP_ACCOUNT_ATTR through pickle on its own
         # (session.py's __getstate__/__setstate__); a plain requests.Session
         # does not (it pickles via its __attrs__ whitelist). Fall back to the
-        # previously stored metadata so identity survives this refresh either way.
-        if getattr(original, GP_ACCOUNT_ATTR, None) is None:
-            stored_metadata = get_session_metadata(session_name)
-            if stored_metadata is not None and stored_metadata.get("account_identifier"):
-                setattr(original, GP_ACCOUNT_ATTR, stored_metadata["account_identifier"])
+        # identifier already returned by this load's metadata (stored_metadata,
+        # from the same backend read — no extra backend call) so identity
+        # survives this refresh either way.
+        if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
+            setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
         cache_session(original, session_name)
         LOG.info("session_cookies_updated", session_name=session_name)
     except Exception as exc:  # noqa: BLE001 — best-effort save

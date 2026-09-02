@@ -139,6 +139,38 @@ def test_identity_survives_load_and_refresh_recache(fresh_backend) -> None:  # n
     assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
 
 
+def test_update_session_cookies_recovers_identifier_without_extra_read(
+    fresh_backend, monkeypatch
+) -> None:
+    """update_session_cookies must recover account_identifier from the metadata
+    its own load already returned, not via a second backend.get_session_metadata
+    call — that would double a round-trip (remote on S3/Supabase)."""
+    import requests
+
+    from graftpunk import cache as cache_mod
+    from graftpunk.cache import cache_session, get_session_metadata, update_session_cookies
+
+    s = requests.Session()
+    setattr(s, GP_ACCOUNT_ATTR, "alice@example.com")
+    cache_session(s, "myshop@alice")
+
+    backend = cache_mod._get_session_storage_backend()
+    calls = {"n": 0}
+    real_get_session_metadata = backend.get_session_metadata
+
+    def _counting_get_session_metadata(name):  # noqa: ANN001, ANN202
+        calls["n"] += 1
+        return real_get_session_metadata(name)
+
+    monkeypatch.setattr(backend, "get_session_metadata", _counting_get_session_metadata)
+
+    api = requests.Session()  # a fresh API-side session for the refresh (no identifier set)
+    update_session_cookies(api, "myshop@alice")
+
+    assert calls["n"] == 0
+    assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
+
+
 def test_backend_protocol_docstring_states_charset() -> None:
     from graftpunk.storage.base import SessionStorageBackend
 
