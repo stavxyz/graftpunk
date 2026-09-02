@@ -14,6 +14,7 @@ from typing import Any, Literal
 import typer
 
 from graftpunk import console as gp_console
+from graftpunk.cache import list_sessions
 from graftpunk.cli.login_commands import (
     resolve_login_callable,
     resolve_login_fields,
@@ -25,6 +26,7 @@ from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
     CommandSpec,
 )
+from graftpunk.session_identity import compute_operating_session_name, split_session_name
 
 LOG = get_logger(__name__)
 
@@ -361,6 +363,11 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     return result.registered
 
 
+def _session_base_matches(session_name: str, base: str) -> bool:
+    """True when *session_name* belongs to the plugin whose base name is *base*."""
+    return split_session_name(session_name)[0] == base
+
+
 def get_plugin_for_session(session_name: str) -> CLIPluginProtocol | None:
     """Look up the plugin instance that owns a given session name.
 
@@ -371,16 +378,26 @@ def get_plugin_for_session(session_name: str) -> CLIPluginProtocol | None:
         The plugin instance, or None if no plugin owns this session.
     """
     for plugin in _registered_plugins_for_teardown:
-        if _plugin_session_map.get(plugin.site_name) == session_name:
+        mapped_base = _plugin_session_map.get(plugin.site_name)
+        if mapped_base is not None and _session_base_matches(session_name, mapped_base):
             return plugin
     return None
 
 
 def resolve_session_name(name: str) -> str:
-    """Resolve a name to a session name via plugin site_name mapping.
+    """Resolve a name to an operating session name.
 
-    If name matches a registered plugin's site_name, returns that plugin's
-    session_name. Otherwise returns name unchanged (it may be a literal
-    session name).
+    A registered plugin site name maps to its base ``session_name`` and then
+    through account resolution (one cached -> that one; several -> raise
+    AmbiguousSessionError; zero -> the base, so the not-found path is
+    unchanged). Anything else — including full ``base@label`` names — passes
+    through unchanged.
     """
-    return _plugin_session_map.get(name, name)
+    if name in _plugin_session_map:
+        # The typed argument is the explicit tier; ambient pins do not
+        # re-steer an explicitly named site. The tier subset is declared
+        # through the one chain function, not encoded by which tier we call.
+        return compute_operating_session_name(
+            None, _plugin_session_map[name], list_sessions(), use_ambient=False
+        )
+    return name

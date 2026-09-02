@@ -29,6 +29,7 @@ def _make_session(
     storage_backend: str = "local",
     storage_location: str = "~/.config/graftpunk/sessions",
     cookie_domains: list[str] | None = None,
+    account_identifier: str | None = None,
 ) -> dict:
     """Build a session metadata dict with sensible defaults."""
     return {
@@ -42,6 +43,7 @@ def _make_session(
         "storage_backend": storage_backend,
         "storage_location": storage_location,
         "cookie_domains": cookie_domains or [],
+        "account_identifier": account_identifier,
     }
 
 
@@ -67,7 +69,7 @@ class TestSessionListDisplay:
             _make_session(storage_location="s3://b"),
         ]
 
-        result = runner.invoke(session_app, ["list"])
+        result = runner.invoke(session_app, ["list"], env={"COLUMNS": "200"})
 
         assert result.exit_code == 0
         output = strip_ansi(result.output)
@@ -327,3 +329,75 @@ class TestNamesAreNotMarkup:
         result = runner.invoke(session_app, ["export", "evil [/x]"])
         assert result.exit_code == 0, result.output
         assert "http --session=evil [/x]" in result.output
+
+
+class TestAccountColumn:
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_list_shows_account(self, mock_list) -> None:  # noqa: ANN001
+        mock_list.return_value = [
+            _make_session(name="myshop@alice", account_identifier="alice@example.com"),
+            _make_session(name="myshop"),
+        ]
+        result = runner.invoke(session_app, ["list"], env={"COLUMNS": "220"})
+        assert result.exit_code == 0, result.output
+        assert "Account" in result.output
+        assert "alice@example.com" in result.output
+
+    def test_list_shows_account_from_the_real_data_path(self, fresh_backend) -> None:  # noqa: ANN001
+        """No mocks: cache on the real local backend, list through production code."""
+        import requests
+
+        from graftpunk.cache import cache_session
+        from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+        s = requests.Session()
+        setattr(s, GP_ACCOUNT_ATTR, "alice@example.com")
+        cache_session(s, "myshop@alice")
+        result = runner.invoke(session_app, ["list"], env={"COLUMNS": "220"})
+        assert result.exit_code == 0, result.output
+        assert "alice@example.com" in result.output
+
+
+def test_render_ambiguous_session_is_a_pure_formatter() -> None:
+    """The console renderer formats data handed to it — no storage reads."""
+    import io
+
+    from rich.console import Console
+
+    from graftpunk import console as gp_console
+
+    buf = Console(file=io.StringIO(), width=200)
+    gp_console.render_ambiguous_session(
+        "myshop",
+        [("myshop", None), ("myshop@alice", "alice@example.com")],
+        console=buf,
+    )
+    out = buf.file.getvalue()
+    for expected in (
+        "myshop@alice",
+        "alice@example.com",
+        "--session",
+        "GRAFTPUNK_SESSION",
+        "gp session use",
+    ):
+        assert expected in out
+
+
+def test_exit_ambiguous_session_enriches_per_candidate_and_exits(monkeypatch) -> None:  # noqa: ANN001
+    """The CLI boundary owns the identifier lookups, one per candidate."""
+    import pytest
+
+    from graftpunk.cli import errors as cli_errors
+    from graftpunk.exceptions import AmbiguousSessionError
+
+    fetched = []
+
+    def fake_meta(name):  # noqa: ANN001, ANN202
+        fetched.append(name)
+        return {"account_identifier": f"{name}@example.com"}
+
+    monkeypatch.setattr(cli_errors, "get_session_metadata", fake_meta)
+    exc = AmbiguousSessionError("myshop", ["myshop@alice", "myshop@bob"])
+    with pytest.raises(SystemExit):
+        cli_errors.exit_ambiguous_session(exc)
+    assert fetched == ["myshop@alice", "myshop@bob"]

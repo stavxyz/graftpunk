@@ -104,7 +104,7 @@ class TestListCommand:
             }
         ]
 
-        result = runner.invoke(app, ["session", "list"])
+        result = runner.invoke(app, ["session", "list"], env={"COLUMNS": "200"})
 
         assert result.exit_code == 0
         assert "weird-session" in result.output

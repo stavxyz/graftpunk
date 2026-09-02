@@ -18,7 +18,9 @@ from rich.console import Console
 from graftpunk import console as gp_console
 from graftpunk.cache import update_session_cookies
 from graftpunk.cli.command_factory import BUILTIN_OPTIONS
+from graftpunk.cli.errors import exit_ambiguous_session
 from graftpunk.exceptions import (
+    AmbiguousSessionError,
     BrowserError,
     CommandError,
     PluginError,
@@ -85,6 +87,8 @@ def run_plugin_command(
     except PluginError as exc:
         gp_console.error(f"Plugin error: {exc}")
         raise SystemExit(1) from exc
+    except AmbiguousSessionError as exc:
+        exit_ambiguous_session(exc)
     except Exception as exc:  # noqa: BLE001 — CLI boundary
         gp_console.error(f"Failed to load session: {exc}")
         LOG.exception("session_load_failed", plugin=plugin.site_name)

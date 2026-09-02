@@ -29,12 +29,14 @@ import graftpunk
 # ensure_bootstrap() — idempotent, order-owned there.
 from graftpunk import workstation_env
 from graftpunk.cli.config_commands import config_app
+from graftpunk.cli.errors import exit_ambiguous_session
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
 from graftpunk.cli.plugin_commands import resolve_session_name
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
 from graftpunk.console import err_console
+from graftpunk.exceptions import AmbiguousSessionError
 from graftpunk.logging import (
     configure_logging,
     configured_by_consumer,
@@ -218,7 +220,10 @@ def observe_callback(
     else:
         resolved = resolve_session(session)
         if resolved and session:
-            resolved = resolve_session_name(resolved)
+            try:
+                resolved = resolve_session_name(resolved)
+            except AmbiguousSessionError as exc:
+                exit_ambiguous_session(exc)
         obj["observe_session"] = resolved
     if ctx.invoked_subcommand is None:
         console.print(ctx.get_help())

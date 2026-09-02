@@ -3571,3 +3571,45 @@ class TestCommandNaming:
             pass
 
         assert AccountStatements._command_group_meta.name == "acct"
+
+
+class TestAccountAwareResolution:
+    def test_single_labelled_session_resolves(self, monkeypatch) -> None:  # noqa: ANN001
+        from graftpunk.cli import plugin_commands
+
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
+        monkeypatch.setattr(plugin_commands, "list_sessions", lambda: ["myshop@alice"])
+        assert plugin_commands.resolve_session_name("fmtsite") == "myshop@alice"
+
+    def test_several_raise(self, monkeypatch) -> None:  # noqa: ANN001
+        from graftpunk.cli import plugin_commands
+        from graftpunk.exceptions import AmbiguousSessionError
+
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
+        monkeypatch.setattr(plugin_commands, "list_sessions", lambda: ["myshop", "myshop@alice"])
+        with pytest.raises(AmbiguousSessionError):
+            plugin_commands.resolve_session_name("fmtsite")
+
+    def test_full_name_passes_through(self, monkeypatch) -> None:  # noqa: ANN001
+        from graftpunk.cli import plugin_commands
+
+        monkeypatch.setattr(plugin_commands, "list_sessions", lambda: [])
+        assert plugin_commands.resolve_session_name("myshop@alice") == "myshop@alice"
+
+    def test_get_plugin_for_session_matches_labelled(self, monkeypatch) -> None:  # noqa: ANN001
+        from unittest.mock import MagicMock
+
+        from graftpunk.cli import plugin_commands
+
+        plugin = MagicMock()
+        plugin.site_name = "fmtsite"
+        plugin.session_name = "myshop"
+        # Fake the registry state get_plugin_for_session actually consults —
+        # the teardown list it iterates plus the session map it .get()s — and
+        # assert the FUNCTION's own return, not the helper, so a mis-wiring of
+        # _session_base_matches into it would fail here.
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
+        monkeypatch.setattr(plugin_commands, "_registered_plugins_for_teardown", [plugin])
+        resolved = plugin_commands.get_plugin_for_session("myshop@alice")
+        assert resolved is plugin
+        assert plugin_commands._session_base_matches("myshop@alice", "myshop")
