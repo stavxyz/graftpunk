@@ -31,7 +31,7 @@
 - Test: `tests/unit/test_session_identity.py`
 
 **Interfaces:**
-- Consumes: nothing (dependency-free module; `SECRET_KEYWORDS` is passed in by callers).
+- Consumes: `slugify` (python-slugify) and `graftpunk.exceptions` only — nothing from `graftpunk.cache` (`SECRET_KEYWORDS` is passed in by callers).
 - Produces: `GP_ACCOUNT_ATTR = "_gp_account_identifier"`; `split_session_name(name) -> tuple[str, str | None]`; `join_session_name(base, label) -> str`; `validate_session_name(name) -> None`; `resolve_account_session(base_name, existing_names) -> str`; `derive_account_identity(fields, secret_keywords) -> tuple[str | None, str | None]` (identifier, label); `AmbiguousSessionError(base_name, candidates)` with `.base_name` and `.candidates` attributes, exported from `graftpunk`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -277,7 +277,7 @@ def derive_account_identity(
 
 - [ ] **Step 5: Delegate `cache.py`'s validation**
 
-In `src/graftpunk/cache.py`, delete the `_SESSION_NAME_RE` constant (line 55) and the body of `validate_session_name` (lines 63-84), replacing the function with a re-export near the top of the file:
+In `src/graftpunk/cache.py`, delete the `_SESSION_NAME_RE` constant (line 55) and the body of `validate_session_name` (lines 63-83), replacing the function with a re-export near the top of the file:
 
 ```python
 from graftpunk.session_identity import validate_session_name  # noqa: F401  (public re-export)
@@ -291,7 +291,7 @@ In `src/graftpunk/__init__.py`, add `AmbiguousSessionError` to the `from graftpu
 
 - [ ] **Step 7: Run tests, lint, types**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_session_identity.py tests/unit/test_cache_keys.py tests/ -q && uvx ruff check . && uvx ruff format --check . && uvx ty@0.0.75 check src/`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_session_identity.py tests/unit/test_cache.py tests/ -q && uvx ruff check . && uvx ruff format --check . && uvx ty@0.0.75 check src/`
 Expected: all pass (the full suite guards the `cache.py` delegation — several existing tests exercise `validate_session_name`).
 
 - [ ] **Step 8: Commit**
@@ -306,8 +306,10 @@ git commit -m "feat(identity): session_identity module — name@label grammar, d
 ### Task 2: `account_identifier` in metadata + pickle whitelist + backend conformance
 
 **Files:**
-- Modify: `src/graftpunk/storage/base.py:46` (`class SessionMetadata`) through `src/graftpunk/storage/base.py:135` (`class SessionStorageBackend`) (field, serializers, protocol docstring), `src/graftpunk/cache.py:177` (`def _extract_session_metadata`), the `SessionMetadata(...)` construction inside `src/graftpunk/cache.py:260` (`def cache_session`), `src/graftpunk/session.py:554` (`def __getstate__`) and `src/graftpunk/session.py:619` (`def __setstate__`) (both backend paths)
+- Modify: `src/graftpunk/storage/base.py:46` (`class SessionMetadata`) through `src/graftpunk/storage/base.py:135` (`class SessionStorageBackend`) (field, serializers, protocol docstring), `src/graftpunk/storage/local.py:347` (`def _metadata_to_dict`) and `src/graftpunk/storage/local.py:371` (`def _dict_to_metadata`) (**delete** — collapse onto the shared `base.py` pair; they are line-for-line duplicates), `src/graftpunk/cache.py:177` (`def _extract_session_metadata`), the `SessionMetadata(...)` construction inside `src/graftpunk/cache.py:260` (`def cache_session`), the hand-built dicts in `src/graftpunk/cache.py:222` (`def get_session_metadata`) and `src/graftpunk/cache.py:693` (`def list_sessions_with_metadata`), `src/graftpunk/session.py:554` (`def __getstate__`) and `src/graftpunk/session.py:619` (`def __setstate__`) (both backend paths)
 - Test: `tests/unit/test_account_metadata.py`
+
+**`SessionMetadata` is serialized in FOUR places today** — `base.py`'s shared pair (S3/Supabase), `local.py`'s private duplicate pair (the default backend), and the two hand-built dict conversions in `cache.py`. This task owns all four: the local pair is deleted in favour of the shared functions (a net code deletion that makes missed-field bugs unrepresentable there), and the two `cache.py` dicts gain the field explicitly. `GraftpunkSession` needs no pickle change: `update_session_cookies` re-caches the *original* unpickled `BrowserSession`, not the API copy, so the attribute never needs to ride the plain `requests.Session` subclass — recorded here so the spec's open question does not outlive the plan.
 
 **Interfaces:**
 - Consumes: `GP_ACCOUNT_ATTR` from Task 1.
@@ -341,6 +343,10 @@ def _metadata(**kw):  # noqa: ANN003, ANN202
         created_at=datetime.now(UTC),
         modified_at=datetime.now(UTC),
         expires_at=None,
+        domain=None,
+        current_url=None,
+        cookie_count=0,
+        cookie_domains=[],
         storage_backend="local",
         storage_location="~/x",
     )
@@ -390,24 +396,80 @@ def test_identifier_survives_pickle_round_trip(backend_type: str) -> None:
     assert getattr(restored, GP_ACCOUNT_ATTR, None) == "alice@example.com"
 
 
-def test_backend_key_schemes_accept_at(tmp_path) -> None:  # noqa: ANN001
-    """The '@' round-trips through each backend's key/path construction (spec: Naming)."""
-    from graftpunk.storage.local import LocalStorageBackend
-    from graftpunk.storage.s3 import S3StorageBackend
+class TestBackendConformance:
+    """Every backend round-trips a labelled name and its identifier (spec: Naming).
 
-    local = LocalStorageBackend(base_dir=tmp_path)
-    # Local: the session directory is created and named verbatim.
-    d = tmp_path / "myshop@alice"
-    d.mkdir()
-    assert d.name == "myshop@alice"
-    assert "myshop@alice" in local.storage_location or True  # path handling only
+    Parametrized so a fourth backend inherits a failing test, not a reading
+    assignment. Local exercises a real save/get on a tmp dir; S3/Supabase are
+    exercised at their serializer + key-construction seams (no network).
+    """
 
-    key = S3StorageBackend._session_key(
-        S3StorageBackend.__new__(S3StorageBackend), "myshop@alice"
-    )
-    assert "myshop@alice" in key
-    # Supabase paths are string joins of the name — covered by the serializer
-    # round-trip plus this same in-key assertion pattern if its helper exists.
+    def test_local_backend_real_round_trip(self, tmp_path) -> None:  # noqa: ANN001
+        import pickle
+
+        from graftpunk.storage.local import LocalSessionStorage
+
+        backend = LocalSessionStorage(base_dir=tmp_path)
+        meta = _metadata(account_identifier="alice@example.com")
+        backend.save_session("myshop@alice", pickle.dumps({"ok": True}), meta)
+        again = backend.get_session_metadata("myshop@alice")
+        assert again is not None
+        assert again.name == "myshop@alice"
+        assert again.account_identifier == "alice@example.com"
+
+    def test_s3_key_scheme_accepts_at(self) -> None:
+        from graftpunk.storage.s3 import S3SessionStorage
+
+        key = S3SessionStorage._session_key(
+            S3SessionStorage.__new__(S3SessionStorage), "myshop@alice"
+        )
+        assert "myshop@alice" in key
+
+    @pytest.mark.parametrize("label", [None, "alice"])
+    def test_shared_serializers_round_trip(self, label) -> None:  # noqa: ANN001
+        name = "myshop" if label is None else f"myshop@{label}"
+        meta = _metadata(name=name, account_identifier="alice@example.com")
+        assert dict_to_metadata(metadata_to_dict(meta)) == meta
+
+
+def test_cache_dict_conversions_carry_the_identifier(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """get_session_metadata and list_sessions_with_metadata expose the field (C1-C3)."""
+    import requests
+
+    from graftpunk import cache as cache_mod
+    from graftpunk.cache import cache_session, get_session_metadata, list_sessions_with_metadata
+
+    monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+    cache_mod._reset_session_storage_backend()
+    try:
+        s = requests.Session()
+        setattr(s, GP_ACCOUNT_ATTR, "alice@example.com")
+        cache_session(s, "myshop@alice")
+        assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
+        rows = list_sessions_with_metadata()
+        assert any(r.get("account_identifier") == "alice@example.com" for r in rows)
+    finally:
+        cache_mod._reset_session_storage_backend()
+
+
+def test_identity_survives_load_and_refresh_recache(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """The spec's load → update_session_cookies re-cache round-trip (NN-C)."""
+    import requests
+
+    from graftpunk import cache as cache_mod
+    from graftpunk.cache import cache_session, get_session_metadata, update_session_cookies
+
+    monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+    cache_mod._reset_session_storage_backend()
+    try:
+        s = requests.Session()
+        setattr(s, GP_ACCOUNT_ATTR, "alice@example.com")
+        cache_session(s, "myshop@alice")
+        api = requests.Session()  # a fresh API-side session for the refresh
+        update_session_cookies(api, "myshop@alice")
+        assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
+    finally:
+        cache_mod._reset_session_storage_backend()
 
 
 def test_backend_protocol_docstring_states_charset() -> None:
@@ -420,7 +482,7 @@ def test_backend_protocol_docstring_states_charset() -> None:
 - [ ] **Step 2: Run to verify failure**
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_account_metadata.py -q`
-Expected: FAIL — `TypeError: ... unexpected keyword argument 'account_identifier'` (and the pickle tests fail with `None`).
+Expected: FAIL — `TypeError: ... unexpected keyword argument 'account_identifier'` from `_metadata`, `ImportError`/`AttributeError` from the cache-dict tests, and the pickle tests fail with `None`.
 
 - [ ] **Step 3: Add the field and serializer lines**
 
@@ -428,6 +490,8 @@ In `src/graftpunk/storage/base.py`:
 - Add to `SessionMetadata` (after `storage_location`): `account_identifier: str | None = None` with an attribute docstring line: `account_identifier: The unslugified login identifier recorded at login (what the user typed, not server-verified), or None for legacy/no-identity sessions.`
 - In `metadata_to_dict`, add `"account_identifier": metadata.account_identifier,`.
 - In `dict_to_metadata`, add `account_identifier=data.get("account_identifier"),`.
+- **Delete `LocalSessionStorage._metadata_to_dict` and `._dict_to_metadata`** (`src/graftpunk/storage/local.py:347` (`def _metadata_to_dict`), `src/graftpunk/storage/local.py:371` (`def _dict_to_metadata`)) and point their call sites at the shared `metadata_to_dict`/`dict_to_metadata` from `graftpunk.storage.base` — they are duplicates, and the duplication is how a new field goes dead on the default backend.
+- **Extend the two hand-built dicts in `cache.py`**: `get_session_metadata`'s conversion (`src/graftpunk/cache.py:222` (`def get_session_metadata`)) and `list_sessions_with_metadata`'s row dict (`src/graftpunk/cache.py:693` (`def list_sessions_with_metadata`)) each gain `"account_identifier": metadata.account_identifier`.
 - Extend the `SessionStorageBackend` class docstring with: `Session names match [a-z0-9][a-z0-9_-]* on each side of at most one '@' (never first/last); every backend's key scheme must round-trip that charset.`
 
 - [ ] **Step 4: Extract the attribute in `cache.py`**
@@ -578,7 +642,7 @@ git commit -m "feat(identity): compute_operating_session_name owns the precedenc
 ### Task 4: CLI resolution wiring + shared renderer + Account column
 
 **Files:**
-- Modify: `src/graftpunk/cli/plugin_commands.py:364` (`def get_plugin_for_session`) and `src/graftpunk/cli/plugin_commands.py:379` (`def resolve_session_name`), `src/graftpunk/console.py` (append renderer), `src/graftpunk/cli/session_commands.py:63` (`def session_list`) and the show command (Account column, show fields), `src/graftpunk/cli/main.py:34` (`from graftpunk.cli.plugin_commands import resolve_session_name`) (observe boundary renders the error), `src/graftpunk/cli/plugin_runtime.py` (error boundary renders it — the same `except GraftpunkError` block that prints friendly errors)
+- Modify: `src/graftpunk/cli/plugin_commands.py:364` (`def get_plugin_for_session`) and `src/graftpunk/cli/plugin_commands.py:379` (`def resolve_session_name`), `src/graftpunk/console.py` (append renderer), `src/graftpunk/cli/session_commands.py:63` (`def session_list`) and the show command (Account column, show fields), `src/graftpunk/cli/main.py:34` (`from graftpunk.cli.plugin_commands import resolve_session_name`) (observe boundary renders the error), `src/graftpunk/cli/plugin_runtime.py` (add an `except AmbiguousSessionError as exc: render_ambiguous_session(exc); raise SystemExit(1) from exc` clause **before** the broad `except Exception` in the session-load block at plugin_runtime.py:78-91 — there is no shared `except GraftpunkError` block to reuse, and the broad catch would otherwise swallow it as "Failed to load session". This clause is dead until Task 5 makes the load path raise; that is expected.)
 - Test: `tests/unit/test_session_commands.py` (append), `tests/unit/test_plugin_commands.py` (append)
 
 **Interfaces:**
@@ -616,11 +680,21 @@ class TestAccountAwareResolution:
         assert plugin_commands.resolve_session_name("myshop@alice") == "myshop@alice"
 
     def test_get_plugin_for_session_matches_labelled(self, monkeypatch) -> None:  # noqa: ANN001
+        from unittest.mock import MagicMock
+
         from graftpunk.cli import plugin_commands
 
+        plugin = MagicMock()
+        plugin.session_name = "myshop"
+        # Fake the registry entries get_plugin_for_session actually consults, and
+        # assert the FUNCTION's own return — not the helper — so a mis-wiring of
+        # _session_base_matches into it would fail here.
         monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
-        # get_plugin_for_session compares by split base; a labelled name maps back.
-        # (Uses the registered-plugin registry; assert via the map-only helper.)
+        monkeypatch.setattr(
+            plugin_commands, "_registered_plugin_instances", {"fmtsite": plugin}, raising=False
+        )
+        resolved = plugin_commands.get_plugin_for_session("myshop@alice")
+        assert resolved is plugin or resolved is None  # see note below
         assert plugin_commands._session_base_matches("myshop@alice", "myshop")
 ```
 
@@ -639,6 +713,28 @@ class TestAccountColumn:
         assert "Account" in result.output
         assert "alice@example.com" in result.output
 
+    def test_list_shows_account_from_the_real_data_path(
+        self, tmp_path, monkeypatch
+    ) -> None:  # noqa: ANN001
+        """No mocks: cache on the real local backend, list through production code."""
+        import requests
+
+        from graftpunk import cache as cache_mod
+        from graftpunk.cache import cache_session
+        from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        cache_mod._reset_session_storage_backend()
+        try:
+            s = requests.Session()
+            setattr(s, GP_ACCOUNT_ATTR, "alice@example.com")
+            cache_session(s, "myshop@alice")
+            result = runner.invoke(session_app, ["list"], env={"COLUMNS": "220"})
+            assert result.exit_code == 0, result.output
+            assert "alice@example.com" in result.output
+        finally:
+            cache_mod._reset_session_storage_backend()
+
 
 def test_render_ambiguous_session_lists_candidates_and_mechanisms() -> None:
     import io
@@ -656,7 +752,7 @@ def test_render_ambiguous_session_lists_candidates_and_mechanisms() -> None:
         assert expected in out
 ```
 
-(`_make_session` needs an `account_identifier: str | None = None` parameter added to its signature and dict.)
+(`_make_session` needs an `account_identifier: str | None = None` parameter added to its signature and dict. The `get_plugin_for_session` test must assert the real function's return against however the registry stores plugin instances — read `get_plugin_for_session`'s body at plugin_commands.py:364-376 first and fake exactly the state it consults; the `resolved is plugin or resolved is None` line above is a placeholder for that read, and the final assertion must be `resolved is plugin`.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -701,11 +797,23 @@ def render_ambiguous_session(exc: "AmbiguousSessionError", *, console: Console |
 
     Every CLI entry point that can surface ``AmbiguousSessionError`` calls
     this — the rendering exists once, whichever door the error exits through.
+    Account identifiers are fetched lazily, for the candidates only, so the
+    user sees who each candidate is; a candidate with no metadata degrades to
+    its name.
     """
+    from graftpunk.cache import get_session_metadata
+
     c = console or err_console
     error(f"Several sessions cached for '{exc.base_name}':", console=c)
     for name in exc.candidates:
-        c.print(f"  - {name}", markup=False, highlight=False)
+        identifier = None
+        try:
+            meta = get_session_metadata(name)
+            identifier = meta.get("account_identifier") if meta else None
+        except Exception:  # noqa: BLE001 — display is best-effort
+            identifier = None
+        line = f"  - {name} — {identifier}" if identifier else f"  - {name}"
+        c.print(line, markup=False, highlight=False)
     info(
         "Pick one with --session <name>, the GRAFTPUNK_SESSION env var, "
         "or: gp session use <name>",
@@ -857,7 +965,7 @@ sess = inspect.Parameter(
 
 Note the reserved-name check at `src/graftpunk/cli/command_factory.py:232` (`reserved = {"ctx"} | (set(BUILTIN_OPTIONS) if include_builtin_options else set())`) already covers new builtin names via `set(BUILTIN_OPTIONS)` — a plugin param named `session` now raises `PluginError` at registration, which is the correct collision behaviour (add one test for it in the existing reserved-names test class).
 
-In `src/graftpunk/cli/plugin_runtime.py`: pop the option (`explicit_session: str = kwargs.pop("session", BUILTIN_OPTIONS["session"])` beside the other pops at :54-57); replace the load at :79 and the write-back at :207:
+In `src/graftpunk/cli/plugin_runtime.py`: pop the option (`explicit_session: str = kwargs.pop("session", BUILTIN_OPTIONS["session"])` beside the other pops at plugin_runtime.py:61-64); replace the load at :79 and the write-back at :207:
 
 ```python
 from graftpunk.cache import list_sessions, load_session_for_api
@@ -873,7 +981,7 @@ else:
     session = requests.Session()
 ```
 
-`CommandContext` gets `_session_name=operating_name` (replacing `plugin.session_name` at :163), and the write-back becomes `update_session_cookies(session, operating_name)`. The `AmbiguousSessionError` escapes to the friendly-error boundary wired in Task 4.
+`CommandContext` gets `_session_name=operating_name` (replacing `plugin.session_name` at :163), and the write-back becomes `update_session_cookies(session, operating_name)`. The `AmbiguousSessionError` raised here is caught by the clause Task 4 added **before** the broad `except Exception` in the session-load block — verify the ordering, since the broad catch at plugin_runtime.py:88 would otherwise swallow it as "Failed to load session". The mandated `test_ambiguous_refuses_with_candidates` guards this via its GRAFTPUNK_SESSION-in-output assertion.
 
 Also confirm the removed `plugin.get_session()` call has no other consumer on this path (the method itself stays — plugins may call it; a one-line docstring note on `get_session` says the CLI runtime now resolves accounts first and loads directly).
 
@@ -907,9 +1015,13 @@ class TestClientOperatingSession:
         plugin = MagicMock()
         plugin.session_name = "myshop"
         plugin.get_commands.return_value = [_make_spec(name="items", requires_session=True)]
-        with patch("graftpunk.client.get_plugin", return_value=plugin):
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch("graftpunk.client.list_sessions") as mock_list,
+        ):
             client = GraftpunkClient("fmtsite", session="myshop@bob")
         assert client._session_name == "myshop@bob"
+        mock_list.assert_not_called()  # a pinned client pays no listing
 
     def test_unpinned_resolves_ignoring_ambient(self, monkeypatch) -> None:  # noqa: ANN001
         monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@env")
@@ -953,9 +1065,11 @@ In `src/graftpunk/client.py`: add `list_sessions` to the `graftpunk.cache` impor
 from graftpunk.session_identity import compute_operating_session_name
 
 # Library code is deliberately not steered by ambient shell state
-# (GRAFTPUNK_SESSION / .gp-session): pin > account resolution only.
-self._session_name = compute_operating_session_name(
-    session, self._plugin.session_name, list_sessions(), use_ambient=False
+# (GRAFTPUNK_SESSION / .gp-session): pin > account resolution only. A pinned
+# client pays no listing — the constructor stays I/O-free in the pinned,
+# scriptable mode (list_sessions() is a remote round-trip on S3/Supabase).
+self._session_name = session or compute_operating_session_name(
+    None, self._plugin.session_name, list_sessions(), use_ambient=False
 )
 ```
 
@@ -1047,10 +1161,12 @@ class TestFunnel:
 
 
 class TestBoundaryWarning:
+    """The helper consumes get_session_metadata's REAL return shape: dict | None."""
+
     def test_warns_only_when_both_present_and_unequal(self) -> None:
         from graftpunk.cli.login_commands import _warn_if_slot_changes_hands
 
-        stored = MagicMock(account_identifier="bob@example.com")
+        stored = {"name": "myshop", "account_identifier": "bob@example.com"}
         with patch(
             "graftpunk.cli.login_commands.get_session_metadata", return_value=stored
         ), patch("graftpunk.cli.login_commands.gp_console") as mock_console:
@@ -1058,18 +1174,48 @@ class TestBoundaryWarning:
         assert mock_console.warn.called
 
     @pytest.mark.parametrize(
-        ("stored_id", "incoming"),
-        [(None, "alice@example.com"), ("bob@example.com", None), (None, None), ("a", "a")],
+        ("stored", "incoming"),
+        [
+            ({"name": "myshop"}, "alice@example.com"),  # key absent (legacy metadata)
+            ({"name": "myshop", "account_identifier": None}, "alice@example.com"),
+            ({"name": "myshop", "account_identifier": "bob@example.com"}, None),
+            (None, "alice@example.com"),  # no stored session at all
+            ({"name": "myshop", "account_identifier": "a"}, "a"),  # same account
+        ],
     )
-    def test_silent_otherwise(self, stored_id, incoming) -> None:  # noqa: ANN001
+    def test_silent_otherwise(self, stored, incoming) -> None:  # noqa: ANN001
         from graftpunk.cli.login_commands import _warn_if_slot_changes_hands
 
-        stored = MagicMock(account_identifier=stored_id) if stored_id is not None else None
         with patch(
             "graftpunk.cli.login_commands.get_session_metadata", return_value=stored
         ), patch("graftpunk.cli.login_commands.gp_console") as mock_console:
             _warn_if_slot_changes_hands("myshop", incoming)
         assert not mock_console.warn.called
+
+    def test_no_metadata_read_on_refresh_writes(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+        """cache_session/update_session_cookies never fetch stored metadata (spec)."""
+        import requests
+
+        from graftpunk import cache as cache_mod
+        from graftpunk.cache import cache_session, update_session_cookies
+
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+        cache_mod._reset_session_storage_backend()
+        try:
+            cache_session(requests.Session(), "myshop@alice")
+            backend = cache_mod._get_session_storage_backend()
+            calls = {"n": 0}
+            real = backend.get_session_metadata
+
+            def counting(name):  # noqa: ANN001, ANN202
+                calls["n"] += 1
+                return real(name)
+
+            monkeypatch.setattr(backend, "get_session_metadata", counting)
+            update_session_cookies(requests.Session(), "myshop@alice")
+            assert calls["n"] == 0, "a refresh write fetched stored metadata"
+        finally:
+            cache_mod._reset_session_storage_backend()
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -1098,7 +1244,7 @@ def _cache_login_session(plugin: "SitePlugin", session: Any) -> str:
     return plugin.session_name
 ```
 
-Replace the four cache sites — both `cache_session(session, plugin.session_name)` calls in the generated login flows, and the two inside `browser_session`/`browser_session_sync` — with `_cache_login_session(plugin, session)` (in `login_engine.py`, import it from `graftpunk.plugins.cli_plugin`; that direction already exists).
+Add `from graftpunk.cache import cache_session` at cli_plugin module level (beside the existing `from graftpunk.cache import load_session_for_api` — today `cache_session` is only imported function-locally inside the `browser_session` helpers, so the funnel and the test's patch target need the module-level import). Then replace the four cache sites — both `cache_session(session, plugin.session_name)` calls in the generated login flows, and the two inside `browser_session`/`browser_session_sync` — with `_cache_login_session(plugin, session)` (in `login_engine.py`, import it from `graftpunk.plugins.cli_plugin` at runtime — today only a TYPE_CHECKING import exists at login_engine.py:22-23; there is no cycle, since cli_plugin does not import login_engine).
 
 In `src/graftpunk/cli/login_commands.py`:
 
@@ -1129,27 +1275,37 @@ def _stamp_login_identity(plugin, label, identifier):  # noqa: ANN001, ANN201
     plugin.session_name = join_session_name(base, label)
     if identifier is not None:
         setattr(plugin, GP_ACCOUNT_ATTR, identifier)
+
+    # Capture-and-restore with a missing-sentinel: a plugin that set
+    # self.session_name in __init__ gets its own value back, not the class's.
+    _MISSING = object()
+    prior_name = plugin.__dict__.get("session_name", _MISSING)
+    prior_attr = plugin.__dict__.get(GP_ACCOUNT_ATTR, _MISSING)
     try:
         yield
     finally:
-        try:
-            del plugin.session_name  # remove the instance shadow
-        except AttributeError:
-            pass
-        if hasattr(plugin, GP_ACCOUNT_ATTR):
-            delattr(plugin, GP_ACCOUNT_ATTR)
+        if prior_name is _MISSING:
+            plugin.__dict__.pop("session_name", None)
+        else:
+            plugin.session_name = prior_name
+        if prior_attr is _MISSING:
+            plugin.__dict__.pop(GP_ACCOUNT_ATTR, None)
+        else:
+            setattr(plugin, GP_ACCOUNT_ATTR, prior_attr)
 
 
 def _warn_if_slot_changes_hands(session_name: str, incoming_identifier: str | None) -> None:
-    """Warn when a login will overwrite a slot recorded for a different account.
+    """Warn when a login has overwritten a slot recorded for a different account.
 
     Both identifiers must be present and unequal; a missing identifier on
-    either side never warns (legacy slots, refresh writes).
+    either side never warns (legacy slots, refresh writes). Note
+    ``get_session_metadata`` returns ``dict | None`` (cache.py:222) — read
+    with ``.get``, never ``getattr``.
     """
     if not incoming_identifier:
         return
     stored = get_session_metadata(session_name)
-    stored_id = getattr(stored, "account_identifier", None) if stored else None
+    stored_id = stored.get("account_identifier") if stored else None
     if stored_id and stored_id != incoming_identifier:
         LOG.warning(
             "session_slot_changing_account",
@@ -1172,11 +1328,17 @@ as_label: str = kwargs.pop("as_label", "") or ""
 identifier, derived_label = derive_account_identity(credentials, SECRET_KEYWORDS)
 label = as_label or derived_label
 target_name = join_session_name(plugin.session_name, label) if label else plugin.session_name
-_warn_if_slot_changes_hands(target_name, identifier)
+stored_before = get_session_metadata(target_name)  # one fetch, before the attempt
 with _stamp_login_identity(plugin, label, identifier):
     ... existing invocation of login_method (both async and sync branches) ...
     cached_name = plugin.session_name  # read inside the stamp
+# Only after a SUCCESSFUL login: compare and warn (spec: the fetch happens
+# before the callable, the emission after success; single emission path).
+if login_succeeded:
+    _warn_if_slot_changes_hands_post(stored_before, identifier, cached_name)
 ```
+
+where `_warn_if_slot_changes_hands` is refactored into fetch (`get_session_metadata`) + a pure compare/emit half (`_warn_if_slot_changes_hands_post(stored, incoming, session_name)`) so the fetch can precede the login and the warning can follow success — adjust the helper tests accordingly (the compare/emit half takes the dict directly). `login_succeeded` is the same success condition the existing body already uses to decide its final messaging.
 
 After a successful login, print the full name and the mismatch hint:
 
@@ -1191,7 +1353,10 @@ if current and current != cached_name:
     )
 ```
 
-In the login command registration (login_commands.py:290), add to `param_specs`:
+**The `--as` flag needs a small factory-contract extension — neither a `cli_name` parameter nor a flag-name `click_kwargs` key exists today** (`PluginParamSpec.option` at cli_plugin.py:93-102 takes `(name, *, type, required, default, help, click_kwargs)`; the flag is always derived from the param name at command_factory.py:90, and `OPTION_KEYS` at command_factory.py:30-32 is a closed set that raises `PluginError` on unknown keys). Sub-steps:
+
+1. Add `"flag"` to `OPTION_KEYS` in `command_factory.py`, and in `map_param_spec`'s option branch use `spec.click_kwargs.get("flag") or f"--{spec.name.replace('_', '-')}"` as the flag string. One factory test: an option with `click_kwargs={"flag": "--as"}` renders `--as` in the synthesized signature.
+2. Register the login option **on the base `param_specs` list at login_commands.py:273** (outside the `_supports_headless` guard, so hand-written `login(credentials)` plugins get the flag too):
 
 ```python
 PluginParamSpec.option(
@@ -1199,13 +1364,37 @@ PluginParamSpec.option(
     type=str,
     default="",
     help="Account label for the cached session (default: derived from the login identifier)",
-    cli_name="--as",
+    click_kwargs={"flag": "--as"},
 )
 ```
 
-(If `PluginParamSpec.option` has no `cli_name` parameter, register the option as `as_label` and add `"--as"` via the param's click kwargs the same way `headful` is declared — check `PluginParamSpec.option`'s signature first and follow its existing pattern; the CLI-visible flag must be `--as`.) Validate the label with the same charset as a name part: `if as_label: validate_session_name(f"x@{as_label}")` (cheap reuse; a bad label raises `ValueError` at the CLI boundary).
+3. Validate the label via a label-specific entry point in `session_identity` — add `validate_account_label(label)` beside `validate_session_name` (reusing `_PART_RE`, message: `Account label {label!r} must match [a-z0-9][a-z0-9_-]*`) — so a bad `--as` produces an error naming the label the user typed, not a synthetic session name.
 
-- [ ] **Step 5: Run the full suite, lint, types; commit**
+- [ ] **Step 5: Wrapper-level tests (the orchestration, not just the helpers)**
+
+Append to `tests/unit/test_login_identity.py` a CliRunner class that registers a plugin whose `login(credentials)` is a fake callable (records what it was invoked with, returns success), via `register_plugin_commands` + `patch(DISCOVER_ALL, ...)` exactly like Task 5's `_invoke` harness, with credential env vars set so no prompt fires:
+
+```python
+class TestLoginWrapperOrchestration:
+    def test_derived_label_names_the_cached_session(self, ...):
+        # invoke: gp fmtsite login   (env: FMTSITE_USERNAME=alice, FMTSITE_PASSWORD=x)
+        # assert: output contains "Cached session: myshop@alice"
+        ...
+
+    def test_as_flag_overrides_the_label(self, ...):
+        # invoke: gp fmtsite login --as work
+        # assert: output contains "Cached session: myshop@work"
+        ...
+
+    def test_command_decorated_login_bypasses_derivation(self, ...):
+        # a plugin whose login is @command-decorated registers no --as and
+        # caches under the bare name (assert via the funnel/cache_session patch)
+        ...
+```
+
+Fill the three bodies concretely at implementation time from the harness pattern; the assertions named in the comments are the contract. Run them with the rest of the file.
+
+- [ ] **Step 6: Run the full suite, lint, types; commit**
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/ -q && uvx ruff check . && uvx ruff format --check . && uvx ty@0.0.75 check src/`
 Expected: all pass (existing login tests exercise `make_login_body` with credentials; the derivation is additive and the stamp is a no-op when no identifier is derivable — e.g. all-secret test fixtures).
@@ -1234,44 +1423,92 @@ git commit -m "feat(login): --as label, identity derivation and stamp, cache fun
 
 from __future__ import annotations
 
+import pytest
 import requests
 
-from graftpunk.cache import cache_session, list_sessions
-from graftpunk.exceptions import AmbiguousSessionError
-from graftpunk.session_identity import (
-    GP_ACCOUNT_ATTR,
-    compute_operating_session_name,
-    resolve_account_session,
-)
+from graftpunk.cache import cache_session
 
 
-def _cache(name: str, identifier: str, isolated_config) -> None:  # noqa: ANN001
+def _cache(name: str, identifier: str) -> None:
+    from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
     s = requests.Session()
     setattr(s, GP_ACCOUNT_ATTR, identifier)
     cache_session(s, name)
 
 
-def test_two_accounts_coexist_and_require_pinning(
-    isolated_config, monkeypatch  # noqa: ANN001
+@pytest.fixture()
+def _fresh_backend():  # noqa: ANN202
+    from graftpunk import cache as cache_mod
+
+    cache_mod._reset_session_storage_backend()
+    yield
+    cache_mod._reset_session_storage_backend()
+
+
+def test_two_accounts_coexist_and_commands_require_pinning(
+    _fresh_backend, monkeypatch  # noqa: ANN001
 ) -> None:
-    import pytest
+    """The spec's e2e, through the CLI surface on the real local backend."""
+    import typer
+    from typer.testing import CliRunner
+    from unittest.mock import patch
+
+    from graftpunk.cache import get_session_metadata, list_sessions
+    from graftpunk.cli.plugin_commands import register_plugin_commands
+    from graftpunk.plugins.cli_plugin import SitePlugin, command
 
     monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
-    _cache("myshop@alice", "alice@example.com", isolated_config)
-    _cache("myshop@bob", "bob@example.com", isolated_config)
+    _cache("myshop@alice", "alice@example.com")
+    _cache("myshop@bob", "bob@example.com")
 
-    names = list_sessions()
-    assert {"myshop@alice", "myshop@bob"} <= set(names)
+    # Stored metadata answers "whose session is this?" without a network call.
+    assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
+    assert get_session_metadata("myshop@bob")["account_identifier"] == "bob@example.com"
 
-    with pytest.raises(AmbiguousSessionError):
-        resolve_account_session("myshop", names)
+    class ShopPlugin(SitePlugin):
+        site_name = "fmtsite"
+        base_url = "https://fmt.example.com"
+        session_name = "myshop"
+        requires_session = True
 
-    assert compute_operating_session_name("myshop@bob", "myshop", names) == "myshop@bob"
-    monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@alice")
-    assert compute_operating_session_name(None, "myshop", names) == "myshop@alice"
+        @command(help="List items")
+        def items(self, ctx):  # noqa: ANN001, ANN202
+            return {"ok": True}
+
+    app = typer.Typer()
+    with patch(
+        "graftpunk.cli.plugin_commands.discover_all_plugins", return_value=(ShopPlugin(),)
+    ):
+        register_plugin_commands(app, notify_errors=False)
+    runner = CliRunner()
+
+    # Unpinned: the command refuses and names both candidates.
+    result = runner.invoke(app, ["fmtsite", "items"], env={"COLUMNS": "200"})
+    assert result.exit_code != 0
+    assert "myshop@alice" in result.output and "myshop@bob" in result.output
+
+    # Pinning each way works.
+    ok_flag = runner.invoke(
+        app, ["fmtsite", "items", "--session", "myshop@bob"], env={"COLUMNS": "200"}
+    )
+    assert ok_flag.exit_code == 0, ok_flag.output
+    ok_env = runner.invoke(
+        app, ["fmtsite", "items"], env={"COLUMNS": "200", "GRAFTPUNK_SESSION": "myshop@alice"}
+    )
+    assert ok_env.exit_code == 0, ok_env.output
+
+    # Keepalive state tracks each name independently (distinct names, distinct entries).
+    from graftpunk.keepalive.state import KeepaliveState
+
+    assert (
+        KeepaliveState(current_session="myshop@alice").current_session
+        != KeepaliveState(current_session="myshop@bob").current_session
+    )
+    assert {"myshop@alice", "myshop@bob"} <= set(list_sessions())
 ```
 
-(Reuse the existing `isolated_config` fixture pattern from `tests/unit/test_config_commands.py` — it points `GRAFTPUNK_CONFIG_DIR` at a tmp dir so `cache_session` writes to the local backend under the test's control. If the fixture lives in that module rather than `conftest.py`, move it to `tests/unit/conftest.py` so both files share it.)
+(The `isolated_config` fixture is **autouse** in `tests/conftest.py:39` (`def isolated_config`) — it already points `GRAFTPUNK_CONFIG_DIR` at a tmp dir for every test; nothing needs moving. What it does NOT do is reset the module-global storage-backend singleton (`src/graftpunk/cache.py:87` (`_session_storage_backend: `), cached by `_get_session_storage_backend`), which is why the `_fresh_backend` fixture above calls `graftpunk.cache._reset_session_storage_backend()` before and after — the same pattern `tests/unit/test_cache.py:106` (`class TestCacheSession:`) uses in its `setup_method`. Adjust the KeepaliveState construction to the dataclass's real required fields — read `src/graftpunk/keepalive/state.py:57` (`current_session: str`) and its neighbours first.)
 
 - [ ] **Step 2: Run it**
 
@@ -1315,6 +1552,6 @@ Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/ -q && uvx ruff check . && uvx
 Expected: all pass.
 
 ```bash
-git add tests/unit/test_multi_account_e2e.py docs/HOW_IT_WORKS.md CHANGELOG.md tests/unit/conftest.py
+git add tests/unit/test_multi_account_e2e.py docs/HOW_IT_WORKS.md CHANGELOG.md
 git commit -m "test(identity): multi-account end-to-end; document multi-account sessions (#151)"
 ```
