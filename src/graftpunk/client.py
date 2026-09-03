@@ -232,9 +232,16 @@ class GraftpunkClient:
         # (GRAFTPUNK_SESSION / .gp-session): pin > account resolution only. A pinned
         # client pays no listing -- the constructor stays I/O-free in the pinned,
         # scriptable mode (list_sessions() is a remote round-trip on S3/Supabase).
-        self._session_name = session or compute_operating_session_name(
-            None, self._plugin.session_name, list_sessions, use_ambient=False
-        )
+        # A plugin that needs no session pays none either: there is nothing to
+        # resolve, and its base name is never loaded.
+        if session:
+            self._session_name = session
+        elif self._plugin.requires_session:
+            self._session_name = compute_operating_session_name(
+                None, self._plugin.session_name, list_sessions, use_ambient=False
+            )
+        else:
+            self._session_name = self._plugin.session_name
         self._session: requests.Session | None = None
         self._session_dirty: bool = False
         self._last_execution: dict[str, float] = {}

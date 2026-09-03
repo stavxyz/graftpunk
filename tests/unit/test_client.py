@@ -1253,6 +1253,20 @@ class TestClientOperatingSession:
         assert client._session_name == "myshop@bob"
         mock_list.assert_not_called()  # a pinned client pays no listing
 
+    def test_sessionless_plugin_performs_no_listing(self) -> None:
+        """requires_session=False has nothing to resolve — and nothing to list."""
+        plugin = MagicMock()
+        plugin.session_name = "myshop"
+        plugin.requires_session = False
+        plugin.get_commands.return_value = [_make_spec(name="items", requires_session=False)]
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch("graftpunk.client.list_sessions") as mock_list,
+        ):
+            client = GraftpunkClient("fmtsite")
+        assert client._session_name == "myshop"
+        mock_list.assert_not_called()
+
     def test_unpinned_resolves_ignoring_ambient(self, monkeypatch) -> None:  # noqa: ANN001
         monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@env")
         plugin = MagicMock()
