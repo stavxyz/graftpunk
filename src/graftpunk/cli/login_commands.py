@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -154,7 +154,9 @@ def _supports_headless(login_callable: Callable[..., Any]) -> bool:
 
 
 @contextmanager
-def _stamp_login_identity(plugin, label, identifier):  # noqa: ANN001, ANN201
+def _stamp_login_identity(
+    plugin: CLIPluginProtocol, label: str | None, identifier: str | None
+) -> Iterator[None]:
     """Stamp the plugin instance for the duration of one login flow.
 
     Confined transport: only the author-facing paths read this state --
@@ -163,26 +165,45 @@ def _stamp_login_identity(plugin, label, identifier):  # noqa: ANN001, ANN201
     paths receive the name and identifier as explicit arguments and never
     depend on the stamp. Instance attributes shadow the class attributes;
     on exit the prior state is restored, so a plugin instance held across a
-    login cannot leak the stamped identity into later reads.
+    login cannot leak the stamped identity into later reads. Retirement of
+    this dual channel is tracked by #174.
+
+    ``CLIPluginProtocol`` declares ``session_name`` as a read-only property,
+    so a protocol-literal plugin can reject the name stamp; that degrades to
+    a warning (the identifier still travels explicitly to the generated
+    flows) rather than failing the login.
     """
-    if not label:
+    if not (label or identifier):
         yield
         return
     # Capture BEFORE mutating, with a missing-sentinel: a plugin that set
     # self.session_name in __init__ gets its own value back, not the class's.
     prior_name = plugin.__dict__.get("session_name", _MISSING)
     prior_attr = plugin.__dict__.get(GP_ACCOUNT_ATTR, _MISSING)
-    base = plugin.session_name
-    plugin.session_name = join_session_name(base, label)
+    stamped_name = False
+    if label:
+        try:
+            # setattr, not attribute assignment: the protocol declares
+            # session_name read-only, and a plugin may really implement it
+            # that way — hence the guard below.
+            setattr(plugin, "session_name", join_session_name(plugin.session_name, label))  # noqa: B010
+            stamped_name = True
+        except AttributeError:
+            LOG.warning(
+                "login_stamp_skipped_readonly_session_name",
+                plugin=plugin.site_name,
+                label=label,
+            )
     if identifier is not None:
         setattr(plugin, GP_ACCOUNT_ATTR, identifier)
     try:
         yield
     finally:
-        if prior_name is _MISSING:
-            plugin.__dict__.pop("session_name", None)
-        else:
-            plugin.session_name = prior_name
+        if stamped_name:
+            if prior_name is _MISSING:
+                plugin.__dict__.pop("session_name", None)
+            else:
+                setattr(plugin, "session_name", prior_name)  # noqa: B010
         if prior_attr is _MISSING:
             plugin.__dict__.pop(GP_ACCOUNT_ATTR, None)
         else:

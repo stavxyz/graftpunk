@@ -1096,7 +1096,7 @@ class SitePlugin:
             await session.transfer_nodriver_cookies_to_session()
             # No explicit name/identifier: the instance state (the login
             # stamp, when a CLI login drove us here) IS this path's contract.
-            _cache_login_session(self, session)
+            cache_login_session(self, session)
         finally:
             try:
                 session.driver.stop()
@@ -1136,7 +1136,7 @@ class SitePlugin:
             # Success path: transfer cookies and cache
             session.transfer_driver_cookies_to_session()
             # Instance fallback by contract -- see browser_session() above.
-            _cache_login_session(self, session)
+            cache_login_session(self, session)
         finally:
             try:
                 session.quit()
@@ -1162,7 +1162,7 @@ class SitePlugin:
         return load_session_for_api(self.session_name)
 
 
-def _cache_login_session(
+def cache_login_session(
     plugin: SitePlugin,
     session: Any,
     *,

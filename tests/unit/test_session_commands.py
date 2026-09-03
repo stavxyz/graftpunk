@@ -109,7 +109,10 @@ class TestSessionShowDisplay:
     """Tests for Backend/Location fields in session show output."""
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_includes_backend_and_location(self, _mock_resolve, mock_get) -> None:
         """Show panel includes backend and location values."""
         mock_get.return_value = _make_session(
@@ -127,7 +130,10 @@ class TestSessionShowDisplay:
         assert "s3://my-bucket" in output
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_empty_storage_fields_shows_dash(self, _mock_resolve, mock_get) -> None:
         """Empty storage fields render as em-dash in show output."""
         mock_get.return_value = _make_session(
@@ -144,7 +150,10 @@ class TestSessionShowDisplay:
         assert "\u2014" in output
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_json_includes_storage_fields(self, _mock_resolve, mock_get) -> None:
         """JSON output includes storage_backend and storage_location keys."""
         mock_get.return_value = _make_session(
@@ -210,7 +219,10 @@ class TestShowErrorHandling:
     """Tests for error handling in session show command."""
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_value_error_shows_friendly_message(self, _mock_resolve, mock_get) -> None:
         """ValueError from backend produces friendly error."""
         mock_get.side_effect = ValueError("Missing GRAFTPUNK_S3_BUCKET")
@@ -222,7 +234,10 @@ class TestShowErrorHandling:
         assert "Storage backend error" in output
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_storage_error_shows_friendly_message(self, _mock_resolve, mock_get) -> None:
         """StorageError from backend produces friendly error."""
         mock_get.side_effect = StorageError("S3 timeout")
@@ -274,7 +289,10 @@ class TestJsonOutputIsMachineReadable:
         assert json.loads(result.stdout)[0]["storage_location"] == long_value
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_json_long_values_are_not_wrapped(self, _mock_resolve, mock_get) -> None:
         long_value = "https://example.com/" + "p" * 300
         mock_get.return_value = _make_session(name="mysite", storage_location=long_value)
@@ -297,7 +315,10 @@ class TestNamesAreNotMarkup:
             assert literal in result.stdout
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_renders_bracketed_values_verbatim(self, _mock_resolve, mock_get) -> None:
         mock_get.return_value = _make_session(
             name="evil [bold]", domain="[red]x.example", cookie_domains=["a [/y].example"]
@@ -308,7 +329,10 @@ class TestNamesAreNotMarkup:
             assert literal in result.stdout
 
     @patch("graftpunk.cli.session_commands.get_session_metadata", return_value=None)
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_not_found_message_keeps_name_verbatim(self, _mock_resolve, _mock_get) -> None:
         result = runner.invoke(session_app, ["show", "nope [/z]"])
         assert result.exit_code != 0
@@ -323,7 +347,10 @@ class TestNamesAreNotMarkup:
         assert "evil [/x]" in result.output and "[red]x.example" in result.output
 
     @patch("graftpunk.cli.session_commands.load_session")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n, **_: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_export_usage_hint_keeps_name_verbatim(self, _mock_resolve, mock_load) -> None:
         mock_load.return_value.save_httpie_session.return_value = "x.json"
         result = runner.invoke(session_app, ["export", "evil [/x]"])

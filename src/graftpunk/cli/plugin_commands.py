@@ -19,7 +19,7 @@ from graftpunk.cli.login_commands import (
     resolve_login_callable,
     resolve_login_fields,
 )
-from graftpunk.exceptions import PluginError
+from graftpunk.exceptions import AmbiguousSessionError, PluginError
 from graftpunk.logging import get_logger
 from graftpunk.plugins import discover_all_plugins
 from graftpunk.plugins.cli_plugin import (
@@ -414,3 +414,24 @@ def resolve_session_name(name: str, backend_override: str | None = None) -> str:
             use_ambient=False,
         )
     return name
+
+
+def resolve_session_name_or_exit(name: str, backend_override: str | None = None) -> str:
+    """Resolve a name at a CLI boundary: ambiguity renders the pick-one list and exits.
+
+    The one place the CLI turns :class:`AmbiguousSessionError` into output.
+    Every command surface that accepts a session name calls this instead of
+    repeating the try/except, so the ambiguity message cannot drift between
+    surfaces (#151).
+
+    Args:
+        name: Plugin site name, alias, or a full session name.
+        backend_override: Storage backend the caller was given, threaded into
+            both the resolution and the candidates' identifier lookups.
+    """
+    from graftpunk.cli.errors import exit_ambiguous_session
+
+    try:
+        return resolve_session_name(name, backend_override=backend_override)
+    except AmbiguousSessionError as exc:
+        exit_ambiguous_session(exc, backend_override=backend_override)

@@ -206,6 +206,33 @@ class TestDeclarativeLoginEngine:
 
         assert result is True
 
+    def test_selenium_login_files_under_the_explicit_operating_name(self) -> None:
+        """The CLI's account-qualified name keys the write-back, not the base (#151)."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        plugin = DeclarativeQuotes()
+        login_method = generate_login_method(plugin)
+
+        mock_bs, instance = _make_selenium_mock_bs()
+        instance.driver = MagicMock()
+        instance.driver.find_element = MagicMock(return_value=MagicMock())
+        instance.transfer_driver_cookies_to_session = MagicMock()
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session") as cache,
+            patch("graftpunk.plugins.login_engine.time"),
+        ):
+            result = login_method(
+                {"username": "user", "password": "test"},  # noqa: S106
+                session_name="myshop@alice",
+                account_identifier="alice@example.com",
+            )
+
+        assert result is True
+        assert instance.session_name == "myshop@alice"
+        assert cache.call_args.args[1] == "myshop@alice"
+
     def test_selenium_login_failure_element_not_found(self) -> None:
         """Test selenium login failure when success element not found."""
         from selenium.common.exceptions import NoSuchElementException

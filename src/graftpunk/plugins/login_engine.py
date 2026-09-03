@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from graftpunk import console as gp_console
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
-from graftpunk.plugins.cli_plugin import _cache_login_session
+from graftpunk.plugins.cli_plugin import cache_login_session
 
 if TYPE_CHECKING:
     from graftpunk.plugins.cli_plugin import SitePlugin
@@ -370,14 +370,17 @@ def _start_login_capture(
     driver: Any,
     observe_mode: str,
     get_tab: Any = None,
+    session_name: str | None = None,
 ) -> tuple[Any, Any]:
     """Create the capture backend for a login run.
 
     Returns ``(capture, storage)``. With ``observe_mode == "off"`` the capture
     is the lightweight header-only one used for role extraction and storage is
     None. Otherwise it is a full capture (bodies streamed to the run dir) and
-    storage is an ``ObserveStorage`` under the plugin's session name, so
-    ``gp --observe=full <plugin> login`` records a run like ``observe go`` does.
+    storage is an ``ObserveStorage`` under the OPERATING session name --
+    ``session_name`` when the CLI computed one (``base@label``), else the
+    plugin's base name -- so ``gp --observe=full <plugin> login`` files the run
+    where the reader looks for that account (#151).
     """
     from graftpunk.observe.capture import create_capture_backend
 
@@ -395,7 +398,7 @@ def _start_login_capture(
 
     # Opt-in diagnostics must never break the login: an unsafe session name or
     # an unwritable base dir degrades to the header-only capture with a warning.
-    session_slug = session_dirname(plugin.session_name)
+    session_slug = session_dirname(session_name or plugin.session_name)
     try:
         storage = ObserveStorage(OBSERVE_BASE_DIR, session_slug, make_run_id())
     except (ValueError, OSError) as exc:
@@ -697,7 +700,12 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
 
             # Header capture for role extraction; a full observe run when requested.
             _header_capture, observe_storage = _start_login_capture(
-                plugin, "nodriver", session.driver, observe_mode, get_tab=lambda: tab
+                plugin,
+                "nodriver",
+                session.driver,
+                observe_mode,
+                get_tab=lambda: tab,
+                session_name=session_name,
             )
             await _header_capture.start_capture_async()
             try:
@@ -854,7 +862,7 @@ async def _run_nodriver_steps(
             error=str(exc),
         )
 
-    _cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
+    cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
     return True
 
 
@@ -906,7 +914,9 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         browser_session = BrowserSession(
             backend="selenium", headless=run_headless, observe_mode=observe_mode
         )
-        browser_session.session_name = plugin.session_name
+        # The operating name the CLI computed, so the write-back and any
+        # observe run land under this account's session (#151).
+        browser_session.session_name = session_name or plugin.session_name
         # The observe HAR carries the login POST; scrub the credentials.
         browser_session.observe_redact = credentials.values()
         with browser_session as session:
@@ -1017,7 +1027,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     error=str(exc),
                 )
 
-            _cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
+            cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
             return True
 
     return login

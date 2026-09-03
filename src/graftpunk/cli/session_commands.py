@@ -16,10 +16,8 @@ from graftpunk import (
     list_sessions_with_metadata,
     load_session,
 )
-from graftpunk.cli.errors import exit_ambiguous_session
-from graftpunk.cli.plugin_commands import resolve_session_name
+from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.exceptions import (
-    AmbiguousSessionError,
     GraftpunkError,
     SessionExpiredError,
     SessionNotFoundError,
@@ -165,10 +163,7 @@ def show(
 ) -> None:
     """Show detailed information about a cached session."""
     backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
-    try:
-        name = resolve_session_name(name, backend_override=backend_override)
-    except AmbiguousSessionError as exc:
-        exit_ambiguous_session(exc, backend_override=backend_override)
+    name = resolve_session_name_or_exit(name, backend_override=backend_override)
     try:
         metadata = get_session_metadata(name, backend_override=backend_override)
     except (ValueError, StorageError) as exc:
@@ -259,10 +254,7 @@ def export(
 
         http --session=SESSION https://example.com/api
     """
-    try:
-        name = resolve_session_name(name)
-    except AmbiguousSessionError as exc:
-        exit_ambiguous_session(exc)
+    name = resolve_session_name_or_exit(name)
     try:
         session = load_session(name)
     except SessionNotFoundError:
@@ -385,10 +377,7 @@ def session_clear(
 
         _print_removed(removed)
     else:
-        try:
-            target = resolve_session_name(target, backend_override=backend_override)
-        except AmbiguousSessionError as exc:
-            exit_ambiguous_session(exc, backend_override=backend_override)
+        target = resolve_session_name_or_exit(target, backend_override=backend_override)
         match = next((s for s in all_metadata if s["name"] == target), None)
 
         if not match:
@@ -419,10 +408,7 @@ def session_use(
     Writes a .gp-session file in the current directory.
     Override per-shell with GRAFTPUNK_SESSION env var.
     """
-    try:
-        resolved = resolve_session_name(name)
-    except AmbiguousSessionError as exc:
-        exit_ambiguous_session(exc)
+    resolved = resolve_session_name_or_exit(name)
     path = set_active_session(resolved)
     console.print(f"[green]Active session set to '{escape(str(resolved))}'[/green]")
     if resolved != name:

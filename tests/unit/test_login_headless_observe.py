@@ -365,6 +365,19 @@ class TestEngineObserve:
         assert storage is not None
         assert storage.run_dir.parent == tmp_path / "my-bank"
 
+    def test_start_login_capture_uses_the_explicit_operating_name(self, tmp_path: Path) -> None:
+        """The CLI's account-qualified name wins over the plugin's base name (#151)."""
+        from graftpunk.plugins.login_engine import _start_login_capture
+
+        plugin = _make_plugin("nodriver")
+        with patch("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path):
+            _, storage = _start_login_capture(
+                plugin, "nodriver", MagicMock(), "full", session_name="myshop@alice"
+            )
+
+        assert storage is not None
+        assert storage.run_dir.parent == tmp_path / "myshop-alice"
+
     def test_start_login_capture_storage_error_falls_back_to_header_capture(
         self, tmp_path: Path
     ) -> None:

@@ -105,7 +105,7 @@ class TestHttpWriterReaderRoundTrip:
 
         with (
             patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path),
-            patch("graftpunk.cli.main.resolve_session_name", return_value=name),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value=name),
         ):
             result = runner.invoke(app, ["observe", "--session", name, "list"])
 

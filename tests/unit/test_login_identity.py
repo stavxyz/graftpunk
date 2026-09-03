@@ -28,6 +28,61 @@ class TestStamp:
         assert plugin.session_name == "myshop"  # class attr visible again
         assert not hasattr(plugin, GP_ACCOUNT_ATTR)
 
+    def test_stamp_restores_when_the_login_raises(self) -> None:
+        """The restore is in a finally: a failed login must not leak the stamp."""
+        from graftpunk.cli.login_commands import _stamp_login_identity
+        from graftpunk.plugins.cli_plugin import SitePlugin
+
+        class P(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "myshop"
+
+        plugin = P()
+        with pytest.raises(RuntimeError), _stamp_login_identity(plugin, "alice", "a@example.com"):
+            assert plugin.session_name == "myshop@alice"
+            raise RuntimeError("login blew up")
+        assert plugin.session_name == "myshop"
+        assert not hasattr(plugin, GP_ACCOUNT_ATTR)
+
+    def test_stamp_survives_a_read_only_session_name(self) -> None:
+        """A protocol-literal plugin declares session_name as a read-only property.
+
+        The stamp is a convenience for author-facing paths; it must degrade to
+        a warning rather than break the login (the identifier still travels
+        explicitly to the generated flows).
+        """
+        from graftpunk.cli.login_commands import _stamp_login_identity
+
+        class ReadOnlyPlugin:
+            site_name = "fmtsite"
+
+            @property
+            def session_name(self) -> str:
+                return "myshop"
+
+        plugin = ReadOnlyPlugin()
+        with _stamp_login_identity(plugin, "alice", "a@example.com"):  # type: ignore[arg-type]
+            assert plugin.session_name == "myshop"
+            assert getattr(plugin, GP_ACCOUNT_ATTR) == "a@example.com"
+        assert plugin.session_name == "myshop"
+
+    def test_stamp_records_the_identifier_without_a_label(self) -> None:
+        """No label (nothing identifier-shaped to slugify) still records who logged in."""
+        from graftpunk.cli.login_commands import _stamp_login_identity
+        from graftpunk.plugins.cli_plugin import SitePlugin
+
+        class P(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "myshop"
+
+        plugin = P()
+        with _stamp_login_identity(plugin, None, "alice@example.com"):
+            assert plugin.session_name == "myshop"
+            assert getattr(plugin, GP_ACCOUNT_ATTR) == "alice@example.com"
+        assert not hasattr(plugin, GP_ACCOUNT_ATTR)
+
     def test_stamp_without_label_is_a_no_op(self) -> None:
         from graftpunk.cli.login_commands import _stamp_login_identity
         from graftpunk.plugins.cli_plugin import SitePlugin
@@ -45,7 +100,7 @@ class TestStamp:
 class TestFunnel:
     def test_explicit_arguments_win(self) -> None:
         """Engine-controlled paths pass name and identifier explicitly."""
-        from graftpunk.plugins.cli_plugin import SitePlugin, _cache_login_session
+        from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
 
         class P(SitePlugin):
             site_name = "fmtsite"
@@ -55,7 +110,7 @@ class TestFunnel:
         plugin = P()
         session = requests.Session()
         with patch("graftpunk.plugins.cli_plugin.cache_session") as mock_cache:
-            used = _cache_login_session(
+            used = cache_login_session(
                 plugin, session, name="myshop@alice", identifier="alice@example.com"
             )
         assert used == "myshop@alice"
@@ -64,7 +119,7 @@ class TestFunnel:
 
     def test_instance_fallback_for_author_facing_paths(self) -> None:
         """browser_session callers pass nothing; the stamp's state is the input."""
-        from graftpunk.plugins.cli_plugin import SitePlugin, _cache_login_session
+        from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
 
         class P(SitePlugin):
             site_name = "fmtsite"
@@ -75,7 +130,7 @@ class TestFunnel:
         setattr(plugin, GP_ACCOUNT_ATTR, "alice@example.com")
         session = requests.Session()
         with patch("graftpunk.plugins.cli_plugin.cache_session") as mock_cache:
-            _cache_login_session(plugin, session)
+            cache_login_session(plugin, session)
         assert getattr(session, GP_ACCOUNT_ATTR) == "alice@example.com"
         mock_cache.assert_called_once_with(session, "myshop")
 
