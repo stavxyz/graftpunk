@@ -40,7 +40,7 @@ from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
-from graftpunk.observe.storage import ObserveStorage
+from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.session_identity import GP_ACCOUNT_ATTR
 
 LOG = get_logger(__name__)
@@ -370,9 +370,10 @@ class BrowserSession(requestium.Session):
 
         run_id = make_run_id()
         # Storage requires a filesystem-safe name; a plugin's session_name is
-        # only validated non-empty. Opt-in diagnostics must never break the
-        # primary operation, so slugify and fall back to no capture on error.
-        session_name = slugify_lib.slugify(getattr(self, "_session_name", "default")) or "default"
+        # only validated non-empty. session_dirname owns that mapping (the
+        # observe readers apply the same one). Opt-in diagnostics must never
+        # break the primary operation, so fall back to no capture on error.
+        session_name = session_dirname(getattr(self, "_session_name", "default"))
         try:
             self._observe_storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
         except (ValueError, OSError) as exc:

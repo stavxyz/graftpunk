@@ -26,7 +26,7 @@ from graftpunk.cache import load_session_for_api
 from graftpunk.exceptions import SessionInvalidatedError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
-from graftpunk.observe.storage import ObserveStorage
+from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.session_context import resolve_session
 
 LOG = get_logger(__name__)
@@ -294,7 +294,7 @@ def _save_observe_data(
     """
     try:
         run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-        storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+        storage = ObserveStorage(OBSERVE_BASE_DIR, session_dirname(session_name), run_id)
 
         # Build minimal HAR entry. A Response built by requests always carries
         # its PreparedRequest, but the attribute is typed Optional.

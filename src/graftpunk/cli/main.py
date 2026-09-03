@@ -563,7 +563,9 @@ async def _setup_observe_session(
             console.print(msg)
 
         run_id = make_run_id()
-        storage = ObserveStorage(OBSERVE_BASE_DIR, namespace, run_id)
+        # The run dir is keyed by the slugified session name — the same
+        # mapping every observe reader applies (#151).
+        storage = ObserveStorage(OBSERVE_BASE_DIR, session_dirname(namespace), run_id)
         bodies_dir = storage.run_dir / "bodies"
         backend = NodriverCaptureBackend(
             browser,

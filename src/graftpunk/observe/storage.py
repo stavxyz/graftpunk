@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from slugify import slugify
+
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -20,14 +22,13 @@ def session_dirname(session_name: str) -> str:
 
     The single source of truth for that mapping: a session name like
     ``myshop@alice`` is not a safe directory component (``@`` fails
-    :data:`_SAFE_NAME_RE`), so the opt-in login capture slugifies it before
-    handing it to :class:`ObserveStorage` (e.g. ``myshop@alice`` ->
-    ``myshop-alice``). Every lookup site (``gp observe ls/show/clean``) must
-    apply this exact same transformation to a user-supplied name, or
-    labelled runs become undiscoverable (#151).
+    :data:`_SAFE_NAME_RE`), so it is slugified before being handed to
+    :class:`ObserveStorage` (e.g. ``myshop@alice`` -> ``myshop-alice``).
+    EVERY writer (the login capture, ``gp http --observe``, ``gp observe
+    go/interactive``, :class:`~graftpunk.session.BrowserSession`) and every
+    lookup site (``gp observe list/show/clean``) must apply this exact same
+    transformation, or runs are written where no reader looks (#151).
     """
-    from slugify import slugify
-
     return slugify(session_name) or "default"
 
 
