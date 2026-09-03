@@ -98,6 +98,16 @@ class TestHttpWriterReaderRoundTrip:
         assert result.exit_code == 0, result.output
         assert session_dirname(name) in strip_ansi(result.output)
 
+    def test_labelled_name_does_not_trip_the_best_effort_warning(self, tmp_path: Path) -> None:
+        """The broad except used to swallow ObserveStorage's ValueError (#151)."""
+        with (
+            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.cli.http_commands.LOG") as log,
+        ):
+            _save_observe_data(LABELLED, "GET", "https://example.com", _fake_response())
+
+        assert log.warning.call_args_list == []
+
     @pytest.mark.parametrize("name", [LABELLED, UNDERSCORED])
     def test_saved_run_is_found_by_list(self, tmp_path: Path, name: str) -> None:
         with patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path):

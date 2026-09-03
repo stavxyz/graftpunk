@@ -179,6 +179,13 @@ def _make_request(
                 "gp session use, or --no-session."
             )
             raise typer.Exit(1)
+        # gp http joins account resolution: a plugin/base name with exactly one
+        # cached account loads that account; several exit with the pick-one
+        # list, the same way every other surface behaves (#151). Imported
+        # lazily — plugin_commands imports the CLI stack this module is part of.
+        from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
+
+        resolved = resolve_session_name_or_exit(resolved)
         try:
             session = load_session_for_api(resolved)
         except Exception as exc:  # noqa: BLE001 — CLI boundary
