@@ -34,10 +34,13 @@ _PART_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _IDENTIFIER_KEYWORDS = ("username", "email", "login", "identifier", "user")
 
 # Derivation-only exclusions. Deliberately NOT SECRET_KEYWORDS (that set drives
-# prompt masking, where a substring hit like "pin" in "shipping" would start
-# masking the wrong prompt). A field whose name contains one of these is never
-# derived from — even when it also matches an identifier keyword, so
-# ``login_code`` is skipped despite matching "login" (#151).
+# prompt masking, where masking is deliberately over-eager and matches by
+# substring). These match by whole TOKEN instead — the field name split on
+# "_"/"-"/"." — so "pin" excludes "otp_pin" but not "shipping_email" or
+# "pinnacle_user" (a substring match would wrongly skip both). A field whose
+# name contains one of these as a token is never derived from — even when it
+# also matches an identifier keyword, so ``login_code`` is skipped despite
+# matching "login" (#151).
 _NON_IDENTIFIER_HINTS = (
     "code",
     "otp",
@@ -147,7 +150,10 @@ def derive_account_identity(
 
     def is_derivable(field_name: str) -> bool:
         lowered = field_name.lower()
-        return not any(k in lowered for k in (*secret_keywords, *_NON_IDENTIFIER_HINTS))
+        if any(k in lowered for k in secret_keywords):
+            return False
+        tokens = re.split(r"[_.-]", lowered)
+        return not any(hint in tokens for hint in _NON_IDENTIFIER_HINTS)
 
     def pick() -> str | None:
         for keyword in _IDENTIFIER_KEYWORDS:

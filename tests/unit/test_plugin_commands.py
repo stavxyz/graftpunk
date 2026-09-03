@@ -3657,6 +3657,18 @@ class TestAccountAwareResolution:
         monkeypatch.setattr(plugin_commands, "list_sessions", lambda backend_override=None: [])
         assert plugin_commands.resolve_session_name("myshop@alice") == "myshop@alice"
 
+    def test_unregistered_invalid_name_raises_before_reaching_storage(self) -> None:
+        """A charset violation must not pass through unvalidated (#151).
+
+        Without validation, ``MyShop@Alice`` would reach storage unchanged
+        and a case-insensitive filesystem would silently "find"
+        ``myshop@alice``.
+        """
+        from graftpunk.cli import plugin_commands
+
+        with pytest.raises(ValueError, match="MyShop@Alice"):
+            plugin_commands.resolve_session_name("MyShop@Alice")
+
     def test_backend_override_reaches_the_listing(self, monkeypatch) -> None:  # noqa: ANN001
         """`gp --storage-backend s3 session show myshop` must resolve against s3.
 
@@ -3677,6 +3689,14 @@ class TestAccountAwareResolution:
         resolved = plugin_commands.resolve_session_name("fmtsite", backend_override="s3")
         assert resolved == "myshop@alice"
         assert seen == ["s3"]
+
+    def test_or_exit_turns_invalid_name_into_exit_1(self, capsys) -> None:  # noqa: ANN001
+        from graftpunk.cli import plugin_commands
+
+        with pytest.raises(SystemExit) as exc:
+            plugin_commands.resolve_session_name_or_exit("MyShop@Alice")
+        assert exc.value.code == 1
+        assert "Invalid session name" in capsys.readouterr().err
 
     def test_cache_list_sessions_accepts_backend_override(self, monkeypatch) -> None:  # noqa: ANN001
         from graftpunk import cache

@@ -385,6 +385,60 @@ class TestAccountColumn:
         assert "alice@example.com" in result.output
 
 
+class TestSessionListNarrowTerminal:
+    """The full session name must survive on a real 80-column terminal.
+
+    The suite pins consoles wide via the autouse ``_wide_consoles`` fixture
+    (see conftest.py); this test opts back out to the narrow default so the
+    ``no_wrap`` Session column is actually exercised at its intended width.
+    """
+
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_session_name_unbroken_at_80_columns(self, mock_list, monkeypatch) -> None:  # noqa: ANN001
+        import importlib
+
+        from tests.unit.conftest import _CONSOLE_LOCATIONS
+
+        for module_name, attr in _CONSOLE_LOCATIONS:
+            console_obj = getattr(importlib.import_module(module_name), attr)
+            monkeypatch.setattr(console_obj, "width", 80)
+
+        mock_list.return_value = [
+            _make_session(name="myshop@alice", account_identifier="alice@example.com")
+        ]
+
+        result = runner.invoke(session_app, ["list"])
+
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        # The Account cell may be truncated with an ellipsis at this width —
+        # only the Session column (no_wrap=True) is asserted on here.
+        assert "myshop@alice" in output
+
+
+class TestSessionShowPassThroughValidation:
+    """`gp session show <name>` validates an unregistered name before storage (#151).
+
+    ``resolve_session_name_or_exit`` is exercised for real here (not mocked
+    like the display tests above), since it's the exact boundary under test.
+    """
+
+    def test_invalid_charset_exits_with_invalid_name_message(self) -> None:
+        result = runner.invoke(session_app, ["show", "MyShop@Alice"])
+
+        assert result.exit_code == 1
+        assert "Invalid session name" in strip_ansi(result.output)
+
+    @patch("graftpunk.cli.session_commands.get_session_metadata")
+    def test_valid_full_name_still_passes_through(self, mock_get) -> None:  # noqa: ANN001
+        mock_get.return_value = _make_session(name="myshop@alice")
+
+        result = runner.invoke(session_app, ["show", "myshop@alice"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_get.call_args.args[0] == "myshop@alice"
+
+
 def test_render_ambiguous_session_is_a_pure_formatter() -> None:
     """The console renderer formats data handed to it — no storage reads."""
     import io

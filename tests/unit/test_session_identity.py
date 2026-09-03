@@ -145,6 +145,26 @@ class TestDerivation:
             None,
         )
 
+    @pytest.mark.parametrize(
+        "field_name",
+        ["shipping_email", "pinnacle_user"],
+    )
+    def test_hint_as_substring_no_longer_blocks_derivation(self, field_name: str) -> None:
+        # "pin" is a substring of "shipping" and "pinnacle" but neither field
+        # name has "pin" as a whole token, so token-boundary matching must
+        # still derive from them (#151).
+        fields = {field_name: "someone@example.com", "password": "x"}
+        identifier, _ = derive_account_identity(fields, SECRETS)
+        assert identifier == "someone@example.com"
+
+    @pytest.mark.parametrize(
+        "field_name",
+        ["pin", "otp_code", "login_code", "security_answer"],
+    )
+    def test_hint_as_whole_token_still_blocks_derivation(self, field_name: str) -> None:
+        fields = {field_name: "123456", "password": "x"}
+        assert derive_account_identity(fields, SECRETS) == (None, None)
+
 
 class TestOperatingName:
     def test_callable_names_are_not_listed_when_a_pin_wins(self) -> None:
