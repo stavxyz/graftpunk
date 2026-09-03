@@ -144,6 +144,33 @@ class TestKeepaliveStateIO:
         assert loaded.current_session == state.current_session
         assert loaded.daemon_status == state.daemon_status
 
+    def test_labelled_current_session_round_trips(self, tmp_path, monkeypatch):
+        """The daemon reads current_session back to decide what to touch, so a
+        multi-account name ("myshop@alice") must survive the state file (#151)."""
+        monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))
+
+        from graftpunk.config import reset_settings
+
+        reset_settings()
+
+        write_keepalive_state(
+            KeepaliveState(
+                watch=True,
+                no_switch=False,
+                max_switches=0,
+                switch_cooldown=30,
+                watch_interval=60,
+                interval=25,
+                days=7,
+                current_session="myshop@alice",
+                daemon_status=DaemonStatus.KEEPING_ALIVE,
+            )
+        )
+        loaded = read_keepalive_state()
+
+        assert loaded is not None
+        assert loaded.current_session == "myshop@alice"
+
     def test_read_nonexistent_state_returns_none(self, tmp_path, monkeypatch):
         """Test reading non-existent state file returns None."""
         monkeypatch.setenv("GRAFTPUNK_CONFIG_DIR", str(tmp_path))

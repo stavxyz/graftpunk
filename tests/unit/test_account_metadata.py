@@ -76,13 +76,65 @@ def test_identifier_survives_pickle_round_trip(backend_type: str) -> None:
     assert getattr(restored, GP_ACCOUNT_ATTR, None) == "alice@example.com"
 
 
+LABELLED = "myshop@alice"
+
+
+def _local_locations(tmp_path) -> list[str]:  # noqa: ANN001
+    from graftpunk.storage.local import LocalSessionStorage
+
+    backend = LocalSessionStorage(base_dir=tmp_path)
+    session_dir = backend.base_dir / LABELLED
+    return [str(session_dir / "session.pickle"), str(session_dir / "metadata.json")]
+
+
+def _s3_locations(_tmp_path) -> list[str]:  # noqa: ANN001
+    from graftpunk.storage.s3 import S3SessionStorage
+
+    backend = S3SessionStorage.__new__(S3SessionStorage)
+    return [backend._session_key(LABELLED), backend._metadata_key(LABELLED)]
+
+
+def _supabase_locations(_tmp_path) -> list[str]:  # noqa: ANN001
+    from graftpunk.storage.supabase import SupabaseSessionStorage
+
+    backend = SupabaseSessionStorage.__new__(SupabaseSessionStorage)
+    return [backend._session_path(LABELLED), backend._metadata_path(LABELLED)]
+
+
+_BACKEND_LOCATIONS = {
+    "local": _local_locations,
+    "s3": _s3_locations,
+    "supabase": _supabase_locations,
+}
+
+
 class TestBackendConformance:
     """Every backend round-trips a labelled name and its identifier (spec: Naming).
 
-    Parametrized so a fourth backend inherits a failing test, not a reading
-    assignment. Local exercises a real save/get on a tmp dir; S3/Supabase are
-    exercised at their serializer + key-construction seams (no network).
+    Parametrized over every backend, so a fourth one inherits a failing test
+    rather than a reading assignment. Local exercises a real save/get on a tmp
+    dir; S3 and Supabase are exercised at their key/path-construction seams
+    plus the shared serializers (no network).
+
+    UNVERIFIED: that S3 and Supabase *accept* an "@" in an object key/path is
+    not proven here — only that graftpunk builds the key with the name intact.
+    The end-to-end acceptance is proven for the local backend alone; the remote
+    ones would need a live bucket (or a moto/respx double) to confirm.
     """
+
+    @pytest.mark.parametrize("backend", sorted(_BACKEND_LOCATIONS))
+    def test_labelled_name_survives_key_construction(self, backend, tmp_path) -> None:  # noqa: ANN001
+        for location in _BACKEND_LOCATIONS[backend](tmp_path):
+            assert LABELLED in location
+
+    @pytest.mark.parametrize("backend", sorted(_BACKEND_LOCATIONS))
+    @pytest.mark.parametrize("label", [None, "alice"])
+    def test_shared_serializers_round_trip(self, backend, label) -> None:  # noqa: ANN001
+        # Every backend persists metadata through these two functions, so one
+        # round-trip per backend is the shared half of the conformance.
+        name = "myshop" if label is None else f"myshop@{label}"
+        meta = _metadata(name=name, account_identifier="alice@example.com", storage_backend=backend)
+        assert dict_to_metadata(metadata_to_dict(meta)) == meta
 
     def test_local_backend_real_round_trip(self, tmp_path) -> None:  # noqa: ANN001
         import pickle
@@ -91,25 +143,11 @@ class TestBackendConformance:
 
         backend = LocalSessionStorage(base_dir=tmp_path)
         meta = _metadata(account_identifier="alice@example.com")
-        backend.save_session("myshop@alice", pickle.dumps({"ok": True}), meta)
-        again = backend.get_session_metadata("myshop@alice")
+        backend.save_session(LABELLED, pickle.dumps({"ok": True}), meta)
+        again = backend.get_session_metadata(LABELLED)
         assert again is not None
-        assert again.name == "myshop@alice"
+        assert again.name == LABELLED
         assert again.account_identifier == "alice@example.com"
-
-    def test_s3_key_scheme_accepts_at(self) -> None:
-        from graftpunk.storage.s3 import S3SessionStorage
-
-        key = S3SessionStorage._session_key(
-            S3SessionStorage.__new__(S3SessionStorage), "myshop@alice"
-        )
-        assert "myshop@alice" in key
-
-    @pytest.mark.parametrize("label", [None, "alice"])
-    def test_shared_serializers_round_trip(self, label) -> None:  # noqa: ANN001
-        name = "myshop" if label is None else f"myshop@{label}"
-        meta = _metadata(name=name, account_identifier="alice@example.com")
-        assert dict_to_metadata(metadata_to_dict(meta)) == meta
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
@@ -121,9 +159,9 @@ def test_metadata_file_is_written_owner_only(tmp_path) -> None:  # noqa: ANN001
 
     backend = LocalSessionStorage(base_dir=tmp_path)
     backend.save_session(
-        "myshop@alice", pickle.dumps({"ok": True}), _metadata(account_identifier="a@example.com")
+        LABELLED, pickle.dumps({"ok": True}), _metadata(account_identifier="a@example.com")
     )
-    metadata_path = tmp_path / "myshop@alice" / "metadata.json"
+    metadata_path = tmp_path / LABELLED / "metadata.json"
     assert metadata_path.stat().st_mode & 0o777 == 0o600
 
 

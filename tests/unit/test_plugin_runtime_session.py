@@ -5,10 +5,22 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 import requests
 
 from graftpunk.exceptions import SessionNotFoundError
 from tests.unit.cli_harness import invoke_plugin_app as _invoke
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_session(monkeypatch, tmp_path):  # noqa: ANN001, ANN201
+    """No ambient pin from the developer's shell or a stray .gp-session.
+
+    get_active_session() reads GRAFTPUNK_SESSION and a .gp-session file in the
+    CWD (the repo root under pytest), either of which would steer these tests.
+    """
+    monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+    monkeypatch.chdir(tmp_path)
 
 
 def _plugin():  # noqa: ANN202
