@@ -99,9 +99,12 @@ class LocalSessionStorage:
             storage_location=self.storage_location,
         )
 
-        # Write metadata
+        # Write metadata with the same secure-from-creation permissions as the
+        # pickle: it carries the account identifier, the domain and the URL
+        # last visited — not secrets, but not other users' business either.
         metadata_dict = metadata_to_dict(metadata)
-        with metadata_path.open("w") as f:
+        meta_fd = os.open(metadata_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(meta_fd, "w") as f:
             json.dump(metadata_dict, f, indent=2, default=str)
 
         LOG.info("session_save_completed", name=name, path=str(session_dir))

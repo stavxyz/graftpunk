@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pickle
+import sys
 
 import pytest
 import requests
@@ -109,6 +110,21 @@ class TestBackendConformance:
         name = "myshop" if label is None else f"myshop@{label}"
         meta = _metadata(name=name, account_identifier="alice@example.com")
         assert dict_to_metadata(metadata_to_dict(meta)) == meta
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_metadata_file_is_written_owner_only(tmp_path) -> None:  # noqa: ANN001
+    """metadata.json carries the account identifier; give it the pickle's mode."""
+    import pickle
+
+    from graftpunk.storage.local import LocalSessionStorage
+
+    backend = LocalSessionStorage(base_dir=tmp_path)
+    backend.save_session(
+        "myshop@alice", pickle.dumps({"ok": True}), _metadata(account_identifier="a@example.com")
+    )
+    metadata_path = tmp_path / "myshop@alice" / "metadata.json"
+    assert metadata_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_cache_dict_conversions_carry_the_identifier(fresh_backend) -> None:  # noqa: ANN001
