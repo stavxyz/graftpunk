@@ -6,6 +6,7 @@ import asyncio
 import re
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -17,6 +18,7 @@ from graftpunk.exceptions import (
     TokenPatternMismatchError,
 )
 from graftpunk.logging import get_logger
+from graftpunk.session_identity import GP_ACCOUNT_ATTR
 
 LOG = get_logger(__name__)
 
@@ -492,6 +494,37 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
 
 _CACHE_ATTR = "_gp_cached_tokens"
 _CSRF_TOKENS_ATTR = "_gp_csrf_tokens"
+_HEADER_ROLES_ATTR = "_gp_header_roles"
+
+# The one registry of attributes that ride a session object beside its cookies
+# and headers. Every place that moves state from one session to another
+# (BrowserSession's pickle hooks, cache._api_session_from_session) iterates
+# this instead of hand-listing, so a new rider is added in one place and
+# cannot be forgotten by one copier (#151).
+SESSION_RIDER_ATTRS: tuple[str, ...] = (
+    _CACHE_ATTR,
+    _CSRF_TOKENS_ATTR,
+    _HEADER_ROLES_ATTR,
+    GP_ACCOUNT_ATTR,
+)
+
+# The value a rider takes on a session that never had one: the dict-valued
+# riders restore as a fresh empty dict (callers mutate them in place), the
+# account identifier as None. Keyed by the same registry above.
+SESSION_RIDER_DEFAULTS: dict[str, Callable[[], Any]] = {
+    _CACHE_ATTR: dict,
+    _CSRF_TOKENS_ATTR: dict,
+    _HEADER_ROLES_ATTR: dict,
+    GP_ACCOUNT_ATTR: lambda: None,
+}
+
+# CSRF tokens are per-request and go stale the moment a session is put away,
+# so they ride in memory but are deliberately kept out of the pickle (a
+# restored session re-extracts them). The subset is DERIVED from the registry,
+# never hand-listed.
+PICKLED_SESSION_RIDER_ATTRS: tuple[str, ...] = tuple(
+    attr for attr in SESSION_RIDER_ATTRS if attr != _CSRF_TOKENS_ATTR
+)
 
 
 def _store_csrf_token(session: requests.Session, name: str, value: str) -> None:

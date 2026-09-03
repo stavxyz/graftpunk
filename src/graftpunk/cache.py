@@ -417,9 +417,9 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     load_session_for_api_from_bytes (from a browser-free deserialize).
     """
     from graftpunk.graftpunk_session import GraftpunkSession
-    from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
+    from graftpunk.tokens import _HEADER_ROLES_ATTR, SESSION_RIDER_ATTRS
 
-    header_roles = getattr(source, "_gp_header_roles", {})
+    header_roles = getattr(source, _HEADER_ROLES_ATTR, {})
     api_session = GraftpunkSession(header_roles=header_roles)
 
     if hasattr(source, "cookies"):
@@ -445,15 +445,16 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
             api_session.headers[key] = value
         LOG.debug("copied_headers_from_session")
 
-    token_cache = getattr(source, _CACHE_ATTR, None)
-    if token_cache:
-        setattr(api_session, _CACHE_ATTR, token_cache)
-        LOG.debug("copied_cached_tokens_from_session", count=len(token_cache))
-
-    csrf_tokens = getattr(source, _CSRF_TOKENS_ATTR, None)
-    if csrf_tokens is not None:
-        setattr(api_session, _CSRF_TOKENS_ATTR, dict(csrf_tokens))
-        LOG.debug("copied_csrf_tokens_from_session", count=len(csrf_tokens))
+    # Every rider travels, from the one registry: token cache, csrf tokens,
+    # header roles and the account identifier. Hand-listing here is what let
+    # the identifier fall off the API session, wiping it from metadata on the
+    # next cache_session (#151).
+    for attr in SESSION_RIDER_ATTRS:
+        value = getattr(source, attr, None)
+        if not value:
+            continue
+        setattr(api_session, attr, dict(value) if isinstance(value, dict) else value)
+        LOG.debug("copied_session_rider", attr=attr)
 
     return api_session
 
@@ -462,11 +463,13 @@ class _Stub:
     """Placeholder for a class the browser-free path cannot import (the browser
     stack is absent). Unpickling restores state via __setstate__ below.
 
-    cookies/headers/_gp_header_roles and the cached-token dict are plain data in
-    BrowserSession.__getstate__ (session.py:581-582), so they land directly on
-    the stub. NOTE: __getstate__ does NOT serialize `_gp_csrf_tokens`, so csrf
-    tokens are absent from the pickle entirely — the stub cannot and does not
-    surface them.
+    cookies/headers and the pickled riders (``PICKLED_SESSION_RIDER_ATTRS``:
+    header roles, the cached-token dict, the account identifier) are plain
+    data in ``BrowserSession.__getstate__``, so they land directly on the
+    stub. NOTE: the pickled subset deliberately excludes ``_gp_csrf_tokens``
+    (per-request, stale the moment a session is put away), so csrf tokens are
+    absent from the pickle entirely — the stub cannot and does not surface
+    them.
     """
 
     def __setstate__(self, state: object) -> None:

@@ -139,6 +139,31 @@ def test_identity_survives_load_and_refresh_recache(fresh_backend) -> None:  # n
     assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
 
 
+def test_direct_recache_of_an_api_session_keeps_the_identifier(fresh_backend) -> None:  # noqa: ANN001
+    """load_session_for_api -> cache_session must not wipe account_identifier.
+
+    The API session is built by copying riders off the stored session; when
+    the identifier was not among them, re-caching that session (the direct
+    re-cache path, no update_session_cookies) blanked the metadata field.
+    """
+    import requests
+
+    from graftpunk.cache import cache_session, get_session_metadata, load_session_for_api
+
+    stored = BrowserSession.__new__(BrowserSession)
+    requests.Session.__init__(stored)
+    stored._backend_type = "nodriver"
+    stored._session_name = "myshop@alice"
+    setattr(stored, GP_ACCOUNT_ATTR, "alice@example.com")
+    cache_session(stored, "myshop@alice")
+
+    api = load_session_for_api("myshop@alice")
+    assert getattr(api, GP_ACCOUNT_ATTR, None) == "alice@example.com"
+
+    cache_session(api, "myshop@alice")
+    assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
+
+
 def test_update_session_cookies_recovers_identifier_without_extra_read(
     fresh_backend, monkeypatch
 ) -> None:

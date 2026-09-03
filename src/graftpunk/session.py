@@ -41,12 +41,30 @@ from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage, session_dirname
-from graftpunk.session_identity import GP_ACCOUNT_ATTR
+from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
 
 LOG = get_logger(__name__)
 
-# Attribute name for cached tokens on session objects — kept in sync with tokens._CACHE_ATTR
-_GP_CACHED_TOKENS = "_gp_cached_tokens"
+
+def _save_session_riders(session: Any, state: dict[str, Any]) -> None:
+    """Copy the session's rider attributes into a pickle *state* dict.
+
+    The riders (cached tokens, header roles, account identifier) are declared
+    once in :data:`graftpunk.tokens.SESSION_RIDER_ATTRS`; both backend
+    branches of ``__getstate__`` go through here so neither can forget one
+    (#151). A rider the session never had is written as its declared empty
+    value, exactly as the hand-written copies did.
+    """
+    for attr in PICKLED_SESSION_RIDER_ATTRS:
+        value = getattr(session, attr, None)
+        state[attr] = SESSION_RIDER_DEFAULTS[attr]() if value is None else value
+
+
+def _restore_session_riders(session: Any, state: dict[str, Any]) -> None:
+    """Restore the rider attributes saved by :func:`_save_session_riders`."""
+    for attr in PICKLED_SESSION_RIDER_ATTRS:
+        value = state.get(attr)
+        setattr(session, attr, SESSION_RIDER_DEFAULTS[attr]() if value is None else value)
 
 
 # requestium.Session has no type stubs, inheritance typing unavailable
@@ -72,6 +90,12 @@ class BrowserSession(requestium.Session):
         >>> session.driver.get("https://example.com")
         >>> session.transfer_driver_cookies_to_session()
     """
+
+    # Rider attributes (graftpunk.tokens.SESSION_RIDER_ATTRS): set by the
+    # capture/token machinery and by __setstate__, declared here so they are
+    # part of the class's shape rather than materializing out of a setattr.
+    _gp_header_roles: dict[str, dict[str, str]]
+    _gp_cached_tokens: dict[str, Any]
 
     def __init__(
         self,
@@ -587,9 +611,7 @@ class BrowserSession(requestium.Session):
                 except Exception as exc:  # noqa: BLE001
                     LOG.debug("url_capture_failed_during_serialization", error=str(exc))
             state["current_url"] = current_url
-            state["_gp_header_roles"] = getattr(self, "_gp_header_roles", {})
-            state[_GP_CACHED_TOKENS] = getattr(self, _GP_CACHED_TOKENS, {})
-            state[GP_ACCOUNT_ATTR] = getattr(self, GP_ACCOUNT_ATTR, None)
+            _save_session_riders(self, state)
             return state
 
         # Selenium/requestium path
@@ -616,9 +638,7 @@ class BrowserSession(requestium.Session):
         # Backend abstraction state
         state["_backend_type"] = backend_type
         state["_use_stealth"] = getattr(self, "_use_stealth", True)
-        state["_gp_header_roles"] = getattr(self, "_gp_header_roles", {})
-        state[_GP_CACHED_TOKENS] = getattr(self, _GP_CACHED_TOKENS, {})
-        state[GP_ACCOUNT_ATTR] = getattr(self, GP_ACCOUNT_ATTR, None)
+        _save_session_riders(self, state)
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -658,11 +678,7 @@ class BrowserSession(requestium.Session):
             if "session_name" in state:
                 self._session_name = state["session_name"]
             self._backend_instance = None  # No browser restored
-            self._gp_header_roles = state.get("_gp_header_roles", {})
-            self._gp_cached_tokens = state.get(_GP_CACHED_TOKENS, {})
-            account = state.get(GP_ACCOUNT_ATTR)
-            if account is not None:
-                setattr(self, GP_ACCOUNT_ATTR, account)
+            _restore_session_riders(self, state)
         else:
             # Selenium/requestium path
             # requestium/requests don't define __setstate__, so this resolves
@@ -672,11 +688,7 @@ class BrowserSession(requestium.Session):
             # in case a future requestium version overrides __setstate__.
             super().__setstate__(state)
             self.__dict__.update(state)
-            self._gp_header_roles = state.get("_gp_header_roles", {})
-            self._gp_cached_tokens = state.get(_GP_CACHED_TOKENS, {})
-            account = state.get(GP_ACCOUNT_ATTR)
-            if account is not None:
-                setattr(self, GP_ACCOUNT_ATTR, account)
+            _restore_session_riders(self, state)
 
             # Only transfer cookies to driver if we have one
             # (for API-only usage, _driver will be None)
