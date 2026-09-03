@@ -125,6 +125,42 @@ class TestHttpWriterReaderRoundTrip:
         assert "1 run(s)" in output
 
 
+class TestHttpObserveUsesTheResolvedName:
+    """The run dir is keyed by the session the request was MADE with."""
+
+    def test_base_name_files_the_run_under_the_resolved_account(self, tmp_path: Path) -> None:
+        from graftpunk.cli.main import app as root_app
+
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.request.return_value = _fake_response()
+
+        with (
+            patch("graftpunk.cli.http_commands.load_session_for_api", return_value=session),
+            patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
+            patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"}),
+            patch("graftpunk.cli.plugin_commands.list_sessions", return_value=["myshop@alice"]),
+            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path),
+        ):
+            result = runner.invoke(
+                root_app, ["http", "get", "--session", "myshop", "https://example.com"]
+            )
+
+        assert result.exit_code == 0, result.output
+        # Written under the RESOLVED name, not the argument the user typed.
+        assert (tmp_path / "myshop-alice").is_dir()
+        assert not (tmp_path / "myshop").exists()
+
+        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+            found = runner.invoke(root_app, ["observe", "show", "myshop@alice"])
+            listed = runner.invoke(root_app, ["observe", "--session", "myshop@alice", "list"])
+
+        assert found.exit_code == 0, found.output
+        assert "myshop-alice" in strip_ansi(found.output)
+        assert listed.exit_code == 0, listed.output
+        assert "1 run(s)" in strip_ansi(listed.output)
+
+
 class TestObserveGoWriterReaderRoundTrip:
     """``gp observe go`` writes where ``gp observe`` reads."""
 

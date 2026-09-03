@@ -100,7 +100,7 @@ class TestMakeRequest:
         mock_session.request.return_value = mock_response
         mock_load.return_value = mock_session
 
-        response = _make_request("GET", "https://example.com", session_name="test-session")
+        response, _ = _make_request("GET", "https://example.com", session_name="test-session")
 
         mock_load.assert_called_once_with("test-session")
         assert response == mock_response
@@ -116,7 +116,7 @@ class TestMakeRequest:
         mock_session.request.return_value = mock_response
         mock_load.return_value = mock_session
 
-        response = _make_request(
+        response, _ = _make_request(
             "POST",
             "https://example.com/api",
             session_name="test-session",
@@ -207,7 +207,7 @@ class TestMakeRequest:
                 [mock_plugin],
             ),
         ):
-            response = _make_request(
+            response, _ = _make_request(
                 "GET",
                 "https://example.com/api",
                 session_name="test-session",
@@ -240,7 +240,7 @@ class TestMakeRequestErrorPaths:
         mock_response.status_code = 200
 
         with patch.object(requests.Session, "request", return_value=mock_response) as mock_req:
-            response = _make_request("GET", "https://example.com", no_session=True)
+            response, _ = _make_request("GET", "https://example.com", no_session=True)
 
         assert response == mock_response
         mock_req.assert_called_once()
@@ -550,7 +550,7 @@ class TestMakeRequestWithRole:
         mock_session.request_with_role.return_value = mock_response
         mock_load.return_value = mock_session
 
-        response = _make_request(
+        response, _ = _make_request(
             "GET",
             "https://example.com/api",
             session_name="test-session",
@@ -572,7 +572,7 @@ class TestMakeRequestWithRole:
         mock_session.request.return_value = mock_response
         mock_load.return_value = mock_session
 
-        response = _make_request(
+        response, _ = _make_request(
             "GET",
             "https://example.com",
             session_name="test-session",
@@ -784,7 +784,7 @@ class TestTokenRetryWithRole:
                 [mock_plugin],
             ),
         ):
-            response = _make_request(
+            response, _ = _make_request(
                 "GET",
                 "https://example.com/api",
                 session_name="test-session",
