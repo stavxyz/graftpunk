@@ -1093,7 +1093,7 @@ class TestObserveCLICommands:
         (run_dir / "events.jsonl").write_text("")
 
         with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
-            result = runner.invoke(app, ["observe", "show", "myshop@alice"])
+            result = runner.invoke(app, ["observe", "show", "myshop@alice"], env={"COLUMNS": "200"})
 
         assert result.exit_code == 0, result.output
         assert "myshop-alice" in strip_ansi(result.output)
@@ -1105,7 +1105,7 @@ class TestObserveCLICommands:
         (run_dir / "events.jsonl").write_text("")
 
         with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
-            result = runner.invoke(app, ["observe", "show", "myshop"])
+            result = runner.invoke(app, ["observe", "show", "myshop"], env={"COLUMNS": "200"})
 
         assert result.exit_code == 0, result.output
 
