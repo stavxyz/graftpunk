@@ -161,6 +161,27 @@ class TestHttpObserveUsesTheResolvedName:
         assert "1 run(s)" in strip_ansi(listed.output)
 
 
+class TestBuildObserveContextWriterReaderRoundTrip:
+    """``build_observe_context`` (the plugin-command entry point) writes where readers look."""
+
+    @pytest.mark.parametrize("name", [LABELLED, UNDERSCORED])
+    def test_context_run_dir_is_found_by_show(self, tmp_path: Path, name: str) -> None:
+        from graftpunk.observe.context import build_observe_context
+
+        with patch("graftpunk.observe.context.OBSERVE_BASE_DIR", tmp_path):
+            ctx = build_observe_context(name, "selenium", None, "full")
+
+        assert ctx._storage is not None
+        assert ctx._storage.run_dir.parent.name == session_dirname(name)
+        assert (tmp_path / session_dirname(name)).is_dir()
+
+        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+            result = runner.invoke(app, ["observe", "show", name])
+
+        assert result.exit_code == 0, result.output
+        assert session_dirname(name) in strip_ansi(result.output)
+
+
 class TestObserveGoWriterReaderRoundTrip:
     """``gp observe go`` writes where ``gp observe`` reads."""
 
