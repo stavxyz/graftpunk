@@ -670,13 +670,16 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         )
 
 
-def list_sessions() -> list[str]:
+def list_sessions(backend_override: str | None = None) -> list[str]:
     """List all cached session names.
+
+    Args:
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         Sorted list of session names.
     """
-    backend = _get_session_storage_backend()
+    backend = _get_session_storage_backend(backend_override=backend_override)
     return backend.list_sessions()
 
 

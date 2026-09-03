@@ -1523,7 +1523,7 @@ class TestResolveSessionNameIntegration:
         result = runner.invoke(app, ["session", "show", "my-plugin"])
 
         assert result.exit_code == 0
-        mock_resolve.assert_called_once_with("my-plugin")
+        mock_resolve.assert_called_once_with("my-plugin", backend_override=None)
         assert "resolved-session" in result.output
 
     @patch("graftpunk.cli.session_commands.clear_session_cache")
@@ -1547,7 +1547,7 @@ class TestResolveSessionNameIntegration:
         result = runner.invoke(app, ["session", "clear", "my-plugin", "--force"])
 
         assert result.exit_code == 0
-        mock_resolve.assert_called_once_with("my-plugin")
+        mock_resolve.assert_called_once_with("my-plugin", backend_override=None)
         mock_clear.assert_called_once_with("resolved-session", backend_override=None)
 
     @patch("graftpunk.cli.session_commands.load_session")
@@ -1585,7 +1585,7 @@ class TestResolveSessionNameIntegration:
         result = runner.invoke(app, ["session", "show", "literal-session-name"])
 
         assert result.exit_code == 0
-        mock_resolve.assert_called_once_with("literal-session-name")
+        mock_resolve.assert_called_once_with("literal-session-name", backend_override=None)
 
 
 class TestObserveNamesAreNotMarkup:

@@ -166,9 +166,9 @@ def show(
     """Show detailed information about a cached session."""
     backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
     try:
-        name = resolve_session_name(name)
+        name = resolve_session_name(name, backend_override=backend_override)
     except AmbiguousSessionError as exc:
-        exit_ambiguous_session(exc)
+        exit_ambiguous_session(exc, backend_override=backend_override)
     try:
         metadata = get_session_metadata(name, backend_override=backend_override)
     except (ValueError, StorageError) as exc:
@@ -386,9 +386,9 @@ def session_clear(
         _print_removed(removed)
     else:
         try:
-            target = resolve_session_name(target)
+            target = resolve_session_name(target, backend_override=backend_override)
         except AmbiguousSessionError as exc:
-            exit_ambiguous_session(exc)
+            exit_ambiguous_session(exc, backend_override=backend_override)
         match = next((s for s in all_metadata if s["name"] == target), None)
 
         if not match:

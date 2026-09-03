@@ -384,7 +384,7 @@ def get_plugin_for_session(session_name: str) -> CLIPluginProtocol | None:
     return None
 
 
-def resolve_session_name(name: str) -> str:
+def resolve_session_name(name: str, backend_override: str | None = None) -> str:
     """Resolve a name to an operating session name.
 
     A registered plugin site name maps to its base ``session_name`` and then
@@ -392,12 +392,25 @@ def resolve_session_name(name: str) -> str:
     AmbiguousSessionError; zero -> the base, so the not-found path is
     unchanged). Anything else — including full ``base@label`` names — passes
     through unchanged.
+
+    Args:
+        name: Plugin site name, alias, or a full session name.
+        backend_override: Storage backend to resolve against, when the caller
+            was given one (``gp --storage-backend s3 ...``). Resolving against
+            the default backend while acting on another one picks the wrong
+            session.
+
+    Raises:
+        AmbiguousSessionError: Several sessions are cached for the base name.
     """
     if name in _plugin_session_map:
         # The typed argument is the explicit tier; ambient pins do not
         # re-steer an explicitly named site. The tier subset is declared
         # through the one chain function, not encoded by which tier we call.
         return compute_operating_session_name(
-            None, _plugin_session_map[name], list_sessions(), use_ambient=False
+            None,
+            _plugin_session_map[name],
+            list_sessions(backend_override=backend_override),
+            use_ambient=False,
         )
     return name

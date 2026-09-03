@@ -3633,7 +3633,9 @@ class TestAccountAwareResolution:
         from graftpunk.cli import plugin_commands
 
         monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
-        monkeypatch.setattr(plugin_commands, "list_sessions", lambda: ["myshop@alice"])
+        monkeypatch.setattr(
+            plugin_commands, "list_sessions", lambda backend_override=None: ["myshop@alice"]
+        )
         assert plugin_commands.resolve_session_name("fmtsite") == "myshop@alice"
 
     def test_several_raise(self, monkeypatch) -> None:  # noqa: ANN001
@@ -3641,15 +3643,57 @@ class TestAccountAwareResolution:
         from graftpunk.exceptions import AmbiguousSessionError
 
         monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
-        monkeypatch.setattr(plugin_commands, "list_sessions", lambda: ["myshop", "myshop@alice"])
+        monkeypatch.setattr(
+            plugin_commands,
+            "list_sessions",
+            lambda backend_override=None: ["myshop", "myshop@alice"],
+        )
         with pytest.raises(AmbiguousSessionError):
             plugin_commands.resolve_session_name("fmtsite")
 
     def test_full_name_passes_through(self, monkeypatch) -> None:  # noqa: ANN001
         from graftpunk.cli import plugin_commands
 
-        monkeypatch.setattr(plugin_commands, "list_sessions", lambda: [])
+        monkeypatch.setattr(plugin_commands, "list_sessions", lambda backend_override=None: [])
         assert plugin_commands.resolve_session_name("myshop@alice") == "myshop@alice"
+
+    def test_backend_override_reaches_the_listing(self, monkeypatch) -> None:  # noqa: ANN001
+        """`gp --storage-backend s3 session show myshop` must resolve against s3.
+
+        Resolution lists sessions; the listing has to honour the same backend
+        override the caller was given, or the command resolves against local
+        and acts on s3 (#151).
+        """
+        from graftpunk.cli import plugin_commands
+
+        seen: list[str | None] = []
+
+        def fake_list_sessions(backend_override: str | None = None) -> list[str]:
+            seen.append(backend_override)
+            return ["myshop@alice"]
+
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
+        monkeypatch.setattr(plugin_commands, "list_sessions", fake_list_sessions)
+        resolved = plugin_commands.resolve_session_name("fmtsite", backend_override="s3")
+        assert resolved == "myshop@alice"
+        assert seen == ["s3"]
+
+    def test_cache_list_sessions_accepts_backend_override(self, monkeypatch) -> None:  # noqa: ANN001
+        from graftpunk import cache
+
+        seen: list[str | None] = []
+
+        class FakeBackend:
+            def list_sessions(self) -> list[str]:
+                return ["myshop@alice"]
+
+        def fake_get_backend(backend_override: str | None = None) -> FakeBackend:
+            seen.append(backend_override)
+            return FakeBackend()
+
+        monkeypatch.setattr(cache, "_get_session_storage_backend", fake_get_backend)
+        assert cache.list_sessions(backend_override="s3") == ["myshop@alice"]
+        assert seen == ["s3"]
 
     def test_get_plugin_for_session_matches_labelled(self, monkeypatch) -> None:  # noqa: ANN001
         from unittest.mock import MagicMock
