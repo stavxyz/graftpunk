@@ -104,8 +104,11 @@ An HTTPie-compatible session file can also be exported alongside the cache, fall
 
 Sessions are keyed by plugin **and** account: `gp myshop login` as alice caches
 `myshop@alice`; a second login as bob caches `myshop@bob` beside it, and logging
-in never evicts another account's session. The label defaults to the slugified
-login identifier; `gp myshop login --as work` pins a label. Metadata records the
+in never evicts another account's session. The label derives from a
+username/email/login-shaped field (slugified); when no such field exists the
+session keeps its bare name — use `--as` to name it. One-time codes, PINs,
+passphrases and security answers are never derived from.
+`gp myshop login --as work` pins a label. Metadata records the
 identifier (what was typed at login, not server-verified), shown in
 `gp session list`'s Account column.
 

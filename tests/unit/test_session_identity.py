@@ -81,9 +81,45 @@ class TestDerivation:
         identifier, _ = derive_account_identity({"user": "bob", "password": "x"}, SECRETS)
         assert identifier == "bob"
 
-    def test_non_secret_fallback(self) -> None:
-        identifier, _ = derive_account_identity({"account_no": "12345", "password": "x"}, SECRETS)
-        assert identifier == "12345"
+    def test_no_identifier_shaped_field_yields_none(self) -> None:
+        # No identifier keyword matches: the session keeps its bare name
+        # rather than persisting an arbitrary field value (#151).
+        assert derive_account_identity({"account_no": "42", "password": "x"}, SECRETS) == (
+            None,
+            None,
+        )
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"passphrase": "hunter2"},
+            {"otp": "123456", "password": "x"},
+            {"pin": "9999", "password": "x"},
+            {"security_answer": "fluffy", "password": "x"},
+            {"login_code": "abc123", "password": "x"},
+            {"account_no": "42", "password": "x"},
+        ],
+    )
+    def test_non_identifier_fields_are_never_derived(self, fields: dict[str, str]) -> None:
+        assert derive_account_identity(fields, SECRETS) == (None, None)
+
+    def test_identifier_shaped_field_still_derives(self) -> None:
+        fields = {"login_code": "abc123", "username": "alice", "password": "x"}
+        assert derive_account_identity(fields, SECRETS) == ("alice", "alice")
+
+    def test_unlabelable_identifier_falls_back_to_bare_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defense in depth: today's slugify cannot emit a label that fails
+        # validate_account_label, so the guard is exercised with a stub. A
+        # rejected label must not become a session label; the identifier is
+        # still recorded (B-M7).
+        import graftpunk.session_identity as si
+
+        monkeypatch.setattr(si, "slugify", lambda value: "-nope-")
+        identifier, label = si.derive_account_identity({"username": "alice"}, SECRETS)
+        assert identifier == "alice"
+        assert label is None
 
     def test_all_secret_or_empty_yields_none(self) -> None:
         assert derive_account_identity({"password": "x"}, SECRETS) == (None, None)

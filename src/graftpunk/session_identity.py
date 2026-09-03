@@ -32,6 +32,23 @@ _PART_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 # checked first, so it wins.
 _IDENTIFIER_KEYWORDS = ("username", "email", "login", "identifier", "user")
 
+# Derivation-only exclusions. Deliberately NOT SECRET_KEYWORDS (that set drives
+# prompt masking, where a substring hit like "pin" in "shipping" would start
+# masking the wrong prompt). A field whose name contains one of these is never
+# derived from — even when it also matches an identifier keyword, so
+# ``login_code`` is skipped despite matching "login" (#151).
+_NON_IDENTIFIER_HINTS = (
+    "code",
+    "otp",
+    "pin",
+    "passphrase",
+    "answer",
+    "captcha",
+    "mfa",
+    "2fa",
+    "totp",
+)
+
 
 def split_session_name(name: str) -> tuple[str, str | None]:
     """Split ``base@label`` into its halves; a bare name has ``label=None``."""
@@ -110,36 +127,45 @@ def derive_account_identity(
 ) -> tuple[str | None, str | None]:
     """Derive ``(identifier, label)`` from resolved login fields.
 
-    The identifier is the value of the first non-secret field whose name
-    contains an identifier keyword (keyword-major order); failing that, the
-    first field that is not secret per *secret_keywords*. A field name
-    matching a secret keyword is never picked as the identifier — even when
-    it also matches an identifier keyword (e.g. ``login_token`` matches both
-    "login" and "token") — because the identifier becomes a persisted,
-    human-visible session label. The label is the slugified identifier.
-    Returns ``(None, None)`` when nothing usable exists — the session then
-    keeps its bare legacy name.
+    The identifier is the value of the first field whose name contains an
+    identifier keyword (keyword-major order: username, email, login,
+    identifier, user) and is neither secret per *secret_keywords* nor
+    non-identifier-shaped per :data:`_NON_IDENTIFIER_HINTS`. The set of
+    derivable fields is therefore closed by construction: there is no
+    "first non-secret field" fallback, so a one-time code, a PIN or a
+    security answer can never become a persisted, human-visible session
+    label. Returns ``(None, None)`` when no field qualifies — the session
+    then keeps its bare legacy name, and ``--as`` remains available to name
+    it explicitly.
+
+    The label is the slugified identifier, validated with
+    :func:`validate_account_label`; an identifier that cannot produce a legal
+    label yields ``(identifier, None)`` — the identifier is still recorded in
+    metadata while the session keeps its bare name.
     """
 
-    def is_secret(field_name: str) -> bool:
+    def is_derivable(field_name: str) -> bool:
         lowered = field_name.lower()
-        return any(k in lowered for k in secret_keywords)
+        return not any(k in lowered for k in (*secret_keywords, *_NON_IDENTIFIER_HINTS))
 
     def pick() -> str | None:
         for keyword in _IDENTIFIER_KEYWORDS:
             for field_name, value in fields.items():
-                if keyword in field_name.lower() and value and not is_secret(field_name):
+                if keyword in field_name.lower() and value and is_derivable(field_name):
                     return value
-        for field_name, value in fields.items():
-            if value and not is_secret(field_name):
-                return value
         return None
 
     identifier = pick()
     if identifier is None:
         return (None, None)
     label = slugify(identifier)
-    return (identifier, label or None)
+    if not label:
+        return (identifier, None)
+    try:
+        validate_account_label(label)
+    except ValueError:
+        return (identifier, None)
+    return (identifier, label)
 
 
 def compute_operating_session_name(
