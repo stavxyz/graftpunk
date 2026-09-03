@@ -110,7 +110,10 @@ def run_plugin_command(
         else:
             session = requests.Session()
     except SessionNotFoundError:
-        gp_console.error(f"Session '{operating_name}' not found. Please create a session first.")
+        # operating_name is "" when the failure came from the resolution step
+        # itself; name the plugin's base session rather than an empty string.
+        named = operating_name or plugin.session_name
+        gp_console.error(f"Session '{named}' not found. Please create a session first.")
         raise SystemExit(1) from None
     except PluginError as exc:
         gp_console.error(f"Plugin error: {exc}")

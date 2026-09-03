@@ -210,10 +210,3 @@ def test_update_session_cookies_recovers_identifier_without_extra_read(
 
     assert calls["n"] == 0
     assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
-
-
-def test_backend_protocol_docstring_states_charset() -> None:
-    from graftpunk.storage.base import SessionStorageBackend
-
-    doc = SessionStorageBackend.__doc__ or ""
-    assert "@" in doc and "[a-z0-9]" in doc

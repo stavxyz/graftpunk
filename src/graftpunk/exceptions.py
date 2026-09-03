@@ -1,5 +1,9 @@
 """Custom exceptions for graftpunk package."""
 
+from __future__ import annotations
+
+from collections.abc import Sequence
+
 
 class GraftpunkError(Exception):
     """Base exception class for all graftpunk errors."""
@@ -128,8 +132,8 @@ class AmbiguousSessionError(GraftpunkError):
     ``gp session use``.
     """
 
-    def __init__(self, base_name: str, candidates: list[str]) -> None:
+    def __init__(self, base_name: str, candidates: Sequence[str]) -> None:
         self.base_name = base_name
-        self.candidates = candidates
+        self.candidates = list(candidates)
         names = ", ".join(candidates)
         super().__init__(f"Several sessions cached for '{base_name}': {names}. Pick one.")

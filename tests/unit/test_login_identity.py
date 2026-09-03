@@ -349,7 +349,7 @@ class TestLoginWrapperOrchestration:
         seen: dict = {}
         result = _invoke(_hand_written_login_plugin(seen), ["fmtsite", "login"], **_CREDS)
         assert result.exit_code == 0, result.output
-        assert "Cached session: myshop@alice" in result.output
+        assert "Session name: myshop@alice" in result.output
         # The stamp is visible to the hand-written login while it runs.
         assert seen["session_name"] == "myshop@alice"
         assert seen["identifier"] == "alice"
@@ -361,7 +361,7 @@ class TestLoginWrapperOrchestration:
             _hand_written_login_plugin(seen), ["fmtsite", "login", "--as", "work"], **_CREDS
         )
         assert result.exit_code == 0, result.output
-        assert "Cached session: myshop@work" in result.output
+        assert "Session name: myshop@work" in result.output
         assert seen["session_name"] == "myshop@work"
 
     def test_bad_as_label_names_the_label_the_user_typed(self) -> None:
@@ -414,4 +414,4 @@ class TestLoginWrapperOrchestration:
             result = _invoke(plugin, ["fmtsite", "login"], **_CREDS)
         assert result.exit_code == 0, result.output
         assert mock_update.call_args[0][1] == "myshop"
-        assert "Cached session:" not in result.output
+        assert "Session name:" not in result.output

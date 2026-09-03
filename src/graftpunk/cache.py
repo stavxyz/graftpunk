@@ -29,7 +29,7 @@ from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNo
 from graftpunk.logging import get_logger
 from graftpunk.session_identity import (
     GP_ACCOUNT_ATTR,
-    validate_session_name,  # noqa: F401  (public re-export)
+    validate_session_name,  # public re-export
 )
 from graftpunk.storage.base import SessionMetadata, metadata_to_dict
 
@@ -326,7 +326,17 @@ def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata
     ``account_identifier`` when the unpickled session dropped it) call this
     directly instead of pairing ``load_session`` with a second metadata read.
 
-    Args/Returns/Raises: see ``load_session``; returns ``(session, metadata)``.
+    Args:
+        name: Session name to load.
+
+    Returns:
+        The deserialized session and the ``SessionMetadata`` read in the same
+        backend round-trip.
+
+    Raises:
+        SessionNotFoundError: No session is stored under *name*.
+        SessionExpiredError: The session is expired, cannot be decrypted, or
+            fails its checksum/deserialization.
     """
     backend = _get_session_storage_backend()
     settings = get_settings()

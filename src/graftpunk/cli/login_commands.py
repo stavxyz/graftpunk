@@ -211,7 +211,7 @@ def _stamp_login_identity(
 
 
 def _warn_if_slot_changes_hands_post(
-    stored: dict | None, incoming_identifier: str | None, session_name: str
+    stored: dict[str, Any] | None, incoming_identifier: str | None, session_name: str
 ) -> None:
     """Warn when a successful login overwrote a slot recorded for another account.
 
@@ -383,7 +383,10 @@ def make_login_body(
         # file; that must cost the user a hint, not the login.
         try:
             _warn_if_slot_changes_hands_post(stored_before, identifier, target_name)
-            gp_console.info(f"Cached session: {target_name}")
+            # What the CLI computed — a hand-written login is free to cache
+            # under a literal name of its own, so this is not a claim about
+            # what landed in the cache.
+            gp_console.info(f"Session name: {target_name}")
             current = get_active_session()
             if current and current != target_name:
                 gp_console.info(
