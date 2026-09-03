@@ -83,6 +83,53 @@ class TestOperatingNameOnPluginPath:
         assert mock_load.call_args[0][0] == "myshop@alice"
 
     @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions")
+    def test_session_flag_performs_no_listing(self, mock_list, mock_load) -> None:  # noqa: ANN001
+        """A pin skips the resolution tier — a listing is a remote round-trip."""
+        mock_load.return_value = requests.Session()
+        result = _invoke(_plugin(), ["fmtsite", "items", "--session", "myshop@bob"])
+        assert result.exit_code == 0, result.output
+        mock_list.assert_not_called()
+
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions")
+    def test_matching_ambient_pin_performs_no_listing(self, mock_list, mock_load) -> None:  # noqa: ANN001
+        mock_load.return_value = requests.Session()
+        result = _invoke(_plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="myshop@alice")
+        assert result.exit_code == 0, result.output
+        mock_list.assert_not_called()
+
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions")
+    def test_traversal_pin_is_refused_before_storage(self, mock_list, mock_load) -> None:  # noqa: ANN001
+        """A --session that cannot name a session never reaches storage."""
+        result = _invoke(_plugin(), ["fmtsite", "items", "--session", "../../x"])
+        assert result.exit_code != 0
+        assert "Invalid session name" in result.output
+        mock_load.assert_not_called()
+        mock_list.assert_not_called()
+
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions")
+    def test_wrong_charset_pin_is_refused(self, mock_list, mock_load) -> None:  # noqa: ANN001
+        result = _invoke(_plugin(), ["fmtsite", "items", "--session", "MyShop@Alice"])
+        assert result.exit_code != 0
+        assert "Invalid session name" in result.output
+        assert "[a-z0-9]" in result.output
+        mock_load.assert_not_called()
+        mock_list.assert_not_called()
+
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions")
+    def test_garbage_ambient_pin_is_refused(self, mock_list, mock_load) -> None:  # noqa: ANN001
+        """A garbage GRAFTPUNK_SESSION is a config error, surfaced loudly."""
+        result = _invoke(_plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="../../x")
+        assert result.exit_code != 0
+        assert "Invalid session name" in result.output
+        mock_load.assert_not_called()
+        mock_list.assert_not_called()
+
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
     @patch("graftpunk.cli.plugin_runtime.list_sessions", return_value=[])
     def test_not_found_names_the_operating_session(self, _ls, mock_load) -> None:  # noqa: ANN001
         """The not-found error names the flagged/computed operating session

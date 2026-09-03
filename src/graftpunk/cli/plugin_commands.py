@@ -410,7 +410,7 @@ def resolve_session_name(name: str, backend_override: str | None = None) -> str:
         return compute_operating_session_name(
             None,
             _plugin_session_map[name],
-            list_sessions(backend_override=backend_override),
+            lambda: list_sessions(backend_override=backend_override),
             use_ambient=False,
         )
     return name

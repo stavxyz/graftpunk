@@ -147,6 +147,48 @@ class TestDerivation:
 
 
 class TestOperatingName:
+    def test_callable_names_are_not_listed_when_a_pin_wins(self) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        calls = 0
+
+        def listing() -> list[str]:
+            nonlocal calls
+            calls += 1
+            return ["myshop@alice"]
+
+        assert (
+            compute_operating_session_name("myshop@bob", "myshop", listing, use_ambient=False)
+            == "myshop@bob"
+        )
+        assert calls == 0
+        assert (
+            compute_operating_session_name(None, "myshop", listing, use_ambient=False)
+            == "myshop@alice"
+        )
+        assert calls == 1
+
+    def test_caller_supplied_ambient_is_used_without_reading_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        monkeypatch.setenv("GRAFTPUNK_SESSION", "myshop@env")
+        got = compute_operating_session_name(None, "myshop", lambda: [], ambient="myshop@caller")
+        assert got == "myshop@caller"
+
+    @pytest.mark.parametrize("bad", ["../../x", "MyShop@Alice"])
+    def test_invalid_pins_raise_before_any_listing(self, bad: str) -> None:
+        from graftpunk.session_identity import compute_operating_session_name
+
+        def listing() -> list[str]:
+            raise AssertionError("storage must not be touched for an invalid pin")
+
+        with pytest.raises(ValueError):
+            compute_operating_session_name(bad, "myshop", listing, use_ambient=False)
+        with pytest.raises(ValueError):
+            compute_operating_session_name(None, "myshop", listing, ambient=bad)
+
     def test_explicit_flag_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from graftpunk.session_identity import compute_operating_session_name
 

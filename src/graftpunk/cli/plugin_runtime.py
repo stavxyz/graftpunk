@@ -86,7 +86,11 @@ def run_plugin_command(
             # Session-identity policy stays logging-free (#151); log the
             # base-scoped ambient-ignore decision here, at the one CLI call
             # site, instead of importing graftpunk.logging into that module.
+            ambient: str | None = None
             if not explicit_session:
+                # Read ONCE here and hand the value to the chain, so the log
+                # and the decision cannot disagree and the env/file is read
+                # a single time per invocation.
                 ambient = get_active_session()
                 if ambient and split_session_name(ambient)[0] != plugin.session_name:
                     LOG.debug(
@@ -94,8 +98,13 @@ def run_plugin_command(
                         ambient=ambient,
                         base=plugin.session_name,
                     )
+            # list_sessions is passed UNCALLED: a pinned --session or a
+            # matching ambient pin must not pay for a listing (#151).
             operating_name = compute_operating_session_name(
-                explicit_session or None, plugin.session_name, list_sessions()
+                explicit_session or None,
+                plugin.session_name,
+                list_sessions,
+                ambient=ambient,
             )
             session = load_session_for_api(operating_name)
         else:
@@ -108,6 +117,11 @@ def run_plugin_command(
         raise SystemExit(1) from exc
     except AmbiguousSessionError as exc:
         exit_ambiguous_session(exc)
+    except ValueError as exc:
+        # A pin that cannot name a session (--session ../../x, a garbage
+        # GRAFTPUNK_SESSION): a caller/config error, refused before storage.
+        gp_console.error(f"Invalid session name: {exc}")
+        raise SystemExit(1) from exc
     except Exception as exc:  # noqa: BLE001 — CLI boundary
         gp_console.error(f"Failed to load session: {exc}")
         LOG.exception("session_load_failed", plugin=plugin.site_name)

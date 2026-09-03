@@ -233,7 +233,7 @@ class GraftpunkClient:
         # client pays no listing -- the constructor stays I/O-free in the pinned,
         # scriptable mode (list_sessions() is a remote round-trip on S3/Supabase).
         self._session_name = session or compute_operating_session_name(
-            None, self._plugin.session_name, list_sessions(), use_ambient=False
+            None, self._plugin.session_name, list_sessions, use_ambient=False
         )
         self._session: requests.Session | None = None
         self._session_dirty: bool = False

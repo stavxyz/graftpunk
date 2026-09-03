@@ -14,7 +14,8 @@ or have callers pass the ambient value in, rather than adding a second boolean.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from typing import cast
 
 from slugify import slugify
 
@@ -168,12 +169,25 @@ def derive_account_identity(
     return (identifier, label)
 
 
+class _AmbientUnread:
+    """Sentinel: the caller did not read ambient state, so read it here."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<ambient unread>"
+
+
+AMBIENT_UNREAD = _AmbientUnread()
+
+
 def compute_operating_session_name(
     explicit: str | None,
     base_name: str,
-    existing_names: Iterable[str],
+    existing_names: Iterable[str] | Callable[[], Iterable[str]],
     *,
     use_ambient: bool = True,
+    ambient: str | None | _AmbientUnread = AMBIENT_UNREAD,
 ) -> str:
     """The one home of the precedence chain: flag > env > .gp-session > resolution.
 
@@ -188,15 +202,46 @@ def compute_operating_session_name(
 
     ``use_ambient=False`` (the Python API's deliberate mode) skips the env and
     per-directory tiers: library code is not steered by ambient shell state.
-    Raises :class:`AmbiguousSessionError` when nothing selects and several
-    sessions are cached for *base_name*.
+
+    Both pins are validated before anything is listed or loaded: a name that
+    cannot exist ("../../x", "MyShop@Alice") is a caller/config error, not a
+    lookup miss, and must never reach storage.
+
+    Args:
+        explicit: The ``--session`` value, or None.
+        base_name: The plugin's base session name.
+        existing_names: The cached session names, or a zero-argument callable
+            returning them. A callable is invoked ONLY when the resolution
+            tier is reached, so a pinned invocation costs no listing (a
+            network round-trip on S3/Supabase).
+        use_ambient: Whether the env and per-directory tiers apply.
+        ambient: The already-read ambient session name, for callers that read
+            :func:`~graftpunk.session_context.get_active_session` themselves
+            (e.g. to log a decision). Left unset, this function reads it —
+            once, and only when the ambient tier is reached.
+
+    Raises:
+        ValueError: The explicit or ambient name is not a legal session name.
+        AmbiguousSessionError: Nothing selects and several sessions are cached
+            for *base_name*.
     """
     if explicit:
+        validate_session_name(explicit)
         return explicit
     if use_ambient:
-        from graftpunk.session_context import get_active_session
+        if isinstance(ambient, _AmbientUnread):
+            from graftpunk.session_context import get_active_session
 
-        ambient = get_active_session()
-        if ambient and split_session_name(ambient)[0] == base_name:
-            return ambient
-    return resolve_account_session(base_name, existing_names)
+            ambient = get_active_session()
+        if ambient:
+            # A garbage GRAFTPUNK_SESSION or .gp-session is a config error:
+            # surface it loudly rather than silently falling through.
+            validate_session_name(ambient)
+            if split_session_name(ambient)[0] == base_name:
+                return ambient
+    if callable(existing_names):
+        # Only here — the resolution tier — does a listing actually happen.
+        names: Iterable[str] = cast("Callable[[], Iterable[str]]", existing_names)()
+    else:
+        names = existing_names
+    return resolve_account_session(base_name, names)
