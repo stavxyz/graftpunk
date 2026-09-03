@@ -326,6 +326,14 @@ gp session use <name>        # Set active session for subsequent commands
 gp session unset             # Clear active session
 ```
 
+Sessions are keyed by plugin **and** account: logging into one site as two
+accounts caches `myshop@alice` and `myshop@bob` side by side, and `gp session
+list` shows which account each one belongs to. Commands pick one with
+`--session myshop@alice` (or `GRAFTPUNK_SESSION` / `gp session use`), and
+refuse — listing the candidates — when several are cached and none is picked.
+The label is derived from the login identifier; `gp <site> login --as work`
+names it yourself.
+
 ### Ad-hoc HTTP Requests
 
 Make authenticated requests using cached sessions without writing a plugin:
