@@ -1011,14 +1011,20 @@ class TestClosePersistence:
     def test_close_persists_dirty_session(
         self, mock_get: MagicMock, mock_update: MagicMock
     ) -> None:
-        """close() calls update_session_cookies when session is dirty."""
+        """close() calls update_session_cookies when session is dirty.
+
+        A loaded session means the name was resolved with it (#181), so the
+        state set up here is the post-load one: the write-back keys off the
+        slot the load reported, never the plugin's bare base.
+        """
         mock_get.return_value = _make_plugin(commands=[])
         client = GraftpunkClient("testsite")
         mock_session = MagicMock(spec=requests.Session)
         client._session = mock_session
+        client._session_name = "testsite@alice"
         client._session_dirty = True
         client.close()
-        mock_update.assert_called_once_with(mock_session, "testsite")
+        mock_update.assert_called_once_with(mock_session, "testsite@alice")
 
     @patch("graftpunk.client.update_session_cookies")
     @patch("graftpunk.client.get_plugin")
@@ -1575,4 +1581,113 @@ class TestClientOperatingSession:
         refreshed = get_session_metadata("myshop@alice")
         assert refreshed["cookie_count"] == 1
         assert refreshed["account_identifier"] == "alice@example.com"
+        assert "myshop" not in list_sessions()
+
+    def test_close_on_a_never_used_client_lists_nothing_and_loads_nothing(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """A client that ran no command has no session to write back.
+
+        close() must not become the resolution that moved out of __init__:
+        with two accounts cached it stays silent rather than raising.
+        """
+        from graftpunk.cache import list_sessions as real_list_sessions
+
+        _cache_account("myshop@alice", "alice@example.com")
+        _cache_account("myshop@bob", "bob@example.com")
+
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            commands=[_make_spec("items", requires_session=True)],
+        )
+        client_spy = MagicMock(wraps=real_list_sessions)
+        cache_spy = MagicMock(wraps=real_list_sessions)
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch("graftpunk.client.list_sessions", client_spy),
+            patch("graftpunk.cache.list_sessions", cache_spy),
+            patch("graftpunk.client.load_session_for_api_resolved") as mock_load,
+        ):
+            with GraftpunkClient("fmtsite"):
+                pass  # constructed, never executed
+            client_spy.assert_not_called()
+            cache_spy.assert_not_called()
+            mock_load.assert_not_called()
+
+    def test_close_persists_onto_the_slot_the_load_resolved(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """The close() write-back keys off the resolved slot, not the base.
+
+        The handler dirties the session without saving it; the client is
+        marked dirty afterwards, so the only write is the one in close().
+        """
+        from graftpunk.cache import get_session_metadata, list_sessions
+
+        _cache_account("myshop@alice", "alice@example.com")
+
+        def handler(ctx: CommandContext, **_kw: Any) -> dict[str, bool]:
+            ctx.session.cookies.set("visited", "1")  # dirtied, never saved
+            return {"ok": True}
+
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            commands=[_make_spec("items", handler=handler, requires_session=True)],
+        )
+        with patch("graftpunk.client.get_plugin", return_value=plugin):
+            with GraftpunkClient("fmtsite") as client:
+                client.execute("items")
+                assert get_session_metadata("myshop@alice")["cookie_count"] == 0
+                client._session_dirty = True
+            assert client._session_name == "myshop@alice"
+
+        refreshed = get_session_metadata("myshop@alice")
+        assert refreshed["cookie_count"] == 1
+        assert refreshed["account_identifier"] == "alice@example.com"
+        assert "myshop" not in list_sessions()
+
+    def test_ambiguity_repeats_on_every_call_and_a_pin_recovers(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """Nothing is cached from a failed resolution, and pinning fixes it.
+
+        The unpinned client raises identically on the second call (it did not
+        half-resolve into some slot), and a client pinned to one of the two
+        accounts runs and writes back to exactly that account.
+        """
+        from graftpunk.cache import get_session_metadata, list_sessions
+        from graftpunk.exceptions import AmbiguousSessionError
+
+        _cache_account("myshop@alice", "alice@example.com")
+        _cache_account("myshop@bob", "bob@example.com")
+
+        def handler(ctx: CommandContext, **_kw: Any) -> dict[str, bool]:
+            ctx.session.cookies.set("visited", "1")
+            ctx.save_session()
+            return {"ok": True}
+
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            commands=[_make_spec("items", handler=handler, requires_session=True)],
+        )
+        with patch("graftpunk.client.get_plugin", return_value=plugin):
+            client = GraftpunkClient("fmtsite")
+            for _ in range(2):
+                with pytest.raises(AmbiguousSessionError) as excinfo:
+                    client.execute("items")
+                assert sorted(excinfo.value.candidates) == ["myshop@alice", "myshop@bob"]
+                assert client._session_name == "myshop"  # unchanged by the failure
+
+            with GraftpunkClient("fmtsite", session="myshop@bob") as pinned:
+                pinned.execute("items")
+                assert pinned._session_name == "myshop@bob"
+
+        assert get_session_metadata("myshop@bob")["cookie_count"] == 1
+        assert get_session_metadata("myshop@alice")["cookie_count"] == 0
         assert "myshop" not in list_sessions()

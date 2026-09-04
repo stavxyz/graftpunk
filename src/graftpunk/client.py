@@ -23,13 +23,14 @@ Example::
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from typing import Any
 
 import requests
 
 from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
-from graftpunk.exceptions import PluginError
+from graftpunk.exceptions import GraftpunkError, PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext
 from graftpunk.plugins import get_plugin
@@ -277,6 +278,9 @@ class GraftpunkClient:
         self._pinned: bool = bool(session)
         self._session_name = session or self._plugin.session_name
         self._session: requests.Session | None = None
+        # Guards the lazy resolve-and-load: one listing and one load per
+        # client even when threads share it (see _execute_command).
+        self._session_lock = threading.Lock()
         self._session_dirty: bool = False
         self._last_execution: dict[str, float] = {}
 
@@ -424,22 +428,41 @@ class GraftpunkClient:
         # Either way the loader reports the slot it landed on, which becomes
         # this client's operating name so both write-backs (below and in
         # close()) key off it — they use the name literally (#182).
+        #
+        # The whole resolve-and-load is under a lock, double-checked on
+        # self._session: two threads sharing a client would otherwise both
+        # list, both load, and race to leave _session_name pointing at one of
+        # their loads while the other one is the session actually in hand.
         if needs_session and self._session is None:
-            if not self._pinned:
-                self._session_name = compute_operating_session_name(
-                    None, self._plugin.session_name, list_sessions, use_ambient=False
-                )
-            # Only a BARE pin asks the loader to resolve: the fallback matches
-            # on the base, so resolving a labelled pin can only list uselessly.
-            resolve = self._pinned and split_session_name(self._session_name)[1] is None
-            self._session, self._session_name = load_session_for_api_resolved(
-                self._session_name, resolve=resolve
-            )
-            if base_url and hasattr(self._session, "gp_base_url"):
-                setattr(self._session, "gp_base_url", base_url)  # noqa: B010
+            with self._session_lock:
+                if self._session is None:
+                    if not self._pinned:
+                        self._session_name = compute_operating_session_name(
+                            None, self._plugin.session_name, list_sessions, use_ambient=False
+                        )
+                    # Only a BARE pin asks the loader to resolve: the fallback
+                    # matches on the base, so resolving a labelled pin can
+                    # only list uselessly.
+                    resolve = self._pinned and split_session_name(self._session_name)[1] is None
+                    self._session, self._session_name = load_session_for_api_resolved(
+                        self._session_name, resolve=resolve
+                    )
+                    if base_url and hasattr(self._session, "gp_base_url"):
+                        setattr(self._session, "gp_base_url", base_url)  # noqa: B010
+
+        # The slot THIS invocation operates on, read once: the ctx and the
+        # write-back below must agree even if another thread's first use
+        # re-points self._session_name in between.
+        operating_name = self._session_name
 
         session = self._session if needs_session else requests.Session()
-        assert session is not None  # guaranteed by lazy-load above
+        if session is None:
+            # Unreachable: the lazy load above either set _session or raised.
+            # A real check rather than an assert, which -O would strip out.
+            raise GraftpunkError(
+                f"No session loaded for '{plugin.site_name}' command '{spec.name}' "
+                "although one is required -- this is a bug in graftpunk."
+            )
 
         # 2. Token injection
         if token_config is not None and needs_session:
@@ -456,7 +479,7 @@ class GraftpunkClient:
             observe=NoOpObservabilityContext(),
             # The resolved operating name (set by the load above), not the
             # plugin's bare base: it is what ctx.save_session() ends up keying.
-            _session_name=(self._session_name if needs_session else ""),
+            _session_name=(operating_name if needs_session else ""),
         )
 
         # 4. Execute with retry/rate-limit; 403 token refresh
@@ -487,7 +510,7 @@ class GraftpunkClient:
         # 5. Persist session if dirty
         if needs_session and (spec.saves_session or ctx._session_dirty or self._session_dirty):
             self._session_dirty = True
-            update_session_cookies(session, self._session_name)
+            update_session_cookies(session, operating_name)
             self._session_dirty = False
 
         # 6. Normalize to CommandResult
