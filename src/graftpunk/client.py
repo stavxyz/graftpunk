@@ -40,7 +40,11 @@ from graftpunk.plugins.cli_plugin import (
     CommandSpec,
     _to_cli_name,
 )
-from graftpunk.session_identity import compute_operating_session_name, validate_session_name
+from graftpunk.session_identity import (
+    compute_operating_session_name,
+    split_session_name,
+    validate_session_name,
+)
 from graftpunk.tokens import clear_cached_tokens, prepare_session
 
 LOG = get_logger(__name__)
@@ -425,8 +429,11 @@ class GraftpunkClient:
                 self._session_name = compute_operating_session_name(
                     None, self._plugin.session_name, list_sessions, use_ambient=False
                 )
+            # Only a BARE pin asks the loader to resolve: the fallback matches
+            # on the base, so resolving a labelled pin can only list uselessly.
+            resolve = self._pinned and split_session_name(self._session_name)[1] is None
             self._session, self._session_name = load_session_for_api_resolved(
-                self._session_name, resolve=self._pinned
+                self._session_name, resolve=resolve
             )
             if base_url and hasattr(self._session, "gp_base_url"):
                 setattr(self._session, "gp_base_url", base_url)  # noqa: B010

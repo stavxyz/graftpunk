@@ -1508,6 +1508,40 @@ class TestClientOperatingSession:
             client_spy.assert_not_called()
             cache_spy.assert_not_called()
 
+    def test_labelled_pin_that_misses_is_not_found_and_still_lists_nowhere(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """A labelled pin is exact, so a miss is a miss — never ambiguity.
+
+        And it costs no listing on the way there: the bare-base fallback is
+        keyed on the BASE, which a labelled miss can never match, so resolving
+        one could only list uselessly. Two accounts are cached precisely to
+        show the fallback is not consulted.
+        """
+        from graftpunk.cache import list_sessions as real_list_sessions
+
+        _cache_account("myshop@alice", "alice@example.com")
+        _cache_account("myshop@bob", "bob@example.com")
+
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            commands=[_make_spec("items", requires_session=True)],
+        )
+        client_spy = MagicMock(wraps=real_list_sessions)
+        cache_spy = MagicMock(wraps=real_list_sessions)
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch("graftpunk.client.list_sessions", client_spy),
+            patch("graftpunk.cache.list_sessions", cache_spy),
+        ):
+            client = GraftpunkClient("fmtsite", session="myshop@nobody")  # silent
+            with pytest.raises(SessionNotFoundError):
+                client.execute("items")
+            client_spy.assert_not_called()
+            cache_spy.assert_not_called()
+
     def test_command_override_on_a_sessionless_plugin_resolves_at_load(
         self,
         fresh_backend,  # noqa: ANN001
