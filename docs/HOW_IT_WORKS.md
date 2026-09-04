@@ -123,7 +123,12 @@ base-scoped — it always wins outright. Both pins are validated before anything
 is listed or loaded, so a malformed name is a loud error, not a lookup miss.
 `GraftpunkClient` resolves the same way but deliberately ignores
 the ambient env/file tiers; pass `GraftpunkClient("site", session="myshop@alice")`
-to pin.
+to pin. It resolves on **first session use**, not at construction: building a
+client performs no storage I/O and never raises for session reasons, so
+`AmbiguousSessionError` (several accounts cached, unpinned) and
+`SessionNotFoundError` surface from the first `execute()` — catch
+`AmbiguousSessionError` next to `SessionNotFoundError` in whatever wraps your
+command calls.
 
 **The pin contract.** A *bare* pin (`--session myshop`, `GRAFTPUNK_SESSION=myshop`,
 `GraftpunkClient(..., session="myshop")`) names a **base**, not a slot, and is
