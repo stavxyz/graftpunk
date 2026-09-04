@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`load_session_for_api(name)` and `SitePlugin.get_session()` treat a bare name as a base name** ([#182](https://github.com/stavxyz/graftpunk/issues/182), [#151](https://github.com/stavxyz/graftpunk/issues/151)) — they resolve a bare base name to its single cached account when nothing is cached under that name exactly — or raise `AmbiguousSessionError` naming the candidates; the slot actually loaded is the one written back to. A slot cached under the bare name itself still wins outright (no listing, no ambiguity). Library consumers holding a bare name keep working after labelled logins, but the exception surface changed: code catching `SessionNotFoundError` should also catch `AmbiguousSessionError`. New `load_session_for_api_resolved(name, *, resolve=True)` returns `(session, loaded_name)` — **use it instead of `load_session_for_api` whenever you write the session back**, since `update_session_cookies(session, name)` uses its name literally and a bare name would refresh a slot that does not exist. `resolve=False` on either function is exact-only, for callers that already resolved.
+
 - **`session` is now a reserved plugin option name** ([#151](https://github.com/stavxyz/graftpunk/issues/151)) — every generated command carries the built-in `--session` for multi-account resolution. **Breaking for plugins** that declared their own `session` parameter on a command: registration now fails with `PluginError` ("reserved parameter name") — rename the plugin parameter.
 
 - **`@command` kebab-cases function command names by default and accepts `name=`** ([#147](https://github.com/stavxyz/graftpunk/issues/147)) — a method `by_parcel` is now `gp <site> by-parcel`, matching what groups already did; auto-discovered group methods follow the same rule. **Behaviour change for the CLI (minor version bump)** — a multi-word function command that was typed with underscores is now hyphenated; pin the old spelling with `@command(name="by_parcel")` if you need it. `GraftpunkClient` is unaffected: `client.by_parcel()`, `execute("by_parcel")` and `execute("by-parcel")` all resolve. Two Python names that kebab-case to the same CLI name now raise `PluginError` in the client as they already did in the CLI.
@@ -24,7 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Status messages treat names as data** ([#166](https://github.com/stavxyz/graftpunk/issues/166)) — session names, domains, storage backends, config keys, HAR paths and error text are escaped before Rich renders them, so a value containing a bracket sequence no longer raises `MarkupError` or disappears from `gp session list/show/export/clear/use`, `gp keepalive`, `gp config` and `gp import-har` output (including the generated-code preview of `--dry-run`).
-- **`load_session_for_api(name)` and `SitePlugin.get_session()` resolve a bare base name to its single cached account** ([#151](https://github.com/stavxyz/graftpunk/issues/151)) — or raise `AmbiguousSessionError` naming the candidates, so library consumers holding a bare name keep working after labelled logins. Consumers catching `SessionNotFoundError` should also catch `AmbiguousSessionError`.
 
 ## [1.14.0] - 2026-08-26
 

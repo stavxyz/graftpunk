@@ -1151,14 +1151,26 @@ class SitePlugin:
         Note: the CLI runtime (``plugin_runtime.run_plugin_command``) no
         longer calls this method -- it resolves the operating account name
         first (``--session`` / env / ``.gp-session`` / resolution) and loads
-        directly via ``load_session_for_api``. This method still loads by
-        the bare base name (``self.session_name``), but ``load_session_for_api``
-        itself now falls back to account resolution when no exact match
-        exists, so a single cached account under that base still resolves;
-        it can still differ from the CLI's resolved session when several
-        accounts are cached for the base (raises ``AmbiguousSessionError``).
-        Plugins calling this directly should be aware of the gap; tracked in
-        https://github.com/stavxyz/graftpunk/issues/174.
+        directly via ``load_session_for_api_resolved``. This method loads by
+        the bare base name (``self.session_name``), which the loader treats as
+        a base: a single cached account under it resolves, several raise.
+
+        **The session this returns may be ``base@label`` while
+        ``self.session_name`` is still bare, so ``self.session_name`` is NOT a
+        valid write-back key.** ``update_session_cookies(session,
+        self.session_name)`` uses the name literally, finds no such slot, and
+        drops the refresh with only a log line. To persist changes, use
+        ``ctx.save_session()`` from a command handler, or the operating name
+        the CLI resolved (``load_session_for_api_resolved`` returns it) --
+        never this method's input. Aligning this method with the resolved name
+        is tracked in https://github.com/stavxyz/graftpunk/issues/174.
+
+        Raises:
+            SessionNotFoundError: Nothing is cached under ``self.session_name``
+                exactly and no account is cached under it either.
+            AmbiguousSessionError: Nothing is cached under
+                ``self.session_name`` exactly and several cached sessions share
+                it as their base; the error names every candidate.
         """
         if not self.requires_session:
             return requests.Session()

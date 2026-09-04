@@ -209,6 +209,16 @@ def compute_operating_session_name(
     ``use_ambient=False`` (the Python API's deliberate mode) skips the env and
     per-directory tiers: library code is not steered by ambient shell state.
 
+    **The pin contract.** A pin is returned as given — this function neither
+    resolves nor rejects it — because a BARE pin names a BASE, not a slot, and
+    is resolved at LOAD time by
+    :func:`graftpunk.cache.load_session_for_api_resolved`: a slot cached under
+    the bare name itself wins, else the single labelled account under that
+    base, else ``AmbiguousSessionError``. A LABELLED pin is exact. Whichever
+    slot the load lands on is the operating name for every write-back of that
+    invocation, so callers replace the pin with the name the load reports
+    (#182) rather than keeping the one they passed in here.
+
     Both pins are validated before anything is listed or loaded: a name that
     cannot exist ("../../x", "MyShop@Alice") is a caller/config error, not a
     lookup miss, and must never reach storage.

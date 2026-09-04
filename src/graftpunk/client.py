@@ -217,13 +217,22 @@ class GraftpunkClient:
             ambient shell state such as ``GRAFTPUNK_SESSION`` or
             ``.gp-session`` is deliberately ignored by library code).
             Unpinned construction therefore performs one backend listing
-            (a network round-trip on S3/Supabase); a pinned client stays
-            I/O-free.
+            (a network round-trip on S3/Supabase).
+
+            A pinned client stays I/O-free at construction, and a client
+            pinned to a name that EXISTS stays I/O-free: the first command's
+            load is an exact hit. A BARE pin whose exact slot is missing
+            (``session="myshop"`` with only ``myshop@alice`` cached) is a base
+            name, resolved on first use -- one listing, then the slot it
+            resolves to becomes this client's operating name, which both
+            write-backs key off (#182).
 
     Raises:
         PluginError: If no plugin with the given name exists.
         AmbiguousSessionError: If *session* is omitted and several sessions
-            are cached for the plugin's base name.
+            are cached for the plugin's base name -- or, for a bare pin, at
+            the FIRST COMMAND (not here), when nothing is cached under that
+            name exactly and several sessions share its base.
     """
 
     def __init__(self, plugin_name: str, session: str | None = None) -> None:
@@ -361,6 +370,10 @@ class GraftpunkClient:
 
         Raises:
             SessionNotFoundError: If the session cannot be loaded.
+            AmbiguousSessionError: If the client is pinned to a bare base name
+                with nothing cached under it exactly and several sessions
+                sharing its base (the load resolves a bare pin -- see the
+                class docstring).
             requests.exceptions.HTTPError: On non-403 HTTP errors, or
                 403 errors when no ``token_config`` is set.
             TokenExtractionError: If ``prepare_session`` fails to extract tokens (a
