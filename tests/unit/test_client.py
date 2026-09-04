@@ -1328,6 +1328,49 @@ class TestClientOperatingSession:
         assert refreshed["account_identifier"] == "alice@example.com"
         assert "myshop" not in list_sessions()
 
+    def test_command_override_on_a_sessionless_plugin_resolves_at_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """A requires_session=True command on a requires_session=False plugin.
+
+        The constructor never ran the resolution chain (the plugin needs no
+        session), so _session_name is the plugin's raw BASE name — a name
+        nothing has resolved. The load must therefore resolve it, exactly as a
+        pin would: keying "already resolved" off "not pinned" loads exact-only
+        and raises where a single cached account should have loaded (#182).
+        """
+        from graftpunk.cache import cache_session, get_session_metadata, list_sessions
+        from graftpunk.session import BrowserSession
+        from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+        stored = BrowserSession.__new__(BrowserSession)
+        requests.Session.__init__(stored)
+        stored._backend_type = "nodriver"
+        setattr(stored, GP_ACCOUNT_ATTR, "alice@example.com")
+        cache_session(stored, "myshop@alice")
+
+        def handler(ctx: CommandContext, **_kw: Any) -> dict[str, bool]:
+            ctx.session.cookies.set("visited", "1")
+            ctx.save_session()
+            return {"ok": True}
+
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            requires_session=False,
+            commands=[_make_spec("items", handler=handler, requires_session=True)],
+        )
+        with patch("graftpunk.client.get_plugin", return_value=plugin):
+            with GraftpunkClient("fmtsite") as client:
+                client.execute("items")
+            assert client._session_name == "myshop@alice"
+
+        refreshed = get_session_metadata("myshop@alice")
+        assert refreshed["cookie_count"] == 1
+        assert refreshed["account_identifier"] == "alice@example.com"
+        assert "myshop" not in list_sessions()
+
     def test_unpinned_ambiguous_raises(self) -> None:
         from graftpunk.exceptions import AmbiguousSessionError
 

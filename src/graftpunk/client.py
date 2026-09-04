@@ -243,16 +243,20 @@ class GraftpunkClient:
         # scriptable mode (list_sessions() is a remote round-trip on S3/Supabase).
         # A plugin that needs no session pays none either: there is nothing to
         # resolve, and its base name is never loaded.
-        # A pin may name a BASE, which only the load can resolve (and only when
-        # it has to look): remember which mode this client is in so the lazy
-        # load below knows whether the fallback applies.
-        self._session_pinned = bool(session)
+        # Whether _session_name came out of the resolution chain below. Only
+        # that branch lists; every other leaves a name still to be resolved at
+        # load time — a pin, which may name a BASE, and the raw base name kept
+        # for a plugin that needs no session (a command can still override
+        # requires_session=True and reach the load with it). The lazy load
+        # reads this to decide whether the fallback applies.
+        self._session_resolved = False
         if session:
             self._session_name = session
         elif self._plugin.requires_session:
             self._session_name = compute_operating_session_name(
                 None, self._plugin.session_name, list_sessions, use_ambient=False
             )
+            self._session_resolved = True
         else:
             self._session_name = self._plugin.session_name
         self._session: requests.Session | None = None
@@ -388,15 +392,16 @@ class GraftpunkClient:
             spec.requires_session if spec.requires_session is not None else plugin.requires_session
         )
 
-        # 1. Lazy-load session. A bare pin ("myshop") names a base: the loader
+        # 1. Lazy-load session. A bare name ("myshop") names a base: the loader
         # resolves it and hands back the slot it landed on, which becomes this
         # client's operating name so both write-backs (below and in close())
-        # key off it — they use the name literally (#182). An unpinned client
-        # resolved against the same listing at construction, so it loads
-        # exact-only rather than paying for a second listing.
+        # key off it — they use the name literally (#182). Only a name the
+        # constructor already resolved against a listing skips the fallback;
+        # anything else resolves here — a pin, or a sessionless plugin's raw
+        # base name reached through a requires_session=True command.
         if needs_session and self._session is None:
             self._session, self._session_name = load_session_for_api_resolved(
-                self._session_name, resolve=self._session_pinned
+                self._session_name, resolve=not self._session_resolved
             )
             if base_url and hasattr(self._session, "gp_base_url"):
                 setattr(self._session, "gp_base_url", base_url)  # noqa: B010

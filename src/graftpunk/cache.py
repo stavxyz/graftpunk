@@ -593,7 +593,6 @@ def load_session_for_api_resolved(
     """
     validate_session_name(name)
 
-    browser_session: SessionLike | None = None
     miss: SessionNotFoundError | None = None
     loaded_name = name
     try:
@@ -604,7 +603,7 @@ def load_session_for_api_resolved(
             raise
         miss = exc
 
-    if browser_session is None:
+    if miss is not None:
         # Deliberately OUTSIDE the except block: an AmbiguousSessionError from
         # here is the whole story, and must not drag the miss along as
         # "During handling of the above exception..." (its __context__). The
