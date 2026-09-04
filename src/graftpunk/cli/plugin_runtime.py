@@ -16,7 +16,7 @@ import typer
 from rich.console import Console
 
 from graftpunk import console as gp_console
-from graftpunk.cache import list_sessions, load_session_for_api, update_session_cookies
+from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
 from graftpunk.cli.command_factory import BUILTIN_OPTIONS
 from graftpunk.cli.errors import exit_ambiguous_session
 from graftpunk.exceptions import (
@@ -87,17 +87,20 @@ def run_plugin_command(
             # base-scoped ambient-ignore decision here, at the one CLI call
             # site, instead of importing graftpunk.logging into that module.
             ambient: str | None = None
+            ambient_pins = False
             if not explicit_session:
                 # Read ONCE here and hand the value to the chain, so the log
                 # and the decision cannot disagree and the env/file is read
                 # a single time per invocation.
                 ambient = get_active_session()
-                if ambient and split_session_name(ambient)[0] != plugin.session_name:
-                    LOG.debug(
-                        "ambient_session_ignored_foreign_base",
-                        ambient=ambient,
-                        base=plugin.session_name,
-                    )
+                if ambient:
+                    ambient_pins = split_session_name(ambient)[0] == plugin.session_name
+                    if not ambient_pins:
+                        LOG.debug(
+                            "ambient_session_ignored_foreign_base",
+                            ambient=ambient,
+                            base=plugin.session_name,
+                        )
             # list_sessions is passed UNCALLED: a pinned --session or a
             # matching ambient pin must not pay for a listing (#151).
             operating_name = compute_operating_session_name(
@@ -106,7 +109,16 @@ def run_plugin_command(
                 list_sessions,
                 ambient=ambient,
             )
-            session = load_session_for_api(operating_name)
+            # A pin may name a BASE (--session myshop, GRAFTPUNK_SESSION=myshop):
+            # the loader resolves it and reports the slot it landed on, which
+            # from here on IS the operating name — for the ctx and for the
+            # write-back below, which keys off it literally (#182). A name that
+            # came out of the chain's resolution tier instead resolved against
+            # the same listing already, so it loads exact-only rather than
+            # paying for a second one.
+            session, operating_name = load_session_for_api_resolved(
+                operating_name, resolve=bool(explicit_session) or ambient_pins
+            )
         else:
             session = requests.Session()
     except SessionNotFoundError:
@@ -242,7 +254,9 @@ def run_plugin_command(
             else:
                 raise
 
-        # Persist session if requested
+        # Persist session if requested. operating_name is the name the load
+        # resolved to (#182) — update_session_cookies uses it literally, so
+        # keying this off the raw pin would drop the refresh.
         if (cmd_spec.saves_session or cmd_ctx._session_dirty) and needs_session:
             update_session_cookies(session, operating_name)
 

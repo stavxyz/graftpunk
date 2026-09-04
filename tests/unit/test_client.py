@@ -45,6 +45,16 @@ def _make_spec(
     )
 
 
+def _loaded(session: Any = None, name: str = "testsite") -> tuple[Any, str]:
+    """What the patched loader hands back: ``(session, the slot it loaded)``.
+
+    ``load_session_for_api_resolved`` reports the name it actually loaded — a
+    bare pin resolves at load time — so the caller keys its write-backs off
+    that slot rather than the name it asked for (#182).
+    """
+    return (session if session is not None else MagicMock(spec=requests.Session), name)
+
+
 def _make_plugin(
     site_name: str = "testsite",
     commands: list[CommandSpec] | None = None,
@@ -173,7 +183,7 @@ class TestGroupProxy:
 class TestCommandCallable:
     """Tests for _CommandCallable.__call__."""
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_call_delegates_to_execute_command(
         self, mock_get: MagicMock, mock_load: MagicMock
@@ -181,7 +191,7 @@ class TestCommandCallable:
         handler = MagicMock(return_value={"ok": True})
         spec = _make_spec("login", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         result = client.login()
         assert result.data == {"ok": True}
@@ -247,13 +257,13 @@ class TestResolveCommand:
 class TestExecute:
     """Tests for GraftpunkClient.execute string dispatch."""
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_execute_delegates(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         handler = MagicMock(return_value={"ok": True})
         spec = _make_spec("login", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         result = client.execute("login")
         assert result.data == {"ok": True}
@@ -315,20 +325,20 @@ class TestGetAttrGuard:
 class TestExecutionPipeline:
     """Tests for _execute_command pipeline."""
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_basic_execution(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """Handler returns a dict, result is CommandResult with that data."""
         handler = MagicMock(return_value={"items": [1, 2]})
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         result = client.fetch()
         assert isinstance(result, CommandResult)
         assert result.data == {"items": [1, 2]}
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_returns_command_result_passthrough(
         self, mock_get: MagicMock, mock_load: MagicMock
@@ -338,26 +348,26 @@ class TestExecutionPipeline:
         handler = MagicMock(return_value=cr)
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         result = client.fetch()
         assert result is cr
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_passes_kwargs_to_handler(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """Handler receives the kwargs."""
         handler = MagicMock(return_value={"ok": True})
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.fetch(status="open", limit=10)
         _, call_kwargs = handler.call_args
         assert call_kwargs["status"] == "open"
         assert call_kwargs["limit"] == 10
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_handler_receives_command_context(
         self, mock_get: MagicMock, mock_load: MagicMock
@@ -366,7 +376,7 @@ class TestExecutionPipeline:
         handler = MagicMock(return_value={})
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.fetch()
         ctx = handler.call_args[0][0]
@@ -384,40 +394,42 @@ class TestExecutionPipeline:
         result = client.health()
         assert result.data == {"public": True}
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_session_loaded_lazily(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """Session not loaded at init, only on first command."""
         handler = MagicMock(return_value={})
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         mock_load.assert_not_called()
         client.fetch()
-        mock_load.assert_called_once_with("testsite")
+        # Unpinned: the operating name was resolved at construction, so the
+        # load is exact-only — no second listing (#182).
+        mock_load.assert_called_once_with("testsite", resolve=False)
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_session_reused_across_calls(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """Second call reuses the same session."""
         handler = MagicMock(return_value={})
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.fetch()
         client.fetch()
         mock_load.assert_called_once()
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_string_dispatch_executes(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """client.execute('group', 'cmd') works."""
         handler = MagicMock(return_value={"ok": True})
         spec = _make_spec("list", group="invoice", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         result = client.execute("invoice", "list")
         assert result.data == {"ok": True}
@@ -432,7 +444,7 @@ class TestTokenInjection:
     """Tests for token injection in the execution pipeline."""
 
     @patch("graftpunk.client.prepare_session")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_tokens_injected_when_configured(
         self,
@@ -447,13 +459,13 @@ class TestTokenInjection:
         mock_get.return_value = _make_plugin(
             commands=[spec], token_config=token_config, base_url="https://ex.com"
         )
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.fetch()
-        mock_prep.assert_called_once_with(mock_load.return_value, token_config, "https://ex.com")
+        mock_prep.assert_called_once_with(mock_load.return_value[0], token_config, "https://ex.com")
 
     @patch("graftpunk.client.prepare_session")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_no_tokens_when_not_configured(
         self,
@@ -465,7 +477,7 @@ class TestTokenInjection:
         handler = MagicMock(return_value={})
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec], token_config=None)
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.fetch()
         mock_prep.assert_not_called()
@@ -481,7 +493,7 @@ class TestTokenRetry:
 
     @patch("graftpunk.client.clear_cached_tokens")
     @patch("graftpunk.client.prepare_session")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_403_triggers_token_refresh_and_retry(
         self,
@@ -504,7 +516,7 @@ class TestTokenRetry:
             token_config=token_config,
             base_url="https://ex.com",
         )
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         result = client.fetch()
         assert result.data == {"retried": True}
@@ -522,7 +534,7 @@ class TestSessionPersistence:
     """Tests for session persistence after command execution."""
 
     @patch("graftpunk.client.update_session_cookies")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_persists_when_saves_session(
         self,
@@ -534,13 +546,13 @@ class TestSessionPersistence:
         handler = MagicMock(return_value={})
         spec = _make_spec("login", handler=handler, saves_session=True)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.login()
-        mock_update.assert_called_once_with(mock_load.return_value, "testsite")
+        mock_update.assert_called_once_with(mock_load.return_value[0], "testsite")
 
     @patch("graftpunk.client.update_session_cookies")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_no_persist_when_not_dirty(
         self,
@@ -552,7 +564,7 @@ class TestSessionPersistence:
         handler = MagicMock(return_value={})
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.fetch()
         mock_update.assert_not_called()
@@ -566,19 +578,19 @@ class TestSessionPersistence:
 class TestErrorHandling:
     """Tests for error propagation from the execution pipeline."""
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_command_error_propagates(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """CommandError from handler propagates to caller."""
         handler = MagicMock(side_effect=CommandError("bad input"))
         spec = _make_spec("fetch", handler=handler)
         mock_get.return_value = _make_plugin(commands=[spec])
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         with pytest.raises(CommandError, match="bad input"):
             client.fetch()
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_session_not_found_propagates(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """SessionNotFoundError from load_session propagates."""
@@ -595,14 +607,14 @@ class TestRetryLogic:
     """Tests for _execute_with_limits retry behavior."""
 
     @patch("graftpunk.client.time")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_retries_on_transient_failure(
         self, mock_get: MagicMock, mock_load: MagicMock, mock_time: MagicMock
     ) -> None:
         """Handler succeeds on retry after transient failure."""
         mock_time.monotonic.return_value = 0.0
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         handler = MagicMock(side_effect=[requests.ConnectionError("reset"), {"ok": True}])
         spec = _make_spec("fetch", handler=handler, max_retries=1)
         mock_get.return_value = _make_plugin(commands=[spec])
@@ -614,14 +626,14 @@ class TestRetryLogic:
         mock_time.sleep.assert_called_once_with(1)  # 2**0
 
     @patch("graftpunk.client.time")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_raises_after_retries_exhausted(
         self, mock_get: MagicMock, mock_load: MagicMock, mock_time: MagicMock
     ) -> None:
         """Raises last exception when all retries exhausted."""
         mock_time.monotonic.return_value = 0.0
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         handler = MagicMock(
             side_effect=[
                 requests.ConnectionError("fail1"),
@@ -635,13 +647,13 @@ class TestRetryLogic:
         with pytest.raises(requests.ConnectionError, match="fail2"):
             client.fetch()
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_non_retryable_error_propagates_immediately(
         self, mock_get: MagicMock, mock_load: MagicMock
     ) -> None:
         """ValueError is not retried."""
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         handler = MagicMock(side_effect=ValueError("bad"))
         spec = _make_spec("fetch", handler=handler, max_retries=3)
         mock_get.return_value = _make_plugin(commands=[spec])
@@ -651,11 +663,11 @@ class TestRetryLogic:
             client.fetch()
         assert handler.call_count == 1
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_403_without_tokens_propagates(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """403 HTTPError without token_config is not retried."""
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         response_403 = MagicMock()
         response_403.status_code = 403
         handler = MagicMock(side_effect=requests.exceptions.HTTPError(response=response_403))
@@ -667,11 +679,11 @@ class TestRetryLogic:
             client.fetch()
         assert handler.call_count == 1
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_500_with_tokens_propagates(self, mock_get: MagicMock, mock_load: MagicMock) -> None:
         """500 HTTPError propagates even when token_config is set."""
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         response_500 = MagicMock()
         response_500.status_code = 500
         handler = MagicMock(side_effect=requests.exceptions.HTTPError(response=response_500))
@@ -691,7 +703,7 @@ class TestSessionDirtyReset:
     @patch("graftpunk.client.update_session_cookies")
     @patch("graftpunk.client.clear_cached_tokens")
     @patch("graftpunk.client.prepare_session")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_dirty_flag_reset_after_persist(
         self,
@@ -702,7 +714,7 @@ class TestSessionDirtyReset:
         mock_update: MagicMock,
     ) -> None:
         """_session_dirty is reset after session is persisted."""
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         response_403 = MagicMock()
         response_403.status_code = 403
         handler = MagicMock(
@@ -1028,13 +1040,13 @@ class TestSessionDirtyPropagation:
     """Ensure ctx._session_dirty propagates to self for close() safety."""
 
     @patch("graftpunk.client.update_session_cookies")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_ctx_dirty_sets_self_dirty_before_persist(
         self, mock_get: MagicMock, mock_load: MagicMock, mock_update: MagicMock
     ) -> None:
         """If persist fails mid-pipeline, close() retries because self is dirty."""
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
 
         def handler_sets_ctx_dirty(ctx: Any, **kw: Any) -> dict:
             ctx._session_dirty = True
@@ -1054,13 +1066,13 @@ class TestSessionDirtyPropagation:
         assert client._session_dirty is True
 
     @patch("graftpunk.client.update_session_cookies")
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_ctx_dirty_resets_after_successful_persist(
         self, mock_get: MagicMock, mock_load: MagicMock, mock_update: MagicMock
     ) -> None:
         """Successful persist resets self._session_dirty to False."""
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
 
         def handler_sets_ctx_dirty(ctx: Any, **kw: Any) -> dict:
             ctx._session_dirty = True
@@ -1084,7 +1096,7 @@ class TestSessionDirtyPropagation:
 class TestRequiresSessionFallback:
     """Tests for requires_session=None defaulting to plugin.requires_session."""
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_none_falls_back_to_plugin_default(
         self, mock_get: MagicMock, mock_load: MagicMock
@@ -1093,12 +1105,12 @@ class TestRequiresSessionFallback:
         handler = MagicMock(return_value={})
         spec = _make_spec("fetch", handler=handler, requires_session=None)
         mock_get.return_value = _make_plugin(commands=[spec], requires_session=True)
-        mock_load.return_value = MagicMock(spec=requests.Session)
+        mock_load.return_value = _loaded()
         client = GraftpunkClient("testsite")
         client.fetch()
         mock_load.assert_called_once()
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_none_falls_back_to_plugin_false(
         self, mock_get: MagicMock, mock_load: MagicMock
@@ -1120,7 +1132,7 @@ class TestRequiresSessionFallback:
 class TestGpBaseUrl:
     """Tests for gp_base_url session attribute setting."""
 
-    @patch("graftpunk.client.load_session_for_api")
+    @patch("graftpunk.client.load_session_for_api_resolved")
     @patch("graftpunk.client.get_plugin")
     def test_sets_gp_base_url_when_available(
         self, mock_get: MagicMock, mock_load: MagicMock
@@ -1131,7 +1143,7 @@ class TestGpBaseUrl:
         mock_get.return_value = _make_plugin(commands=[spec], base_url="https://example.com")
         session = MagicMock(spec=requests.Session)
         session.gp_base_url = ""
-        mock_load.return_value = session
+        mock_load.return_value = _loaded(session)
         client = GraftpunkClient("testsite")
         client.fetch()
         assert session.gp_base_url == "https://example.com"
@@ -1278,6 +1290,86 @@ class TestClientOperatingSession:
         ):
             client = GraftpunkClient("fmtsite")
         assert client._session_name == "myshop@alice"  # env deliberately ignored
+
+    def test_bare_pin_resolves_at_load_and_the_refresh_follows_it(self, fresh_backend) -> None:  # noqa: ANN001
+        """A bare pin names a base (#182): both write-backs key off what loaded.
+
+        The real local backend, so the refresh is a real re-cache: only
+        ``myshop@alice`` is cached, and keying the save off the bare "myshop"
+        the caller pinned drops it silently (nothing is cached under that name).
+        """
+        from graftpunk.cache import cache_session, get_session_metadata, list_sessions
+        from graftpunk.session import BrowserSession
+        from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+        stored = BrowserSession.__new__(BrowserSession)
+        requests.Session.__init__(stored)
+        stored._backend_type = "nodriver"
+        setattr(stored, GP_ACCOUNT_ATTR, "alice@example.com")
+        cache_session(stored, "myshop@alice")
+
+        def handler(ctx: CommandContext, **_kw: Any) -> dict[str, bool]:
+            ctx.session.cookies.set("visited", "1")
+            ctx.save_session()
+            return {"ok": True}
+
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            commands=[_make_spec("items", handler=handler, requires_session=True)],
+        )
+        with patch("graftpunk.client.get_plugin", return_value=plugin):
+            with GraftpunkClient("fmtsite", session="myshop") as client:
+                client.execute("items")
+            assert client._session_name == "myshop@alice"
+
+        refreshed = get_session_metadata("myshop@alice")
+        assert refreshed["cookie_count"] == 1
+        assert refreshed["account_identifier"] == "alice@example.com"
+        assert "myshop" not in list_sessions()
+
+    def test_command_override_on_a_sessionless_plugin_resolves_at_load(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """A requires_session=True command on a requires_session=False plugin.
+
+        The constructor never ran the resolution chain (the plugin needs no
+        session), so _session_name is the plugin's raw BASE name — a name
+        nothing has resolved. The load must therefore resolve it, exactly as a
+        pin would: keying "already resolved" off "not pinned" loads exact-only
+        and raises where a single cached account should have loaded (#182).
+        """
+        from graftpunk.cache import cache_session, get_session_metadata, list_sessions
+        from graftpunk.session import BrowserSession
+        from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+        stored = BrowserSession.__new__(BrowserSession)
+        requests.Session.__init__(stored)
+        stored._backend_type = "nodriver"
+        setattr(stored, GP_ACCOUNT_ATTR, "alice@example.com")
+        cache_session(stored, "myshop@alice")
+
+        def handler(ctx: CommandContext, **_kw: Any) -> dict[str, bool]:
+            ctx.session.cookies.set("visited", "1")
+            ctx.save_session()
+            return {"ok": True}
+
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            requires_session=False,
+            commands=[_make_spec("items", handler=handler, requires_session=True)],
+        )
+        with patch("graftpunk.client.get_plugin", return_value=plugin):
+            with GraftpunkClient("fmtsite") as client:
+                client.execute("items")
+            assert client._session_name == "myshop@alice"
+
+        refreshed = get_session_metadata("myshop@alice")
+        assert refreshed["cookie_count"] == 1
+        assert refreshed["account_identifier"] == "alice@example.com"
+        assert "myshop" not in list_sessions()
 
     def test_unpinned_ambiguous_raises(self) -> None:
         from graftpunk.exceptions import AmbiguousSessionError

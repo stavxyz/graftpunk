@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
 
 from graftpunk import console as gp_console
-from graftpunk.cache import load_session_for_api
+from graftpunk.cache import load_session_for_api_resolved
 from graftpunk.exceptions import SessionInvalidatedError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
@@ -192,7 +192,13 @@ def _make_request(
 
         resolved = resolve_session_name_or_exit(resolved)
         try:
-            session = load_session_for_api(resolved)
+            # A pin can still be a BARE base name here (a name that is not a
+            # registered plugin passes through resolve_session_name unchanged):
+            # the loader resolves it and reports the slot it loaded, which is
+            # the name every downstream use must key off — the observe run dir
+            # included (#182). An already-resolved name is an exact hit and
+            # lists nothing.
+            session, resolved = load_session_for_api_resolved(resolved)
         except Exception as exc:  # noqa: BLE001 — CLI boundary
             LOG.error("session_load_failed", session_name=resolved, error=str(exc))
             gp_console.error(f"Failed to load session '{resolved}': {exc}")

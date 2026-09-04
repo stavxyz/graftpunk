@@ -28,7 +28,7 @@ from typing import Any
 
 import requests
 
-from graftpunk.cache import list_sessions, load_session_for_api, update_session_cookies
+from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext
@@ -217,13 +217,22 @@ class GraftpunkClient:
             ambient shell state such as ``GRAFTPUNK_SESSION`` or
             ``.gp-session`` is deliberately ignored by library code).
             Unpinned construction therefore performs one backend listing
-            (a network round-trip on S3/Supabase); a pinned client stays
-            I/O-free.
+            (a network round-trip on S3/Supabase).
+
+            A pinned client stays I/O-free at construction, and a client
+            pinned to a name that EXISTS stays I/O-free: the first command's
+            load is an exact hit. A BARE pin whose exact slot is missing
+            (``session="myshop"`` with only ``myshop@alice`` cached) is a base
+            name, resolved on first use -- one listing, then the slot it
+            resolves to becomes this client's operating name, which both
+            write-backs key off (#182).
 
     Raises:
         PluginError: If no plugin with the given name exists.
         AmbiguousSessionError: If *session* is omitted and several sessions
-            are cached for the plugin's base name.
+            are cached for the plugin's base name -- or, for a bare pin, at
+            the FIRST COMMAND (not here), when nothing is cached under that
+            name exactly and several sessions share its base.
     """
 
     def __init__(self, plugin_name: str, session: str | None = None) -> None:
@@ -234,12 +243,20 @@ class GraftpunkClient:
         # scriptable mode (list_sessions() is a remote round-trip on S3/Supabase).
         # A plugin that needs no session pays none either: there is nothing to
         # resolve, and its base name is never loaded.
+        # Whether _session_name came out of the resolution chain below. Only
+        # that branch lists; every other leaves a name still to be resolved at
+        # load time — a pin, which may name a BASE, and the raw base name kept
+        # for a plugin that needs no session (a command can still override
+        # requires_session=True and reach the load with it). The lazy load
+        # reads this to decide whether the fallback applies.
+        self._session_resolved = False
         if session:
             self._session_name = session
         elif self._plugin.requires_session:
             self._session_name = compute_operating_session_name(
                 None, self._plugin.session_name, list_sessions, use_ambient=False
             )
+            self._session_resolved = True
         else:
             self._session_name = self._plugin.session_name
         self._session: requests.Session | None = None
@@ -357,6 +374,10 @@ class GraftpunkClient:
 
         Raises:
             SessionNotFoundError: If the session cannot be loaded.
+            AmbiguousSessionError: If the client is pinned to a bare base name
+                with nothing cached under it exactly and several sessions
+                sharing its base (the load resolves a bare pin -- see the
+                class docstring).
             requests.exceptions.HTTPError: On non-403 HTTP errors, or
                 403 errors when no ``token_config`` is set.
             TokenExtractionError: If ``prepare_session`` fails to extract tokens (a
@@ -371,9 +392,17 @@ class GraftpunkClient:
             spec.requires_session if spec.requires_session is not None else plugin.requires_session
         )
 
-        # 1. Lazy-load session
+        # 1. Lazy-load session. A bare name ("myshop") names a base: the loader
+        # resolves it and hands back the slot it landed on, which becomes this
+        # client's operating name so both write-backs (below and in close())
+        # key off it — they use the name literally (#182). Only a name the
+        # constructor already resolved against a listing skips the fallback;
+        # anything else resolves here — a pin, or a sessionless plugin's raw
+        # base name reached through a requires_session=True command.
         if needs_session and self._session is None:
-            self._session = load_session_for_api(self._session_name)
+            self._session, self._session_name = load_session_for_api_resolved(
+                self._session_name, resolve=not self._session_resolved
+            )
             if base_url and hasattr(self._session, "gp_base_url"):
                 setattr(self._session, "gp_base_url", base_url)  # noqa: B010
 
@@ -393,7 +422,9 @@ class GraftpunkClient:
             base_url=base_url,
             config=getattr(plugin, "_plugin_config", None),
             observe=NoOpObservabilityContext(),
-            _session_name=(plugin.session_name if needs_session else ""),
+            # The resolved operating name (set by the load above), not the
+            # plugin's bare base: it is what ctx.save_session() ends up keying.
+            _session_name=(self._session_name if needs_session else ""),
         )
 
         # 4. Execute with retry/rate-limit; 403 token refresh

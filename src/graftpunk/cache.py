@@ -29,6 +29,7 @@ from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNo
 from graftpunk.logging import get_logger
 from graftpunk.session_identity import (
     GP_ACCOUNT_ATTR,
+    resolve_account_session,
     validate_session_name,  # public re-export
 )
 from graftpunk.storage.base import SessionMetadata, metadata_to_dict
@@ -531,7 +532,106 @@ def _deserialize_browserfree(decrypted: bytes) -> object:
     return _BrowserFreeUnpickler(io.BytesIO(decrypted)).load()
 
 
-def load_session_for_api(name: str) -> requests.Session:
+def load_session_for_api_resolved(
+    name: str, *, resolve: bool = True
+) -> tuple[requests.Session, str]:
+    """Load a cached session for API use AND report the name it came from.
+
+    Same load as :func:`load_session_for_api` (see it for what the returned
+    session carries and why no browser process starts); this variant returns
+    the pair so a caller can key its write-backs off the slot that was
+    actually loaded.
+
+    **The pin contract.** A bare *name* (``"mysite"``) names a BASE, not a
+    slot, and is resolved here, at load time:
+
+    1. a slot cached under the bare name itself wins — an exact hit, and no
+       listing happens;
+    2. otherwise the single labelled account under that base
+       (:func:`graftpunk.session_identity.resolve_account_session`), at the
+       cost of ONE ``list_sessions()`` call on this miss path only;
+    3. otherwise :class:`~graftpunk.exceptions.AmbiguousSessionError` naming
+       the candidates, or :class:`~graftpunk.exceptions.SessionNotFoundError`
+       when nothing is cached for the base at all.
+
+    A labelled *name* (``"mysite@alice"``) is exact: a miss is a miss, never
+    another account's session.
+
+    Because step 1 answers first, this deliberately does NOT raise where the
+    CLI's unpinned resolution would: with both ``mysite`` and ``mysite@alice``
+    cached, ``mysite`` loads the bare slot rather than refusing.
+
+    Whatever slot is loaded is the operating name for every write-back of that
+    invocation: pass the returned name — never the requested one — to
+    :func:`update_session_cookies`, which uses its argument literally (#182).
+
+    Args:
+        name: Session name (without .session.pickle extension). May be a bare
+            base name (``"mysite"``) or a full ``base@label`` name.
+        resolve: Whether the bare-base fallback (step 2 above) applies. Pass
+            ``False`` when *name* already came out of
+            :func:`graftpunk.session_identity.compute_operating_session_name`'s
+            resolution tier: it resolved against the same listing, so a second
+            one would be a wasted round-trip and a miss is genuinely a miss.
+
+    Returns:
+        ``(session, loaded_name)`` — the API session, and the cache key it was
+        loaded from (equal to *name* on an exact hit).
+
+    Raises:
+        ValueError: *name* is not a legal session name. Checked first: a name
+            that cannot exist never reaches storage or a listing.
+        SessionNotFoundError: Nothing is cached under *name* exactly and (with
+            ``resolve=True``) no account is cached under it either; the
+            original miss is kept as ``__cause__``.
+        AmbiguousSessionError: Nothing is cached under *name* exactly and more
+            than one cached session shares its base; the error names every
+            candidate.
+        SessionExpiredError: The session cannot be unpickled.
+        ImportError: The browser stack needed to reconstruct the cached object
+            is not installed (see :func:`load_session_for_api`).
+    """
+    validate_session_name(name)
+
+    miss: SessionNotFoundError | None = None
+    loaded_name = name
+    try:
+        browser_session = load_session(name)
+    except SessionNotFoundError as exc:
+        if not resolve:
+            LOG.info("session_not_found_for_api", name=name, resolve=False)
+            raise
+        miss = exc
+
+    if miss is not None:
+        # Deliberately OUTSIDE the except block: an AmbiguousSessionError from
+        # here is the whole story, and must not drag the miss along as
+        # "During handling of the above exception..." (its __context__). The
+        # miss itself is kept in `miss` and re-attached explicitly below.
+        resolved = resolve_account_session(name, list_sessions())
+        if resolved == name:
+            LOG.info("session_not_found_for_api", name=name, resolve=True)
+            raise SessionNotFoundError(
+                f"No session cached for '{name}', and no account is cached under it. "
+                "Run 'gp <site> login' first."
+            ) from miss
+        LOG.info("api_session_resolved_account", requested=name, resolved=resolved)
+        browser_session = load_session(resolved)
+        loaded_name = resolved
+
+    header_roles = getattr(browser_session, "_gp_header_roles", {})
+    api_session = _api_session_from_session(browser_session)
+    LOG.info(
+        "created_api_session_from_cached_session",
+        name=loaded_name,
+        has_header_roles=bool(header_roles),
+        role_count=len(header_roles),
+        **({"requested": name} if loaded_name != name else {}),
+    )
+    return api_session, loaded_name
+
+
+def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session:
     """Load cached session for API use (no browser launched).
 
     This extracts cookies and headers from a cached BrowserSession
@@ -546,35 +646,42 @@ def load_session_for_api(name: str) -> requests.Session:
     :func:`load_session_for_api_from_bytes`, which stubs the browser classes
     instead of importing them.
 
+    A thin wrapper over :func:`load_session_for_api_resolved`, which owns the
+    bare-name pin contract in full: since #176 ``gp <site> login`` writes
+    sessions as ``base@label``, so a bare *name* is tried as an exact key
+    first and only then resolved against the single cached account for that
+    base — one ``list_sessions()`` call, on that miss path only. A slot cached
+    under the bare name itself always wins, so this differs from the CLI's
+    unpinned resolution, which refuses when several accounts share a base.
+
+    Callers that write back to the cache afterwards must use
+    :func:`load_session_for_api_resolved` instead: the loaded slot can differ
+    from *name*, and :func:`update_session_cookies` keys off its argument
+    literally, so refreshing under the requested bare name silently drops the
+    write (#182).
+
     Args:
-        name: Session name (without .session.pickle extension).
+        name: Session name (without .session.pickle extension). May be a bare
+            base name (``"mysite"``) or a full ``base@label`` name.
+        resolve: Whether the bare-base fallback applies; ``False`` means exact
+            only (see :func:`load_session_for_api_resolved`).
 
     Returns:
         GraftpunkSession with cookies, headers, and header roles
         from the cached session.
 
     Raises:
-        SessionNotFoundError: If session file doesn't exist.
+        ValueError: *name* is not a legal session name.
+        SessionNotFoundError: Nothing is cached under *name* exactly and no
+            account is cached under it either.
+        AmbiguousSessionError: Nothing is cached under *name* exactly and more
+            than one cached session shares its base; the error names every
+            candidate.
         SessionExpiredError: If session cannot be unpickled.
         ImportError: If the browser stack needed to reconstruct the cached
             object is not installed (see note above).
     """
-    try:
-        browser_session = load_session(name)
-    except FileNotFoundError as exc:
-        LOG.error("session_not_found_for_api", name=name)
-        raise SessionNotFoundError(
-            f"No cached session found for '{name}'. Please login first."
-        ) from exc
-
-    header_roles = getattr(browser_session, "_gp_header_roles", {})
-    api_session = _api_session_from_session(browser_session)
-    LOG.info(
-        "created_api_session_from_cached_session",
-        name=name,
-        has_header_roles=bool(header_roles),
-        role_count=len(header_roles),
-    )
+    api_session, _loaded_name = load_session_for_api_resolved(name, resolve=resolve)
     return api_session
 
 
@@ -640,9 +747,19 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
     updates its cookies and token cache from the API session, and saves it back.
     This is best-effort — failures are logged but do not raise.
 
+    *session_name* is used LITERALLY: unlike
+    :func:`load_session_for_api_resolved`, this never resolves a bare base name
+    to an account, so it can never fork a bare ``mysite`` slot open beside the
+    ``mysite@alice`` the session was loaded from. The flip side is that a bare
+    name whose slot does not exist makes this a logged no-op — a silently
+    dropped refresh. Callers therefore pass the operating name the load
+    returned (``load_session_for_api_resolved``'s second element, the CLI's
+    resolved operating name, or ``ctx.save_session()``), never the name a user
+    typed (#182).
+
     Args:
         api_session: The API session with potentially updated cookies and token cache.
-        session_name: Name of the cached session to update.
+        session_name: Name of the cached session to update, used verbatim.
     """
     try:
         original, stored_metadata = _load_session_with_metadata(session_name)

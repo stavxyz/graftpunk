@@ -121,10 +121,20 @@ running `gp myshop ...`) is ignored and resolution continues, so one pinned
 shell does not misdirect every other site. An explicit `--session` is not
 base-scoped — it always wins outright. Both pins are validated before anything
 is listed or loaded, so a malformed name is a loud error, not a lookup miss.
-The same resolved name keys every write-back, so a refresh can never fork into
-another slot. `GraftpunkClient` resolves the same way but deliberately ignores
+`GraftpunkClient` resolves the same way but deliberately ignores
 the ambient env/file tiers; pass `GraftpunkClient("site", session="myshop@alice")`
 to pin.
+
+**The pin contract.** A *bare* pin (`--session myshop`, `GRAFTPUNK_SESSION=myshop`,
+`GraftpunkClient(..., session="myshop")`) names a **base**, not a slot, and is
+resolved when the session is loaded: a slot cached under the bare name itself
+wins (an exact hit — nothing is listed), otherwise the single labelled account
+under that base, otherwise `AmbiguousSessionError` naming the candidates. A
+*labelled* pin (`myshop@alice`) is exact — a miss is a miss, never another
+account's session. Whichever slot the load lands on is the operating name for
+the rest of that invocation: every write-back keys off the name the load
+resolved, not the name that was typed, so a refresh can never fork into another
+slot (or vanish into one that does not exist).
 
 ### Loading
 
@@ -136,7 +146,17 @@ from graftpunk.cache import load_session_for_api
 session = load_session_for_api("mysite")  # returns GraftpunkSession
 ```
 
-This extracts cookies and headers from the cached `BrowserSession` into a `GraftpunkSession` (a `requests.Session` subclass) suitable for API calls.
+This extracts cookies and headers from the cached `BrowserSession` into a `GraftpunkSession` (a `requests.Session` subclass) suitable for API calls. A bare base name like `"mysite"` is tried as an exact key first and, only if nothing is cached under it, falls back to resolving it against the single cached account for that base (or raises `AmbiguousSessionError` naming the candidates when several are cached) — so a consumer holding a bare name keeps working after a labelled `gp mysite login`. The listing that resolution needs happens only on that miss path.
+
+If you write the session back afterwards, load it through the variant that tells you which slot answered:
+
+```python
+from graftpunk.cache import load_session_for_api_resolved, update_session_cookies
+
+session, operating_name = load_session_for_api_resolved("mysite")  # e.g. "mysite@alice"
+# ... use the session ...
+update_session_cookies(session, operating_name)  # never "mysite"
+```
 
 #### Loading from bytes (no filesystem, no browser stack)
 
@@ -230,7 +250,7 @@ def refresh(self, ctx: CommandContext):
     return resp.json()
 ```
 
-The `update_session_cookies()` function merges new cookies from the API session back into the cached `BrowserSession`.
+The `update_session_cookies()` function merges new cookies from the API session back into the cached `BrowserSession`. It uses the session name **literally** — it never resolves a bare base name, so it can never fork a bare `mysite` slot open beside the `mysite@alice` a session was loaded from. That is why callers pass the operating name the load resolved (the CLI's resolved name, `ctx.save_session()`, or `load_session_for_api_resolved`'s second return value): keying a refresh off a bare name whose slot does not exist drops it with only a log line.
 
 ### Bot-Detection Cookie Filtering
 
