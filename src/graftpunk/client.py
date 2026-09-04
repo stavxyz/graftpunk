@@ -40,7 +40,7 @@ from graftpunk.plugins.cli_plugin import (
     CommandSpec,
     _to_cli_name,
 )
-from graftpunk.session_identity import compute_operating_session_name
+from graftpunk.session_identity import compute_operating_session_name, validate_session_name
 from graftpunk.tokens import clear_cached_tokens, prepare_session
 
 LOG = get_logger(__name__)
@@ -209,14 +209,19 @@ class GraftpunkClient:
     Observability is a no-op in the Python API -- use the CLI
     (``--observe``) for capture-based observability.
 
-    **Construction performs no storage I/O and never raises for session
-    reasons** (#181). Every session name -- pinned or not -- is resolved at
-    the FIRST COMMAND that needs a session, so ``AmbiguousSessionError`` and
-    ``SessionNotFoundError`` surface from ``execute()`` (or the equivalent
-    attribute call), inside the call a consumer already wraps. A consumer
-    translating session errors should catch ``AmbiguousSessionError`` next to
-    ``SessionNotFoundError``: several cached accounts is a *pick one* problem,
-    not a *log in again* one.
+    **Construction performs no session-storage I/O and never raises for
+    session STATE reasons** -- ambiguity, not-found, expiry (#181). Every
+    session name -- pinned or not -- is resolved at the FIRST COMMAND that
+    needs a session, so ``AmbiguousSessionError`` and ``SessionNotFoundError``
+    surface from ``execute()`` (or the equivalent attribute call), inside the
+    call a consumer already wraps. A consumer translating session errors
+    should catch ``AmbiguousSessionError`` next to ``SessionNotFoundError``:
+    several cached accounts is a *pick one* problem, not a *log in again* one.
+
+    Two things do still happen here: plugin discovery (so ``PluginError``
+    remains a construction-time error), and validation of the pin *string* --
+    an illegal pin (``"MyShop@Alice"``, ``"../../x"``) raises ``ValueError``
+    immediately, since that is pure policy and costs no I/O.
 
     Args:
         plugin_name: The ``site_name`` of the plugin to load.
@@ -241,19 +246,31 @@ class GraftpunkClient:
 
     Raises:
         PluginError: If no plugin with the given name exists (or defines a
-            command twice). Session errors are NOT raised here -- see
-            :meth:`_execute_command`.
+            command twice).
+        ValueError: If *session* is not a legal session name -- checked here,
+            before anything is listed or loaded.
+        AmbiguousSessionError, SessionNotFoundError, SessionExpiredError: NOT
+            raised here. Session STATE surfaces from the first command that
+            needs a session -- see :meth:`_execute_command`.
     """
 
     def __init__(self, plugin_name: str, session: str | None = None) -> None:
         self._plugin: CLIPluginProtocol = get_plugin(plugin_name)
-        # Nothing is resolved here: construction performs no storage I/O and
-        # never raises for session reasons (#181). _session_name starts as the
-        # pin, or the plugin's raw base name, and is replaced by the slot the
-        # first session-requiring command actually loads. Whether it was
-        # PINNED is the one thing the lazy load needs from here, because the
-        # two paths resolve differently (see _execute_command).
-        self._pinned = bool(session)
+        # Nothing is resolved here: construction performs no session-storage
+        # I/O and never raises for session STATE reasons (#181). _session_name
+        # starts as the pin, or the plugin's raw base name, and is replaced by
+        # the slot the first session-requiring command actually loads. Whether
+        # it was PINNED is the one thing the lazy load needs from here, because
+        # the two paths resolve differently (see _execute_command).
+        #
+        # The pin STRING is checked here all the same: validation is pure
+        # policy, costs no listing and no load, and a name that cannot exist
+        # ("MyShop@Alice", "../../x") is a caller error best raised where it
+        # was typed. The loader validates again — defense in depth, since a
+        # name can also reach it from elsewhere.
+        if session:
+            validate_session_name(session)
+        self._pinned: bool = bool(session)
         self._session_name = session or self._plugin.session_name
         self._session: requests.Session | None = None
         self._session_dirty: bool = False

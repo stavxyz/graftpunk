@@ -1272,15 +1272,18 @@ class TestKebabCaseNamesThroughTheClient:
 class TestClientOperatingSession:
     """The operating session name: pinned, or resolved on FIRST USE (#181).
 
-    Construction never performs storage I/O and never raises for session
-    reasons; every resolution happens at the lazy load in the first command
-    that needs a session.
+    Construction performs no session-storage I/O and never raises for session
+    STATE reasons; every resolution happens at the lazy load in the first
+    command that needs a session. An illegal pin *string* is the exception:
+    pure policy, no I/O, refused immediately.
     """
 
-    def test_pin_is_used_for_load_and_store(self) -> None:
-        plugin = MagicMock()
-        plugin.session_name = "myshop"
-        plugin.get_commands.return_value = [_make_spec(name="items", requires_session=True)]
+    def test_pin_is_stored_without_listing(self) -> None:
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            commands=[_make_spec("items", requires_session=True)],
+        )
         with (
             patch("graftpunk.client.get_plugin", return_value=plugin),
             patch("graftpunk.client.list_sessions") as mock_list,
@@ -1288,6 +1291,30 @@ class TestClientOperatingSession:
             client = GraftpunkClient("fmtsite", session="myshop@bob")
         assert client._session_name == "myshop@bob"
         mock_list.assert_not_called()  # a pinned client pays no listing
+
+    def test_illegal_pin_raises_value_error_at_construction(self) -> None:
+        """A pin that cannot name a session is refused immediately.
+
+        Validating the pin STRING is pure policy — no listing, no load — so it
+        stays in ``__init__`` even though every session-STATE error (ambiguity,
+        not-found, expiry) moved to first use (#181). A typo fails where it was
+        typed rather than one command later.
+        """
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            commands=[_make_spec("items", requires_session=True)],
+        )
+        for bad in ("MyShop@Alice", "../../x", "my.shop", "myshop@"):
+            with (
+                patch("graftpunk.client.get_plugin", return_value=plugin),
+                patch("graftpunk.client.list_sessions") as mock_list,
+                patch("graftpunk.client.load_session_for_api_resolved") as mock_load,
+                pytest.raises(ValueError),
+            ):
+                GraftpunkClient("fmtsite", session=bad)
+            mock_list.assert_not_called()
+            mock_load.assert_not_called()
 
     def test_sessionless_plugin_never_lists_or_loads(self) -> None:
         """requires_session=False has nothing to resolve — and nothing to list.
