@@ -8,6 +8,7 @@ import pytest
 import requests
 
 from graftpunk.session_identity import GP_ACCOUNT_ATTR
+from tests.unit.cli_harness import echo_loaded_session
 from tests.unit.cli_harness import invoke_plugin_app as _invoke
 
 
@@ -406,8 +407,8 @@ class TestLoginWrapperOrchestration:
         with (
             patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=requests.Session(),
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(),
             ),
             patch("graftpunk.cli.plugin_runtime.list_sessions", return_value=[]),
         ):

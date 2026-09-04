@@ -17,6 +17,7 @@ from graftpunk.cli.http_commands import (
     _resolve_role_name,
     _save_observe_data,
 )
+from tests.unit.cli_harness import echo_loaded_session
 
 
 class TestResolveJsonBody:
@@ -47,7 +48,7 @@ class TestResolveJsonBody:
 class TestHttpAccountResolution:
     """`gp http` resolves accounts like every other surface (#151)."""
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"})
     @patch("graftpunk.cli.plugin_commands.list_sessions", return_value=["myshop@alice"])
@@ -59,13 +60,13 @@ class TestHttpAccountResolution:
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request.return_value = mock_response
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         _make_request("GET", "https://example.com", session_name="myshop")
 
         mock_load.assert_called_once_with("myshop@alice")
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"})
     @patch(
@@ -89,7 +90,7 @@ class TestHttpAccountResolution:
 class TestMakeRequest:
     """Tests for _make_request."""
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
     def test_get_basic(self, mock_load: MagicMock) -> None:
@@ -98,14 +99,14 @@ class TestMakeRequest:
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request.return_value = mock_response
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         response, _ = _make_request("GET", "https://example.com", session_name="test-session")
 
         mock_load.assert_called_once_with("test-session")
         assert response == mock_response
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
     def test_post_with_json_body(self, mock_load: MagicMock) -> None:
@@ -114,7 +115,7 @@ class TestMakeRequest:
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request.return_value = mock_response
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         response, _ = _make_request(
             "POST",
@@ -129,7 +130,7 @@ class TestMakeRequest:
         assert call_kwargs[1]["data"] == '{"key": "value"}'
         assert mock_session.headers["Content-Type"] == "application/json"
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
     def test_no_browser_headers_clears_roles(self, mock_load: MagicMock) -> None:
@@ -139,7 +140,7 @@ class TestMakeRequest:
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request.return_value = mock_response
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         _make_request(
             "GET",
@@ -151,7 +152,7 @@ class TestMakeRequest:
         # Header roles should have been cleared via public method
         mock_session.clear_header_roles.assert_called_once()
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
     def test_extra_headers(self, mock_load: MagicMock) -> None:
@@ -160,7 +161,7 @@ class TestMakeRequest:
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request.return_value = mock_response
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         _make_request(
             "GET",
@@ -172,7 +173,7 @@ class TestMakeRequest:
         assert mock_session.headers["X-Custom"] == "my-value"
         assert mock_session.headers["Authorization"] == "Bearer abc"
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.tokens.clear_cached_tokens")
     @patch("graftpunk.tokens.prepare_session")
     def test_token_refresh_on_403(
@@ -188,7 +189,7 @@ class TestMakeRequest:
         mock_200 = MagicMock(spec=requests.Response)
         mock_200.status_code = 200
         mock_session.request.side_effect = [mock_403, mock_200]
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         # Create a mock plugin with token_config
         mock_plugin = MagicMock()
@@ -258,7 +259,7 @@ class TestMakeRequestErrorPaths:
 
         mock_get_plugin.assert_not_called()
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
     def test_invalid_header_format_exits_with_error(self, mock_load: MagicMock) -> None:
@@ -267,7 +268,7 @@ class TestMakeRequestErrorPaths:
 
         mock_session = MagicMock(spec=requests.Session)
         mock_session.headers = {}
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         with pytest.raises(typer.Exit) as exc_info:
             _make_request(
@@ -279,7 +280,7 @@ class TestMakeRequestErrorPaths:
 
         assert exc_info.value.exit_code == 1
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     def test_session_load_failure_exits_with_error(self, mock_load: MagicMock) -> None:
         """Exits with error when session loading raises an exception."""
         import typer
@@ -539,7 +540,7 @@ class TestDispatchRequest:
 class TestMakeRequestWithRole:
     """Tests for _make_request with --role flag."""
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
     def test_role_xhr_dispatches_via_request_with_role(self, mock_load: MagicMock) -> None:
@@ -548,7 +549,7 @@ class TestMakeRequestWithRole:
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request_with_role.return_value = mock_response
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         response, _ = _make_request(
             "GET",
@@ -561,7 +562,7 @@ class TestMakeRequestWithRole:
         mock_session.request.assert_not_called()
         assert response == mock_response
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
     def test_role_none_uses_session_request(self, mock_load: MagicMock) -> None:
@@ -570,7 +571,7 @@ class TestMakeRequestWithRole:
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request.return_value = mock_response
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         response, _ = _make_request(
             "GET",
@@ -581,7 +582,7 @@ class TestMakeRequestWithRole:
         mock_session.request.assert_called_once()
         assert response == mock_response
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     def test_plugin_header_roles_merged_into_session(self, mock_load: MagicMock) -> None:
         """Plugin's header_roles dict is merged via merge_header_roles()."""
         mock_session = MagicMock()
@@ -591,7 +592,7 @@ class TestMakeRequestWithRole:
         mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
         mock_session.request_with_role.return_value = mock_response
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         mock_plugin = MagicMock()
         mock_plugin.site_name = "test-plugin"
@@ -680,7 +681,10 @@ class TestRoleCLI:
         mock_session.request_with_role.return_value = mock_response
 
         with (
-            patch("graftpunk.cli.http_commands.load_session_for_api", return_value=mock_session),
+            patch(
+                "graftpunk.cli.http_commands.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
+            ),
             patch("graftpunk.cli.http_commands._save_observe_data"),
             patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
             patch("graftpunk.cli.plugin_commands._plugin_session_map", {}),
@@ -750,7 +754,7 @@ class TestRoleHelpText:
 class TestTokenRetryWithRole:
     """Tests for 403 token retry when --role is used."""
 
-    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.tokens.clear_cached_tokens")
     @patch("graftpunk.tokens.prepare_session")
     def test_403_retry_preserves_role(
@@ -766,7 +770,7 @@ class TestTokenRetryWithRole:
         mock_200 = MagicMock(spec=requests.Response)
         mock_200.status_code = 200
         mock_session.request_with_role.side_effect = [mock_403, mock_200]
-        mock_load.return_value = mock_session
+        mock_load.side_effect = echo_loaded_session(mock_session)
 
         mock_plugin = MagicMock()
         mock_plugin.site_name = "test-plugin"

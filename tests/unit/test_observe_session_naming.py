@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 from graftpunk.cli.http_commands import _save_observe_data
 from graftpunk.cli.main import app
 from graftpunk.observe.storage import session_dirname
+from tests.unit.cli_harness import echo_loaded_session
 
 runner = CliRunner()
 
@@ -136,7 +137,10 @@ class TestHttpObserveUsesTheResolvedName:
         session.request.return_value = _fake_response()
 
         with (
-            patch("graftpunk.cli.http_commands.load_session_for_api", return_value=session),
+            patch(
+                "graftpunk.cli.http_commands.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(session),
+            ),
             patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
             patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"}),
             patch("graftpunk.cli.plugin_commands.list_sessions", return_value=["myshop@alice"]),
@@ -159,6 +163,33 @@ class TestHttpObserveUsesTheResolvedName:
         assert "myshop-alice" in strip_ansi(found.output)
         assert listed.exit_code == 0, listed.output
         assert "1 run(s)" in strip_ansi(listed.output)
+
+    def test_bare_pin_files_the_run_under_the_slot_the_load_resolved(self, tmp_path: Path) -> None:
+        """A bare pin that names no registered plugin passes through resolution
+        untouched — so it is the LOADER that resolves it, and the run dir must
+        follow the name it reports back (#182)."""
+        from graftpunk.cli.main import app as root_app
+
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.request.return_value = _fake_response()
+
+        with (
+            patch(
+                "graftpunk.cli.http_commands.load_session_for_api_resolved",
+                return_value=(session, "myshop@alice"),
+            ),
+            patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
+            patch("graftpunk.cli.plugin_commands._plugin_session_map", {}),
+            patch("graftpunk.cli.http_commands.OBSERVE_BASE_DIR", tmp_path),
+        ):
+            result = runner.invoke(
+                root_app, ["http", "get", "--session", "myshop", "https://example.com"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "myshop-alice").is_dir()
+        assert not (tmp_path / "myshop").exists()
 
 
 class TestBuildObserveContextWriterReaderRoundTrip:

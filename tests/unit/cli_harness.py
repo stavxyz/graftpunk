@@ -7,7 +7,22 @@ test_multi_account_e2e.py — one copy, so the harness cannot drift.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
+
+
+def echo_loaded_session(session: Any = None) -> Any:
+    """A ``side_effect`` for a patched ``load_session_for_api_resolved``.
+
+    The real loader returns ``(session, loaded_name)``: the name it actually
+    loaded from, which the caller then keys its write-backs off (#182). On an
+    exact hit that IS the requested name, so a test that only needs the load
+    stubbed echoes the name back rather than hard-coding one.
+    """
+    import requests
+
+    loaded = requests.Session() if session is None else session
+    return lambda name, **_kwargs: (loaded, name)
 
 
 def invoke_plugin_app(plugin, argv, **env):  # noqa: ANN001, ANN002, ANN003, ANN201

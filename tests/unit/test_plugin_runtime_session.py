@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 import requests
 
 from graftpunk.exceptions import SessionNotFoundError
+from tests.unit.cli_harness import echo_loaded_session
 from tests.unit.cli_harness import invoke_plugin_app as _invoke
 
 
@@ -43,75 +44,77 @@ def _plugin():  # noqa: ANN202
 
 class TestOperatingNameOnPluginPath:
     @patch("graftpunk.cli.plugin_runtime.update_session_cookies")
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions", return_value=["myshop@alice"])
     def test_resolved_name_used_for_load_and_store(self, _ls, mock_load, mock_update) -> None:  # noqa: ANN001
-        mock_load.return_value = requests.Session()
+        mock_load.side_effect = echo_loaded_session()
         result = _invoke(_plugin(), ["fmtsite", "items"])
         assert result.exit_code == 0, result.output
         assert mock_load.call_args[0][0] == "myshop@alice"
         assert mock_update.call_args[0][1] == "myshop@alice"
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch(
         "graftpunk.cli.plugin_runtime.list_sessions",
         return_value=["myshop@alice", "myshop@bob"],
     )
     def test_session_flag_pins(self, _ls, mock_load) -> None:  # noqa: ANN001
-        mock_load.return_value = requests.Session()
+        mock_load.side_effect = echo_loaded_session()
         result = _invoke(_plugin(), ["fmtsite", "items", "--session", "myshop@bob"])
         assert result.exit_code == 0, result.output
         assert mock_load.call_args[0][0] == "myshop@bob"
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch(
         "graftpunk.cli.plugin_runtime.list_sessions",
         return_value=["myshop@alice", "myshop@bob"],
     )
     def test_ambiguous_refuses_with_candidates(self, _ls, mock_load) -> None:  # noqa: ANN001
-        mock_load.return_value = requests.Session()
+        mock_load.side_effect = echo_loaded_session()
         result = _invoke(_plugin(), ["fmtsite", "items"])
         assert result.exit_code != 0
         assert "myshop@alice" in result.output and "GRAFTPUNK_SESSION" in result.output
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions", return_value=["myshop@alice"])
     def test_env_var_pins(self, _ls, mock_load) -> None:  # noqa: ANN001
-        mock_load.return_value = requests.Session()
+        mock_load.side_effect = echo_loaded_session()
         result = _invoke(_plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="myshop@alice")
         assert result.exit_code == 0, result.output
         assert mock_load.call_args[0][0] == "myshop@alice"
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions", return_value=["myshop@alice"])
     def test_foreign_base_env_var_does_not_steer(self, _ls, mock_load) -> None:  # noqa: ANN001
         """A GRAFTPUNK_SESSION for a different base is ignored (#151); the
         plugin resolves normally against its own cached sessions."""
-        mock_load.return_value = requests.Session()
+        mock_load.side_effect = echo_loaded_session()
         result = _invoke(
             _plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="othersite@someone-else"
         )
         assert result.exit_code == 0, result.output
-        assert mock_load.call_args[0][0] == "myshop@alice"
+        # The name came out of the chain's resolution tier, which listed
+        # already: the load is exact-only (#182).
+        assert mock_load.call_args == call("myshop@alice", resolve=False)
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions")
     def test_session_flag_performs_no_listing(self, mock_list, mock_load) -> None:  # noqa: ANN001
         """A pin skips the resolution tier — a listing is a remote round-trip."""
-        mock_load.return_value = requests.Session()
+        mock_load.side_effect = echo_loaded_session()
         result = _invoke(_plugin(), ["fmtsite", "items", "--session", "myshop@bob"])
         assert result.exit_code == 0, result.output
         mock_list.assert_not_called()
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions")
     def test_matching_ambient_pin_performs_no_listing(self, mock_list, mock_load) -> None:  # noqa: ANN001
-        mock_load.return_value = requests.Session()
+        mock_load.side_effect = echo_loaded_session()
         result = _invoke(_plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="myshop@alice")
         assert result.exit_code == 0, result.output
         mock_list.assert_not_called()
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions")
     def test_traversal_pin_is_refused_before_storage(self, mock_list, mock_load) -> None:  # noqa: ANN001
         """A --session that cannot name a session never reaches storage."""
@@ -121,7 +124,7 @@ class TestOperatingNameOnPluginPath:
         mock_load.assert_not_called()
         mock_list.assert_not_called()
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions")
     def test_wrong_charset_pin_is_refused(self, mock_list, mock_load) -> None:  # noqa: ANN001
         result = _invoke(_plugin(), ["fmtsite", "items", "--session", "MyShop@Alice"])
@@ -131,7 +134,7 @@ class TestOperatingNameOnPluginPath:
         mock_load.assert_not_called()
         mock_list.assert_not_called()
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions")
     def test_garbage_ambient_pin_is_refused(self, mock_list, mock_load) -> None:  # noqa: ANN001
         """A garbage GRAFTPUNK_SESSION is a config error, surfaced loudly."""
@@ -141,7 +144,7 @@ class TestOperatingNameOnPluginPath:
         mock_load.assert_not_called()
         mock_list.assert_not_called()
 
-    @patch("graftpunk.cli.plugin_runtime.load_session_for_api")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions", return_value=[])
     def test_not_found_names_the_operating_session(self, _ls, mock_load) -> None:  # noqa: ANN001
         """The not-found error names the flagged/computed operating session
@@ -150,3 +153,38 @@ class TestOperatingNameOnPluginPath:
         result = _invoke(_plugin(), ["fmtsite", "items", "--session", "myshop@wronglabel"])
         assert result.exit_code != 0
         assert "myshop@wronglabel" in result.output
+
+    @patch("graftpunk.cli.plugin_runtime.update_session_cookies")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions")
+    def test_bare_session_flag_resolves_at_load_and_stores_that_name(  # noqa: ANN201
+        self,
+        mock_list,  # noqa: ANN001
+        mock_load,  # noqa: ANN001
+        mock_update,  # noqa: ANN001
+    ) -> None:
+        """--session myshop names a BASE: the loader resolves it, and the slot
+        it reports back is what the write-back keys off (#182)."""
+        mock_load.return_value = (requests.Session(), "myshop@alice")
+        result = _invoke(_plugin(), ["fmtsite", "items", "--session", "myshop"])
+        assert result.exit_code == 0, result.output
+        assert mock_load.call_args == call("myshop", resolve=True)
+        assert mock_update.call_args[0][1] == "myshop@alice"
+        mock_list.assert_not_called()  # the pin still skips the chain's listing
+
+    @patch("graftpunk.cli.plugin_runtime.update_session_cookies")
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions")
+    def test_bare_ambient_pin_resolves_at_load_and_stores_that_name(  # noqa: ANN201
+        self,
+        mock_list,  # noqa: ANN001
+        mock_load,  # noqa: ANN001
+        mock_update,  # noqa: ANN001
+    ) -> None:
+        """Same contract through the ambient tier: GRAFTPUNK_SESSION=myshop."""
+        mock_load.return_value = (requests.Session(), "myshop@alice")
+        result = _invoke(_plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="myshop")
+        assert result.exit_code == 0, result.output
+        assert mock_load.call_args == call("myshop", resolve=True)
+        assert mock_update.call_args[0][1] == "myshop@alice"
+        mock_list.assert_not_called()

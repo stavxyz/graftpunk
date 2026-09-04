@@ -28,7 +28,7 @@ from typing import Any
 
 import requests
 
-from graftpunk.cache import list_sessions, load_session_for_api, update_session_cookies
+from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext
@@ -234,6 +234,10 @@ class GraftpunkClient:
         # scriptable mode (list_sessions() is a remote round-trip on S3/Supabase).
         # A plugin that needs no session pays none either: there is nothing to
         # resolve, and its base name is never loaded.
+        # A pin may name a BASE, which only the load can resolve (and only when
+        # it has to look): remember which mode this client is in so the lazy
+        # load below knows whether the fallback applies.
+        self._session_pinned = bool(session)
         if session:
             self._session_name = session
         elif self._plugin.requires_session:
@@ -371,9 +375,16 @@ class GraftpunkClient:
             spec.requires_session if spec.requires_session is not None else plugin.requires_session
         )
 
-        # 1. Lazy-load session
+        # 1. Lazy-load session. A bare pin ("myshop") names a base: the loader
+        # resolves it and hands back the slot it landed on, which becomes this
+        # client's operating name so both write-backs (below and in close())
+        # key off it — they use the name literally (#182). An unpinned client
+        # resolved against the same listing at construction, so it loads
+        # exact-only rather than paying for a second listing.
         if needs_session and self._session is None:
-            self._session = load_session_for_api(self._session_name)
+            self._session, self._session_name = load_session_for_api_resolved(
+                self._session_name, resolve=self._session_pinned
+            )
             if base_url and hasattr(self._session, "gp_base_url"):
                 setattr(self._session, "gp_base_url", base_url)  # noqa: B010
 
@@ -393,7 +404,9 @@ class GraftpunkClient:
             base_url=base_url,
             config=getattr(plugin, "_plugin_config", None),
             observe=NoOpObservabilityContext(),
-            _session_name=(plugin.session_name if needs_session else ""),
+            # The resolved operating name (set by the load above), not the
+            # plugin's bare base: it is what ctx.save_session() ends up keying.
+            _session_name=(self._session_name if needs_session else ""),
         )
 
         # 4. Execute with retry/rate-limit; 403 token refresh

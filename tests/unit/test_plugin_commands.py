@@ -21,6 +21,7 @@ from graftpunk.plugins.cli_plugin import (
     SitePlugin,
     command,
 )
+from tests.unit.cli_harness import echo_loaded_session
 
 DISCOVER_ALL = "graftpunk.cli.plugin_commands.discover_all_plugins"
 
@@ -314,14 +315,16 @@ class TestCommandExecution:
         # TestClickKwargsPassthrough through _build_site_app. Here, verify
         # the mocked session is actually used to execute the command. The
         # runtime loads by operating name (resolved from plugin.session_name)
-        # via load_session_for_api, not plugin.get_session() (#151).
+        # via load_session_for_api_resolved, not plugin.get_session() (#151).
         with patch(
-            "graftpunk.cli.plugin_runtime.load_session_for_api",
-            return_value=mock_session,
+            "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+            side_effect=echo_loaded_session(mock_session),
         ) as mock_load:
             result = TyperCliRunner().invoke(app, [])
             assert result.exit_code == 0
-            mock_load.assert_called_once_with("mocksession")
+            # resolve=False: the name came out of the chain's resolution
+            # tier, which already listed (#182).
+            mock_load.assert_called_once_with("mocksession", resolve=False)
 
     def test_command_with_params(self, isolated_config: Path) -> None:
         """Test command with parameters."""
@@ -888,7 +891,7 @@ class TestCommandOutputConsole:
         with (
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_con,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
                 side_effect=SessionNotFoundError("mocksession"),
             ),
         ):
@@ -1988,8 +1991,8 @@ class TestPluginMounting:
             register_plugin_commands(app, notify_errors=False)
 
         with patch(
-            "graftpunk.cli.plugin_runtime.load_session_for_api",
-            return_value=requests.Session(),
+            "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+            side_effect=echo_loaded_session(requests.Session()),
         ):
             result = TyperCliRunner().invoke(app, ["mocksite", "items"])
         assert result.exit_code == 0
@@ -2025,7 +2028,7 @@ class TestSynthesizedCommandCallback:
         with (
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
                 side_effect=PluginError("session corrupted"),
             ),
         ):
@@ -2054,7 +2057,7 @@ class TestSynthesizedCommandCallback:
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
             patch("graftpunk.cli.plugin_runtime.LOG") as mock_log,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
                 side_effect=RuntimeError("unexpected db error"),
             ),
         ):
@@ -2082,8 +2085,8 @@ class TestSynthesizedCommandCallback:
         with (
             patch("graftpunk.cli.plugin_runtime.build_observe_context") as mock_build,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=plain_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(plain_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -2121,8 +2124,8 @@ class TestSynthesizedCommandCallback:
             patch("graftpunk.cli.plugin_runtime.LOG") as mock_log,
             patch("graftpunk.cli.plugin_runtime.build_observe_context"),
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -2504,8 +2507,8 @@ class TestCommandContextPopulation:
         app = build_command_app(mock_plugin, cmd_spec)
 
         with patch(
-            "graftpunk.cli.plugin_runtime.load_session_for_api",
-            return_value=requests.Session(),
+            "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+            side_effect=echo_loaded_session(requests.Session()),
         ):
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
@@ -2538,8 +2541,8 @@ class TestCommandErrorCatch:
         with (
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=requests.Session(),
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(requests.Session()),
             ),
         ):
             runner = TyperCliRunner()
@@ -2567,8 +2570,8 @@ class TestCommandErrorCatch:
         with (
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=requests.Session(),
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(requests.Session()),
             ),
         ):
             runner = TyperCliRunner()
@@ -2635,14 +2638,16 @@ class TestPerCommandRequiresSession:
         app = build_command_app(mock_plugin, cmd_spec)
 
         with patch(
-            "graftpunk.cli.plugin_runtime.load_session_for_api",
-            return_value=mock_session,
+            "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+            side_effect=echo_loaded_session(mock_session),
         ) as mock_load:
             runner = TyperCliRunner()
             result = runner.invoke(app, [])
 
             assert result.exit_code == 0
-            mock_load.assert_called_once_with("mocksession")
+            # resolve=False: the name came out of the chain's resolution
+            # tier, which already listed (#182).
+            mock_load.assert_called_once_with("mocksession", resolve=False)
         assert captured_sessions[0] is mock_session
 
 
@@ -2898,8 +2903,8 @@ class TestTokenAutoInjection:
         with (
             patch("graftpunk.tokens.prepare_session") as mock_prepare,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             mock_prepare.return_value = mock_session
@@ -2932,8 +2937,8 @@ class TestTokenAutoInjection:
         with (
             patch("graftpunk.tokens.prepare_session") as mock_prepare,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -2965,8 +2970,8 @@ class TestTokenAutoInjection:
             ),
             patch("graftpunk.cli.plugin_runtime.gp_console") as mock_console,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -3017,8 +3022,8 @@ class TestTokenRefreshOn403:
             patch("graftpunk.tokens.prepare_session") as mock_prepare,
             patch("graftpunk.tokens.clear_cached_tokens") as mock_clear,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -3052,8 +3057,8 @@ class TestTokenRefreshOn403:
         with (
             patch("graftpunk.cli.plugin_runtime.gp_console"),
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -3093,8 +3098,8 @@ class TestTokenRefreshOn403:
             patch("graftpunk.tokens.clear_cached_tokens"),
             patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -3129,8 +3134,8 @@ class TestTokenRefreshOn403:
             patch("graftpunk.tokens.clear_cached_tokens"),
             patch("graftpunk.cli.plugin_runtime.gp_console"),
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -3164,8 +3169,8 @@ class TestSessionPersistence:
         with (
             patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -3195,8 +3200,8 @@ class TestSessionPersistence:
         with (
             patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -3225,8 +3230,8 @@ class TestSessionPersistence:
         with (
             patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
@@ -3256,8 +3261,8 @@ class TestSessionPersistence:
         with (
             patch("graftpunk.cli.plugin_runtime.update_session_cookies") as mock_update,
             patch(
-                "graftpunk.cli.plugin_runtime.load_session_for_api",
-                return_value=mock_session,
+                "graftpunk.cli.plugin_runtime.load_session_for_api_resolved",
+                side_effect=echo_loaded_session(mock_session),
             ),
         ):
             runner = TyperCliRunner()
