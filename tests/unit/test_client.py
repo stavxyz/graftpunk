@@ -1431,9 +1431,11 @@ class TestClientOperatingSession:
             ],
         )
         spy = MagicMock(wraps=real_list_sessions)
+        cache_spy = MagicMock(wraps=real_list_sessions)
         with (
             patch("graftpunk.client.get_plugin", return_value=plugin),
             patch("graftpunk.client.list_sessions", spy),
+            patch("graftpunk.cache.list_sessions", cache_spy),
         ):
             with GraftpunkClient("fmtsite") as client:
                 assert spy.call_count == 0
@@ -1443,6 +1445,9 @@ class TestClientOperatingSession:
                 client.execute("items")
                 assert spy.call_count == 1  # resolved once, reused after
             assert seen == ["myshop@alice", "myshop@alice"]
+            # One listing TOTAL: the resolution tier did it, and the load it
+            # feeds is exact-only, so the loader never lists again.
+            cache_spy.assert_not_called()
 
         refreshed = get_session_metadata("myshop@alice")
         assert refreshed["cookie_count"] == 1
@@ -1548,7 +1553,7 @@ class TestClientOperatingSession:
             client_spy.assert_not_called()
             cache_spy.assert_not_called()
 
-    def test_command_override_on_a_sessionless_plugin_resolves_at_load(
+    def test_command_override_on_a_sessionless_plugin_resolves_on_first_use(
         self,
         fresh_backend,  # noqa: ANN001
     ) -> None:
@@ -1556,9 +1561,11 @@ class TestClientOperatingSession:
 
         Nothing is pinned, so the lazy path resolves the plugin's base name
         exactly as it would for any unpinned client — and only here, at the
-        first command that actually asks for a session (#181, #182).
+        first command that actually asks for a session (#181, #182). The
+        listing that costs is the resolution tier's, and it is the only one.
         """
         from graftpunk.cache import get_session_metadata, list_sessions
+        from graftpunk.cache import list_sessions as real_list_sessions
 
         _cache_account("myshop@alice", "alice@example.com")
 
@@ -1573,15 +1580,61 @@ class TestClientOperatingSession:
             requires_session=False,
             commands=[_make_spec("items", handler=handler, requires_session=True)],
         )
-        with patch("graftpunk.client.get_plugin", return_value=plugin):
+        client_spy = MagicMock(wraps=real_list_sessions)
+        cache_spy = MagicMock(wraps=real_list_sessions)
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch("graftpunk.client.list_sessions", client_spy),
+            patch("graftpunk.cache.list_sessions", cache_spy),
+        ):
             with GraftpunkClient("fmtsite") as client:
                 client.execute("items")
             assert client._session_name == "myshop@alice"
+            assert client_spy.call_count == 1  # the resolution tier listed
+            cache_spy.assert_not_called()  # the loader did not
 
         refreshed = get_session_metadata("myshop@alice")
         assert refreshed["cookie_count"] == 1
         assert refreshed["account_identifier"] == "alice@example.com"
         assert "myshop" not in list_sessions()
+
+    def test_command_override_on_a_sessionless_plugin_can_be_ambiguous(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """The override takes UNPINNED semantics, ambiguity included (#181).
+
+        A legacy bare ``myshop`` alongside ``myshop@alice`` is exactly the
+        case where the two differ: an unpinned client refuses and names both,
+        where a pin would have taken the bare slot outright. Consistency with
+        every other unpinned surface wins — the command opted into a session,
+        it did not opt into a pin.
+        """
+        from graftpunk.cache import list_sessions as real_list_sessions
+        from graftpunk.exceptions import AmbiguousSessionError
+
+        _cache_account("myshop", "legacy@example.com")
+        _cache_account("myshop@alice", "alice@example.com")
+
+        plugin = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            requires_session=False,
+            commands=[_make_spec("items", requires_session=True)],
+        )
+        client_spy = MagicMock(wraps=real_list_sessions)
+        cache_spy = MagicMock(wraps=real_list_sessions)
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            patch("graftpunk.client.list_sessions", client_spy),
+            patch("graftpunk.cache.list_sessions", cache_spy),
+        ):
+            client = GraftpunkClient("fmtsite")  # silent, as ever
+            with pytest.raises(AmbiguousSessionError) as excinfo:
+                client.execute("items")
+            assert client_spy.call_count == 1  # the resolution tier listed
+            cache_spy.assert_not_called()  # the loader never ran
+        assert sorted(excinfo.value.candidates) == ["myshop", "myshop@alice"]
 
     def test_close_on_a_never_used_client_lists_nothing_and_loads_nothing(
         self,

@@ -247,7 +247,12 @@ class GraftpunkClient:
 
             A plugin with ``requires_session=False`` resolves and loads
             nothing, ever -- unless a command overrides
-            ``requires_session=True``, which reaches the same lazy path.
+            ``requires_session=True``. Such a command reaches the same lazy
+            path with the same UNPINNED semantics: it opted into a session,
+            not into a pin, so several accounts under the plugin's base name
+            raise ``AmbiguousSessionError`` rather than quietly taking a slot
+            cached under the bare base. Pin the client to keep a legacy bare
+            slot once a labelled account exists alongside it.
 
     Raises:
         PluginError: If no plugin with the given name exists (or defines a
@@ -394,7 +399,13 @@ class GraftpunkClient:
             A ``CommandResult`` wrapping the handler's return value.
 
         Raises:
+            ValueError: If the name reaching the loader is not a legal session
+                name. A pin is already validated in ``__init__``; this covers
+                a plugin whose ``session_name`` is itself illegal.
             SessionNotFoundError: If the session cannot be loaded.
+            SessionExpiredError: If the cached session cannot be unpickled.
+            ImportError: If the browser package needed to reconstruct the
+                cached session is not installed (the ``[browser]`` extra).
             AmbiguousSessionError: If several sessions are cached for the
                 plugin's base name and nothing selects one -- an unpinned
                 client (resolved here, on first use, never at construction --
