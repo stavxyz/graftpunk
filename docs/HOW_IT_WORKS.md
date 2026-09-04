@@ -123,7 +123,16 @@ base-scoped — it always wins outright. Both pins are validated before anything
 is listed or loaded, so a malformed name is a loud error, not a lookup miss.
 `GraftpunkClient` resolves the same way but deliberately ignores
 the ambient env/file tiers; pass `GraftpunkClient("site", session="myshop@alice")`
-to pin.
+to pin. It resolves on **first session use**, not at construction: building a
+client performs no session-storage I/O and never raises for session *state*
+reasons, so `AmbiguousSessionError` (several accounts cached, unpinned),
+`SessionNotFoundError`, `SessionExpiredError` and the browser-extra
+`ImportError` all surface from the first `execute()` — catch
+`AmbiguousSessionError` next to `SessionNotFoundError` in whatever wraps your
+command calls. Two things still happen at construction: plugin discovery
+(`PluginError`), and validation of the pin string — a malformed pin
+(`session="MyShop@Alice"`) is rejected there with `ValueError`, since that
+costs no I/O. A labelled pin never lists at all, hit or miss.
 
 **The pin contract.** A *bare* pin (`--session myshop`, `GRAFTPUNK_SESSION=myshop`,
 `GraftpunkClient(..., session="myshop")`) names a **base**, not a slot, and is
@@ -606,7 +615,7 @@ MYSITE_USERNAME=x MYSITE_PASSWORD=y gp mysite login  # No prompts
 Commands execute through two paths that share the same retry/rate-limit core:
 
 - **CLI path** — The CLI callback calls `execute_plugin_command()` from `graftpunk.client`. The CLI handles session loading, token injection, 403 retry, session persistence, and output formatting around it.
-- **Python API path** — `GraftpunkClient._execute_command()` manages the full pipeline: lazy session loading, token injection, retry/rate-limit (via the shared `_run_handler_with_limits()`), 403 token refresh, and session persistence. All commands return `CommandResult`.
+- **Python API path** — `GraftpunkClient._execute_command()` manages the full pipeline: lazy session resolution and loading, token injection, retry/rate-limit (via the shared `_run_handler_with_limits()`), 403 token refresh, and session persistence. All commands return `CommandResult`.
 
 Both paths use the same `_run_handler_with_limits()` function for retry and rate-limit enforcement, ensuring consistent behavior.
 

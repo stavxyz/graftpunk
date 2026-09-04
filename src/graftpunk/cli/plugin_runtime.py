@@ -116,8 +116,12 @@ def run_plugin_command(
             # came out of the chain's resolution tier instead resolved against
             # the same listing already, so it loads exact-only rather than
             # paying for a second one.
+            # Only a BARE pin asks the loader to resolve: the fallback matches
+            # on the base, so resolving a labelled pin can only list uselessly.
+            pinned = bool(explicit_session) or ambient_pins
             session, operating_name = load_session_for_api_resolved(
-                operating_name, resolve=bool(explicit_session) or ambient_pins
+                operating_name,
+                resolve=pinned and split_session_name(operating_name)[1] is None,
             )
         else:
             session = requests.Session()

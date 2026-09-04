@@ -28,6 +28,7 @@ from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.session_context import resolve_session
+from graftpunk.session_identity import split_session_name
 
 LOG = get_logger(__name__)
 
@@ -198,7 +199,12 @@ def _make_request(
             # the name every downstream use must key off — the observe run dir
             # included (#182). An already-resolved name is an exact hit and
             # lists nothing.
-            session, resolved = load_session_for_api_resolved(resolved)
+            #
+            # Only a BARE name asks the loader to resolve: the fallback matches
+            # on the base, so resolving a labelled name can only list uselessly.
+            session, resolved = load_session_for_api_resolved(
+                resolved, resolve=split_session_name(resolved)[1] is None
+            )
         except Exception as exc:  # noqa: BLE001 — CLI boundary
             LOG.error("session_load_failed", session_name=resolved, error=str(exc))
             gp_console.error(f"Failed to load session '{resolved}': {exc}")
