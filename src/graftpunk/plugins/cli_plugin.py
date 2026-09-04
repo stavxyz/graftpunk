@@ -1152,9 +1152,12 @@ class SitePlugin:
         longer calls this method -- it resolves the operating account name
         first (``--session`` / env / ``.gp-session`` / resolution) and loads
         directly via ``load_session_for_api``. This method still loads by
-        the bare base name (``self.session_name``), so it can differ from
-        the CLI's resolved session under multiple cached accounts. Plugins
-        calling this directly should be aware of the gap; tracked in
+        the bare base name (``self.session_name``), but ``load_session_for_api``
+        itself now falls back to account resolution when no exact match
+        exists, so a single cached account under that base still resolves;
+        it can still differ from the CLI's resolved session when several
+        accounts are cached for the base (raises ``AmbiguousSessionError``).
+        Plugins calling this directly should be aware of the gap; tracked in
         https://github.com/stavxyz/graftpunk/issues/174.
         """
         if not self.requires_session:

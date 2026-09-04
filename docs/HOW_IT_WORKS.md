@@ -136,7 +136,7 @@ from graftpunk.cache import load_session_for_api
 session = load_session_for_api("mysite")  # returns GraftpunkSession
 ```
 
-This extracts cookies and headers from the cached `BrowserSession` into a `GraftpunkSession` (a `requests.Session` subclass) suitable for API calls.
+This extracts cookies and headers from the cached `BrowserSession` into a `GraftpunkSession` (a `requests.Session` subclass) suitable for API calls. A bare base name like `"mysite"` is tried as an exact key first and, only if nothing is cached under it, falls back to resolving it against the single cached account for that base (or raises `AmbiguousSessionError` naming the candidates when several are cached) — so a consumer holding a bare name keeps working after a labelled `gp mysite login`.
 
 #### Loading from bytes (no filesystem, no browser stack)
 

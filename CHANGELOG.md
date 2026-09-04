@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Status messages treat names as data** ([#166](https://github.com/stavxyz/graftpunk/issues/166)) — session names, domains, storage backends, config keys, HAR paths and error text are escaped before Rich renders them, so a value containing a bracket sequence no longer raises `MarkupError` or disappears from `gp session list/show/export/clear/use`, `gp keepalive`, `gp config` and `gp import-har` output (including the generated-code preview of `--dry-run`).
+- **`load_session_for_api(name)` and `SitePlugin.get_session()` resolve a bare base name to its single cached account** ([#151](https://github.com/stavxyz/graftpunk/issues/151)) — or raise `AmbiguousSessionError` naming the candidates, so library consumers holding a bare name keep working after labelled logins. Consumers catching `SessionNotFoundError` should also catch `AmbiguousSessionError`.
 
 ## [1.14.0] - 2026-08-26
 

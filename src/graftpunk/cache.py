@@ -29,6 +29,7 @@ from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNo
 from graftpunk.logging import get_logger
 from graftpunk.session_identity import (
     GP_ACCOUNT_ATTR,
+    resolve_account_session,
     validate_session_name,  # public re-export
 )
 from graftpunk.storage.base import SessionMetadata, metadata_to_dict
@@ -546,26 +547,39 @@ def load_session_for_api(name: str) -> requests.Session:
     :func:`load_session_for_api_from_bytes`, which stubs the browser classes
     instead of importing them.
 
+    Since #176, ``gp <site> login`` writes sessions as ``base@label``. A caller
+    holding only the bare base name (e.g. this function's own ``"mysite"``
+    example above) is tried as an exact key first; only if that is not found
+    does this fall back to resolving *name* against the single cached account
+    for that base via :func:`graftpunk.session_identity.resolve_account_session`
+    — one extra ``list_sessions()`` call, and only on this not-found path.
+
     Args:
-        name: Session name (without .session.pickle extension).
+        name: Session name (without .session.pickle extension). May be a bare
+            base name (``"mysite"``) or a full ``base@label`` name.
 
     Returns:
         GraftpunkSession with cookies, headers, and header roles
         from the cached session.
 
     Raises:
-        SessionNotFoundError: If session file doesn't exist.
+        SessionNotFoundError: If no session is cached under *name*, and none
+            of the cached sessions resolve to it either (original error,
+            unchanged).
+        AmbiguousSessionError: If *name* is a bare base name and more than one
+            cached session matches it; the error names every candidate.
         SessionExpiredError: If session cannot be unpickled.
         ImportError: If the browser stack needed to reconstruct the cached
             object is not installed (see note above).
     """
     try:
         browser_session = load_session(name)
-    except FileNotFoundError as exc:
-        LOG.error("session_not_found_for_api", name=name)
-        raise SessionNotFoundError(
-            f"No cached session found for '{name}'. Please login first."
-        ) from exc
+    except SessionNotFoundError:
+        resolved = resolve_account_session(name, list_sessions())
+        if resolved == name:
+            raise
+        LOG.info("api_session_resolved_account", requested=name, resolved=resolved)
+        browser_session = load_session(resolved)
 
     header_roles = getattr(browser_session, "_gp_header_roles", {})
     api_session = _api_session_from_session(browser_session)
