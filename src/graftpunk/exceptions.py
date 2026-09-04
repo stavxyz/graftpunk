@@ -1,5 +1,9 @@
 """Custom exceptions for graftpunk package."""
 
+from __future__ import annotations
+
+from collections.abc import Sequence
+
 
 class GraftpunkError(Exception):
     """Base exception class for all graftpunk errors."""
@@ -119,3 +123,17 @@ class TokenPatternMismatchError(TokenExtractionError):
     server no longer serves the authenticated response, so if updating the
     config does not help, try a fresh login.
     """
+
+
+class AmbiguousSessionError(GraftpunkError):
+    """Several cached sessions match a plugin and none was selected.
+
+    Pick one with ``--session``, the ``GRAFTPUNK_SESSION`` env var, or
+    ``gp session use``.
+    """
+
+    def __init__(self, base_name: str, candidates: Sequence[str]) -> None:
+        self.base_name = base_name
+        self.candidates = list(candidates)
+        names = ", ".join(candidates)
+        super().__init__(f"Several sessions cached for '{base_name}': {names}. Pick one.")

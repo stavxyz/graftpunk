@@ -104,7 +104,7 @@ class TestListCommand:
             }
         ]
 
-        result = runner.invoke(app, ["session", "list"])
+        result = runner.invoke(app, ["session", "list"], env={"COLUMNS": "200"})
 
         assert result.exit_code == 0
         assert "weird-session" in result.output
@@ -1084,6 +1084,31 @@ class TestObserveCLICommands:
         output = strip_ansi(result.output)
         assert "No observe data" in output or "no observe" in output.lower()
 
+    def test_observe_show_finds_slugified_labelled_session_dir(self, tmp_path):
+        """A labelled session ("myshop@alice") is written by the login capture
+        under its slugified name ("myshop-alice"); the lookup must apply the
+        same transformation or the run is undiscoverable (#151)."""
+        run_dir = tmp_path / "myshop-alice" / "20260101-120000"
+        run_dir.mkdir(parents=True)
+        (run_dir / "events.jsonl").write_text("")
+
+        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+            result = runner.invoke(app, ["observe", "show", "myshop@alice"], env={"COLUMNS": "200"})
+
+        assert result.exit_code == 0, result.output
+        assert "myshop-alice" in strip_ansi(result.output)
+
+    def test_observe_show_bare_name_still_finds_unlabelled_dir(self, tmp_path):
+        """A bare (unlabelled) session name keeps finding its own dir unchanged."""
+        run_dir = tmp_path / "myshop" / "20260101-120000"
+        run_dir.mkdir(parents=True)
+        (run_dir / "events.jsonl").write_text("")
+
+        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+            result = runner.invoke(app, ["observe", "show", "myshop"], env={"COLUMNS": "200"})
+
+        assert result.exit_code == 0, result.output
+
 
 class TestObserveSessionFlag:
     """Tests for --session flag on observe command group."""
@@ -1096,7 +1121,7 @@ class TestObserveSessionFlag:
 
         with (
             patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base),
-            patch("graftpunk.cli.main.resolve_session_name", return_value="site-a"),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="site-a"),
         ):
             result = runner.invoke(app, ["observe", "--session", "site-a", "list"])
         assert result.exit_code == 0
@@ -1126,7 +1151,7 @@ class TestObserveSessionFlag:
 
         with (
             patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base),
-            patch("graftpunk.cli.main.resolve_session_name", return_value="site-a"),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="site-a"),
         ):
             result = runner.invoke(app, ["observe", "--session", "site-a", "show"])
         assert result.exit_code == 0
@@ -1150,7 +1175,7 @@ class TestObserveSessionFlag:
 
         with (
             patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base),
-            patch("graftpunk.cli.main.resolve_session_name", return_value="site-a"),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="site-a"),
         ):
             result = runner.invoke(
                 app,
@@ -1271,7 +1296,7 @@ class TestMainCallback:
 class TestSessionUseCommand:
     """Tests for session use command."""
 
-    @patch("graftpunk.cli.session_commands.resolve_session_name")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
     def test_session_use_sets_active(self, mock_resolve, tmp_path):
         """Test session use writes .gp-session file."""
         mock_resolve.return_value = "resolved-session"
@@ -1283,7 +1308,7 @@ class TestSessionUseCommand:
         assert "resolved-session" in output
         assert (tmp_path / ".gp-session").read_text() == "resolved-session"
 
-    @patch("graftpunk.cli.session_commands.resolve_session_name")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
     def test_session_use_shows_resolution(self, mock_resolve, tmp_path):
         """Test session use shows resolution info when name differs."""
         mock_resolve.return_value = "news.ycombinator.com"
@@ -1296,7 +1321,7 @@ class TestSessionUseCommand:
         assert "resolved from plugin" in output
         assert "hackernews" in output
 
-    @patch("graftpunk.cli.session_commands.resolve_session_name")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
     def test_session_use_no_resolution_message_when_same(self, mock_resolve, tmp_path):
         """Test session use does not show resolution when name is unchanged."""
         mock_resolve.return_value = "my-session"
@@ -1365,7 +1390,7 @@ class TestObserveGoCommand:
     def test_observe_go_with_session_flag(self):
         """observe go --session should run the capture flow."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
             patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock),
             patch("graftpunk.cli.main.asyncio") as mock_asyncio,
         ):
@@ -1378,7 +1403,7 @@ class TestObserveGoCommand:
     def test_observe_go_with_wait_option(self):
         """observe go --wait should pass wait value through."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
             patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock),
             patch("graftpunk.cli.main.asyncio") as mock_asyncio,
         ):
@@ -1481,7 +1506,7 @@ class TestResolveSessionNameIntegration:
     """Tests for resolve_session_name integration in show, clear, and export commands."""
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
     def test_show_resolves_site_name_to_session_name(self, mock_resolve, mock_get_metadata):
         """Test that show command calls resolve_session_name with the given name."""
         mock_resolve.return_value = "resolved-session"
@@ -1498,12 +1523,12 @@ class TestResolveSessionNameIntegration:
         result = runner.invoke(app, ["session", "show", "my-plugin"])
 
         assert result.exit_code == 0
-        mock_resolve.assert_called_once_with("my-plugin")
+        mock_resolve.assert_called_once_with("my-plugin", backend_override=None)
         assert "resolved-session" in result.output
 
     @patch("graftpunk.cli.session_commands.clear_session_cache")
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
     def test_clear_resolves_site_name_to_session_name(
         self, mock_resolve, mock_list_meta, mock_clear
     ):
@@ -1522,11 +1547,11 @@ class TestResolveSessionNameIntegration:
         result = runner.invoke(app, ["session", "clear", "my-plugin", "--force"])
 
         assert result.exit_code == 0
-        mock_resolve.assert_called_once_with("my-plugin")
+        mock_resolve.assert_called_once_with("my-plugin", backend_override=None)
         mock_clear.assert_called_once_with("resolved-session", backend_override=None)
 
     @patch("graftpunk.cli.session_commands.load_session")
-    @patch("graftpunk.cli.session_commands.resolve_session_name")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
     def test_export_resolves_site_name_to_session_name(self, mock_resolve, mock_load):
         """Test that export command calls resolve_session_name with the given name."""
         mock_resolve.return_value = "resolved-session"
@@ -1543,7 +1568,7 @@ class TestResolveSessionNameIntegration:
         mock_load.assert_called_once_with("resolved-session")
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
     def test_show_passthrough_when_no_mapping(self, mock_resolve, mock_get_metadata):
         """Test that resolve_session_name passes through when name has no mapping."""
         mock_resolve.return_value = "literal-session-name"
@@ -1560,7 +1585,7 @@ class TestResolveSessionNameIntegration:
         result = runner.invoke(app, ["session", "show", "literal-session-name"])
 
         assert result.exit_code == 0
-        mock_resolve.assert_called_once_with("literal-session-name")
+        mock_resolve.assert_called_once_with("literal-session-name", backend_override=None)
 
 
 class TestObserveNamesAreNotMarkup:
@@ -1572,9 +1597,22 @@ class TestObserveNamesAreNotMarkup:
         from graftpunk.cli import main as cli_main
 
         base = tmp_path / "observe"
-        run_dir = base / "evil [bold]" / "run [red]"
-        run_dir.mkdir(parents=True)
-        (run_dir / "network [dim].har").write_text("{}")
+        # A directory literally named with markup, as if it predates (or
+        # bypassed) the writer's slugify — `observe list` enumerates disk
+        # entries directly (no lookup transform), so its raw name must
+        # still render escaped rather than as Rich markup.
+        list_run_dir = base / "evil [bold]" / "run [red]"
+        list_run_dir.mkdir(parents=True)
+        (list_run_dir / "network [dim].har").write_text("{}")
+
+        # `observe show` slugifies the user-typed name to find the run dir,
+        # matching the writer's transformation (#151) — so the discoverable
+        # dir sits at the slugified path. The user-typed name is still
+        # echoed back unslugified and must render escaped.
+        show_run_dir = base / "evil-bold" / "run [red]"
+        show_run_dir.mkdir(parents=True)
+        (show_run_dir / "network [dim].har").write_text("{}")
+
         monkeypatch.setattr(cli_main, "OBSERVE_BASE_DIR", base)
         runner = CliRunner()
 

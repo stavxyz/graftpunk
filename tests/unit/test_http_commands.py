@@ -44,6 +44,48 @@ class TestResolveJsonBody:
             _resolve_json_body("@/nonexistent/file.json")
 
 
+class TestHttpAccountResolution:
+    """`gp http` resolves accounts like every other surface (#151)."""
+
+    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
+    @patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"})
+    @patch("graftpunk.cli.plugin_commands.list_sessions", return_value=["myshop@alice"])
+    def test_base_name_loads_the_single_labelled_session(
+        self, _mock_list: MagicMock, mock_load: MagicMock
+    ) -> None:
+        mock_session = MagicMock(spec=requests.Session)
+        mock_session.headers = {}
+        mock_response = MagicMock(spec=requests.Response)
+        mock_response.status_code = 200
+        mock_session.request.return_value = mock_response
+        mock_load.return_value = mock_session
+
+        _make_request("GET", "https://example.com", session_name="myshop")
+
+        mock_load.assert_called_once_with("myshop@alice")
+
+    @patch("graftpunk.cli.http_commands.load_session_for_api")
+    @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
+    @patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"})
+    @patch(
+        "graftpunk.cli.plugin_commands.list_sessions",
+        return_value=["myshop@alice", "myshop@bob"],
+    )
+    def test_ambiguous_base_name_lists_candidates_and_exits(
+        self, _mock_list: MagicMock, mock_load: MagicMock, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exc:
+            _make_request("GET", "https://example.com", session_name="myshop")
+
+        assert exc.value.code == 1
+        mock_load.assert_not_called()
+        rendered = capsys.readouterr()
+        combined = rendered.out + rendered.err
+        assert "myshop@alice" in combined
+        assert "myshop@bob" in combined
+
+
 class TestMakeRequest:
     """Tests for _make_request."""
 
@@ -58,7 +100,7 @@ class TestMakeRequest:
         mock_session.request.return_value = mock_response
         mock_load.return_value = mock_session
 
-        response = _make_request("GET", "https://example.com", session_name="test-session")
+        response, _ = _make_request("GET", "https://example.com", session_name="test-session")
 
         mock_load.assert_called_once_with("test-session")
         assert response == mock_response
@@ -74,7 +116,7 @@ class TestMakeRequest:
         mock_session.request.return_value = mock_response
         mock_load.return_value = mock_session
 
-        response = _make_request(
+        response, _ = _make_request(
             "POST",
             "https://example.com/api",
             session_name="test-session",
@@ -165,7 +207,7 @@ class TestMakeRequest:
                 [mock_plugin],
             ),
         ):
-            response = _make_request(
+            response, _ = _make_request(
                 "GET",
                 "https://example.com/api",
                 session_name="test-session",
@@ -198,7 +240,7 @@ class TestMakeRequestErrorPaths:
         mock_response.status_code = 200
 
         with patch.object(requests.Session, "request", return_value=mock_response) as mock_req:
-            response = _make_request("GET", "https://example.com", no_session=True)
+            response, _ = _make_request("GET", "https://example.com", no_session=True)
 
         assert response == mock_response
         mock_req.assert_called_once()
@@ -508,7 +550,7 @@ class TestMakeRequestWithRole:
         mock_session.request_with_role.return_value = mock_response
         mock_load.return_value = mock_session
 
-        response = _make_request(
+        response, _ = _make_request(
             "GET",
             "https://example.com/api",
             session_name="test-session",
@@ -530,7 +572,7 @@ class TestMakeRequestWithRole:
         mock_session.request.return_value = mock_response
         mock_load.return_value = mock_session
 
-        response = _make_request(
+        response, _ = _make_request(
             "GET",
             "https://example.com",
             session_name="test-session",
@@ -742,7 +784,7 @@ class TestTokenRetryWithRole:
                 [mock_plugin],
             ),
         ):
-            response = _make_request(
+            response, _ = _make_request(
                 "GET",
                 "https://example.com/api",
                 session_name="test-session",

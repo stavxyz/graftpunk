@@ -8,6 +8,7 @@ Key principle: stderr for status/progress, stdout for data.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from rich.console import Console
@@ -82,3 +83,29 @@ def info(message: str, *, console: Console | None = None) -> None:
     """Print an info message (dim) to stderr."""
     c = console or err_console
     c.print(f"  {message}", style="dim", markup=False, highlight=False)
+
+
+def render_ambiguous_session(
+    base_name: str,
+    candidates: Sequence[tuple[str, str | None]],
+    *,
+    console: Console | None = None,
+) -> None:
+    """Render the pick-one message for an ambiguous session.
+
+    A pure formatter over data handed to it — candidate names with optional
+    account identifiers — so the presentation layer performs no storage
+    reads. Every CLI entry point that can surface ``AmbiguousSessionError``
+    funnels through ``graftpunk.cli.errors.exit_ambiguous_session``, which
+    enriches the candidates and calls this: the rendering exists once,
+    whichever door the error exits through.
+    """
+    c = console or err_console
+    error(f"Several sessions cached for '{base_name}':", console=c)
+    for name, identifier in candidates:
+        line = f"  - {name} — {identifier}" if identifier else f"  - {name}"
+        c.print(line, markup=False, highlight=False)
+    info(
+        "Pick one with --session <name>, the GRAFTPUNK_SESSION env var, or: gp session use <name>",
+        console=c,
+    )

@@ -109,7 +109,10 @@ def build_observe_context(
     """Build an observability context for a plugin command or session.
 
     Args:
-        site_name: Plugin site name (used as subdirectory).
+        site_name: Plugin site name, normalized via
+            :func:`graftpunk.observe.storage.session_dirname` before use as
+            a subdirectory (the same transformation every other writer
+            applies, so readers like ``gp observe show`` find the run).
         backend_type: Browser backend type ("selenium" or "nodriver").
         driver: Browser driver instance, or None.
         mode: Observe mode ("off" or "full").
@@ -123,10 +126,10 @@ def build_observe_context(
     import datetime
 
     from graftpunk.observe.capture import create_capture_backend
-    from graftpunk.observe.storage import ObserveStorage
+    from graftpunk.observe.storage import ObserveStorage, session_dirname
 
     run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-    storage = ObserveStorage(OBSERVE_BASE_DIR, site_name, run_id)
+    storage = ObserveStorage(OBSERVE_BASE_DIR, session_dirname(site_name), run_id)
 
     if driver is not None:
         capture = create_capture_backend(

@@ -19,6 +19,9 @@ def _fresh(tmp_path, monkeypatch):
 
 
 def _plugin(site="acme", **attrs):
+    # session_name is part of CLIPluginProtocol (SitePlugin defaults it to
+    # site_name); make_login_body reads it to name the cached session.
+    attrs.setdefault("session_name", site)
     return SimpleNamespace(site_name=site, **attrs)
 
 

@@ -16,7 +16,7 @@ from graftpunk import (
     list_sessions_with_metadata,
     load_session,
 )
-from graftpunk.cli.plugin_commands import resolve_session_name
+from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.exceptions import (
     GraftpunkError,
     SessionExpiredError,
@@ -25,6 +25,7 @@ from graftpunk.exceptions import (
 )
 from graftpunk.plugins.formatters import write_raw
 from graftpunk.session_context import clear_active_session, set_active_session
+from graftpunk.session_identity import split_session_name
 
 if TYPE_CHECKING:
     from graftpunk.session import BrowserSession
@@ -57,6 +58,11 @@ def session_callback(
 def _cell(value: object) -> Text | str:
     """A table cell for session metadata: data is never markup-parsed; empty shows a dash."""
     return Text(str(value)) if value else "[dim]—[/dim]"
+
+
+def _label_of(name: str) -> str:
+    """The ``@label`` half of a session name, or "" for a bare base name."""
+    return split_session_name(name)[1] or ""
 
 
 @session_app.command("list")
@@ -101,6 +107,7 @@ def session_list(
     )
     table.add_column("Session", style="cyan", no_wrap=True)
     table.add_column("Domain", style="white")
+    table.add_column("Account", style="white")
     table.add_column("Status", justify="center")
     table.add_column("Cookies", justify="right", style="dim")
     table.add_column("Last Modified", style="dim")
@@ -123,6 +130,7 @@ def session_list(
         table.add_row(
             Text(str(session.get("name", ""))),
             _cell(session.get("domain")),
+            _cell(session.get("account_identifier") or _label_of(session.get("name", ""))),
             status_display,
             Text(str(session.get("cookie_count", 0))),
             _cell(modified),
@@ -155,7 +163,7 @@ def show(
 ) -> None:
     """Show detailed information about a cached session."""
     backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
-    name = resolve_session_name(name)
+    name = resolve_session_name_or_exit(name, backend_override=backend_override)
     try:
         metadata = get_session_metadata(name, backend_override=backend_override)
     except (ValueError, StorageError) as exc:
@@ -197,10 +205,15 @@ def show(
     backend = metadata.get("storage_backend") or "—"
     location = metadata.get("storage_location") or "—"
 
+    account = metadata.get("account_identifier") or "—"
+    label = _label_of(str(name)) or "—"
+
     info = f"""
 {status_icon} [bold]{escape(str(name))}[/bold]  {status_text}
 
 [dim]Domain:[/dim]     {escape(str(metadata.get("domain") or "—"))}
+[dim]Account:[/dim]    {escape(str(account))}
+[dim]Label:[/dim]      {escape(str(label))}
 [dim]Cookies:[/dim]    {metadata.get("cookie_count", 0)}
 [dim]Created:[/dim]    {escape(str(created))}
 [dim]Modified:[/dim]   {escape(str(modified))}
@@ -241,7 +254,7 @@ def export(
 
         http --session=SESSION https://example.com/api
     """
-    name = resolve_session_name(name)
+    name = resolve_session_name_or_exit(name)
     try:
         session = load_session(name)
     except SessionNotFoundError:
@@ -364,7 +377,7 @@ def session_clear(
 
         _print_removed(removed)
     else:
-        target = resolve_session_name(target)
+        target = resolve_session_name_or_exit(target, backend_override=backend_override)
         match = next((s for s in all_metadata if s["name"] == target), None)
 
         if not match:
@@ -395,7 +408,7 @@ def session_use(
     Writes a .gp-session file in the current directory.
     Override per-shell with GRAFTPUNK_SESSION env var.
     """
-    resolved = resolve_session_name(name)
+    resolved = resolve_session_name_or_exit(name)
     path = set_active_session(resolved)
     console.print(f"[green]Active session set to '{escape(str(resolved))}'[/green]")
     if resolved != name:

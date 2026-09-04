@@ -45,6 +45,7 @@ from graftpunk.client import GraftpunkClient
 from graftpunk.config import GraftpunkSettings, get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data, get_encryption_key
 from graftpunk.exceptions import (
+    AmbiguousSessionError,
     BrowserError,
     EncryptionError,
     GraftpunkError,
@@ -175,6 +176,7 @@ __all__ = [
     "get_settings",
     # Exceptions
     "GraftpunkError",
+    "AmbiguousSessionError",
     "BrowserError",
     "SessionExpiredError",
     "SessionNotFoundError",

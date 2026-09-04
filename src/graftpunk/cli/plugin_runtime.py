@@ -16,9 +16,11 @@ import typer
 from rich.console import Console
 
 from graftpunk import console as gp_console
-from graftpunk.cache import update_session_cookies
+from graftpunk.cache import list_sessions, load_session_for_api, update_session_cookies
 from graftpunk.cli.command_factory import BUILTIN_OPTIONS
+from graftpunk.cli.errors import exit_ambiguous_session
 from graftpunk.exceptions import (
+    AmbiguousSessionError,
     BrowserError,
     CommandError,
     PluginError,
@@ -31,6 +33,8 @@ from graftpunk.observe import build_observe_context
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, CommandSpec
 from graftpunk.plugins.formatters import format_output
 from graftpunk.session import BrowserSession
+from graftpunk.session_context import get_active_session
+from graftpunk.session_identity import compute_operating_session_name, split_session_name
 
 LOG = get_logger(__name__)
 _format_console = Console()
@@ -62,6 +66,7 @@ def run_plugin_command(
     # CHANGED: typer passes --view as a list (or None) -- normalize to tuple.
     view_args: tuple[str, ...] = tuple(kwargs.pop("view", BUILTIN_OPTIONS["view"]) or ())
     output_path: str = kwargs.pop("output", BUILTIN_OPTIONS["output"])
+    explicit_session: str = kwargs.pop("session", BUILTIN_OPTIONS["session"])
     # CHANGED: explicit --format detection now uses the Typer-injected context
     # (name-compare; see format_source_is_commandline) instead of external
     # click.get_current_context()/click.core.ParameterSource.
@@ -75,15 +80,50 @@ def run_plugin_command(
     )
 
     # --- Session loading (CLI-specific error handling) ---
+    operating_name = ""
     try:
-        session = plugin.get_session() if needs_session else requests.Session()
+        if needs_session:
+            # Session-identity policy stays logging-free (#151); log the
+            # base-scoped ambient-ignore decision here, at the one CLI call
+            # site, instead of importing graftpunk.logging into that module.
+            ambient: str | None = None
+            if not explicit_session:
+                # Read ONCE here and hand the value to the chain, so the log
+                # and the decision cannot disagree and the env/file is read
+                # a single time per invocation.
+                ambient = get_active_session()
+                if ambient and split_session_name(ambient)[0] != plugin.session_name:
+                    LOG.debug(
+                        "ambient_session_ignored_foreign_base",
+                        ambient=ambient,
+                        base=plugin.session_name,
+                    )
+            # list_sessions is passed UNCALLED: a pinned --session or a
+            # matching ambient pin must not pay for a listing (#151).
+            operating_name = compute_operating_session_name(
+                explicit_session or None,
+                plugin.session_name,
+                list_sessions,
+                ambient=ambient,
+            )
+            session = load_session_for_api(operating_name)
+        else:
+            session = requests.Session()
     except SessionNotFoundError:
-        gp_console.error(
-            f"Session '{plugin.session_name}' not found. Please create a session first."
-        )
+        # operating_name is "" when the failure came from the resolution step
+        # itself; name the plugin's base session rather than an empty string.
+        named = operating_name or plugin.session_name
+        gp_console.error(f"Session '{named}' not found. Please create a session first.")
         raise SystemExit(1) from None
     except PluginError as exc:
         gp_console.error(f"Plugin error: {exc}")
+        raise SystemExit(1) from exc
+    except AmbiguousSessionError as exc:
+        exit_ambiguous_session(exc)
+    except ValueError as exc:
+        # A pin that cannot name a session (--session ../../x, a garbage
+        # GRAFTPUNK_SESSION): a caller/config error, refused before storage.
+        gp_console.error(f"Invalid session name: {exc}")
         raise SystemExit(1) from exc
     except Exception as exc:  # noqa: BLE001 — CLI boundary
         gp_console.error(f"Failed to load session: {exc}")
@@ -160,7 +200,7 @@ def run_plugin_command(
             base_url=getattr(plugin, "base_url", ""),
             config=getattr(plugin, "_plugin_config", None),
             observe=observe_ctx,
-            _session_name=(plugin.session_name if needs_session else ""),
+            _session_name=operating_name,
         )
 
         try:
@@ -204,7 +244,7 @@ def run_plugin_command(
 
         # Persist session if requested
         if (cmd_spec.saves_session or cmd_ctx._session_dirty) and needs_session:
-            update_session_cookies(session, plugin.session_name)
+            update_session_cookies(session, operating_name)
 
         format_output(
             result,

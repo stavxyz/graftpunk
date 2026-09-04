@@ -52,6 +52,16 @@ class TestMapParamSpec:
         # explicit positive-only decl -> bare --no-wait flag, no --no-no-wait pair
         assert param.default.param_decls == ("--no-wait",)
 
+    def test_explicit_flag_overrides_the_derived_name(self) -> None:
+        # The "flag" key lets a spec name a flag its param name cannot derive
+        # (login's --as, whose param is as_label because "as" is a keyword).
+        spec = PluginParamSpec.option(
+            "as_label", type=str, default="", click_kwargs={"flag": "--as"}
+        )
+        param, _ = map_param_spec("fmtsite", "login", spec)
+        assert param.name == "as_label"
+        assert param.default.param_decls == ("--as",)
+
     def test_envvar_and_show_default_pass_through(self) -> None:
         spec = PluginParamSpec.option(
             "token", type=str, default="", click_kwargs={"envvar": "MY_TOKEN"}
@@ -268,6 +278,16 @@ class TestSynthesizeCommandFn:
             synthesize_command_fn(
                 name="c",
                 param_specs=[PluginParamSpec.option("format", type=str, default="x")],
+                body=_capture_body({}),
+            )
+
+    def test_reserved_param_name_session_rejected(self) -> None:
+        # `session` is a built-in option (--session) since #151; a plugin
+        # param sharing that name must fail loudly, not collide silently.
+        with pytest.raises(PluginError, match="reserved"):
+            synthesize_command_fn(
+                name="c",
+                param_specs=[PluginParamSpec.option("session", type=str, default="x")],
                 body=_capture_body({}),
             )
 

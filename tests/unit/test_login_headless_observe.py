@@ -365,6 +365,19 @@ class TestEngineObserve:
         assert storage is not None
         assert storage.run_dir.parent == tmp_path / "my-bank"
 
+    def test_start_login_capture_uses_the_explicit_operating_name(self, tmp_path: Path) -> None:
+        """The CLI's account-qualified name wins over the plugin's base name (#151)."""
+        from graftpunk.plugins.login_engine import _start_login_capture
+
+        plugin = _make_plugin("nodriver")
+        with patch("graftpunk.observe.OBSERVE_BASE_DIR", tmp_path):
+            _, storage = _start_login_capture(
+                plugin, "nodriver", MagicMock(), "full", session_name="myshop@alice"
+            )
+
+        assert storage is not None
+        assert storage.run_dir.parent == tmp_path / "myshop-alice"
+
     def test_start_login_capture_storage_error_falls_back_to_header_capture(
         self, tmp_path: Path
     ) -> None:
@@ -398,7 +411,9 @@ class TestLoginCommandPlumbing:
         plugin = _make_plugin("nodriver")
         fn = create_login_fn(plugin, generate_login_method(plugin), {"username": "#u"})
         params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
-        assert params == ["headless", "headful"]
+        # --as is offered by every login command; the browser flags only by
+        # callables that can honour them.
+        assert params == ["as_label", "headless", "headful"]
 
     def test_generated_login_help_names_the_site_not_the_engine(self) -> None:
         from graftpunk.cli.login_commands import create_login_fn
@@ -418,13 +433,17 @@ class TestLoginCommandPlumbing:
 
         fn = create_login_fn(plugin, login, {"username": "#u"})
         params = [p for p in inspect.signature(fn).parameters if p != "ctx"]
-        assert params == []
+        # No browser flags it cannot honour -- but --as is the CLI's own
+        # option (it names the cached session), so it is still offered.
+        assert params == ["as_label"]
         assert fn.__doc__ == "Sign in to Example."
 
     def _run_body(self, login: Any, ctx: Any, **kwargs: Any) -> None:
         from graftpunk.cli.login_commands import make_login_body
 
-        body = make_login_body(SimpleNamespace(site_name="acme"), login, {"username": "#u"})
+        body = make_login_body(
+            SimpleNamespace(site_name="acme", session_name="acme"), login, {"username": "#u"}
+        )
         body(ctx, **kwargs)
 
     @staticmethod

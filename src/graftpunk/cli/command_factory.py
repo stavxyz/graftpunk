@@ -28,7 +28,7 @@ from graftpunk.plugins.cli_plugin import PluginParamSpec
 # The supported click_kwargs surface (the RFC's documented contract).
 # Anything outside these sets fails loudly at registration -- no silent drift.
 OPTION_KEYS = frozenset(
-    {"type", "required", "default", "help", "is_flag", "show_default", "envvar"}
+    {"type", "required", "default", "help", "is_flag", "show_default", "envvar", "flag"}
 )
 ARGUMENT_KEYS = frozenset({"type", "required", "default", "nargs"})
 
@@ -87,7 +87,9 @@ def map_param_spec(
             )
         # Explicit positive-only decl: bare flag for bools (no --no-* pair),
         # and immune to typer-version differences in derived flag names.
-        flag = f"--{spec.name.replace('_', '-')}"
+        # "flag" overrides the derived name for the cases a Python parameter
+        # name cannot spell (login's --as: "as" is a reserved keyword).
+        flag = kw.get("flag") or f"--{spec.name.replace('_', '-')}"
         info = typer.Option(
             ... if required else default,
             flag,
@@ -141,7 +143,12 @@ def map_param_spec(
 # declares these options from this mapping and the runtime (plugin_runtime)
 # pops them against the same mapping -- a rename or default change cannot
 # silently diverge between construction and execution.
-BUILTIN_OPTIONS: dict[str, Any] = {"format": "json", "view": (), "output": ""}
+BUILTIN_OPTIONS: dict[str, Any] = {
+    "format": "json",
+    "view": (),
+    "output": "",
+    "session": "",
+}
 
 
 def _format_help(extra_formats: Sequence[str] = ()) -> str:
@@ -197,7 +204,17 @@ def _builtin_option_params(
         ),
         annotation=str,
     )
-    return [(fmt, str), (view, list[str]), (out, str)]
+    sess = inspect.Parameter(
+        "session",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=typer.Option(
+            BUILTIN_OPTIONS["session"],
+            "--session",
+            help="Session name to use (base or base@label); overrides env and .gp-session",
+        ),
+        annotation=str,
+    )
+    return [(fmt, str), (view, list[str]), (out, str), (sess, str)]
 
 
 def synthesize_command_fn(

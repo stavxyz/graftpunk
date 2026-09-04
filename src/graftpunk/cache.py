@@ -16,7 +16,6 @@ Thread Safety:
 
 import hashlib
 import io
-import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
 from urllib.parse import urlparse
@@ -28,7 +27,11 @@ from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data
 from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
-from graftpunk.storage.base import SessionMetadata
+from graftpunk.session_identity import (
+    GP_ACCOUNT_ATTR,
+    validate_session_name,  # public re-export
+)
+from graftpunk.storage.base import SessionMetadata, metadata_to_dict
 
 if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
@@ -52,35 +55,10 @@ LOG = get_logger(__name__)
 
 T = TypeVar("T")
 
-_SESSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-
 # Ephemeral security headers that should not be copied from browser sessions
 # to API sessions.  These are per-request tokens (e.g. WAF sensor blobs) that
 # would cause stale-blob rejections if replayed.
 _EPHEMERAL_HEADERS: frozenset[str] = frozenset({"x-csrf-token"})
-
-
-def validate_session_name(name: str) -> None:
-    """Validate a session name.
-
-    Session names must be lowercase alphanumeric with hyphens/underscores,
-    starting with a letter or digit. Dots are not allowed (they indicate domains).
-
-    Raises:
-        ValueError: If name is invalid.
-    """
-    if not name:
-        raise ValueError("Session name must be non-empty")
-    if "." in name:
-        raise ValueError(
-            f"Session name {name!r} cannot contain dots. "
-            "Dots are reserved for domain matching in 'gp session clear'."
-        )
-    if not _SESSION_NAME_RE.match(name):
-        raise ValueError(
-            f"Session name {name!r} must match pattern [a-z0-9][a-z0-9_-]* "
-            "(lowercase alphanumeric, hyphens, underscores)"
-        )
 
 
 # Global session storage backend (lazy-loaded)
@@ -185,6 +163,7 @@ def _extract_session_metadata(session: Any, session_name: str) -> dict[str, Any]
         Dictionary with extracted metadata
     """
     metadata: dict[str, Any] = {"name": session_name}
+    metadata["account_identifier"] = getattr(session, GP_ACCOUNT_ATTR, None)
 
     # Extract domain from current_url
     current_url = getattr(session, "current_url", None)
@@ -241,20 +220,7 @@ def get_session_metadata(
         return None
 
     # Convert SessionMetadata to dict for API compatibility
-    return {
-        "name": metadata.name,
-        "checksum": metadata.checksum,
-        "created_at": metadata.created_at.isoformat(),
-        "modified_at": metadata.modified_at.isoformat(),
-        "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
-        "domain": metadata.domain,
-        "current_url": metadata.current_url,
-        "cookie_count": metadata.cookie_count,
-        "cookie_domains": metadata.cookie_domains,
-        "status": metadata.status,
-        "storage_backend": metadata.storage_backend,
-        "storage_location": metadata.storage_location,
-    }
+    return metadata_to_dict(metadata)
 
 
 def cache_session(session: T, session_name: str | None = None) -> str:
@@ -304,6 +270,7 @@ def cache_session(session: T, session_name: str | None = None) -> str:
             cookie_count=raw_metadata.get("cookie_count", 0),
             cookie_domains=raw_metadata.get("cookie_domains", []),
             status="active",
+            account_identifier=raw_metadata.get("account_identifier"),
         )
 
         # Save to backend
@@ -345,6 +312,31 @@ def load_session(name: str) -> SessionLike:
     Raises:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be decrypted or has invalid structure.
+    """
+    session, _metadata = _load_session_with_metadata(name)
+    return session
+
+
+def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata]:
+    """Load a cached session together with the SessionMetadata already fetched
+    during that same backend read.
+
+    ``load_session`` delegates here and discards the metadata half; callers
+    that need both (e.g. ``update_session_cookies``, which must recover
+    ``account_identifier`` when the unpickled session dropped it) call this
+    directly instead of pairing ``load_session`` with a second metadata read.
+
+    Args:
+        name: Session name to load.
+
+    Returns:
+        The deserialized session and the ``SessionMetadata`` read in the same
+        backend round-trip.
+
+    Raises:
+        SessionNotFoundError: No session is stored under *name*.
+        SessionExpiredError: The session is expired, cannot be decrypted, or
+            fails its checksum/deserialization.
     """
     backend = _get_session_storage_backend()
     settings = get_settings()
@@ -397,7 +389,7 @@ def load_session(name: str) -> SessionLike:
             )
 
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
-        return session
+        return session, metadata
 
     except (SessionNotFoundError, SessionExpiredError):
         raise
@@ -435,9 +427,9 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     load_session_for_api_from_bytes (from a browser-free deserialize).
     """
     from graftpunk.graftpunk_session import GraftpunkSession
-    from graftpunk.tokens import _CACHE_ATTR, _CSRF_TOKENS_ATTR
+    from graftpunk.tokens import _HEADER_ROLES_ATTR, SESSION_RIDER_ATTRS
 
-    header_roles = getattr(source, "_gp_header_roles", {})
+    header_roles = getattr(source, _HEADER_ROLES_ATTR, {})
     api_session = GraftpunkSession(header_roles=header_roles)
 
     if hasattr(source, "cookies"):
@@ -463,15 +455,16 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
             api_session.headers[key] = value
         LOG.debug("copied_headers_from_session")
 
-    token_cache = getattr(source, _CACHE_ATTR, None)
-    if token_cache:
-        setattr(api_session, _CACHE_ATTR, token_cache)
-        LOG.debug("copied_cached_tokens_from_session", count=len(token_cache))
-
-    csrf_tokens = getattr(source, _CSRF_TOKENS_ATTR, None)
-    if csrf_tokens is not None:
-        setattr(api_session, _CSRF_TOKENS_ATTR, dict(csrf_tokens))
-        LOG.debug("copied_csrf_tokens_from_session", count=len(csrf_tokens))
+    # Every rider travels, from the one registry: token cache, csrf tokens,
+    # header roles and the account identifier. Hand-listing here is what let
+    # the identifier fall off the API session, wiping it from metadata on the
+    # next cache_session (#151).
+    for attr in SESSION_RIDER_ATTRS:
+        value = getattr(source, attr, None)
+        if not value:
+            continue
+        setattr(api_session, attr, dict(value) if isinstance(value, dict) else value)
+        LOG.debug("copied_session_rider", attr=attr)
 
     return api_session
 
@@ -480,11 +473,13 @@ class _Stub:
     """Placeholder for a class the browser-free path cannot import (the browser
     stack is absent). Unpickling restores state via __setstate__ below.
 
-    cookies/headers/_gp_header_roles and the cached-token dict are plain data in
-    BrowserSession.__getstate__ (session.py:581-582), so they land directly on
-    the stub. NOTE: __getstate__ does NOT serialize `_gp_csrf_tokens`, so csrf
-    tokens are absent from the pickle entirely — the stub cannot and does not
-    surface them.
+    cookies/headers and the pickled riders (``PICKLED_SESSION_RIDER_ATTRS``:
+    header roles, the cached-token dict, the account identifier) are plain
+    data in ``BrowserSession.__getstate__``, so they land directly on the
+    stub. NOTE: the pickled subset deliberately excludes ``_gp_csrf_tokens``
+    (per-request, stale the moment a session is put away), so csrf tokens are
+    absent from the pickle entirely — the stub cannot and does not surface
+    them.
     """
 
     def __setstate__(self, state: object) -> None:
@@ -650,7 +645,7 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         session_name: Name of the cached session to update.
     """
     try:
-        original = load_session(session_name)
+        original, stored_metadata = _load_session_with_metadata(session_name)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
             "session_save_skipped_load_failed",
@@ -670,6 +665,14 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         csrf_tokens = getattr(api_session, _CSRF_TOKENS_ATTR, None)
         if csrf_tokens is not None:
             setattr(original, _CSRF_TOKENS_ATTR, dict(csrf_tokens))
+        # A BrowserSession round-trips GP_ACCOUNT_ATTR through pickle on its own
+        # (session.py's __getstate__/__setstate__); a plain requests.Session
+        # does not (it pickles via its __attrs__ whitelist). Fall back to the
+        # identifier already returned by this load's metadata (stored_metadata,
+        # from the same backend read — no extra backend call) so identity
+        # survives this refresh either way.
+        if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
+            setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
         cache_session(original, session_name)
         LOG.info("session_cookies_updated", session_name=session_name)
     except Exception as exc:  # noqa: BLE001 — best-effort save
@@ -680,13 +683,16 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         )
 
 
-def list_sessions() -> list[str]:
+def list_sessions(backend_override: str | None = None) -> list[str]:
     """List all cached session names.
+
+    Args:
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         Sorted list of session names.
     """
-    backend = _get_session_storage_backend()
+    backend = _get_session_storage_backend(backend_override=backend_override)
     return backend.list_sessions()
 
 
@@ -712,22 +718,7 @@ def list_sessions_with_metadata(
     for name in names:
         metadata = backend.get_session_metadata(name)
         if metadata is not None:
-            results.append(
-                {
-                    "name": metadata.name,
-                    "checksum": metadata.checksum,
-                    "created_at": metadata.created_at.isoformat(),
-                    "modified_at": metadata.modified_at.isoformat(),
-                    "expires_at": metadata.expires_at.isoformat() if metadata.expires_at else None,
-                    "domain": metadata.domain,
-                    "current_url": metadata.current_url,
-                    "cookie_count": metadata.cookie_count,
-                    "cookie_domains": metadata.cookie_domains,
-                    "status": metadata.status,
-                    "storage_backend": metadata.storage_backend,
-                    "storage_location": metadata.storage_location,
-                }
-            )
+            results.append(metadata_to_dict(metadata))
 
     return sorted(results, key=lambda x: x.get("modified_at", ""), reverse=True)
 

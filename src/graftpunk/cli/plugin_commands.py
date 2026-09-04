@@ -14,16 +14,22 @@ from typing import Any, Literal
 import typer
 
 from graftpunk import console as gp_console
+from graftpunk.cache import list_sessions
 from graftpunk.cli.login_commands import (
     resolve_login_callable,
     resolve_login_fields,
 )
-from graftpunk.exceptions import PluginError
+from graftpunk.exceptions import AmbiguousSessionError, PluginError
 from graftpunk.logging import get_logger
 from graftpunk.plugins import discover_all_plugins
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
     CommandSpec,
+)
+from graftpunk.session_identity import (
+    compute_operating_session_name,
+    split_session_name,
+    validate_session_name,
 )
 
 LOG = get_logger(__name__)
@@ -361,6 +367,11 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     return result.registered
 
 
+def _session_base_matches(session_name: str, base: str) -> bool:
+    """True when *session_name* belongs to the plugin whose base name is *base*."""
+    return split_session_name(session_name)[0] == base
+
+
 def get_plugin_for_session(session_name: str) -> CLIPluginProtocol | None:
     """Look up the plugin instance that owns a given session name.
 
@@ -371,16 +382,71 @@ def get_plugin_for_session(session_name: str) -> CLIPluginProtocol | None:
         The plugin instance, or None if no plugin owns this session.
     """
     for plugin in _registered_plugins_for_teardown:
-        if _plugin_session_map.get(plugin.site_name) == session_name:
+        mapped_base = _plugin_session_map.get(plugin.site_name)
+        if mapped_base is not None and _session_base_matches(session_name, mapped_base):
             return plugin
     return None
 
 
-def resolve_session_name(name: str) -> str:
-    """Resolve a name to a session name via plugin site_name mapping.
+def resolve_session_name(name: str, backend_override: str | None = None) -> str:
+    """Resolve a name to an operating session name.
 
-    If name matches a registered plugin's site_name, returns that plugin's
-    session_name. Otherwise returns name unchanged (it may be a literal
-    session name).
+    A registered plugin site name maps to its base ``session_name`` and then
+    through account resolution (one cached -> that one; several -> raise
+    AmbiguousSessionError; zero -> the base, so the not-found path is
+    unchanged). Anything else — including full ``base@label`` names — passes
+    through, but is still validated: a pass-through name is about to reach
+    storage unchanged, so a charset violation (e.g. ``MyShop@Alice``, which a
+    case-insensitive filesystem would otherwise silently "find" as
+    ``myshop@alice``) must be refused here rather than reaching storage (#151).
+
+    Args:
+        name: Plugin site name, alias, or a full session name.
+        backend_override: Storage backend to resolve against, when the caller
+            was given one (``gp --storage-backend s3 ...``). Resolving against
+            the default backend while acting on another one picks the wrong
+            session.
+
+    Raises:
+        AmbiguousSessionError: Several sessions are cached for the base name.
+        ValueError: *name* is neither a registered plugin site name nor a
+            legal session name.
     """
-    return _plugin_session_map.get(name, name)
+    if name in _plugin_session_map:
+        # The typed argument is the explicit tier; ambient pins do not
+        # re-steer an explicitly named site. The tier subset is declared
+        # through the one chain function, not encoded by which tier we call.
+        return compute_operating_session_name(
+            None,
+            _plugin_session_map[name],
+            lambda: list_sessions(backend_override=backend_override),
+            use_ambient=False,
+        )
+    validate_session_name(name)
+    return name
+
+
+def resolve_session_name_or_exit(name: str, backend_override: str | None = None) -> str:
+    """Resolve a name at a CLI boundary: ambiguity renders the pick-one list and exits.
+
+    The one place the CLI turns :class:`AmbiguousSessionError` and an invalid
+    pass-through name into output. Every command surface that accepts a
+    session name calls this instead of repeating the try/except, so neither
+    message can drift between surfaces (#151).
+
+    Args:
+        name: Plugin site name, alias, or a full session name.
+        backend_override: Storage backend the caller was given, threaded into
+            both the resolution and the candidates' identifier lookups.
+    """
+    from graftpunk.cli.errors import exit_ambiguous_session
+
+    try:
+        return resolve_session_name(name, backend_override=backend_override)
+    except AmbiguousSessionError as exc:
+        exit_ambiguous_session(exc, backend_override=backend_override)
+    except ValueError as exc:
+        # A name that cannot exist ("MyShop@Alice"): a caller error, refused
+        # before storage — same wording as the plugin_runtime pin boundary.
+        gp_console.error(f"Invalid session name: {exc}")
+        raise SystemExit(1) from exc

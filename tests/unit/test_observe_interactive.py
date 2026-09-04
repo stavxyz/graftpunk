@@ -300,7 +300,7 @@ class TestObserveGoInteractiveFlag:
     def test_interactive_flag_calls_run_observe_interactive(self) -> None:
         """Test that observe go --interactive calls _run_observe_interactive."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
             patch(
                 "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
             ) as _mock_interactive,
@@ -326,7 +326,7 @@ class TestObserveGoInteractiveFlag:
     def test_without_interactive_flag_calls_run_observe_go(self) -> None:
         """Test that observe go without --interactive calls _run_observe_go."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
             patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock) as _mock_go,
             patch(
                 "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
@@ -351,7 +351,7 @@ class TestObserveGoInteractiveFlag:
     def test_interactive_short_flag(self) -> None:
         """Test that observe go -i also delegates to _run_observe_interactive."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name", return_value="mysite"),
+            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
             patch(
                 "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
             ) as _mock_interactive,

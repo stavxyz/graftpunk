@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
-from graftpunk.storage.base import SessionMetadata
+from graftpunk.storage.base import SessionMetadata, dict_to_metadata, metadata_to_dict
 from graftpunk.storage.local import LocalSessionStorage
 
 
@@ -439,8 +439,12 @@ class TestLocalStorageIdentity:
         assert "storage_location" in saved_dict
         assert saved_dict["storage_location"] != ""
 
-    def test_private_serializers_include_storage_fields(self, storage):
-        """Test that _metadata_to_dict includes storage_backend and storage_location."""
+    def test_shared_serializer_includes_storage_fields(self, storage):
+        """Test that metadata_to_dict includes storage_backend and storage_location.
+
+        LocalSessionStorage delegates to the shared base.py serializers (no
+        private per-backend duplicates), so this exercises them directly.
+        """
         now = datetime.now(UTC)
         location = "~/.config/graftpunk/sessions"
         metadata = SessionMetadata(
@@ -456,12 +460,12 @@ class TestLocalStorageIdentity:
             storage_backend="local",
             storage_location=location,
         )
-        result = storage._metadata_to_dict(metadata)
+        result = metadata_to_dict(metadata)
         assert result["storage_backend"] == "local"
         assert result["storage_location"] == location
 
-    def test_private_deserializer_defaults_missing_fields(self, storage):
-        """Test that _dict_to_metadata defaults missing storage fields to empty string."""
+    def test_shared_deserializer_defaults_missing_fields(self, storage):
+        """Test that dict_to_metadata defaults missing storage fields to empty string."""
         old_dict = {
             "name": "old-session",
             "checksum": "abc",
@@ -474,6 +478,6 @@ class TestLocalStorageIdentity:
             "cookie_domains": [],
             "status": "active",
         }
-        metadata = storage._dict_to_metadata(old_dict)
+        metadata = dict_to_metadata(old_dict)
         assert metadata.storage_backend == ""
         assert metadata.storage_location == ""

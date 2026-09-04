@@ -26,7 +26,7 @@ from graftpunk.cache import load_session_for_api
 from graftpunk.exceptions import SessionInvalidatedError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
-from graftpunk.observe.storage import ObserveStorage
+from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.session_context import resolve_session
 
 LOG = get_logger(__name__)
@@ -139,13 +139,14 @@ def _make_request(
     form_data: str | None = None,
     extra_headers: list[str] | None = None,
     timeout: float = 30.0,
-) -> requests.Response:
+) -> tuple[requests.Response, str | None]:
     """Make an HTTP request, optionally using a cached graftpunk session.
 
     Args:
         method: HTTP method (GET, POST, etc.).
         url: Target URL.
-        session_name: Session name to load. Falls back to ``resolve_session()``.
+        session_name: Session name to load — a plugin/base name is put through
+            account resolution here. Falls back to ``resolve_session()``.
         no_session: When True, use a bare ``requests.Session`` without cookies.
         browser_headers: Whether to keep auto-detected browser header roles.
             When False, clears ``_gp_header_roles`` so the session sends
@@ -161,7 +162,11 @@ def _make_request(
         timeout: Request timeout in seconds.
 
     Returns:
-        The HTTP response.
+        The HTTP response and the operating session name it was made with
+        (None with ``no_session``). The caller needs that name — resolution
+        happens once, here, where the load happens, and every downstream use
+        (the observe run dir) must key off the SAME name, not the raw
+        argument (#151).
 
     Raises:
         typer.Exit: If session cannot be resolved or loaded.
@@ -179,6 +184,13 @@ def _make_request(
                 "gp session use, or --no-session."
             )
             raise typer.Exit(1)
+        # gp http joins account resolution: a plugin/base name with exactly one
+        # cached account loads that account; several exit with the pick-one
+        # list, the same way every other surface behaves (#151). Imported
+        # lazily — plugin_commands imports the CLI stack this module is part of.
+        from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
+
+        resolved = resolve_session_name_or_exit(resolved)
         try:
             session = load_session_for_api(resolved)
         except Exception as exc:  # noqa: BLE001 — CLI boundary
@@ -260,17 +272,17 @@ def _make_request(
         except SessionInvalidatedError as exc:
             gp_console.error(f"Token refresh failed: {exc}")
             gp_console.info("The session is no longer authenticated; log in again.")
-            return response  # Return the original 403 response
+            return response, resolved  # Return the original 403 response
         except ValueError as exc:
             gp_console.error(f"Token refresh failed: {exc}")
-            return response  # Return the original 403 response
+            return response, resolved  # Return the original 403 response
         try:
             response = _dispatch_request(session, method, url, role=role, **kwargs)
         except requests.exceptions.RequestException as exc:
             gp_console.error(f"Retry request failed: {exc}")
             raise typer.Exit(1) from exc
 
-    return response
+    return response, resolved
 
 
 def _save_observe_data(
@@ -294,7 +306,7 @@ def _save_observe_data(
     """
     try:
         run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
-        storage = ObserveStorage(OBSERVE_BASE_DIR, session_name, run_id)
+        storage = ObserveStorage(OBSERVE_BASE_DIR, session_dirname(session_name), run_id)
 
         # Build minimal HAR entry. A Response built by requests always carries
         # its PreparedRequest, but the attribute is typed Optional.
@@ -456,7 +468,7 @@ def _http_command(method: str) -> Callable[..., None]:
         if json_body is not None:
             resolved_json = _resolve_json_body(json_body)
 
-        response = _make_request(
+        response, operating_session = _make_request(
             method,
             url,
             session_name=session,
@@ -471,15 +483,18 @@ def _http_command(method: str) -> Callable[..., None]:
 
         # Observe: save HAR data by default
         if not no_observe:
-            if no_session:
+            if operating_session:
+                # The name the request was actually made with — resolved once,
+                # by _make_request. Filing the run under the raw argument would
+                # hide it from `gp observe ls --session <resolved name>` (#151).
+                resolved_namespace = operating_session
+            else:
                 from graftpunk.plugins import infer_site_name
 
-                resolved_namespace = infer_site_name(url)
+                resolved_namespace = infer_site_name(url) or ""
                 if not resolved_namespace:
                     LOG.warning("namespace_inference_failed", url=url, fallback="unknown")
                     resolved_namespace = "unknown"
-            else:
-                resolved_namespace = session or resolve_session(None) or "unknown"
             request_body = resolved_json or data
             _save_observe_data(resolved_namespace, method, url, response, request_body)
 

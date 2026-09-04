@@ -31,7 +31,7 @@ from graftpunk import workstation_env
 from graftpunk.cli.config_commands import config_app
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
-from graftpunk.cli.plugin_commands import resolve_session_name
+from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
 from graftpunk.console import err_console
@@ -43,6 +43,7 @@ from graftpunk.logging import (
 )
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.run import make_run_id, save_observe_run
+from graftpunk.observe.storage import session_dirname
 from graftpunk.plugins import (
     discover_keepalive_handlers,
     discover_site_plugins,
@@ -218,7 +219,7 @@ def observe_callback(
     else:
         resolved = resolve_session(session)
         if resolved and session:
-            resolved = resolve_session_name(resolved)
+            resolved = resolve_session_name_or_exit(resolved)
         obj["observe_session"] = resolved
     if ctx.invoked_subcommand is None:
         console.print(ctx.get_help())
@@ -236,7 +237,11 @@ def observe_list(ctx: typer.Context) -> None:
 
     runs: list[tuple[str, str]] = []
     if observe_session:
-        session_dir = OBSERVE_BASE_DIR / observe_session
+        # The writer (opt-in login capture) slugifies the session name into
+        # its run-dir name (e.g. "myshop@alice" -> "myshop-alice"); the
+        # lookup must apply the identical transformation or labelled runs
+        # are undiscoverable (#151).
+        session_dir = OBSERVE_BASE_DIR / session_dirname(observe_session)
         if session_dir.is_dir():
             for run_dir in sorted(session_dir.iterdir()):
                 if run_dir.is_dir():
@@ -287,7 +292,8 @@ def observe_show(
     if session_name is None:
         console.print("[red]Session name required. Use --session or pass SESSION argument.[/red]")
         raise typer.Exit(1)
-    session_dir = OBSERVE_BASE_DIR / session_name
+    # See observe_list: the lookup dir must match the writer's slugified name.
+    session_dir = OBSERVE_BASE_DIR / session_dirname(session_name)
     if not session_dir.exists() or not session_dir.is_dir():
         console.print(f"[red]No runs found for session '{escape(session_name)}'[/red]")
         raise typer.Exit(1)
@@ -350,7 +356,8 @@ def observe_clean(
         return
 
     if session_name:
-        target = OBSERVE_BASE_DIR / session_name
+        # See observe_list: the lookup dir must match the writer's slugified name.
+        target = OBSERVE_BASE_DIR / session_dirname(session_name)
         if not target.exists():
             console.print(f"[dim]No data for session '{escape(session_name)}'[/dim]")
             return
@@ -551,7 +558,9 @@ async def _setup_observe_session(
             console.print(msg)
 
         run_id = make_run_id()
-        storage = ObserveStorage(OBSERVE_BASE_DIR, namespace, run_id)
+        # The run dir is keyed by the slugified session name — the same
+        # mapping every observe reader applies (#151).
+        storage = ObserveStorage(OBSERVE_BASE_DIR, session_dirname(namespace), run_id)
         bodies_dir = storage.run_dir / "bodies"
         backend = NodriverCaptureBackend(
             browser,

@@ -29,6 +29,7 @@ def _make_session(
     storage_backend: str = "local",
     storage_location: str = "~/.config/graftpunk/sessions",
     cookie_domains: list[str] | None = None,
+    account_identifier: str | None = None,
 ) -> dict:
     """Build a session metadata dict with sensible defaults."""
     return {
@@ -42,6 +43,7 @@ def _make_session(
         "storage_backend": storage_backend,
         "storage_location": storage_location,
         "cookie_domains": cookie_domains or [],
+        "account_identifier": account_identifier,
     }
 
 
@@ -67,7 +69,7 @@ class TestSessionListDisplay:
             _make_session(storage_location="s3://b"),
         ]
 
-        result = runner.invoke(session_app, ["list"])
+        result = runner.invoke(session_app, ["list"], env={"COLUMNS": "200"})
 
         assert result.exit_code == 0
         output = strip_ansi(result.output)
@@ -107,7 +109,10 @@ class TestSessionShowDisplay:
     """Tests for Backend/Location fields in session show output."""
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_includes_backend_and_location(self, _mock_resolve, mock_get) -> None:
         """Show panel includes backend and location values."""
         mock_get.return_value = _make_session(
@@ -125,7 +130,10 @@ class TestSessionShowDisplay:
         assert "s3://my-bucket" in output
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_empty_storage_fields_shows_dash(self, _mock_resolve, mock_get) -> None:
         """Empty storage fields render as em-dash in show output."""
         mock_get.return_value = _make_session(
@@ -142,7 +150,10 @@ class TestSessionShowDisplay:
         assert "\u2014" in output
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_json_includes_storage_fields(self, _mock_resolve, mock_get) -> None:
         """JSON output includes storage_backend and storage_location keys."""
         mock_get.return_value = _make_session(
@@ -208,7 +219,10 @@ class TestShowErrorHandling:
     """Tests for error handling in session show command."""
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_value_error_shows_friendly_message(self, _mock_resolve, mock_get) -> None:
         """ValueError from backend produces friendly error."""
         mock_get.side_effect = ValueError("Missing GRAFTPUNK_S3_BUCKET")
@@ -220,7 +234,10 @@ class TestShowErrorHandling:
         assert "Storage backend error" in output
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_storage_error_shows_friendly_message(self, _mock_resolve, mock_get) -> None:
         """StorageError from backend produces friendly error."""
         mock_get.side_effect = StorageError("S3 timeout")
@@ -272,7 +289,10 @@ class TestJsonOutputIsMachineReadable:
         assert json.loads(result.stdout)[0]["storage_location"] == long_value
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_json_long_values_are_not_wrapped(self, _mock_resolve, mock_get) -> None:
         long_value = "https://example.com/" + "p" * 300
         mock_get.return_value = _make_session(name="mysite", storage_location=long_value)
@@ -295,7 +315,10 @@ class TestNamesAreNotMarkup:
             assert literal in result.stdout
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_renders_bracketed_values_verbatim(self, _mock_resolve, mock_get) -> None:
         mock_get.return_value = _make_session(
             name="evil [bold]", domain="[red]x.example", cookie_domains=["a [/y].example"]
@@ -306,7 +329,10 @@ class TestNamesAreNotMarkup:
             assert literal in result.stdout
 
     @patch("graftpunk.cli.session_commands.get_session_metadata", return_value=None)
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_show_not_found_message_keeps_name_verbatim(self, _mock_resolve, _mock_get) -> None:
         result = runner.invoke(session_app, ["show", "nope [/z]"])
         assert result.exit_code != 0
@@ -321,9 +347,139 @@ class TestNamesAreNotMarkup:
         assert "evil [/x]" in result.output and "[red]x.example" in result.output
 
     @patch("graftpunk.cli.session_commands.load_session")
-    @patch("graftpunk.cli.session_commands.resolve_session_name", side_effect=lambda n: n)
+    @patch(
+        "graftpunk.cli.session_commands.resolve_session_name_or_exit",
+        side_effect=lambda n, **_: n,
+    )
     def test_export_usage_hint_keeps_name_verbatim(self, _mock_resolve, mock_load) -> None:
         mock_load.return_value.save_httpie_session.return_value = "x.json"
         result = runner.invoke(session_app, ["export", "evil [/x]"])
         assert result.exit_code == 0, result.output
         assert "http --session=evil [/x]" in result.output
+
+
+class TestAccountColumn:
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_list_shows_account(self, mock_list) -> None:  # noqa: ANN001
+        mock_list.return_value = [
+            _make_session(name="myshop@alice", account_identifier="alice@example.com"),
+            _make_session(name="myshop"),
+        ]
+        result = runner.invoke(session_app, ["list"], env={"COLUMNS": "220"})
+        assert result.exit_code == 0, result.output
+        assert "Account" in result.output
+        assert "alice@example.com" in result.output
+
+    def test_list_shows_account_from_the_real_data_path(self, fresh_backend) -> None:  # noqa: ANN001
+        """No mocks: cache on the real local backend, list through production code."""
+        import requests
+
+        from graftpunk.cache import cache_session
+        from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+        s = requests.Session()
+        setattr(s, GP_ACCOUNT_ATTR, "alice@example.com")
+        cache_session(s, "myshop@alice")
+        result = runner.invoke(session_app, ["list"], env={"COLUMNS": "220"})
+        assert result.exit_code == 0, result.output
+        assert "alice@example.com" in result.output
+
+
+class TestSessionListNarrowTerminal:
+    """The full session name must survive on a real 80-column terminal.
+
+    The suite pins consoles wide via the autouse ``_wide_consoles`` fixture
+    (see conftest.py); this test opts back out to the narrow default so the
+    ``no_wrap`` Session column is actually exercised at its intended width.
+    """
+
+    @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
+    def test_session_name_unbroken_at_80_columns(self, mock_list, monkeypatch) -> None:  # noqa: ANN001
+        import importlib
+
+        from tests.unit.conftest import _CONSOLE_LOCATIONS
+
+        for module_name, attr in _CONSOLE_LOCATIONS:
+            console_obj = getattr(importlib.import_module(module_name), attr)
+            monkeypatch.setattr(console_obj, "width", 80)
+
+        mock_list.return_value = [
+            _make_session(name="myshop@alice", account_identifier="alice@example.com")
+        ]
+
+        result = runner.invoke(session_app, ["list"])
+
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        # The Account cell may be truncated with an ellipsis at this width —
+        # only the Session column (no_wrap=True) is asserted on here.
+        assert "myshop@alice" in output
+
+
+class TestSessionShowPassThroughValidation:
+    """`gp session show <name>` validates an unregistered name before storage (#151).
+
+    ``resolve_session_name_or_exit`` is exercised for real here (not mocked
+    like the display tests above), since it's the exact boundary under test.
+    """
+
+    def test_invalid_charset_exits_with_invalid_name_message(self) -> None:
+        result = runner.invoke(session_app, ["show", "MyShop@Alice"])
+
+        assert result.exit_code == 1
+        assert "Invalid session name" in strip_ansi(result.output)
+
+    @patch("graftpunk.cli.session_commands.get_session_metadata")
+    def test_valid_full_name_still_passes_through(self, mock_get) -> None:  # noqa: ANN001
+        mock_get.return_value = _make_session(name="myshop@alice")
+
+        result = runner.invoke(session_app, ["show", "myshop@alice"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_get.call_args.args[0] == "myshop@alice"
+
+
+def test_render_ambiguous_session_is_a_pure_formatter() -> None:
+    """The console renderer formats data handed to it — no storage reads."""
+    import io
+
+    from rich.console import Console
+
+    from graftpunk import console as gp_console
+
+    buf = Console(file=io.StringIO(), width=200)
+    gp_console.render_ambiguous_session(
+        "myshop",
+        [("myshop", None), ("myshop@alice", "alice@example.com")],
+        console=buf,
+    )
+    out = buf.file.getvalue()
+    for expected in (
+        "myshop@alice",
+        "alice@example.com",
+        "--session",
+        "GRAFTPUNK_SESSION",
+        "gp session use",
+    ):
+        assert expected in out
+
+
+def test_exit_ambiguous_session_enriches_per_candidate_and_exits(monkeypatch) -> None:  # noqa: ANN001
+    """The CLI boundary owns the identifier lookups, one per candidate."""
+    import pytest
+
+    from graftpunk.cli import errors as cli_errors
+    from graftpunk.exceptions import AmbiguousSessionError
+
+    fetched = []
+
+    def fake_meta(name, backend_override=None):  # noqa: ANN001, ANN202
+        fetched.append((name, backend_override))
+        return {"account_identifier": f"{name}@example.com"}
+
+    monkeypatch.setattr(cli_errors, "get_session_metadata", fake_meta)
+    exc = AmbiguousSessionError("myshop", ["myshop@alice", "myshop@bob"])
+    with pytest.raises(SystemExit):
+        cli_errors.exit_ambiguous_session(exc, backend_override="s3")
+    # The identifiers come from the same backend the candidates came from.
+    assert fetched == [("myshop@alice", "s3"), ("myshop@bob", "s3")]

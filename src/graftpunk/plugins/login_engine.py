@@ -14,10 +14,10 @@ import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
-from graftpunk import cache_session
 from graftpunk import console as gp_console
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
+from graftpunk.plugins.cli_plugin import cache_login_session
 
 if TYPE_CHECKING:
     from graftpunk.plugins.cli_plugin import SitePlugin
@@ -370,14 +370,17 @@ def _start_login_capture(
     driver: Any,
     observe_mode: str,
     get_tab: Any = None,
+    session_name: str | None = None,
 ) -> tuple[Any, Any]:
     """Create the capture backend for a login run.
 
     Returns ``(capture, storage)``. With ``observe_mode == "off"`` the capture
     is the lightweight header-only one used for role extraction and storage is
     None. Otherwise it is a full capture (bodies streamed to the run dir) and
-    storage is an ``ObserveStorage`` under the plugin's session name, so
-    ``gp --observe=full <plugin> login`` records a run like ``observe go`` does.
+    storage is an ``ObserveStorage`` under the OPERATING session name --
+    ``session_name`` when the CLI computed one (``base@label``), else the
+    plugin's base name -- so ``gp --observe=full <plugin> login`` files the run
+    where the reader looks for that account (#151).
     """
     from graftpunk.observe.capture import create_capture_backend
 
@@ -389,15 +392,13 @@ def _start_login_capture(
     # capture needs a get_tab callable for the tab that the login opens, and
     # its eager body fetch only runs from start_capture_async(), neither of
     # which BrowserSession's sync _start_observe can provide.
-    import slugify as slugify_lib
-
     from graftpunk.observe import OBSERVE_BASE_DIR
     from graftpunk.observe.run import make_run_id
-    from graftpunk.observe.storage import ObserveStorage
+    from graftpunk.observe.storage import ObserveStorage, session_dirname
 
     # Opt-in diagnostics must never break the login: an unsafe session name or
     # an unwritable base dir degrades to the header-only capture with a warning.
-    session_slug = slugify_lib.slugify(plugin.session_name) or "default"
+    session_slug = session_dirname(session_name or plugin.session_name)
     try:
         storage = ObserveStorage(OBSERVE_BASE_DIR, session_slug, make_run_id())
     except (ValueError, OSError) as exc:
@@ -649,6 +650,8 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
         *,
         headless: bool | None = None,
         observe_mode: str = "off",
+        session_name: str | None = None,
+        account_identifier: str | None = None,
     ) -> bool:
         """Log in with a nodriver browser.
 
@@ -659,6 +662,11 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
             observe_mode: "off" or "full". "full" records an observe run
                 (screenshot, page source, HAR with bodies, console) under the
                 plugin's session name, whether or not the login succeeds.
+            session_name: The operating session name to cache under; None
+                falls back to ``plugin.session_name``. The CLI passes the
+                account-qualified name it computed (``base@label``).
+            account_identifier: The unslugified login identifier to record in
+                the cached session's metadata; None records nothing.
         """
         if plugin.login_config is None:
             raise PluginError(
@@ -692,7 +700,12 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
 
             # Header capture for role extraction; a full observe run when requested.
             _header_capture, observe_storage = _start_login_capture(
-                plugin, "nodriver", session.driver, observe_mode, get_tab=lambda: tab
+                plugin,
+                "nodriver",
+                session.driver,
+                observe_mode,
+                get_tab=lambda: tab,
+                session_name=session_name,
             )
             await _header_capture.start_capture_async()
             try:
@@ -705,6 +718,8 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                     failure_text=failure_text,
                     base_url=base_url,
                     header_capture=_header_capture,
+                    session_name=session_name,
+                    account_identifier=account_identifier,
                 )
             finally:
                 if observe_storage is not None:
@@ -742,8 +757,15 @@ async def _run_nodriver_steps(
     failure_text: str,
     base_url: str,
     header_capture: Any,
+    session_name: str | None = None,
+    account_identifier: str | None = None,
 ) -> bool:
-    """Execute the configured login steps on an open tab and cache on success."""
+    """Execute the configured login steps on an open tab and cache on success.
+
+    *session_name* and *account_identifier* are the operating identity the CLI
+    computed; both default to None, which caches under ``plugin.session_name``
+    with no recorded identifier.
+    """
     assert plugin.login_config is not None  # noqa: S101 — checked by caller
     # Top-level wait_for: wait for a specific element before any steps
     # (e.g., a form that appears after a redirect completes)
@@ -840,7 +862,7 @@ async def _run_nodriver_steps(
             error=str(exc),
         )
 
-    cache_session(session, plugin.session_name)
+    cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
     return True
 
 
@@ -854,6 +876,8 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         *,
         headless: bool | None = None,
         observe_mode: str = "off",
+        session_name: str | None = None,
+        account_identifier: str | None = None,
     ) -> bool:
         """Log in with a selenium browser.
 
@@ -864,6 +888,11 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             observe_mode: "off" or "full". "full" makes the BrowserSession
                 record an observe run (HAR, console, error screenshot) under
                 the plugin's session name.
+            session_name: The operating session name to cache under; None
+                falls back to ``plugin.session_name``. The CLI passes the
+                account-qualified name it computed (``base@label``).
+            account_identifier: The unslugified login identifier to record in
+                the cached session's metadata; None records nothing.
         """
         if plugin.login_config is None:
             raise PluginError(
@@ -885,7 +914,9 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         browser_session = BrowserSession(
             backend="selenium", headless=run_headless, observe_mode=observe_mode
         )
-        browser_session.session_name = plugin.session_name
+        # The operating name the CLI computed, so the write-back and any
+        # observe run land under this account's session (#151).
+        browser_session.session_name = session_name or plugin.session_name
         # The observe HAR carries the login POST; scrub the credentials.
         browser_session.observe_redact = credentials.values()
         with browser_session as session:
@@ -996,7 +1027,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     error=str(exc),
                 )
 
-            cache_session(session, plugin.session_name)
+            cache_login_session(plugin, session, name=session_name, identifier=account_identifier)
             return True
 
     return login

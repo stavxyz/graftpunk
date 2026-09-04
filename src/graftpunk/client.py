@@ -28,7 +28,7 @@ from typing import Any
 
 import requests
 
-from graftpunk.cache import load_session_for_api, update_session_cookies
+from graftpunk.cache import list_sessions, load_session_for_api, update_session_cookies
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext
@@ -40,6 +40,7 @@ from graftpunk.plugins.cli_plugin import (
     CommandSpec,
     _to_cli_name,
 )
+from graftpunk.session_identity import compute_operating_session_name
 from graftpunk.tokens import clear_cached_tokens, prepare_session
 
 LOG = get_logger(__name__)
@@ -210,13 +211,37 @@ class GraftpunkClient:
 
     Args:
         plugin_name: The ``site_name`` of the plugin to load.
+        session: Pin the operating session name (``base`` or ``base@label``).
+            When omitted, the operating name is resolved once from the
+            plugin's cached sessions (pin > account resolution only --
+            ambient shell state such as ``GRAFTPUNK_SESSION`` or
+            ``.gp-session`` is deliberately ignored by library code).
+            Unpinned construction therefore performs one backend listing
+            (a network round-trip on S3/Supabase); a pinned client stays
+            I/O-free.
 
     Raises:
         PluginError: If no plugin with the given name exists.
+        AmbiguousSessionError: If *session* is omitted and several sessions
+            are cached for the plugin's base name.
     """
 
-    def __init__(self, plugin_name: str) -> None:
+    def __init__(self, plugin_name: str, session: str | None = None) -> None:
         self._plugin: CLIPluginProtocol = get_plugin(plugin_name)
+        # Library code is deliberately not steered by ambient shell state
+        # (GRAFTPUNK_SESSION / .gp-session): pin > account resolution only. A pinned
+        # client pays no listing -- the constructor stays I/O-free in the pinned,
+        # scriptable mode (list_sessions() is a remote round-trip on S3/Supabase).
+        # A plugin that needs no session pays none either: there is nothing to
+        # resolve, and its base name is never loaded.
+        if session:
+            self._session_name = session
+        elif self._plugin.requires_session:
+            self._session_name = compute_operating_session_name(
+                None, self._plugin.session_name, list_sessions, use_ambient=False
+            )
+        else:
+            self._session_name = self._plugin.session_name
         self._session: requests.Session | None = None
         self._session_dirty: bool = False
         self._last_execution: dict[str, float] = {}
@@ -348,7 +373,7 @@ class GraftpunkClient:
 
         # 1. Lazy-load session
         if needs_session and self._session is None:
-            self._session = load_session_for_api(plugin.session_name)
+            self._session = load_session_for_api(self._session_name)
             if base_url and hasattr(self._session, "gp_base_url"):
                 setattr(self._session, "gp_base_url", base_url)  # noqa: B010
 
@@ -399,7 +424,7 @@ class GraftpunkClient:
         # 5. Persist session if dirty
         if needs_session and (spec.saves_session or ctx._session_dirty or self._session_dirty):
             self._session_dirty = True
-            update_session_cookies(session, plugin.session_name)
+            update_session_cookies(session, self._session_name)
             self._session_dirty = False
 
         # 6. Normalize to CommandResult
@@ -428,7 +453,7 @@ class GraftpunkClient:
         """
         if self._session is not None and self._session_dirty:
             try:
-                update_session_cookies(self._session, self._plugin.session_name)
+                update_session_cookies(self._session, self._session_name)
                 self._session_dirty = False
             except Exception:  # noqa: BLE001
                 LOG.error(

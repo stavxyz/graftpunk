@@ -66,6 +66,9 @@ class SessionMetadata:
         status: Session status ("active", "logged_out")
         storage_backend: Backend that stored this session (e.g., "local", "s3")
         storage_location: Where the session is stored (path or URI)
+        account_identifier: The unslugified login identifier recorded at login
+            (what the user typed, not server-verified), or None for
+            legacy/no-identity sessions.
     """
 
     name: str
@@ -80,6 +83,7 @@ class SessionMetadata:
     status: str = "active"
     storage_backend: str = ""
     storage_location: str = ""
+    account_identifier: str | None = None
 
 
 def metadata_to_dict(metadata: SessionMetadata) -> dict[str, "Any"]:
@@ -104,6 +108,7 @@ def metadata_to_dict(metadata: SessionMetadata) -> dict[str, "Any"]:
         "status": metadata.status,
         "storage_backend": metadata.storage_backend,
         "storage_location": metadata.storage_location,
+        "account_identifier": metadata.account_identifier,
     }
 
 
@@ -129,6 +134,7 @@ def dict_to_metadata(data: dict[str, "Any"]) -> SessionMetadata:
         status=data.get("status", "active"),
         storage_backend=data.get("storage_backend", ""),
         storage_location=data.get("storage_location", ""),
+        account_identifier=data.get("account_identifier"),
     )
 
 
@@ -140,6 +146,10 @@ class SessionStorageBackend(Protocol):
 
     All methods work with already-encrypted data, maintaining separation
     of concerns between encryption (encryption.py) and storage (this module).
+
+    Session names match [a-z0-9][a-z0-9_-]* on each side of at most one '@'
+    (never first/last); every backend's key scheme must round-trip that
+    charset.
     """
 
     def save_session(

@@ -74,7 +74,7 @@ The context manager handles:
 - Flushing observability data (screenshots, HAR, console logs) on exit — each flush step is isolated so one failure doesn't prevent others
 - Browser cleanup (quit/stop) on exit
 
-**Serialization:** `BrowserSession` implements `__getstate__` to strip browser-related state (driver handles, async loops) before pickling. The nodriver backend serializes only HTTP client state (cookies, headers, session name) — browser driver handles are excluded; the selenium backend delegates to `requests.Session.__getstate__`. Both backends preserve `_gp_cached_tokens` (token cache) and `_gp_header_roles` (browser header roles) through the pickle roundtrip.
+**Serialization:** `BrowserSession` implements `__getstate__` to strip browser-related state (driver handles, async loops) before pickling. The nodriver backend serializes only HTTP client state (cookies, headers, session name) — browser driver handles are excluded; the selenium backend delegates to `requests.Session.__getstate__`. Both backends preserve the session's rider attributes through the pickle roundtrip — the token cache, the browser header roles and the account identifier — from one registry (`graftpunk.tokens.SESSION_RIDER_ATTRS`); CSRF tokens are deliberately excluded, being per-request and stale on restore.
 
 ---
 
@@ -96,9 +96,35 @@ This:
 3. Encrypts with Fernet (AES-128-CBC + HMAC-SHA256)
 4. Stores encrypted data + metadata via the storage backend
 
-Sessions have a configurable TTL (`GRAFTPUNK_SESSION_TTL_HOURS`). Metadata tracks domain, cookie count, cookie domains, and status.
+Sessions have a configurable TTL (`GRAFTPUNK_SESSION_TTL_HOURS`). Metadata tracks domain, cookie count, cookie domains, status, and the `account_identifier` recorded at login (see Multi-Account Sessions).
 
 An HTTPie-compatible session file can also be exported alongside the cache, falling back gracefully (with a warning log) if cookie extraction fails due to browser state issues.
+
+### Multi-Account Sessions
+
+Sessions are keyed by plugin **and** account: `gp myshop login` as alice caches
+`myshop@alice`; a second login as bob caches `myshop@bob` beside it, and logging
+in never evicts another account's session. The label derives from a
+username/email/login-shaped field (slugified); when no such field exists the
+session keeps its bare name — use `--as` to name it. One-time codes, PINs,
+passphrases and security answers are never derived from.
+`gp myshop login --as work` pins a label. Metadata records the
+identifier (what was typed at login, not server-verified), shown in
+`gp session list`'s Account column.
+
+Which session a command uses is resolved once per invocation:
+`--session` > `GRAFTPUNK_SESSION` > `.gp-session` in the working directory >
+the plugin's cached sessions (exactly one → used; several → the command refuses
+and lists them — never "most recent wins"). The env and file tiers apply only to
+their own plugin: a pin for another plugin's base name (`othersite@bob` while
+running `gp myshop ...`) is ignored and resolution continues, so one pinned
+shell does not misdirect every other site. An explicit `--session` is not
+base-scoped — it always wins outright. Both pins are validated before anything
+is listed or loaded, so a malformed name is a loud error, not a lookup miss.
+The same resolved name keys every write-back, so a refresh can never fork into
+another slot. `GraftpunkClient` resolves the same way but deliberately ignores
+the ambient env/file tiers; pass `GraftpunkClient("site", session="myshop@alice")`
+to pin.
 
 ### Loading
 
@@ -240,7 +266,7 @@ gp session unset             # Clear active session
 
 ## Plugin System
 
-Plugins define CLI command groups for specific sites. Each plugin has a `site_name` (the CLI subcommand) and a `session_name` (the cached session key).
+Plugins define CLI command groups for specific sites. Each plugin has a `site_name` (the CLI subcommand) and a `session_name` — the **base** session name, an input to session resolution rather than the storage key itself. The key a command actually reads and writes is the operating name resolved per invocation (`myshop` or `myshop@alice`); see Multi-Account Sessions.
 
 ### Plugin Types
 
@@ -745,7 +771,7 @@ The `create_capture_backend()` factory validates the backend type and creates th
 Observability data is stored in a structured directory:
 
 ```
-~/.local/share/graftpunk/observe/{session_name}/{run_id}/
+~/.local/share/graftpunk/observe/{slugified_session_name}/{run_id}/
     screenshots/
         001-before-login.png
         002-after-login.png
@@ -754,6 +780,8 @@ Observability data is stored in a structured directory:
     console.jsonl
     metadata.json
 ```
+
+The directory component is the session name slugified (`session_dirname`): `myshop@alice` becomes `myshop-alice`, `my_shop` becomes `my-shop`. Every writer and every `gp observe list/show/clean` lookup applies that one mapping, so a labelled run stays discoverable.
 
 **Path safety:** `ObserveStorage` validates session names and run IDs on construction — rejecting empty strings, path separators (`/`, `\`), directory traversal (`..`), leading dots, spaces, and special characters. Only alphanumeric characters, hyphens, dots (non-leading), and underscores are allowed.
 
