@@ -1155,15 +1155,18 @@ class SitePlugin:
         the bare base name (``self.session_name``), which the loader treats as
         a base: a single cached account under it resolves, several raise.
 
-        **The session this returns may be ``base@label`` while
-        ``self.session_name`` is still bare, so ``self.session_name`` is NOT a
-        valid write-back key.** ``update_session_cookies(session,
-        self.session_name)`` uses the name literally, finds no such slot, and
-        drops the refresh with only a log line. To persist changes, use
-        ``ctx.save_session()`` from a command handler, or the operating name
-        the CLI resolved (``load_session_for_api_resolved`` returns it) --
-        never this method's input. Aligning this method with the resolved name
-        is tracked in https://github.com/stavxyz/graftpunk/issues/174.
+        The session this returns may be ``base@label`` while
+        ``self.session_name`` is still bare. Persisting with
+        ``update_session_cookies(session, self.session_name)`` lands on the
+        slot that was loaded: the session carries that slot name in memory,
+        and a write-back whose argument is the slot's bare base follows it
+        (#174). ``ctx.save_session()`` from a command handler, and the
+        operating name the CLI resolved
+        (``load_session_for_api_resolved`` returns it), both remain exact and
+        say the target at the call site.
+
+        Retiring the login identity stamp, the other half of
+        https://github.com/stavxyz/graftpunk/issues/174, is still open.
 
         Raises:
             SessionNotFoundError: Nothing is cached under ``self.session_name``

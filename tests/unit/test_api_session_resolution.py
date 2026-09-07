@@ -279,3 +279,99 @@ def test_site_plugin_get_session_resolves_bare_base_name(fresh_backend) -> None:
     # Identity, not shape: a fresh requests.Session would satisfy isinstance.
     assert getattr(api, GP_ACCOUNT_ATTR) == "alice@example.com"
     assert api.cookies.get("planted") == "1"
+
+
+def test_bare_write_back_from_get_session_follows_the_loaded_slot(fresh_backend) -> None:  # noqa: ANN001
+    """#174: the author-facing pair (get_session + the bare name) must persist."""
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+    class MyPlugin(SitePlugin):
+        site_name = "myshop"
+        session_name = "myshop"
+        help_text = "Test plugin"
+
+    plugin = MyPlugin()
+    session = plugin.get_session()
+    session.cookies.set("visited", "1")
+    update_session_cookies(session, plugin.session_name)
+
+    stored = get_session_metadata("myshop@alice")
+    assert stored["cookie_count"] == 1
+    assert stored["account_identifier"] == "alice@example.com"
+    assert "myshop" not in list_sessions()
+
+
+def test_bare_write_back_from_load_session_for_api_follows_the_loaded_slot(
+    fresh_backend,  # noqa: ANN001
+    captured_logs,  # noqa: ANN001
+) -> None:
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+    session = load_session_for_api("myshop")
+    session.cookies.set("visited", "1")
+    update_session_cookies(session, "myshop")
+
+    assert get_session_metadata("myshop@alice")["cookie_count"] == 1
+    assert "myshop" not in list_sessions()
+    followed = [e for e in captured_logs if e["event"] == "session_write_back_follows_loaded_slot"]
+    assert followed, f"expected session_write_back_follows_loaded_slot, got: {captured_logs}"
+    assert followed[0]["requested"] == "myshop"
+    assert followed[0]["target"] == "myshop@alice"
+
+
+def test_a_rider_from_another_base_does_not_redirect_the_write_back(fresh_backend) -> None:  # noqa: ANN001
+    """Following only ever happens inside one base: `othersite@bob` is not `myshop`."""
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+    cache_session(_cached_session("bob@example.com"), "othersite@bob")
+
+    session = load_session_for_api("othersite")
+    session.cookies.set("visited", "1")
+    update_session_cookies(session, "myshop")
+
+    assert "myshop" not in list_sessions()
+    assert get_session_metadata("myshop@alice")["cookie_count"] == 0
+    assert get_session_metadata("othersite@bob")["cookie_count"] == 0
+
+
+def test_a_labelled_argument_that_differs_from_the_rider_stays_literal(fresh_backend) -> None:  # noqa: ANN001
+    """An explicit `base@label` is an instruction, and is still used verbatim."""
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+    cache_session(_cached_session("bob@example.com"), "myshop@bob")
+
+    session = load_session_for_api("myshop@alice")
+    session.cookies.set("visited", "1")
+    update_session_cookies(session, "myshop@bob")
+
+    assert get_session_metadata("myshop@bob")["cookie_count"] == 1
+    assert get_session_metadata("myshop@alice")["cookie_count"] == 0
+
+
+def test_cache_session_stamps_the_slot_it_saved_under(fresh_backend) -> None:  # noqa: ANN001
+    from graftpunk.tokens import _SESSION_NAME_ATTR
+
+    session = _cached_session("alice@example.com")
+    cache_session(session, "myshop@alice")
+
+    assert getattr(session, _SESSION_NAME_ATTR) == "myshop@alice"
+    copied = cache_mod._api_session_from_session(session)
+    assert getattr(copied, _SESSION_NAME_ATTR) == "myshop@alice"
+
+
+def test_the_loaded_slot_name_never_rides_the_pickle(fresh_backend) -> None:  # noqa: ANN001
+    """A cached blob must not carry a slot name that goes stale under another key."""
+    import dill
+
+    from graftpunk.tokens import _SESSION_NAME_ATTR
+
+    session = _cached_session("alice@example.com")
+    setattr(session, _SESSION_NAME_ATTR, "myshop@alice")
+
+    restored = dill.loads(dill.dumps(session))  # noqa: S301 — bytes this test just produced
+
+    assert getattr(restored, GP_ACCOUNT_ATTR) == "alice@example.com"
+    assert getattr(restored, _SESSION_NAME_ATTR, None) is None
+
+    # The loader is what puts the name back, from the key it read.
+    cache_session(session, "myshop@alice")
+    loaded = cache_mod.load_session("myshop@alice")
+    assert getattr(loaded, _SESSION_NAME_ATTR) == "myshop@alice"

@@ -495,6 +495,7 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
 _CACHE_ATTR = "_gp_cached_tokens"
 _CSRF_TOKENS_ATTR = "_gp_csrf_tokens"
 _HEADER_ROLES_ATTR = "_gp_header_roles"
+_SESSION_NAME_ATTR = "_gp_session_name"
 
 # The one registry of attributes that ride a session object beside its cookies
 # and headers. Every place that moves state from one session to another
@@ -505,25 +506,33 @@ SESSION_RIDER_ATTRS: tuple[str, ...] = (
     _CACHE_ATTR,
     _CSRF_TOKENS_ATTR,
     _HEADER_ROLES_ATTR,
+    _SESSION_NAME_ATTR,
     GP_ACCOUNT_ATTR,
 )
 
 # The value a rider takes on a session that never had one: the dict-valued
 # riders restore as a fresh empty dict (callers mutate them in place), the
-# account identifier as None. Keyed by the same registry above.
+# account identifier and the loaded slot name as None. Keyed by the same
+# registry above.
 SESSION_RIDER_DEFAULTS: dict[str, Callable[[], Any]] = {
     _CACHE_ATTR: dict,
     _CSRF_TOKENS_ATTR: dict,
     _HEADER_ROLES_ATTR: dict,
+    _SESSION_NAME_ATTR: lambda: None,
     GP_ACCOUNT_ATTR: lambda: None,
 }
 
-# CSRF tokens are per-request and go stale the moment a session is put away,
-# so they ride in memory but are deliberately kept out of the pickle (a
-# restored session re-extracts them). The subset is DERIVED from the registry,
-# never hand-listed.
+# Two riders live in memory only, and the pickled subset is DERIVED by
+# excluding them, never hand-listed. CSRF tokens are per-request and go stale
+# the moment a session is put away, so a restored session re-extracts them.
+# The loaded slot name is stamped by the cache at load and save time, so it
+# always describes the key this copy actually came from or went to; pickling it
+# would let a blob cached under a second name carry the first one (#174).
+_MEMORY_ONLY_SESSION_RIDER_ATTRS: frozenset[str] = frozenset(
+    {_CSRF_TOKENS_ATTR, _SESSION_NAME_ATTR}
+)
 PICKLED_SESSION_RIDER_ATTRS: tuple[str, ...] = tuple(
-    attr for attr in SESSION_RIDER_ATTRS if attr != _CSRF_TOKENS_ATTR
+    attr for attr in SESSION_RIDER_ATTRS if attr not in _MEMORY_ONLY_SESSION_RIDER_ATTRS
 )
 
 
