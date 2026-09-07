@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.16.0] - 2026-09-07
+
+This is a minor release. It carries two documented changes for plugin authors and one new behaviour inside command handlers.
+
+### Upgrading
+
+1. CLI installs do not upgrade themselves when a project raises its graftpunk dependency floor. Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, `pip install -U graftpunk`, or `pip install -U 'graftpunk[browser]'` when the browser extra is in use (extras must be repeated on every upgrade).
+2. **Inside a hand-written `login()`, `self.session_name` is the bare base.** A login that caches through `browser_session()` or `browser_session_sync()` needs nothing. One that calls `cache_session(session, self.session_name)` by hand now writes the bare slot; call `cache_login_session(self, session)` instead (exported from `graftpunk.plugins`), or accept `session_name` and `account_identifier` keyword arguments. After a login that did not write its target slot, the CLI says so and names that migration. Listed under Changed below.
+3. **`CLIPluginProtocol.get_session` takes an optional `session_name`.** A type checker flags a structural implementer that still declares the zero-argument form; add `session_name: str | None = None`. `SitePlugin` subclasses and `isinstance` checks are unaffected. Listed under Changed below.
+4. **`self.get_session()` inside a command handler loads the account the invocation resolved.** With one cached account nothing changes; with several, it follows the pin instead of raising `AmbiguousSessionError`. Listed under Added below.
 
 ### Added
 
