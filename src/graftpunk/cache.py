@@ -29,7 +29,9 @@ from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNo
 from graftpunk.logging import get_logger
 from graftpunk.session_identity import (
     GP_ACCOUNT_ATTR,
+    GP_SESSION_NAME_ATTR,
     resolve_account_session,
+    split_session_name,
     validate_session_name,  # public re-export
 )
 from graftpunk.storage.base import SessionMetadata, metadata_to_dict
@@ -224,6 +226,32 @@ def get_session_metadata(
     return metadata_to_dict(metadata)
 
 
+def _stamp_session_slot(session: Any, name: str) -> None:
+    """Record on *session* the cache slot this copy came from or went to.
+
+    The stamp is the one thing that lets a bare-name write-back find the slot a
+    bare-name load resolved to (:func:`update_session_cookies`, #174). It is a
+    memory-only rider (``_MEMORY_ONLY_SESSION_RIDER_ATTRS`` in
+    :mod:`graftpunk.tokens`): every loader that has a key, and the saver, set it
+    from the key it just used, so it never outlives the key it describes. The
+    bytes loader (:func:`load_session_for_api_from_bytes`) has no key and leaves
+    the session unstamped.
+
+    The stamp is advisory, so no failure to record it may fail the load or save
+    that carried it. A session object that refuses the attribute keeps working
+    without it, and only loses the bare-name write-back redirect.
+    """
+    try:
+        setattr(session, GP_SESSION_NAME_ATTR, name)
+    except Exception as exc:  # noqa: BLE001 (an advisory stamp never fails its caller)
+        LOG.debug(
+            "session_slot_stamp_skipped",
+            name=name,
+            session_type=type(session).__name__,
+            error=str(exc),
+        )
+
+
 def cache_session(session: T, session_name: str | None = None) -> str:
     """Cache a session with metadata.
 
@@ -276,6 +304,11 @@ def cache_session(session: T, session_name: str | None = None) -> str:
 
         # Save to backend
         location = backend.save_session(session_name, encrypted_data, metadata)
+        # Stamp the in-memory object with the slot it now lives in, so a later
+        # write-back through this object knows where it belongs (#174). Set
+        # after the pickle above on purpose: the name describes this copy, not
+        # the bytes, and the blob must stay free of it.
+        _stamp_session_slot(session, session_name)
         LOG.info("wrote_session_to_backend", name=session_name, location=location)
         return location
 
@@ -389,6 +422,10 @@ def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata
                 f"Session '{name}' has invalid structure. Run 'gp clear' and re-login."
             )
 
+        # The slot this object came out of, for any write-back that follows
+        # (#174). Set here rather than in the pickle so it can never be stale.
+        _stamp_session_slot(session, name)
+
         LOG.info("successfully_loaded_session", name=name, backend=settings.storage_backend)
         return session, metadata
 
@@ -474,13 +511,12 @@ class _Stub:
     """Placeholder for a class the browser-free path cannot import (the browser
     stack is absent). Unpickling restores state via __setstate__ below.
 
-    cookies/headers and the pickled riders (``PICKLED_SESSION_RIDER_ATTRS``:
-    header roles, the cached-token dict, the account identifier) are plain
-    data in ``BrowserSession.__getstate__``, so they land directly on the
-    stub. NOTE: the pickled subset deliberately excludes ``_gp_csrf_tokens``
-    (per-request, stale the moment a session is put away), so csrf tokens are
-    absent from the pickle entirely — the stub cannot and does not surface
-    them.
+    cookies/headers and the pickled riders (``PICKLED_SESSION_RIDER_ATTRS``)
+    are plain data in ``BrowserSession.__getstate__``, so they land directly on
+    the stub. NOTE: that subset deliberately excludes the memory-only riders
+    (``_MEMORY_ONLY_SESSION_RIDER_ATTRS`` in :mod:`graftpunk.tokens`), which
+    are therefore absent from the pickle entirely: the stub cannot and does not
+    surface them.
     """
 
     def __setstate__(self, state: object) -> None:
@@ -564,6 +600,9 @@ def load_session_for_api_resolved(
     Whatever slot is loaded is the operating name for every write-back of that
     invocation: pass the returned name — never the requested one — to
     :func:`update_session_cookies`, which uses its argument literally (#182).
+    The returned session also carries that name as a memory-only rider, so a
+    write-back keyed off the bare base name follows it to the same slot (#174);
+    passing the returned name explicitly says so at the call site.
 
     Args:
         name: Session name (without .session.pickle extension). May be a bare
@@ -621,6 +660,10 @@ def load_session_for_api_resolved(
 
     header_roles = getattr(browser_session, "_gp_header_roles", {})
     api_session = _api_session_from_session(browser_session)
+    # The copy inherits the source's stamp through SESSION_RIDER_ATTRS, so this
+    # is belt and braces: it stamps the copy anyway, for a source object that
+    # refused the stamp (_stamp_session_slot is advisory and swallows that).
+    _stamp_session_slot(api_session, loaded_name)
     LOG.info(
         "created_api_session_from_cached_session",
         name=loaded_name,
@@ -655,12 +698,13 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
     unpinned resolution, which refuses when several accounts share a base.
 
     **If you will persist changes to the returned session** (cookies, tokens)
-    with :func:`update_session_cookies`, use
-    :func:`load_session_for_api_resolved` instead and key the write-back off
-    the name it RETURNS: a bare *name* may resolve to a labelled slot, and
-    :func:`update_session_cookies` uses its argument literally, so writing
-    back under the bare name is silently a no-op (#182). This function throws
-    the loaded name away, which is the whole reason it is read-only-shaped.
+    with :func:`update_session_cookies`, prefer
+    :func:`load_session_for_api_resolved` and key the write-back off the name
+    it RETURNS, which states the operating slot at the call site. This function
+    throws the loaded name away, which is the whole reason it is
+    read-only-shaped. The returned session still carries the loaded slot name
+    as a memory-only rider, so ``update_session_cookies(session, name)`` with
+    the bare base name follows it to the slot the load landed on (#174).
 
     Args:
         name: Session name (without .session.pickle extension). May be a bare
@@ -742,6 +786,36 @@ def load_session_for_api_from_bytes(
         raise SessionExpiredError(f"Session bytes have unusable cookies/headers: {exc}") from exc
 
 
+def _write_back_target(api_session: requests.Session, session_name: str) -> str:
+    """The slot a write-back of *api_session* under *session_name* falls back to
+    when no slot is cached under *session_name* itself.
+
+    The answer is *session_name* itself in every case but one: the session was
+    last loaded from or saved to a slot in *session_name*'s own family, and
+    *session_name* is the bare base of that family. Then the write follows the
+    stamped slot, because that is the session the caller actually holds (#174).
+
+    A labelled *session_name*, a stamp from a different base, and an unstamped
+    session all stay literal, and nothing here lists or resolves. The caller
+    consults this only after the literal slot has already missed, so an existing
+    bare slot is never passed over.
+    """
+    # A non-string stamp is not a slot name (a test double answers every
+    # getattr), and only a real one may redirect a write.
+    loaded_name = getattr(api_session, GP_SESSION_NAME_ATTR, None)
+    if not isinstance(loaded_name, str) or not loaded_name or loaded_name == session_name:
+        return session_name
+    if split_session_name(loaded_name)[0] != session_name:
+        return session_name
+
+    LOG.info(
+        "session_write_back_follows_loaded_slot",
+        requested=session_name,
+        target=loaded_name,
+    )
+    return loaded_name
+
+
 def update_session_cookies(api_session: requests.Session, session_name: str) -> None:
     """Persist an API session's cookies and token cache back to the session cache.
 
@@ -749,26 +823,50 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
     updates its cookies and token cache from the API session, and saves it back.
     This is best-effort — failures are logged but do not raise.
 
-    *session_name* is used LITERALLY: unlike
-    :func:`load_session_for_api_resolved`, this never resolves a bare base name
-    to an account, so it can never fork a bare ``mysite`` slot open beside the
-    ``mysite@alice`` the session was loaded from. The flip side is that a bare
-    name whose slot does not exist makes this a logged no-op — a silently
-    dropped refresh. Callers therefore pass the operating name the load
-    returned (``load_session_for_api_resolved``'s second element, the CLI's
-    resolved operating name, or ``ctx.save_session()``), never the name a user
-    typed (#182).
+    *session_name* is tried LITERALLY first, and a slot cached under it wins
+    outright, including a bare ``mysite`` slot. Only when that name has no slot
+    of its own does the one fallback apply (:func:`_write_back_target`): a bare
+    *session_name* whose family the session was last loaded from or saved to
+    writes to that stamped slot, so ``mysite`` refreshes the ``mysite@alice``
+    the session came from. That covers the author-facing pair
+    ``update_session_cookies(plugin.get_session(), plugin.session_name)``, whose
+    refresh used to be dropped with only a log line (#174). Everything else is
+    verbatim: a bare name that names an existing slot, a labelled name, a
+    session stamped with another base, and an unstamped session all write
+    exactly where they are told. This can therefore never fork a bare ``mysite``
+    slot open beside the ``mysite@alice`` a session was loaded from, and it
+    performs no listing and no account resolution.
+
+    The stamp records the last load or save, so it is the slot the caller's
+    object currently corresponds to. A bare name with neither a slot of its own
+    nor a stamped one is still a logged no-op, so callers that hold the
+    operating name from the load (``load_session_for_api_resolved``'s second
+    element, the CLI's resolved operating name, or ``ctx.save_session()``) keep
+    passing it (#182): it states the target at the call site.
 
     Args:
         api_session: The API session with potentially updated cookies and token cache.
-        session_name: Name of the cached session to update, used verbatim.
+        session_name: Name of the cached session to update, used verbatim unless
+            no slot exists under it and it is the bare base of the slot
+            *api_session* was last loaded from or saved to.
     """
+    target = session_name
     try:
-        original, stored_metadata = _load_session_with_metadata(session_name)
+        try:
+            original, stored_metadata = _load_session_with_metadata(session_name)
+        except SessionNotFoundError:
+            # The literal name answers first, so an existing slot is never
+            # passed over; only its absence lets the session's own stamp name
+            # the target (#174). A re-raise here lands in the warning below.
+            target = _write_back_target(api_session, session_name)
+            if target == session_name:
+                raise
+            original, stored_metadata = _load_session_with_metadata(target)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
             "session_save_skipped_load_failed",
-            session_name=session_name,
+            session_name=target,
+            requested=session_name,
             error=str(exc),
         )
         return
@@ -792,12 +890,13 @@ def update_session_cookies(api_session: requests.Session, session_name: str) -> 
         # survives this refresh either way.
         if getattr(original, GP_ACCOUNT_ATTR, None) is None and stored_metadata.account_identifier:
             setattr(original, GP_ACCOUNT_ATTR, stored_metadata.account_identifier)
-        cache_session(original, session_name)
-        LOG.info("session_cookies_updated", session_name=session_name)
+        cache_session(original, target)
+        LOG.info("session_cookies_updated", session_name=target)
     except Exception as exc:  # noqa: BLE001 — best-effort save
         LOG.warning(
             "session_save_failed",
-            session_name=session_name,
+            session_name=target,
+            requested=session_name,
             error=str(exc),
         )
 

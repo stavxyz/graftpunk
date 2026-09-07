@@ -49,11 +49,13 @@ LOG = get_logger(__name__)
 def _save_session_riders(session: Any, state: dict[str, Any]) -> None:
     """Copy the session's rider attributes into a pickle *state* dict.
 
-    The riders (cached tokens, header roles, account identifier) are declared
-    once in :data:`graftpunk.tokens.SESSION_RIDER_ATTRS`; both backend
-    branches of ``__getstate__`` go through here so neither can forget one
-    (#151). A rider the session never had is written as its declared empty
-    value, exactly as the hand-written copies did.
+    The riders are declared once in
+    :data:`graftpunk.tokens.SESSION_RIDER_ATTRS`, and the subset that belongs
+    in a pickle is derived from it by excluding
+    ``_MEMORY_ONLY_SESSION_RIDER_ATTRS``; both backend branches of
+    ``__getstate__`` go through here so neither can forget one (#151). A rider
+    the session never had is written as its declared empty value, exactly as
+    the hand-written copies did.
     """
     for attr in PICKLED_SESSION_RIDER_ATTRS:
         value = getattr(session, attr, None)
@@ -92,10 +94,14 @@ class BrowserSession(requestium.Session):
     """
 
     # Rider attributes (graftpunk.tokens.SESSION_RIDER_ATTRS): set by the
-    # capture/token machinery and by __setstate__, declared here so they are
-    # part of the class's shape rather than materializing out of a setattr.
+    # capture/token machinery, by the cache, and by __setstate__, declared here
+    # so they are part of the class's shape rather than materializing out of a
+    # setattr. The last two are memory-only and never reach a pickle.
     _gp_header_roles: dict[str, dict[str, str]]
     _gp_cached_tokens: dict[str, Any]
+    _gp_account_identifier: str | None
+    _gp_csrf_tokens: dict[str, str]
+    _gp_session_name: str | None
 
     def __init__(
         self,

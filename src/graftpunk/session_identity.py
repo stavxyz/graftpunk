@@ -25,6 +25,12 @@ from graftpunk.exceptions import AmbiguousSessionError
 # other module hard-codes the string (precedent: tokens.py's _CACHE_ATTR).
 GP_ACCOUNT_ATTR = "_gp_account_identifier"
 
+# The session attribute that carries the cache slot a session was last loaded
+# from or saved to. It lives here beside the identifier because it is naming
+# policy, not token machinery: it is the name of a slot, and it is what lets a
+# write-back keyed off a bare base name find the slot in that base (#174).
+GP_SESSION_NAME_ATTR = "_gp_session_name"
+
 # One side of a session name: today's rule, unchanged.
 _PART_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
