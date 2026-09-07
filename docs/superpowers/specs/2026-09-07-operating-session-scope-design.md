@@ -67,8 +67,14 @@ def operating_session_for(base: str) -> OperatingSession | None:
 
 `name` is validated with `validate_session_name` on entry, so a scope can never
 hold a name the cache would refuse. The module imports only `session_identity`
-(for `split_session_name` and `validate_session_name`), so `cache.py`,
-`cli_plugin.py`, and the CLI can all import it without cycles.
+(for `split_session_name` and `validate_session_name`). That floor is set by
+its actual importers: the plugin base class
+(`src/graftpunk/plugins/cli_plugin.py:1202` (`def cache_login_session(`)), the
+shared execution pipeline
+(`src/graftpunk/client.py:81` (`def _run_handler_with_limits`)), and the login
+command (`src/graftpunk/cli/login_commands.py:241` (`def make_login_body`)).
+Staying below all three keeps it free of storage and CLI dependencies, so none
+of them can form a cycle through it.
 
 Why a ContextVar and not a parameter alone: the case the issue describes is an
 author inside a command handler, who holds `ctx` but not a name, and whose call
@@ -112,20 +118,21 @@ Precedence, one chain:
    name is by construction a slot that loaded moments ago.
 3. Else the bare `self.session_name`, resolving, exactly as today.
 
-Both dispatchers set the scope around the handler, after the load and token
-injection, with the name they already hold:
+The scope has one owner: the shared execution pipeline both dispatchers
+already call, `_run_handler_with_limits` (`src/graftpunk/client.py:81` (`def _run_handler_with_limits`)),
+sets it from `ctx._operating_session_name` around the handler, and sets none
+when that field is empty (a `requires_session=False` command). Both dispatchers
+already populate that field when they build the `CommandContext`
+(`src/graftpunk/cli/plugin_runtime.py:219` (`_operating_session_name=operating_name,`);
+`src/graftpunk/client.py:493` (`_operating_session_name=(operating_name if needs_session else ""),`)),
+so neither is edited, the `needs_session` condition is written once, each 403
+retry re-enters the scope on its own, and a dispatcher added later gets the
+scope for free.
 
-- `run_plugin_command`, where the `CommandContext` is built
-  (`src/graftpunk/cli/plugin_runtime.py:219` (`_operating_session_name=operating_name,`)):
-  the `execute_plugin_command` call and its 403-refresh retry a few lines below
-  it run inside `operating_session(operating_name)` when `needs_session`.
-- `GraftpunkClient._execute_command` (`execute` only resolves the command and delegates), where its `CommandContext` is built
-  (`src/graftpunk/client.py:493` (`_operating_session_name=(operating_name if needs_session else ""),`)):
-  the `_run_handler_with_limits` call and its retry run inside the same scope,
-  with the client's `operating_name` local.
-
-Setting it once around a block that contains both the call and its retry is one
-`with` per dispatcher, not two. A `requires_session=False` command sets no scope.
+> **Design note (2026-09-07):** the first draft had each dispatcher set the
+> scope beside the field it already writes; the validation review flagged two
+> carriers of one fact with nothing keeping them in step, which is the class of
+> disagreement #174 exists to close. The pipeline is the single owner instead.
 
 `get_session()` returns a **second** `requests.Session`, not `ctx.session`;
 that is unchanged and stays documented. What changes is that the second one is
@@ -166,8 +173,12 @@ caches through the helpers or through `cache_login_session(self, session)` is
 unaffected. One that calls `cache_session(session, self.session_name)` by hand
 now lands on the bare slot instead of the labelled one. The migration is one
 line: call `cache_login_session(self, session)` (public; this change exports it
-from `graftpunk.plugins` beside `SitePlugin`, together with `operating_session`) or accept `session_name` and `account_identifier` as keyword
-arguments, which `_accepted_login_kwargs`
+from `graftpunk.plugins` beside `SitePlugin`. `operating_session` is not
+exported and stays internal to `graftpunk.session_scope`: there is no author
+use case for setting the scope by hand, since the dispatchers set it, and the
+explicit `session_name` parameter on `get_session()` is the channel for code
+running outside a dispatch) or accept `session_name` and `account_identifier`
+as keyword arguments, which `_accepted_login_kwargs`
 (`src/graftpunk/cli/login_commands.py:125` (`def _accepted_login_kwargs`))
 already passes to any login that declares them. The CHANGELOG records this
 under Changed; the author docs (`docs/HOW_IT_WORKS.md`, "Custom Login Method")
