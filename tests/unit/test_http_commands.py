@@ -72,6 +72,29 @@ class TestHttpAccountResolution:
     @patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"})
     @patch(
         "graftpunk.cli.plugin_commands.list_sessions",
+        return_value=["myshop", "myshop@alice"],
+    )
+    def test_bare_slot_wins_over_account_resolution(
+        self, _mock_list: MagicMock, mock_load: MagicMock
+    ) -> None:
+        """A legacy bare slot next to a labelled account is an exact hit (#186)."""
+        mock_session = MagicMock(spec=requests.Session)
+        mock_session.headers = {}
+        mock_response = MagicMock(spec=requests.Response)
+        mock_response.status_code = 200
+        mock_session.request.return_value = mock_response
+        mock_load.side_effect = echo_loaded_session(mock_session)
+
+        _, operating_name = _make_request("GET", "https://example.com", session_name="myshop")
+
+        assert operating_name == "myshop"
+        mock_load.assert_called_once_with("myshop", resolve=True)
+
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
+    @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
+    @patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"})
+    @patch(
+        "graftpunk.cli.plugin_commands.list_sessions",
         return_value=["myshop@alice", "myshop@bob"],
     )
     def test_ambiguous_base_name_lists_candidates_and_exits(

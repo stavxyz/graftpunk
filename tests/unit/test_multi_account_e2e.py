@@ -133,3 +133,164 @@ def test_bare_pin_resolves_and_the_refresh_follows_the_resolved_slot(
     assert stored["cookie_count"] == 2  # both invocations' refreshes landed
     assert stored["account_identifier"] == "alice@example.com"
     assert "myshop" not in list_sessions()
+
+
+def _myshop_plugin(cookie: str = "visited"):  # noqa: ANN202
+    """A plugin whose site_name and session_name are both "myshop" (#186).
+
+    Its one command dirties and saves the session, so an unpinned invocation
+    exercises the plugin-command runtime's real write-back path rather than
+    a stub.
+    """
+    from graftpunk.plugins.cli_plugin import SitePlugin, command
+
+    class MyShopPlugin(SitePlugin):
+        site_name = "myshop"
+        base_url = "https://myshop.example.com"
+        session_name = "myshop"
+        requires_session = True
+
+        @command(help="List items", saves_session=True)
+        def items(self, ctx):  # noqa: ANN001, ANN202
+            ctx.session.cookies.set(cookie, "1")
+            ctx.save_session()
+            return {"ok": True}
+
+    return MyShopPlugin()
+
+
+class TestSessionCommandsPreferTheExactCachedBareSlot:
+    """``gp session clear/show <base>`` operate on an exact cached slot (#186).
+
+    Before the fix, a registered site name was always routed through account
+    resolution, so a legacy bare slot next to a labelled account raised
+    AmbiguousSessionError and the documented ``gp session clear <base>``
+    remedy removed nothing.
+    """
+
+    def test_clear_bare_base_removes_only_the_bare_slot(self, fresh_backend, monkeypatch) -> None:  # noqa: ANN001
+        from typer.testing import CliRunner
+
+        from graftpunk.cache import list_sessions
+        from graftpunk.cli import plugin_commands
+        from graftpunk.cli.session_commands import session_app
+
+        _cache("myshop", "legacy@example.com")
+        _cache("myshop@alice", "alice@example.com")
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "myshop", "myshop")
+
+        result = CliRunner().invoke(session_app, ["clear", "myshop", "--force"])
+
+        assert result.exit_code == 0, result.output
+        names = set(list_sessions())
+        assert "myshop" not in names
+        assert "myshop@alice" in names
+
+    def test_show_bare_base_shows_the_bare_slot(self, fresh_backend, monkeypatch) -> None:  # noqa: ANN001
+        from typer.testing import CliRunner
+
+        from graftpunk.cli import plugin_commands
+        from graftpunk.cli.session_commands import session_app
+
+        _cache("myshop", "legacy@example.com")
+        _cache("myshop@alice", "alice@example.com")
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "myshop", "myshop")
+
+        runner = CliRunner()
+        bare = runner.invoke(session_app, ["show", "myshop", "--json"])
+        assert bare.exit_code == 0, bare.output
+        assert '"account_identifier": "legacy@example.com"' in bare.output
+
+        labelled = runner.invoke(session_app, ["show", "myshop@alice", "--json"])
+        assert labelled.exit_code == 0, labelled.output
+        assert '"account_identifier": "alice@example.com"' in labelled.output
+
+    def test_show_still_resolves_when_only_the_labelled_account_is_cached(
+        self,
+        fresh_backend,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from graftpunk.cli import plugin_commands
+        from graftpunk.cli.session_commands import session_app
+
+        _cache("myshop@alice", "alice@example.com")
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "myshop", "myshop")
+
+        result = CliRunner().invoke(session_app, ["show", "myshop", "--json"])
+        assert result.exit_code == 0, result.output
+        assert '"account_identifier": "alice@example.com"' in result.output
+
+    def test_show_still_raises_ambiguity_with_no_bare_slot(
+        self,
+        fresh_backend,  # noqa: ANN001
+        monkeypatch,  # noqa: ANN001
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from graftpunk.cli import plugin_commands
+        from graftpunk.cli.session_commands import session_app
+
+        _cache("myshop@alice", "alice@example.com")
+        _cache("myshop@bob", "bob@example.com")
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "myshop", "myshop")
+
+        result = CliRunner().invoke(session_app, ["show", "myshop"])
+        assert result.exit_code == 1
+        assert "myshop@alice" in result.output and "myshop@bob" in result.output
+
+    def test_use_bare_base_pins_the_bare_slot(self, fresh_backend, monkeypatch, tmp_path) -> None:  # noqa: ANN001
+        """``gp session use myshop`` pins the exact bare slot, not an account (#186).
+
+        ``tmp_path`` is the same directory the autouse ``_no_ambient_session``
+        fixture already ``chdir``'d into: the assertion just reads
+        ``.gp-session`` back from it.
+        """
+        from typer.testing import CliRunner
+
+        from graftpunk.cli import plugin_commands
+        from graftpunk.cli.session_commands import session_app
+
+        _cache("myshop", "legacy@example.com")
+        _cache("myshop@alice", "alice@example.com")
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "myshop", "myshop")
+
+        result = CliRunner().invoke(session_app, ["use", "myshop"])
+
+        assert result.exit_code == 0, result.output
+        pin_file = tmp_path / ".gp-session"
+        assert pin_file.exists()
+        assert pin_file.read_text().strip() == "myshop"
+
+
+class TestPluginRuntimeStillRefusesUnpinnedAmbiguity:
+    """The plugin-command runtime does not adopt the exact-base-slot rule (#186).
+
+    Session-management surfaces address a slot exactly so it can be
+    inspected or removed. The plugin-command runtime writes the session back
+    on every command, so an unpinned command with a legacy bare slot beside a
+    labelled account still refuses, forcing the one-time migration.
+    """
+
+    def test_unpinned_plugin_command_refuses_while_session_show_resolves_the_bare_slot(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from graftpunk.cli.session_commands import session_app
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        _cache("myshop", "legacy@example.com")
+        _cache("myshop@alice", "alice@example.com")
+
+        # Unpinned: the plugin-command runtime still refuses and names both.
+        result = invoke_plugin_app(_myshop_plugin(), ["myshop", "items"])
+        assert result.exit_code != 0
+        assert "myshop" in result.output and "myshop@alice" in result.output
+
+        # The session-management surface addresses the bare slot exactly.
+        show = CliRunner().invoke(session_app, ["show", "myshop", "--json"])
+        assert show.exit_code == 0, show.output
+        assert '"account_identifier": "legacy@example.com"' in show.output

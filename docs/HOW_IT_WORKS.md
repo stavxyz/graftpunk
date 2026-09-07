@@ -145,6 +145,15 @@ the rest of that invocation: every write-back keys off the name the load
 resolved, not the name that was typed, so a refresh can never fork into another
 slot (or vanish into one that does not exist).
 
+The session-management commands (`gp session show`, `gp session clear`, `gp
+session use`) and `gp http --session` apply a narrower rule for a registered
+plugin's base name: they address the exact slot cached under that base when
+one exists, and resolve accounts only when it does not. An unpinned plugin
+command applies the general pin contract above and refuses when several
+candidates share a base, even when one of them is cached under the bare base
+name itself; that surface writes the session back on every command, and
+refusing forces the one-time migration described in the CHANGELOG.
+
 ### Loading
 
 For CLI commands, sessions are loaded without a browser:
