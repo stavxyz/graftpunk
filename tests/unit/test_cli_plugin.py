@@ -1220,7 +1220,7 @@ class TestCommandContextSaveSession:
             plugin_name="test",
             command_name="cmd",
             api_version=1,
-            _session_name="testsession",
+            _operating_session_name="testsession",
         )
         assert ctx._session_dirty is False
 
@@ -1230,7 +1230,7 @@ class TestCommandContextSaveSession:
             plugin_name="test",
             command_name="cmd",
             api_version=1,
-            _session_name="testsession",
+            _operating_session_name="testsession",
         )
         ctx.save_session()
         assert ctx._session_dirty is True
@@ -1252,7 +1252,7 @@ class TestCommandContextSaveSession:
             command_name="cmd",
             api_version=1,
         )
-        assert ctx._session_name == ""
+        assert ctx._operating_session_name == ""
 
 
 class TestPluginParamSpecClickKwargs:

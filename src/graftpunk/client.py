@@ -490,7 +490,7 @@ class GraftpunkClient:
             observe=NoOpObservabilityContext(),
             # The resolved operating name (set by the load above), not the
             # plugin's bare base: it is what ctx.save_session() ends up keying.
-            _session_name=(operating_name if needs_session else ""),
+            _operating_session_name=(operating_name if needs_session else ""),
         )
 
         # 4. Execute with retry/rate-limit; 403 token refresh
