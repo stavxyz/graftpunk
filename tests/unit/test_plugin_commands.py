@@ -3698,23 +3698,52 @@ class TestAccountAwareResolution:
         monkeypatch.setitem(plugin_commands._plugin_session_map, "myshop", "myshop")
 
         calls: list[None] = []
+        cached: list[str] = ["myshop", "myshop@alice"]
 
         def counting_list_sessions(backend_override: str | None = None) -> list[str]:
             calls.append(None)
-            return ["myshop", "myshop@alice"]
+            return cached
 
         monkeypatch.setattr(plugin_commands, "list_sessions", counting_list_sessions)
         assert plugin_commands.resolve_session_name("myshop") == "myshop"
         assert len(calls) == 1
 
         calls.clear()
+        cached[:] = ["myshop@alice"]
+        assert plugin_commands.resolve_session_name("myshop") == "myshop@alice"
+        assert len(calls) == 1
+
+    def test_alias_slot_is_not_an_exact_hit_for_a_different_base(self, monkeypatch) -> None:  # noqa: ANN001
+        """A slot cached under the typed alias belongs to no plugin (#186).
+
+        The site name here is "fmtsite" and its mapped base is "myshop". A
+        slot happens to be cached under the alias itself ("fmtsite"), but
+        that name is not this plugin's family: every downstream base-scoped
+        pin (the ambient tier, ``.gp-session``, header injection) matches
+        against the base, never the alias, so treating the alias as an exact
+        hit would resolve to a name those surfaces then ignore. Only the
+        mapped base is checked for an exact hit.
+        """
+        from graftpunk.cli import plugin_commands
+
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
         monkeypatch.setattr(
             plugin_commands,
             "list_sessions",
-            lambda backend_override=None: (calls.append(None), ["myshop@alice"])[1],
+            lambda backend_override=None: ["fmtsite", "myshop@alice"],
         )
-        assert plugin_commands.resolve_session_name("myshop") == "myshop@alice"
-        assert len(calls) == 1
+        # No bare "myshop" slot: falls through to resolving the single
+        # labelled account, never to the alias slot.
+        assert plugin_commands.resolve_session_name("fmtsite") == "myshop@alice"
+
+        monkeypatch.setattr(
+            plugin_commands,
+            "list_sessions",
+            lambda backend_override=None: ["fmtsite", "myshop", "myshop@alice"],
+        )
+        # A bare "myshop" slot is now cached: that exact base hit wins,
+        # still never the alias slot.
+        assert plugin_commands.resolve_session_name("fmtsite") == "myshop"
 
     def test_non_site_pass_through_lists_nothing(self, monkeypatch) -> None:  # noqa: ANN001
         """A name with no plugin mapping never consults list_sessions."""

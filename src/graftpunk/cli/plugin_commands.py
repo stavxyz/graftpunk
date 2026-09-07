@@ -392,18 +392,38 @@ def resolve_session_name(name: str, backend_override: str | None = None) -> str:
     """Resolve a name to an operating session name.
 
     A registered plugin site name maps to its base ``session_name``. An exact
-    cached slot under that name (or the mapped base, when it differs from the
-    site name) always wins outright — consistent with
-    :func:`graftpunk.cache.load_session_for_api_resolved`'s "a slot cached
-    under the bare name itself wins" rule — so the listing is fetched once and
-    checked before any resolution happens. Only when neither is cached does
-    this fall through to account resolution (one cached -> that one; several
-    -> raise AmbiguousSessionError; zero -> the base, so the not-found path is
-    unchanged). Anything else — including full ``base@label`` names — passes
+    slot cached under that base always wins outright. This matches
+    :func:`graftpunk.cache.load_session_for_api_resolved`'s rule that a slot
+    cached under the bare name itself wins, so the listing is fetched once and
+    checked before any resolution happens.
+
+    The check tests the mapped BASE name, never the typed alias itself. A
+    slot cached under an alias that differs from its plugin's base belongs to
+    no plugin: treating that alias as an exact hit would return a name outside
+    the plugin's family (#186), and every downstream pin (``.gp-session`` from
+    ``gp session use``, the ambient tier read by plugin commands, header
+    injection on ``gp http``) is base-scoped and would silently stop matching.
+    When ``site_name`` equals ``session_name`` the alias and the base are the
+    same string, so the reported bug still resolves the exact cached slot the
+    user typed.
+
+    Only when the base itself is not cached does this fall through to account
+    resolution (one cached -> that one; several -> raise
+    AmbiguousSessionError; zero -> the base, so the not-found path is
+    unchanged). Anything else, including a full ``base@label`` name, passes
     through, but is still validated: a pass-through name is about to reach
     storage unchanged, so a charset violation (e.g. ``MyShop@Alice``, which a
     case-insensitive filesystem would otherwise silently "find" as
     ``myshop@alice``) must be refused here rather than reaching storage (#151).
+
+    The plugin-command runtime (:mod:`graftpunk.cli.plugin_runtime`) calls
+    :func:`~graftpunk.session_identity.compute_operating_session_name`
+    directly and does not adopt this exact-base rule: an unpinned plugin
+    command with a legacy bare slot beside a labelled one still refuses with
+    AmbiguousSessionError. That surface writes the session back on every
+    command, so refusing forces the one-time migration. The session-management
+    surfaces this function serves need to address a slot exactly so it can be
+    inspected or removed.
 
     Args:
         name: Plugin site name, alias, or a full session name.
@@ -413,7 +433,8 @@ def resolve_session_name(name: str, backend_override: str | None = None) -> str:
             session.
 
     Raises:
-        AmbiguousSessionError: Several sessions are cached for the base name.
+        AmbiguousSessionError: Several sessions share the base name and none
+            is cached under the base name itself.
         ValueError: *name* is neither a registered plugin site name nor a
             legal session name.
     """
@@ -424,9 +445,11 @@ def resolve_session_name(name: str, backend_override: str | None = None) -> str:
         # checked against it first, so a second listing on the resolution
         # fallback below would be a wasted round-trip.
         names = list_sessions(backend_override=backend_override)
-        if name in names:
-            return name
-        if base != name and base in names:
+        # Only the mapped BASE is checked for an exact hit, never the typed
+        # alias: a slot cached under an alias that differs from its plugin's
+        # base is not this plugin's session, and returning it would hand
+        # every downstream base-scoped pin a name outside the family (#186).
+        if base in names:
             return base
         # The typed argument is the explicit tier; ambient pins do not
         # re-steer an explicitly named site. The tier subset is declared
