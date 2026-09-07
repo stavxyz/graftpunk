@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `gp session export` and `gp session use` now honor `--storage-backend` for both resolving the session name and loading the session, instead of resolving against the override backend and then loading from the default one ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
 - Loading a local session now tightens an existing `metadata.json` file's permissions to 0600 when they are wider than that ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
 - A bare session name that resolves to a single cached account no longer leaves warning-level log entries behind. A genuine not-found still logs a warning ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
+- `gp http --session <base>` no longer lists cached sessions twice when the name is not found. It lists once ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
 
 ## [1.15.1] - 2026-09-07
 

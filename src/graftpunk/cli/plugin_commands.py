@@ -388,6 +388,19 @@ def get_plugin_for_session(session_name: str) -> CLIPluginProtocol | None:
     return None
 
 
+def is_registered_site_name(name: str) -> bool:
+    """True when *name* is a registered plugin's site name.
+
+    :func:`resolve_session_name` already consults the session listing for
+    this case (the exact-hit check on the plugin's base, and the account
+    fallback on the same listing), so a caller that already resolved
+    through this map knows the listing was exhausted -- a subsequent load
+    can skip its own resolve step rather than listing again on a miss
+    (see ``gp http``'s use in :mod:`graftpunk.cli.http_commands`, #178).
+    """
+    return name in _plugin_session_map
+
+
 def resolve_session_name(name: str, backend_override: str | None = None) -> str:
     """Resolve a name to an operating session name.
 

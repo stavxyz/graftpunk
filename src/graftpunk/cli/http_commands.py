@@ -189,8 +189,19 @@ def _make_request(
         # cached account loads that account; several exit with the pick-one
         # list, the same way every other surface behaves (#151). Imported
         # lazily — plugin_commands imports the CLI stack this module is part of.
-        from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
+        from graftpunk.cli.plugin_commands import (
+            is_registered_site_name,
+            resolve_session_name_or_exit,
+        )
 
+        # A registered site name already had resolve_session_name_or_exit
+        # consult the listing (the exact-hit check on the base, and the
+        # account fallback on that same listing) -- asking the loader to
+        # resolve again would repeat that listing on the not-found path
+        # (#178). Only a bare name that is NOT a registered site name still
+        # needs the loader's own resolve step, since resolve_session_name
+        # passes those through untouched.
+        site_name_resolved = is_registered_site_name(resolved)
         resolved = resolve_session_name_or_exit(resolved)
         try:
             # A pin can still be a BARE base name here (a name that is not a
@@ -203,7 +214,8 @@ def _make_request(
             # Only a BARE name asks the loader to resolve: the fallback matches
             # on the base, so resolving a labelled name can only list uselessly.
             session, resolved = load_session_for_api_resolved(
-                resolved, resolve=split_session_name(resolved)[1] is None
+                resolved,
+                resolve=(not site_name_resolved) and split_session_name(resolved)[1] is None,
             )
         except Exception as exc:  # noqa: BLE001 — CLI boundary
             LOG.error("session_load_failed", session_name=resolved, error=str(exc))
