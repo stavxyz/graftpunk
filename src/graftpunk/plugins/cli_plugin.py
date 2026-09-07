@@ -271,6 +271,17 @@ class CommandContext:
             raise ValueError("No session name configured on this CommandContext")
         self._session_dirty = True
 
+    @property
+    def _session_name(self) -> str:
+        """Compatibility alias for ``_operating_session_name`` (#178).
+
+        Read-only: this field was renamed from ``_session_name`` to
+        ``_operating_session_name`` to say plainly that it holds the slot a
+        load resolved to, not the caller's raw pin. This alias returns the
+        same value under the old name for any handler still reading it.
+        """
+        return self._operating_session_name
+
 
 @dataclass(frozen=True)
 class CommandResult:
