@@ -1,4 +1,4 @@
-"""Login derives, stamps, funnels and warns about account identity (#151)."""
+"""Login derives, scopes, funnels and warns about account identity (#151, #174)."""
 
 from __future__ import annotations
 
@@ -10,92 +10,6 @@ import requests
 from graftpunk.session_identity import GP_ACCOUNT_ATTR
 from tests.unit.cli_harness import echo_loaded_session
 from tests.unit.cli_harness import invoke_plugin_app as _invoke
-
-
-class TestStamp:
-    def test_stamp_sets_and_restores(self) -> None:
-        from graftpunk.cli.login_commands import _stamp_login_identity
-        from graftpunk.plugins.cli_plugin import SitePlugin
-
-        class P(SitePlugin):
-            site_name = "fmtsite"
-            base_url = "https://fmt.example.com"
-            session_name = "myshop"
-
-        plugin = P()
-        with _stamp_login_identity(plugin, "alice", "alice@example.com"):
-            assert plugin.session_name == "myshop@alice"
-            assert getattr(plugin, GP_ACCOUNT_ATTR) == "alice@example.com"
-        assert plugin.session_name == "myshop"  # class attr visible again
-        assert not hasattr(plugin, GP_ACCOUNT_ATTR)
-
-    def test_stamp_restores_when_the_login_raises(self) -> None:
-        """The restore is in a finally: a failed login must not leak the stamp."""
-        from graftpunk.cli.login_commands import _stamp_login_identity
-        from graftpunk.plugins.cli_plugin import SitePlugin
-
-        class P(SitePlugin):
-            site_name = "fmtsite"
-            base_url = "https://fmt.example.com"
-            session_name = "myshop"
-
-        plugin = P()
-        with pytest.raises(RuntimeError), _stamp_login_identity(plugin, "alice", "a@example.com"):
-            assert plugin.session_name == "myshop@alice"
-            raise RuntimeError("login blew up")
-        assert plugin.session_name == "myshop"
-        assert not hasattr(plugin, GP_ACCOUNT_ATTR)
-
-    def test_stamp_survives_a_read_only_session_name(self) -> None:
-        """A protocol-literal plugin declares session_name as a read-only property.
-
-        The stamp is a convenience for author-facing paths; it must degrade to
-        a warning rather than break the login (the identifier still travels
-        explicitly to the generated flows).
-        """
-        from graftpunk.cli.login_commands import _stamp_login_identity
-
-        class ReadOnlyPlugin:
-            site_name = "fmtsite"
-
-            @property
-            def session_name(self) -> str:
-                return "myshop"
-
-        plugin = ReadOnlyPlugin()
-        with _stamp_login_identity(plugin, "alice", "a@example.com"):  # type: ignore[arg-type]
-            assert plugin.session_name == "myshop"
-            assert getattr(plugin, GP_ACCOUNT_ATTR) == "a@example.com"
-        assert plugin.session_name == "myshop"
-
-    def test_stamp_records_the_identifier_without_a_label(self) -> None:
-        """No label (nothing identifier-shaped to slugify) still records who logged in."""
-        from graftpunk.cli.login_commands import _stamp_login_identity
-        from graftpunk.plugins.cli_plugin import SitePlugin
-
-        class P(SitePlugin):
-            site_name = "fmtsite"
-            base_url = "https://fmt.example.com"
-            session_name = "myshop"
-
-        plugin = P()
-        with _stamp_login_identity(plugin, None, "alice@example.com"):
-            assert plugin.session_name == "myshop"
-            assert getattr(plugin, GP_ACCOUNT_ATTR) == "alice@example.com"
-        assert not hasattr(plugin, GP_ACCOUNT_ATTR)
-
-    def test_stamp_without_label_is_a_no_op(self) -> None:
-        from graftpunk.cli.login_commands import _stamp_login_identity
-        from graftpunk.plugins.cli_plugin import SitePlugin
-
-        class P(SitePlugin):
-            site_name = "fmtsite"
-            base_url = "https://fmt.example.com"
-            session_name = "myshop"
-
-        plugin = P()
-        with _stamp_login_identity(plugin, None, None):
-            assert plugin.session_name == "myshop"
 
 
 class TestFunnel:
@@ -118,9 +32,11 @@ class TestFunnel:
         assert getattr(session, GP_ACCOUNT_ATTR) == "alice@example.com"
         mock_cache.assert_called_once_with(session, "myshop@alice")
 
-    def test_instance_fallback_for_author_facing_paths(self) -> None:
-        """browser_session callers pass nothing; the stamp's state is the input."""
+    def test_scope_fallback_for_author_facing_paths(self, fresh_backend) -> None:  # noqa: ANN001
+        """browser_session callers pass nothing; the operating scope is the input."""
+        from graftpunk.cache import get_session_metadata, list_sessions
         from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
+        from graftpunk.session_scope import operating_session
 
         class P(SitePlugin):
             site_name = "fmtsite"
@@ -128,12 +44,59 @@ class TestFunnel:
             session_name = "myshop"
 
         plugin = P()
-        setattr(plugin, GP_ACCOUNT_ATTR, "alice@example.com")
         session = requests.Session()
-        with patch("graftpunk.plugins.cli_plugin.cache_session") as mock_cache:
-            cache_login_session(plugin, session)
+        with operating_session("myshop@alice", "alice@example.com"):
+            used = cache_login_session(plugin, session)
+
+        assert used == "myshop@alice"
         assert getattr(session, GP_ACCOUNT_ATTR) == "alice@example.com"
-        mock_cache.assert_called_once_with(session, "myshop")
+        assert list_sessions() == ["myshop@alice"]
+        assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
+
+    def test_a_scope_for_another_base_does_not_steer_the_funnel(self, fresh_backend) -> None:  # noqa: ANN001
+        """The base-scoped guard: another plugin's login must not rename this cache write."""
+        from graftpunk.cache import list_sessions
+        from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
+        from graftpunk.session_scope import operating_session
+
+        class P(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "myshop"
+
+        plugin = P()
+        with operating_session("othersite@bob", "bob@example.com"):
+            used = cache_login_session(plugin, requests.Session())
+
+        assert used == "myshop"
+        assert list_sessions() == ["myshop"]
+
+    def test_an_explicit_name_does_not_borrow_the_scope_identity(self, fresh_backend) -> None:  # noqa: ANN001
+        """The slot and the account come from one decision, never from two tiers.
+
+        A caller naming the slot is naming the account too, or recording none.
+        Taking the name from the argument and the identifier from the scope
+        would stamp whoever the login command was about onto a session that
+        caller never named.
+        """
+        from graftpunk.cache import get_session_metadata, list_sessions
+        from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
+        from graftpunk.session_scope import operating_session
+
+        class P(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "myshop"
+
+        plugin = P()
+        session = requests.Session()
+        with operating_session("myshop@alice", "alice@example.com"):
+            used = cache_login_session(plugin, session, name="myshop@bob")
+
+        assert used == "myshop@bob"
+        assert not hasattr(session, GP_ACCOUNT_ATTR)
+        assert list_sessions() == ["myshop@bob"]
+        assert get_session_metadata("myshop@bob")["account_identifier"] is None
 
 
 class TestBoundaryWarning:
@@ -305,8 +268,8 @@ class TestEngineChainThreading:
 
 
 def _hand_written_login_plugin(seen: dict | None = None):  # noqa: ANN001, ANN202
-    """A plugin whose ``login(credentials)`` is a fake that records and succeeds."""
-    from graftpunk.plugins.cli_plugin import SitePlugin
+    """A plugin whose ``login(credentials)`` records, caches through the funnel, succeeds."""
+    from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
 
     class ShopPlugin(SitePlugin):
         site_name = "fmtsite"
@@ -317,8 +280,68 @@ def _hand_written_login_plugin(seen: dict | None = None):  # noqa: ANN001, ANN20
             """Sign in to fmtsite."""
             if seen is not None:
                 seen["credentials"] = dict(credentials)
+                # The class attribute, always: nothing mutates the instance
+                # for the length of a login flow any more (#174).
                 seen["session_name"] = self.session_name
-                seen["identifier"] = getattr(self, GP_ACCOUNT_ATTR, None)
+            cache_login_session(self, requests.Session())
+            return True
+
+    return ShopPlugin()
+
+
+def _by_hand_login_plugin():  # noqa: ANN202
+    """A login that caches under ``self.session_name`` by hand: the migration case.
+
+    With the stamp gone this writes the bare ``myshop`` while the CLI targeted
+    ``myshop@bob``, which is exactly the silent divergence the post-login
+    advisory has to catch.
+    """
+    from graftpunk.cache import cache_session
+    from graftpunk.plugins.cli_plugin import SitePlugin
+
+    class ShopPlugin(SitePlugin):
+        site_name = "fmtsite"
+        base_url = "https://fmt.example.com"
+        session_name = "myshop"
+
+        def login(self, credentials: dict[str, str]) -> bool:
+            """Sign in to fmtsite."""
+            cache_session(requests.Session(), self.session_name)
+            return True
+
+    return ShopPlugin()
+
+
+def _raising_login_plugin():  # noqa: ANN202
+    """A plugin whose ``login(credentials)`` raises."""
+    from graftpunk.plugins.cli_plugin import SitePlugin
+
+    class ShopPlugin(SitePlugin):
+        site_name = "fmtsite"
+        base_url = "https://fmt.example.com"
+        session_name = "myshop"
+
+        def login(self, credentials: dict[str, str]) -> bool:
+            """Sign in to fmtsite."""
+            raise RuntimeError("the site was down")
+
+    return ShopPlugin()
+
+
+def _browser_login_plugin():  # noqa: ANN202
+    """A hand-written login that caches through ``browser_session_sync()``."""
+    from graftpunk.plugins.cli_plugin import SitePlugin
+
+    class ShopPlugin(SitePlugin):
+        site_name = "fmtsite"
+        base_url = "https://fmt.example.com"
+        session_name = "myshop"
+        backend = "selenium"
+
+        def login(self, credentials: dict[str, str]) -> bool:
+            """Sign in to fmtsite."""
+            with self.browser_session_sync() as (session, driver):
+                driver.get(f"{self.base_url}/login")
             return True
 
     return ShopPlugin()
@@ -346,24 +369,35 @@ _CREDS = {"FMTSITE_USERNAME": "alice", "FMTSITE_PASSWORD": "x"}
 
 
 class TestLoginWrapperOrchestration:
-    def test_derived_label_names_the_cached_session(self) -> None:
+    def test_derived_label_names_the_cached_session(self, fresh_backend) -> None:  # noqa: ANN001
+        from graftpunk.cache import get_session_metadata, list_sessions
+
         seen: dict = {}
         result = _invoke(_hand_written_login_plugin(seen), ["fmtsite", "login"], **_CREDS)
+
         assert result.exit_code == 0, result.output
         assert "Session name: myshop@alice" in result.output
-        # The stamp is visible to the hand-written login while it runs.
-        assert seen["session_name"] == "myshop@alice"
-        assert seen["identifier"] == "alice"
+        # The bare base name, inside the plugin's own login(): the stamp is gone.
+        assert seen["session_name"] == "myshop"
         assert seen["credentials"] == {"username": "alice", "password": "x"}
+        # What the scope carried is what the cache received.
+        assert list_sessions() == ["myshop@alice"]
+        assert get_session_metadata("myshop@alice")["account_identifier"] == "alice"
+        # The happy path says nothing extra.
+        assert "This login did not write" not in result.output
 
-    def test_as_flag_overrides_the_label(self) -> None:
+    def test_as_flag_overrides_the_label(self, fresh_backend) -> None:  # noqa: ANN001
+        from graftpunk.cache import list_sessions
+
         seen: dict = {}
         result = _invoke(
             _hand_written_login_plugin(seen), ["fmtsite", "login", "--as", "work"], **_CREDS
         )
+
         assert result.exit_code == 0, result.output
         assert "Session name: myshop@work" in result.output
-        assert seen["session_name"] == "myshop@work"
+        assert seen["session_name"] == "myshop"
+        assert list_sessions() == ["myshop@work"]
 
     def test_bad_as_label_names_the_label_the_user_typed(self) -> None:
         result = _invoke(
@@ -387,13 +421,14 @@ class TestLoginWrapperOrchestration:
         assert "was recorded for bob@example.com" in result.output
         assert "replaces it as alice" in result.output
 
-    def test_advisory_failure_never_fails_a_successful_login(self) -> None:
+    def test_advisory_failure_never_fails_a_successful_login(self, fresh_backend) -> None:  # noqa: ANN001
         """The verdict is sealed before the advisory block: a raise there is a hint lost."""
         with patch(
             "graftpunk.cli.login_commands.get_active_session",
             side_effect=FileNotFoundError("cwd was removed"),
         ):
             result = _invoke(_hand_written_login_plugin(), ["fmtsite", "login"], **_CREDS)
+
         assert result.exit_code == 0, result.output
         assert "Logged in to fmtsite (session cached)" in result.output
         assert "Login failed" not in result.output
@@ -416,3 +451,107 @@ class TestLoginWrapperOrchestration:
         assert result.exit_code == 0, result.output
         assert mock_update.call_args[0][1] == "myshop"
         assert "Session name:" not in result.output
+
+    def test_browser_session_sync_login_lands_on_the_scoped_slot(self) -> None:
+        """A hand-written login caching through the helper reaches myshop@bob (#174)."""
+        from unittest.mock import MagicMock
+
+        with (
+            patch("graftpunk.BrowserSession") as mock_bs,
+            patch("graftpunk.plugins.cli_plugin.cache_session") as mock_cache,
+        ):
+            instance = mock_bs.return_value
+            instance.driver = MagicMock()
+            instance.transfer_driver_cookies_to_session = MagicMock()
+            instance.quit = MagicMock()
+            result = _invoke(
+                _browser_login_plugin(),
+                ["fmtsite", "login", "--as", "bob"],
+                FMTSITE_USERNAME="bob@example.com",
+                FMTSITE_PASSWORD="x",  # noqa: S106
+            )
+
+        assert result.exit_code == 0, result.output
+        cached_session, cached_name = mock_cache.call_args[0]
+        assert cached_name == "myshop@bob"
+        assert getattr(cached_session, GP_ACCOUNT_ATTR) == "bob@example.com"
+
+    def test_a_by_hand_cache_under_the_bare_name_warns_after_success(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """#174: the login succeeded, but nothing landed on the labelled slot."""
+        from structlog.testing import capture_logs
+
+        from graftpunk.cache import list_sessions
+
+        with capture_logs() as logs:
+            result = _invoke(
+                _by_hand_login_plugin(),
+                ["fmtsite", "login", "--as", "bob"],
+                FMTSITE_USERNAME="bob@example.com",
+                FMTSITE_PASSWORD="x",  # noqa: S106
+            )
+
+        # Advisory only: the login itself still succeeded.
+        assert result.exit_code == 0, result.output
+        assert "Logged in to fmtsite (session cached)" in result.output
+        # It wrote the bare slot, not the one the CLI targeted.
+        assert list_sessions() == ["myshop"]
+        assert "This login did not write 'myshop@bob'" in result.output
+        assert "cache_login_session" in result.output
+        assert "login_cached_outside_target_slot" in [e["event"] for e in logs]
+
+    def test_a_by_hand_write_warns_even_when_the_target_slot_already_exists(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """Existence is not the question; movement is.
+
+        An earlier login left ``myshop@bob`` cached. This login targets the
+        same slot, writes the bare base instead, and leaves that slot stale. A
+        check that only asked whether the slot exists would say nothing, and
+        the user would go on using a session this login never refreshed.
+        """
+        from graftpunk.cache import cache_session, get_session_metadata
+        from tests.unit.cli_harness import cacheable_browser_session
+
+        cache_session(cacheable_browser_session("bob@example.com"), "myshop@bob")
+        before = get_session_metadata("myshop@bob")["modified_at"]
+
+        result = _invoke(
+            _by_hand_login_plugin(),
+            ["fmtsite", "login", "--as", "bob"],
+            FMTSITE_USERNAME="bob@example.com",
+            FMTSITE_PASSWORD="x",  # noqa: S106
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "This login did not write 'myshop@bob'" in result.output
+        # The pre-existing slot really was left untouched.
+        assert get_session_metadata("myshop@bob")["modified_at"] == before
+
+    def test_an_unlabelled_target_never_warns(self, fresh_backend) -> None:  # noqa: ANN001
+        """No label means the bare base IS the target, so a by-hand write is correct."""
+        from graftpunk.cache import list_sessions
+
+        result = _invoke(
+            _by_hand_login_plugin(),
+            ["fmtsite", "login"],
+            FMTSITE_USERNAME="!!!",
+            FMTSITE_PASSWORD="x",  # noqa: S106
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Session name: myshop" in result.output
+        assert list_sessions() == ["myshop"]
+        assert "This login did not write" not in result.output
+
+    def test_a_failed_login_leaves_no_scope_behind(self) -> None:
+        from graftpunk.session_scope import current_operating_session
+
+        result = _invoke(_raising_login_plugin(), ["fmtsite", "login"], **_CREDS)
+
+        assert result.exit_code != 0
+        assert "Login failed: the site was down" in result.output
+        assert current_operating_session() is None

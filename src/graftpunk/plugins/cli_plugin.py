@@ -57,7 +57,7 @@ from graftpunk.cache import cache_session, load_session_for_api
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
-from graftpunk.session_scope import resolve_load_target
+from graftpunk.session_scope import operating_session_for, resolve_load_target
 
 LOG = get_logger(__name__)
 
@@ -1110,8 +1110,8 @@ class SitePlugin:
                 session.current_url = f"{self.base_url}/"
             # Success path: transfer cookies and cache
             await session.transfer_nodriver_cookies_to_session()
-            # No explicit name/identifier: the instance state (the login
-            # stamp, when a CLI login drove us here) IS this path's contract.
+            # No explicit name/identifier: the operating session scope, set by
+            # the login command around the login callable, IS this path's input.
             cache_login_session(self, session)
         finally:
             try:
@@ -1151,7 +1151,7 @@ class SitePlugin:
                 session.current_url = f"{self.base_url}/"
             # Success path: transfer cookies and cache
             session.transfer_driver_cookies_to_session()
-            # Instance fallback by contract -- see browser_session() above.
+            # Scope fallback by contract -- see browser_session() above.
             cache_login_session(self, session)
         finally:
             try:
@@ -1206,18 +1206,29 @@ def cache_login_session(
 ) -> str:
     """The one login-flow cache funnel. Explicit arguments first.
 
-    Callers that hold the operating name and identifier pass them explicitly --
-    the generated login flows receive both from ``make_login_body``. The
-    instance fallback exists ONLY for the author-facing paths (hand-written
-    logins caching through ``browser_session``/``browser_session_sync``),
-    whose API shape reads ``self.session_name``; the login stamp covers those.
+    *name* when given wins outright: the generated login flows pass it, and so
+    does any caller that already knows the slot. Otherwise the operating
+    session scope the login command set around the login callable supplies both
+    the slot and the account, and failing that the plugin's bare base name
+    does. The scope is base-scoped, so another plugin's login can never rename
+    this write. That is how a hand-written ``login()`` caching through
+    ``browser_session`` or ``browser_session_sync`` lands on the
+    account-qualified slot with nothing mutating the plugin instance (#174).
+
+    The scope is consulted ONCE, and the slot and the identifier come from the
+    same decision: an explicit *name* means the caller is naming the slot, so
+    the identifier falls back to nothing rather than to the scope's. Pairing a
+    slot from one tier with an account from another would record whoever the
+    login command happened to be about against a session it did not name.
+
     The identifier rides the session object so ``_extract_session_metadata``
     records it. Returns the session name used.
     """
     from graftpunk.session_identity import GP_ACCOUNT_ATTR
 
-    session_name = name or plugin.session_name
-    account = identifier if identifier is not None else getattr(plugin, GP_ACCOUNT_ATTR, None)
+    scope = operating_session_for(plugin.session_name) if name is None else None
+    session_name = name if name is not None else (scope.name if scope else plugin.session_name)
+    account = identifier if identifier is not None else (scope.identifier if scope else None)
     if account is not None:
         setattr(session, GP_ACCOUNT_ATTR, account)
     cache_session(session, session_name)
