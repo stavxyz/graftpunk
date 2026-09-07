@@ -6,8 +6,11 @@ import stat
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+import structlog
+from structlog.testing import capture_logs
 
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 from graftpunk.storage.base import SessionMetadata, dict_to_metadata, metadata_to_dict
@@ -69,6 +72,51 @@ class TestLocalSessionStorage:
         storage.load_session("test-session")
 
         assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+    def test_load_tightens_a_wide_pickle_mode(self, storage, sample_metadata, tmp_path):
+        """session.pickle is tightened on load too, not just metadata.json (#178)."""
+        storage.save_session("test-session", b"encrypted session data", sample_metadata)
+        pickle_path = tmp_path / "test-session" / "session.pickle"
+        os.chmod(pickle_path, 0o644)
+        assert stat.S_IMODE(pickle_path.stat().st_mode) == 0o644
+
+        storage.load_session("test-session")
+
+        assert stat.S_IMODE(pickle_path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+    def test_load_does_not_chmod_an_already_tight_file(self, storage, sample_metadata):
+        """No gratuitous chmod when a file is already 0o600 (#178, PR #189 review)."""
+        storage.save_session("test-session", b"encrypted session data", sample_metadata)
+
+        with patch("os.fchmod") as mock_fchmod:
+            storage.load_session("test-session")
+
+        mock_fchmod.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+    def test_load_swallows_a_chmod_permission_error(self, storage, sample_metadata, tmp_path):
+        """A chmod failure is best-effort: it is logged, never raised (#178, PR #189 review)."""
+        storage.save_session("test-session", b"encrypted session data", sample_metadata)
+        metadata_path = tmp_path / "test-session" / "metadata.json"
+        os.chmod(metadata_path, 0o644)
+
+        # capture_logs() keeps the library's import-time WARNING filter by
+        # default, which would drop this DEBUG event before it is captured;
+        # reset_defaults() lifts it (the autouse _reset_structlog fixture
+        # restores it after the test, so this does not affect neighbours).
+        structlog.reset_defaults()
+        with (
+            patch("os.fchmod", side_effect=PermissionError("no permission")),
+            capture_logs() as logs,
+        ):
+            encrypted_data, metadata = storage.load_session("test-session")
+
+        assert encrypted_data == b"encrypted session data"
+        assert metadata.name == sample_metadata.name
+        failures = [e for e in logs if e["event"] == "session_file_chmod_failed"]
+        assert failures, f"expected session_file_chmod_failed, got: {logs}"
 
     def test_list_sessions(self, storage, sample_metadata):
         """Test listing sessions."""
@@ -263,6 +311,24 @@ class TestLocalEdgeCases:
 
         with pytest.raises(SessionNotFoundError, match="not found"):
             storage.load_session("empty-dir")
+
+    def test_load_session_missing_pickle_warns(self, storage, tmp_path):
+        """A session directory without its pickle is not a plain miss: it warns.
+
+        The directory existing means a bare-name resolution already matched
+        it, so a missing pickle signals a partial write or tampering rather
+        than "nothing was ever cached here" (#178, PR #189 review).
+        """
+        session_dir = tmp_path / "empty-dir"
+        session_dir.mkdir()
+        # No session.pickle
+
+        with capture_logs() as logs, pytest.raises(SessionNotFoundError):
+            storage.load_session("empty-dir")
+
+        warnings = [e for e in logs if e.get("log_level") == "warning"]
+        assert warnings, f"expected a warning-level event, got: {logs}"
+        assert warnings[0]["event"] == "session_pickle_not_found"
 
     def test_load_session_invalid_expires_at_continues(self, storage, tmp_path):
         """Test load continues when expires_at is an unparseable string."""
