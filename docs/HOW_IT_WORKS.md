@@ -173,7 +173,7 @@ from graftpunk.cache import load_session_for_api_resolved, update_session_cookie
 
 session, operating_name = load_session_for_api_resolved("mysite")  # e.g. "mysite@alice"
 # ... use the session ...
-update_session_cookies(session, operating_name)  # never "mysite"
+update_session_cookies(session, operating_name)  # states the slot at the call site
 ```
 
 #### Loading from bytes (no filesystem, no browser stack)
@@ -268,7 +268,7 @@ def refresh(self, ctx: CommandContext):
     return resp.json()
 ```
 
-The `update_session_cookies()` function merges new cookies from the API session back into the cached `BrowserSession`. It uses the session name **literally** — it never resolves a bare base name, so it can never fork a bare `mysite` slot open beside the `mysite@alice` a session was loaded from. That is why callers pass the operating name the load resolved (the CLI's resolved name, `ctx.save_session()`, or `load_session_for_api_resolved`'s second return value): keying a refresh off a bare name whose slot does not exist drops it with only a log line. The one relaxation is for the bare base of the slot the session came from: a session remembers in memory which slot it was loaded from, so `update_session_cookies(session, "mysite")` on a session loaded from `mysite@alice` refreshes `mysite@alice` ([#174](https://github.com/stavxyz/graftpunk/issues/174)).
+The `update_session_cookies()` function merges new cookies from the API session back into the cached `BrowserSession`. It uses the session name **literally, with one fallback**: a slot cached under that exact name always wins, and it never resolves a bare base name against the list of cached sessions, so it can never fork a bare `mysite` slot open beside the `mysite@alice` a session was loaded from. The fallback covers the case where the name has no slot of its own. A session remembers in memory which slot it was last loaded from or saved to, so `update_session_cookies(session, "mysite")` on a session loaded from `mysite@alice` refreshes `mysite@alice` when no bare `mysite` slot exists ([#174](https://github.com/stavxyz/graftpunk/issues/174)). Last load or save wins, and a bare `mysite` slot that does exist is written instead. A bare name with neither a slot of its own nor a remembered one still drops the refresh with only a log line, which is why callers that hold the operating name the load resolved (the CLI's resolved name, `ctx.save_session()`, or `load_session_for_api_resolved`'s second return value) keep passing it.
 
 ### Bot-Detection Cookie Filtering
 
