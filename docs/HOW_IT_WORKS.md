@@ -145,6 +145,15 @@ the rest of that invocation: every write-back keys off the name the load
 resolved, not the name that was typed, so a refresh can never fork into another
 slot (or vanish into one that does not exist).
 
+Inside a plugin command handler, `self.get_session()` follows the resolution
+the CLI (or `GraftpunkClient`) already performed for that invocation, so it
+loads the slot the command is pinned to rather than resolving the plugin's bare
+base name a second time. It still returns a second `requests.Session`, not
+`ctx.session`; what it no longer does is disagree with the pin. Outside a
+command (a script, a test, library code that already holds a name), pass the
+name: `plugin.get_session("myshop@alice")` loads that slot exactly, and
+`plugin.get_session("myshop")` resolves the base.
+
 The session-management commands (`gp session show`, `gp session clear`, `gp
 session use`) and `gp http --session` apply a narrower rule for a registered
 plugin's base name: they address the exact slot cached under that base when
@@ -596,6 +605,21 @@ async def login(self, credentials: dict[str, str]) -> bool:
 ```
 
 The `browser_session()` and `browser_session_sync()` context managers handle browser lifecycle, cookie transfer, and session caching automatically.
+
+**Where the account-qualified name comes from.** During `gp mysite login`, the
+CLI derives the account label from the login identifier (or takes it from
+`--as`) and sets the operating session scope around your `login()` call. Two
+ways of caching pick that name up for you: the `browser_session()` and
+`browser_session_sync()` helpers, which cache on their success path, and
+`cache_login_session(self, session)` (exported from `graftpunk.plugins`) when
+you build the session yourself. Inside `login()`, `self.session_name` is the
+plugin's bare base name (`mysite`), never the account-qualified slot, because
+nothing mutates the plugin instance. A `login()` that calls
+`cache_session(session, self.session_name)` by hand therefore writes the bare
+slot, and the CLI says so after the login: switch it to
+`cache_login_session(self, session)`, or declare `session_name` and
+`account_identifier` as keyword arguments on `login()` and the CLI passes both
+in.
 
 **Return value contract:** `login()` should return `True` on success and `False` on failure. The CLI checks for `is False` specifically — returning `None` or other values triggers a warning log but is treated as success for backwards compatibility.
 
