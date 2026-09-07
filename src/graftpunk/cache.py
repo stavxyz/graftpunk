@@ -642,7 +642,7 @@ def load_session_for_api_resolved(
         browser_session = load_session(name)
     except SessionNotFoundError as exc:
         if not resolve:
-            LOG.info("session_not_found_for_api", name=name, resolve=False)
+            LOG.warning("session_not_found_for_api", name=name, resolve=False)
             raise
         miss = exc
 
@@ -653,7 +653,7 @@ def load_session_for_api_resolved(
         # miss itself is kept in `miss` and re-attached explicitly below.
         resolved = resolve_account_session(name, list_sessions())
         if resolved == name:
-            LOG.info("session_not_found_for_api", name=name, resolve=True)
+            LOG.warning("session_not_found_for_api", name=name, resolve=True)
             raise SessionNotFoundError(
                 f"No session cached for '{name}', and no account is cached under it. "
                 "Run 'gp <site> login' first."

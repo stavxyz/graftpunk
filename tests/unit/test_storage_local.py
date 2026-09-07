@@ -1,6 +1,9 @@
 """Tests for local storage backend."""
 
 import json
+import os
+import stat
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -54,6 +57,18 @@ class TestLocalSessionStorage:
         assert loaded_metadata.name == sample_metadata.name
         assert loaded_metadata.checksum == sample_metadata.checksum
         assert loaded_metadata.domain == sample_metadata.domain
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+    def test_load_tightens_a_wide_metadata_mode(self, storage, sample_metadata, tmp_path):
+        """A metadata.json left world/group readable is narrowed to 0o600 on load (#178)."""
+        storage.save_session("test-session", b"encrypted session data", sample_metadata)
+        metadata_path = tmp_path / "test-session" / "metadata.json"
+        os.chmod(metadata_path, 0o644)
+        assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o644
+
+        storage.load_session("test-session")
+
+        assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
 
     def test_list_sessions(self, storage, sample_metadata):
         """Test listing sessions."""

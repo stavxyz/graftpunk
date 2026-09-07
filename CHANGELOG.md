@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `update_session_cookies(session, base)` follows the slot the session was loaded from when `base` is that slot's base name and no slot is cached under `base` itself, so `SitePlugin.get_session()` and `load_session_for_api(base)` callers that persist with the bare name no longer drop the refresh ([#174](https://github.com/stavxyz/graftpunk/issues/174)). A slot cached under the name given always wins, so an existing bare `base` slot is still written. The slot name rides on the session object in memory and is not pickled; both the loaders and `cache_session` set it, so the last load or save wins. Explicit labelled names and slots from another base stay literal.
 - `gp session export` and `gp session use` now honor `--storage-backend` for both resolving the session name and loading the session, instead of resolving against the override backend and then loading from the default one ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
+- Loading a local session now tightens an existing `metadata.json` file's permissions to 0600 when they are wider than that ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
+- A bare session name that resolves to a single cached account no longer leaves warning-level log entries behind. A genuine not-found still logs a warning ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
 
 ## [1.15.1] - 2026-09-07
 

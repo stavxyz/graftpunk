@@ -3,6 +3,8 @@
 import json
 import os
 import shutil
+import stat
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -134,14 +136,18 @@ class LocalSessionStorage:
             if old_path.exists():
                 return self._load_legacy_session(name, old_path)
 
-            LOG.warning("session_not_found", name=name)
+            # A miss is a normal query result, not a problem: the raised
+            # SessionNotFoundError is the signal callers act on, and a bare
+            # base name resolving to an account is expected to miss here on
+            # the way to a hit (#178).
+            LOG.debug("session_not_found", name=name)
             raise SessionNotFoundError(f"Session '{name}' not found")
 
         pickle_path = session_dir / "session.pickle"
         metadata_path = session_dir / "metadata.json"
 
         if not pickle_path.exists():
-            LOG.warning("session_pickle_not_found", name=name)
+            LOG.debug("session_pickle_not_found", name=name)
             raise SessionNotFoundError(f"Session '{name}' not found")
 
         LOG.info("session_load_started", name=name, structure="directory")
@@ -152,6 +158,8 @@ class LocalSessionStorage:
             raise SessionExpiredError(
                 f"Session '{name}' is missing metadata. Please run 'graftpunk clear' and re-login."
             )
+
+        self._tighten_metadata_mode(metadata_path, name)
 
         try:
             with metadata_path.open() as f:
@@ -189,6 +197,25 @@ class LocalSessionStorage:
         metadata = dict_to_metadata(metadata_dict)
         LOG.info("session_load_completed", name=name)
         return encrypted_data, metadata
+
+    def _tighten_metadata_mode(self, path: Path, name: str) -> None:
+        """Best-effort: narrow an existing metadata.json's mode to 0o600.
+
+        New metadata is written with 0o600 from creation, but a file saved
+        before that (or copied in by some other means) may carry a wider
+        mode. The metadata is not itself a secret, but it is not other
+        users' business either. Skipped on Windows, where POSIX modes do
+        not apply; a failure to chmod is logged at debug and never blocks
+        the load.
+        """
+        if sys.platform == "win32":
+            return
+        try:
+            current_mode = stat.S_IMODE(path.stat().st_mode)
+            if current_mode & ~0o600:
+                os.chmod(path, 0o600)
+        except OSError as exc:
+            LOG.debug("session_metadata_chmod_failed", name=name, error=str(exc))
 
     def _load_legacy_session(
         self,
