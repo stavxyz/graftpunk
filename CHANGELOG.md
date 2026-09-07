@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `update_session_cookies(session, base)` follows the slot the session was loaded from when `base` is that slot's base name, so `SitePlugin.get_session()` and `load_session_for_api(base)` callers that persist with the bare name no longer drop the refresh ([#174](https://github.com/stavxyz/graftpunk/issues/174)). The loaded slot name rides on the session object in memory and is not pickled; explicit labelled names and other bases stay literal.
+
 ## [1.15.1] - 2026-09-07
 
 ### Fixed

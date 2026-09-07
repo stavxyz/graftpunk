@@ -268,7 +268,7 @@ def refresh(self, ctx: CommandContext):
     return resp.json()
 ```
 
-The `update_session_cookies()` function merges new cookies from the API session back into the cached `BrowserSession`. It uses the session name **literally** — it never resolves a bare base name, so it can never fork a bare `mysite` slot open beside the `mysite@alice` a session was loaded from. That is why callers pass the operating name the load resolved (the CLI's resolved name, `ctx.save_session()`, or `load_session_for_api_resolved`'s second return value): keying a refresh off a bare name whose slot does not exist drops it with only a log line.
+The `update_session_cookies()` function merges new cookies from the API session back into the cached `BrowserSession`. It uses the session name **literally** — it never resolves a bare base name, so it can never fork a bare `mysite` slot open beside the `mysite@alice` a session was loaded from. That is why callers pass the operating name the load resolved (the CLI's resolved name, `ctx.save_session()`, or `load_session_for_api_resolved`'s second return value): keying a refresh off a bare name whose slot does not exist drops it with only a log line. The one relaxation is for the bare base of the slot the session came from: a session remembers in memory which slot it was loaded from, so `update_session_cookies(session, "mysite")` on a session loaded from `mysite@alice` refreshes `mysite@alice` ([#174](https://github.com/stavxyz/graftpunk/issues/174)).
 
 ### Bot-Detection Cookie Filtering
 
