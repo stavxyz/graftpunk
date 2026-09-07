@@ -160,7 +160,11 @@ scope = operating_session_for(plugin.session_name) if name is None else None
 session_name = name if name is not None else (scope.name if scope else plugin.session_name)
 account = identifier if identifier is not None else (scope.identifier if scope else None)
 if account is None:
-    stored = get_session_metadata(session_name)
+    try:
+        stored = get_session_metadata(session_name)
+    except Exception as exc:
+        LOG.warning("login_identity_carry_forward_failed", session=session_name, ...)
+        stored = None
     account = stored.get("account_identifier") if stored else None
 ```
 
@@ -171,7 +175,11 @@ if account is None:
 > one), so a write under one would otherwise record `account_identifier=None`
 > over the account the slot already names; reading the slot's stored metadata
 > once, here in the funnel, keeps `cache_session` read-free while a refresh
-> write preserves the account.
+> write preserves the account. That read is advisory: it runs on the login
+> path, where the session in hand is the thing worth keeping, so a storage
+> failure logs `login_identity_carry_forward_failed` and the write goes ahead
+> recording no account. Only the read is wrapped; a `cache_session` failure
+> still raises.
 
 The `getattr(plugin, GP_ACCOUNT_ATTR, None)` read goes away; nothing writes that
 attribute on a plugin any more. The generated login flows are untouched: they

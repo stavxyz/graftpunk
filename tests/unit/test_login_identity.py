@@ -550,6 +550,46 @@ class TestLoginWrapperOrchestration:
         assert "Logged in to fmtsite (session cached)" in result.output
         assert "Login failed" not in result.output
 
+    def test_a_slot_check_failure_still_prints_the_pin_hint(self, fresh_backend) -> None:  # noqa: ANN001
+        """Each advisory has its own try, so one failing does not cost the other.
+
+        The pre-attempt fetch succeeds and the post-login slot check raises, so
+        only the block that reads storage is lost. The ambient pin hint reads
+        the environment instead and still reaches the user.
+        """
+        from structlog.testing import capture_logs
+
+        from graftpunk.exceptions import StorageError
+
+        calls = {"n": 0}
+
+        def one_good_fetch_then_failure(name):  # noqa: ANN001, ANN202
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None  # the pre-attempt fetch: nothing cached yet
+            raise StorageError("the backend went away mid-login")
+
+        with (
+            capture_logs() as logs,
+            patch(
+                "graftpunk.cli.login_commands.get_session_metadata",
+                side_effect=one_good_fetch_then_failure,
+            ),
+        ):
+            result = _invoke(
+                _hand_written_login_plugin(),
+                ["fmtsite", "login"],
+                GRAFTPUNK_SESSION="myshop@bob",
+                **_CREDS,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Logged in to fmtsite (session cached)" in result.output
+        assert "This shell is pinned to myshop@bob" in result.output
+        assert "gp session use myshop@alice" in result.output
+        failures = [e for e in logs if e["event"] == "post_login_advisory_failed"]
+        assert [e["stage"] for e in failures] == ["target_slot_check"]
+
     def test_command_decorated_login_bypasses_derivation(self) -> None:
         plugin = _command_login_plugin()
         rejected = _invoke(plugin, ["fmtsite", "login", "--as", "work"], **_CREDS)
