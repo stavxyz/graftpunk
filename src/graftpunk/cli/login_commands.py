@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from typing import Any
 
 import typer
@@ -27,11 +26,11 @@ from graftpunk.plugins.cli_plugin import (
 from graftpunk.plugins.login_engine import generate_login_method
 from graftpunk.session_context import get_active_session
 from graftpunk.session_identity import (
-    GP_ACCOUNT_ATTR,
     derive_account_identity,
     join_session_name,
     validate_account_label,
 )
+from graftpunk.session_scope import operating_session
 
 LOG = get_logger(__name__)
 
@@ -39,10 +38,6 @@ LOG = get_logger(__name__)
 # make_login_body masks prompts with it, and gp config's set guardrail
 # (cli/config_commands.py) warns on literal values for such names.
 SECRET_KEYWORDS = frozenset({"password", "secret", "token", "key"})
-
-# "attribute absent" sentinel for the login stamp's save/restore (None is a
-# legitimate stored value, so it cannot mark absence).
-_MISSING = object()
 
 
 def login_method(plugin: CLIPluginProtocol) -> Callable[..., Any] | None:
@@ -153,71 +148,15 @@ def _supports_headless(login_callable: Callable[..., Any]) -> bool:
     return "headless" in _accepted_login_kwargs(login_callable, headless=None)
 
 
-@contextmanager
-def _stamp_login_identity(
-    plugin: CLIPluginProtocol, label: str | None, identifier: str | None
-) -> Iterator[None]:
-    """Stamp the plugin instance for the duration of one login flow.
-
-    Confined transport: only the author-facing paths read this state --
-    hand-written ``login(credentials)`` methods and the ``browser_session``
-    helpers, whose API shape reads ``self.session_name``. Engine-controlled
-    paths receive the name and identifier as explicit arguments and never
-    depend on the stamp. Instance attributes shadow the class attributes;
-    on exit the prior state is restored, so a plugin instance held across a
-    login cannot leak the stamped identity into later reads. Retirement of
-    this dual channel is tracked by #174.
-
-    ``CLIPluginProtocol`` declares ``session_name`` as a read-only property,
-    so a protocol-literal plugin can reject the name stamp; that degrades to
-    a warning (the identifier still travels explicitly to the generated
-    flows) rather than failing the login.
-    """
-    if not (label or identifier):
-        yield
-        return
-    # Capture BEFORE mutating, with a missing-sentinel: a plugin that set
-    # self.session_name in __init__ gets its own value back, not the class's.
-    prior_name = plugin.__dict__.get("session_name", _MISSING)
-    prior_attr = plugin.__dict__.get(GP_ACCOUNT_ATTR, _MISSING)
-    stamped_name = False
-    if label:
-        try:
-            # setattr, not attribute assignment: the protocol declares
-            # session_name read-only, and a plugin may really implement it
-            # that way — hence the guard below.
-            setattr(plugin, "session_name", join_session_name(plugin.session_name, label))  # noqa: B010
-            stamped_name = True
-        except AttributeError:
-            LOG.warning(
-                "login_stamp_skipped_readonly_session_name",
-                plugin=plugin.site_name,
-                label=label,
-            )
-    if identifier is not None:
-        setattr(plugin, GP_ACCOUNT_ATTR, identifier)
-    try:
-        yield
-    finally:
-        if stamped_name:
-            if prior_name is _MISSING:
-                plugin.__dict__.pop("session_name", None)
-            else:
-                setattr(plugin, "session_name", prior_name)  # noqa: B010
-        if prior_attr is _MISSING:
-            plugin.__dict__.pop(GP_ACCOUNT_ATTR, None)
-        else:
-            setattr(plugin, GP_ACCOUNT_ATTR, prior_attr)
-
-
 def _warn_if_slot_changes_hands_post(
     stored: dict[str, Any] | None, incoming_identifier: str | None, session_name: str
 ) -> None:
     """Warn when a successful login overwrote a slot recorded for another account.
 
-    The pure compare/emit half: ``make_login_body`` performs the ONE metadata
-    fetch before the login attempt and calls this only after success, so the
-    fetch/emit split is the final shape from the start. Both identifiers must
+    The pure compare/emit half: ``make_login_body`` performs the one
+    pre-attempt metadata fetch before the login attempt and calls this only
+    after success, so the fetch/emit split is the final shape from the start.
+    Both identifiers must
     be present and unequal; a missing identifier on either side never warns
     (legacy slots, refresh writes). Note ``get_session_metadata`` returns
     ``dict | None`` (cache.py:222) -- read with ``.get``, never ``getattr``.
@@ -314,7 +253,7 @@ def make_login_body(
             session_name=target_name,
             account_identifier=identifier,
         )
-        # The ONE metadata fetch, before the attempt; the comparison and the
+        # The one pre-attempt metadata fetch; the comparison and the
         # emission happen only after a successful login. A storage hiccup
         # must not stop a login over an advisory warning.
         try:
@@ -331,7 +270,7 @@ def make_login_body(
         try:
             with (
                 Status("Logging in...", console=gp_console.err_console),
-                _stamp_login_identity(plugin, label, identifier),
+                operating_session(target_name, identifier),
             ):
                 if asyncio.iscoroutinefunction(login_method):
                     # Suppress asyncio "Loop ... is closed" warning that fires when
@@ -378,24 +317,59 @@ def make_login_body(
 
         # Advisory only, and only after a SUCCESSFUL login: the verdict above is
         # already sealed (a failure exited), so nothing here can turn a cached
-        # login into "Login failed". get_active_session() reads the environment
-        # (cwd, .gp-session) and can raise on a removed cwd or an unreadable
-        # file; that must cost the user a hint, not the login.
+        # login into "Login failed". Each advisory gets its own try, so a
+        # storage hiccup in one costs that hint alone.
         try:
             _warn_if_slot_changes_hands_post(stored_before, identifier, target_name)
-            # What the CLI computed — a hand-written login is free to cache
-            # under a literal name of its own, so this is not a claim about
-            # what landed in the cache.
+            # What the CLI computed, not what landed: compare the slot across
+            # the login, since the one pre-attempt fetch already captured it.
+            # Existence alone would not answer it: a hand-written login caching
+            # under self.session_name by hand now writes the bare base (#174),
+            # and if the target slot happened to exist already from an earlier
+            # login, an existence test would stay silent while the user keeps
+            # using a stale session. A pre-attempt fetch that failed leaves
+            # stored_before None; a slot that exists afterwards is then taken as
+            # landed, because nothing here can prove otherwise.
             gp_console.info(f"Session name: {target_name}")
+            stored_after = get_session_metadata(target_name)
+            landed = stored_after is not None and (
+                stored_before is None
+                or stored_after.get("modified_at") != stored_before.get("modified_at")
+            )
+            if not landed:
+                LOG.warning(
+                    "login_cached_outside_target_slot",
+                    plugin=plugin.site_name,
+                    target=target_name,
+                )
+                gp_console.warn(
+                    f"Nothing was written to '{target_name}' by this login. If it "
+                    "caches by hand, call cache_login_session(self, session) or "
+                    "accept session_name and account_identifier keyword arguments."
+                )
+        except Exception as exc:  # noqa: BLE001 (advisory output: the login already succeeded)
+            LOG.warning(
+                "post_login_advisory_failed",
+                stage="target_slot_check",
+                plugin=plugin.site_name,
+                session=target_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+
+        # get_active_session() reads the environment (cwd, .gp-session) and can
+        # raise on a removed cwd or an unreadable file.
+        try:
             current = get_active_session()
             if current and current != target_name:
                 gp_console.info(
                     f"This shell is pinned to {current} — "
                     f"run: gp session use {target_name} to switch"
                 )
-        except Exception as exc:  # noqa: BLE001 — advisory output; the login already succeeded
+        except Exception as exc:  # noqa: BLE001 (advisory output: never blocks a login)
             LOG.warning(
                 "post_login_advisory_failed",
+                stage="ambient_pin_hint",
                 plugin=plugin.site_name,
                 session=target_name,
                 error=str(exc),

@@ -37,6 +37,7 @@ from graftpunk.plugins.cli_plugin import (
     PluginParamSpec,
     SitePlugin,
     build_plugin_config,
+    cache_login_session,
     command,
 )
 from graftpunk.plugins.export import (
@@ -71,6 +72,7 @@ from graftpunk.tokens import Token, TokenConfig
 __all__ = [
     # Base classes and decorators
     "SitePlugin",
+    "cache_login_session",
     "command",
     "CLIPluginProtocol",
     "CommandContext",

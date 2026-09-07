@@ -53,10 +53,11 @@ if TYPE_CHECKING:
     from graftpunk.plugins.output_config import OutputConfig
     from graftpunk.tokens import TokenConfig
 
-from graftpunk.cache import cache_session, load_session_for_api
+from graftpunk.cache import cache_session, get_session_metadata, load_session_for_api
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
+from graftpunk.session_scope import operating_session_for, resolve_load_target
 
 LOG = get_logger(__name__)
 
@@ -709,7 +710,7 @@ class CLIPluginProtocol(Protocol):
         """Return all commands defined by this plugin."""
         ...
 
-    def get_session(self) -> requests.Session:
+    def get_session(self, session_name: str | None = None) -> requests.Session:
         """Load the graftpunk session for API calls."""
         ...
 
@@ -1109,8 +1110,8 @@ class SitePlugin:
                 session.current_url = f"{self.base_url}/"
             # Success path: transfer cookies and cache
             await session.transfer_nodriver_cookies_to_session()
-            # No explicit name/identifier: the instance state (the login
-            # stamp, when a CLI login drove us here) IS this path's contract.
+            # No explicit name/identifier: the operating session scope, set by
+            # the login command around the login callable, IS this path's input.
             cache_login_session(self, session)
         finally:
             try:
@@ -1150,7 +1151,7 @@ class SitePlugin:
                 session.current_url = f"{self.base_url}/"
             # Success path: transfer cookies and cache
             session.transfer_driver_cookies_to_session()
-            # Instance fallback by contract -- see browser_session() above.
+            # Scope fallback by contract -- see browser_session() above.
             cache_login_session(self, session)
         finally:
             try:
@@ -1158,45 +1159,47 @@ class SitePlugin:
             except Exception as cleanup_exc:
                 LOG.exception("browser_session_cleanup_failed", error=str(cleanup_exc))
 
-    def get_session(self) -> requests.Session:
+    def get_session(self, session_name: str | None = None) -> requests.Session:
         """Load the graftpunk session for API calls.
 
-        If requires_session is False, returns a plain requests.Session.
+        If ``requires_session`` is False, returns a plain ``requests.Session``.
 
-        Note: the CLI runtime (``plugin_runtime.run_plugin_command``) no
-        longer calls this method -- it resolves the operating account name
-        first (``--session`` / env / ``.gp-session`` / resolution) and loads
-        directly via ``load_session_for_api_resolved``. This method loads by
-        the bare base name (``self.session_name``), which the loader treats as
-        a base: a single cached account under it resolves, several raise.
+        The plain-session short-circuit applies only when no name is given:
+        an explicit *session_name* names a slot to load, and is honoured even
+        on a ``requires_session=False`` plugin.
 
-        The session this returns may be ``base@label`` while
-        ``self.session_name`` is still bare. Persisting with
-        ``update_session_cookies(session, self.session_name)`` lands on the
-        slot that was loaded: the session carries that slot name in memory,
-        and a write-back whose argument is the slot's bare base follows it
-        (#174). ``ctx.save_session()`` from a command handler, and the
-        operating name the CLI resolved
-        (``load_session_for_api_resolved`` returns it), both remain exact and
-        say the target at the call site.
+        Which slot is loaded is decided by
+        :func:`graftpunk.session_scope.resolve_load_target`: *session_name*
+        when given (a labelled name is exact, a bare one is a base the loader
+        resolves), else the operating session scope when one is set for this
+        plugin's base name (a labelled scope name is exact, a bare one
+        resolves), else the bare ``self.session_name``, resolving. A scope
+        set for another plugin's base is ignored, so one plugin's dispatch
+        never steers another's load.
 
-        That fixes the write-back only. This method still loads by the bare
-        base name, so with two accounts cached under it and the CLI pinned to
-        one, ``get_session()`` resolves on its own terms and raises
-        ``AmbiguousSessionError``. Threading the resolved name into this method
-        remains tracked by https://github.com/stavxyz/graftpunk/issues/174,
-        alongside retiring the login identity stamp.
+        This returns a SECOND ``requests.Session``, not ``ctx.session``.
+
+        Args:
+            session_name: An explicit slot or base name, overriding the scope
+                and the plugin's base name. This is the channel for callers
+                outside a dispatch: scripts, tests, and library code that
+                already holds a name.
 
         Raises:
-            SessionNotFoundError: Nothing is cached under ``self.session_name``
-                exactly and no account is cached under it either.
-            AmbiguousSessionError: Nothing is cached under
-                ``self.session_name`` exactly and several cached sessions share
-                it as their base; the error names every candidate.
+            SessionNotFoundError: Nothing is cached under the name that was
+                loaded. On an exact load (a labelled name, from either tier) a
+                miss is a miss.
+            AmbiguousSessionError: A resolving load (any bare name, whether
+                explicit, from the scope, or the plugin's own) found several
+                cached sessions sharing the base and nothing selected one; the
+                error names every candidate.
+            ValueError: The name reaching the loader is not a legal session
+                name.
         """
-        if not self.requires_session:
+        if session_name is None and not self.requires_session:
             return requests.Session()
-        return load_session_for_api(self.session_name)
+        name, resolve = resolve_load_target(self.session_name, session_name)
+        return load_session_for_api(name, resolve=resolve)
 
 
 def cache_login_session(
@@ -1208,18 +1211,47 @@ def cache_login_session(
 ) -> str:
     """The one login-flow cache funnel. Explicit arguments first.
 
-    Callers that hold the operating name and identifier pass them explicitly --
-    the generated login flows receive both from ``make_login_body``. The
-    instance fallback exists ONLY for the author-facing paths (hand-written
-    logins caching through ``browser_session``/``browser_session_sync``),
-    whose API shape reads ``self.session_name``; the login stamp covers those.
+    *name* when given wins outright: the generated login flows pass it, and so
+    does any caller that already knows the slot. Otherwise the operating
+    session scope supplies both the slot and the account, and failing that the
+    plugin's bare base name does. The scope is base-scoped, so another
+    plugin's dispatch can never rename this write. That is how a hand-written
+    ``login()`` caching through ``browser_session`` or ``browser_session_sync``
+    lands on the account-qualified slot with nothing mutating the plugin
+    instance (#174).
+
+    The scope may have been set by any dispatch, not only by the login
+    command. It is read only when *name* is None. Explicit arguments always
+    win individually, and a missing identifier is carried forward from the
+    slot's stored metadata when that slot already records one, so a write
+    under a command scope refreshes cookies without erasing the account the
+    slot was recorded for. A storage failure on that read is logged and the
+    write goes ahead recording no account.
+
     The identifier rides the session object so ``_extract_session_metadata``
     records it. Returns the session name used.
     """
     from graftpunk.session_identity import GP_ACCOUNT_ATTR
 
-    session_name = name or plugin.session_name
-    account = identifier if identifier is not None else getattr(plugin, GP_ACCOUNT_ATTR, None)
+    scope = operating_session_for(plugin.session_name) if name is None else None
+    session_name = name if name is not None else (scope.name if scope else plugin.session_name)
+    account = identifier if identifier is not None else (scope.identifier if scope else None)
+    if account is None:
+        # The one read in the funnel; cache_session itself stays read-free. A
+        # storage failure here costs the carried-forward account, never the
+        # write: this runs on the login path, where the session in hand is the
+        # thing worth keeping.
+        try:
+            stored = get_session_metadata(session_name)
+        except Exception as exc:  # noqa: BLE001 (advisory read: never blocks a cache write)
+            LOG.warning(
+                "login_identity_carry_forward_failed",
+                session=session_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            stored = None
+        account = stored.get("account_identifier") if stored else None
     if account is not None:
         setattr(session, GP_ACCOUNT_ATTR, account)
     cache_session(session, session_name)

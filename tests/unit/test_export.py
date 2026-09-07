@@ -523,6 +523,7 @@ class TestPluginFormattersThreading:
         spec = _make_test_spec()
         ctx = MagicMock(spec=CommandContext)
         ctx.plugin_name = "test"
+        ctx._operating_session_name = ""
         result = execute_plugin_command(
             spec,
             ctx,
@@ -534,6 +535,7 @@ class TestPluginFormattersThreading:
         spec = _make_test_spec()
         ctx = MagicMock(spec=CommandContext)
         ctx.plugin_name = "test"
+        ctx._operating_session_name = ""
         result = execute_plugin_command(spec, ctx)
         assert result._plugin_formatters is None
 

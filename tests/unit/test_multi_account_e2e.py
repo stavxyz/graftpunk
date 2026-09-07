@@ -294,3 +294,84 @@ class TestPluginRuntimeStillRefusesUnpinnedAmbiguity:
         show = CliRunner().invoke(session_app, ["show", "myshop", "--json"])
         assert show.exit_code == 0, show.output
         assert '"account_identifier": "legacy@example.com"' in show.output
+
+
+def _whoami_plugin(seen: dict):  # noqa: ANN001, ANN202
+    """A plugin whose handler calls ``self.get_session()`` and records the account."""
+    from graftpunk.plugins.cli_plugin import SitePlugin, command
+    from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+    class ShopPlugin(SitePlugin):
+        site_name = "fmtsite"
+        base_url = "https://fmt.example.com"
+        session_name = "myshop"
+        requires_session = True
+
+        @command(help="Report the account get_session loads")
+        def whoami(self, ctx):  # noqa: ANN001, ANN202
+            api = self.get_session()
+            seen["account"] = getattr(api, GP_ACCOUNT_ATTR, None)
+            return {"ok": True}
+
+    return ShopPlugin()
+
+
+class TestGetSessionFollowsTheOperatingScope:
+    """#174 end to end: the author-facing load agrees with the dispatcher's pin."""
+
+    def test_cli_pin_steers_get_session_inside_the_handler(self, fresh_backend) -> None:  # noqa: ANN001
+        from tests.unit.cli_harness import cacheable_browser_session, invoke_plugin_app
+
+        cache_session(cacheable_browser_session("alice@example.com"), "myshop@alice")
+        cache_session(cacheable_browser_session("bob@example.com"), "myshop@bob")
+
+        seen: dict = {}
+        result = invoke_plugin_app(
+            _whoami_plugin(seen), ["fmtsite", "whoami", "--session", "myshop@bob"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["account"] == "bob@example.com"
+
+    def test_client_pin_steers_get_session_inside_the_handler(self, fresh_backend) -> None:  # noqa: ANN001
+        from unittest.mock import patch
+
+        from graftpunk.client import GraftpunkClient
+        from tests.unit.cli_harness import cacheable_browser_session
+
+        cache_session(cacheable_browser_session("alice@example.com"), "myshop@alice")
+        cache_session(cacheable_browser_session("bob@example.com"), "myshop@bob")
+
+        seen: dict = {}
+        plugin = _whoami_plugin(seen)
+        with (
+            patch("graftpunk.client.get_plugin", return_value=plugin),
+            GraftpunkClient("fmtsite", session="myshop@bob") as client,
+        ):
+            client.execute("whoami")
+
+        assert seen["account"] == "bob@example.com"
+
+    def test_a_sessionless_command_sets_no_scope(self, fresh_backend) -> None:  # noqa: ANN001
+        """There is no account for a requires_session=False command to be about."""
+        from graftpunk.plugins.cli_plugin import SitePlugin, command
+        from graftpunk.session_scope import current_operating_session
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        seen: dict = {}
+
+        class FreePlugin(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "myshop"
+            requires_session = False
+
+            @command(help="No session needed")
+            def ping(self, ctx):  # noqa: ANN001, ANN202
+                seen["scope"] = current_operating_session()
+                return {"ok": True}
+
+        result = invoke_plugin_app(FreePlugin(), ["fmtsite", "ping"])
+
+        assert result.exit_code == 0, result.output
+        assert seen["scope"] is None
