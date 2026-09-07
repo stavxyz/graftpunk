@@ -1419,7 +1419,7 @@ class TestClientOperatingSession:
         seen: list[str] = []
 
         def handler(ctx: CommandContext, **_kw: Any) -> dict[str, bool]:
-            seen.append(ctx._session_name)
+            seen.append(ctx._operating_session_name)
             ctx.session.cookies.set("visited", "1")
             return {"ok": True}
 

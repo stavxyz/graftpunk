@@ -243,7 +243,11 @@ class CommandContext:
     base_url: str = ""
     config: PluginConfig | None = None
     observe: ObservabilityContext = field(default_factory=NoOpObservabilityContext)
-    _session_name: str = field(default="", repr=False)
+    # The resolved operating session name (the slot a load landed on, not
+    # necessarily the caller's raw pin) -- read back by a command handler
+    # that needs to know which slot is in play, and used as a truthiness
+    # gate by save_session() below (#178).
+    _operating_session_name: str = field(default="", repr=False)
     _session_dirty: bool = field(default=False, repr=False, init=False)
 
     def __post_init__(self) -> None:
@@ -263,9 +267,20 @@ class CommandContext:
         Raises:
             ValueError: If no session name is configured on this context.
         """
-        if not self._session_name:
+        if not self._operating_session_name:
             raise ValueError("No session name configured on this CommandContext")
         self._session_dirty = True
+
+    @property
+    def _session_name(self) -> str:
+        """Compatibility alias for ``_operating_session_name`` (#178).
+
+        Read-only: this field was renamed from ``_session_name`` to
+        ``_operating_session_name`` to say plainly that it holds the slot a
+        load resolved to, not the caller's raw pin. This alias returns the
+        same value under the old name for any handler still reading it.
+        """
+        return self._operating_session_name
 
 
 @dataclass(frozen=True)

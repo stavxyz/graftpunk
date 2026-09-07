@@ -88,7 +88,10 @@ class TestHttpAccountResolution:
         _, operating_name = _make_request("GET", "https://example.com", session_name="myshop")
 
         assert operating_name == "myshop"
-        mock_load.assert_called_once_with("myshop", resolve=True)
+        # "myshop" is a registered site name: resolve_session_name_or_exit
+        # already consulted the listing (the exact-hit check found the bare
+        # slot), so the load is exact-only and does not list again (#178).
+        mock_load.assert_called_once_with("myshop", resolve=False)
 
     @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
@@ -142,6 +145,49 @@ class TestHttpPinResolution:
         cache_spy.assert_not_called()
         rendered = capsys.readouterr()
         assert "myshop@nobody" in rendered.out + rendered.err
+
+    def test_registered_site_name_not_found_lists_exactly_once(
+        self,
+        fresh_backend,  # noqa: ANN001
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A registered site name with nothing cached lists once, not twice (#178).
+
+        ``resolve_session_name_or_exit`` already lists once (the exact-hit
+        check on the plugin's base, then the account-resolution fallback on
+        that SAME listing) and returns the bare base when nothing is cached.
+        The loader must not list again on its way to the same
+        ``SessionNotFoundError``: count both the ``plugin_commands`` and the
+        ``cache`` bindings of ``list_sessions``, since either could be the one
+        that pays for a second round-trip. The rendered message must also
+        keep the actionable wording (#178, PR #189 review): the loader's own
+        raise text, not the storage backend's bare "not found".
+        """
+        import typer
+
+        from graftpunk.cache import list_sessions as real_list_sessions
+
+        plugin_commands_spy = MagicMock(wraps=real_list_sessions)
+        cache_spy = MagicMock(wraps=real_list_sessions)
+        with (
+            patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
+            patch("graftpunk.cli.plugin_commands._plugin_session_map", {"myshop": "myshop"}),
+            patch("graftpunk.cli.plugin_commands.list_sessions", plugin_commands_spy),
+            patch("graftpunk.cache.list_sessions", cache_spy),
+            pytest.raises(typer.Exit) as exc_info,
+        ):
+            _make_request("GET", "https://example.com", session_name="myshop")
+
+        assert exc_info.value.exit_code == 1
+        assert plugin_commands_spy.call_count + cache_spy.call_count == 1, (
+            f"plugin_commands calls={plugin_commands_spy.call_count}, "
+            f"cache calls={cache_spy.call_count}"
+        )
+        rendered = capsys.readouterr()
+        combined = rendered.out + rendered.err
+        assert "myshop" in combined
+        assert "no account is cached under it" in combined
+        assert "Run 'gp <site> login' first" in combined
 
     @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])

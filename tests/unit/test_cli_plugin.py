@@ -1220,7 +1220,7 @@ class TestCommandContextSaveSession:
             plugin_name="test",
             command_name="cmd",
             api_version=1,
-            _session_name="testsession",
+            _operating_session_name="testsession",
         )
         assert ctx._session_dirty is False
 
@@ -1230,7 +1230,7 @@ class TestCommandContextSaveSession:
             plugin_name="test",
             command_name="cmd",
             api_version=1,
-            _session_name="testsession",
+            _operating_session_name="testsession",
         )
         ctx.save_session()
         assert ctx._session_dirty is True
@@ -1252,7 +1252,21 @@ class TestCommandContextSaveSession:
             command_name="cmd",
             api_version=1,
         )
-        assert ctx._session_name == ""
+        assert ctx._operating_session_name == ""
+
+    def test_session_name_alias_reads_operating_session_name(self) -> None:
+        """_session_name is a read-only compatibility alias for the rename (#178)."""
+        ctx = CommandContext(
+            session=MagicMock(),
+            plugin_name="test",
+            command_name="cmd",
+            api_version=1,
+            _operating_session_name="testsession",
+        )
+        assert ctx._session_name == "testsession"
+        assert ctx._session_name == ctx._operating_session_name
+        with pytest.raises(AttributeError):
+            ctx._session_name = "other"  # type: ignore[misc]
 
 
 class TestPluginParamSpecClickKwargs:

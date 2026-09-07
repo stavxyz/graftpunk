@@ -216,7 +216,7 @@ def run_plugin_command(
             base_url=getattr(plugin, "base_url", ""),
             config=getattr(plugin, "_plugin_config", None),
             observe=observe_ctx,
-            _session_name=operating_name,
+            _operating_session_name=operating_name,
         )
 
         try:

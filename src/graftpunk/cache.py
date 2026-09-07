@@ -317,7 +317,7 @@ def cache_session(session: T, session_name: str | None = None) -> str:
         raise
 
 
-def load_session(name: str) -> SessionLike:
+def load_session(name: str, backend_override: str | None = None) -> SessionLike:
     """Load a cached session.
 
     Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
@@ -339,6 +339,7 @@ def load_session(name: str) -> SessionLike:
 
     Args:
         name: Session name.
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         Loaded session object.
@@ -347,11 +348,13 @@ def load_session(name: str) -> SessionLike:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be decrypted or has invalid structure.
     """
-    session, _metadata = _load_session_with_metadata(name)
+    session, _metadata = _load_session_with_metadata(name, backend_override=backend_override)
     return session
 
 
-def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata]:
+def _load_session_with_metadata(
+    name: str, backend_override: str | None = None
+) -> tuple[SessionLike, SessionMetadata]:
     """Load a cached session together with the SessionMetadata already fetched
     during that same backend read.
 
@@ -362,6 +365,7 @@ def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata
 
     Args:
         name: Session name to load.
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         The deserialized session and the ``SessionMetadata`` read in the same
@@ -372,7 +376,7 @@ def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata
         SessionExpiredError: The session is expired, cannot be decrypted, or
             fails its checksum/deserialization.
     """
-    backend = _get_session_storage_backend()
+    backend = _get_session_storage_backend(backend_override=backend_override)
     settings = get_settings()
 
     try:
@@ -568,6 +572,22 @@ def _deserialize_browserfree(decrypted: bytes) -> object:
     return _BrowserFreeUnpickler(io.BytesIO(decrypted)).load()
 
 
+def no_account_cached_message(name: str) -> str:
+    """The actionable message for a bare *name* with nothing cached under it.
+
+    Shared by :func:`load_session_for_api_resolved` and any CLI surface that
+    already knows account resolution was exhausted for *name* (a registered
+    site name whose listing ``resolve_session_name_or_exit`` already
+    consulted), so the wording never drifts between the exception this
+    module raises for that case and the one a caller renders for the same
+    case (#178, PR #189 review).
+    """
+    return (
+        f"No session cached for '{name}', and no account is cached under it. "
+        "Run 'gp <site> login' first."
+    )
+
+
 def load_session_for_api_resolved(
     name: str, *, resolve: bool = True
 ) -> tuple[requests.Session, str]:
@@ -638,6 +658,10 @@ def load_session_for_api_resolved(
         browser_session = load_session(name)
     except SessionNotFoundError as exc:
         if not resolve:
+            # INFO, not WARNING: this is invisible under the library's
+            # WARNING default and useful when tracing with logging turned
+            # up. The raised SessionNotFoundError is the signal a caller
+            # acts on, not this log line (#178, PR #189 review).
             LOG.info("session_not_found_for_api", name=name, resolve=False)
             raise
         miss = exc
@@ -650,10 +674,7 @@ def load_session_for_api_resolved(
         resolved = resolve_account_session(name, list_sessions())
         if resolved == name:
             LOG.info("session_not_found_for_api", name=name, resolve=True)
-            raise SessionNotFoundError(
-                f"No session cached for '{name}', and no account is cached under it. "
-                "Run 'gp <site> login' first."
-            ) from miss
+            raise SessionNotFoundError(no_account_cached_message(name)) from miss
         LOG.info("api_session_resolved_account", requested=name, resolved=resolved)
         browser_session = load_session(resolved)
         loaded_name = resolved

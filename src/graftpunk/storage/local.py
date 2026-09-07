@@ -3,9 +3,12 @@
 import json
 import os
 import shutil
+import stat
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO, Any
 
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError
 from graftpunk.logging import get_logger
@@ -87,8 +90,13 @@ class LocalSessionStorage:
 
         LOG.info("session_save_started", name=name, path=str(pickle_path))
 
-        # Write encrypted pickle file with secure permissions from creation
+        # Write encrypted pickle file with secure permissions from creation.
+        # The mode given to os.open only applies to a NEW file; an existing
+        # one keeps whatever mode it already had, so an explicit fchmod
+        # after the open tightens a re-save over a file left wide by some
+        # other means too (#178, PR #189 review).
         fd = os.open(pickle_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(encrypted_data)
 
@@ -102,8 +110,11 @@ class LocalSessionStorage:
         # Write metadata with the same secure-from-creation permissions as the
         # pickle: it carries the account identifier, the domain and the URL
         # last visited — not secrets, but not other users' business either.
+        # Same re-save caveat as above: fchmod after the open, not just the
+        # os.open mode, so an existing wide file is tightened too.
         metadata_dict = metadata_to_dict(metadata)
         meta_fd = os.open(metadata_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(meta_fd, 0o600)
         with os.fdopen(meta_fd, "w") as f:
             json.dump(metadata_dict, f, indent=2, default=str)
 
@@ -134,13 +145,22 @@ class LocalSessionStorage:
             if old_path.exists():
                 return self._load_legacy_session(name, old_path)
 
-            LOG.warning("session_not_found", name=name)
+            # A miss is a normal query result, not a problem: the raised
+            # SessionNotFoundError is the signal callers act on, and a bare
+            # base name resolving to an account is expected to miss here on
+            # the way to a hit (#178).
+            LOG.debug("session_not_found", name=name)
             raise SessionNotFoundError(f"Session '{name}' not found")
 
         pickle_path = session_dir / "session.pickle"
         metadata_path = session_dir / "metadata.json"
 
         if not pickle_path.exists():
+            # NOT a plain miss: the session directory exists (so a bare-name
+            # resolution already matched it) but its pickle is gone, which
+            # means a partial write or tampering rather than "nothing was
+            # ever cached here". That is worth a WARNING (#178, PR #189
+            # review).
             LOG.warning("session_pickle_not_found", name=name)
             raise SessionNotFoundError(f"Session '{name}' not found")
 
@@ -155,6 +175,7 @@ class LocalSessionStorage:
 
         try:
             with metadata_path.open() as f:
+                self._tighten_mode(f, name)
                 metadata_dict = json.load(f)
         except (OSError, json.JSONDecodeError) as exc:
             LOG.error("session_metadata_invalid", name=name, error=str(exc))
@@ -184,11 +205,36 @@ class LocalSessionStorage:
 
         # Load encrypted data
         with pickle_path.open("rb") as f:
+            self._tighten_mode(f, name)
             encrypted_data = f.read()
 
         metadata = dict_to_metadata(metadata_dict)
         LOG.info("session_load_completed", name=name)
         return encrypted_data, metadata
+
+    def _tighten_mode(self, f: IO[Any], name: str) -> None:
+        """Best-effort: narrow an already-open file's mode to 0o600.
+
+        New files are written with 0o600 from creation, and a re-save
+        fchmods to it too (see ``save_session``), but a file saved before
+        either of those, or copied in by some other means, may carry a
+        wider mode. Neither the pickle nor the metadata is itself a
+        secret, but they are not other users' business either. This works
+        off the descriptor *f* already has open for the read that follows,
+        so it costs no extra path lookup and has no window between
+        checking the mode and a different file landing at that path.
+        Skipped on Windows, where POSIX modes do not apply; a failure to
+        chmod is logged at debug and never blocks the load.
+        """
+        if sys.platform == "win32":
+            return
+        try:
+            fd = f.fileno()
+            current_mode = stat.S_IMODE(os.fstat(fd).st_mode)
+            if current_mode & ~0o600:
+                os.fchmod(fd, 0o600)
+        except OSError as exc:
+            LOG.debug("session_file_chmod_failed", name=name, error=str(exc))
 
     def _load_legacy_session(
         self,
@@ -210,12 +256,12 @@ class LocalSessionStorage:
             encrypted_data = f.read()
 
         # Create minimal metadata from file stats
-        stat = path.stat()
+        file_stat = path.stat()
         metadata = SessionMetadata(
             name=name,
             checksum="",  # Unknown for legacy sessions
-            created_at=datetime.fromtimestamp(stat.st_ctime, tz=UTC),
-            modified_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+            created_at=datetime.fromtimestamp(file_stat.st_ctime, tz=UTC),
+            modified_at=datetime.fromtimestamp(file_stat.st_mtime, tz=UTC),
             expires_at=None,  # No TTL for legacy sessions
             domain=None,
             current_url=None,

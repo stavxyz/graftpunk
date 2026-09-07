@@ -99,6 +99,23 @@ def test_bare_name_resolves_to_single_labelled_account(fresh_backend, captured_l
     assert created[0]["requested"] == "myshop"
 
 
+def test_successful_bare_name_resolution_emits_no_warnings(fresh_backend, captured_logs) -> None:  # noqa: ANN001
+    """A miss on the way to a hit is a normal query result, not a problem (#178).
+
+    ``load_session_for_api("myshop")`` misses the bare key before it resolves
+    to the single ``myshop@alice`` account underneath it. That miss must not
+    leave a WARNING behind, from either the backend's own load or cache.py's
+    ``session_not_found_for_api``: the raised ``SessionNotFoundError`` is the
+    signal, and this call never raises one.
+    """
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+    load_session_for_api("myshop")
+
+    warnings = [e for e in captured_logs if e.get("log_level") == "warning"]
+    assert not warnings, f"expected no WARNING-level events, got: {warnings}"
+
+
 def test_tuple_variant_returns_the_loaded_name_on_the_fallback(fresh_backend) -> None:  # noqa: ANN001
     cache_session(_cached_session("alice@example.com"), "myshop@alice")
 
@@ -147,6 +164,12 @@ def test_miss_logs_session_not_found_for_api(fresh_backend, captured_logs) -> No
     events = [e for e in captured_logs if e["event"] == "session_not_found_for_api"]
     assert events, f"expected session_not_found_for_api log event, got: {captured_logs}"
     assert events[0]["name"] == "myshop"
+    # INFO, not WARNING: invisible under the library's WARNING default and
+    # useful when tracing with logging turned up. The raised
+    # SessionNotFoundError is the signal a caller acts on, not this log
+    # line -- a WARNING here would triple-report the same miss once the
+    # CLI boundary logs and renders its own error too (#178, PR #189 review).
+    assert events[0]["log_level"] == "info"
 
 
 def test_exact_labelled_name_does_not_list_sessions(fresh_backend, monkeypatch) -> None:  # noqa: ANN001

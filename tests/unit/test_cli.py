@@ -1564,8 +1564,8 @@ class TestResolveSessionNameIntegration:
         result = runner.invoke(app, ["session", "export", "my-plugin"])
 
         assert result.exit_code == 0
-        mock_resolve.assert_called_once_with("my-plugin")
-        mock_load.assert_called_once_with("resolved-session")
+        mock_resolve.assert_called_once_with("my-plugin", backend_override=None)
+        mock_load.assert_called_once_with("resolved-session", backend_override=None)
 
     @patch("graftpunk.cli.session_commands.get_session_metadata")
     @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")

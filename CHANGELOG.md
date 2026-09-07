@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `CommandContext._session_name` is renamed to `_operating_session_name`, to say plainly that it holds the slot a load resolved to rather than the caller's raw pin ([#178](https://github.com/stavxyz/graftpunk/issues/178)). A read-only `_session_name` property remains on `CommandContext` as a compatibility alias returning the same value, so a command handler still reading the old name keeps working.
+
 ### Fixed
 
 - `update_session_cookies(session, base)` follows the slot the session was loaded from when `base` is that slot's base name and no slot is cached under `base` itself, so `SitePlugin.get_session()` and `load_session_for_api(base)` callers that persist with the bare name no longer drop the refresh ([#174](https://github.com/stavxyz/graftpunk/issues/174)). A slot cached under the name given always wins, so an existing bare `base` slot is still written. The slot name rides on the session object in memory and is not pickled; both the loaders and `cache_session` set it, so the last load or save wins. Explicit labelled names and slots from another base stay literal.
+- `gp session export` and `gp session use` now honor `--storage-backend` when resolving the session name, and `gp session export` also honors it when loading the session, instead of resolving (and, for export, loading) against the default backend regardless of the flag ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
+- Session storage backends' "not found" logs on a plain miss are now DEBUG instead of WARNING, since a miss on the way to a hit (for example `load_session_for_api("myshop")` resolving to `myshop@alice`) is a normal query result. A real not-found still raises `SessionNotFoundError`, and the API loader records it at INFO ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
+- `gp http --session <name>` no longer lists cached sessions twice when `<name>` is a registered site name (or alias) with nothing cached. It lists once on the miss path ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
+
+### Security
+
+- Loading a local session now tightens an existing `metadata.json` or `session.pickle` file's permissions to 0600 when they are wider than that, and re-saving one does the same ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
 
 ## [1.15.1] - 2026-09-07
 

@@ -290,7 +290,9 @@ class SupabaseSessionStorage:
             metadata_json = metadata_bytes.decode("utf-8")
             metadata = dict_to_metadata(json.loads(metadata_json))
         except (HTTPStatusError, StorageApiError) as e:
-            LOG.warning("session_metadata_not_found", name=name, error=str(e))
+            # A miss is a normal query result, not a problem: the raised
+            # SessionNotFoundError is the signal callers act on (#178).
+            LOG.debug("session_metadata_not_found", name=name, error=str(e))
             raise SessionNotFoundError(f"Session '{name}' not found") from e
 
         # Check TTL
