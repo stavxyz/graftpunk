@@ -157,9 +157,11 @@ class TestHttpPinResolution:
         check on the plugin's base, then the account-resolution fallback on
         that SAME listing) and returns the bare base when nothing is cached.
         The loader must not list again on its way to the same
-        ``SessionNotFoundError`` — count both the ``plugin_commands`` and the
+        ``SessionNotFoundError``: count both the ``plugin_commands`` and the
         ``cache`` bindings of ``list_sessions``, since either could be the one
-        that pays for a second round-trip.
+        that pays for a second round-trip. The rendered message must also
+        keep the actionable wording (#178, PR #189 review): the loader's own
+        raise text, not the storage backend's bare "not found".
         """
         import typer
 
@@ -182,7 +184,10 @@ class TestHttpPinResolution:
             f"cache calls={cache_spy.call_count}"
         )
         rendered = capsys.readouterr()
-        assert "myshop" in rendered.out + rendered.err
+        combined = rendered.out + rendered.err
+        assert "myshop" in combined
+        assert "no account is cached under it" in combined
+        assert "Run 'gp <site> login' first" in combined
 
     @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])

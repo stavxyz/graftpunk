@@ -164,8 +164,12 @@ def test_miss_logs_session_not_found_for_api(fresh_backend, captured_logs) -> No
     events = [e for e in captured_logs if e["event"] == "session_not_found_for_api"]
     assert events, f"expected session_not_found_for_api log event, got: {captured_logs}"
     assert events[0]["name"] == "myshop"
-    # The real not-found is the case that still gets a WARNING (#178).
-    assert events[0]["log_level"] == "warning"
+    # INFO, not WARNING: invisible under the library's WARNING default and
+    # useful when tracing with logging turned up. The raised
+    # SessionNotFoundError is the signal a caller acts on, not this log
+    # line -- a WARNING here would triple-report the same miss once the
+    # CLI boundary logs and renders its own error too (#178, PR #189 review).
+    assert events[0]["log_level"] == "info"
 
 
 def test_exact_labelled_name_does_not_list_sessions(fresh_backend, monkeypatch) -> None:  # noqa: ANN001

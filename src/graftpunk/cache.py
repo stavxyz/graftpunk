@@ -572,6 +572,22 @@ def _deserialize_browserfree(decrypted: bytes) -> object:
     return _BrowserFreeUnpickler(io.BytesIO(decrypted)).load()
 
 
+def no_account_cached_message(name: str) -> str:
+    """The actionable message for a bare *name* with nothing cached under it.
+
+    Shared by :func:`load_session_for_api_resolved` and any CLI surface that
+    already knows account resolution was exhausted for *name* (a registered
+    site name whose listing ``resolve_session_name_or_exit`` already
+    consulted), so the wording never drifts between the exception this
+    module raises for that case and the one a caller renders for the same
+    case (#178, PR #189 review).
+    """
+    return (
+        f"No session cached for '{name}', and no account is cached under it. "
+        "Run 'gp <site> login' first."
+    )
+
+
 def load_session_for_api_resolved(
     name: str, *, resolve: bool = True
 ) -> tuple[requests.Session, str]:
@@ -642,7 +658,11 @@ def load_session_for_api_resolved(
         browser_session = load_session(name)
     except SessionNotFoundError as exc:
         if not resolve:
-            LOG.warning("session_not_found_for_api", name=name, resolve=False)
+            # INFO, not WARNING: this is invisible under the library's
+            # WARNING default and useful when tracing with logging turned
+            # up. The raised SessionNotFoundError is the signal a caller
+            # acts on, not this log line (#178, PR #189 review).
+            LOG.info("session_not_found_for_api", name=name, resolve=False)
             raise
         miss = exc
 
@@ -653,11 +673,8 @@ def load_session_for_api_resolved(
         # miss itself is kept in `miss` and re-attached explicitly below.
         resolved = resolve_account_session(name, list_sessions())
         if resolved == name:
-            LOG.warning("session_not_found_for_api", name=name, resolve=True)
-            raise SessionNotFoundError(
-                f"No session cached for '{name}', and no account is cached under it. "
-                "Run 'gp <site> login' first."
-            ) from miss
+            LOG.info("session_not_found_for_api", name=name, resolve=True)
+            raise SessionNotFoundError(no_account_cached_message(name)) from miss
         LOG.info("api_session_resolved_account", requested=name, resolved=resolved)
         browser_session = load_session(resolved)
         loaded_name = resolved

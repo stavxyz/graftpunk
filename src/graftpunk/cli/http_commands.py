@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
 
 from graftpunk import console as gp_console
-from graftpunk.cache import load_session_for_api_resolved
-from graftpunk.exceptions import SessionInvalidatedError
+from graftpunk.cache import load_session_for_api_resolved, no_account_cached_message
+from graftpunk.exceptions import SessionInvalidatedError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import ObserveStorage, session_dirname
@@ -198,28 +198,34 @@ def _make_request(
         # consult the listing (the exact-hit check on the base, and the
         # account fallback on that same listing) -- asking the loader to
         # resolve again would repeat that listing on the not-found path
-        # (#178). Only a bare name that is NOT a registered site name still
-        # needs the loader's own resolve step, since resolve_session_name
-        # passes those through untouched.
-        site_name_resolved = is_registered_site_name(resolved)
+        # (#178). A pin can still be a BARE base name here for any OTHER
+        # name (one that is not a registered plugin passes through
+        # resolve_session_name unchanged): the loader resolves it and
+        # reports the slot it loaded, which is the name every downstream
+        # use must key off -- the observe run dir included (#182). An
+        # already-resolved name is an exact hit and lists nothing.
+        is_site_name = is_registered_site_name(resolved)
         resolved = resolve_session_name_or_exit(resolved)
         try:
-            # A pin can still be a BARE base name here (a name that is not a
-            # registered plugin passes through resolve_session_name unchanged):
-            # the loader resolves it and reports the slot it loaded, which is
-            # the name every downstream use must key off — the observe run dir
-            # included (#182). An already-resolved name is an exact hit and
-            # lists nothing.
-            #
-            # Only a BARE name asks the loader to resolve: the fallback matches
-            # on the base, so resolving a labelled name can only list uselessly.
             session, resolved = load_session_for_api_resolved(
                 resolved,
-                resolve=(not site_name_resolved) and split_session_name(resolved)[1] is None,
+                resolve=(not is_site_name) and split_session_name(resolved)[1] is None,
             )
         except Exception as exc:  # noqa: BLE001 — CLI boundary
-            LOG.error("session_load_failed", session_name=resolved, error=str(exc))
-            gp_console.error(f"Failed to load session '{resolved}': {exc}")
+            # resolve=False for a registered site name means
+            # resolve_session_name_or_exit already exhausted the account
+            # listing for this base; the backend's own miss message
+            # ("Session 'x' not found") is technically correct but loses
+            # that context, so restore the actionable wording
+            # load_session_for_api_resolved itself would have raised for
+            # the same case (#178, PR #189 review).
+            message = (
+                no_account_cached_message(resolved)
+                if is_site_name and isinstance(exc, SessionNotFoundError)
+                else str(exc)
+            )
+            LOG.error("session_load_failed", session_name=resolved, error=message)
+            gp_console.error(f"Failed to load session '{resolved}': {message}")
             raise typer.Exit(1) from exc
 
     if not browser_headers and hasattr(session, "clear_header_roles"):
