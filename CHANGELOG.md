@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.16.0] - 2026-09-07
 
+This is a minor release. It carries two documented changes for plugin authors and one new behaviour inside command handlers.
+
+### Upgrading
+
+1. CLI installs do not upgrade themselves when a project raises its graftpunk dependency floor. Run `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, `pip install -U graftpunk`, or `pip install -U 'graftpunk[browser]'` when the browser extra is in use (extras must be repeated on every upgrade).
+2. **Inside a hand-written `login()`, `self.session_name` is the bare base.** A login that caches through `browser_session()` or `browser_session_sync()` needs nothing. One that calls `cache_session(session, self.session_name)` by hand now writes the bare slot; call `cache_login_session(self, session)` instead (exported from `graftpunk.plugins`), or accept `session_name` and `account_identifier` keyword arguments. After a login that did not write its target slot, the CLI says so and names that migration. Listed under Changed below.
+3. **`CLIPluginProtocol.get_session` takes an optional `session_name`.** A type checker flags a structural implementer that still declares the zero-argument form; add `session_name: str | None = None`. `SitePlugin` subclasses and `isinstance` checks are unaffected. Listed under Changed below.
+4. **`self.get_session()` inside a command handler loads the account the invocation resolved.** With one cached account nothing changes; with several, it follows the pin instead of raising `AmbiguousSessionError`. Listed under Added below.
+
 ### Added
 
 - **The operating session scope** ([#174](https://github.com/stavxyz/graftpunk/issues/174)). A new internal `graftpunk.session_scope` module holds the session slot one dispatch is about in a `contextvars.ContextVar`, and owns `resolve_load_target(base, explicit)`, the one place the explicit-then-scope-then-bare precedence lives. The shared execution pipeline sets the scope around every command handler from the operating name the dispatcher already resolved, and the login command sets it around the login callable, so both the CLI and `GraftpunkClient` behave the same way without either of them managing the scope itself.
@@ -30,17 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Loading a local session now tightens an existing `metadata.json` or `session.pickle` file's permissions to 0600 when they are wider than that, and re-saving one does the same ([#178](https://github.com/stavxyz/graftpunk/issues/178)).
-
-### Upgrading
-
-Upgrade the CLI with `uv tool upgrade graftpunk`, `pipx upgrade graftpunk`, or `pip install -U graftpunk`. Bumping a consumer's version floor does not upgrade an installed tool environment.
-
-This is a minor release. It carries two documented changes for plugin authors, both listed under Changed above:
-
-1. **Inside a hand-written `login()`, `self.session_name` is the bare base.** A login that caches through `browser_session()` or `browser_session_sync()` needs nothing. One that calls `cache_session(session, self.session_name)` by hand now writes the bare slot; call `cache_login_session(self, session)` instead (exported from `graftpunk.plugins`), or accept `session_name` and `account_identifier` keyword arguments. After a login that did not write its target slot, the CLI says so and names that migration.
-2. **`CLIPluginProtocol.get_session` takes an optional `session_name`.** A type checker flags a structural implementer that still declares the zero-argument form; add `session_name: str | None = None`. `SitePlugin` subclasses and `isinstance` checks are unaffected.
-
-`self.get_session()` inside a command handler now loads the account the invocation resolved. With one cached account nothing changes; with several, it follows the pin instead of raising `AmbiguousSessionError`.
 
 ## [1.15.1] - 2026-09-07
 
