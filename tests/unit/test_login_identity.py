@@ -150,6 +150,36 @@ class TestFunnel:
         assert used == "myshop@alice"
         assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
 
+    def test_a_failed_carry_forward_read_still_caches_the_session(self, fresh_backend) -> None:  # noqa: ANN001
+        """The read is advisory: a storage failure costs the account, not the write."""
+        from structlog.testing import capture_logs
+
+        from graftpunk.cache import get_session_metadata, list_sessions
+        from graftpunk.exceptions import StorageError
+        from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
+        from graftpunk.session_scope import operating_session
+        from tests.unit.cli_harness import cacheable_browser_session
+
+        class P(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "myshop"
+
+        with (
+            capture_logs() as logs,
+            patch(
+                "graftpunk.plugins.cli_plugin.get_session_metadata",
+                side_effect=StorageError("the backend is unreachable"),
+            ),
+            operating_session("myshop@alice"),
+        ):
+            used = cache_login_session(P(), cacheable_browser_session())
+
+        assert used == "myshop@alice"
+        assert list_sessions() == ["myshop@alice"]
+        assert get_session_metadata("myshop@alice")["account_identifier"] is None
+        assert "login_identity_carry_forward_failed" in [e["event"] for e in logs]
+
 
 class TestBoundaryWarning:
     """The pure compare/emit half consumes get_session_metadata's REAL shape: dict | None."""

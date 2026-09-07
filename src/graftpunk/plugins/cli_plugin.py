@@ -1225,7 +1225,8 @@ def cache_login_session(
     win individually, and a missing identifier is carried forward from the
     slot's stored metadata when that slot already records one, so a write
     under a command scope refreshes cookies without erasing the account the
-    slot was recorded for.
+    slot was recorded for. A storage failure on that read is logged and the
+    write goes ahead recording no account.
 
     The identifier rides the session object so ``_extract_session_metadata``
     records it. Returns the session name used.
@@ -1236,8 +1237,20 @@ def cache_login_session(
     session_name = name if name is not None else (scope.name if scope else plugin.session_name)
     account = identifier if identifier is not None else (scope.identifier if scope else None)
     if account is None:
-        # The one read in the funnel; cache_session itself stays read-free.
-        stored = get_session_metadata(session_name)
+        # The one read in the funnel; cache_session itself stays read-free. A
+        # storage failure here costs the carried-forward account, never the
+        # write: this runs on the login path, where the session in hand is the
+        # thing worth keeping.
+        try:
+            stored = get_session_metadata(session_name)
+        except Exception as exc:  # noqa: BLE001 (advisory read: never blocks a cache write)
+            LOG.warning(
+                "login_identity_carry_forward_failed",
+                session=session_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            stored = None
         account = stored.get("account_identifier") if stored else None
     if account is not None:
         setattr(session, GP_ACCOUNT_ATTR, account)

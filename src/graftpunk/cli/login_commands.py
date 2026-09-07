@@ -347,7 +347,7 @@ def make_login_body(
                     "caches by hand, call cache_login_session(self, session) or "
                     "accept session_name and account_identifier keyword arguments."
                 )
-        except Exception as exc:  # noqa: BLE001 — advisory output; the login already succeeded
+        except Exception as exc:  # noqa: BLE001 (advisory output: the login already succeeded)
             LOG.warning(
                 "post_login_advisory_failed",
                 stage="target_slot_check",
@@ -366,7 +366,7 @@ def make_login_body(
                     f"This shell is pinned to {current} — "
                     f"run: gp session use {target_name} to switch"
                 )
-        except Exception as exc:  # noqa: BLE001 — advisory output; the login already succeeded
+        except Exception as exc:  # noqa: BLE001 (advisory output: never blocks a login)
             LOG.warning(
                 "post_login_advisory_failed",
                 stage="ambient_pin_hint",
