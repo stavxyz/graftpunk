@@ -154,9 +154,10 @@ def _warn_if_slot_changes_hands_post(
 ) -> None:
     """Warn when a successful login overwrote a slot recorded for another account.
 
-    The pure compare/emit half: ``make_login_body`` performs the ONE metadata
-    fetch before the login attempt and calls this only after success, so the
-    fetch/emit split is the final shape from the start. Both identifiers must
+    The pure compare/emit half: ``make_login_body`` performs the one
+    pre-attempt metadata fetch before the login attempt and calls this only
+    after success, so the fetch/emit split is the final shape from the start.
+    Both identifiers must
     be present and unequal; a missing identifier on either side never warns
     (legacy slots, refresh writes). Note ``get_session_metadata`` returns
     ``dict | None`` (cache.py:222) -- read with ``.get``, never ``getattr``.
@@ -253,7 +254,7 @@ def make_login_body(
             session_name=target_name,
             account_identifier=identifier,
         )
-        # The ONE metadata fetch, before the attempt; the comparison and the
+        # The one pre-attempt metadata fetch; the comparison and the
         # emission happen only after a successful login. A storage hiccup
         # must not stop a login over an advisory warning.
         try:

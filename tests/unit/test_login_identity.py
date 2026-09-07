@@ -98,6 +98,32 @@ class TestFunnel:
         assert list_sessions() == ["myshop@bob"]
         assert get_session_metadata("myshop@bob")["account_identifier"] is None
 
+    def test_an_explicit_identifier_wins_with_the_scopes_slot(self, fresh_backend) -> None:  # noqa: ANN001
+        """Leaving *name* out but naming *identifier* mixes tiers deliberately.
+
+        The slot still comes from the scope (name was left out), but the
+        account is the caller's explicit choice, not the scope's. Each field
+        is decided on its own rather than as a package deal.
+        """
+        from graftpunk.cache import get_session_metadata, list_sessions
+        from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
+        from graftpunk.session_scope import operating_session
+
+        class P(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "myshop"
+
+        plugin = P()
+        session = requests.Session()
+        with operating_session("myshop@alice", "alice@example.com"):
+            used = cache_login_session(plugin, session, identifier="bob@example.com")
+
+        assert used == "myshop@alice"
+        assert getattr(session, GP_ACCOUNT_ATTR) == "bob@example.com"
+        assert list_sessions() == ["myshop@alice"]
+        assert get_session_metadata("myshop@alice")["account_identifier"] == "bob@example.com"
+
 
 class TestBoundaryWarning:
     """The pure compare/emit half consumes get_session_metadata's REAL shape: dict | None."""

@@ -1215,11 +1215,15 @@ def cache_login_session(
     ``browser_session`` or ``browser_session_sync`` lands on the
     account-qualified slot with nothing mutating the plugin instance (#174).
 
-    The scope is consulted ONCE, and the slot and the identifier come from the
-    same decision: an explicit *name* means the caller is naming the slot, so
-    the identifier falls back to nothing rather than to the scope's. Pairing a
-    slot from one tier with an account from another would record whoever the
-    login command happened to be about against a session it did not name.
+    Explicit arguments always win individually; the scope supplies only what
+    the caller left out, and it is read only when *name* was left out. An
+    explicit *name* means the caller is naming the slot, and the scope is not
+    consulted at all: an *identifier* left unset then records no account,
+    rather than falling back to the scope's. When *name* is left out, the
+    scope supplies the slot, and an explicit *identifier* still wins over the
+    scope's own: the slot can come from the scope while the account comes
+    from the caller. That pairing is deliberate, not an oversight: the two
+    fields are decided independently, not as a package deal.
 
     The identifier rides the session object so ``_extract_session_metadata``
     records it. Returns the session name used.
