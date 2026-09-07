@@ -28,7 +28,6 @@ from graftpunk.session_context import get_active_session
 from graftpunk.session_identity import (
     derive_account_identity,
     join_session_name,
-    split_session_name,
     validate_account_label,
 )
 from graftpunk.session_scope import operating_session
@@ -318,44 +317,49 @@ def make_login_body(
 
         # Advisory only, and only after a SUCCESSFUL login: the verdict above is
         # already sealed (a failure exited), so nothing here can turn a cached
-        # login into "Login failed". get_active_session() reads the environment
-        # (cwd, .gp-session) and can raise on a removed cwd or an unreadable
-        # file; that must cost the user a hint, not the login.
+        # login into "Login failed". Each advisory gets its own try, so a
+        # storage hiccup in one costs that hint alone.
         try:
             _warn_if_slot_changes_hands_post(stored_before, identifier, target_name)
-            # What the CLI computed — a hand-written login is free to cache
-            # under a literal name of its own, so this is not a claim about
-            # what landed in the cache.
+            # What the CLI computed, not what landed: compare the slot across
+            # the login, since the one pre-attempt fetch already captured it.
+            # Existence alone would not answer it: a hand-written login caching
+            # under self.session_name by hand now writes the bare base (#174),
+            # and if the target slot happened to exist already from an earlier
+            # login, an existence test would stay silent while the user keeps
+            # using a stale session. A pre-attempt fetch that failed leaves
+            # stored_before None; a slot that exists afterwards is then taken as
+            # landed, because nothing here can prove otherwise.
             gp_console.info(f"Session name: {target_name}")
-            # The line above says what the CLI computed, not what landed. On a
-            # labelled target, compare the slot across the login: the ONE
-            # pre-attempt fetch already captured it, so a second fetch here
-            # answers "did this login write the slot it named". Existence alone
-            # would not: a hand-written login caching under self.session_name by
-            # hand now writes the bare base (#174), and if the labelled slot
-            # happened to exist already from an earlier login, an existence test
-            # would stay silent while the user keeps using a stale session. A
-            # pre-attempt fetch that failed leaves stored_before None; a slot
-            # that exists afterwards is then taken as landed, because nothing
-            # here can prove otherwise. This sits inside the advisory try: a
-            # storage hiccup costs the hint, not the login.
-            if split_session_name(target_name)[1] is not None:
-                stored_after = get_session_metadata(target_name)
-                landed = stored_after is not None and (
-                    stored_before is None
-                    or stored_after.get("modified_at") != stored_before.get("modified_at")
+            stored_after = get_session_metadata(target_name)
+            landed = stored_after is not None and (
+                stored_before is None
+                or stored_after.get("modified_at") != stored_before.get("modified_at")
+            )
+            if not landed:
+                LOG.warning(
+                    "login_cached_outside_target_slot",
+                    plugin=plugin.site_name,
+                    target=target_name,
                 )
-                if not landed:
-                    LOG.warning(
-                        "login_cached_outside_target_slot",
-                        plugin=plugin.site_name,
-                        target=target_name,
-                    )
-                    gp_console.warn(
-                        f"This login did not write '{target_name}'. A login that caches "
-                        "by hand should call cache_login_session(self, session), or "
-                        "accept session_name and account_identifier keyword arguments."
-                    )
+                gp_console.warn(
+                    f"Nothing was written to '{target_name}' by this login. If it "
+                    "caches by hand, call cache_login_session(self, session) or "
+                    "accept session_name and account_identifier keyword arguments."
+                )
+        except Exception as exc:  # noqa: BLE001 — advisory output; the login already succeeded
+            LOG.warning(
+                "post_login_advisory_failed",
+                stage="target_slot_check",
+                plugin=plugin.site_name,
+                session=target_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+
+        # get_active_session() reads the environment (cwd, .gp-session) and can
+        # raise on a removed cwd or an unreadable file.
+        try:
             current = get_active_session()
             if current and current != target_name:
                 gp_console.info(
@@ -365,6 +369,7 @@ def make_login_body(
         except Exception as exc:  # noqa: BLE001 — advisory output; the login already succeeded
             LOG.warning(
                 "post_login_advisory_failed",
+                stage="ambient_pin_hint",
                 plugin=plugin.site_name,
                 session=target_name,
                 error=str(exc),

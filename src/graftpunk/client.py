@@ -103,11 +103,6 @@ def _run_handler_with_limits(
     what a ``requires_session=False`` command carries, sets no scope: there is
     no account for it to be about.
 
-    The name understates what this now does: it is also the one place a
-    handler is invoked from, which is why the scope belongs here. It is left
-    as it is deliberately, since renaming a function the test suite imports by
-    name buys nothing this change needs.
-
     Args:
         handler: The command handler callable.
         ctx: CommandContext to pass to the handler.
@@ -119,6 +114,9 @@ def _run_handler_with_limits(
         The handler's return value.
 
     Raises:
+        ValueError: ``ctx._operating_session_name`` is non-empty and not a
+            legal session name; the scope validates it before the handler
+            runs.
         Exception: The last exception if all attempts fail.
     """
     attempts = 1 + spec.max_retries

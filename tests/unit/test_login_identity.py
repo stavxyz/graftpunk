@@ -30,7 +30,7 @@ class TestFunnel:
             )
         assert used == "myshop@alice"
         assert getattr(session, GP_ACCOUNT_ATTR) == "alice@example.com"
-        mock_cache.assert_called_once_with(session, "myshop@alice")
+        assert mock_cache.call_args[0] == (session, "myshop@alice")
 
     def test_scope_fallback_for_author_facing_paths(self, fresh_backend) -> None:  # noqa: ANN001
         """browser_session callers pass nothing; the operating scope is the input."""
@@ -72,12 +72,12 @@ class TestFunnel:
         assert list_sessions() == ["myshop"]
 
     def test_an_explicit_name_does_not_borrow_the_scope_identity(self, fresh_backend) -> None:  # noqa: ANN001
-        """The slot and the account come from one decision, never from two tiers.
+        """A caller naming the slot is naming the account too, or recording none.
 
-        A caller naming the slot is naming the account too, or recording none.
         Taking the name from the argument and the identifier from the scope
         would stamp whoever the login command was about onto a session that
-        caller never named.
+        caller never named. The named slot is empty here, so the carry-forward
+        has nothing to offer either and no account is recorded.
         """
         from graftpunk.cache import get_session_metadata, list_sessions
         from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
@@ -123,6 +123,32 @@ class TestFunnel:
         assert getattr(session, GP_ACCOUNT_ATTR) == "bob@example.com"
         assert list_sessions() == ["myshop@alice"]
         assert get_session_metadata("myshop@alice")["account_identifier"] == "bob@example.com"
+
+    def test_a_command_scope_write_keeps_the_slots_recorded_account(self, fresh_backend) -> None:  # noqa: ANN001
+        """A command scope carries no identifier; the write must not erase the account.
+
+        Only a login sets the scope's identifier. Any other dispatch leaves it
+        None, so without the carry-forward a refresh write under a command
+        scope would record ``account_identifier=None`` over the account the
+        slot was cached for.
+        """
+        from graftpunk.cache import cache_session, get_session_metadata
+        from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
+        from graftpunk.session_scope import operating_session
+        from tests.unit.cli_harness import cacheable_browser_session
+
+        class P(SitePlugin):
+            site_name = "fmtsite"
+            base_url = "https://fmt.example.com"
+            session_name = "myshop"
+
+        cache_session(cacheable_browser_session("alice@example.com"), "myshop@alice")
+
+        with operating_session("myshop@alice"):
+            used = cache_login_session(P(), cacheable_browser_session())
+
+        assert used == "myshop@alice"
+        assert get_session_metadata("myshop@alice")["account_identifier"] == "alice@example.com"
 
 
 class TestBoundaryWarning:
@@ -338,6 +364,41 @@ def _by_hand_login_plugin():  # noqa: ANN202
     return ShopPlugin()
 
 
+def _no_write_login_plugin():  # noqa: ANN202
+    """A login that succeeds without caching anything: the advisory's other case."""
+    from graftpunk.plugins.cli_plugin import SitePlugin
+
+    class ShopPlugin(SitePlugin):
+        site_name = "fmtsite"
+        base_url = "https://fmt.example.com"
+        session_name = "myshop"
+
+        def login(self, credentials: dict[str, str]) -> bool:
+            """Sign in to fmtsite."""
+            return True
+
+    return ShopPlugin()
+
+
+def _scope_reading_login_plugin(seen: dict):  # noqa: ANN001, ANN202
+    """A hand-written login that loads the session the scope names, then caches it."""
+    from graftpunk.plugins.cli_plugin import SitePlugin, cache_login_session
+
+    class ShopPlugin(SitePlugin):
+        site_name = "fmtsite"
+        base_url = "https://fmt.example.com"
+        session_name = "myshop"
+
+        def login(self, credentials: dict[str, str]) -> bool:
+            """Sign in to fmtsite."""
+            loaded = self.get_session()
+            seen["account"] = getattr(loaded, GP_ACCOUNT_ATTR, None)
+            cache_login_session(self, loaded)
+            return True
+
+    return ShopPlugin()
+
+
 def _raising_login_plugin():  # noqa: ANN202
     """A plugin whose ``login(credentials)`` raises."""
     from graftpunk.plugins.cli_plugin import SitePlugin
@@ -410,7 +471,7 @@ class TestLoginWrapperOrchestration:
         assert list_sessions() == ["myshop@alice"]
         assert get_session_metadata("myshop@alice")["account_identifier"] == "alice"
         # The happy path says nothing extra.
-        assert "This login did not write" not in result.output
+        assert "Nothing was written to" not in result.output
 
     def test_as_flag_overrides_the_label(self, fresh_backend) -> None:  # noqa: ANN001
         from graftpunk.cache import list_sessions
@@ -524,7 +585,7 @@ class TestLoginWrapperOrchestration:
         assert "Logged in to fmtsite (session cached)" in result.output
         # It wrote the bare slot, not the one the CLI targeted.
         assert list_sessions() == ["myshop"]
-        assert "This login did not write 'myshop@bob'" in result.output
+        assert "Nothing was written to 'myshop@bob'" in result.output
         assert "cache_login_session" in result.output
         assert "login_cached_outside_target_slot" in [e["event"] for e in logs]
 
@@ -553,11 +614,14 @@ class TestLoginWrapperOrchestration:
         )
 
         assert result.exit_code == 0, result.output
-        assert "This login did not write 'myshop@bob'" in result.output
+        assert "Nothing was written to 'myshop@bob'" in result.output
         # The pre-existing slot really was left untouched.
         assert get_session_metadata("myshop@bob")["modified_at"] == before
 
-    def test_an_unlabelled_target_never_warns(self, fresh_backend) -> None:  # noqa: ANN001
+    def test_an_unlabelled_target_does_not_warn_when_the_funnel_wrote_it(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
         """No label means the bare base IS the target, so a by-hand write is correct."""
         from graftpunk.cache import list_sessions
 
@@ -571,7 +635,68 @@ class TestLoginWrapperOrchestration:
         assert result.exit_code == 0, result.output
         assert "Session name: myshop" in result.output
         assert list_sessions() == ["myshop"]
-        assert "This login did not write" not in result.output
+        assert "Nothing was written to" not in result.output
+
+    def test_an_unlabelled_target_does_not_warn_when_the_login_caches_by_hand(
+        self,
+        fresh_backend,  # noqa: ANN001
+    ) -> None:
+        """The funnel writes the bare base the CLI named, so there is nothing to report."""
+        from graftpunk.cache import list_sessions
+
+        result = _invoke(
+            _hand_written_login_plugin(),
+            ["fmtsite", "login"],
+            FMTSITE_USERNAME="!!!",
+            FMTSITE_PASSWORD="x",  # noqa: S106
+        )
+
+        assert result.exit_code == 0, result.output
+        assert list_sessions() == ["myshop"]
+        assert "Nothing was written to" not in result.output
+
+    def test_an_unlabelled_target_warns_when_nothing_was_written(self, fresh_backend) -> None:  # noqa: ANN001
+        """A login that caches nothing at all is reported on a bare target too."""
+        from structlog.testing import capture_logs
+
+        from graftpunk.cache import list_sessions
+
+        with capture_logs() as logs:
+            result = _invoke(
+                _no_write_login_plugin(),
+                ["fmtsite", "login"],
+                FMTSITE_USERNAME="!!!",
+                FMTSITE_PASSWORD="x",  # noqa: S106
+            )
+
+        assert result.exit_code == 0, result.output
+        assert list_sessions() == []
+        assert "Nothing was written to 'myshop'" in result.output
+        assert "cache_login_session" in result.output
+        assert "login_cached_outside_target_slot" in [e["event"] for e in logs]
+
+    def test_a_label_less_login_can_read_the_cached_account(self, fresh_backend) -> None:  # noqa: ANN001
+        """#174: a bare scope must resolve, or self.get_session() raises inside login().
+
+        Credentials that derive no label make the CLI target the bare
+        ``myshop`` and set a bare scope. Loading that exact-only missed the one
+        cached account and raised ``SessionNotFoundError``.
+        """
+        from graftpunk.cache import cache_session
+        from tests.unit.cli_harness import cacheable_browser_session
+
+        cache_session(cacheable_browser_session("alice@example.com"), "myshop@alice")
+        seen: dict = {}
+
+        result = _invoke(
+            _scope_reading_login_plugin(seen),
+            ["fmtsite", "login"],
+            FMTSITE_USERNAME="!!!",
+            FMTSITE_PASSWORD="x",  # noqa: S106
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["account"] == "alice@example.com"
 
     def test_a_failed_login_leaves_no_scope_behind(self) -> None:
         from graftpunk.session_scope import current_operating_session

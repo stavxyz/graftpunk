@@ -58,6 +58,14 @@ def test_for_base_matches_a_bare_scope() -> None:
         assert scope.name == "myshop"
 
 
+def test_for_base_matches_a_labelled_base() -> None:
+    """A plugin whose declared session_name is itself labelled matches its own scope."""
+    with operating_session("myshop@prod"):
+        scope = operating_session_for("myshop@prod")
+        assert scope is not None
+        assert scope.name == "myshop@prod"
+
+
 def test_for_base_ignores_a_foreign_base() -> None:
     """A scope set for one plugin must never steer another (the base-scoped guard)."""
     with operating_session("othersite@bob"):
@@ -117,10 +125,15 @@ class TestResolveLoadTarget:
     def test_explicit_bare_name_resolves(self) -> None:
         assert resolve_load_target("myshop", "myshop") == ("myshop", True)
 
-    def test_a_scope_for_the_base_loads_exact(self) -> None:
-        """The dispatcher already resolved that name, so a second listing is waste."""
+    def test_a_labelled_scope_loads_exact(self) -> None:
+        """A labelled scope name is a slot by construction, so no listing is needed."""
         with operating_session("myshop@bob"):
             assert resolve_load_target("myshop") == ("myshop@bob", False)
+
+    def test_a_bare_scope_resolves(self) -> None:
+        """A bare scope name is a base like any other: the login command can set one."""
+        with operating_session("myshop"):
+            assert resolve_load_target("myshop") == ("myshop", True)
 
     def test_a_scope_for_a_foreign_base_is_ignored(self) -> None:
         with operating_session("othersite@bob"):

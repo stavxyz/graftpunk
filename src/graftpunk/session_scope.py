@@ -13,6 +13,10 @@ This module is imported by the plugin base class
 (``graftpunk.client``), so it has to stay free of their dependencies: it
 imports only :mod:`graftpunk.session_identity`, and it never logs.
 
+The scope does not cross a thread boundary: a handler that dispatches work to
+a thread sees no scope there, and ``get_session()`` on that thread falls back
+to the bare path.
+
 This is NOT the ambient pin. ``session_context`` reads ``GRAFTPUNK_SESSION``
 and ``.gp-session`` from the environment, which the library path deliberately
 ignores (#181). The scope is in-process state written by the dispatcher that
@@ -109,11 +113,15 @@ def operating_session_for(base: str) -> OperatingSession | None:
     The base-scoped guard: a scope set for plugin A must never steer plugin
     B's ``get_session()`` or cache write. This is the same rule the ambient
     pin already applies in ``plugin_runtime`` (#176).
+
+    Both sides are split, so a plugin whose declared ``session_name`` is
+    itself labelled (``myshop@prod``) still matches a scope set for its own
+    base.
     """
     scope = _CURRENT.get()
     if scope is None:
         return None
-    return scope if split_session_name(scope.name)[0] == base else None
+    return scope if split_session_name(scope.name)[0] == split_session_name(base)[0] else None
 
 
 def resolve_load_target(base: str, explicit: str | None = None) -> tuple[str, bool]:
@@ -124,9 +132,11 @@ def resolve_load_target(base: str, explicit: str | None = None) -> tuple[str, bo
 
     1. *explicit*, when given: it wins outright. A labelled name is exact; a
        bare name is a BASE and the loader resolves it (the pin contract).
-    2. Otherwise the operating session scope, when one is set for *base*. The
-       dispatcher that set it already resolved that name against the listing,
-       so the load is exact-only and a second listing would be waste.
+    2. Otherwise the operating session scope, when one is set for *base*. A
+       labelled scope name is exact by construction; a bare one is a base and
+       resolves like any bare name. On a dispatch that already resolved the
+       slot the bare name IS the cached slot, so the exact hit answers before
+       any listing happens.
     3. Otherwise *base* itself, resolving, which is the pre-#174 behaviour.
 
     Args:
@@ -143,5 +153,5 @@ def resolve_load_target(base: str, explicit: str | None = None) -> tuple[str, bo
         return (explicit, split_session_name(explicit)[1] is None)
     scope = operating_session_for(base)
     if scope is not None:
-        return (scope.name, False)
+        return (scope.name, split_session_name(scope.name)[1] is None)
     return (base, True)

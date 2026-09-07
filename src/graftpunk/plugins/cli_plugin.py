@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from graftpunk.plugins.output_config import OutputConfig
     from graftpunk.tokens import TokenConfig
 
-from graftpunk.cache import cache_session, load_session_for_api
+from graftpunk.cache import cache_session, get_session_metadata, load_session_for_api
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
@@ -1164,12 +1164,16 @@ class SitePlugin:
 
         If ``requires_session`` is False, returns a plain ``requests.Session``.
 
+        The plain-session short-circuit applies only when no name is given:
+        an explicit *session_name* names a slot to load, and is honoured even
+        on a ``requires_session=False`` plugin.
+
         Which slot is loaded is decided by
         :func:`graftpunk.session_scope.resolve_load_target`: *session_name*
         when given (a labelled name is exact, a bare one is a base the loader
         resolves), else the operating session scope when one is set for this
-        plugin's base name (loaded exact-only, since whoever set it already
-        resolved it), else the bare ``self.session_name``, resolving. A scope
+        plugin's base name (a labelled scope name is exact, a bare one
+        resolves), else the bare ``self.session_name``, resolving. A scope
         set for another plugin's base is ignored, so one plugin's dispatch
         never steers another's load.
 
@@ -1183,15 +1187,16 @@ class SitePlugin:
 
         Raises:
             SessionNotFoundError: Nothing is cached under the name that was
-                loaded. On the scope path a miss is a miss, since that load is
-                exact-only.
-            AmbiguousSessionError: A resolving load (an explicit bare name, or
-                no scope) found several cached sessions sharing the base and
-                nothing selected one; the error names every candidate.
+                loaded. On an exact load (a labelled name, from either tier) a
+                miss is a miss.
+            AmbiguousSessionError: A resolving load (any bare name, whether
+                explicit, from the scope, or the plugin's own) found several
+                cached sessions sharing the base and nothing selected one; the
+                error names every candidate.
             ValueError: The name reaching the loader is not a legal session
                 name.
         """
-        if not self.requires_session:
+        if session_name is None and not self.requires_session:
             return requests.Session()
         name, resolve = resolve_load_target(self.session_name, session_name)
         return load_session_for_api(name, resolve=resolve)
@@ -1208,22 +1213,19 @@ def cache_login_session(
 
     *name* when given wins outright: the generated login flows pass it, and so
     does any caller that already knows the slot. Otherwise the operating
-    session scope the login command set around the login callable supplies both
-    the slot and the account, and failing that the plugin's bare base name
-    does. The scope is base-scoped, so another plugin's login can never rename
-    this write. That is how a hand-written ``login()`` caching through
-    ``browser_session`` or ``browser_session_sync`` lands on the
-    account-qualified slot with nothing mutating the plugin instance (#174).
+    session scope supplies both the slot and the account, and failing that the
+    plugin's bare base name does. The scope is base-scoped, so another
+    plugin's dispatch can never rename this write. That is how a hand-written
+    ``login()`` caching through ``browser_session`` or ``browser_session_sync``
+    lands on the account-qualified slot with nothing mutating the plugin
+    instance (#174).
 
-    Explicit arguments always win individually; the scope supplies only what
-    the caller left out, and it is read only when *name* was left out. An
-    explicit *name* means the caller is naming the slot, and the scope is not
-    consulted at all: an *identifier* left unset then records no account,
-    rather than falling back to the scope's. When *name* is left out, the
-    scope supplies the slot, and an explicit *identifier* still wins over the
-    scope's own: the slot can come from the scope while the account comes
-    from the caller. That pairing is deliberate, not an oversight: the two
-    fields are decided independently, not as a package deal.
+    The scope may have been set by any dispatch, not only by the login
+    command. It is read only when *name* is None. Explicit arguments always
+    win individually, and a missing identifier is carried forward from the
+    slot's stored metadata when that slot already records one, so a write
+    under a command scope refreshes cookies without erasing the account the
+    slot was recorded for.
 
     The identifier rides the session object so ``_extract_session_metadata``
     records it. Returns the session name used.
@@ -1233,6 +1235,10 @@ def cache_login_session(
     scope = operating_session_for(plugin.session_name) if name is None else None
     session_name = name if name is not None else (scope.name if scope else plugin.session_name)
     account = identifier if identifier is not None else (scope.identifier if scope else None)
+    if account is None:
+        # The one read in the funnel; cache_session itself stays read-free.
+        stored = get_session_metadata(session_name)
+        account = stored.get("account_identifier") if stored else None
     if account is not None:
         setattr(session, GP_ACCOUNT_ATTR, account)
     cache_session(session, session_name)

@@ -541,6 +541,47 @@ class TestTokenRetry:
         # prepare_session called twice: initial + retry
         assert mock_prep.call_count == 2
 
+    @patch("graftpunk.client.clear_cached_tokens")
+    @patch("graftpunk.client.prepare_session")
+    @patch("graftpunk.client.load_session_for_api_resolved")
+    @patch("graftpunk.client.get_plugin")
+    def test_the_operating_scope_is_set_on_the_403_retry_too(
+        self,
+        mock_get: MagicMock,
+        mock_load: MagicMock,
+        mock_prep: MagicMock,
+        mock_clear: MagicMock,
+    ) -> None:
+        """#174: the retry re-enters the pipeline, so both attempts see the scope."""
+        from graftpunk.session_scope import current_operating_session
+
+        response_403 = MagicMock()
+        response_403.status_code = 403
+        response_403.url = "https://ex.com/api"
+        seen: list[str | None] = []
+
+        def handler(ctx: CommandContext, **_kw: Any) -> dict[str, bool]:
+            scope = current_operating_session()
+            seen.append(scope.name if scope else None)
+            if len(seen) == 1:
+                raise requests.exceptions.HTTPError(response=response_403)
+            return {"retried": True}
+
+        mock_get.return_value = _make_plugin(
+            site_name="fmtsite",
+            session_name="myshop",
+            commands=[_make_spec("fetch", handler=handler, requires_session=True)],
+            token_config=MagicMock(),
+            base_url="https://ex.com",
+        )
+        mock_load.return_value = _loaded(name="myshop@alice")
+
+        result = GraftpunkClient("fmtsite", session="myshop@alice").fetch()
+
+        assert result.data == {"retried": True}
+        assert seen == ["myshop@alice", "myshop@alice"]
+        assert current_operating_session() is None
+
 
 # ---------------------------------------------------------------------------
 # Session persistence

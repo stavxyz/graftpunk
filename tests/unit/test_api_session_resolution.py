@@ -516,6 +516,40 @@ def test_get_session_ignores_a_scope_for_a_foreign_base(fresh_backend) -> None: 
     assert getattr(api, GP_ACCOUNT_ATTR) == "alice@example.com"
 
 
+def test_get_session_follows_a_bare_scope_by_resolving_it(fresh_backend) -> None:  # noqa: ANN001
+    """A login that derives no label sets a BARE scope; it resolves like any base.
+
+    Loading exact-only here raised ``SessionNotFoundError`` for a hand-written
+    ``login()`` that called ``self.get_session()``, with the account cached
+    and nothing ambiguous about it.
+    """
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+    with operating_session("myshop"):
+        api = _scope_plugin().get_session()
+
+    assert getattr(api, GP_ACCOUNT_ATTR) == "alice@example.com"
+
+
+def test_get_session_honours_an_explicit_name_without_requires_session(fresh_backend) -> None:  # noqa: ANN001
+    """The plain-session short-circuit applies only when no name is given."""
+    cache_session(_cached_session("bob@example.com"), "myshop@bob")
+
+    class Sessionless(SitePlugin):
+        site_name = "myshop"
+        session_name = "myshop"
+        requires_session = False
+        help_text = "Test plugin"
+
+    plugin = Sessionless()
+
+    named = plugin.get_session("myshop@bob")
+    assert getattr(named, GP_ACCOUNT_ATTR) == "bob@example.com"
+
+    plain = plugin.get_session()
+    assert not hasattr(plain, GP_ACCOUNT_ATTR)
+
+
 def test_get_session_without_a_scope_still_refuses_two_accounts(fresh_backend) -> None:  # noqa: ANN001
     """Unchanged where nothing set a scope: the bare base resolves on its own terms."""
     cache_session(_cached_session("alice@example.com"), "myshop@alice")
