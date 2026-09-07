@@ -108,6 +108,20 @@ class TestOperatingNameOnPluginPath:
 
     @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_runtime.list_sessions")
+    def test_labelled_session_flag_loads_exact_only(self, mock_list, mock_load) -> None:  # noqa: ANN001
+        """A LABELLED pin is exact, so the loader is told not to resolve it.
+
+        The bare-base fallback matches on the base, which a labelled miss can
+        never reach: resolving one could only list uselessly (#181).
+        """
+        mock_load.side_effect = echo_loaded_session()
+        result = _invoke(_plugin(), ["fmtsite", "items", "--session", "myshop@bob"])
+        assert result.exit_code == 0, result.output
+        assert mock_load.call_args == call("myshop@bob", resolve=False)
+        mock_list.assert_not_called()
+
+    @patch("graftpunk.cli.plugin_runtime.load_session_for_api_resolved")
+    @patch("graftpunk.cli.plugin_runtime.list_sessions")
     def test_matching_ambient_pin_performs_no_listing(self, mock_list, mock_load) -> None:  # noqa: ANN001
         mock_load.side_effect = echo_loaded_session()
         result = _invoke(_plugin(), ["fmtsite", "items"], GRAFTPUNK_SESSION="myshop@alice")

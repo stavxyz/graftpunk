@@ -64,7 +64,8 @@ class TestHttpAccountResolution:
 
         _make_request("GET", "https://example.com", session_name="myshop")
 
-        mock_load.assert_called_once_with("myshop@alice")
+        # Resolution already picked the account: the load is exact-only (#181).
+        mock_load.assert_called_once_with("myshop@alice", resolve=False)
 
     @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
     @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
@@ -87,6 +88,56 @@ class TestHttpAccountResolution:
         assert "myshop@bob" in combined
 
 
+class TestHttpPinResolution:
+    """A labelled name is exact on `gp http` too — no useless listing (#181)."""
+
+    def test_labelled_session_miss_is_not_found_and_lists_nothing(
+        self,
+        fresh_backend,  # noqa: ANN001
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A labelled `--session` that misses never consults the fallback.
+
+        The bare-base fallback matches on the BASE, which a labelled miss can
+        never reach, so resolving one could only pay for a listing (a remote
+        round-trip on S3/Supabase) before failing anyway.
+        """
+        import typer
+
+        from graftpunk.cache import list_sessions as real_list_sessions
+
+        cache_spy = MagicMock(wraps=real_list_sessions)
+        with (
+            patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", []),
+            patch("graftpunk.cli.plugin_commands._plugin_session_map", {}),
+            patch("graftpunk.cache.list_sessions", cache_spy),
+            pytest.raises(typer.Exit) as exc_info,
+        ):
+            _make_request("GET", "https://example.com", session_name="myshop@nobody")
+
+        assert exc_info.value.exit_code == 1
+        cache_spy.assert_not_called()
+        rendered = capsys.readouterr()
+        assert "myshop@nobody" in rendered.out + rendered.err
+
+    @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
+    @patch("graftpunk.cli.plugin_commands._registered_plugins_for_teardown", [])
+    @patch("graftpunk.cli.plugin_commands._plugin_session_map", {})
+    def test_bare_session_still_resolves_at_load(self, mock_load: MagicMock) -> None:
+        """A BARE name keeps the pin contract: the loader resolves it."""
+        mock_session = MagicMock(spec=requests.Session)
+        mock_session.headers = {}
+        mock_response = MagicMock(spec=requests.Response)
+        mock_response.status_code = 200
+        mock_session.request.return_value = mock_response
+        mock_load.return_value = (mock_session, "myshop@alice")
+
+        _, operating_name = _make_request("GET", "https://example.com", session_name="myshop")
+
+        mock_load.assert_called_once_with("myshop", resolve=True)
+        assert operating_name == "myshop@alice"  # downstream keys off the slot loaded
+
+
 class TestMakeRequest:
     """Tests for _make_request."""
 
@@ -103,7 +154,7 @@ class TestMakeRequest:
 
         response, _ = _make_request("GET", "https://example.com", session_name="test-session")
 
-        mock_load.assert_called_once_with("test-session")
+        mock_load.assert_called_once_with("test-session", resolve=True)
         assert response == mock_response
 
     @patch("graftpunk.cli.http_commands.load_session_for_api_resolved")
@@ -291,7 +342,7 @@ class TestMakeRequestErrorPaths:
             _make_request("GET", "https://example.com", session_name="nonexistent")
 
         assert exc_info.value.exit_code == 1
-        mock_load.assert_called_once_with("nonexistent")
+        mock_load.assert_called_once_with("nonexistent", resolve=True)
 
 
 class TestSaveObserveData:

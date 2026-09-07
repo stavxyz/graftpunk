@@ -654,11 +654,13 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
     under the bare name itself always wins, so this differs from the CLI's
     unpinned resolution, which refuses when several accounts share a base.
 
-    Callers that write back to the cache afterwards must use
-    :func:`load_session_for_api_resolved` instead: the loaded slot can differ
-    from *name*, and :func:`update_session_cookies` keys off its argument
-    literally, so refreshing under the requested bare name silently drops the
-    write (#182).
+    **If you will persist changes to the returned session** (cookies, tokens)
+    with :func:`update_session_cookies`, use
+    :func:`load_session_for_api_resolved` instead and key the write-back off
+    the name it RETURNS: a bare *name* may resolve to a labelled slot, and
+    :func:`update_session_cookies` uses its argument literally, so writing
+    back under the bare name is silently a no-op (#182). This function throws
+    the loaded name away, which is the whole reason it is read-only-shaped.
 
     Args:
         name: Session name (without .session.pickle extension). May be a bare
