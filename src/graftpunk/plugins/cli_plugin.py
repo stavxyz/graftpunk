@@ -57,6 +57,7 @@ from graftpunk.cache import cache_session, load_session_for_api
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
+from graftpunk.session_scope import resolve_load_target
 
 LOG = get_logger(__name__)
 
@@ -709,7 +710,7 @@ class CLIPluginProtocol(Protocol):
         """Return all commands defined by this plugin."""
         ...
 
-    def get_session(self) -> requests.Session:
+    def get_session(self, session_name: str | None = None) -> requests.Session:
         """Load the graftpunk session for API calls."""
         ...
 
@@ -1158,45 +1159,42 @@ class SitePlugin:
             except Exception as cleanup_exc:
                 LOG.exception("browser_session_cleanup_failed", error=str(cleanup_exc))
 
-    def get_session(self) -> requests.Session:
+    def get_session(self, session_name: str | None = None) -> requests.Session:
         """Load the graftpunk session for API calls.
 
-        If requires_session is False, returns a plain requests.Session.
+        If ``requires_session`` is False, returns a plain ``requests.Session``.
 
-        Note: the CLI runtime (``plugin_runtime.run_plugin_command``) no
-        longer calls this method -- it resolves the operating account name
-        first (``--session`` / env / ``.gp-session`` / resolution) and loads
-        directly via ``load_session_for_api_resolved``. This method loads by
-        the bare base name (``self.session_name``), which the loader treats as
-        a base: a single cached account under it resolves, several raise.
+        Which slot is loaded is decided by
+        :func:`graftpunk.session_scope.resolve_load_target`: *session_name*
+        when given (a labelled name is exact, a bare one is a base the loader
+        resolves), else the operating session scope when one is set for this
+        plugin's base name (loaded exact-only, since whoever set it already
+        resolved it), else the bare ``self.session_name``, resolving. A scope
+        set for another plugin's base is ignored, so one plugin's dispatch
+        never steers another's load.
 
-        The session this returns may be ``base@label`` while
-        ``self.session_name`` is still bare. Persisting with
-        ``update_session_cookies(session, self.session_name)`` lands on the
-        slot that was loaded: the session carries that slot name in memory,
-        and a write-back whose argument is the slot's bare base follows it
-        (#174). ``ctx.save_session()`` from a command handler, and the
-        operating name the CLI resolved
-        (``load_session_for_api_resolved`` returns it), both remain exact and
-        say the target at the call site.
+        This returns a SECOND ``requests.Session``, not ``ctx.session``.
 
-        That fixes the write-back only. This method still loads by the bare
-        base name, so with two accounts cached under it and the CLI pinned to
-        one, ``get_session()`` resolves on its own terms and raises
-        ``AmbiguousSessionError``. Threading the resolved name into this method
-        remains tracked by https://github.com/stavxyz/graftpunk/issues/174,
-        alongside retiring the login identity stamp.
+        Args:
+            session_name: An explicit slot or base name, overriding the scope
+                and the plugin's base name. This is the channel for callers
+                outside a dispatch: scripts, tests, and library code that
+                already holds a name.
 
         Raises:
-            SessionNotFoundError: Nothing is cached under ``self.session_name``
-                exactly and no account is cached under it either.
-            AmbiguousSessionError: Nothing is cached under
-                ``self.session_name`` exactly and several cached sessions share
-                it as their base; the error names every candidate.
+            SessionNotFoundError: Nothing is cached under the name that was
+                loaded. On the scope path a miss is a miss, since that load is
+                exact-only.
+            AmbiguousSessionError: A resolving load (an explicit bare name, or
+                no scope) found several cached sessions sharing the base and
+                nothing selected one; the error names every candidate.
+            ValueError: The name reaching the loader is not a legal session
+                name.
         """
         if not self.requires_session:
             return requests.Session()
-        return load_session_for_api(self.session_name)
+        name, resolve = resolve_load_target(self.session_name, session_name)
+        return load_session_for_api(name, resolve=resolve)
 
 
 def cache_login_session(

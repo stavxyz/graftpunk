@@ -169,7 +169,7 @@ class TestGetSession:
         ) as mock_load:
             result = plugin.get_session()
 
-        mock_load.assert_called_once_with("my_session")
+        mock_load.assert_called_once_with("my_session", resolve=True)
         assert result is mock_session
 
     def test_get_session_without_requires_session(self) -> None:

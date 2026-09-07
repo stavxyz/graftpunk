@@ -36,6 +36,7 @@ from graftpunk.exceptions import (
 from graftpunk.plugins.cli_plugin import SitePlugin
 from graftpunk.session import BrowserSession
 from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
+from graftpunk.session_scope import operating_session
 
 
 @pytest.fixture
@@ -440,3 +441,85 @@ def test_the_slot_name_is_excluded_from_both_pickle_whitelists() -> None:
     assert GP_SESSION_NAME_ATTR not in PICKLED_SESSION_RIDER_ATTRS
     # The selenium __getstate__ branch inherits requests' own whitelist.
     assert GP_SESSION_NAME_ATTR not in requests.Session.__attrs__
+
+
+def _scope_plugin():  # noqa: ANN202
+    """A plugin whose base session name is ``myshop``, with no session of its own."""
+
+    class MyPlugin(SitePlugin):
+        site_name = "myshop"
+        session_name = "myshop"
+        help_text = "Test plugin"
+
+    return MyPlugin()
+
+
+def test_get_session_explicit_labelled_name_loads_that_slot(fresh_backend) -> None:  # noqa: ANN001
+    """An explicit name is the top of the chain, and a labelled one is exact."""
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+    cache_session(_cached_session("bob@example.com"), "myshop@bob")
+
+    api = _scope_plugin().get_session("myshop@bob")
+
+    assert getattr(api, GP_ACCOUNT_ATTR) == "bob@example.com"
+
+
+def test_get_session_explicit_bare_name_resolves_a_single_account(fresh_backend) -> None:  # noqa: ANN001
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+    api = _scope_plugin().get_session("myshop")
+
+    assert getattr(api, GP_ACCOUNT_ATTR) == "alice@example.com"
+
+
+def test_get_session_explicit_bare_name_refuses_two_accounts(fresh_backend) -> None:  # noqa: ANN001
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+    cache_session(_cached_session("bob@example.com"), "myshop@bob")
+
+    with pytest.raises(AmbiguousSessionError) as exc:
+        _scope_plugin().get_session("myshop")
+
+    assert exc.value.candidates == ["myshop@alice", "myshop@bob"]
+
+
+def test_get_session_follows_the_scope_with_two_accounts_cached(fresh_backend) -> None:  # noqa: ANN001
+    """The issue's scenario: the CLI pinned myshop@bob, the handler calls get_session()."""
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+    cache_session(_cached_session("bob@example.com"), "myshop@bob")
+
+    with operating_session("myshop@bob"):
+        api = _scope_plugin().get_session()
+
+    assert getattr(api, GP_ACCOUNT_ATTR) == "bob@example.com"
+
+
+def test_get_session_loads_the_scope_exact_only(fresh_backend) -> None:  # noqa: ANN001
+    """The scope names a slot the dispatcher already resolved: a miss is a miss.
+
+    With ``resolve=True`` this would have fallen back to ``myshop@alice``, so
+    the raise is what proves the scope path does not resolve.
+    """
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+    with operating_session("myshop@bob"), pytest.raises(SessionNotFoundError):
+        _scope_plugin().get_session()
+
+
+def test_get_session_ignores_a_scope_for_a_foreign_base(fresh_backend) -> None:  # noqa: ANN001
+    """A scope set while running another plugin must not steer this one."""
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+    cache_session(_cached_session("carol@example.com"), "othersite@carol")
+
+    with operating_session("othersite@carol"):
+        api = _scope_plugin().get_session()
+
+    assert getattr(api, GP_ACCOUNT_ATTR) == "alice@example.com"
+
+
+def test_get_session_without_a_scope_still_refuses_two_accounts(fresh_backend) -> None:  # noqa: ANN001
+    """Unchanged where nothing set a scope: the bare base resolves on its own terms."""
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+    cache_session(_cached_session("bob@example.com"), "myshop@bob")
+
+    with pytest.raises(AmbiguousSessionError):
+        _scope_plugin().get_session()
