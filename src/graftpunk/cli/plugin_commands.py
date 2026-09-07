@@ -391,9 +391,14 @@ def get_plugin_for_session(session_name: str) -> CLIPluginProtocol | None:
 def resolve_session_name(name: str, backend_override: str | None = None) -> str:
     """Resolve a name to an operating session name.
 
-    A registered plugin site name maps to its base ``session_name`` and then
-    through account resolution (one cached -> that one; several -> raise
-    AmbiguousSessionError; zero -> the base, so the not-found path is
+    A registered plugin site name maps to its base ``session_name``. An exact
+    cached slot under that name (or the mapped base, when it differs from the
+    site name) always wins outright — consistent with
+    :func:`graftpunk.cache.load_session_for_api_resolved`'s "a slot cached
+    under the bare name itself wins" rule — so the listing is fetched once and
+    checked before any resolution happens. Only when neither is cached does
+    this fall through to account resolution (one cached -> that one; several
+    -> raise AmbiguousSessionError; zero -> the base, so the not-found path is
     unchanged). Anything else — including full ``base@label`` names — passes
     through, but is still validated: a pass-through name is about to reach
     storage unchanged, so a charset violation (e.g. ``MyShop@Alice``, which a
@@ -413,13 +418,23 @@ def resolve_session_name(name: str, backend_override: str | None = None) -> str:
             legal session name.
     """
     if name in _plugin_session_map:
+        base = _plugin_session_map[name]
+        # One listing, fetched eagerly here rather than via the lazy callable
+        # compute_operating_session_name accepts: an exact hit must be
+        # checked against it first, so a second listing on the resolution
+        # fallback below would be a wasted round-trip.
+        names = list_sessions(backend_override=backend_override)
+        if name in names:
+            return name
+        if base != name and base in names:
+            return base
         # The typed argument is the explicit tier; ambient pins do not
         # re-steer an explicitly named site. The tier subset is declared
         # through the one chain function, not encoded by which tier we call.
         return compute_operating_session_name(
             None,
-            _plugin_session_map[name],
-            lambda: list_sessions(backend_override=backend_override),
+            base,
+            names,
             use_ambient=False,
         )
     validate_session_name(name)

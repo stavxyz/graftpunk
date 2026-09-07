@@ -3651,10 +3651,80 @@ class TestAccountAwareResolution:
         monkeypatch.setattr(
             plugin_commands,
             "list_sessions",
-            lambda backend_override=None: ["myshop", "myshop@alice"],
+            lambda backend_override=None: ["myshop@alice", "myshop@bob"],
         )
         with pytest.raises(AmbiguousSessionError):
             plugin_commands.resolve_session_name("fmtsite")
+
+    def test_bare_slot_under_the_mapped_base_wins_outright(self, monkeypatch) -> None:  # noqa: ANN001
+        """A legacy bare slot next to a labelled account is an exact hit, not ambiguous.
+
+        Consistent with load_session_for_api_resolved's "a slot cached under
+        the bare name itself wins outright": the site name here ("fmtsite")
+        differs from its mapped base ("myshop"), and the bare base is itself
+        cached alongside a labelled account. The base wins rather than raising
+        AmbiguousSessionError (#186).
+        """
+        from graftpunk.cli import plugin_commands
+
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "fmtsite", "myshop")
+        monkeypatch.setattr(
+            plugin_commands,
+            "list_sessions",
+            lambda backend_override=None: ["myshop", "myshop@alice"],
+        )
+        assert plugin_commands.resolve_session_name("fmtsite") == "myshop"
+
+    def test_exact_site_name_cached_bare_wins_outright(self, monkeypatch) -> None:  # noqa: ANN001
+        """A plugin whose site_name equals its session_name: the bare hit wins.
+
+        The typed name IS the cached bare slot here (site_name == base ==
+        "myshop"), the case reported in #186.
+        """
+        from graftpunk.cli import plugin_commands
+
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "myshop", "myshop")
+        monkeypatch.setattr(
+            plugin_commands,
+            "list_sessions",
+            lambda backend_override=None: ["myshop", "myshop@alice"],
+        )
+        assert plugin_commands.resolve_session_name("myshop") == "myshop"
+
+    def test_site_name_path_lists_exactly_once(self, monkeypatch) -> None:  # noqa: ANN001
+        """Both the exact-hit and the resolution-fallback outcomes cost ONE listing."""
+        from graftpunk.cli import plugin_commands
+
+        monkeypatch.setitem(plugin_commands._plugin_session_map, "myshop", "myshop")
+
+        calls: list[None] = []
+
+        def counting_list_sessions(backend_override: str | None = None) -> list[str]:
+            calls.append(None)
+            return ["myshop", "myshop@alice"]
+
+        monkeypatch.setattr(plugin_commands, "list_sessions", counting_list_sessions)
+        assert plugin_commands.resolve_session_name("myshop") == "myshop"
+        assert len(calls) == 1
+
+        calls.clear()
+        monkeypatch.setattr(
+            plugin_commands,
+            "list_sessions",
+            lambda backend_override=None: (calls.append(None), ["myshop@alice"])[1],
+        )
+        assert plugin_commands.resolve_session_name("myshop") == "myshop@alice"
+        assert len(calls) == 1
+
+    def test_non_site_pass_through_lists_nothing(self, monkeypatch) -> None:  # noqa: ANN001
+        """A name with no plugin mapping never consults list_sessions."""
+        from graftpunk.cli import plugin_commands
+
+        def boom(backend_override: str | None = None) -> list[str]:
+            raise AssertionError("list_sessions must not be called for a pass-through name")
+
+        monkeypatch.setattr(plugin_commands, "list_sessions", boom)
+        assert plugin_commands.resolve_session_name("myshop@alice") == "myshop@alice"
 
     def test_full_name_passes_through(self, monkeypatch) -> None:  # noqa: ANN001
         from graftpunk.cli import plugin_commands
