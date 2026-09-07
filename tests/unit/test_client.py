@@ -889,6 +889,45 @@ class TestRunHandlerWithLimits:
             _run_handler_with_limits(handler, ctx, spec, {})
         assert handler.call_count == 1
 
+    def test_the_operating_scope_is_set_around_the_handler(self) -> None:
+        """#174: the one pipeline owns the scope, derived from the ctx field."""
+        from graftpunk.session_scope import current_operating_session
+
+        seen: dict = {}
+
+        def handler(ctx, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+            scope = current_operating_session()
+            seen["name"] = scope.name if scope else None
+            return {"ok": True}
+
+        ctx = CommandContext(
+            session=MagicMock(),
+            plugin_name="testplugin",
+            command_name="test",
+            api_version=1,
+            _operating_session_name="myshop@bob",
+        )
+
+        result = _run_handler_with_limits(handler, ctx, _make_spec("cmd"), {})
+
+        assert result == {"ok": True}
+        assert seen["name"] == "myshop@bob"
+        assert current_operating_session() is None
+
+    def test_an_empty_operating_name_sets_no_scope(self) -> None:
+        """A requires_session=False command carries an empty name and no scope."""
+        from graftpunk.session_scope import current_operating_session
+
+        seen: dict = {}
+
+        def handler(ctx, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+            seen["scope"] = current_operating_session()
+            return {"ok": True}
+
+        _run_handler_with_limits(handler, self._make_ctx(), _make_spec("cmd"), {})
+
+        assert seen["scope"] is None
+
 
 # ---------------------------------------------------------------------------
 # _enforce_shared_rate_limit

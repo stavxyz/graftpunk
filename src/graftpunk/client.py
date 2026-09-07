@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 import requests
@@ -46,6 +47,7 @@ from graftpunk.session_identity import (
     split_session_name,
     validate_session_name,
 )
+from graftpunk.session_scope import operating_session
 from graftpunk.tokens import clear_cached_tokens, prepare_session
 
 LOG = get_logger(__name__)
@@ -90,6 +92,22 @@ def _run_handler_with_limits(
     Retries the handler up to ``spec.max_retries`` times with
     exponential backoff on transient failures.
 
+    The handler runs inside the operating session scope named by
+    ``ctx._operating_session_name``, so author-facing code in the handler
+    (``self.get_session()``) loads the slot the dispatcher already resolved
+    instead of resolving the plugin's bare base name on its own terms (#174).
+    This is the one pipeline every dispatcher goes through (the CLI runtime
+    via ``execute_plugin_command``, ``GraftpunkClient`` directly), so the scope
+    has a single owner and derives from the field the context already carries
+    rather than from a second copy of the condition. An empty name, which is
+    what a ``requires_session=False`` command carries, sets no scope: there is
+    no account for it to be about.
+
+    The name understates what this now does: it is also the one place a
+    handler is invoked from, which is why the scope belongs here. It is left
+    as it is deliberately, since renaming a function the test suite imports by
+    name buys nothing this change needs.
+
     Args:
         handler: The command handler callable.
         ctx: CommandContext to pass to the handler.
@@ -106,40 +124,46 @@ def _run_handler_with_limits(
     attempts = 1 + spec.max_retries
     last_exc: Exception | None = None
     command_key = f"{ctx.plugin_name}.{spec.name}"
+    scope: AbstractContextManager[object] = (
+        operating_session(ctx._operating_session_name)
+        if ctx._operating_session_name
+        else nullcontext()
+    )
 
-    for attempt in range(attempts):
-        try:
-            if spec.rate_limit:
-                _enforce_shared_rate_limit(
-                    command_key,
-                    spec.rate_limit,
-                    rate_limit_state,
-                )
-            result = handler(ctx, **kwargs)
-            if asyncio.iscoroutine(result):
-                LOG.warning(
-                    "async_handler_auto_executed",
-                    command=spec.name,
-                    plugin=ctx.plugin_name,
-                )
-                result = asyncio.run(result)
-            return result
-        except (
-            requests.RequestException,
-            ConnectionError,
-            TimeoutError,
-            OSError,
-        ) as exc:
-            last_exc = exc
-            if attempt < attempts - 1:
-                backoff = 2**attempt
-                LOG.warning(
-                    "command_retry",
-                    command=spec.name,
-                    attempt=attempt + 1,
-                    backoff=backoff,
-                )
-                time.sleep(backoff)
+    with scope:
+        for attempt in range(attempts):
+            try:
+                if spec.rate_limit:
+                    _enforce_shared_rate_limit(
+                        command_key,
+                        spec.rate_limit,
+                        rate_limit_state,
+                    )
+                result = handler(ctx, **kwargs)
+                if asyncio.iscoroutine(result):
+                    LOG.warning(
+                        "async_handler_auto_executed",
+                        command=spec.name,
+                        plugin=ctx.plugin_name,
+                    )
+                    result = asyncio.run(result)
+                return result
+            except (
+                requests.RequestException,
+                ConnectionError,
+                TimeoutError,
+                OSError,
+            ) as exc:
+                last_exc = exc
+                if attempt < attempts - 1:
+                    backoff = 2**attempt
+                    LOG.warning(
+                        "command_retry",
+                        command=spec.name,
+                        attempt=attempt + 1,
+                        backoff=backoff,
+                    )
+                    time.sleep(backoff)
 
     assert last_exc is not None  # for type narrowing
     raise last_exc

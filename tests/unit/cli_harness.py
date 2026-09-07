@@ -7,8 +7,11 @@ test_multi_account_e2e.py — one copy, so the harness cannot drift.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
+
+if TYPE_CHECKING:
+    from graftpunk.session import BrowserSession
 
 
 def echo_loaded_session(session: Any = None) -> Any:
@@ -35,3 +38,36 @@ def invoke_plugin_app(plugin, argv, **env):  # noqa: ANN001, ANN002, ANN003, ANN
     with patch("graftpunk.cli.plugin_commands.discover_all_plugins", return_value=(plugin,)):
         register_plugin_commands(app, notify_errors=False)
     return CliRunner().invoke(app, argv, env={"COLUMNS": "200", **env})
+
+
+def cacheable_browser_session(
+    identifier: str | None = None, backend_type: str = "nodriver"
+) -> BrowserSession:
+    """A session whose rider attributes survive the cache's pickle round-trip.
+
+    A plain ``requests.Session`` pickles through its ``__attrs__`` whitelist,
+    which drops the rider attributes, so a test that caches one and loads it
+    back cannot tell two accounts apart: the account identifier is gone.
+    ``BrowserSession`` round-trips them in ``__getstate__``/``__setstate__``.
+    Built with ``__new__`` so no browser process starts and no driver is
+    required: this is a cache fixture, not a live session.
+
+    Args:
+        identifier: The account identifier to stamp, or None for a session
+            with no recorded account.
+        backend_type: The backend the cached session claims to come from.
+
+    Returns:
+        A ``BrowserSession`` ready to hand to ``cache_session``.
+    """
+    import requests
+
+    from graftpunk.session import BrowserSession
+    from graftpunk.session_identity import GP_ACCOUNT_ATTR
+
+    session = BrowserSession.__new__(BrowserSession)
+    requests.Session.__init__(session)
+    session._backend_type = backend_type
+    if identifier is not None:
+        setattr(session, GP_ACCOUNT_ATTR, identifier)
+    return session
