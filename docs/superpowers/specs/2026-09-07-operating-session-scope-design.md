@@ -119,7 +119,7 @@ injection, with the name they already hold:
   (`src/graftpunk/cli/plugin_runtime.py:219` (`_operating_session_name=operating_name,`)):
   the `execute_plugin_command` call and its 403-refresh retry a few lines below
   it run inside `operating_session(operating_name)` when `needs_session`.
-- `GraftpunkClient.execute`, where its `CommandContext` is built
+- `GraftpunkClient._execute_command` (`execute` only resolves the command and delegates), where its `CommandContext` is built
   (`src/graftpunk/client.py:493` (`_operating_session_name=(operating_name if needs_session else ""),`)):
   the `_run_handler_with_limits` call and its retry run inside the same scope,
   with the client's `operating_name` local.
@@ -165,8 +165,8 @@ it now reads `myshop`, the class attribute, always. A hand-written login that
 caches through the helpers or through `cache_login_session(self, session)` is
 unaffected. One that calls `cache_session(session, self.session_name)` by hand
 now lands on the bare slot instead of the labelled one. The migration is one
-line: call `cache_login_session(self, session)` (public, exported alongside
-`SitePlugin`) or accept `session_name` and `account_identifier` as keyword
+line: call `cache_login_session(self, session)` (public; this change exports it
+from `graftpunk.plugins` beside `SitePlugin`, together with `operating_session`) or accept `session_name` and `account_identifier` as keyword
 arguments, which `_accepted_login_kwargs`
 (`src/graftpunk/cli/login_commands.py:125` (`def _accepted_login_kwargs`))
 already passes to any login that declares them. The CHANGELOG records this
