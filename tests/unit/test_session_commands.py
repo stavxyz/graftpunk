@@ -215,6 +215,49 @@ class TestStorageBackendFlag:
         assert "S3 connection refused" in output
 
 
+class TestExportUseBackendOverride:
+    """``export`` and ``use`` thread --storage-backend into resolution and load (#178)."""
+
+    @patch("graftpunk.cli.session_commands.load_session")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
+    def test_export_consults_override_backend(self, mock_resolve, mock_load) -> None:
+        """--storage-backend reaches both resolution and the session load."""
+        mock_resolve.return_value = "mysite"
+        mock_load.return_value.save_httpie_session.return_value = "x.json"
+
+        result = runner.invoke(session_app, ["--storage-backend", "s3", "export", "mysite"])
+
+        assert result.exit_code == 0, result.output
+        mock_resolve.assert_called_once_with("mysite", backend_override="s3")
+        mock_load.assert_called_once_with("mysite", backend_override="s3")
+
+    @patch("graftpunk.cli.session_commands.load_session")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
+    def test_export_uses_default_backend_when_no_flag(self, mock_resolve, mock_load) -> None:
+        """Without --storage-backend, both calls get backend_override=None."""
+        mock_resolve.return_value = "mysite"
+        mock_load.return_value.save_httpie_session.return_value = "x.json"
+
+        result = runner.invoke(session_app, ["export", "mysite"])
+
+        assert result.exit_code == 0, result.output
+        mock_resolve.assert_called_once_with("mysite", backend_override=None)
+        mock_load.assert_called_once_with("mysite", backend_override=None)
+
+    @patch("graftpunk.cli.session_commands.set_active_session")
+    @patch("graftpunk.cli.session_commands.resolve_session_name_or_exit")
+    def test_use_consults_override_backend(self, mock_resolve, mock_set) -> None:
+        """--storage-backend reaches resolution before the active session is set."""
+        mock_resolve.return_value = "mysite"
+        mock_set.return_value = ".gp-session"
+
+        result = runner.invoke(session_app, ["--storage-backend", "s3", "use", "mysite"])
+
+        assert result.exit_code == 0, result.output
+        mock_resolve.assert_called_once_with("mysite", backend_override="s3")
+        mock_set.assert_called_once_with("mysite")
+
+
 class TestShowErrorHandling:
     """Tests for error handling in session show command."""
 

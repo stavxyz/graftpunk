@@ -317,7 +317,7 @@ def cache_session(session: T, session_name: str | None = None) -> str:
         raise
 
 
-def load_session(name: str) -> SessionLike:
+def load_session(name: str, backend_override: str | None = None) -> SessionLike:
     """Load a cached session.
 
     Storage location depends on GRAFTPUNK_STORAGE_BACKEND:
@@ -339,6 +339,7 @@ def load_session(name: str) -> SessionLike:
 
     Args:
         name: Session name.
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         Loaded session object.
@@ -347,11 +348,13 @@ def load_session(name: str) -> SessionLike:
         SessionNotFoundError: If session file doesn't exist.
         SessionExpiredError: If session cannot be decrypted or has invalid structure.
     """
-    session, _metadata = _load_session_with_metadata(name)
+    session, _metadata = _load_session_with_metadata(name, backend_override=backend_override)
     return session
 
 
-def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata]:
+def _load_session_with_metadata(
+    name: str, backend_override: str | None = None
+) -> tuple[SessionLike, SessionMetadata]:
     """Load a cached session together with the SessionMetadata already fetched
     during that same backend read.
 
@@ -362,6 +365,7 @@ def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata
 
     Args:
         name: Session name to load.
+        backend_override: If set, use this backend type instead of the default.
 
     Returns:
         The deserialized session and the ``SessionMetadata`` read in the same
@@ -372,7 +376,7 @@ def _load_session_with_metadata(name: str) -> tuple[SessionLike, SessionMetadata
         SessionExpiredError: The session is expired, cannot be decrypted, or
             fails its checksum/deserialization.
     """
-    backend = _get_session_storage_backend()
+    backend = _get_session_storage_backend(backend_override=backend_override)
     settings = get_settings()
 
     try:

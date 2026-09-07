@@ -232,6 +232,7 @@ def show(
 
 @session_app.command("export")
 def export(
+    ctx: typer.Context,
     name: Annotated[
         str,
         typer.Argument(
@@ -254,9 +255,10 @@ def export(
 
         http --session=SESSION https://example.com/api
     """
-    name = resolve_session_name_or_exit(name)
+    backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
+    name = resolve_session_name_or_exit(name, backend_override=backend_override)
     try:
-        session = load_session(name)
+        session = load_session(name, backend_override=backend_override)
     except SessionNotFoundError:
         console.print(f"[red]✗ Session '{escape(str(name))}' not found[/red]")
         raise typer.Exit(1) from None
@@ -398,6 +400,7 @@ def session_clear(
 
 @session_app.command("use")
 def session_use(
+    ctx: typer.Context,
     name: Annotated[
         str,
         typer.Argument(help="Session name or plugin alias to set as active", metavar="SESSION"),
@@ -408,7 +411,8 @@ def session_use(
     Writes a .gp-session file in the current directory.
     Override per-shell with GRAFTPUNK_SESSION env var.
     """
-    resolved = resolve_session_name_or_exit(name)
+    backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
+    resolved = resolve_session_name_or_exit(name, backend_override=backend_override)
     path = set_active_session(resolved)
     console.print(f"[green]Active session set to '{escape(str(resolved))}'[/green]")
     if resolved != name:
