@@ -1255,6 +1255,35 @@ class TestResolveSessionName:
             _plugin_session_map.pop("hn", None)
 
 
+class TestIsRegisteredSiteName:
+    """Tests for is_registered_site_name, the resolve=False signal gp http uses (#178)."""
+
+    def test_registered_site_name_is_true(self) -> None:
+        from graftpunk.cli.plugin_commands import _plugin_session_map, is_registered_site_name
+
+        _plugin_session_map["hn"] = "hackernews"
+        try:
+            assert is_registered_site_name("hn") is True
+        finally:
+            _plugin_session_map.pop("hn", None)
+
+    def test_true_only_for_the_alias_key_not_the_mapped_base(self) -> None:
+        """The map is keyed by alias; the base it maps to is not itself a key."""
+        from graftpunk.cli.plugin_commands import _plugin_session_map, is_registered_site_name
+
+        _plugin_session_map["hn"] = "hackernews"
+        try:
+            assert is_registered_site_name("hn") is True
+            assert is_registered_site_name("hackernews") is False
+        finally:
+            _plugin_session_map.pop("hn", None)
+
+    def test_unknown_name_is_false(self) -> None:
+        from graftpunk.cli.plugin_commands import is_registered_site_name
+
+        assert is_registered_site_name("not-a-registered-plugin") is False
+
+
 class TestInferSiteName:
     """Tests for infer_site_name URL-to-name utility."""
 

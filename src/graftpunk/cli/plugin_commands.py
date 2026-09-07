@@ -397,6 +397,9 @@ def is_registered_site_name(name: str) -> bool:
     through this map knows the listing was exhausted -- a subsequent load
     can skip its own resolve step rather than listing again on a miss
     (see ``gp http``'s use in :mod:`graftpunk.cli.http_commands`, #178).
+
+    Must stay in step with resolve_session_name's own
+    ``if name in _plugin_session_map:`` branch condition below.
     """
     return name in _plugin_session_map
 
