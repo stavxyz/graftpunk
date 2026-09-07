@@ -1,8 +1,12 @@
+---
+type: spec
+---
+
 # Operating session scope: `get_session()` agrees with the CLI, and the login stamp retires
 
 **Issue:** https://github.com/stavxyz/graftpunk/issues/174 (the two remaining halves)
 **Date:** 2026-09-07
-**Status:** design, awaiting approval
+**Status:** approved 2026-09-07 (plan validated at 5b8dc51)
 
 ## Problem
 
@@ -112,10 +116,10 @@ Precedence, one chain:
 1. `session_name` given: load it. A labelled name loads exact; a bare name is a
    base and the loader resolves it (the pin contract:
    `resolve = split_session_name(name)[1] is None`).
-2. Else `operating_session_for(self.session_name)` is set: load that name
-   exact-only (`resolve=False`). The dispatcher that set the scope already
-   resolved it against the listing, so a second listing would be waste, and the
-   name is by construction a slot that loaded moments ago.
+2. Else `operating_session_for(self.session_name)` is set: load that name. A
+   labelled scope name is exact by construction; a bare one is a base and
+   resolves like any bare name. On the dispatch path the bare slot, when it
+   exists, answers before any listing.
 3. Else the bare `self.session_name`, resolving, exactly as today.
 
 The scope has one owner: the shared execution pipeline both dispatchers
@@ -152,10 +156,22 @@ are deleted.
 its fallback reads the scope instead of the instance:
 
 ```python
-scope = operating_session_for(plugin.session_name)
-session_name = name or (scope.name if scope else plugin.session_name)
+scope = operating_session_for(plugin.session_name) if name is None else None
+session_name = name if name is not None else (scope.name if scope else plugin.session_name)
 account = identifier if identifier is not None else (scope.identifier if scope else None)
+if account is None:
+    stored = get_session_metadata(session_name)
+    account = stored.get("account_identifier") if stored else None
 ```
+
+> **Design note (2026-09-07):** the scope is read only when *name* is None, so
+> an explicit name never borrows the scope's identity: a caller naming the slot
+> is naming the account too, or recording none. The carry-forward covers the
+> other direction. A command scope carries no identifier (only a login sets
+> one), so a write under one would otherwise record `account_identifier=None`
+> over the account the slot already names; reading the slot's stored metadata
+> once, here in the funnel, keeps `cache_session` read-free while a refresh
+> write preserves the account.
 
 The `getattr(plugin, GP_ACCOUNT_ATTR, None)` read goes away; nothing writes that
 attribute on a plugin any more. The generated login flows are untouched: they
@@ -202,9 +218,9 @@ defect.
   `validate_session_name` before setting anything. Both dispatchers pass names
   that already loaded, so this is a programming-error guard, not a user path.
 - `get_session()` errors are unchanged in kind: `SessionNotFoundError`,
-  `AmbiguousSessionError` (only on the bare path), `ValueError` on an invalid
-  explicit name. The scope path cannot raise `AmbiguousSessionError`, since it
-  loads exact-only.
+  `AmbiguousSessionError` (only on a bare name, from whichever tier supplied
+  it), `ValueError` on an invalid explicit name. A labelled name loads exact,
+  so it can only miss.
 - A scope leaking past its block is prevented by `ContextVar.reset(token)` in a
   `finally`, and tested with a raising block.
 
@@ -218,9 +234,10 @@ Tests assert behaviour through the public surfaces and a fresh backend
   name refused; the scope is visible inside `asyncio.run(coro())` started
   within the block (the propagation proof).
 - `get_session()`: explicit labelled name loads exact; explicit bare name
-  resolves a single account and raises `AmbiguousSessionError` on two; scope for
-  the same base loads that slot exact-only with two accounts cached (the
-  issue's scenario, no ambiguity error); scope for a foreign base is ignored and
+  resolves a single account and raises `AmbiguousSessionError` on two; a
+  labelled scope for the same base loads that slot exactly with two accounts
+  cached (the issue's scenario, no ambiguity error); a bare scope resolves like
+  any bare name; scope for a foreign base is ignored and
   the bare path runs; no scope behaves as today.
 - End to end through the CLI harness (`invoke_plugin_app`): a handler that
   calls `self.get_session()` under `--session myshop@bob` with `myshop@alice`

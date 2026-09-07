@@ -154,6 +154,10 @@ command (a script, a test, library code that already holds a name), pass the
 name: `plugin.get_session("myshop@alice")` loads that slot exactly, and
 `plugin.get_session("myshop")` resolves the base.
 
+A `requires_session=False` command carries no operating session scope, so
+`self.get_session()` in its handler resolves the plugin's bare base name;
+pass an explicit name there when the handler needs one particular account.
+
 The session-management commands (`gp session show`, `gp session clear`, `gp
 session use`) and `gp http --session` apply a narrower rule for a registered
 plugin's base name: they address the exact slot cached under that base when
@@ -616,7 +620,8 @@ you build the session yourself. Inside `login()`, `self.session_name` is the
 plugin's bare base name (`mysite`), never the account-qualified slot, because
 nothing mutates the plugin instance. A `login()` that calls
 `cache_session(session, self.session_name)` by hand therefore writes the bare
-slot, and the CLI says so after the login: switch it to
+slot, and the CLI says so after the login: it reports that nothing was written
+to the slot it named, and names the two fixes. Switch to
 `cache_login_session(self, session)`, or declare `session_name` and
 `account_identifier` as keyword arguments on `login()` and the CLI passes both
 in.
