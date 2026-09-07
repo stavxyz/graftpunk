@@ -35,7 +35,7 @@ from graftpunk.exceptions import (
 )
 from graftpunk.plugins.cli_plugin import SitePlugin
 from graftpunk.session import BrowserSession
-from graftpunk.session_identity import GP_ACCOUNT_ATTR
+from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
 
 
 @pytest.fixture
@@ -251,7 +251,7 @@ def test_write_back_with_the_returned_name_refreshes_the_loaded_slot(fresh_backe
     assert "myshop" not in list_sessions()
 
 
-def test_update_session_cookies_uses_the_name_literally(fresh_backend) -> None:  # noqa: ANN001
+def test_update_session_cookies_uses_an_unstamped_name_literally(fresh_backend) -> None:  # noqa: ANN001
     cache_session(_cached_session("alice@example.com"), "myshop@alice")
 
     # Best-effort no-op: "myshop" isn't a cached key, so the literal load fails
@@ -319,7 +319,10 @@ def test_bare_write_back_from_load_session_for_api_follows_the_loaded_slot(
     assert followed[0]["target"] == "myshop@alice"
 
 
-def test_a_rider_from_another_base_does_not_redirect_the_write_back(fresh_backend) -> None:  # noqa: ANN001
+def test_a_rider_from_another_base_does_not_redirect_the_write_back(
+    fresh_backend,  # noqa: ANN001
+    captured_logs,  # noqa: ANN001
+) -> None:
     """Following only ever happens inside one base: `othersite@bob` is not `myshop`."""
     cache_session(_cached_session("alice@example.com"), "myshop@alice")
     cache_session(_cached_session("bob@example.com"), "othersite@bob")
@@ -331,6 +334,7 @@ def test_a_rider_from_another_base_does_not_redirect_the_write_back(fresh_backen
     assert "myshop" not in list_sessions()
     assert get_session_metadata("myshop@alice")["cookie_count"] == 0
     assert get_session_metadata("othersite@bob")["cookie_count"] == 0
+    assert not [e for e in captured_logs if e["event"] == "session_write_back_follows_loaded_slot"]
 
 
 def test_a_labelled_argument_that_differs_from_the_rider_stays_literal(fresh_backend) -> None:  # noqa: ANN001
@@ -347,31 +351,69 @@ def test_a_labelled_argument_that_differs_from_the_rider_stays_literal(fresh_bac
 
 
 def test_cache_session_stamps_the_slot_it_saved_under(fresh_backend) -> None:  # noqa: ANN001
-    from graftpunk.tokens import _SESSION_NAME_ATTR
-
     session = _cached_session("alice@example.com")
     cache_session(session, "myshop@alice")
 
-    assert getattr(session, _SESSION_NAME_ATTR) == "myshop@alice"
+    assert getattr(session, GP_SESSION_NAME_ATTR) == "myshop@alice"
     copied = cache_mod._api_session_from_session(session)
-    assert getattr(copied, _SESSION_NAME_ATTR) == "myshop@alice"
+    assert getattr(copied, GP_SESSION_NAME_ATTR) == "myshop@alice"
 
 
 def test_the_loaded_slot_name_never_rides_the_pickle(fresh_backend) -> None:  # noqa: ANN001
     """A cached blob must not carry a slot name that goes stale under another key."""
     import dill
 
-    from graftpunk.tokens import _SESSION_NAME_ATTR
-
     session = _cached_session("alice@example.com")
-    setattr(session, _SESSION_NAME_ATTR, "myshop@alice")
+    setattr(session, GP_SESSION_NAME_ATTR, "myshop@alice")
 
-    restored = dill.loads(dill.dumps(session))  # noqa: S301 — bytes this test just produced
+    restored = dill.loads(dill.dumps(session))  # noqa: S301  (bytes this test just produced)
 
     assert getattr(restored, GP_ACCOUNT_ATTR) == "alice@example.com"
-    assert getattr(restored, _SESSION_NAME_ATTR, None) is None
+    assert getattr(restored, GP_SESSION_NAME_ATTR, None) is None
 
     # The loader is what puts the name back, from the key it read.
     cache_session(session, "myshop@alice")
     loaded = cache_mod.load_session("myshop@alice")
-    assert getattr(loaded, _SESSION_NAME_ATTR) == "myshop@alice"
+    assert getattr(loaded, GP_SESSION_NAME_ATTR) == "myshop@alice"
+
+
+def test_an_existing_bare_slot_wins_over_the_stamped_one(fresh_backend) -> None:  # noqa: ANN001
+    """The literal name answers first, so a bare slot is never passed over."""
+    cache_session(_cached_session("legacy@example.com"), "myshop")
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+    session = load_session_for_api("myshop@alice")
+    session.cookies.set("visited", "1")
+    update_session_cookies(session, "myshop")
+
+    assert get_session_metadata("myshop")["cookie_count"] == 1
+    assert get_session_metadata("myshop@alice")["cookie_count"] == 0
+
+
+def test_a_non_string_stamp_keeps_the_write_literal(fresh_backend, captured_logs) -> None:  # noqa: ANN001
+    """Only a real slot name may redirect a write; a test double answers anything."""
+    cache_session(_cached_session("alice@example.com"), "myshop@alice")
+
+    session = requests.Session()
+    setattr(session, GP_SESSION_NAME_ATTR, object())
+    session.cookies.set("visited", "1")
+    update_session_cookies(session, "myshop")
+
+    assert "myshop" not in list_sessions()
+    assert get_session_metadata("myshop@alice")["cookie_count"] == 0
+    # The no-op is the plain miss on "myshop", not a stamp that blew up.
+    skipped = [e for e in captured_logs if e["event"] == "session_save_skipped_load_failed"]
+    assert skipped, f"expected session_save_skipped_load_failed, got: {captured_logs}"
+    assert skipped[0]["session_name"] == "myshop"
+    assert skipped[0]["requested"] == "myshop"
+    assert "not found" in skipped[0]["error"]
+
+
+def test_the_slot_name_is_excluded_from_both_pickle_whitelists() -> None:
+    """The registry, not a round-trip, is where the exclusion has to hold."""
+    from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_ATTRS
+
+    assert GP_SESSION_NAME_ATTR in SESSION_RIDER_ATTRS
+    assert GP_SESSION_NAME_ATTR not in PICKLED_SESSION_RIDER_ATTRS
+    # The selenium __getstate__ branch inherits requests' own whitelist.
+    assert GP_SESSION_NAME_ATTR not in requests.Session.__attrs__

@@ -1165,8 +1165,12 @@ class SitePlugin:
         (``load_session_for_api_resolved`` returns it), both remain exact and
         say the target at the call site.
 
-        Retiring the login identity stamp, the other half of
-        https://github.com/stavxyz/graftpunk/issues/174, is still open.
+        That fixes the write-back only. This method still loads by the bare
+        base name, so with two accounts cached under it and the CLI pinned to
+        one, ``get_session()`` resolves on its own terms and raises
+        ``AmbiguousSessionError``. Threading the resolved name into this method
+        remains tracked by https://github.com/stavxyz/graftpunk/issues/174,
+        alongside retiring the login identity stamp.
 
         Raises:
             SessionNotFoundError: Nothing is cached under ``self.session_name``

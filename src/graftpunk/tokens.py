@@ -18,7 +18,7 @@ from graftpunk.exceptions import (
     TokenPatternMismatchError,
 )
 from graftpunk.logging import get_logger
-from graftpunk.session_identity import GP_ACCOUNT_ATTR
+from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
 
 LOG = get_logger(__name__)
 
@@ -495,7 +495,6 @@ def extract_token(session: requests.Session, token: Token, base_url: str) -> str
 _CACHE_ATTR = "_gp_cached_tokens"
 _CSRF_TOKENS_ATTR = "_gp_csrf_tokens"
 _HEADER_ROLES_ATTR = "_gp_header_roles"
-_SESSION_NAME_ATTR = "_gp_session_name"
 
 # The one registry of attributes that ride a session object beside its cookies
 # and headers. Every place that moves state from one session to another
@@ -506,7 +505,7 @@ SESSION_RIDER_ATTRS: tuple[str, ...] = (
     _CACHE_ATTR,
     _CSRF_TOKENS_ATTR,
     _HEADER_ROLES_ATTR,
-    _SESSION_NAME_ATTR,
+    GP_SESSION_NAME_ATTR,
     GP_ACCOUNT_ATTR,
 )
 
@@ -518,7 +517,7 @@ SESSION_RIDER_DEFAULTS: dict[str, Callable[[], Any]] = {
     _CACHE_ATTR: dict,
     _CSRF_TOKENS_ATTR: dict,
     _HEADER_ROLES_ATTR: dict,
-    _SESSION_NAME_ATTR: lambda: None,
+    GP_SESSION_NAME_ATTR: lambda: None,
     GP_ACCOUNT_ATTR: lambda: None,
 }
 
@@ -529,7 +528,7 @@ SESSION_RIDER_DEFAULTS: dict[str, Callable[[], Any]] = {
 # always describes the key this copy actually came from or went to; pickling it
 # would let a blob cached under a second name carry the first one (#174).
 _MEMORY_ONLY_SESSION_RIDER_ATTRS: frozenset[str] = frozenset(
-    {_CSRF_TOKENS_ATTR, _SESSION_NAME_ATTR}
+    {_CSRF_TOKENS_ATTR, GP_SESSION_NAME_ATTR}
 )
 PICKLED_SESSION_RIDER_ATTRS: tuple[str, ...] = tuple(
     attr for attr in SESSION_RIDER_ATTRS if attr not in _MEMORY_ONLY_SESSION_RIDER_ATTRS
