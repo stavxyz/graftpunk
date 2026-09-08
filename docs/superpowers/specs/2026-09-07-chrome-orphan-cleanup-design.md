@@ -58,16 +58,40 @@ Three parts. The first is the backstop the issue asks for and covers every way
 a parent can die. The second stops the leak that makes the first necessary so
 often. The third covers the catchable signals.
 
-### Part 1: orphan detection and reaping, `src/graftpunk/backends/chrome_orphans.py`
+### Part 1: orphan detection and reaping, `src/graftpunk/chrome_orphans.py`
 
 A new module with no graftpunk dependencies beyond `graftpunk.logging`, so the
 backend and the CLI can both import it.
 
+> **Design note (2026-09-07):** the module sits at the top level beside
+> `chrome.py`, not under `backends/`: it is a process-hygiene utility with no
+> backend in it, and the CLI imports it too. The API below is the shape the
+> SOLID review ruled: one `ProcessOps` collaborator instead of five separate
+> callable seams, `base_browser_args()` so both launch sites start from the
+> same switch list, one `_removable_temp_profile` predicate for every "is this
+> ours to delete" question (including the legacy orphan rule, which no longer
+> uses a looser substring test), an `_ARMED` module flag the unit suite turns
+> off at the origin, and a `CleanupReport` from the composition root rather
+> than a count plus a print.
+
 ```python
 OWNER_SWITCH = "--graftpunk-owner-pid"
+_ARMED = True   # the unit suite sets this False through one autouse fixture
 
 def owner_switch(pid: int | None = None) -> str:
     """The marker switch for this process: ``--graftpunk-owner-pid=<pid>``."""
+
+def base_browser_args() -> list[str]:
+    """["--test-type", owner_switch()]: what both launch sites start from."""
+
+@dataclass(frozen=True)
+class ProcessOps:
+    """The OS calls this module makes, in one injectable place. Tests pass a fake kernel."""
+    read_table: Callable[[], str] = _read_ps_table    # ps -eo pid=,ppid=,args=
+    kill: Callable[[int, int], None] = os.kill
+    pid_alive: Callable[[int], bool] = _pid_alive
+    sleep: Callable[[float], None] = time.sleep
+    monotonic: Callable[[], float] = time.monotonic
 
 @dataclass(frozen=True)
 class ChromeProcess:
@@ -77,26 +101,42 @@ class ChromeProcess:
     owner_pid: int | None          # from the marker switch, when present
     user_data_dir: str | None      # from --user-data-dir=, when present
 
-def list_chrome_processes(process_table: Callable[[], str] | None = None) -> list[ChromeProcess]:
-    """Every process whose argv carries --remote-debugging-port. POSIX only; [] elsewhere.
+def list_chrome_processes(ops: ProcessOps | None = None) -> list[ChromeProcess]:
+    """Every process whose argv carries --remote-debugging-port. POSIX only; [] elsewhere."""
 
-    process_table defaults to running ``ps -eo pid=,ppid=,args=``; tests pass a fake."""
+def _removable_temp_profile(user_data_dir: str | None) -> Path | None:
+    """The one "is this ours to delete" predicate: a directory whose name starts with
+       ``uc_`` sitting directly under tempfile.gettempdir(), which is where nodriver's
+       mkdtemp puts it. Every deletion site and the legacy orphan rule consult this."""
 
-def find_orphans(processes: Iterable[ChromeProcess], *, pid_alive: Callable[[int], bool] = _pid_alive) -> list[ChromeProcess]:
+def find_orphans(processes: Iterable[ChromeProcess], *, ops: ProcessOps | None = None) -> list[ChromeProcess]:
     """The subset that nobody owns any more:
        (a) the marker names an owner pid that is not alive, or
-       (b) no marker, the profile is a nodriver temp profile (``/uc_`` in --user-data-dir), and ppid == 1.
+       (b) no marker, _removable_temp_profile accepts the --user-data-dir, and ppid == 1.
     A process whose owner is alive, or a Chrome without a debugging port (the user's browser), never matches."""
 
-def reap_orphans(*, grace_seconds: float = 3.0, kill: Callable[[int, int], None] = os.kill, ...) -> list[ChromeProcess]:
+def reap_orphans(*, grace_seconds: float = 3.0, poll_interval: float = 0.5,
+                 ops: ProcessOps | None = None) -> list[ChromeProcess]:
     """SIGTERM each orphan, wait up to grace_seconds for it to leave the table, SIGKILL the rest,
-       then remove each orphan's temp profile directory when it is a ``uc_*`` directory under tempfile.gettempdir().
-       Per-process failures are logged and never raise. Returns the orphans acted on."""
+       then remove each orphan's temp profile directory when _removable_temp_profile accepts it.
+       Per-process failures are logged and never raise. Returns the orphans acted on.
+       [] when _ARMED is False or off POSIX. Half-second polling: six table reads, not thirty."""
 
-def remove_stale_temp_profiles(*, older_than_seconds: float = 3600.0) -> list[Path]:
-    """Remove ``uc_*`` directories under tempfile.gettempdir() that no live process references
-       in its argv and whose mtime is older than the threshold. The age guard keeps a
-       directory another process created moments ago, before its Chrome shows in ps."""
+def remove_stale_temp_profiles(*, older_than_seconds: float = 3600.0,
+                               ops: ProcessOps | None = None) -> list[Path]:
+    """Remove the temp profiles no listed browser names in its parsed --user-data-dir and
+       whose mtime is older than the threshold. The age guard keeps a directory another
+       process created moments ago, before its Chrome shows in ps."""
+
+@dataclass(frozen=True)
+class CleanupReport:
+    reaped: list[ChromeProcess]
+    profiles_removed: list[Path]
+
+def cleanup_orphans_before_launch() -> CleanupReport:
+    """The composition root both launch sites call: arm the termination handlers when the
+       CLI asked for them, apply the opt-out, run the two sweeps under separate guards.
+       Never raises, and prints nothing: the caller decides what its user should see."""
 ```
 
 Rule (b) exists for orphans launched before this change (they carry no marker)
@@ -112,20 +152,38 @@ Rule (a) treats "owner pid not alive" as `os.kill(pid, 0)` raising
 live owner's Chrome.
 
 Killing the browser process takes its renderer and GPU helpers with it (they
-exit when their parent's IPC channel closes). Helpers that show up in the table
-with the same switches are matched and handled by the same rules, so a helper
-whose browser process is already gone is covered too.
+exit when their parent's IPC channel closes). The marker is on the browser
+process only: Chrome copies an allowlisted subset of switches to its helpers
+(`CopySwitchesFrom` over `kSwitchNames` in
+`content/browser/renderer_host/render_process_host_impl.cc`), and a vendor
+switch is not on that list. A helper carries `--user-data-dir` but no marker,
+so one that outlived its browser is matched only if it also carries
+`--remote-debugging-port` and satisfies rule (b); a helper with neither is out
+of scope for this design.
 
-Opt-out: `GRAFTPUNK_KEEP_ORPHANED_CHROME=1` (a `Settings` field beside
+> **Design note (2026-09-07):** this paragraph previously said helpers carry
+> the same switches and are handled by the same rules. The fact-check measured
+> otherwise (a live probe: the renderer carried 25 of its browser's 39
+> switches, including `--user-data-dir` but not the vendor ones), so the claim
+> is corrected here rather than left for the implementation to inherit.
+
+Opt-out: `GRAFTPUNK_KEEP_ORPHANED_CHROME=1` (a `GraftpunkSettings` field beside
 `browser_executable_path` at `src/graftpunk/config.py:87` (`browser_executable_path: str | None = Field(`))
 skips Part 1 entirely, for users who deliberately keep detached browsers.
 
 Structured events: `chrome_orphan_found` (pid, ppid, owner_pid, user_data_dir,
 rule), `chrome_orphan_terminated`, `chrome_orphan_killed`,
 `chrome_orphan_profile_removed`, `chrome_orphan_cleanup_failed` (pid, error),
-`chrome_temp_profile_removed`. The CLI prints one line when it reaped anything
-("Cleaned up N orphaned Chrome process(es) from earlier runs.") so the user
-learns why a start took a few seconds longer.
+`chrome_temp_profile_removed`. `gp observe` prints one line when the pass
+reaped anything ("Cleaned up N orphaned Chrome process(es) from earlier runs.")
+so the user learns why a start took a few seconds longer. The backend logs
+`chrome_orphans_cleaned` with the counts and prints nothing.
+
+> **Design note (2026-09-07):** the printing was originally described as "the
+> CLI prints one line", which in practice meant the shared cleanup function
+> printing for every caller, including a plugin login writing to a pipe. The
+> function now returns a `CleanupReport` and prints nothing; the interactive
+> `gp observe` command is the one caller that turns it into a message.
 
 Windows: `list_chrome_processes` returns `[]` with one debug log; nothing else
 changes. The issue's problem statement is about POSIX parent death.
@@ -134,10 +192,17 @@ changes. The issue's problem statement is about POSIX parent death.
 
 `NoDriverBackend._start_async` (`src/graftpunk/backends/nodriver.py:297` (`async def _start_async(self, _max_attempts: int = 3) -> None:`)):
 
-- Before the first `uc.start` attempt, when the opt-out is not set:
-  `reap_orphans()` then `remove_stale_temp_profiles()`. Both are bounded (the
-  grace period) and never raise into the start path.
-- `browser_args` gains `owner_switch()` next to `--test-type`.
+- Before the first `uc.start` attempt: `await asyncio.to_thread(cleanup_orphans_before_launch)`,
+  which applies the opt-out and runs both sweeps. Bounded (the grace period)
+  and it never raises into the start path. The backend logs the report's
+  counts as `chrome_orphans_cleaned`.
+- `browser_args` starts from `base_browser_args()` and extends it with any
+  configured extras.
+
+> **Design note (2026-09-07):** the sweep shells out to `ps` and can sleep
+> through a three second grace period, so both async launch sites run it on a
+> worker thread rather than blocking the event loop that is about to start a
+> browser.
 
 `NoDriverBackend._stop_async` (`src/graftpunk/backends/nodriver.py:424` (`async def _stop_async(self) -> None:`)):
 after `_reap_browser_process` returns, remove the browser's profile directory
@@ -146,38 +211,63 @@ created a temp dir"), with `shutil.rmtree(..., ignore_errors=True)` and a
 `chrome_temp_profile_removed` event. A custom `profile_dir` is never touched.
 This is the fix for finding 2.
 
-The backend also exposes `terminate_browser_process(self) -> None`: a
-synchronous, loop-free method that sends SIGTERM to the Chrome subprocess it
-launched and removes its temp profile, for use from a signal handler (Part 3).
-It touches only `self._browser._process` and the profile path, never the event
-loop, so it is safe where `stop()` (which runs `asyncio.run`) is not.
+The backend also implements `_terminate_for_signal(self) -> None`, the
+`TerminatableBrowser` protocol of Part 3: a synchronous, loop-free method that
+sends SIGTERM to the Chrome subprocess it launched, removes its temp profile,
+and then calls `_reset_state()` so the object is coherent afterwards. It
+touches only `self._browser._process` and the profile path, never the event
+loop, so it is safe where `stop()` (which runs `asyncio.run`) is not. The
+backend registers itself with the Part 3 registry once its browser is up and
+leaves the registry in `_reset_state`, which both stop paths call from a
+`finally`, so the entry outlives the risky part of a stop.
 
 The `gp observe` interactive path (`src/graftpunk/cli/main.py:524` (`browser = await nodriver.start(`))
-calls `reap_orphans()` and `remove_stale_temp_profiles()` before its own
-`nodriver.start`, adds `owner_switch()` to its `browser_args`, and removes the
-temp profile after its `browser.stop()`. Routing that path through
-`NoDriverBackend` instead is a larger refactor and out of scope; the three
-shared helpers keep the two launch sites in step.
+runs the same `cleanup_orphans_before_launch` before its own `nodriver.start`,
+passes `base_browser_args()`, registers a small `_ObserveBrowserHandle` around
+the browser it drives, and removes both the registry entry and the temp profile
+after its `browser.stop()`. Routing that path through `NoDriverBackend` instead
+is a larger refactor and out of scope; the shared helpers keep the two launch
+sites in step.
+
+> **Design note (2026-09-07):** the observe path registering a handle of its
+> own is new here. Without it, a SIGTERM during `gp observe` would end nothing,
+> which is the launch site least likely to be covered by an orderly shutdown.
 
 ### Part 3: SIGTERM and SIGHUP end the browser too
 
-`src/graftpunk/session.py` keeps a module-level `weakref.WeakSet` of live
-`BrowserSession` instances, added in `__init__` and discarded in `quit()`
-(`src/graftpunk/session.py:536` (`    def quit(self) -> None:`)) and
-`_quit_async`. `BrowserSession.terminate_browser_process()` forwards to the
-backend's method when the backend is nodriver.
+A new `src/graftpunk/signals.py` holds a runtime-checkable
+`TerminatableBrowser` protocol with one method, `_terminate_for_signal() -> None`
+(handler-only, and named accordingly), and a `weakref.WeakSet` registry with
+`register_live_browser`, `unregister_live_browser` and a `live_browsers()`
+snapshot. `NoDriverBackend` registers itself when its browser is up and leaves
+in `_reset_state`; the `gp observe` path registers an `_ObserveBrowserHandle`
+around the browser it drives directly. Nothing in the signal path knows what a
+`BrowserSession` is, and `src/graftpunk/session.py` is not modified.
 
-A new `src/graftpunk/cli/signals.py` with `install_termination_cleanup()`: for
-each of SIGTERM and SIGHUP whose current disposition is `SIG_DFL`, install a
-handler that calls `terminate_browser_process()` on every live session (each
-call wrapped, failures logged), logs `termination_signal_received` with the
-signal name, restores `SIG_DFL`, and re-raises the same signal at the process
+The same module's `install_termination_cleanup()`: for each of SIGTERM and
+SIGHUP whose current disposition is `SIG_DFL`, install a handler that calls
+`_terminate_for_signal()` on every registered handle (each call wrapped,
+failures logged), logs `termination_signal_received` with the signal name,
+restores `SIG_DFL`, and re-raises the same signal at the process
 (`os.kill(os.getpid(), signum)`) so the exit status is the conventional
-128 + signum and any parent supervisor sees the real cause. The CLI's
+128 + signum and any parent supervisor sees the real cause. A slot that is not
+`SIG_DFL` (a host already handles it) is left alone and logged at debug.
+
+Arming is lazy. The module carries `auto_install: bool = False`; the CLI's
 `main_callback` (`src/graftpunk/cli/main.py:122` (`@app.callback(invoke_without_command=True)`))
-calls it once. Importing `graftpunk` as a library installs nothing; a host that
-wants the behaviour calls `install_termination_cleanup()` itself. A slot that
-is not `SIG_DFL` (a host already handles it) is left alone and logged at debug.
+sets it, which claims no signal slot, and `cleanup_orphans_before_launch`
+installs the handlers at the first browser launch. Importing `graftpunk` as a
+library installs nothing, and neither does a `gp` command that opens no
+browser; a host that wants the behaviour calls `install_termination_cleanup()`
+itself or sets the same flag.
+
+> **Design note (2026-09-07):** two changes from the shape first written here.
+> The registry holds browser handles rather than `BrowserSession` instances, so
+> the signal path does not depend on the session module and does not dispatch
+> on a backend name, and `gp observe`, which never builds a `BrowserSession`,
+> is covered by the same mechanism. And `main_callback` sets a flag instead of
+> installing handlers, so `gp session list` no longer claims two process-wide
+> signal slots for a command that opens no browser.
 
 SIGKILL and the OOM killer remain uncatchable; Part 1 is their backstop, as the
 issue says.
@@ -203,8 +293,11 @@ plus one `rmtree`, then the default action.
 
 ### Testing
 
-Unit tests inject the process table and the kill function; none touches a real
-Chrome:
+Unit tests inject a fake `ProcessOps` (table, kill, liveness, sleep, clock);
+none touches a real Chrome. The unit suite is disarmed at the origin by one
+autouse fixture that sets `chrome_orphans._ARMED` False, so a test that drives
+a browser launch cannot signal anything even by accident; the reaper's own
+tests re-arm it and inject a fake table.
 
 - `list_chrome_processes` parses a fixture `ps` output (macOS and Linux
   shapes, args containing spaces, a Chrome without a debugging port that must
@@ -222,20 +315,28 @@ Chrome:
   and assert `reap_orphans()` (real `ps`, real `os.kill`) ends it and reports
   it; the same spawn with `--graftpunk-owner-pid=<os.getpid()>` is left alive
   and is killed by the test's own teardown.
-- Backend: `_start_async` adds the marker to `browser_args` and calls the
-  reaper before `uc.start` (nodriver patched as the existing backend tests
-  do); `_stop_async` removes a temp profile and leaves a custom `profile_dir`.
-- Signals: `install_termination_cleanup` leaves a non-default slot alone;
-  a subprocess test sends SIGTERM to a child Python that has a registered
-  fake session and asserts the child exits with 143 and the fake session's
-  `terminate_browser_process` ran (observed through a file the fake writes).
-- The leak fix is also covered by counting `uc_*` directories across a
-  mocked start and stop.
+- Backend: `_start_async` passes `base_browser_args()` and runs the sweep
+  before `uc.start` (nodriver patched as the existing backend tests do);
+  `_stop_async` removes a temp profile and leaves a custom `profile_dir`;
+  a started backend is in the registry and a stopped one is not;
+  `_terminate_for_signal` signals the subprocess, removes the profile, and
+  leaves `is_running` False.
+- Signals: `install_termination_cleanup` leaves a non-default slot alone; the
+  registry holds handles weakly and hands out a snapshot; a subprocess test
+  sends SIGTERM to a child Python that has a registered fake browser and
+  asserts the child exits with 143 and the fake's `_terminate_for_signal` ran
+  (observed through a file the fake writes).
+- Observe: the browser is registered while it is up and released on stop, and
+  the one-line message appears only when the pass reaped something.
+- The leak fix is covered by asserting the specific temp profile directory is
+  gone after a mocked start and stop, and that a custom `profile_dir` is not.
 
 ### Documentation
 
 `docs/HOW_IT_WORKS.md` gains a short "Browser process hygiene" subsection:
-what is cleaned at start, the marker switch, the opt-out, the signals the CLI
-handles, and the process-group fact. `CHANGELOG.md` `[Unreleased]`: Added
-(orphan cleanup, SIGTERM/SIGHUP handling, the opt-out) and Fixed (the temp
-profile leak), referencing #96.
+what is cleaned at start, the marker switch (on the browser process only), the
+opt-out, the signals graftpunk handles and how they are armed, and the
+process-group fact. `README.md`'s configuration table gains the opt-out
+variable. `CHANGELOG.md` `[Unreleased]`: Added (orphan cleanup,
+SIGTERM/SIGHUP handling through `graftpunk.signals`, the opt-out) and Fixed
+(the temp profile leak), referencing #96.
