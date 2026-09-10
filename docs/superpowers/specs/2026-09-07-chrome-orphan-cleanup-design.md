@@ -31,7 +31,7 @@ Python 3.12) reshape the issue's proposal:
    `tempfile.mkdtemp(prefix="uc_")` (`nodriver/core/config.py`) and removes it
    only in its `atexit` handler, `deconstruct_browser`, which iterates
    nodriver's registry of live browsers. graftpunk removes its browser from
-   that registry on stop (`src/graftpunk/backends/nodriver.py:408` (`def _deregister_browser`))
+   that registry on stop (the backend's `_deregister_browser`, as it stood at 165459c before this change)
    to silence nodriver's stdout chatter, so nodriver never removes the
    directory and graftpunk does not either. The probe went from 163 to 164
    `uc_*` directories under `$TMPDIR` across one start and stop. Those 163
@@ -40,7 +40,7 @@ Python 3.12) reshape the issue's proposal:
    `--graftpunk-owner-pid=<pid>` through `browser_args` to `nodriver.start`
    showed up in `ps` for the Chrome process (Chrome ignores switches it does
    not know; `--test-type`, which graftpunk already passes at
-   `src/graftpunk/backends/nodriver.py:315` (`browser_args = ["--test-type"]`),
+   the backend's `browser_args` list at 165459c,
    suppresses the "unsupported flag" banner). That gives exact identification of
    graftpunk's own Chromes and of who owned them, without a process library.
 
@@ -211,7 +211,7 @@ changes. The issue's problem statement is about POSIX parent death.
 
 ### Part 2: the backend marks, reaps, and stops leaking
 
-`NoDriverBackend._start_async` (`src/graftpunk/backends/nodriver.py:297` (`async def _start_async(self, _max_attempts: int = 3) -> None:`)):
+`NoDriverBackend._start_async` (`NoDriverBackend._start_async`):
 
 - Before the first `uc.start` attempt: `await asyncio.to_thread(prepare_browser_launch)`,
   which applies the opt-out and runs both sweeps. Bounded (the grace period)
@@ -225,7 +225,7 @@ changes. The issue's problem statement is about POSIX parent death.
 > worker thread rather than blocking the event loop that is about to start a
 > browser.
 
-`NoDriverBackend._stop_async` (`src/graftpunk/backends/nodriver.py:424` (`async def _stop_async(self) -> None:`)):
+`NoDriverBackend._stop_async` (`NoDriverBackend._stop_async`):
 after `_reap_browser_process` returns, remove the browser's profile directory
 when `not browser.config.uses_custom_data_dir` (nodriver's own flag for "we
 created a temp dir"), with `shutil.rmtree(..., ignore_errors=True)` and a
@@ -290,12 +290,19 @@ their own profile immediately.
 
 Arming is lazy. The module carries `auto_install: bool = False`; the CLI's
 `main_callback` (`src/graftpunk/cli/main.py:122` (`@app.callback(invoke_without_command=True)`))
-sets it, which claims no signal slot, and `prepare_browser_launch` installs the
-handlers at the first browser launch, and only when the orphan module is armed:
-one flag means "this process may not touch signals, processes, or directories".
-Importing `graftpunk` as a library installs nothing, and neither does a `gp`
-command that opens no browser; a host that wants the behaviour calls
-`install_termination_cleanup()` itself or sets the same flag.
+sets it, which claims no signal slot, and `browser_launch.arm_termination_handlers()`
+installs the handlers at the first browser launch, and only when the orphan
+module is armed: one flag means "this process may not touch signals, processes,
+or directories". Importing `graftpunk` as a library installs nothing, and
+neither does a `gp` command that opens no browser; a host that wants the
+behaviour calls `install_termination_cleanup()` itself or sets the same flag.
+
+> **Design note (2026-09-10):** arming is a separate call, made on the calling
+> thread, and not part of `prepare_browser_launch`. `signal.signal()` succeeds
+> only on the main thread, and the sweeps run under `asyncio.to_thread`, so an
+> arming step inside the threaded sweep failed silently on every launch (the
+> Task 3 review reproduced it: the SIGTERM slot stayed at `SIG_DFL`). Both
+> launch sites call `arm_termination_handlers()` first, then await the sweep.
 
 > **Design note (2026-09-07):** two changes from the shape first written here.
 > The registry holds browser handles rather than `BrowserSession` instances, so
