@@ -53,23 +53,34 @@ def _restore_termination_signals():  # noqa: ANN201
     A CLI invocation sets ``signals.auto_install`` and a browser launch then
     installs the handlers, both process-wide. Left in place, one test's
     leftovers are ambient state for the rest of the run, and the signal tests
-    cannot tell an install apart from an inheritance. One fixture owns both
-    pieces of that state, because they are two halves of the same thing.
+    cannot tell an install apart from an inheritance. One fixture owns all
+    three pieces of that state, because they are set by the same flow.
+
+    The flag is cleared first, dispositions are restored next, and the live
+    browser registry is put back last, in a ``finally``, so a fixture-cached
+    handle from some other task's tests cannot leak across tests even when
+    restoring a disposition raises.
     """
     import signal
 
     from graftpunk import signals
 
-    saved = {}
+    saved_signals = {}
     for name in ("SIGTERM", "SIGHUP"):
         signum = getattr(signal, name, None)
         if signum is not None:
-            saved[signum] = signal.getsignal(signum)
+            saved_signals[signum] = signal.getsignal(signum)
+    saved_browsers = list(signals._LIVE_BROWSERS)
     yield
-    for signum, handler in saved.items():
-        if handler is not None:
-            signal.signal(signum, handler)
     signals.auto_install = False
+    try:
+        for signum, handler in saved_signals.items():
+            if handler is not None:
+                signal.signal(signum, handler)
+    finally:
+        signals._LIVE_BROWSERS.clear()
+        for handle in saved_browsers:
+            signals._LIVE_BROWSERS.add(handle)
 
 
 @pytest.fixture()

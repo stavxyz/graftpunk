@@ -89,20 +89,31 @@ def _handle_termination(signum: int, _frame: FrameType | None) -> None:
 
     Restoring ``SIG_DFL`` and re-raising, rather than calling ``sys.exit``,
     keeps the exit status the conventional 128 + signum, so a supervisor
-    watching this process still sees the real cause of death.
+    watching this process still sees the real cause of death. That restore
+    and re-raise live in a ``finally``, so they run even if a handle raises
+    something other than ``Exception``, or a log call itself raises: nothing
+    here may turn a signal into a hang or a swallowed signal.
 
-    Every handle's call is wrapped: one browser that will not go must not stop
-    the others from being asked, and must not stall the process on its way out.
+    Every handle's call is wrapped in ``except BaseException``, not
+    ``except Exception``: a handle that raises ``SystemExit`` or
+    ``KeyboardInterrupt`` must not stop the others from being asked.
     """
     name = signal.Signals(signum).name
-    for handle in live_browsers():
-        try:
-            handle._terminate_for_signal()
-        except Exception as exc:  # noqa: BLE001 - a handler has nowhere to raise
-            LOG.warning("termination_cleanup_failed", signal=name, error=str(exc))
-    LOG.info("termination_signal_received", signal=name)
-    signal.signal(signum, signal.SIG_DFL)
-    os.kill(os.getpid(), signum)
+    try:
+        LOG.info("termination_signal_received", signal=name)
+        for handle in live_browsers():
+            try:
+                handle._terminate_for_signal()
+            except BaseException as exc:  # noqa: BLE001 - a handler has nowhere to raise
+                LOG.warning(
+                    "termination_cleanup_failed",
+                    signal=name,
+                    error=str(exc),
+                    exc_info=True,
+                )
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
 
 
 def install_termination_cleanup() -> None:

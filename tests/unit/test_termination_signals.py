@@ -25,13 +25,10 @@ from graftpunk.signals import (
 
 
 class FakeBrowser:
-    """A handle that records the one call the signal handler makes."""
-
-    def __init__(self) -> None:
-        self.terminated = 0
+    """A handle that satisfies TerminatableBrowser and does nothing else."""
 
     def _terminate_for_signal(self) -> None:
-        self.terminated += 1
+        pass
 
 
 class TestLiveBrowserRegistry:
@@ -51,7 +48,11 @@ class TestLiveBrowserRegistry:
         assert handle not in live_browsers()
 
     def test_unregistering_something_never_registered_is_a_no_op(self) -> None:
+        before = live_browsers()
+
         unregister_live_browser(FakeBrowser())
+
+        assert live_browsers() == before
 
     def test_the_registry_holds_only_weak_references(self) -> None:
         """A forgotten browser must not be kept alive by the registry."""
@@ -85,6 +86,10 @@ class TestTerminatableBrowserProtocol:
 
 class TestInstallTerminationCleanup:
     """Which signal slots graftpunk is allowed to take."""
+
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32", reason="SIGHUP does not exist on win32"
+    )
 
     @pytest.fixture(autouse=True)
     def _default_slots(self):  # noqa: ANN202
@@ -127,6 +132,25 @@ def test_importing_graftpunk_arms_nothing() -> None:
     module's own default rather than whatever the last CLI invocation left.
     """
     assert signals.auto_install is False
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="SIGTERM disposition is not meaningful on win32"
+)
+def test_importing_graftpunk_leaves_sigterm_at_the_default() -> None:
+    """In a fresh process, merely importing graftpunk touches no signal slot."""
+    result = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            "import graftpunk, signal; assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 CHILD_SCRIPT = '''
@@ -185,3 +209,76 @@ def test_sigterm_ends_the_browsers_then_kills_the_process(tmp_path: Path) -> Non
     # Popen reports a signal death as -signum; a shell would report 128 + 15.
     assert returncode == -signal.SIGTERM
     assert marker.read_text() == "terminated"
+
+
+CHILD_SCRIPT_ONE_HANDLE_RAISES = '''
+import sys
+import time
+
+from graftpunk.signals import install_termination_cleanup, register_live_browser
+
+raising_marker = sys.argv[1]
+well_behaved_marker = sys.argv[2]
+ready = sys.argv[3]
+
+
+class RaisingBrowser:
+    """Writes its marker, then raises, to prove one bad handle does not stop the rest."""
+
+    def _terminate_for_signal(self):
+        with open(raising_marker, "w") as handle:
+            handle.write("terminated")
+        raise SystemExit(1)
+
+
+class WellBehavedBrowser:
+    """Just writes its marker."""
+
+    def _terminate_for_signal(self):
+        with open(well_behaved_marker, "w") as handle:
+            handle.write("terminated")
+
+
+# Kept alive as module globals: register_live_browser holds only weak refs.
+raising_browser = RaisingBrowser()
+well_behaved_browser = WellBehavedBrowser()
+register_live_browser(raising_browser)
+register_live_browser(well_behaved_browser)
+install_termination_cleanup()
+with open(ready, "w") as handle:
+    handle.write("ready")
+time.sleep(30)
+'''
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: no SIGTERM disposition to restore")
+def test_a_handle_that_raises_does_not_stop_the_others(tmp_path: Path) -> None:
+    """One handle raising SystemExit must not stop the process from dying of the signal,
+    and must not stop the other handle from being asked."""
+    script = tmp_path / "child.py"
+    script.write_text(CHILD_SCRIPT_ONE_HANDLE_RAISES)
+    raising_marker = tmp_path / "raising_terminated"
+    well_behaved_marker = tmp_path / "well_behaved_terminated"
+    ready = tmp_path / "ready"
+
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, str(script), str(raising_marker), str(well_behaved_marker), str(ready)]
+    )
+    try:
+        deadline = time.monotonic() + 30.0
+        while not ready.exists() and time.monotonic() < deadline:
+            if child.poll() is not None:
+                pytest.fail(f"the child exited early with {child.returncode}")
+            time.sleep(0.05)
+        assert ready.exists(), "the child never installed its handler"
+
+        os.kill(child.pid, signal.SIGTERM)
+        returncode = child.wait(timeout=30)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=30)
+
+    assert returncode == -signal.SIGTERM
+    assert raising_marker.read_text() == "terminated"
+    assert well_behaved_marker.read_text() == "terminated"
