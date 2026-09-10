@@ -46,6 +46,32 @@ def _disarm_chrome_orphan_cleanup(monkeypatch):  # noqa: ANN001, ANN201
     monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", False)
 
 
+@pytest.fixture(autouse=True)
+def _restore_termination_signals():  # noqa: ANN201
+    """Give each test the SIGTERM and SIGHUP slots back, and the arming flag.
+
+    A CLI invocation sets ``signals.auto_install`` and a browser launch then
+    installs the handlers, both process-wide. Left in place, one test's
+    leftovers are ambient state for the rest of the run, and the signal tests
+    cannot tell an install apart from an inheritance. One fixture owns both
+    pieces of that state, because they are two halves of the same thing.
+    """
+    import signal
+
+    from graftpunk import signals
+
+    saved = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            saved[signum] = signal.getsignal(signum)
+    yield
+    for signum, handler in saved.items():
+        if handler is not None:
+            signal.signal(signum, handler)
+    signals.auto_install = False
+
+
 @pytest.fixture()
 def fresh_backend(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
     """A private tmp cache dir + a reset of cache.py's backend singleton.
