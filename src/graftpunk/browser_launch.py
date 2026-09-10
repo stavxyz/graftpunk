@@ -4,6 +4,12 @@ The composition root for the two launch sites, and the only module that knows
 about settings, signal handlers and orphan cleanup at once. Keeping it separate
 is what lets :mod:`graftpunk.chrome_orphans` depend on nothing but
 ``graftpunk.logging`` and :mod:`graftpunk.signals` know nothing about browsers.
+
+Two entry points, because they have to run on different threads.
+:func:`arm_termination_handlers` sets signal dispositions, which CPython only
+allows from the main thread, so a launch site calls it directly.
+:func:`prepare_browser_launch` shells out to ``ps`` and sleeps through a grace
+period, so an async launch site hands it to a worker thread.
 """
 
 from __future__ import annotations
@@ -36,19 +42,44 @@ class CleanupReport:
         return bool(self.reaped or self.profiles_removed)
 
 
-def prepare_browser_launch() -> CleanupReport:
-    """Arm the termination handlers, end orphaned Chromes, sweep stale profiles.
+def arm_termination_handlers() -> None:
+    """Install the SIGTERM and SIGHUP handlers, if this process may have them.
 
-    The one entry point both launch sites call, so the backend and
+    Call it from the thread that owns the process's signal dispositions:
+    ``signal.signal`` raises ``ValueError`` anywhere but the main thread, and
+    :func:`graftpunk.signals.install_termination_cleanup` logs that at debug
+    and returns, so arming from a worker thread would silently do nothing.
+    That is why this is separate from :func:`prepare_browser_launch`, which a
+    launch site runs off the main thread.
+
+    Arming happens at the first launch rather than in the CLI's root callback,
+    so a command that opens no browser claims no signal slot. It is skipped
+    when the orphan module is disarmed: that one flag means "this process may
+    not touch signals, processes, or directories", which is what makes the
+    unit suite safe without a list of things to patch.
+
+    It never raises. A launch must not fail because a signal slot could not be
+    taken.
+    """
+    if not (chrome_orphans._ARMED and signals.auto_install):
+        return
+    try:
+        signals.install_termination_cleanup()
+    except Exception as exc:  # noqa: BLE001 - a launch must not fail on this
+        LOG.warning("termination_handler_install_failed", error=str(exc), exc_info=True)
+
+
+def prepare_browser_launch() -> CleanupReport:
+    """End the orphaned Chromes and sweep the stale temp profiles.
+
+    The one cleanup entry point both launch sites call, so the backend and
     ``gp observe`` cannot drift. It applies the opt-out, runs the two sweeps
     under separate guards so a failure in one does not cost the other, and
     never raises: a browser start must not fail because a cleanup pass did.
 
-    Arming happens here rather than in the CLI's root callback, so a command
-    that opens no browser claims no signal slot, and it is skipped when the
-    orphan module is disarmed: that one flag means "this process may not touch
-    signals, processes, or directories", which is what makes the unit suite
-    safe without a list of things to patch.
+    Arming the termination handlers is :func:`arm_termination_handlers`, not
+    this function: this one is written to run on a worker thread, where
+    setting a signal disposition is not allowed.
 
     It prints nothing. The caller decides whether its user wants a line about
     it: ``gp observe`` prints one, a plugin login only logs, and neither
@@ -57,30 +88,24 @@ def prepare_browser_launch() -> CleanupReport:
     Returns:
         What was cleaned up. Falsey when nothing was.
     """
-    if chrome_orphans._ARMED and signals.auto_install:
-        try:
-            signals.install_termination_cleanup()
-        except Exception as exc:  # noqa: BLE001 - a launch must not fail on this
-            LOG.warning("termination_handler_install_failed", error=str(exc))
-
     try:
         if get_settings().keep_orphaned_chrome:
             LOG.debug("chrome_orphan_cleanup_skipped", reason="opt_out")
             return CleanupReport()
     except Exception as exc:  # noqa: BLE001 - unreadable settings are not a launch failure
-        LOG.warning("chrome_orphan_cleanup_failed", stage="settings", error=str(exc))
+        LOG.warning("chrome_orphan_cleanup_failed", stage="settings", error=str(exc), exc_info=True)
         return CleanupReport()
 
     try:
         reaped = chrome_orphans.reap_orphans()
     except Exception as exc:  # noqa: BLE001 - cleanup must never fail a browser start
-        LOG.warning("chrome_orphan_cleanup_failed", stage="reap", error=str(exc))
+        LOG.warning("chrome_orphan_cleanup_failed", stage="reap", error=str(exc), exc_info=True)
         reaped = []
 
     try:
         profiles_removed = chrome_orphans.remove_stale_temp_profiles()
     except Exception as exc:  # noqa: BLE001 - cleanup must never fail a browser start
-        LOG.warning("chrome_orphan_cleanup_failed", stage="sweep", error=str(exc))
+        LOG.warning("chrome_orphan_cleanup_failed", stage="sweep", error=str(exc), exc_info=True)
         profiles_removed = []
 
     return CleanupReport(reaped=reaped, profiles_removed=profiles_removed)

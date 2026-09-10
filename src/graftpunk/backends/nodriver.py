@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from graftpunk.backends.base import Cookie
-from graftpunk.browser_launch import prepare_browser_launch
+from graftpunk.browser_launch import arm_termination_handlers, prepare_browser_launch
 from graftpunk.chrome_orphans import (
     base_browser_args,
     remove_browser_temp_profile,
@@ -325,10 +325,16 @@ class NoDriverBackend:
 
         _patch_nodriver_cookie_parsing()
 
-        # End the Chromes earlier runs left behind before adding one more, and
-        # arm the termination handlers if the CLI asked for them (#96). The
-        # sweep shells out to ps and sleeps through a grace period, so it runs
-        # on a worker thread rather than blocking this event loop.
+        # Arm the termination handlers if the CLI asked for them, on this
+        # thread: signal dispositions can only be set from the main thread,
+        # and arming inside the to_thread call below would silently do
+        # nothing (#96).
+        arm_termination_handlers()
+
+        # End the Chromes earlier runs left behind before adding one more
+        # (#96). The sweep shells out to ps and sleeps through a grace
+        # period, so it runs on a worker thread rather than blocking this
+        # event loop.
         report = await asyncio.to_thread(prepare_browser_launch)
         if report:
             LOG.info(

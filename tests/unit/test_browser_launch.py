@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from graftpunk import chrome_orphans, signals
-from graftpunk.browser_launch import CleanupReport, prepare_browser_launch
+from graftpunk.browser_launch import (
+    CleanupReport,
+    arm_termination_handlers,
+    prepare_browser_launch,
+)
 from graftpunk.chrome_orphans import ChromeProcess
 from graftpunk.config import reset_settings
 
@@ -111,32 +115,45 @@ class TestArmingTheHandlers:
     """Handlers are armed at the first launch, not at import and not per command."""
 
     def test_it_arms_them_when_the_cli_asked(
-        self, armed: None, no_sweeps: None, monkeypatch: pytest.MonkeyPatch
+        self, armed: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(signals, "auto_install", True)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
-        prepare_browser_launch()
+        arm_termination_handlers()
 
         assert signal.getsignal(signal.SIGTERM) is signals._handle_termination
 
     def test_it_arms_nothing_when_the_flag_is_unset(
-        self, armed: None, no_sweeps: None, monkeypatch: pytest.MonkeyPatch
+        self, armed: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(signals, "auto_install", False)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
-        prepare_browser_launch()
+        arm_termination_handlers()
 
         assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
 
-    def test_a_disarmed_process_arms_nothing_either(
-        self, no_sweeps: None, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_disarmed_process_arms_nothing_either(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """One switch covers signals, processes and directories alike.
 
         The unit suite runs disarmed, so a test that drives a launch must not
         acquire this worker's signal slots even with the CLI flag set.
+        """
+        monkeypatch.setattr(signals, "auto_install", True)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+        arm_termination_handlers()
+
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+    def test_the_sweeps_do_not_arm_anything(
+        self, armed: None, no_sweeps: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cleanup pass runs on a worker thread, where signal.signal raises.
+
+        Arming from in there would be swallowed at debug and the handlers
+        would never be installed, so the sweeps must not try.
         """
         monkeypatch.setattr(signals, "auto_install", True)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
