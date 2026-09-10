@@ -22,10 +22,12 @@ from graftpunk.chrome_orphans import (
     ProcessOps,
     _pid_alive,
     base_browser_args,
+    browser_temp_profile,
     find_orphans,
     list_chrome_processes,
     owner_switch,
     reap_orphans,
+    remove_browser_temp_profile,
     remove_stale_temp_profiles,
     terminate_nodriver_browser,
 )
@@ -533,12 +535,79 @@ class TestTerminateNodriverBrowser:
 
         terminate_nodriver_browser(self._browser(4242), ops=kernel.ops)
 
+        assert kernel.signals == [(4242, signal.SIGTERM)]
+
     def test_a_browser_with_no_subprocess_is_a_no_op(self, armed: None) -> None:
         kernel = FakeKernel({})
 
         terminate_nodriver_browser(self._browser(None), ops=kernel.ops)
 
         assert kernel.signals == []
+
+
+class TestBrowserTempProfile:
+    """What nodriver made for a browser, and whether it is ours to touch."""
+
+    @staticmethod
+    def _browser(*, custom: bool, user_data_dir: str | None) -> SimpleNamespace:
+        return SimpleNamespace(
+            config=SimpleNamespace(uses_custom_data_dir=custom, user_data_dir=user_data_dir)
+        )
+
+    def test_a_custom_data_dir_is_never_reported(self, tmp_path: Path) -> None:
+        browser = self._browser(custom=True, user_data_dir=str(tmp_path / "profile_dir"))
+
+        assert browser_temp_profile(browser) is None
+
+    def test_a_nodriver_made_dir_is_reported(self, temp_root: Path) -> None:
+        profile = _profile_dir(temp_root, "uc_abc")
+        browser = self._browser(custom=False, user_data_dir=str(profile))
+
+        assert browser_temp_profile(browser) == profile
+
+    def test_a_config_that_raises_is_reported_as_no_profile(self) -> None:
+        class BoomConfig:
+            @property
+            def uses_custom_data_dir(self) -> bool:
+                raise AttributeError("no such attribute")
+
+        assert browser_temp_profile(SimpleNamespace(config=BoomConfig())) is None
+
+
+class TestRemoveBrowserTempProfile:
+    """The rmtree call that runs after a browser has already stopped, outside _ARMED."""
+
+    @staticmethod
+    def _browser(*, custom: bool, user_data_dir: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            config=SimpleNamespace(uses_custom_data_dir=custom, user_data_dir=user_data_dir)
+        )
+
+    def test_a_temp_profile_under_the_temp_root_is_removed(self, temp_root: Path) -> None:
+        profile = _profile_dir(temp_root, "uc_live")
+        browser = self._browser(custom=False, user_data_dir=str(profile))
+
+        removed = remove_browser_temp_profile(browser)
+
+        assert removed == profile
+        assert not profile.exists()
+
+    def test_a_temp_profile_outside_the_temp_root_survives(
+        self, tmp_path: Path, temp_root: Path
+    ) -> None:
+        outside = _profile_dir(tmp_path / "persistent", "uc_keep")
+        browser = self._browser(custom=False, user_data_dir=str(outside))
+
+        assert remove_browser_temp_profile(browser) is None
+        assert outside.exists()
+
+    def test_a_custom_profile_dir_survives_however_it_is_named(self, temp_root: Path) -> None:
+        """The custom flag protects it before the name or location is ever checked."""
+        custom = _profile_dir(temp_root, "uc_custom")
+        browser = self._browser(custom=True, user_data_dir=str(custom))
+
+        assert remove_browser_temp_profile(browser) is None
+        assert custom.exists()
 
 
 def _ps_limited_to(pids: set[int]) -> ProcessOps:
@@ -614,16 +683,25 @@ class TestRealProcesses:
     def test_a_reaped_child_is_not_alive(self) -> None:
         assert _pid_alive(_a_pid_that_is_gone()) is False
 
+    def test_a_non_positive_pid_is_reported_alive_without_asking_the_kernel(self) -> None:
+        """0 and negative pids name a process group, not one process; never signal one."""
+        assert _pid_alive(0) is True
+        assert _pid_alive(-1) is True
+
     def test_a_real_orphan_is_ended_and_a_live_owners_browser_is_not(self, armed: None) -> None:
-        orphan = _spawn_sleeper(_a_pid_that_is_gone())
-        mine = _spawn_sleeper(os.getpid())
+        procs: list[subprocess.Popen] = []
         try:
+            orphan = _spawn_sleeper(_a_pid_that_is_gone())
+            procs.append(orphan)
+            mine = _spawn_sleeper(os.getpid())
+            procs.append(mine)
+
             reaped = reap_orphans(ops=_ps_limited_to({orphan.pid, mine.pid}))
 
             assert [p.pid for p in reaped] == [orphan.pid]
             assert orphan.wait(timeout=10) == -signal.SIGTERM
             assert mine.poll() is None
         finally:
-            for proc in (orphan, mine):
+            for proc in procs:
                 proc.kill()
                 proc.wait(timeout=10)

@@ -135,7 +135,15 @@ def _pid_alive(pid: int) -> bool:
     direction, because the cost of a false "alive" is one orphan surviving
     until the next launch, and the cost of a false "dead" is killing somebody's
     browser.
+
+    A non-positive pid is never a single process to signal (0 means the
+    caller's process group, negative means a process group, and os.kill on
+    either can reach more than one process), so it is reported alive without
+    asking the kernel: a parsed ``--graftpunk-owner-pid=-1`` must never be
+    treated as a dead owner.
     """
+    if pid <= 0:
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
