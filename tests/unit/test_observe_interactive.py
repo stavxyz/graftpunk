@@ -469,3 +469,250 @@ class TestSetupObserveSessionSigintIsolation:
 
         # Original handler must be restored even after an exception
         assert signal.getsignal(signal.SIGINT) == original_handler
+
+
+class TestObserveBrowserHygiene:
+    """gp observe marks its Chrome, registers it, and cleans up after it (#96)."""
+
+    @staticmethod
+    def _browser(profile: Path | None) -> MagicMock:
+        """A fake browser whose config says nodriver made the profile directory."""
+        tab = MagicMock()
+        tab.sleep = AsyncMock()
+        browser = MagicMock()
+        browser.main_tab = tab
+        browser.get = AsyncMock(return_value=tab)
+        browser.config.uses_custom_data_dir = False
+        browser.config.user_data_dir = str(profile) if profile is not None else None
+        return browser
+
+    @staticmethod
+    def _capture_backend() -> MagicMock:
+        backend = MagicMock()
+        backend.start_capture_async = AsyncMock()
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_the_shared_switches_reach_nodriver_start(self, tmp_path: Path) -> None:
+        from graftpunk.chrome_orphans import base_browser_args
+        from graftpunk.cli.main import _setup_observe_session
+
+        started: list = []
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            started.append(kwargs)
+            return self._browser(None)
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_start
+        storage = MagicMock()
+        storage.run_dir = tmp_path / "run"
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend",
+                return_value=self._capture_backend(),
+            ),
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+        ):
+            await _setup_observe_session(
+                "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
+            )
+
+        (kwargs,) = started
+        assert kwargs["browser_args"] == base_browser_args()
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_runs_before_the_browser_starts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.browser_launch import CleanupReport
+        from graftpunk.cli.main import _setup_observe_session
+
+        order: list[str] = []
+
+        def fake_prepare() -> CleanupReport:
+            order.append("sweep")
+            return CleanupReport()
+
+        monkeypatch.setattr("graftpunk.cli.main.prepare_browser_launch", fake_prepare)
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            order.append("start")
+            return self._browser(None)
+
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = fake_start
+        storage = MagicMock()
+        storage.run_dir = tmp_path / "run"
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend",
+                return_value=self._capture_backend(),
+            ),
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+        ):
+            await _setup_observe_session(
+                "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
+            )
+
+        assert order == ["sweep", "start"]
+
+    @pytest.mark.asyncio
+    async def test_a_reaped_run_tells_the_user_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from graftpunk.browser_launch import CleanupReport
+        from graftpunk.chrome_orphans import ChromeProcess
+        from graftpunk.cli.main import _setup_observe_session
+
+        orphan = ChromeProcess(pid=4242, ppid=1, args="", owner_pid=999999, user_data_dir=None)
+        monkeypatch.setattr(
+            "graftpunk.cli.main.prepare_browser_launch",
+            lambda: CleanupReport(reaped=[orphan]),
+        )
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = AsyncMock(return_value=self._browser(None))
+        storage = MagicMock()
+        storage.run_dir = tmp_path / "run"
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend",
+                return_value=self._capture_backend(),
+            ),
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+        ):
+            await _setup_observe_session(
+                "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
+            )
+
+        assert "Cleaned up 1 orphaned Chrome process(es)" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_the_browser_is_registered_for_signals_and_released_on_stop(
+        self, tmp_path: Path
+    ) -> None:
+        from graftpunk.cli.main import _run_observe_go
+        from graftpunk.signals import live_browsers
+
+        registered: list = []
+        browser = self._browser(None)
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = AsyncMock(return_value=browser)
+        storage = MagicMock()
+        storage.run_dir = tmp_path / "run"
+
+        async def record_then_save(*args: object, **kwargs: object) -> None:
+            registered.extend(live_browsers())
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend",
+                return_value=self._capture_backend(),
+            ),
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+            patch("graftpunk.cli.main.save_observe_run", new=record_then_save),
+        ):
+            await _run_observe_go(
+                "test-ns", "https://example.com", 0.0, 5 * 1024 * 1024, session_name=None
+            )
+
+        # Registered while the browser was up, and gone once it was stopped.
+        assert any(getattr(h, "_browser", None) is browser for h in registered)
+        assert not any(getattr(h, "_browser", None) is browser for h in live_browsers())
+
+    @pytest.mark.asyncio
+    async def test_the_temp_profile_is_removed_after_the_browser_stops(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The leak fix at the second launch site: observe made the directory too."""
+        import tempfile
+
+        from graftpunk.cli.main import _run_observe_go
+
+        temp_root = tmp_path / "tmp"
+        temp_root.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+        profile = temp_root / "uc_observe"
+        (profile / "Default").mkdir(parents=True)
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = AsyncMock(return_value=self._browser(profile))
+        storage = MagicMock()
+        storage.run_dir = tmp_path / "run"
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend",
+                return_value=self._capture_backend(),
+            ),
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+            patch("graftpunk.cli.main.save_observe_run", new_callable=AsyncMock),
+        ):
+            await _run_observe_go(
+                "test-ns", "https://example.com", 0.0, 5 * 1024 * 1024, session_name=None
+            )
+
+        assert not profile.exists()
+
+
+class TestObserveArmsTheSignalHandlers:
+    """The root callback sets a flag; it takes no signal slot by itself (#96)."""
+
+    def test_the_callback_sets_the_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from graftpunk import signals
+
+        monkeypatch.setattr(signals, "auto_install", False)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+        result = runner.invoke(app, ["version"])
+
+        assert result.exit_code == 0, result.output
+        assert signals.auto_install is True
+        # A command that opens no browser leaves the slot alone.
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+    @pytest.mark.asyncio
+    async def test_the_start_path_arms_the_handlers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Arming runs on this thread, not inside the worker the sweep runs on.
+
+        ``signal.signal`` raises off the main thread and the installer logs
+        that at debug, so arming inside the threaded sweep would leave the
+        process with no handlers and no error.
+        """
+        from graftpunk import chrome_orphans, signals
+        from graftpunk.cli.main import _setup_observe_session
+
+        monkeypatch.setattr(chrome_orphans, "_ARMED", True)
+        monkeypatch.setattr(chrome_orphans, "reap_orphans", list)
+        monkeypatch.setattr(chrome_orphans, "remove_stale_temp_profiles", list)
+        monkeypatch.setattr(signals, "auto_install", True)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+        hygiene = TestObserveBrowserHygiene
+        mock_nodriver = MagicMock()
+        mock_nodriver.start = AsyncMock(return_value=hygiene._browser(None))
+        storage = MagicMock()
+        storage.run_dir = tmp_path / "run"
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_nodriver}),
+            patch(
+                "graftpunk.observe.capture.NodriverCaptureBackend",
+                return_value=hygiene._capture_backend(),
+            ),
+            patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
+        ):
+            await _setup_observe_session(
+                "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
+            )
+
+        assert signal.getsignal(signal.SIGTERM) is signals._handle_termination
