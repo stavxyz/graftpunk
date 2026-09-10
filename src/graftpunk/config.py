@@ -94,6 +94,15 @@ class GraftpunkSettings(BaseSettings):
         ),
     )
 
+    keep_orphaned_chrome: bool = Field(
+        default=False,
+        description=(
+            "Keep the Chrome processes earlier runs left behind instead of ending them "
+            "before a nodriver browser starts. Set GRAFTPUNK_KEEP_ORPHANED_CHROME=1 when "
+            "you deliberately leave detached browsers running."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_prefix="GRAFTPUNK_",
         env_file=".env",
