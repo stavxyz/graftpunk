@@ -32,6 +32,20 @@ def _wide_consoles(monkeypatch):  # noqa: ANN001, ANN201
         monkeypatch.setattr(console, "width", 220)
 
 
+@pytest.fixture(autouse=True)
+def _disarm_chrome_orphan_cleanup(monkeypatch):  # noqa: ANN001, ANN201
+    """No unit test may signal a process or delete a directory it does not own.
+
+    The reaper reads the real process table and sends real signals, and the
+    browser launch sites call it for real in tests that drive a start. Disarm
+    it at the origin, once, for the whole unit suite: reap_orphans and
+    remove_stale_temp_profiles then do nothing, whoever calls them, so a new
+    caller is covered the day it is written. The reaper's own tests re-arm it
+    and inject a fake process table.
+    """
+    monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", False)
+
+
 @pytest.fixture()
 def fresh_backend(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
     """A private tmp cache dir + a reset of cache.py's backend singleton.
