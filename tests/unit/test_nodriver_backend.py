@@ -11,6 +11,7 @@ from structlog.testing import capture_logs
 from graftpunk.backends import get_backend, list_backends
 from graftpunk.backends.nodriver import NoDriverBackend
 from graftpunk.chrome_orphans import OWNER_SWITCH, base_browser_args
+from graftpunk.exceptions import BrowserError
 
 from .conftest import close_coro_and_raise, close_coro_and_return
 
@@ -1396,6 +1397,129 @@ class TestNoDriverBackendOrphanCleanup:
         assert backend not in live_browsers()
 
 
+class TestNoDriverBackendFailedStartAttempts:
+    """A start attempt that half succeeded used to leave its Chrome running (#192)."""
+
+    @staticmethod
+    def _browser(profile: Path, pid: int = 4242) -> MagicMock:
+        """A browser that starts fine and then fails its first CDP call."""
+        browser = MagicMock()
+        browser._process = MagicMock()
+        browser._process.pid = pid
+        browser.config.uses_custom_data_dir = False
+        browser.config.user_data_dir = str(profile)
+        browser.get = AsyncMock(side_effect=RuntimeError("Failed to connect to browser"))
+        return browser
+
+    async def test_the_browser_a_failed_attempt_left_is_ended_and_its_profile_removed(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """uc.start() returns a live browser; the failure comes from the first get()."""
+        signalled: list = []
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.terminate_nodriver_browser", signalled.append
+        )
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+        first_profile = temp_profiles / "uc_first"
+        (first_profile / "Default").mkdir(parents=True)
+        first = self._browser(first_profile)
+        browsers: list[MagicMock] = []
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            if not browsers:
+                browsers.append(first)
+                return first
+            good = MagicMock()
+            good._process = None
+            good.get = AsyncMock(return_value=MagicMock())
+            good.config.uses_custom_data_dir = False
+            good.config.user_data_dir = None
+            browsers.append(good)
+            return good
+
+        mock_uc = MagicMock()
+        mock_uc.start = fake_start
+        backend = NoDriverBackend()
+
+        try:
+            with patch.dict("sys.modules", {"nodriver": mock_uc}):
+                await backend._start_async()
+        finally:
+            backend._reset_state()
+
+        assert signalled == [first]
+        assert not first_profile.exists()
+
+    async def test_the_last_failed_attempt_is_released_before_the_error_is_raised(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Three failures used to leave three Chromes and three directories behind."""
+        signalled: list = []
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.terminate_nodriver_browser", signalled.append
+        )
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+        profiles = []
+        for index in range(3):
+            profile = temp_profiles / f"uc_attempt{index}"
+            (profile / "Default").mkdir(parents=True)
+            profiles.append(profile)
+        started = iter(self._browser(profile) for profile in profiles)
+
+        mock_uc = MagicMock()
+        mock_uc.start = AsyncMock(side_effect=lambda **kwargs: next(started))
+        backend = NoDriverBackend()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_uc}),
+            pytest.raises(BrowserError, match="Failed to connect to browser after 3 attempts"),
+        ):
+            await backend._start_async()
+
+        assert len(signalled) == 3
+        assert [profile.exists() for profile in profiles] == [False, False, False]
+        assert backend._browser is None
+
+    async def test_a_failed_attempt_leaves_the_signal_registry(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The handle is registered between the start and the first get(), so it must go."""
+        from graftpunk.signals import live_browsers
+
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.terminate_nodriver_browser", lambda _b: None
+        )
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+        profile = temp_profiles / "uc_registered"
+        profile.mkdir()
+        mock_uc = MagicMock()
+        mock_uc.start = AsyncMock(side_effect=lambda **kwargs: self._browser(profile))
+        backend = NoDriverBackend()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_uc}),
+            pytest.raises(BrowserError),
+        ):
+            await backend._start_async()
+
+        assert backend not in live_browsers()
+
+
 class TestNoDriverBackendTempProfileCleanup:
     """Every stop used to leak the temp profile nodriver made for it (#96)."""
 
@@ -1454,6 +1578,26 @@ class TestNoDriverBackendTempProfileCleanup:
         backend._browser = browser
 
         with pytest.raises(ValueError, match="nodriver blew up"):
+            await backend._stop_async()
+
+        assert not profile.exists()
+
+    async def test_a_reap_that_raises_still_removes_the_temp_profile(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The removal is nested behind the reap, so a broken reap does not cost it."""
+        profile = temp_profiles / "uc_reap_raised"
+        (profile / "Default").mkdir(parents=True)
+
+        async def boom(_proc: object) -> None:
+            raise RuntimeError("the reap blew up")
+
+        monkeypatch.setattr("graftpunk.backends.nodriver._reap_browser_process", boom)
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._browser(profile, custom=False)
+
+        with pytest.raises(RuntimeError, match="the reap blew up"):
             await backend._stop_async()
 
         assert not profile.exists()

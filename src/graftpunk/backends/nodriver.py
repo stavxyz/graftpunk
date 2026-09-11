@@ -374,6 +374,9 @@ class NoDriverBackend:
                 return
             except Exception as exc:
                 last_exc = exc
+                # Release whatever this attempt left running before the next
+                # one overwrites the handle, or before the raise below (#192).
+                self._release_failed_attempt()
                 if "Failed to connect to browser" not in str(exc):
                     raise
                 if attempt < _max_attempts:
@@ -439,6 +442,29 @@ class NoDriverBackend:
             )
             raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
 
+    def _release_failed_attempt(self) -> None:
+        """End the browser a failed start attempt left behind. Never raises.
+
+        ``uc.start()`` returns a live browser whose first CDP call can still
+        fail, and "Failed to connect to browser" is raised by that call rather
+        than by the launch. Retrying then overwrote ``self._browser``, so
+        nothing ever stopped the earlier Chrome or deleted its temp profile,
+        and a start that failed three times left three of each (#192).
+
+        The browser is ended the way a signal handler ends one, since there is
+        no working CDP connection to ask it politely, and the profile goes with
+        it: this is not a signal handler, so it may do the unbounded work that
+        ``terminate_nodriver_browser`` deliberately leaves out.
+        """
+        browser = self._browser
+        if browser is None:
+            return
+        unregister_live_browser(self)
+        self._browser = None
+        self._page = None
+        terminate_nodriver_browser(browser)
+        remove_browser_temp_profile(browser)
+
     def _deregister_browser(self) -> None:
         """Remove browser from nodriver's global instance registry.
 
@@ -494,16 +520,21 @@ class NoDriverBackend:
                 #
                 # Edge case: if browser.stop() raised before sending SIGTERM,
                 # the helper will pay one _REAP_TERM_TIMEOUT_S wait before
-                # the SIGKILL escalation reaps the process. Acceptable —
+                # the SIGKILL escalation reaps the process. Acceptable:
                 # error paths are rare and the delay is bounded by the
                 # configured timeout.
-                await _reap_browser_process(proc)
-                # nodriver deletes its temp profile only from the atexit
-                # handler that iterates the registry _deregister_browser just
-                # removed us from, so without this every stop leaks one
-                # directory under the temp dir (#96). A custom profile_dir is
-                # never touched.
-                remove_browser_temp_profile(browser)
+                #
+                # The removal is nested behind the reap in its own finally,
+                # because a reap that raises must not cost the directory.
+                try:
+                    await _reap_browser_process(proc)
+                finally:
+                    # nodriver deletes its temp profile only from the atexit
+                    # handler that iterates the registry _deregister_browser
+                    # just removed us from, so without this every stop leaks
+                    # one directory under the temp dir (#96). A custom
+                    # profile_dir is never touched.
+                    remove_browser_temp_profile(browser)
 
     def stop(self) -> None:
         """Stop the browser and release resources.
