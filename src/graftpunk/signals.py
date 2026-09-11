@@ -7,10 +7,11 @@ running. This module installs the handlers that close that gap.
 
 The registry holds browser HANDLES, not sessions: anything that can end one
 browser without an event loop. ``NoDriverBackend`` registers itself once its
-browser is up; ``gp observe``, which drives a ``nodriver`` browser directly,
-registers a small adapter of its own. Nothing here knows what a
-``BrowserSession`` is, and a future backend gets the behaviour by implementing
-one method.
+browser is up; the two launch sites that drive a ``nodriver`` browser directly,
+``gp observe`` and browser token extraction, register the one adapter they
+share, ``graftpunk.browser_launch.NodriverBrowserHandle``. Nothing here knows
+what a ``BrowserSession`` is, and a future backend gets the behaviour by
+implementing one method.
 
 Nothing is installed by importing graftpunk. The CLI sets :data:`auto_install`
 in its root callback and the first browser launch arms the handlers, so a

@@ -1,6 +1,6 @@
 """What every graftpunk browser launch does before it starts a browser (#96).
 
-The composition root for the two launch sites, and the only module that knows
+The composition root for the three launch sites, and the only module that knows
 about settings, signal handlers and orphan cleanup at once. Keeping it separate
 is what lets :mod:`graftpunk.chrome_orphans` depend on nothing but
 ``graftpunk.logging`` and :mod:`graftpunk.signals` know nothing about browsers.
@@ -10,12 +10,18 @@ Two entry points, because they have to run on different threads.
 allows from the main thread, so a launch site calls it directly.
 :func:`prepare_browser_launch` shells out to ``ps`` and sleeps through a grace
 period, so an async launch site hands it to a worker thread.
+
+:class:`NodriverBrowserHandle` is here for the same reason: the two launch
+sites that drive ``nodriver`` directly need the signal adapter
+``NoDriverBackend`` gets by implementing the protocol itself, and one adapter
+in the composition root is what stops them writing two.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from graftpunk import chrome_orphans, signals
 from graftpunk.chrome_orphans import ChromeProcess
@@ -40,6 +46,30 @@ class CleanupReport:
     def __bool__(self) -> bool:
         """True when the pass changed something, so a caller can report it once."""
         return bool(self.reaped or self.profiles_removed)
+
+
+class NodriverBrowserHandle:
+    """A signal-handler grip on a ``nodriver`` browser started outside the backend.
+
+    ``gp observe`` and browser token extraction call ``nodriver.start``
+    themselves rather than going through ``NoDriverBackend``, so they register
+    this adapter to get the same SIGTERM and SIGHUP cleanup the backend gets
+    (#96). It implements :class:`graftpunk.signals.TerminatableBrowser`, and
+    the sequence itself lives in
+    :func:`graftpunk.chrome_orphans.terminate_nodriver_browser`, shared with
+    the backend.
+    """
+
+    def __init__(self, browser: Any) -> None:
+        self._browser = browser
+
+    def _terminate_for_signal(self) -> None:
+        """Send the browser process one SIGTERM, and nothing else.
+
+        No temp profile removal: a handler runs while the process is on its way
+        out, and the directory is left for a later launch's stale sweep.
+        """
+        chrome_orphans.terminate_nodriver_browser(self._browser)
 
 
 def arm_termination_handlers() -> None:
@@ -72,8 +102,9 @@ def arm_termination_handlers() -> None:
 def prepare_browser_launch() -> CleanupReport:
     """End the orphaned Chromes and sweep the stale temp profiles.
 
-    The one cleanup entry point both launch sites call, so the backend and
-    ``gp observe`` cannot drift. It applies the opt-out, runs the two sweeps
+    The one cleanup entry point all three launch sites call, so the backend,
+    ``gp observe`` and browser token extraction cannot drift. It applies the
+    opt-out, runs the two sweeps
     under separate guards so a failure in one does not cost the other, and
     never raises: a browser start must not fail because a cleanup pass did.
 

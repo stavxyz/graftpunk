@@ -667,7 +667,8 @@ class TestObserveBrowserHygiene:
         """The unregister and the profile removal sit in a finally behind the stop."""
         import tempfile
 
-        from graftpunk.cli.main import _ObserveBrowserHandle, _stop_observe_browser
+        from graftpunk.browser_launch import NodriverBrowserHandle
+        from graftpunk.cli.main import _stop_observe_browser
         from graftpunk.signals import live_browsers, register_live_browser
 
         temp_root = tmp_path / "tmp"
@@ -677,7 +678,7 @@ class TestObserveBrowserHygiene:
         (profile / "Default").mkdir(parents=True)
         browser = self._browser(profile)
         browser.stop = MagicMock(side_effect=ValueError("stop blew up"))
-        handle = _ObserveBrowserHandle(browser)
+        handle = NodriverBrowserHandle(browser)
         register_live_browser(handle)
 
         with pytest.raises(ValueError, match="stop blew up"):

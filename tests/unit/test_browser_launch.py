@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import graftpunk
 from graftpunk import chrome_orphans, signals
 from graftpunk.browser_launch import (
     CleanupReport,
@@ -161,3 +162,41 @@ class TestArmingTheHandlers:
         prepare_browser_launch()
 
         assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
+class TestEveryLaunchSiteIsWiredUp:
+    """A launch site that skips the hygiene is a bug the file itself can show.
+
+    The third site went a whole change without the marker, the sweep or the
+    profile removal because nothing counted the sites (#96). This counts them:
+    a file that starts a nodriver browser has to name both shared helpers.
+    """
+
+    @staticmethod
+    def _launch_sites() -> dict[str, str]:
+        package = Path(graftpunk.__file__).parent
+        return {
+            str(path.relative_to(package)): text
+            for path in sorted(package.rglob("*.py"))
+            for text in [path.read_text()]
+            if "nodriver.start(" in text or "uc.start(" in text
+        }
+
+    def test_the_sites_are_the_three_this_suite_knows_about(self) -> None:
+        assert set(self._launch_sites()) == {
+            "backends/nodriver.py",
+            "cli/main.py",
+            "tokens.py",
+        }
+
+    def test_each_one_uses_the_shared_switches_and_the_shared_sweep(self) -> None:
+        missing = {
+            name: [
+                helper
+                for helper in ("base_browser_args", "prepare_browser_launch")
+                if helper not in text
+            ]
+            for name, text in self._launch_sites().items()
+        }
+
+        assert {name: gaps for name, gaps in missing.items() if gaps} == {}

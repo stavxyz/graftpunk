@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -594,3 +597,198 @@ class TestPollForTokens:
         results = await _poll_for_tokens(mock_tab, [t1, t2], "https://x.com/p", "test")
 
         assert results == {"X-A": "1", "X-B": "2"}
+
+
+def _hygiene_browser(profile: Path | None = None) -> MagicMock:
+    """A fake nodriver browser whose config says nodriver made its profile directory."""
+    tab = _AwaitableMock()
+    tab.get_content = AsyncMock(return_value='csrf = "v1";')
+    browser = MagicMock()
+    browser.main_tab = tab
+    browser.get = AsyncMock(return_value=tab)
+    browser.stop = MagicMock()
+    browser.config.uses_custom_data_dir = False
+    browser.config.user_data_dir = str(profile) if profile is not None else None
+    return browser
+
+
+_HYGIENE_TOKEN = Token(
+    name="X-CSRF",
+    source="page",
+    pattern=r'csrf = "([^"]+)"',
+    page_url="/app",
+    extraction="browser",
+)
+
+
+@contextmanager
+def _patched_nodriver(start: object) -> Iterator[None]:
+    """Everything outside the code under test: the nodriver module and the registry."""
+    module = MagicMock()
+    module.start = start
+    with (
+        patch.dict("sys.modules", {"nodriver": module}),
+        patch(
+            "graftpunk.session.inject_cookies_to_nodriver",
+            new_callable=AsyncMock,
+            return_value=(0, 0),
+        ),
+        patch("graftpunk.tokens._deregister_nodriver_browser"),
+    ):
+        yield
+
+
+class TestBrowserExtractionHygiene:
+    """The third launch site marks, sweeps, registers and cleans up like the other two (#96)."""
+
+    @pytest.mark.asyncio
+    async def test_the_shared_switches_reach_nodriver_start(self) -> None:
+        from graftpunk.chrome_orphans import base_browser_args
+        from graftpunk.tokens import _extract_tokens_browser
+
+        started: list[dict] = []
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            started.append(kwargs)
+            return _hygiene_browser()
+
+        with _patched_nodriver(fake_start):
+            await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
+            )
+
+        (kwargs,) = started
+        assert kwargs["browser_args"] == base_browser_args()
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_runs_before_the_browser_starts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.browser_launch import CleanupReport
+        from graftpunk.tokens import _extract_tokens_browser
+
+        order: list[str] = []
+
+        def fake_prepare() -> CleanupReport:
+            order.append("sweep")
+            return CleanupReport()
+
+        monkeypatch.setattr("graftpunk.tokens.prepare_browser_launch", fake_prepare)
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            order.append("start")
+            return _hygiene_browser()
+
+        with _patched_nodriver(fake_start):
+            await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
+            )
+
+        assert order == ["sweep", "start"]
+
+    @pytest.mark.asyncio
+    async def test_the_browser_is_registered_for_signals_and_released_on_stop(self) -> None:
+        from graftpunk.signals import live_browsers
+        from graftpunk.tokens import _extract_tokens_browser
+
+        browser = _hygiene_browser()
+        registered: list = []
+
+        async def get(_url: str) -> object:
+            registered.extend(live_browsers())
+            return browser.main_tab
+
+        browser.get = get
+
+        with _patched_nodriver(AsyncMock(return_value=browser)):
+            await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
+            )
+
+        assert any(getattr(handle, "_browser", None) is browser for handle in registered)
+        assert not any(getattr(handle, "_browser", None) is browser for handle in live_browsers())
+
+    @pytest.mark.asyncio
+    async def test_the_temp_profile_is_removed_after_the_browser_stops(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The leak this site had: nodriver made the directory and nobody deleted it."""
+        from graftpunk.tokens import _extract_tokens_browser
+
+        profile = _temp_profile(tmp_path, monkeypatch, "uc_tokens")
+
+        with _patched_nodriver(AsyncMock(return_value=_hygiene_browser(profile))):
+            await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
+            )
+
+        assert not profile.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_stop_that_raises_still_releases_the_browser(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The releases sit in a finally behind the stop, so a broken stop leaks nothing."""
+        from graftpunk.signals import live_browsers
+        from graftpunk.tokens import _extract_tokens_browser
+
+        profile = _temp_profile(tmp_path, monkeypatch, "uc_raised")
+        browser = _hygiene_browser(profile)
+        browser.stop = MagicMock(side_effect=ValueError("stop blew up"))
+
+        with (
+            _patched_nodriver(AsyncMock(return_value=browser)),
+            pytest.raises(ValueError, match="stop blew up"),
+        ):
+            await _extract_tokens_browser(
+                requests.Session(), [_HYGIENE_TOKEN], "https://example.com"
+            )
+
+        assert not profile.exists()
+        assert not any(getattr(handle, "_browser", None) is browser for handle in live_browsers())
+
+
+def _temp_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Path:
+    """A uc_ directory under a temp root this test owns, so no real profile is at risk."""
+    import tempfile
+
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    profile = temp_root / name
+    (profile / "Default").mkdir(parents=True)
+    return profile
+
+
+class TestBrowserExtractionArmsTheHandlers:
+    """Arming runs on the thread that calls in, not in the worker the extraction may use."""
+
+    def test_the_sync_path_arms_them_on_the_calling_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``signal.signal`` raises off the main thread and the installer swallows that.
+
+        The async branch hands the coroutine to a worker thread, so arming
+        inside the extraction would leave the process with no handlers and no
+        error.
+        """
+        import signal as signal_module
+
+        from graftpunk import chrome_orphans, signals
+        from graftpunk.browser_launch import CleanupReport
+        from graftpunk.tokens import _run_browser_extraction
+
+        monkeypatch.setattr(chrome_orphans, "_ARMED", True)
+        # The sweep is replaced at this module's call site, so an armed pass in
+        # this test can never reach the real process table.
+        monkeypatch.setattr("graftpunk.tokens.prepare_browser_launch", CleanupReport)
+        monkeypatch.setattr(signals, "auto_install", True)
+        signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
+
+        with patch(
+            "graftpunk.tokens._extract_tokens_browser", new_callable=AsyncMock
+        ) as mock_extract:
+            mock_extract.return_value = {}
+            _run_browser_extraction(requests.Session(), [_HYGIENE_TOKEN], "https://example.com")
+
+        assert signal_module.getsignal(signal_module.SIGTERM) is signals._handle_termination
