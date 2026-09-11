@@ -1,16 +1,35 @@
 """Tests for NoDriver browser backend."""
 
 import asyncio
+import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from structlog.testing import capture_logs
 
 from graftpunk.backends import get_backend, list_backends
 from graftpunk.backends.nodriver import NoDriverBackend
+from graftpunk.chrome_orphans import OWNER_SWITCH, base_browser_args
+from graftpunk.exceptions import BrowserError
 
 from .conftest import close_coro_and_raise, close_coro_and_return
+
+
+@pytest.fixture()
+def temp_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A sandbox that ``tempfile.gettempdir()`` points at.
+
+    ``_removable_temp_profile`` only deletes a directory sitting directly under
+    the temp directory, which is where nodriver puts its profiles. A test
+    profile has to be somewhere that predicate accepts.
+    """
+    import tempfile
+
+    root = tmp_path / "tmp"
+    root.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(root))
+    return root
 
 
 class TestNoDriverBackendProtocol:
@@ -1212,3 +1231,464 @@ class TestNoDriverBackendStopReap:
             "SIGKILL escalation should reap the process when browser.stop() raised"
         )
         assert proc.wait_call_count == 2, "Both wait() calls (SIGTERM + SIGKILL) should have run"
+
+
+class TestNoDriverBackendOrphanCleanup:
+    """The start path marks its own Chrome and clears the ones earlier runs left (#96)."""
+
+    @staticmethod
+    def _fake_nodriver(record: list) -> MagicMock:
+        """A stand-in nodriver module whose start() records what it was given."""
+        mock_uc = MagicMock()
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            record.append(kwargs)
+            browser = MagicMock()
+            browser.get = AsyncMock(return_value=MagicMock())
+            # No subprocess to reap: an auto-created MagicMock here is not
+            # awaitable and the stop path awaits proc.wait().
+            browser._process = None
+            return browser
+
+        mock_uc.start = fake_start
+        return mock_uc
+
+    async def test_the_owner_marker_rides_in_browser_args(self) -> None:
+        started: list = []
+        backend = NoDriverBackend()
+
+        with patch.dict("sys.modules", {"nodriver": self._fake_nodriver(started)}):
+            await backend._start_async()
+
+        (kwargs,) = started
+        assert kwargs["browser_args"] == ["--test-type", f"{OWNER_SWITCH}={os.getpid()}"]
+
+    async def test_configured_browser_args_follow_the_shared_ones(self) -> None:
+        started: list = []
+        backend = NoDriverBackend(browser_args=["--lang=en-US"])
+
+        with patch.dict("sys.modules", {"nodriver": self._fake_nodriver(started)}):
+            await backend._start_async()
+
+        assert started[0]["browser_args"] == [*base_browser_args(), "--lang=en-US"]
+
+    async def test_the_sweep_runs_before_the_browser_starts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reaping after the launch would leave the new Chrome competing with the old."""
+        from graftpunk.browser_launch import CleanupReport
+
+        order: list[str] = []
+
+        def fake_prepare() -> CleanupReport:
+            order.append("sweep")
+            return CleanupReport()
+
+        monkeypatch.setattr("graftpunk.backends.nodriver.prepare_browser_launch", fake_prepare)
+        mock_uc = MagicMock()
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            order.append("start")
+            browser = MagicMock()
+            browser.get = AsyncMock(return_value=MagicMock())
+            return browser
+
+        mock_uc.start = fake_start
+        backend = NoDriverBackend()
+
+        with patch.dict("sys.modules", {"nodriver": mock_uc}):
+            await backend._start_async()
+
+        assert order == ["sweep", "start"]
+
+    async def test_a_started_backend_is_in_the_signal_registry(self) -> None:
+        from graftpunk.signals import live_browsers
+
+        backend = NoDriverBackend()
+        try:
+            with patch.dict("sys.modules", {"nodriver": self._fake_nodriver([])}):
+                await backend._start_async()
+
+            assert backend in live_browsers()
+        finally:
+            backend._reset_state()
+
+    async def test_the_sweep_runs_once_across_a_connect_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sweep sits outside the retry loop: one pass, however many attempts."""
+        from graftpunk.browser_launch import CleanupReport
+
+        sweeps: list[str] = []
+
+        def fake_prepare() -> CleanupReport:
+            sweeps.append("sweep")
+            return CleanupReport()
+
+        monkeypatch.setattr("graftpunk.backends.nodriver.prepare_browser_launch", fake_prepare)
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+        attempts: list[int] = []
+        mock_uc = MagicMock()
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("Failed to connect to browser")
+            browser = MagicMock()
+            browser.get = AsyncMock(return_value=MagicMock())
+            browser._process = None
+            return browser
+
+        mock_uc.start = fake_start
+        backend = NoDriverBackend()
+
+        with patch.dict("sys.modules", {"nodriver": mock_uc}):
+            await backend._start_async()
+
+        assert len(attempts) == 2
+        assert sweeps == ["sweep"]
+
+    async def test_the_start_path_arms_the_termination_handlers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Arming has to happen on this thread, not inside the worker sweep.
+
+        ``signal.signal`` raises off the main thread and the installer logs
+        that at debug, so arming from the sweep would leave the process with
+        no handlers and no error.
+        """
+        import signal as signal_module
+
+        from graftpunk import chrome_orphans, signals
+        from graftpunk.browser_launch import CleanupReport
+
+        monkeypatch.setattr(chrome_orphans, "_ARMED", True)
+        # The sweep itself is replaced at its call site, so an armed pass in
+        # this test can never reach the real process table.
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.prepare_browser_launch", lambda: CleanupReport()
+        )
+        monkeypatch.setattr(signals, "auto_install", True)
+        signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
+        backend = NoDriverBackend()
+
+        try:
+            with patch.dict("sys.modules", {"nodriver": self._fake_nodriver([])}):
+                await backend._start_async()
+
+            assert signal_module.getsignal(signal_module.SIGTERM) is signals._handle_termination
+        finally:
+            backend._reset_state()
+
+    async def test_stopping_leaves_the_signal_registry(self) -> None:
+        from graftpunk.signals import live_browsers
+
+        backend = NoDriverBackend()
+        with patch.dict("sys.modules", {"nodriver": self._fake_nodriver([])}):
+            await backend._start_async()
+        backend._started = True
+
+        await backend.stop_async()
+
+        assert backend not in live_browsers()
+
+
+class TestNoDriverBackendFailedStartAttempts:
+    """A start attempt that half succeeded used to leave its Chrome running (#192)."""
+
+    @staticmethod
+    def _browser(profile: Path, pid: int = 4242) -> MagicMock:
+        """A browser that starts fine and then fails its first CDP call."""
+        browser = MagicMock()
+        browser._process = MagicMock()
+        browser._process.pid = pid
+        browser.config.uses_custom_data_dir = False
+        browser.config.user_data_dir = str(profile)
+        browser.get = AsyncMock(side_effect=RuntimeError("Failed to connect to browser"))
+        return browser
+
+    async def test_the_browser_a_failed_attempt_left_is_ended_and_its_profile_removed(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """uc.start() returns a live browser; the failure comes from the first get()."""
+        signalled: list = []
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.terminate_nodriver_browser", signalled.append
+        )
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+        first_profile = temp_profiles / "uc_first"
+        (first_profile / "Default").mkdir(parents=True)
+        first = self._browser(first_profile)
+        browsers: list[MagicMock] = []
+
+        async def fake_start(**kwargs: object) -> MagicMock:
+            if not browsers:
+                browsers.append(first)
+                return first
+            good = MagicMock()
+            good._process = None
+            good.get = AsyncMock(return_value=MagicMock())
+            good.config.uses_custom_data_dir = False
+            good.config.user_data_dir = None
+            browsers.append(good)
+            return good
+
+        mock_uc = MagicMock()
+        mock_uc.start = fake_start
+        backend = NoDriverBackend()
+
+        try:
+            with patch.dict("sys.modules", {"nodriver": mock_uc}):
+                await backend._start_async()
+        finally:
+            backend._reset_state()
+
+        assert signalled == [first]
+        assert not first_profile.exists()
+
+    async def test_the_last_failed_attempt_is_released_before_the_error_is_raised(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Three failures used to leave three Chromes and three directories behind."""
+        signalled: list = []
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.terminate_nodriver_browser", signalled.append
+        )
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+        profiles = []
+        for index in range(3):
+            profile = temp_profiles / f"uc_attempt{index}"
+            (profile / "Default").mkdir(parents=True)
+            profiles.append(profile)
+        started = iter(self._browser(profile) for profile in profiles)
+
+        mock_uc = MagicMock()
+        mock_uc.start = AsyncMock(side_effect=lambda **kwargs: next(started))
+        backend = NoDriverBackend()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_uc}),
+            pytest.raises(BrowserError, match="Failed to connect to browser after 3 attempts"),
+        ):
+            await backend._start_async()
+
+        assert len(signalled) == 3
+        assert [profile.exists() for profile in profiles] == [False, False, False]
+        assert backend._browser is None
+
+    async def test_a_failed_attempt_leaves_the_signal_registry(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The handle is registered between the start and the first get(), so it must go."""
+        from graftpunk.signals import live_browsers
+
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.terminate_nodriver_browser", lambda _b: None
+        )
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+
+        profile = temp_profiles / "uc_registered"
+        profile.mkdir()
+        mock_uc = MagicMock()
+        mock_uc.start = AsyncMock(side_effect=lambda **kwargs: self._browser(profile))
+        backend = NoDriverBackend()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_uc}),
+            pytest.raises(BrowserError),
+        ):
+            await backend._start_async()
+
+        assert backend not in live_browsers()
+
+
+class TestNoDriverBackendTempProfileCleanup:
+    """Every stop used to leak the temp profile nodriver made for it (#96)."""
+
+    @staticmethod
+    def _browser(profile: Path | None, *, custom: bool) -> MagicMock:
+        browser = MagicMock()
+        browser._process = None
+        browser.config.uses_custom_data_dir = custom
+        browser.config.user_data_dir = str(profile) if profile is not None else None
+        browser.stop = MagicMock()
+        return browser
+
+    async def test_a_temp_profile_is_removed_on_stop(self, temp_profiles: Path) -> None:
+        profile = temp_profiles / "uc_abc"
+        (profile / "Default").mkdir(parents=True)
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._browser(profile, custom=False)
+
+        await backend._stop_async()
+
+        assert not profile.exists()
+
+    async def test_a_custom_profile_dir_survives_stop(self, temp_profiles: Path) -> None:
+        """A plugin's persistent profile is the user's data, never ours to delete."""
+        profile = temp_profiles / "uc_persistent"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._browser(profile, custom=True)
+
+        await backend._stop_async()
+
+        assert profile.exists()
+
+    async def test_a_browser_with_no_profile_recorded_is_harmless(self) -> None:
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._browser(None, custom=False)
+
+        with capture_logs() as logs:
+            await backend._stop_async()
+
+        assert [entry for entry in logs if entry["event"] == "chrome_temp_profile_removed"] == []
+
+    async def test_a_stop_that_raises_still_removes_the_temp_profile(
+        self, temp_profiles: Path
+    ) -> None:
+        """The removal sits in the same finally as the reap, for the same reason."""
+        profile = temp_profiles / "uc_raised"
+        (profile / "Default").mkdir(parents=True)
+        backend = NoDriverBackend()
+        backend._started = True
+        browser = self._browser(profile, custom=False)
+        browser.stop = MagicMock(side_effect=ValueError("nodriver blew up"))
+        backend._browser = browser
+
+        with pytest.raises(ValueError, match="nodriver blew up"):
+            await backend._stop_async()
+
+        assert not profile.exists()
+
+    async def test_a_reap_that_raises_still_removes_the_temp_profile(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The removal is nested behind the reap, so a broken reap does not cost it."""
+        profile = temp_profiles / "uc_reap_raised"
+        (profile / "Default").mkdir(parents=True)
+
+        async def boom(_proc: object) -> None:
+            raise RuntimeError("the reap blew up")
+
+        monkeypatch.setattr("graftpunk.backends.nodriver._reap_browser_process", boom)
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._browser(profile, custom=False)
+
+        with pytest.raises(RuntimeError, match="the reap blew up"):
+            await backend._stop_async()
+
+        assert not profile.exists()
+
+
+class TestNoDriverBackendTerminateForSignal:
+    """The loop-free path the signal handler takes (#96)."""
+
+    @staticmethod
+    def _browser(profile: Path, pid: int = 4242) -> MagicMock:
+        browser = MagicMock()
+        browser._process = MagicMock()
+        browser._process.pid = pid
+        browser.config.uses_custom_data_dir = False
+        browser.config.user_data_dir = str(profile)
+        return browser
+
+    def test_it_delegates_the_signal_to_the_shared_helper(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One implementation of the sequence, shared with the observe handle."""
+        seen: list = []
+        monkeypatch.setattr("graftpunk.backends.nodriver.terminate_nodriver_browser", seen.append)
+        profile = temp_profiles / "uc_live"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        backend._browser = self._browser(profile)
+        backend._started = True
+        browser = backend._browser
+
+        backend._terminate_for_signal()
+
+        assert seen == [browser]
+
+    def test_it_leaves_the_temp_profile_for_the_stale_sweep(self, temp_profiles: Path) -> None:
+        """A handler does bounded work: no rmtree between the signal and the exit."""
+        profile = temp_profiles / "uc_live"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        backend._browser = self._browser(profile)
+        backend._started = True
+
+        backend._terminate_for_signal()
+
+        assert profile.exists()
+
+    def test_it_leaves_the_backend_coherent(self, temp_profiles: Path) -> None:
+        """is_running must not claim a browser this method just ended."""
+        from graftpunk.signals import live_browsers, register_live_browser
+
+        profile = temp_profiles / "uc_live"
+        profile.mkdir()
+        backend = NoDriverBackend()
+        backend._browser = self._browser(profile)
+        backend._started = True
+        register_live_browser(backend)
+
+        backend._terminate_for_signal()
+
+        assert backend.is_running is False
+        assert backend._browser is None
+        assert backend not in live_browsers()
+
+    def test_no_browser_is_a_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list = []
+        monkeypatch.setattr("graftpunk.backends.nodriver.terminate_nodriver_browser", seen.append)
+        backend = NoDriverBackend()
+
+        backend._terminate_for_signal()
+
+        assert seen == []
+        assert backend.is_running is False
+
+    def test_the_backend_satisfies_the_protocol(self) -> None:
+        from graftpunk.signals import TerminatableBrowser
+
+        assert isinstance(NoDriverBackend(), TerminatableBrowser)
+
+
+class TestKeepOrphanedChromeSetting:
+    """The opt-out, for users who deliberately keep detached browsers (#96)."""
+
+    def test_the_default_is_to_clean_up(self) -> None:
+        from graftpunk.config import get_settings
+
+        assert get_settings().keep_orphaned_chrome is False
+
+    def test_the_environment_variable_turns_it_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from graftpunk.config import get_settings, reset_settings
+
+        monkeypatch.setenv("GRAFTPUNK_KEEP_ORPHANED_CHROME", "1")
+        reset_settings()
+
+        assert get_settings().keep_orphaned_chrome is True

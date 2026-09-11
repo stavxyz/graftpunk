@@ -35,8 +35,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from graftpunk.backends.base import Cookie
+from graftpunk.browser_launch import arm_termination_handlers, prepare_browser_launch
+from graftpunk.chrome_orphans import (
+    base_browser_args,
+    remove_browser_temp_profile,
+    terminate_nodriver_browser,
+)
 from graftpunk.exceptions import BrowserError
 from graftpunk.logging import get_logger
+from graftpunk.signals import register_live_browser, unregister_live_browser
 
 if TYPE_CHECKING:
     import nodriver
@@ -224,7 +231,14 @@ class NoDriverBackend:
             LOG.warning("nodriver_backend_stop_unexpected", error=str(exc))
 
     def _reset_state(self) -> None:
-        """Reset browser state after stop."""
+        """Reset browser state after stop, and leave the signal registry.
+
+        Both stop paths call this from a ``finally``, so the registry entry
+        outlives the risky part of a stop: a stop that raises still leaves a
+        handle the termination handler can use, and a stop that succeeds takes
+        the entry with it (#96).
+        """
+        unregister_live_browser(self)
         self._browser = None
         self._page = None
         self._started = False
@@ -311,8 +325,25 @@ class NoDriverBackend:
 
         _patch_nodriver_cookie_parsing()
 
-        # --test-type suppresses Chrome's "unsupported flag" warning banner
-        browser_args = ["--test-type"]
+        # Arm the termination handlers if the CLI asked for them, on this
+        # thread: signal dispositions can only be set from the main thread,
+        # and arming inside the to_thread call below would silently do
+        # nothing (#96).
+        arm_termination_handlers()
+
+        # End the Chromes earlier runs left behind before adding one more
+        # (#96). The sweep shells out to ps and sleeps through a grace
+        # period, so it runs on a worker thread rather than blocking this
+        # event loop.
+        report = await asyncio.to_thread(prepare_browser_launch)
+        if report:
+            LOG.info(
+                "chrome_orphans_cleaned",
+                reaped=len(report.reaped),
+                profiles_removed=len(report.profiles_removed),
+            )
+
+        browser_args = base_browser_args()
         if "browser_args" in self._options:
             browser_args.extend(self._options["browser_args"])
 
@@ -335,11 +366,17 @@ class NoDriverBackend:
         for attempt in range(1, _max_attempts + 1):
             try:
                 self._browser = await uc.start(**start_kwargs)
+                # Registered before the first tab: a signal arriving during
+                # navigation must still find this browser (#96).
+                register_live_browser(self)
                 # Get initial page/tab - navigate to blank page
                 self._page = await self._browser.get("about:blank")
                 return
             except Exception as exc:
                 last_exc = exc
+                # Release whatever this attempt left running before the next
+                # one overwrites the handle, or before the raise below (#192).
+                self._release_failed_attempt()
                 if "Failed to connect to browser" not in str(exc):
                     raise
                 if attempt < _max_attempts:
@@ -405,6 +442,32 @@ class NoDriverBackend:
             )
             raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
 
+    def _release_failed_attempt(self) -> None:
+        """End the browser a failed start attempt left behind. Never raises.
+
+        ``uc.start()`` returns a live browser whose first CDP call can still
+        fail, and "Failed to connect to browser" is raised by that call rather
+        than by the launch. Retrying then overwrote ``self._browser``, so
+        nothing ever stopped the earlier Chrome or deleted its temp profile,
+        and a start that failed three times left three of each (#192).
+
+        The browser is ended the way a signal handler ends one, since there is
+        no working CDP connection to ask it politely, and the profile goes with
+        it: this is not a signal handler, so it may do the unbounded work that
+        ``terminate_nodriver_browser`` deliberately leaves out.
+        """
+        browser = self._browser
+        if browser is None:
+            return
+        unregister_live_browser(self)
+        # Out of nodriver's atexit registry as well, so its handler does not
+        # re-stop a browser this code already ended.
+        self._deregister_browser()
+        self._browser = None
+        self._page = None
+        terminate_nodriver_browser(browser)
+        remove_browser_temp_profile(browser)
+
     def _deregister_browser(self) -> None:
         """Remove browser from nodriver's global instance registry.
 
@@ -436,6 +499,9 @@ class NoDriverBackend:
             # Reading after stop() risks getting None and silently no-op'ing
             # the reap.
             proc = getattr(self._browser, "_process", None)
+            # The same defensive capture for the profile: read it while the
+            # browser object is still the one we started.
+            browser = self._browser
             # try/finally guarantees the reap runs even if browser.stop() or
             # _deregister_browser() raise an unexpected exception (anything
             # outside the (RuntimeError, OSError) handled set). Reaping is
@@ -457,10 +523,21 @@ class NoDriverBackend:
                 #
                 # Edge case: if browser.stop() raised before sending SIGTERM,
                 # the helper will pay one _REAP_TERM_TIMEOUT_S wait before
-                # the SIGKILL escalation reaps the process. Acceptable —
+                # the SIGKILL escalation reaps the process. Acceptable:
                 # error paths are rare and the delay is bounded by the
                 # configured timeout.
-                await _reap_browser_process(proc)
+                #
+                # The removal is nested behind the reap in its own finally,
+                # because a reap that raises must not cost the directory.
+                try:
+                    await _reap_browser_process(proc)
+                finally:
+                    # nodriver deletes its temp profile only from the atexit
+                    # handler that iterates the registry _deregister_browser
+                    # just removed us from, so without this every stop leaks
+                    # one directory under the temp dir (#96). A custom
+                    # profile_dir is never touched.
+                    remove_browser_temp_profile(browser)
 
     def stop(self) -> None:
         """Stop the browser and release resources.
@@ -497,6 +574,27 @@ class NoDriverBackend:
             self._handle_stop_error(exc)
         finally:
             self._reset_state()
+
+    def _terminate_for_signal(self) -> None:
+        """End the browser process from a signal handler, then reset this backend.
+
+        The loop-free path (:class:`graftpunk.signals.TerminatableBrowser`).
+        ``stop()`` runs ``asyncio.run()`` and ``stop_async()`` needs a running
+        loop; a signal handler has neither. The sequence itself lives in
+        ``terminate_nodriver_browser``, which the ``gp observe`` handle shares:
+        one SIGTERM and one log line, no directory removal, because a handler
+        must not do unbounded work on its way out. The temp profile is left for
+        a later launch's stale sweep.
+
+        It finishes with ``_reset_state()`` so the object is coherent
+        afterwards: ``is_running`` must not claim a browser this method just
+        ended, and the registry entry goes with it.
+        """
+        browser = self._browser
+        if browser is None:
+            return
+        terminate_nodriver_browser(browser)
+        self._reset_state()
 
     @property
     def is_running(self) -> bool:

@@ -32,6 +32,64 @@ def _wide_consoles(monkeypatch):  # noqa: ANN001, ANN201
         monkeypatch.setattr(console, "width", 220)
 
 
+@pytest.fixture(autouse=True)
+def _disarm_chrome_orphan_cleanup(monkeypatch):  # noqa: ANN001, ANN201
+    """No unit test may signal a process or delete a directory it does not own.
+
+    The reaper reads the real process table and sends real signals, and the
+    browser launch sites call it for real in tests that drive a start. Disarm
+    it at the origin, once, for the whole unit suite: reap_orphans and
+    remove_stale_temp_profiles then do nothing, whoever calls them, so a new
+    caller is covered the day it is written. The reaper's own tests re-arm it
+    and inject a fake process table.
+    """
+    monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", False)
+
+
+@pytest.fixture(autouse=True)
+def _restore_termination_signals():  # noqa: ANN201
+    """Give each test the SIGTERM and SIGHUP slots back, and the arming flag.
+
+    A CLI invocation sets ``signals.auto_install`` and a browser launch then
+    installs the handlers, both process-wide. Left in place, one test's
+    leftovers are ambient state for the rest of the run, and the signal tests
+    cannot tell an install apart from an inheritance. One fixture owns all
+    three pieces of that state, because they are set by the same flow.
+
+    The flag is cleared first, dispositions are restored next, and the live
+    browser registry is put back last, in a ``finally``, so a fixture-cached
+    handle from some other task's tests cannot leak across tests even when
+    restoring a disposition raises.
+    """
+    import signal
+
+    from graftpunk import signals
+
+    saved_signals = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            saved_signals[signum] = signal.getsignal(signum)
+    saved_browsers = list(signals._LIVE_BROWSERS)
+    yield
+    signals.auto_install = False
+    try:
+        for signum, handler in saved_signals.items():
+            if handler is not None:
+                signal.signal(signum, handler)
+            else:
+                # getsignal returns None when the disposition was set outside
+                # Python, which cannot be restored as it was. Leaving
+                # graftpunk's handler in the slot would make one test's
+                # install ambient state for the rest of the run, so SIG_DFL is
+                # the closest honest restore.
+                signal.signal(signum, signal.SIG_DFL)
+    finally:
+        signals._LIVE_BROWSERS.clear()
+        for handle in saved_browsers:
+            signals._LIVE_BROWSERS.add(handle)
+
+
 @pytest.fixture()
 def fresh_backend(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
     """A private tmp cache dir + a reset of cache.py's backend singleton.

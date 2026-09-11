@@ -394,6 +394,7 @@ gp import-har auth-flow.har --name mybank
 | `GRAFTPUNK_LOG_LEVEL` | `WARNING` | Logging verbosity |
 | `GRAFTPUNK_LOG_FORMAT` | `console` | Log format: `console` or `json` |
 | `GRAFTPUNK_BROWSER_EXECUTABLE_PATH` | _(system Chrome)_ | Path to a Chrome/Chromium binary for the `nodriver` backend (e.g. Chrome-for-Testing on machines/CI without a system Chrome install) |
+| `GRAFTPUNK_KEEP_ORPHANED_CHROME` | _(unset)_ | Set to `1` to keep the Chrome processes earlier runs left behind, instead of ending them before a `nodriver` browser starts |
 
 CLI flags: `-v` (info), `-vv` (debug), `--log-format json`, `--observe full`, `--network-debug` (wire-level HTTP tracing).
 

@@ -12,6 +12,12 @@ from typing import Any, Literal, cast
 
 import requests
 
+from graftpunk.browser_launch import (
+    NodriverBrowserHandle,
+    arm_termination_handlers,
+    prepare_browser_launch,
+)
+from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
 from graftpunk.exceptions import (
     SessionInvalidatedError,
     TokenExtractionError,
@@ -19,6 +25,7 @@ from graftpunk.exceptions import (
 )
 from graftpunk.logging import get_logger
 from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
+from graftpunk.signals import register_live_browser, unregister_live_browser
 
 LOG = get_logger(__name__)
 
@@ -43,6 +50,10 @@ async def nodriver_start(*, headless: bool = True) -> Any:
 
     Thin wrapper to isolate the nodriver import for testability.
     Retries on connection failure, matching NoDriverBackend._start_async().
+
+    The switches are ``base_browser_args()``, the same list the other two
+    launch sites start from, so this browser carries the owner marker that
+    makes it identifiable as graftpunk's if it is ever orphaned (#96).
     """
     import nodriver
 
@@ -53,7 +64,7 @@ async def nodriver_start(*, headless: bool = True) -> Any:
             return await nodriver.start(
                 headless=headless,
                 sandbox=False,
-                browser_args=["--test-type"],
+                browser_args=base_browser_args(),
             )
         except Exception as exc:
             last_exc = exc
@@ -156,7 +167,23 @@ async def _extract_tokens_browser(
     for token in tokens:
         by_url[token.page_url].append(token)
 
+    # End the Chromes earlier runs left behind before adding one more (#96).
+    # This site launches nodriver directly rather than through
+    # NoDriverBackend, so it calls the same helpers the backend does. It runs
+    # on a worker thread: the sweep shells out to ps and sleeps through a
+    # grace period. Nothing is printed, because a plugin's token refresh has
+    # no user watching it.
+    report = await asyncio.to_thread(prepare_browser_launch)
+    if report:
+        LOG.info(
+            "chrome_orphans_cleaned",
+            reaped=len(report.reaped),
+            profiles_removed=len(report.profiles_removed),
+        )
+
     browser = await nodriver_start(headless=True)
+    handle = NodriverBrowserHandle(browser)
+    register_live_browser(handle)
     try:
         tab = browser.main_tab
         injected, _skipped = await inject_cookies_to_nodriver(tab, session.cookies)
@@ -191,8 +218,18 @@ async def _extract_tokens_browser(
 
         return results
     finally:
-        browser.stop()
-        _deregister_nodriver_browser(browser)
+        # The releases sit behind the stop in a finally, so a stop that raises
+        # still leaves both registries clean and the temp profile gone.
+        # nodriver deletes that directory only from the atexit handler that
+        # iterates the registry the deregister call removes this browser from,
+        # so without the last call every token extraction leaks one directory
+        # (#96).
+        try:
+            browser.stop()
+        finally:
+            _deregister_nodriver_browser(browser)
+            unregister_live_browser(handle)
+            remove_browser_temp_profile(browser)
 
 
 async def extract_tokens_from_tab(
@@ -404,6 +441,12 @@ def _run_browser_extraction(
     Returns:
         Mapping of token name to extracted value.
     """
+    # Arm the termination handlers on this thread. Signal dispositions can
+    # only be set from the main thread, and the async branch below runs the
+    # extraction in a worker thread, where arming would silently do nothing
+    # (#96).
+    arm_termination_handlers()
+
     coro = _extract_tokens_browser(session, tokens, base_url)
 
     try:

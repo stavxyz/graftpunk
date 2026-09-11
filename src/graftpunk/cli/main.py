@@ -9,6 +9,7 @@ import os
 import shutil
 import signal
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -27,7 +28,13 @@ import graftpunk
 # the second (post-bootstrap) picks up file statics for
 # GRAFTPUNK_LOG_LEVEL/GRAFTPUNK_LOG_FORMAT. get_settings() also calls
 # ensure_bootstrap() — idempotent, order-owned there.
-from graftpunk import workstation_env
+from graftpunk import signals, workstation_env
+from graftpunk.browser_launch import (
+    NodriverBrowserHandle,
+    arm_termination_handlers,
+    prepare_browser_launch,
+)
+from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
 from graftpunk.cli.config_commands import config_app
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
@@ -167,6 +174,11 @@ def main_callback(
 
     if network_debug:
         enable_network_debug()
+
+    # Arm the termination handlers for the first browser this command opens.
+    # Setting a flag claims no signal slot, so a command that never starts a
+    # browser leaves the process's dispositions exactly as it found them (#96).
+    signals.auto_install = True
 
     ctx.ensure_object(dict)["observe_mode"] = observe.value
 
@@ -451,6 +463,42 @@ def observe_go(
     asyncio.run(_run_observe_go(namespace, url, wait, max_body_size, session_name=session_name))
 
 
+@dataclass(frozen=True)
+class _ObserveSession:
+    """What a set-up observe run hands back to the command that drives it.
+
+    Attributes:
+        browser: The ``nodriver`` browser, already navigated to the URL.
+        handle: Its entry in the termination-signal registry.
+        tab: The post-navigation tab.
+        storage: Where this run's capture is written.
+        backend: The capture backend, already started.
+    """
+
+    browser: Any
+    handle: NodriverBrowserHandle
+    tab: Any
+    storage: Any
+    backend: Any
+
+
+def _stop_observe_browser(browser: Any, handle: NodriverBrowserHandle) -> None:
+    """Stop the observe browser, leave the signal registry, and delete its temp profile.
+
+    nodriver removes that directory only from its own atexit handler, which
+    never runs for a browser we stopped ourselves, so every observe run used to
+    leak one directory under the temp dir (#96). The orderly stop path is where
+    that deletion belongs; the signal handler does not do it. Unregistering and
+    removing the profile happen in the finally, so a raising stop still leaves
+    both done.
+    """
+    try:
+        browser.stop()
+    finally:
+        signals.unregister_live_browser(handle)
+        remove_browser_temp_profile(browser)
+
+
 async def _setup_observe_session(
     namespace: str,
     url: str,
@@ -458,7 +506,7 @@ async def _setup_observe_session(
     headless: bool,
     *,
     session_name: str | None = None,
-) -> tuple[Any, Any, Any, Any] | None:
+) -> _ObserveSession | None:
     """Set up browser, optionally inject cookies, initialize capture, and navigate to URL.
 
     When ``session_name`` is provided, loads the cached session and injects
@@ -473,8 +521,7 @@ async def _setup_observe_session(
         session_name: Session name for cookie injection, or None to skip.
 
     Returns:
-        Tuple of (browser, tab, storage, backend) or None on failure.
-        The returned tab is the post-navigation tab.
+        The set-up :class:`_ObserveSession`, or None on failure.
     """
 
     import nodriver
@@ -512,6 +559,23 @@ async def _setup_observe_session(
     else:
         console.print("[dim]No session — opening browser without cookies[/dim]")
 
+    # Arm the termination handlers on this thread: signal dispositions can
+    # only be set from the main thread, so arming inside the sweep's worker
+    # thread below would silently do nothing (#96).
+    arm_termination_handlers()
+
+    # End the Chromes earlier runs left behind before adding one more (#96).
+    # gp observe launches nodriver directly rather than through
+    # NoDriverBackend, so it calls the same helpers the backend does. This
+    # setup helper serves both observe subcommands, go and interactive, so it
+    # says what it did either way.
+    report = await asyncio.to_thread(prepare_browser_launch)
+    if report.reaped:
+        console.print(
+            f"[dim]Cleaned up {len(report.reaped)} orphaned Chrome process(es) "
+            f"from earlier runs.[/dim]"
+        )
+
     # Isolate Chrome from SIGINT: child process inherits SIG_IGN disposition,
     # so Ctrl+C only reaches Python. We save data, then explicitly stop Chrome.
     old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -524,7 +588,7 @@ async def _setup_observe_session(
                 browser = await nodriver.start(
                     headless=headless,
                     sandbox=False,
-                    browser_args=["--test-type"],
+                    browser_args=base_browser_args(),
                 )
                 break
             except Exception as exc:
@@ -546,6 +610,9 @@ async def _setup_observe_session(
             ) from last_exc
     finally:
         signal.signal(signal.SIGINT, old_sigint)
+
+    handle = NodriverBrowserHandle(browser)
+    signals.register_live_browser(handle)
     try:
         tab = browser.main_tab
 
@@ -571,9 +638,11 @@ async def _setup_observe_session(
         await backend.start_capture_async()
 
         tab = await browser.get(url)
-        return browser, tab, storage, backend
+        return _ObserveSession(
+            browser=browser, handle=handle, tab=tab, storage=storage, backend=backend
+        )
     except Exception:
-        browser.stop()
+        _stop_observe_browser(browser, handle)
         raise
 
 
@@ -581,19 +650,17 @@ async def _run_observe_go(
     namespace: str, url: str, wait: float, max_body_size: int, *, session_name: str | None = None
 ) -> None:
     """Async implementation of observe go."""
-    result = await _setup_observe_session(
+    observed = await _setup_observe_session(
         namespace, url, max_body_size, headless=True, session_name=session_name
     )
-    if result is None:
+    if observed is None:
         raise typer.Exit(1)
 
-    browser, tab, storage, backend = result
-
     try:
-        await tab.sleep(wait)
-        await save_observe_run(storage, backend, "observe-go", console=console)
+        await observed.tab.sleep(wait)
+        await save_observe_run(observed.storage, observed.backend, "observe-go", console=console)
     finally:
-        browser.stop()
+        _stop_observe_browser(observed.browser, observed.handle)
 
 
 async def _run_observe_interactive(
@@ -601,13 +668,11 @@ async def _run_observe_interactive(
 ) -> None:
     """Async implementation of observe interactive."""
 
-    result = await _setup_observe_session(
+    observed = await _setup_observe_session(
         namespace, url, max_body_size, headless=False, session_name=session_name
     )
-    if result is None:
+    if observed is None:
         raise typer.Exit(1)
-
-    browser, tab, storage, backend = result
 
     try:
         stop_event = asyncio.Event()
@@ -633,9 +698,11 @@ async def _run_observe_interactive(
             loop.remove_signal_handler(signal.SIGINT)
 
         console.print("\n[dim]Recording stopped. Saving capture...[/dim]")
-        await save_observe_run(storage, backend, "interactive-final", console=console)
+        await save_observe_run(
+            observed.storage, observed.backend, "interactive-final", console=console
+        )
     finally:
-        browser.stop()
+        _stop_observe_browser(observed.browser, observed.handle)
 
 
 @observe_app.command("interactive")
