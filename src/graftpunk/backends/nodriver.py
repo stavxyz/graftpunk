@@ -460,6 +460,9 @@ class NoDriverBackend:
         if browser is None:
             return
         unregister_live_browser(self)
+        # Out of nodriver's atexit registry as well, so its handler does not
+        # re-stop a browser this code already ended.
+        self._deregister_browser()
         self._browser = None
         self._page = None
         terminate_nodriver_browser(browser)

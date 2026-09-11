@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import signal
 from pathlib import Path
 
@@ -179,7 +180,9 @@ class TestEveryLaunchSiteIsWiredUp:
             str(path.relative_to(package)): text
             for path in sorted(package.rglob("*.py"))
             for text in [path.read_text()]
-            if "nodriver.start(" in text or "uc.start(" in text
+            if "nodriver.start(" in text
+            or "uc.start(" in text
+            or re.search(r"^from nodriver(?:\.\w+)* import .*\bstart\b", text, re.MULTILINE)
         }
 
     def test_the_sites_are_the_three_this_suite_knows_about(self) -> None:
