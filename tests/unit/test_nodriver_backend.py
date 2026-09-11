@@ -1363,10 +1363,14 @@ class TestNoDriverBackendOrphanCleanup:
         import signal as signal_module
 
         from graftpunk import chrome_orphans, signals
+        from graftpunk.browser_launch import CleanupReport
 
         monkeypatch.setattr(chrome_orphans, "_ARMED", True)
-        monkeypatch.setattr(chrome_orphans, "reap_orphans", list)
-        monkeypatch.setattr(chrome_orphans, "remove_stale_temp_profiles", list)
+        # The sweep itself is replaced at its call site, so an armed pass in
+        # this test can never reach the real process table.
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.prepare_browser_launch", lambda: CleanupReport()
+        )
         monkeypatch.setattr(signals, "auto_install", True)
         signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
         backend = NoDriverBackend()

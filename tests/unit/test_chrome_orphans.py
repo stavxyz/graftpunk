@@ -440,6 +440,18 @@ class TestRemoveStaleTempProfiles:
         assert removed == [stale]
         assert not stale.exists()
 
+    def test_a_temp_root_with_whitespace_skips_the_sweep(
+        self, armed: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A live --user-data-dir would truncate at the space; nothing is safe to delete."""
+        spaced_root = tmp_path / "tmp dir"
+        spaced_root.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(spaced_root))
+        stale = _profile_dir(spaced_root, "uc_stale", age_seconds=7200)
+
+        assert remove_stale_temp_profiles(ops=_ops("")) == []
+        assert stale.exists()
+
     def test_a_fresh_profile_is_kept(self, armed: None, temp_root: Path) -> None:
         """Another process may have made it seconds ago, before its Chrome reached ps."""
         fresh = _profile_dir(temp_root, "uc_fresh")

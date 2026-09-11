@@ -661,6 +661,31 @@ class TestObserveBrowserHygiene:
 
         assert not profile.exists()
 
+    def test_a_stop_that_raises_still_releases_the_browser(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The unregister and the profile removal sit in a finally behind the stop."""
+        import tempfile
+
+        from graftpunk.cli.main import _ObserveBrowserHandle, _stop_observe_browser
+        from graftpunk.signals import live_browsers, register_live_browser
+
+        temp_root = tmp_path / "tmp"
+        temp_root.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+        profile = temp_root / "uc_raised"
+        (profile / "Default").mkdir(parents=True)
+        browser = self._browser(profile)
+        browser.stop = MagicMock(side_effect=ValueError("stop blew up"))
+        handle = _ObserveBrowserHandle(browser)
+        register_live_browser(handle)
+
+        with pytest.raises(ValueError, match="stop blew up"):
+            _stop_observe_browser(browser, handle)
+
+        assert handle not in live_browsers()
+        assert not profile.exists()
+
 
 class TestObserveArmsTheSignalHandlers:
     """The root callback sets a flag; it takes no signal slot by itself (#96)."""
@@ -689,11 +714,13 @@ class TestObserveArmsTheSignalHandlers:
         process with no handlers and no error.
         """
         from graftpunk import chrome_orphans, signals
+        from graftpunk.browser_launch import CleanupReport
         from graftpunk.cli.main import _setup_observe_session
 
         monkeypatch.setattr(chrome_orphans, "_ARMED", True)
-        monkeypatch.setattr(chrome_orphans, "reap_orphans", list)
-        monkeypatch.setattr(chrome_orphans, "remove_stale_temp_profiles", list)
+        # The sweep itself is replaced at its call site, so an armed pass in
+        # this test can never reach the real process table.
+        monkeypatch.setattr("graftpunk.cli.main.prepare_browser_launch", lambda: CleanupReport())
         monkeypatch.setattr(signals, "auto_install", True)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 

@@ -490,11 +490,15 @@ def _stop_observe_browser(browser: Any, handle: _ObserveBrowserHandle) -> None:
     nodriver removes that directory only from its own atexit handler, which
     never runs for a browser we stopped ourselves, so every observe run used to
     leak one directory under the temp dir (#96). The orderly stop path is where
-    that deletion belongs; the signal handler does not do it.
+    that deletion belongs; the signal handler does not do it. Unregistering and
+    removing the profile happen in the finally, so a raising stop still leaves
+    both done.
     """
-    signals.unregister_live_browser(handle)
-    browser.stop()
-    remove_browser_temp_profile(browser)
+    try:
+        browser.stop()
+    finally:
+        signals.unregister_live_browser(handle)
+        remove_browser_temp_profile(browser)
 
 
 async def _setup_observe_session(
@@ -565,8 +569,9 @@ async def _setup_observe_session(
 
     # End the Chromes earlier runs left behind before adding one more (#96).
     # gp observe launches nodriver directly rather than through
-    # NoDriverBackend, so it calls the same helpers the backend does. This is
-    # the interactive path, so it says what it did.
+    # NoDriverBackend, so it calls the same helpers the backend does. This
+    # setup helper serves both observe subcommands, go and interactive, so it
+    # says what it did either way.
     report = await asyncio.to_thread(prepare_browser_launch)
     if report.reaped:
         console.print(

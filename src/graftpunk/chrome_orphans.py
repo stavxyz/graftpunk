@@ -32,10 +32,12 @@ and deletes it only from an ``atexit`` handler that iterates its registry of
 live browsers. graftpunk removes its browser from that registry on stop, so
 nothing deletes the directory. :func:`remove_browser_temp_profile` does.
 
-POSIX only. The default process table comes from ``ps -eo pid=,ppid=,args=``,
+POSIX only. The default process table comes from ``ps -ww -eo pid=,ppid=,args=``,
 which Windows does not have: there the reader returns nothing and the two
 functions that signal or delete return nothing. An injected table is still
-parsed, so the parsing tests are meaningful on any platform.
+parsed, so the parsing tests are meaningful on any platform. ``-ww`` disables
+``ps``'s line-length truncation of the args column, verified on this macOS;
+it is also a valid flag for procps ``ps`` on Linux.
 
 Everything here is best effort. A cleanup pass must never turn a browser start
 into a failure or a signal into a hang, so per-item ``OSError`` is logged and
@@ -64,7 +66,7 @@ OWNER_SWITCH = "--graftpunk-owner-pid"
 _DEBUG_PORT_SWITCH = "--remote-debugging-port"
 _USER_DATA_DIR_SWITCH = "--user-data-dir"
 _TEMP_PROFILE_PREFIX = "uc_"
-_PS_ARGV = ["ps", "-eo", "pid=,ppid=,args="]
+_PS_ARGV = ["ps", "-ww", "-eo", "pid=,ppid=,args="]
 _PS_TIMEOUT_S = 5.0
 _GRACE_SECONDS = 3.0
 _POLL_INTERVAL_S = 0.5
@@ -463,14 +465,27 @@ def remove_stale_temp_profiles(
     protect it. The age guard is what keeps a directory another process created
     moments ago, before its Chrome has shown up in ``ps``.
 
+    ``_switch_value`` reads a switch's value up to the next whitespace, so a
+    temp directory whose path contains a space would come back truncated for
+    every live browser under it, and none of them would then match a
+    candidate's real path in ``in_use``. Rather than risk deleting a live
+    browser's profile out from under it, the sweep skips entirely when the
+    temp root itself contains whitespace.
+
     Args:
         older_than_seconds: How old a directory must be to count as abandoned.
         ops: The operating system calls to use.
 
     Returns:
-        The directories removed. Empty when the module is disarmed or off POSIX.
+        The directories removed. Empty when the module is disarmed, off
+        POSIX, or the temp root contains whitespace.
     """
     if not _armed_for("sweep"):
+        return []
+
+    temp_root = Path(tempfile.gettempdir())
+    if any(char.isspace() for char in str(temp_root)):
+        LOG.debug("stale_profile_sweep_skipped", reason="temp root contains whitespace")
         return []
 
     ops = ops or DEFAULT_OPS
@@ -479,7 +494,6 @@ def remove_stale_temp_profiles(
         for proc in list_chrome_processes(ops)
         if proc.user_data_dir
     }
-    temp_root = Path(tempfile.gettempdir())
     try:
         candidates = sorted(
             path
