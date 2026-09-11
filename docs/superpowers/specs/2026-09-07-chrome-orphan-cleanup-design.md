@@ -52,6 +52,17 @@ The `gp observe` interactive path launches nodriver directly
 (`src/graftpunk/cli/main.py:524` (`browser = await nodriver.start(`)) rather than
 through `NoDriverBackend`, so anything the backend does must reach it too.
 
+> **Design note (2026-09-11):** there are three launch sites, not two. Browser
+> token extraction (`nodriver_start` in `src/graftpunk/tokens.py`, called by
+> `_extract_tokens_browser` when a plugin refreshes a page-source token) is the
+> third, and this document counted two throughout: everything below that says
+> "both launch sites" means all three. It now passes `base_browser_args()`,
+> runs `prepare_browser_launch()` before its start, registers a handle, and
+> removes its temp profile on stop, like the other two. The handle is the
+> shared `browser_launch.NodriverBrowserHandle`, which replaced the private
+> `_ObserveBrowserHandle` described in Part 2: the two sites that drive
+> `nodriver` directly now register one adapter rather than one each.
+
 ## Design
 
 Three parts. The first is the backstop the issue asks for and covers every way
@@ -87,7 +98,7 @@ def base_browser_args() -> list[str]:
 @dataclass(frozen=True)
 class ProcessOps:
     """The OS calls this module makes, in one injectable place. Tests pass a fake kernel."""
-    read_table: Callable[[], str] = _read_ps_table    # ps -eo pid=,ppid=,args=
+    read_table: Callable[[], str] = _read_ps_table    # ps -ww -eo pid=,ppid=,args=
     kill: Callable[[int, int], None] = os.kill
     pid_alive: Callable[[int], bool] = _pid_alive
     sleep: Callable[[float], None] = time.sleep
@@ -145,9 +156,13 @@ class CleanupReport:
     reaped: list[ChromeProcess]
     profiles_removed: list[Path]     # truthy when either list is non-empty
 
+def arm_termination_handlers() -> None:
+    """Install the SIGTERM and SIGHUP handlers when the CLI asked for them and the orphan
+       module is armed. Separate from the sweep below, and called from the launch site's
+       own thread: signal.signal() succeeds only on the main thread."""
+
 def prepare_browser_launch() -> CleanupReport:
-    """Arm the termination handlers when the CLI asked for them and the orphan module is
-       armed, apply the opt-out, run the two sweeps under separate guards.
+    """Apply the opt-out, run the two sweeps under separate guards.
        Never raises, and prints nothing: the caller decides what its user should see."""
 ```
 

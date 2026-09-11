@@ -98,8 +98,8 @@ class GraftpunkSettings(BaseSettings):
         default=False,
         description=(
             "Keep the Chrome processes earlier runs left behind instead of ending them "
-            "before a nodriver browser starts. Set GRAFTPUNK_KEEP_ORPHANED_CHROME=1 when "
-            "you deliberately leave detached browsers running."
+            "before a nodriver browser starts. This does not affect the SIGTERM and "
+            "SIGHUP handlers, which still end a browser this process registered."
         ),
     )
 
