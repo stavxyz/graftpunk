@@ -77,6 +77,13 @@ def _restore_termination_signals():  # noqa: ANN201
         for signum, handler in saved_signals.items():
             if handler is not None:
                 signal.signal(signum, handler)
+            else:
+                # getsignal returns None when the disposition was set outside
+                # Python, which cannot be restored as it was. Leaving
+                # graftpunk's handler in the slot would make one test's
+                # install ambient state for the rest of the run, so SIG_DFL is
+                # the closest honest restore.
+                signal.signal(signum, signal.SIG_DFL)
     finally:
         signals._LIVE_BROWSERS.clear()
         for handle in saved_browsers:

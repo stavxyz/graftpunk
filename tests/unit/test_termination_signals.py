@@ -180,9 +180,17 @@ time.sleep(30)
 '''
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: no SIGTERM disposition to restore")
-def test_sigterm_ends_the_browsers_then_kills_the_process(tmp_path: Path) -> None:
-    """End to end, in a real process: the cleanup runs and the exit status is 128 + 15."""
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX only: no signal disposition to restore")
+@pytest.mark.parametrize("signal_name", ["SIGTERM", "SIGHUP"])
+def test_a_termination_signal_ends_the_browsers_then_kills_the_process(
+    tmp_path: Path, signal_name: str
+) -> None:
+    """End to end, in a real process: the cleanup runs and the exit status is 128 + signum.
+
+    Both handled signals, because the handler is installed for both and a
+    closing terminal sends the second one.
+    """
+    signum = getattr(signal, signal_name)
     script = tmp_path / "child.py"
     script.write_text(CHILD_SCRIPT)
     marker = tmp_path / "terminated"
@@ -199,15 +207,15 @@ def test_sigterm_ends_the_browsers_then_kills_the_process(tmp_path: Path) -> Non
             time.sleep(0.05)
         assert ready.exists(), "the child never installed its handler"
 
-        os.kill(child.pid, signal.SIGTERM)
+        os.kill(child.pid, signum)
         returncode = child.wait(timeout=30)
     finally:
         if child.poll() is None:
             child.kill()
             child.wait(timeout=30)
 
-    # Popen reports a signal death as -signum; a shell would report 128 + 15.
-    assert returncode == -signal.SIGTERM
+    # Popen reports a signal death as -signum; a shell would report 128 + signum.
+    assert returncode == -signum
     assert marker.read_text() == "terminated"
 
 
