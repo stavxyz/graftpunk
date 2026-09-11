@@ -104,9 +104,9 @@ def prepare_browser_launch() -> CleanupReport:
 
     The one cleanup entry point all three launch sites call, so the backend,
     ``gp observe`` and browser token extraction cannot drift. It applies the
-    opt-out, runs the two sweeps
-    under separate guards so a failure in one does not cost the other, and
-    never raises: a browser start must not fail because a cleanup pass did.
+    opt-out, runs the two sweeps under separate guards so a failure in one does
+    not cost the other, and never raises: a browser start must not fail because
+    a cleanup pass did.
 
     Arming the termination handlers is :func:`arm_termination_handlers`, not
     this function: this one is written to run on a worker thread, where

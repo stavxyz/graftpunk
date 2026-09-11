@@ -61,7 +61,9 @@ through `NoDriverBackend`, so anything the backend does must reach it too.
 > removes its temp profile on stop, like the other two. The handle is the
 > shared `browser_launch.NodriverBrowserHandle`, which replaced the private
 > `_ObserveBrowserHandle` described in Part 2: the two sites that drive
-> `nodriver` directly now register one adapter rather than one each.
+> `nodriver` directly now register one adapter rather than one each. The
+> observe handle still travels beside the browser, in the `_ObserveSession`
+> record `_setup_observe_session` returns in place of its tuple.
 
 ## Design
 

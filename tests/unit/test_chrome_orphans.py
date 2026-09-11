@@ -77,9 +77,10 @@ class FakeKernel:
     """A fake process table, signal delivery and clock, offered as one ProcessOps.
 
     A signal that would end a process removes its row, so a test asserts on the
-    table that is left rather than on which mock was called. The clock only
-    moves when the code under test sleeps, so a three second grace period costs
-    the test nothing.
+    table that is left rather than on which mock was called. The clock moves
+    only when the code under test sleeps, or by ``read_costs`` when it reads
+    the table, so a three second grace period costs the test nothing and a
+    ``ps`` that hangs can be staged exactly.
     """
 
     def __init__(

@@ -219,10 +219,11 @@ async def _extract_tokens_browser(
         return results
     finally:
         # The releases sit behind the stop in a finally, so a stop that raises
-        # still leaves the registry clean and the temp profile gone. nodriver
-        # deletes that directory only from the atexit handler the deregister
-        # above takes this browser out of, so without the last call every
-        # token extraction leaks one directory (#96).
+        # still leaves both registries clean and the temp profile gone.
+        # nodriver deletes that directory only from the atexit handler that
+        # iterates the registry the deregister call removes this browser from,
+        # so without the last call every token extraction leaks one directory
+        # (#96).
         try:
             browser.stop()
         finally:
