@@ -18,7 +18,7 @@ validated:
 # Plugin tooling: observe digest, raw captures, and the plugin scaffold
 
 **Date:** 2026-09-11
-**Status:** approved 2026-09-11 (validated over three rounds against f9fe962)
+**Status:** approved 2026-09-11 (validated over three rounds against f9fe962; rebased onto 3b3b661 the same day)
 **Series:** part B of four (B tooling, A session primitives, C docs refresh, D the plugin-development skill). Each part is its own spec, plan, and PR. This one comes first because A, C, and D all depend on the commands it adds.
 
 ## Problem
@@ -27,7 +27,7 @@ Building a new graftpunk plugin today starts from a recording and ends with a
 hand-built project, and the two starting points the framework offers for the
 middle are stale:
 
-- `gp import-har` (`src/graftpunk/cli/main.py:727` (`@app.command("import-har")`))
+- `gp import-har` (`src/graftpunk/cli/main.py:794` (`@app.command("import-har")`))
   generates handlers whose first parameter is a raw `requests.Session`
   (`src/graftpunk/har/generator.py:91` (`    params = ["self", "session: requests.Session"]`)),
   a shape the framework has not accepted since command handlers started
@@ -397,7 +397,7 @@ legible from the import paths:
 ### `gp observe digest <session> [<run>] [--json] [--all-hosts] [--limit N] [--output PATH]` and `gp observe digest --har PATH`
 
 Resolves the run like `gp observe show`
-(`src/graftpunk/cli/main.py:277` (`@observe_app.command("show")`)): session
+(`src/graftpunk/cli/main.py:289` (`@observe_app.command("show")`)): session
 through `session_dirname`
 (`src/graftpunk/observe/storage.py:20` (`def session_dirname(session_name: str) -> str:`)),
 run defaulting to the newest, then builds `DigestSource.from_run_dir` and
@@ -418,16 +418,16 @@ interim split grows no import back into `main.py`. The module exposes
 it constructs the sub-app; the other command modules are attached as
 module-level sub-apps, and this one differs only because the sub-app it
 extends already exists in `main.py`. The five existing observe commands stay
-in `main.py` for this part: the `gp observe interactive` launch path is being
-edited on the branch for issue #96 (PR #195), and moving it now would
-collide. Part C moves them into `observe_commands.py` once that branch lands.
+in `main.py` for this part, to keep its diff to the new commands now that the
+`gp observe interactive` launch path has just been reworked by PR #195
+(merged 2026-09-11, closing #96). Part C moves them into
+`observe_commands.py`.
 
 > **Design note (2026-09-11):** the review noted the new commands had no
 > named module and that `main.py` already holds the whole observe sub-app.
 > New code goes in its own module; the rerun asked for the interim split to
-> have a named owner and trigger (part C, after PR #195), for the shared run
-> resolution to move now, and for the precedent of `register()` to be named
-> correctly.
+> have a named owner (part C), for the shared run resolution to move now,
+> and for the precedent of `register()` to be named correctly.
 
 ### `gp observe fixtures <session> [<run>] --match "<METHOD> <template>" [--out DIR] [--limit N] [--allow-tracked]`
 
@@ -688,7 +688,7 @@ points at `gp plugin new` where it named the Python template.
 `docs/HOW_IT_WORKS.md`: the Observability section gains digest and fixtures;
 the plugin section points at `gp plugin new` and documents
 `ctx.request_json`, `ctx.request_text`, and `graftpunk.testing`.
-`CHANGELOG.md`: a new `[Unreleased]` section above `[1.16.0]` with Added
+`CHANGELOG.md`: the existing `[Unreleased]` section (PR #195 opened it) gains Added
 (three commands, the `--har` form, `CommandContext.request_json` and
 `request_text`, `SessionRejectedError` and `UnexpectedResponseError`,
 `graftpunk.testing`, the reserved CLI names) and Removed (`gp import-har`,
