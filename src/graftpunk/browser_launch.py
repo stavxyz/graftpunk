@@ -61,7 +61,7 @@ def arm_termination_handlers() -> None:
     It never raises. A launch must not fail because a signal slot could not be
     taken.
     """
-    if not (chrome_orphans._ARMED and signals.auto_install):
+    if not (chrome_orphans.is_armed() and signals.auto_install):
         return
     try:
         signals.install_termination_cleanup()

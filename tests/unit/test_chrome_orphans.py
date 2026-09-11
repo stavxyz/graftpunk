@@ -55,6 +55,12 @@ def _chrome_args(*, port: int = 9222, owner: int | None = None, profile: str | N
     return args
 
 
+# A readable process table with no browser in it: the stale sweep's "nothing is
+# using a profile" case. A blank table means ps failed, which is a different
+# case with a different behaviour, so no sweep test may stand in for it.
+_NO_BROWSERS = _row(1, 0, "/sbin/launchd")
+
+
 def _proc(
     pid: int, ppid: int, *, owner: int | None = None, profile: str | None = None
 ) -> ChromeProcess:
@@ -83,11 +89,15 @@ class FakeKernel:
         alive_pids: frozenset[int] = frozenset(),
         ignores_sigterm: frozenset[int] = frozenset(),
         kill_raises: dict[int, OSError] | None = None,
+        sigkill_raises: dict[int, OSError] | None = None,
+        read_costs: tuple[float, ...] = (),
     ) -> None:
         self.rows = dict(rows)
         self.alive_pids = alive_pids
         self.ignores_sigterm = ignores_sigterm
         self.kill_raises = kill_raises or {}
+        self.sigkill_raises = sigkill_raises or {}
+        self.read_costs = read_costs
         self.signals: list[tuple[int, int]] = []
         self.reads = 0
         self.now = 0.0
@@ -104,6 +114,9 @@ class FakeKernel:
 
     def read_table(self) -> str:
         self.reads += 1
+        if self.read_costs:
+            # What this read costs the clock, in order; the last entry repeats.
+            self.now += self.read_costs[min(self.reads - 1, len(self.read_costs) - 1)]
         return "\n".join(self.rows.values())
 
     def pid_alive(self, pid: int) -> bool:
@@ -111,7 +124,9 @@ class FakeKernel:
 
     def kill(self, pid: int, signum: int) -> None:
         self.signals.append((pid, signum))
-        exc = self.kill_raises.get(pid)
+        exc = self.sigkill_raises.get(pid) if signum == signal.SIGKILL else None
+        if exc is None:
+            exc = self.kill_raises.get(pid)
         if exc is not None:
             raise exc
         ends_it = signum == signal.SIGKILL or (
@@ -168,7 +183,7 @@ class TestBrowserArgs:
     def test_the_marker_names_an_explicit_pid(self) -> None:
         assert owner_switch(4242) == "--graftpunk-owner-pid=4242"
 
-    def test_both_launch_sites_start_from_the_same_switches(self) -> None:
+    def test_every_launch_site_starts_from_the_same_switches(self) -> None:
         assert base_browser_args() == ["--test-type", owner_switch()]
 
     def test_the_caller_gets_a_list_it_may_extend(self) -> None:
@@ -177,6 +192,16 @@ class TestBrowserArgs:
         first.append("--lang=en-US")
 
         assert base_browser_args() == ["--test-type", owner_switch()]
+
+
+class TestIsArmed:
+    """The public read of the switch, for the modules that consult it."""
+
+    def test_the_unit_suite_runs_disarmed(self) -> None:
+        assert chrome_orphans.is_armed() is False
+
+    def test_it_follows_the_switch(self, armed: None) -> None:
+        assert chrome_orphans.is_armed() is True
 
 
 class TestListChromeProcesses:
@@ -409,6 +434,85 @@ class TestReapOrphans:
         assert [p.pid for p in reaped] == [4242]
         assert outside.exists()
 
+    def test_a_killed_orphans_profile_is_removed(self, armed: None, temp_root: Path) -> None:
+        """The SIGKILL path ends it too, so its directory goes with it."""
+        profile = _profile_dir(temp_root, "uc_stubborn")
+        kernel = FakeKernel(
+            {4242: _row(4242, 1, _chrome_args(owner=999999, profile=str(profile)))},
+            ignores_sigterm=frozenset({4242}),
+        )
+
+        reap_orphans(grace_seconds=0.3, poll_interval=0.1, ops=kernel.ops)
+
+        assert kernel.signals == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+        assert not profile.exists()
+
+    def test_a_refused_kill_leaves_the_orphans_profile_alone(
+        self, armed: None, temp_root: Path
+    ) -> None:
+        """It is still running and may still be writing there. The stale sweep can have it."""
+        profile = _profile_dir(temp_root, "uc_unkillable")
+        kernel = FakeKernel(
+            {4242: _row(4242, 1, _chrome_args(owner=999999, profile=str(profile)))},
+            ignores_sigterm=frozenset({4242}),
+            sigkill_raises={4242: PermissionError(1, "Operation not permitted")},
+        )
+
+        reaped = reap_orphans(grace_seconds=0.3, poll_interval=0.1, ops=kernel.ops)
+
+        assert [p.pid for p in reaped] == [4242]
+        assert profile.exists()
+
+    def test_a_pid_reused_during_the_grace_is_not_killed(self, armed: None) -> None:
+        """The orphan exits, the kernel hands its pid on, and the newcomer is not ours."""
+        rows = {4242: _row(4242, 1, _chrome_args(owner=999999))}
+        sent: list[tuple[int, int]] = []
+        clock = {"now": 0.0}
+
+        def kill(pid: int, signum: int) -> None:
+            sent.append((pid, signum))
+            if signum == signal.SIGTERM:
+                rows[pid] = _row(pid, 1, f"{CHROME} --remote-debugging-port=9333")
+
+        def tick(seconds: float) -> None:
+            clock["now"] += seconds
+
+        ops = ProcessOps(
+            read_table=lambda: "\n".join(rows.values()),
+            kill=kill,
+            pid_alive=lambda pid: False,
+            sleep=tick,
+            monotonic=lambda: clock["now"],
+        )
+
+        reaped = reap_orphans(grace_seconds=0.3, poll_interval=0.1, ops=ops)
+
+        assert [p.pid for p in reaped] == [4242]
+        assert sent == [(4242, signal.SIGTERM)]
+
+    def test_a_slow_process_table_ends_the_pass_at_its_budget(self, armed: None) -> None:
+        """The whole pass gets the grace plus one ps timeout, not one per poll.
+
+        The first read costs seven seconds here, which is what a ``ps`` that
+        hangs to its own timeout costs a real pass. The polling that follows
+        stops at the budget instead of running the grace period out on top of
+        it.
+        """
+        kernel = FakeKernel(
+            {4242: _row(4242, 1, _chrome_args(owner=999999))},
+            ignores_sigterm=frozenset({4242}),
+            read_costs=(7.0, 0.0),
+        )
+
+        reaped = reap_orphans(grace_seconds=3.0, poll_interval=0.5, ops=kernel.ops)
+
+        assert [p.pid for p in reaped] == [4242]
+        assert (4242, signal.SIGKILL) in kernel.signals
+        # 3.0 of grace + the 5.0 ps timeout, measured from the start of the
+        # pass: two polls after the slow first read, not six.
+        assert kernel.now == pytest.approx(8.0)
+        assert kernel.reads == 3
+
     def test_a_live_owners_chrome_is_never_signalled(self, armed: None) -> None:
         """Two rows, one orphan. The live owner's browser keeps running."""
         kernel = FakeKernel(
@@ -429,13 +533,13 @@ class TestRemoveStaleTempProfiles:
     def test_a_disarmed_sweep_deletes_nothing(self, temp_root: Path) -> None:
         stale = _profile_dir(temp_root, "uc_stale", age_seconds=7200)
 
-        assert remove_stale_temp_profiles(ops=_ops("")) == []
+        assert remove_stale_temp_profiles(ops=_ops(_NO_BROWSERS)) == []
         assert stale.exists()
 
     def test_an_old_unreferenced_profile_is_removed(self, armed: None, temp_root: Path) -> None:
         stale = _profile_dir(temp_root, "uc_stale", age_seconds=7200)
 
-        removed = remove_stale_temp_profiles(ops=_ops(""))
+        removed = remove_stale_temp_profiles(ops=_ops(_NO_BROWSERS))
 
         assert removed == [stale]
         assert not stale.exists()
@@ -449,14 +553,42 @@ class TestRemoveStaleTempProfiles:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(spaced_root))
         stale = _profile_dir(spaced_root, "uc_stale", age_seconds=7200)
 
+        assert remove_stale_temp_profiles(ops=_ops(_NO_BROWSERS)) == []
+        assert stale.exists()
+
+    def test_an_unavailable_process_table_skips_the_sweep(
+        self, armed: None, temp_root: Path
+    ) -> None:
+        """A blank table is ``ps`` failing, not a machine with no browsers running.
+
+        Read as the latter it says every profile on the machine is unused, and
+        the sweep deletes the profiles of live browsers.
+        """
+        stale = _profile_dir(temp_root, "uc_stale", age_seconds=7200)
+
         assert remove_stale_temp_profiles(ops=_ops("")) == []
         assert stale.exists()
+
+    def test_a_live_profile_under_a_symlinked_temp_root_is_kept(
+        self, armed: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """macOS: ``gettempdir()`` says /var/..., the browser's argv says /private/var/...."""
+        real_root = tmp_path / "private" / "tmp"
+        real_root.mkdir(parents=True)
+        link_root = tmp_path / "tmp"
+        link_root.symlink_to(real_root, target_is_directory=True)
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(link_root))
+        live = _profile_dir(real_root, "uc_live", age_seconds=7200)
+        table = _row(4242, 1, _chrome_args(owner=os.getpid(), profile=str(live)))
+
+        assert remove_stale_temp_profiles(ops=_ops(table)) == []
+        assert live.exists()
 
     def test_a_fresh_profile_is_kept(self, armed: None, temp_root: Path) -> None:
         """Another process may have made it seconds ago, before its Chrome reached ps."""
         fresh = _profile_dir(temp_root, "uc_fresh")
 
-        assert remove_stale_temp_profiles(ops=_ops("")) == []
+        assert remove_stale_temp_profiles(ops=_ops(_NO_BROWSERS)) == []
         assert fresh.exists()
 
     def test_a_profile_a_live_browser_names_is_kept_however_old(
@@ -484,7 +616,7 @@ class TestRemoveStaleTempProfiles:
     ) -> None:
         other = _profile_dir(temp_root, "pytest-of-alice", age_seconds=7200)
 
-        assert remove_stale_temp_profiles(ops=_ops("")) == []
+        assert remove_stale_temp_profiles(ops=_ops(_NO_BROWSERS)) == []
         assert other.exists()
 
     def test_a_file_named_like_a_profile_is_not_removed(self, armed: None, temp_root: Path) -> None:
@@ -493,7 +625,7 @@ class TestRemoveStaleTempProfiles:
         old = time.time() - 7200
         os.utime(path, (old, old))
 
-        assert remove_stale_temp_profiles(ops=_ops("")) == []
+        assert remove_stale_temp_profiles(ops=_ops(_NO_BROWSERS)) == []
         assert path.exists()
 
 
@@ -627,11 +759,15 @@ def _ps_limited_to(pids: set[int]) -> ProcessOps:
 
     Real ps and real os.kill, and nothing else on this machine can match: a
     genuine orphan from a real session must survive a test run untouched.
+
+    The argv is the module's own, so this table is the table the code reads: a
+    switch added there (``-ww``, which stops ps truncating the args column)
+    reaches this test rather than being silently dropped from it.
     """
 
     def table() -> str:
-        out = subprocess.run(  # noqa: S603
-            ["ps", "-eo", "pid=,ppid=,args="],  # noqa: S607 - PATH lookup of ps is intentional
+        out = subprocess.run(  # noqa: S603 - PATH lookup of ps is intentional
+            chrome_orphans._PS_ARGV,
             capture_output=True,
             text=True,
             timeout=10,

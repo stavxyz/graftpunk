@@ -3,8 +3,9 @@
 When the Python process that launched a nodriver Chrome dies without running
 its cleanup (SIGKILL, an OOM kill, a closed terminal, a crash), Chrome
 survives. The survivors hold their debug ports and their memory, and they
-accumulate. This module is the backstop: before a new browser starts, both
-launch sites ask it to find the survivors nobody owns any more and end them.
+accumulate. This module is the backstop: before a new browser starts, all
+three launch sites ask it to find the survivors nobody owns any more and end
+them.
 
 Identification is exact rather than heuristic. Every graftpunk launch passes
 ``--graftpunk-owner-pid=<pid>`` in ``browser_args``; Chrome ignores switches it
@@ -33,11 +34,15 @@ live browsers. graftpunk removes its browser from that registry on stop, so
 nothing deletes the directory. :func:`remove_browser_temp_profile` does.
 
 POSIX only. The default process table comes from ``ps -ww -eo pid=,ppid=,args=``,
-which Windows does not have: there the reader returns nothing and the two
-functions that signal or delete return nothing. An injected table is still
-parsed, so the parsing tests are meaningful on any platform. ``-ww`` disables
-``ps``'s line-length truncation of the args column, verified on this macOS;
-it is also a valid flag for procps ``ps`` on Linux.
+which Windows does not have: there the reader returns nothing and the three
+functions that consult the arming switch (:func:`reap_orphans`,
+:func:`remove_stale_temp_profiles` and :func:`terminate_nodriver_browser`)
+return nothing. :func:`remove_browser_temp_profile` is outside that switch on
+purpose: it deletes the directory of a browser this process has just stopped,
+which is safe wherever it runs. An injected table is still parsed, so the
+parsing tests are meaningful on any platform. ``-ww`` disables ``ps``'s
+line-length truncation of the args column, verified on this macOS; it is also
+a valid flag for procps ``ps`` on Linux.
 
 Everything here is best effort. A cleanup pass must never turn a browser start
 into a failure or a signal into a hang, so per-item ``OSError`` is logged and
@@ -55,7 +60,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from graftpunk.logging import get_logger
 
@@ -72,12 +77,24 @@ _GRACE_SECONDS = 3.0
 _POLL_INTERVAL_S = 0.5
 _STALE_PROFILE_SECONDS = 3600.0
 
-# Signalling and deleting are armed in production and disarmed by the unit
+# Signalling and sweeping are armed in production and disarmed by the unit
 # suite, at the origin: one autouse fixture sets this False and every test is
 # covered, including the ones that drive a browser start through a launch site
 # that calls in here. Guarding here rather than patching each caller means a
-# new caller is covered the day it is written.
+# new caller is covered the day it is written. Three functions consult it
+# (reap_orphans, remove_stale_temp_profiles and terminate_nodriver_browser);
+# remove_browser_temp_profile is deliberately outside it, because the
+# directory it deletes belongs to a browser this process has just stopped.
 _ARMED = True
+
+
+def is_armed() -> bool:
+    """Whether this process may signal a process or run a sweep.
+
+    The public read of the switch above, for callers in other modules:
+    :mod:`graftpunk.browser_launch` consults it before taking a signal slot.
+    """
+    return _ARMED
 
 
 def owner_switch(pid: int | None = None) -> str:
@@ -96,9 +113,9 @@ def base_browser_args() -> list[str]:
     """The Chrome switches every graftpunk launch passes.
 
     ``--test-type``, which graftpunk has passed since before this change, and
-    the owner marker that makes the browser identifiable as ours. Both launch
-    sites start from this list and extend it, so a switch added here reaches
-    the backend and ``gp observe`` alike.
+    the owner marker that makes the browser identifiable as ours. All three
+    launch sites start from this list and extend it, so a switch added here
+    reaches the backend, ``gp observe`` and browser token extraction alike.
 
     Returns:
         A fresh list each call, so one caller's extras cannot reach the other.
@@ -277,7 +294,16 @@ def list_chrome_processes(ops: ProcessOps | None = None) -> list[ChromeProcess]:
         The matching rows. Empty on a platform with no ``ps``, or when ``ps``
         is missing or fails.
     """
-    table = (ops or DEFAULT_OPS).read_table()
+    return _parse_table((ops or DEFAULT_OPS).read_table())
+
+
+def _parse_table(table: str) -> list[ChromeProcess]:
+    """The rows of *table* that name a CDP-controlled browser.
+
+    Split out from :func:`list_chrome_processes` so a caller that has to look
+    at the raw table first, as the stale sweep does, can parse the table it
+    already read rather than shelling out to ``ps`` a second time.
+    """
     processes = []
     for row in table.splitlines():
         parsed = _parse_row(row)
@@ -365,25 +391,26 @@ def find_orphans(
 
 def _deliver(
     proc: ChromeProcess, signum: int, kill: Callable[[int, int], None], event: str
-) -> bool:
+) -> Literal["delivered", "gone", "refused"]:
     """Send one signal to one orphan. Never raises.
 
     Returns:
-        True when the signal was delivered. A process that has already exited
-        (``ProcessLookupError``) and a signal the kernel refused both return
-        False, the first at debug because it is a normal race and the second at
-        warning because it is not.
+        ``"delivered"`` when the kernel accepted the signal, ``"gone"`` when
+        the process had already exited (``ProcessLookupError``, a normal race,
+        logged at debug), and ``"refused"`` when the kernel rejected it (logged
+        at warning, because it is not). The three are distinct because only
+        ``"refused"`` means the process is still out there holding its profile.
     """
     try:
         kill(proc.pid, signum)
     except ProcessLookupError as exc:
         LOG.debug("chrome_orphan_cleanup_failed", pid=proc.pid, error=str(exc))
-        return False
+        return "gone"
     except OSError as exc:
         LOG.warning("chrome_orphan_cleanup_failed", pid=proc.pid, error=str(exc))
-        return False
+        return "refused"
     LOG.info(event, pid=proc.pid)
-    return True
+    return "delivered"
 
 
 def reap_orphans(
@@ -400,8 +427,17 @@ def reap_orphans(
     and GPU helpers with it, because they exit when their parent's IPC channel
     closes.
 
-    Per-process failures are logged and never raised: this runs on the way into
-    a browser start.
+    The profile removal at the end runs for the processes that left the table
+    and for the ones that accepted a SIGKILL. A process whose SIGKILL the
+    kernel refused keeps its directory: it may still be running and writing to
+    it, and the stale sweep can have it once it is old enough.
+
+    The pass is budgeted as a whole, not per wait: *grace_seconds* plus one
+    ``ps`` timeout, measured from the moment it starts. A table read that hangs
+    until its own timeout therefore costs the polling loop its time rather than
+    adding to it, because this runs on the way into a browser start.
+
+    Per-process failures are logged and never raised, for the same reason.
 
     Args:
         grace_seconds: How long to wait for a SIGTERM to be honoured.
@@ -419,28 +455,41 @@ def reap_orphans(
         return []
 
     ops = ops or DEFAULT_OPS
+    started = ops.monotonic()
     orphans = find_orphans(list_chrome_processes(ops), ops=ops)
     if not orphans:
         return []
 
     acted_on = []
     for proc in orphans:
-        if _deliver(proc, signal.SIGTERM, ops.kill, "chrome_orphan_terminated"):
+        if _deliver(proc, signal.SIGTERM, ops.kill, "chrome_orphan_terminated") == "delivered":
             acted_on.append(proc)
     if not acted_on:
         return []
 
     remaining = list(acted_on)
-    deadline = ops.monotonic() + grace_seconds
-    while remaining and ops.monotonic() < deadline:
+    # Two deadlines: the grace the orphans get, and the budget the whole pass
+    # gets. The first table read may itself have taken up to the ps timeout,
+    # and that time comes out of the budget rather than being added to it.
+    grace_deadline = ops.monotonic() + grace_seconds
+    budget_deadline = started + grace_seconds + _PS_TIMEOUT_S
+    while remaining and ops.monotonic() < min(grace_deadline, budget_deadline):
         ops.sleep(poll_interval)
-        still_listed = {proc.pid for proc in list_chrome_processes(ops)}
-        remaining = [proc for proc in remaining if proc.pid in still_listed]
+        # Matched on (pid, args), not pid alone: a pid freed by an orphan that
+        # exited can be handed to something else before the next poll, and
+        # that process must not inherit this pass's SIGKILL.
+        still_listed = {(proc.pid, proc.args) for proc in list_chrome_processes(ops)}
+        remaining = [proc for proc in remaining if (proc.pid, proc.args) in still_listed]
 
+    survivors = set()
     for proc in remaining:
-        _deliver(proc, signal.SIGKILL, ops.kill, "chrome_orphan_killed")
+        if _deliver(proc, signal.SIGKILL, ops.kill, "chrome_orphan_killed") == "refused":
+            survivors.add(proc.pid)
 
     for proc in acted_on:
+        if proc.pid in survivors:
+            LOG.debug("chrome_orphan_profile_kept", pid=proc.pid, reason="still running")
+            continue
         path = _removable_temp_profile(proc.user_data_dir)
         if path is None or not path.exists():
             continue
@@ -472,13 +521,23 @@ def remove_stale_temp_profiles(
     browser's profile out from under it, the sweep skips entirely when the
     temp root itself contains whitespace.
 
+    For the same reason it skips when the process table comes back blank. An
+    unreadable table (no ``ps``, a timeout, a non-zero exit) is indistinguishable
+    from "nothing is running" by its content alone, and reading it as the latter
+    would delete the profiles of every live browser on the machine.
+
+    Both halves of the "in use" comparison go through ``os.path.realpath``: on
+    macOS ``gettempdir()`` reports ``/var/folders/...`` while a browser's own
+    ``--user-data-dir`` reports the ``/private/var/folders/...`` it resolves to,
+    and a live profile must not look unreferenced because of the symlink.
+
     Args:
         older_than_seconds: How old a directory must be to count as abandoned.
         ops: The operating system calls to use.
 
     Returns:
-        The directories removed. Empty when the module is disarmed, off
-        POSIX, or the temp root contains whitespace.
+        The directories removed. Empty when the module is disarmed, off POSIX,
+        the temp root contains whitespace, or the process table is unavailable.
     """
     if not _armed_for("sweep"):
         return []
@@ -489,10 +548,13 @@ def remove_stale_temp_profiles(
         return []
 
     ops = ops or DEFAULT_OPS
+    table = ops.read_table()
+    if not table.strip():
+        LOG.debug("stale_profile_sweep_skipped", reason="process table unavailable")
+        return []
+
     in_use = {
-        os.path.normpath(proc.user_data_dir)
-        for proc in list_chrome_processes(ops)
-        if proc.user_data_dir
+        os.path.realpath(proc.user_data_dir) for proc in _parse_table(table) if proc.user_data_dir
     }
     try:
         candidates = sorted(
@@ -506,7 +568,7 @@ def remove_stale_temp_profiles(
 
     removed = []
     for path in candidates:
-        if os.path.normpath(str(path)) in in_use:
+        if os.path.realpath(str(path)) in in_use:
             continue
         try:
             age = time.time() - path.stat().st_mtime
