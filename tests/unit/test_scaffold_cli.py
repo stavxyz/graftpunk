@@ -374,13 +374,14 @@ class TestSuiteModeLeavesRestOfPyprojectByteIdentical:
 class TestPyprojectEditErrorRefusedCleanly:
     def test_include_only_wheel_table_refuses_without_a_traceback(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
+        original = (
             '[project]\nname = "mysuite"\n\n'
             '[project.entry-points."graftpunk.plugins"]\n'
             'existing = "mysuite.existing:ExistingPlugin"\n\n'
             "[tool.hatch.build.targets.wheel]\n"
             'include = ["src/mysuite/**"]\n'
         )
+        pyproject.write_text(original)
         result = runner.invoke(
             _build_app(),
             [
@@ -397,6 +398,13 @@ class TestPyprojectEditErrorRefusedCleanly:
         assert "include" in result.output.lower()
         assert "Traceback" not in result.output
         assert result.exception is None or isinstance(result.exception, SystemExit)
+        # A refusal leaves the suite byte-identical: no partial pyproject.toml
+        # edit, no new package directory, no new test module, no .gitignore
+        # created where none existed.
+        assert pyproject.read_text() == original
+        assert not (tmp_path / "src" / "graftpunk_widgets").exists()
+        assert not (tmp_path / "tests" / "test_widgets.py").exists()
+        assert not (tmp_path / ".gitignore").exists()
 
 
 class TestReservedNamesSnapshot:

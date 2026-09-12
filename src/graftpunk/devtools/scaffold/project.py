@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored
-from graftpunk.devtools.scaffold.pyproject_edit import add_entry_point, add_wheel_package
+from graftpunk.devtools.scaffold.pyproject_edit import (
+    PyprojectEditError,
+    add_entry_point,
+    add_wheel_package,
+)
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, module_name_for, render
 from graftpunk.logging import get_logger
 
@@ -69,6 +73,11 @@ def write_scaffold(
         ValueError: *target_dir* has a ``pyproject.toml`` that does not
             declare the ``graftpunk.plugins`` entry-point group: a
             different kind of project.
+        PyprojectEditError: In suite mode, ``pyproject.toml`` could not be
+            edited (see ``pyproject_edit.py``). ``pyproject.toml`` is
+            restored to its original bytes before this re-raises, and no
+            rendered file has been written yet, so the suite is left
+            byte-identical to how ``write_scaffold`` found it.
     """
     existing = None if force_new else _existing_pyproject(target_dir)
     if existing is not None and not _declares_plugin_group(existing):
@@ -83,27 +92,40 @@ def write_scaffold(
     resolved_spec = dataclasses.replace(spec, mode=mode)
     files = render(resolved_spec)
 
+    # Conflict detection runs before anything else is touched, in either
+    # mode: a refusal here must never have edited pyproject.toml either.
     targets = {target_dir / rel: content for rel, content in files.items()}
     conflicts = sorted(p for p in targets if p.exists())
     if conflicts:
         LOG.warning("scaffold_write_refused", conflicts=len(conflicts))
         raise ScaffoldConflictError(conflicts)
 
-    for path, content in targets.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-
     gitignore_updated = False
     pyproject_updated = False
     if mode == "add_to_suite":
         assert existing is not None  # narrows for the type checker; mode implies it
-        gitignore_updated = ensure_ignored(target_dir, CAPTURES_DIR)
         module = module_name_for(resolved_spec.name)
         package = f"src/graftpunk_{module}"
         target = f"graftpunk_{module}.plugin:{class_name_for(resolved_spec.name)}"
-        add_entry_point(existing, resolved_spec.name, target)
-        add_wheel_package(existing, package)
+        # Both pyproject.toml edits happen (and, on failure, are undone)
+        # before any rendered file is written: a PyprojectEditError from
+        # add_wheel_package must not leave add_entry_point's edit behind,
+        # and neither edit failing may leave a new package directory or
+        # test module on disk.
+        original_pyproject_text = existing.read_text(encoding="utf-8")
+        try:
+            add_entry_point(existing, resolved_spec.name, target)
+            add_wheel_package(existing, package)
+        except PyprojectEditError:
+            existing.write_text(original_pyproject_text, encoding="utf-8")
+            LOG.warning("scaffold_write_refused", reason="pyproject_edit_error")
+            raise
         pyproject_updated = True
+        gitignore_updated = ensure_ignored(target_dir, CAPTURES_DIR)
+
+    for path, content in targets.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
 
     LOG.info("scaffold_written", mode=mode, target_dir=str(target_dir), files=len(targets))
     return ScaffoldResult(

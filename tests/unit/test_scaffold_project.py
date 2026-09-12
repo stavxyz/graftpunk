@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from graftpunk.devtools.scaffold.project import ScaffoldConflictError, write_scaffold
+from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec
 
 _SUITE_PYPROJECT = """\
@@ -23,6 +24,17 @@ packages = ["src/mysuite"]
 _NON_PLUGIN_PYPROJECT = """\
 [project]
 name = "unrelated-package"
+"""
+
+_INCLUDE_WHEEL_PYPROJECT = """\
+[project]
+name = "mysuite"
+
+[project.entry-points."graftpunk.plugins"]
+existing = "mysuite.existing:ExistingPlugin"
+
+[tool.hatch.build.targets.wheel]
+include = ["src/mysuite/**"]
 """
 
 
@@ -102,3 +114,39 @@ class TestConflicts:
             write_scaffold(tmp_path, _spec())
         assert any(p.name == "README.md" for p in exc.value.conflicts)
         assert not (tmp_path / "pyproject.toml").exists()
+
+
+class TestPyprojectEditFailureLeavesSuiteUntouched:
+    """A refused suite addition must leave the suite byte-identical: nothing
+    written, pyproject.toml exactly as it was found, even when one of its two
+    edits (add_entry_point) already succeeded before the other failed."""
+
+    def test_include_only_wheel_table_leaves_pyproject_byte_identical(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_INCLUDE_WHEEL_PYPROJECT)
+        original = pyproject.read_text()
+
+        with pytest.raises(PyprojectEditError):
+            write_scaffold(tmp_path, _spec("widgets"))
+
+        assert pyproject.read_text() == original
+        assert not (tmp_path / "src" / "graftpunk_widgets").exists()
+        assert not (tmp_path / "tests" / "test_widgets.py").exists()
+        assert not (tmp_path / ".gitignore").exists()
+
+    def test_add_wheel_package_failure_does_not_leave_the_entry_point_behind(
+        self, tmp_path: Path
+    ) -> None:
+        """add_entry_point succeeds (the table is present and 'widgets' is
+        not registered yet) before add_wheel_package fails on the include
+        shape; the restore must undo add_entry_point's edit too, not just
+        refuse to apply add_wheel_package's."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_INCLUDE_WHEEL_PYPROJECT)
+
+        with pytest.raises(PyprojectEditError):
+            write_scaffold(tmp_path, _spec("widgets"))
+
+        text = pyproject.read_text()
+        assert "widgets" not in text
+        assert 'existing = "mysuite.existing:ExistingPlugin"' in text
