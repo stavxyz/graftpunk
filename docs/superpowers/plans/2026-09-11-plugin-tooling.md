@@ -1,3 +1,20 @@
+---
+type: plan
+validated:
+  sha: 493d10f
+  date: 2026-09-12T19:22:11Z
+  reviewers: [fact-check, solid-hygiene]
+  findings:
+    critical: 1
+    important: 3
+    medium: 3
+    low: 0
+    nitpick: 0
+  net_negative_raised: 3
+  net_negative_addressed: 3
+  net_negative_remaining: 0
+---
+
 # Plugin Tooling Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -3451,7 +3468,6 @@ LOG = get_logger(__name__)
 console = Console()
 
 _DEFAULT_FIXTURE_LIMIT = 5
-_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
 def resolve_run(session_name: str, run_id: str | None, *, base_dir: Path | None = None) -> Path:
