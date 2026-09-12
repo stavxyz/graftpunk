@@ -14,6 +14,7 @@ from graftpunk.devtools.scaffold.render import (
     PLUGIN_NAME_RE,
     ScaffoldSpec,
     _literal_lines,
+    _wrapped_comment_lines,
     class_name_for,
     module_name_for,
     render,
@@ -183,6 +184,32 @@ class TestLiteralLines:
         continuation_pad = " " * (indent + 4)
         chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
         assert "".join(chunks) == value
+        for line in lines:
+            assert len(line) <= 100
+
+
+class TestWrappedCommentLines:
+    def test_short_text_is_one_line(self) -> None:
+        assert _wrapped_comment_lines("short comment", indent=4) == ["    # short comment"]
+
+    def test_long_text_reconstructs_after_stripping_prefixes(self) -> None:
+        text = (
+            "1. GET https://api.myshop.example.com/some/reasonably/long/path and "
+            "several more plain words to force this comment across more than one "
+            "wrapped line (auth_api)"
+        )
+        indent = 4
+        lines = _wrapped_comment_lines(text, indent=indent)
+        assert len(lines) > 1
+        pad = " " * indent
+        first_prefix = f"{pad}# "
+        rest_prefix = f"{pad}#   "
+        assert lines[0].startswith(first_prefix)
+        parts = [lines[0][len(first_prefix) :]]
+        for line in lines[1:]:
+            assert line.startswith(rest_prefix)
+            parts.append(line[len(rest_prefix) :])
+        assert " ".join(parts) == text
         for line in lines:
             assert len(line) <= 100
 
@@ -675,4 +702,37 @@ class TestRenderedTreeIsRuffClean:
         assert "Token.from_" in plugin_code
         assert "LoginStep(" in plugin_code
         tree = self._write_tree(tmp_path / "long_selectors", files)
+        self._assert_tree_is_clean(tree)
+
+    def test_long_observation_url_and_unpaired_token_project(self, tmp_path: Path) -> None:
+        # No password form (so the "no form found" observation-comment branch
+        # renders), a long observation URL (a path, no query), an unpaired
+        # token candidate with a long name, and a long base_url (which the
+        # class docstring, and the base_url attribute itself, both
+        # interpolate): the shapes the round-3 re-review reproduced its
+        # failures with (validation fix round 3, 2026-09-12).
+        long_path = "/".join(f"segment-{i}" for i in range(12))
+        long_url = f"https://api.myshop.example.com/{long_path}"
+        assert 140 <= len(long_url) <= 180
+        observation = LoginObservation(
+            order=1, method="GET", url=long_url, status=200, kind="form_page", fields=()
+        )
+        long_token_name = "X-" + "B" * 88
+        assert len(long_token_name) == 90
+        lone = TokenCandidate(kind="header", name=long_token_name, seen_on=("GET /dashboard",))
+        digest = _digest(login=(observation,), tokens=(lone,))
+        long_base_url = "https://" + "x" * 100 + ".example.com"
+        assert 110 <= len(long_base_url) <= 130
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url=long_base_url,
+            digest=digest,
+        )
+        files = render(spec)
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        assert "1." in plugin_code
+        assert "unpaired token candidate" in plugin_code
+        tree = self._write_tree(tmp_path / "long_observation", files)
         self._assert_tree_is_clean(tree)

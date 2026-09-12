@@ -147,10 +147,10 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     if form is None:
         lines = ["    # No login form detected. Observations:"]
         for observation in spec.digest.login:
-            lines.append(
-                f"    #   {observation.order}. {observation.method} "
-                f"{observation.url} ({observation.kind})"
+            text = (
+                f"{observation.order}. {observation.method} {observation.url} ({observation.kind})"
             )
+            lines.extend(_wrapped_comment_lines(text, indent=len(_L1)))
         lines.append(
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])'
         )
@@ -162,7 +162,8 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     lines.extend(_literal_lines(form.action, indent=len(_L2), prefix="url="))
     lines.append('        failure="GP-FILL: text on the page indicating login failure",')
     if hint:
-        lines.append(f"        # candidate success redirect target, from the run: {hint}")
+        text = f"candidate success redirect target, from the run: {hint}"
+        lines.extend(_wrapped_comment_lines(text, indent=len(_L2)))
     lines.append('        success="GP-FILL: CSS selector for login success",')
     lines.append("    )")
     return lines
@@ -204,9 +205,8 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
             'Token.from_meta_tag(name="...", header="...")])'
         )
     for candidate in unpaired:
-        lines.append(
-            f"    # GP-FILL: unpaired token candidate: {candidate.kind} '{candidate.name}'"
-        )
+        text = f"GP-FILL: unpaired token candidate: {candidate.kind} '{candidate.name}'"
+        lines.extend(_wrapped_comment_lines(text, indent=len(_L1)))
     return lines
 
 
@@ -221,6 +221,39 @@ def _wrapped_docstring_lines(text: str) -> list[str]:
     return [f"{_L2}{line}" for line in wrapped]
 
 
+def _wrapped_comment_lines(text: str, *, indent: int) -> list[str]:
+    """*text* as one or more ``#``-prefixed comment lines at *indent* spaces: a
+    captured URL or candidate name is unbounded, and ``E501`` applies to a comment
+    line exactly as it does to code, so every comment this module emits routes
+    through here rather than risking one long line (validation fix round 3, Finding
+    open in round 2, 2026-09-12). ``break_long_words`` means a URL with no spaces at
+    all still cannot overflow; ``initial_indent``/``subsequent_indent`` give the
+    first line ``# `` and every continuation line the hanging ``#   `` the ruling
+    asked for, with ``textwrap`` doing the width accounting for both.
+    """
+    pad = " " * indent
+    return textwrap.wrap(
+        text,
+        width=_GENERATED_LINE_LENGTH,
+        initial_indent=f"{pad}# ",
+        subsequent_indent=f"{pad}#   ",
+        break_long_words=True,
+        break_on_hyphens=False,
+    ) or [f"{pad}# "]
+
+
+def _wrapped_docstring_block(text: str, *, indent: int) -> list[str]:
+    """A one-line docstring ``\"\"\"{text}\"\"\"`` at *indent* spaces when that fits the
+    generated width; otherwise the same text as a multi-line docstring with the
+    closing quotes on their own line (validation fix round 3, 2026-09-12)."""
+    pad = " " * indent
+    single_line = f'{pad}"""{text}"""'
+    if len(single_line) <= _GENERATED_LINE_LENGTH:
+        return [single_line]
+    wrapped = textwrap.wrap(text, width=max(1, _GENERATED_LINE_LENGTH - indent)) or [text]
+    return [f'{pad}"""', *(f"{pad}{line}" for line in wrapped), f'{pad}"""']
+
+
 def _exploded_dict_lines(keyword: str, entries: list[tuple[str, str]]) -> list[str]:
     """A ``keyword={...}`` call argument, one ``key: value,`` entry per line, with a
     magic trailing comma on the closing brace so ``ruff format`` leaves it exploded."""
@@ -230,7 +263,9 @@ def _exploded_dict_lines(keyword: str, entries: list[tuple[str, str]]) -> list[s
     return lines
 
 
-def _literal_lines(value: str, *, indent: int, prefix: str = "") -> list[str]:
+def _literal_lines(
+    value: str, *, indent: int, prefix: str = "", trailing_comma: bool = True
+) -> list[str]:
     """A quoted Python string literal for a captured site fact (a selector, a URL, a
     header name): one line, ``{prefix}"{value}",`` at *indent* spaces, when that fits
     the generated width. Past that width a single quoted string can still overflow on
@@ -238,10 +273,13 @@ def _literal_lines(value: str, *, indent: int, prefix: str = "") -> list[str]:
     selector or header name is one fact ruff format itself never splits), so this
     falls back to an implicit string concatenation instead, each chunk from
     ``textwrap.wrap`` with whitespace preserved so the chunks rejoin to exactly
-    *value* (validation fix round 2, Finding 4, 2026-09-12).
+    *value* (validation fix round 2, Finding 4, 2026-09-12). ``trailing_comma=False``
+    renders a plain assignment statement (``name = "value"``) rather than a call
+    keyword argument (``name="value",``); both shapes reuse the same wrapping.
     """
+    comma = "," if trailing_comma else ""
     pad = " " * indent
-    single_line = f'{pad}{prefix}"{value}",'
+    single_line = f'{pad}{prefix}"{value}"{comma}'
     if len(single_line) <= _GENERATED_LINE_LENGTH:
         return [single_line]
     continuation_pad = " " * (indent + 4)
@@ -256,7 +294,7 @@ def _literal_lines(value: str, *, indent: int, prefix: str = "") -> list[str]:
     ) or [value]
     lines = [f"{pad}{prefix}("]
     lines.extend(f'{continuation_pad}"{chunk}"' for chunk in chunks)
-    lines.append(f"{pad}),")
+    lines.append(f"{pad}){comma}")
     return lines
 
 
@@ -403,12 +441,15 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
     if needs_token_import:
         lines.append("from graftpunk.tokens import Token, TokenConfig")
     lines += ["", "", f"class {klass}(SitePlugin):"]
-    lines.append(f'    """Commands for {spec.base_url or "GP-FILL: base_url"}."""')
+    class_docstring = f"Commands for {spec.base_url or 'GP-FILL: base_url'}."
+    lines.extend(_wrapped_docstring_block(class_docstring, indent=len(_L1)))
     lines.append("")
     lines.append(f'    site_name = "{spec.name}"')
     lines.append(f'    session_name = "{spec.name}"')
     lines.append(f'    help_text = "Commands for {spec.name}"')
-    lines.append(f'    base_url = "{spec.base_url}"')
+    lines.extend(
+        _literal_lines(spec.base_url, indent=len(_L1), prefix="base_url = ", trailing_comma=False)
+    )
     lines.append(f'    backend = "{spec.backend}"')
     lines.append("    api_version = 1")
     lines.append("")
