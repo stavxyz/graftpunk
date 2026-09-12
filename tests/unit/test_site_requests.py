@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 import requests
+import structlog
+from structlog.testing import capture_logs
 
 from graftpunk.exceptions import CommandError, SessionRejectedError, UnexpectedResponseError
 from graftpunk.graftpunk_session import GraftpunkSession
@@ -155,25 +157,35 @@ class TestPlainSessionHasNoRoles:
         SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/orders")
         assert session.calls == [("GET", "https://myshop.example.com/orders")]
 
-    def test_warning_logged_once_per_session_not_once_per_call(
-        self, capsys: pytest.CaptureFixture
-    ) -> None:
-        """Matches the established structlog assertion pattern in this suite
-        (`tests/unit/test_graftpunk_session.py::test_unknown_default_role_warns`):
-        structlog's configured PrintLogger is captured via capsys, not caplog."""
+    def test_warning_logged_once_per_session_not_once_per_call(self) -> None:
+        """Captures through structlog, not stdio.
+
+        `graftpunk.cli.main` points structlog's `PrintLoggerFactory` at
+        stderr as an import side effect; whether that import has happened
+        yet in a given pytest-xdist worker is not deterministic, so a
+        `capsys` assertion on a specific stream flakes. `capture_logs()` is
+        the pattern used elsewhere in this suite for the same reason (see
+        `tests/unit/test_storage_local.py`, `test_nodriver_backend.py`,
+        `test_login_identity.py`). `reset_defaults()` first lifts the
+        library's import-time level filter, matching
+        `test_storage_local.py`'s precedent, even though this event is
+        already at WARNING.
+        """
 
         class _PlainSession:
             def request(self, method: str, url: str, **kwargs: Any) -> _FakeResponse:
                 return _FakeResponse(200)
 
         session = _PlainSession()
-        policy = SiteRequests(session, "myshop", "https://myshop.example.com")
-        policy.json("GET", "/a")
-        policy.json("GET", "/b")
-        second_policy = SiteRequests(session, "myshop", "https://myshop.example.com")
-        second_policy.json("GET", "/c")
-        captured = capsys.readouterr()
-        assert captured.out.count("session_roles_unavailable") == 1
+        structlog.reset_defaults()
+        with capture_logs() as logs:
+            policy = SiteRequests(session, "myshop", "https://myshop.example.com")
+            policy.json("GET", "/a")
+            policy.json("GET", "/b")
+            second_policy = SiteRequests(session, "myshop", "https://myshop.example.com")
+            second_policy.json("GET", "/c")
+        warnings = [event for event in logs if event["event"] == "session_roles_unavailable"]
+        assert len(warnings) == 1
 
 
 class TestCommandContextDelegates:
