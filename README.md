@@ -305,12 +305,12 @@ $ gp --help
 Commands:
   version     Show graftpunk version and installation info.
   plugins     List discovered plugins (storage, handlers, sites, CLI).
-  plugin      Scaffold a new graftpunk plugin.
   observe     View and manage observability data (HAR, screenshots, logs).
   session     Manage encrypted browser sessions.
   keepalive   Manage the session keepalive daemon.
   http        Make ad-hoc HTTP requests with cached session cookies.
   config      Show configuration; manage the workstation env file.
+  plugin      Scaffold a new graftpunk plugin.
 ```
 
 (Options and the Quick-start block are elided; the full text is `gp --help`.)

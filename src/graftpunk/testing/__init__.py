@@ -72,6 +72,12 @@ class FixtureSession(GraftpunkSession):
     content type when present (the same sidecar ``gp observe fixtures``
     writes); without one, the status is 200 and the type is guessed from
     the file's extension. No matching file answers 404.
+
+    The lookup matches the base stem only, so the ``_1``, ``_2`` files
+    ``gp observe fixtures`` writes for repeated captures of one template are
+    never consulted: a second recorded response becomes a fixture by being
+    copied onto the base name. When a stem has several extensions, the first
+    in sorted order is used.
     """
 
     def __init__(self, fixtures_dir: Path | str, **kwargs: Any) -> None:

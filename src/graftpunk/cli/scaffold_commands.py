@@ -12,7 +12,7 @@ from rich.markup import escape
 
 import graftpunk
 from graftpunk.cli.observe_commands import resolve_run
-from graftpunk.cli.plugin_commands import _derive_reserved_cli_names
+from graftpunk.cli.plugin_commands import derive_reserved_cli_names
 from graftpunk.devtools.captures import CAPTURES_DIR
 from graftpunk.devtools.scaffold.project import ScaffoldConflictError, write_scaffold
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
@@ -50,7 +50,7 @@ def register(app: typer.Typer) -> None:
     """
     global _reserved_names
     app.add_typer(plugin_app)
-    _reserved_names = _derive_reserved_cli_names(app)
+    _reserved_names = derive_reserved_cli_names(app)
 
 
 def reserved_cli_names() -> frozenset[str]:

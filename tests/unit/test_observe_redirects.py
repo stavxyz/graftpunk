@@ -403,7 +403,9 @@ class TestSeleniumRedirectHops:
 class TestOrdering:
     def test_entries_without_wall_time_sort_last(self) -> None:
         """An entry with no wall time renders startedDateTime as 'now'; it must not
-        lead the HAR -- detect_auth_flow reads list order as chronology."""
+        lead the HAR. The HAR's entry order is its chronology: every reader of a
+        capture, the digest's login-sequence detection included, takes an earlier
+        entry to have happened earlier."""
         backend = NodriverCaptureBackend(MagicMock())
         backend._on_response(_response_received("orphan", _response(HOME + "late", 200)))
         first = _will_be_sent("r6", _request(LOGIN, "POST", "x=1"))

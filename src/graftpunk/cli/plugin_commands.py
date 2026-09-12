@@ -301,14 +301,16 @@ def _group_name(info: Any) -> str | None:
     return inner_name if isinstance(inner_name, str) else None
 
 
-def _derive_reserved_cli_names(app: typer.Typer) -> frozenset[str]:
+def derive_reserved_cli_names(app: typer.Typer) -> frozenset[str]:
     """Every top-level command and group name already on *app*, at attach time.
 
-    A plugin whose ``site_name`` collides with one of these is refused:
     'plugin', 'plugins', 'session', 'http', 'config', 'keepalive', 'observe'
     today, and whatever else ``main.py`` has registered by the time plugins
-    attach, derived rather than hardcoded so a new top-level command
-    reserves its own name automatically (plugin tooling spec, 2026-09-11).
+    attach, derived rather than hardcoded so a new top-level command reserves
+    its own name automatically (plugin tooling spec, 2026-09-11). Two callers:
+    ``register_plugin_commands`` below skips an installed plugin whose
+    ``site_name`` is in here, and ``graftpunk.cli.scaffold_commands.register``
+    snapshots the set so ``gp plugin new`` can refuse such a name up front.
     """
     names: set[str] = set()
     for command_info in getattr(app, "registered_commands", []):
@@ -346,12 +348,13 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     # This reserved set is local to this call, not cached module state: a
     # cache written here would be clobbered by every other call this
     # process makes against some other (often disposable) Typer app -- see
-    # reserved_cli_names()'s docstring.
+    # graftpunk.cli.scaffold_commands.register()'s docstring, where the CLI's
+    # own snapshot of these names is taken and explained.
     previous_plugin_names = set(_registered_plugin_sources)
     _registered_plugin_sources.clear()
     _plugin_session_map.clear()
     _registered_plugins_for_teardown.clear()
-    reserved = _derive_reserved_cli_names(app) - previous_plugin_names
+    reserved = derive_reserved_cli_names(app) - previous_plugin_names
     result = PluginDiscoveryResult()
 
     # Use shared discovery (clear cache so CLI always gets fresh results)
