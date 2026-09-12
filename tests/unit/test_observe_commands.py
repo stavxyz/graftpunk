@@ -397,6 +397,88 @@ class TestFixturesCommand:
         assert not out_dir.exists() or not list(out_dir.iterdir())
 
 
+class TestMatchPatternValidation:
+    @pytest.mark.parametrize("pattern", ["/orders", "ORDERS /orders", "GET", "GET   "])
+    def test_a_pattern_that_is_not_method_plus_template_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str
+    ) -> None:
+        """The matcher partitions on a space, so these match nothing at all: the
+        user has to be told, not handed 'No entries matched'."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+        )
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", pattern, "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        assert "METHOD template" in result.output
+        assert not out_dir.exists()
+
+    def test_a_well_formed_pattern_is_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+        )
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "get /orders/{order_id}",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+
+class TestBinaryBodiesAreSkipped:
+    def test_an_entry_with_no_text_body_writes_no_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`body or ""` used to put a zero-byte file on disk, which reads back as a
+        real but empty fixture."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        binary = _entry("GET", "https://api.myshop.example.com/orders/1/photo")
+        binary["response"]["headers"] = [{"name": "Content-Type", "value": "image/png"}]
+        binary["response"]["content"] = {"mimeType": "image/png", "size": 2048}
+        _write_run(observe_base, "myshop", "run-1", [binary])
+        out_dir = tmp_path / "out"
+
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /orders/{order_id}/photo",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "image/png" in result.output
+        assert list(out_dir.iterdir()) == []
+
+
 @contextmanager
 def _unwritable_dir(parent: Path, name: str = "readonly") -> Iterator[Path]:
     """A directory nothing may write into, restored so tmp_path cleanup works."""

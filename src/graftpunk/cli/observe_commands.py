@@ -30,6 +30,9 @@ from graftpunk.observe.storage import session_dirname
 console = Console()
 
 _DEFAULT_FIXTURE_LIMIT = 5
+_HTTP_METHODS = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
+)
 
 
 def resolve_run(session_name: str, run_id: str | None, *, base_dir: Path | None = None) -> Path:
@@ -141,6 +144,25 @@ def _matches_template(entry_method: str, entry_template: str, pattern: str) -> b
     return entry_template == path_part or fnmatch.fnmatch(entry_template, path_part)
 
 
+def _validate_match_patterns(patterns: list[str]) -> None:
+    """Refuse a ``--match`` value that cannot match anything.
+
+    The matcher partitions on a space, so ``--match "/orders"`` reads as the
+    method ``/orders`` against an empty template and silently matches nothing:
+    the user sees "No entries matched" and no way to tell a typo from an empty
+    run (final fix wave, 2026-09-12).
+    """
+    for pattern in patterns:
+        method_part, separator, path_part = pattern.strip().partition(" ")
+        if not separator or not path_part.strip() or method_part.upper() not in _HTTP_METHODS:
+            console.print(
+                f"[red]--match '{escape(pattern)}' is not a \"METHOD template\" pair. "
+                f"Write the method, a space, then the template, as in "
+                f'"GET /orders/{{order_id}}".[/red]'
+            )
+            raise typer.Exit(1)
+
+
 def fixtures_cmd(
     session: Annotated[str, typer.Argument(metavar="SESSION")],
     run: Annotated[str | None, typer.Argument(metavar="RUN_ID")] = None,
@@ -155,10 +177,15 @@ def fixtures_cmd(
         bool, typer.Option("--allow-tracked", help="Write even onto a tracked path")
     ] = False,
 ) -> None:
-    """Write captured response bodies exactly as recorded, named for deriving test fixtures."""
+    """Write captured response bodies exactly as recorded, named for deriving test fixtures.
+
+    Only text bodies are written: an entry the capture holds no text for (an image, a
+    font, any binary response) is named on stdout and skipped.
+    """
     if not match:
         console.print("[red]--match is required (repeatable).[/red]")
         raise typer.Exit(1)
+    _validate_match_patterns(match)
 
     run_dir = resolve_run(session, run)
     har_path = run_dir / "network.har"
@@ -203,13 +230,23 @@ def fixtures_cmd(
         method = entry.request.method.upper()
         if not any(_matches_template(method, template, pattern) for pattern in match):
             continue
+        content_type = entry.response.content_type or "application/octet-stream"
+        if entry.response.body is None:
+            # A capture holds no text for a binary response, and writing
+            # `body or ""` put a zero-byte file on disk that reads as a real
+            # (empty) fixture (final fix wave, 2026-09-12).
+            console.print(
+                f"[dim]Skipped {escape(method)} {escape(template)}: "
+                f"no text body ({escape(content_type)})[/dim]"
+            )
+            continue
+
         key = f"{method} {template}"
         seen = per_template_count.get(key, 0)
         if seen >= limit:
             continue
         per_template_count[key] = seen + 1
 
-        content_type = entry.response.content_type or "application/octet-stream"
         filename = capture_filename(method, path, content_type)
         if seen > 0:
             stem, _, ext = filename.rpartition(".")
@@ -217,7 +254,7 @@ def fixtures_cmd(
         file_path = target_dir / filename
         meta_path = target_dir / f"{filename}.meta.json"
         try:
-            file_path.write_text(entry.response.body or "", encoding="utf-8")
+            file_path.write_text(entry.response.body, encoding="utf-8")
             meta_path.write_text(
                 jsonlib.dumps(
                     {
