@@ -12,9 +12,10 @@ from rich.markup import escape
 
 import graftpunk
 from graftpunk.cli.observe_commands import resolve_run
-from graftpunk.cli.plugin_commands import reserved_cli_names
+from graftpunk.cli.plugin_commands import _derive_reserved_cli_names
 from graftpunk.devtools.captures import CAPTURES_DIR
 from graftpunk.devtools.scaffold.project import ScaffoldConflictError, write_scaffold
+from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.logging import get_logger
@@ -24,8 +25,41 @@ console = Console()
 
 plugin_app = typer.Typer(name="plugin", help="Scaffold a new graftpunk plugin.")
 
-_SUPPORTED_BACKENDS: tuple[str, ...] = ("nodriver", "selenium")
+_BackendName = Literal["nodriver", "selenium"]
+_SUPPORTED_BACKENDS: tuple[_BackendName, ...] = ("nodriver", "selenium")
 _PRERELEASE_SUFFIX_RE = re.compile(r"(a|b|rc|dev)\d*$")
+
+# The reserved top-level CLI names, snapshotted by register() at attach time
+# (before any site plugin's own sub-app is mounted): see register()'s
+# docstring for why this must be a snapshot rather than a live query.
+_reserved_names: frozenset[str] = frozenset()
+
+
+def register(app: typer.Typer) -> None:
+    """Attach ``plugin_app`` to *app* and snapshot its reserved top-level names.
+
+    Called from ``main.py`` right before ``register_plugin_commands(app)``
+    runs, so the snapshot holds only the CLI's own built-in names (session,
+    http, config, keepalive, observe, plugins, plugin, ...) and never an
+    installed site plugin's ``site_name``: plugin discovery has not mounted
+    anything onto *app* yet at this point. A snapshot, rather than deriving
+    fresh from a live app reference, also means this module never has to
+    import ``graftpunk.cli.main`` (main.py already imports this module at
+    module scope; the reverse import would be a real cycle, not just a lazy
+    one deferred past load time).
+    """
+    global _reserved_names
+    app.add_typer(plugin_app)
+    _reserved_names = _derive_reserved_cli_names(app)
+
+
+def reserved_cli_names() -> frozenset[str]:
+    """The reserved set snapshotted by the last ``register()`` call.
+
+    ``gp plugin new`` reads this to refuse a plugin name before generating
+    anything.
+    """
+    return _reserved_names
 
 
 def _graftpunk_version_floor() -> str:
@@ -40,18 +74,6 @@ def _graftpunk_version_floor() -> str:
     return f"{parts[0]}.{parts[1]}.0"
 
 
-def _backend_literal(value: str) -> Literal["nodriver", "selenium"]:
-    """*value*, already checked against ``_SUPPORTED_BACKENDS`` by the caller.
-
-    The check happens before this is called; this only carries the
-    narrowing so ``ScaffoldSpec`` receives a ``Literal`` without a
-    suppression.
-    """
-    if value == "nodriver":
-        return "nodriver"
-    return "selenium"
-
-
 @plugin_app.command("new")
 def plugin_new(
     name: Annotated[str, typer.Argument(help="Plugin name: site_name, and the package suffix")],
@@ -59,11 +81,15 @@ def plugin_new(
         str, typer.Option("--url", help="Base URL (ignored when --from-run supplies one)")
     ] = "",
     from_run: Annotated[
-        tuple[str, str] | None,
+        str | None,
         typer.Option(
-            "--from-run",
-            help="SESSION RUN_ID: fill the scaffold from an observe run "
-            "(pass an empty RUN_ID to use the latest run)",
+            "--from-run", help="SESSION: fill the scaffold from this session's newest run"
+        ),
+    ] = None,
+    run: Annotated[
+        str | None,
+        typer.Option(
+            "--run", help="RUN_ID: use this run instead of the newest one (requires --from-run)"
         ),
     ] = None,
     dir_: Annotated[Path, typer.Option("--dir", help="Target directory")] = Path("."),
@@ -72,25 +98,31 @@ def plugin_new(
 ) -> None:
     """Scaffold a new plugin: a fresh project, or a member of the suite in --dir."""
     if backend not in _SUPPORTED_BACKENDS:
+        LOG.warning("scaffold_refused", reason="bad_backend", backend=backend)
         console.print(
             f"[red]--backend must be one of {_SUPPORTED_BACKENDS}, got '{escape(backend)}'[/red]"
         )
         raise typer.Exit(1)
+    # ty narrows `backend: str` to `_BackendName` from the membership check
+    # above (against a tuple typed `tuple[_BackendName, ...]`): no cast needed.
 
     if name in reserved_cli_names():
+        LOG.warning("scaffold_refused", reason="reserved_name", name=name)
         console.print(
             f"[red]'{escape(name)}' is a reserved command name and cannot be a plugin name.[/red]"
         )
         raise typer.Exit(1)
 
+    if run is not None and from_run is None:
+        LOG.warning("scaffold_refused", reason="run_without_from_run")
+        console.print("[red]--run requires --from-run.[/red]")
+        raise typer.Exit(1)
+
     digest_result = None
     base_url = url
-    if from_run:
-        session_name, run_id_raw = from_run
-        run_id = run_id_raw or None
-
-        run_dir = resolve_run(session_name, run_id)
-        source = DigestSource.from_run_dir(run_dir, session=session_name, run_id=run_dir.name)
+    if from_run is not None:
+        run_dir = resolve_run(from_run, run)
+        source = DigestSource.from_run_dir(run_dir, session=from_run, run_id=run_dir.name)
         digest_result = digest(source)
         base_url = url or f"https://{digest_result.primary_host}"
 
@@ -98,21 +130,28 @@ def plugin_new(
         spec = ScaffoldSpec(
             name=name,
             mode="new_project",  # write_scaffold decides the real mode
-            backend=_backend_literal(backend),
+            backend=backend,
             base_url=base_url,
             digest=digest_result,
             graftpunk_version=_graftpunk_version_floor(),
         )
         result = write_scaffold(dir_, spec, force_new=new)
     except ScaffoldConflictError as exc:
+        LOG.warning("scaffold_refused", reason="conflict", conflicts=len(exc.conflicts))
         console.print("[red]Refusing to overwrite existing file(s):[/red]")
         for path in exc.conflicts:
             console.print(f"  {escape(str(path))}")
         raise typer.Exit(1) from None
+    except PyprojectEditError as exc:
+        LOG.warning("scaffold_refused", reason="pyproject_edit_error")
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from None
     except ValueError as exc:
+        LOG.warning("scaffold_refused", reason="invalid_name")
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
+    LOG.info("scaffold_written", mode=result.mode, dir=str(dir_))
     console.print(f"[green]{result.mode.replace('_', ' ').title()}:[/green]")
     for path in result.written:
         console.print(f"  {escape(str(path))}")

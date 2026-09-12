@@ -321,24 +321,6 @@ def _derive_reserved_cli_names(app: typer.Typer) -> frozenset[str]:
     return frozenset(names)
 
 
-def reserved_cli_names() -> frozenset[str]:
-    """The reserved set derived fresh from the live production app.
-
-    ``gp plugin new`` reads this to refuse a plugin name before generating
-    anything. Derived on every call, rather than cached from the last
-    ``register_plugin_commands`` call, because that function also runs
-    against disposable ``typer.Typer()`` instances in tests; a cached value
-    would go stale (or nearly empty) the moment such a call ran anywhere in
-    the same process. The lazy import avoids a real import cycle: ``main``
-    imports this module at module scope, so importing ``main`` back here
-    only works once ``main`` itself has finished loading, i.e. inside a
-    function body invoked at CLI run time, never at import time.
-    """
-    from graftpunk.cli.main import app as main_app
-
-    return _derive_reserved_cli_names(main_app)
-
-
 def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) -> dict[str, str]:
     """Discover and register all plugin commands with a Typer app.
 

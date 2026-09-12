@@ -57,27 +57,32 @@ class TestPluginNewHappyPath:
         assert result.exit_code == 0, result.output
         assert (tmp_path / "src" / "graftpunk_myshop" / "plugin.py").exists()
 
-    def test_reserved_name_refused_through_the_real_app(self) -> None:
+    def test_reserved_name_refused_through_the_real_app(self, tmp_path: Path) -> None:
         """Uses the real graftpunk.cli.main.app, whose plugin_app and existing
         groups (observe, session, http, config, keepalive) are all registered
         by the time register_plugin_commands runs, so 'observe' is reserved."""
         from graftpunk.cli.main import app as real_app
 
-        result = runner.invoke(real_app, ["plugin", "new", "observe"])
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(real_app, ["plugin", "new", "observe", "--dir", str(tmp_path)])
         assert result.exit_code == 1
         assert "reserved" in result.output.lower()
+        assert set(tmp_path.iterdir()) == before
 
-    def test_plugin_group_itself_is_reserved_through_the_real_app(self) -> None:
-        """plugin_app is attached before register_plugin_commands runs, so
-        'plugin' is in the reserved set by the time it derives it."""
+    def test_plugin_group_itself_is_reserved_through_the_real_app(self, tmp_path: Path) -> None:
+        """register() attaches plugin_app before register_plugin_commands runs,
+        so 'plugin' is in the snapshotted reserved set."""
         from graftpunk.cli.main import app as real_app
 
-        result = runner.invoke(real_app, ["plugin", "new", "plugin"])
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(real_app, ["plugin", "new", "plugin", "--dir", str(tmp_path)])
         assert result.exit_code == 1
         assert "reserved" in result.output.lower()
+        assert set(tmp_path.iterdir()) == before
 
     def test_conflict_refusal(self, tmp_path: Path) -> None:
         (tmp_path / "README.md").write_text("already here")
+        before = set(tmp_path.iterdir())
         result = runner.invoke(
             _build_app(),
             [
@@ -92,23 +97,46 @@ class TestPluginNewHappyPath:
         )
         assert result.exit_code == 1
         assert "README.md" in result.output
+        assert set(tmp_path.iterdir()) == before
 
     def test_bad_backend_refused(self, tmp_path: Path) -> None:
+        before = set(tmp_path.iterdir())
         result = runner.invoke(
             _build_app(),
             ["plugin", "new", "myshop", "--dir", str(tmp_path), "--backend", "carrier-pigeon"],
         )
         assert result.exit_code == 1
+        assert "nodriver" in result.output
+        assert "selenium" in result.output
+        assert set(tmp_path.iterdir()) == before
 
     def test_rejects_invalid_name(self, tmp_path: Path) -> None:
+        before = set(tmp_path.iterdir())
         result = runner.invoke(
             _build_app(),
             ["plugin", "new", "2fa-site", "--dir", str(tmp_path)],
         )
         assert result.exit_code == 1
         assert "letter" in result.output.lower()
-        assert not (tmp_path / "pyproject.toml").exists()
-        assert not (tmp_path / "src").exists()
+        assert set(tmp_path.iterdir()) == before
+
+    def test_run_without_from_run_refused(self, tmp_path: Path) -> None:
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--run", "run-1", "--dir", str(tmp_path)],
+        )
+        assert result.exit_code == 1
+        assert "--from-run" in result.output
+        assert set(tmp_path.iterdir()) == before
+
+
+def _write_run(observe_base: Path, session: str, run_id: str, *, url: str, body: str) -> None:
+    run_dir = observe_base / session / run_id
+    run_dir.mkdir(parents=True)
+    entries = [_entry("GET", url, body=body)]
+    har = {"log": {"version": "1.2", "entries": entries}}
+    (run_dir / "network.har").write_text(json.dumps(har))
 
 
 class TestPluginNewFromRun:
@@ -147,7 +175,17 @@ class TestPluginNewFromRun:
         target = tmp_path / "out"
         result = runner.invoke(
             _build_app(),
-            ["plugin", "new", "myshop", "--from-run", "myshop", "run-1", "--dir", str(target)],
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
         )
         assert result.exit_code == 0, result.output
         plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
@@ -155,6 +193,78 @@ class TestPluginNewFromRun:
         assert '"password": "#pw"' in plugin_code
         assert "@command(" in plugin_code
         assert 'base_url = "https://api.myshop.example.com"' in plugin_code
+
+    def test_from_run_alone_resolves_the_newest_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            url="https://api.myshop.example.com/older",
+            body='{"id": 1}',
+        )
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-2",
+            url="https://api.myshop.example.com/newer",
+            body='{"id": 2}',
+        )
+
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 0, result.output
+        plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        # resolve_run with no run_id picks the newest run (highest sorted
+        # directory name): run-2, not run-1.
+        assert "myshop/run-2" in plugin_code
+        assert "myshop/run-1" not in plugin_code
+
+    def test_from_run_with_explicit_run_resolves_that_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            url="https://api.myshop.example.com/older",
+            body='{"id": 1}',
+        )
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-2",
+            url="https://api.myshop.example.com/newer",
+            body='{"id": 2}',
+        )
+
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "myshop/run-1" in plugin_code
+        assert "myshop/run-2" not in plugin_code
 
 
 class TestGeneratedProjectPassesItsOwnGate:
@@ -197,7 +307,17 @@ class TestGeneratedProjectPassesItsOwnGate:
         target = tmp_path / "out"
         result = runner.invoke(
             _build_app(),
-            ["plugin", "new", "myshop", "--from-run", "myshop", "run-1", "--dir", str(target)],
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
         )
         assert result.exit_code == 0, result.output
 
@@ -249,3 +369,31 @@ class TestSuiteModeLeavesRestOfPyprojectByteIdentical:
         assert "[tool.ruff]" in after
         assert "line-length = 88" in after
         assert 'existing = "mysuite.existing:ExistingPlugin"' in after
+
+
+class TestPyprojectEditErrorRefusedCleanly:
+    def test_include_only_wheel_table_refuses_without_a_traceback(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "mysuite"\n\n'
+            '[project.entry-points."graftpunk.plugins"]\n'
+            'existing = "mysuite.existing:ExistingPlugin"\n\n'
+            "[tool.hatch.build.targets.wheel]\n"
+            'include = ["src/mysuite/**"]\n'
+        )
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "widgets",
+                "--url",
+                "https://myshop.example.com",
+                "--dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 1
+        assert "include" in result.output.lower()
+        assert "Traceback" not in result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit)

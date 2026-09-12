@@ -86,6 +86,7 @@ def write_scaffold(
     targets = {target_dir / rel: content for rel, content in files.items()}
     conflicts = sorted(p for p in targets if p.exists())
     if conflicts:
+        LOG.warning("scaffold_write_refused", conflicts=len(conflicts))
         raise ScaffoldConflictError(conflicts)
 
     for path, content in targets.items():
@@ -104,6 +105,7 @@ def write_scaffold(
         add_wheel_package(existing, package)
         pyproject_updated = True
 
+    LOG.info("scaffold_written", mode=mode, target_dir=str(target_dir), files=len(targets))
     return ScaffoldResult(
         mode=mode,
         written=tuple(sorted(targets)),
