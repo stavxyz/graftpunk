@@ -78,7 +78,9 @@ class FixtureSession(GraftpunkSession):
         super().__init__(**kwargs)
         self._fixtures_dir = Path(fixtures_dir)
 
-    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:  # type: ignore
+    def request(  # ty: ignore[invalid-method-override]
+        self, method: str, url: str, **kwargs: Any
+    ) -> requests.Response:
         path = urlparse(url).path or "/"
         stem = capture_slug(method, path)
         matches = sorted(

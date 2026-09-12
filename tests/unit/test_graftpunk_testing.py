@@ -122,7 +122,7 @@ class TestSiteEnvScrubber:
                 assert os.environ["OTHER_VAR"] == "kept"
             """,
         )
-        result = pytester.runpytest_inprocess()
+        result = pytester.runpytest_inprocess("-o", "asyncio_default_fixture_loop_scope=function")
         result.assert_outcomes(passed=1)
         assert os.environ["MYSHOP_USERNAME"] == "alice"
 
