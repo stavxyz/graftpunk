@@ -11,7 +11,7 @@ from __future__ import annotations
 import fnmatch
 import json as jsonlib
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 from urllib.parse import urlparse
 
 import typer
@@ -65,6 +65,17 @@ def resolve_run(session_name: str, run_id: str | None, *, base_dir: Path | None 
     return run_dir
 
 
+def _refuse_write(path: Path, exc: OSError) -> NoReturn:
+    """Report an unwritable *path* as a refusal, not as a Rich traceback.
+
+    Every CLI refusal is a red line and exit 1: an unwritable ``--output`` or
+    ``--out`` directory is the user's to correct (final fix wave, 2026-09-12).
+    """
+    target = exc.filename or str(path)
+    console.print(f"[red]Could not write {escape(str(target))}: {escape(exc.strerror or '')}[/red]")
+    raise typer.Exit(1) from None
+
+
 def _digest_source(session_name: str | None, run_id: str | None, har: Path | None) -> DigestSource:
     if har is not None and session_name is not None:
         console.print("[red]Pass a session or --har, not both.[/red]")
@@ -109,7 +120,10 @@ def digest_cmd(
     result = digest(source, all_hosts=all_hosts)
     text = render_json(result) if as_json else render_markdown(result, limit=limit)
     if output is not None:
-        output.write_text(text, encoding="utf-8")
+        try:
+            output.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            _refuse_write(output, exc)
         console.print(f"[green]Digest written:[/green] {escape(str(output))}")
     else:
         # soft_wrap=True: Console.print's default wrapping breaks a long
@@ -176,7 +190,10 @@ def fixtures_cmd(
             console.print("[dim]Pass --allow-tracked to write anyway.[/dim]")
             raise typer.Exit(1)
 
-    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _refuse_write(target_dir, exc)
     entries = parse_har_file(har_path).entries
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
@@ -198,21 +215,24 @@ def fixtures_cmd(
             stem, _, ext = filename.rpartition(".")
             filename = f"{stem}_{seen}.{ext}"
         file_path = target_dir / filename
-        file_path.write_text(entry.response.body or "", encoding="utf-8")
         meta_path = target_dir / f"{filename}.meta.json"
-        meta_path.write_text(
-            jsonlib.dumps(
-                {
-                    "url": entry.request.url,
-                    "status": entry.response.status,
-                    "content_type": content_type,
-                    "body_params": sorted(body_params(entry)),
-                    "captured_at": entry.timestamp.isoformat(),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        try:
+            file_path.write_text(entry.response.body or "", encoding="utf-8")
+            meta_path.write_text(
+                jsonlib.dumps(
+                    {
+                        "url": entry.request.url,
+                        "status": entry.response.status,
+                        "content_type": content_type,
+                        "body_params": sorted(body_params(entry)),
+                        "captured_at": entry.timestamp.isoformat(),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            _refuse_write(file_path, exc)
         written.append(file_path)
         console.print(f"[green]Wrote:[/green] {escape(str(file_path))}")
 

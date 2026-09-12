@@ -146,6 +146,15 @@ def plugin_new(
         LOG.warning("scaffold_refused", reason="pyproject_edit_error")
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
+    except OSError as exc:
+        # A CLI refusal is a red line and exit 1, never a Rich traceback: an
+        # unwritable --dir is the user's mistake to correct, not a crash.
+        # write_scaffold has already removed whatever it wrote before failing.
+        LOG.warning("scaffold_refused", reason="os_error", error=str(exc))
+        target = exc.filename or str(dir_)
+        reason = exc.strerror or str(exc)
+        console.print(f"[red]Could not write {escape(str(target))}: {escape(reason)}[/red]")
+        raise typer.Exit(1) from None
     except ValueError as exc:
         LOG.warning("scaffold_refused", reason="invalid_name")
         console.print(f"[red]{escape(str(exc))}[/red]")

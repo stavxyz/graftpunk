@@ -407,6 +407,36 @@ class TestPyprojectEditErrorRefusedCleanly:
         assert not (tmp_path / ".gitignore").exists()
 
 
+class TestUnwritableTargetDirIsARefusal:
+    def test_unwritable_dir_refuses_without_a_traceback(self, tmp_path: Path) -> None:
+        if os.geteuid() == 0:
+            pytest.skip("root ignores mode bits, so the write would succeed")
+        readonly = tmp_path / "readonly"
+        readonly.mkdir()
+        readonly.chmod(0o500)
+        try:
+            result = runner.invoke(
+                _build_app(),
+                [
+                    "plugin",
+                    "new",
+                    "myshop",
+                    "--url",
+                    "https://myshop.example.com",
+                    "--dir",
+                    str(readonly),
+                ],
+            )
+            assert result.exit_code == 1, result.output
+            assert "could not write" in result.output.lower()
+            assert "Traceback" not in result.output
+            assert result.exception is None or isinstance(result.exception, SystemExit)
+            assert list(readonly.iterdir()) == []
+        finally:
+            # Restored so pytest's own tmp_path cleanup can remove the tree.
+            readonly.chmod(0o700)
+
+
 class TestReservedNamesSnapshot:
     def test_a_later_site_plugin_name_is_not_in_the_snapshot(self) -> None:
         """register() snapshots reserved names once, at attach time. A site

@@ -7,6 +7,7 @@ decisions ``render.py`` has no business making (plugin tooling spec,
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import tomllib
 from dataclasses import dataclass
@@ -26,6 +27,37 @@ LOG = get_logger(__name__)
 __all__ = ["ScaffoldConflictError", "ScaffoldResult", "write_scaffold"]
 
 PLUGINS_ENTRY_POINT_GROUP = "graftpunk.plugins"
+
+
+def _missing_parents(directory: Path) -> list[Path]:
+    """The ancestors of *directory*, *directory* included, that do not exist yet.
+
+    Deepest last, which is the order ``mkdir(parents=True)`` creates them and the
+    reverse of the order they have to be removed in.
+    """
+    missing: list[Path] = []
+    current = directory
+    while not current.exists() and current != current.parent:
+        missing.append(current)
+        current = current.parent
+    return list(reversed(missing))
+
+
+def _undo_writes(written: list[Path], created_dirs: list[Path]) -> None:
+    """Remove what this call put on disk, best effort.
+
+    Files first, then the directories this call created, deepest first and only
+    while they are empty: a directory that already held something, or that the
+    user has since filled, is not this function's to delete. Every removal is
+    guarded because unwinding after an I/O failure runs in the same conditions
+    that caused it, and the original error is the one the caller must see.
+    """
+    for path in written:
+        with contextlib.suppress(OSError):
+            path.unlink()
+    for directory in reversed(created_dirs):
+        with contextlib.suppress(OSError):
+            directory.rmdir()
 
 
 class ScaffoldConflictError(Exception):
@@ -102,6 +134,7 @@ def write_scaffold(
 
     gitignore_updated = False
     pyproject_updated = False
+    original_pyproject_text: str | None = None
     if mode == "add_to_suite":
         assert existing is not None  # narrows for the type checker; mode implies it
         module = module_name_for(resolved_spec.name)
@@ -123,9 +156,20 @@ def write_scaffold(
         pyproject_updated = True
         gitignore_updated = ensure_ignored(target_dir, CAPTURES_DIR)
 
-    for path, content in targets.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+    written: list[Path] = []
+    created_dirs: list[Path] = []
+    try:
+        for path, content in targets.items():
+            created_dirs.extend(_missing_parents(path.parent))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            written.append(path)
+    except OSError:
+        _undo_writes(written, created_dirs)
+        if existing is not None and original_pyproject_text is not None:
+            existing.write_text(original_pyproject_text, encoding="utf-8")
+        LOG.warning("scaffold_write_refused", reason="os_error", written=len(written))
+        raise
 
     LOG.info("scaffold_written", mode=mode, target_dir=str(target_dir), files=len(targets))
     return ScaffoldResult(

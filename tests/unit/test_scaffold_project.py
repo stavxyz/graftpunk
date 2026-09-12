@@ -150,3 +150,36 @@ class TestPyprojectEditFailureLeavesSuiteUntouched:
         text = pyproject.read_text()
         assert "widgets" not in text
         assert 'existing = "mysuite.existing:ExistingPlugin"' in text
+
+
+class TestAWriteFailureLeavesNoPartialTree:
+    def test_files_written_before_the_failure_are_removed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disk that refuses one file must not leave the earlier ones behind.
+
+        ``plugin.py`` is the third file the renderer emits, so pyproject.toml
+        and the package ``__init__.py`` are already on disk when it fails.
+        Fault injection at ``Path.write_text`` is the only way to fail one file
+        and not the rest; the assertions are all on the tree the call leaves on
+        disk.
+        """
+        real_write_text = Path.write_text
+        failing_name = "plugin.py"
+
+        def write_text_failing_on_the_plugin_module(
+            self: Path, *args: object, **kwargs: object
+        ) -> int:
+            if self.name == failing_name:
+                raise OSError(28, "No space left on device", str(self))
+            return real_write_text(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+        monkeypatch.setattr(Path, "write_text", write_text_failing_on_the_plugin_module)
+
+        with pytest.raises(OSError, match="No space left on device"):
+            write_scaffold(tmp_path, _spec())
+
+        monkeypatch.undo()
+        leftovers = sorted(p for p in tmp_path.rglob("*") if p.is_file())
+        assert leftovers == [], f"a refused write left {leftovers} behind"
+        assert not (tmp_path / "src" / "graftpunk_myshop").exists()

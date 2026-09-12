@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -392,3 +395,71 @@ class TestFixturesCommand:
         assert result.exit_code == 0, result.output
         assert "no entries matched --match." in result.output.lower()
         assert not out_dir.exists() or not list(out_dir.iterdir())
+
+
+@contextmanager
+def _unwritable_dir(parent: Path, name: str = "readonly") -> Iterator[Path]:
+    """A directory nothing may write into, restored so tmp_path cleanup works."""
+    if os.geteuid() == 0:
+        pytest.skip("root ignores mode bits, so the write would succeed")
+    directory = parent / name
+    directory.mkdir()
+    directory.chmod(0o500)
+    try:
+        yield directory
+    finally:
+        directory.chmod(0o700)
+
+
+class TestUnwritableTargetIsARefusal:
+    """An OSError on write is a red line and exit 1, never a Rich traceback."""
+
+    def test_digest_output_into_an_unwritable_directory(self, tmp_path: Path) -> None:
+        har_path = tmp_path / "network.har"
+        entries = [_entry("GET", "https://api.myshop.example.com/orders/1")]
+        har_path.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
+        with _unwritable_dir(tmp_path) as readonly:
+            result = runner.invoke(
+                _build_app(),
+                [
+                    "observe",
+                    "digest",
+                    "--har",
+                    str(har_path),
+                    "--output",
+                    str(readonly / "digest.md"),
+                ],
+            )
+            assert result.exit_code == 1, result.output
+            assert "could not write" in result.output.lower()
+            assert "Traceback" not in result.output
+            assert not (readonly / "digest.md").exists()
+
+    def test_fixtures_out_into_an_unwritable_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+        )
+        with _unwritable_dir(tmp_path) as readonly:
+            result = runner.invoke(
+                _build_app(),
+                [
+                    "observe",
+                    "fixtures",
+                    "myshop",
+                    "--match",
+                    "GET /orders/{order_id}",
+                    "--out",
+                    str(readonly),
+                ],
+            )
+            assert result.exit_code == 1, result.output
+            assert "could not write" in result.output.lower()
+            assert "Traceback" not in result.output
+            assert list(readonly.iterdir()) == []
