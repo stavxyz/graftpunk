@@ -285,3 +285,110 @@ class TestFixturesCommand:
         app = _build_app()
         result = runner.invoke(app, ["observe", "fixtures", "myshop"])
         assert result.exit_code == 1
+
+    def test_allow_tracked_writes_onto_a_tracked_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+        )
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(["git", "init", "-q"], repo)
+        _git(["git", "config", "user.email", "alice@example.com"], repo)
+        _git(["git", "config", "user.name", "alice"], repo)
+        out_dir = repo / "tests" / "captures"
+        out_dir.mkdir(parents=True)
+        tracked = out_dir / "get_orders_{order_id}.json"
+        tracked.write_text("{}")
+        _git(["git", "add", "-A"], repo)
+        _git(["git", "commit", "-q", "-m", "seed"], repo)
+
+        app = _build_app()
+        result = runner.invoke(
+            app,
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /orders/{order_id}",
+                "--out",
+                str(out_dir),
+                "--allow-tracked",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert json.loads(tracked.read_text()) == {"id": 1}
+
+    def test_outside_a_git_work_tree_warns_and_still_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+        )
+        # No git init here: out_dir is a plain tmp_path directory, not part
+        # of this worktree's tree (find_repo_root walks from out_dir, not
+        # from the test process's cwd, so it never reaches the repo above).
+        out_dir = tmp_path / "no_repo_here" / "captures"
+
+        app = _build_app()
+        result = runner.invoke(
+            app,
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /orders/{order_id}",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "not inside a git work tree" in result.output.lower()
+        written = [
+            p for p in out_dir.glob("get_orders_*.json") if not p.name.endswith(".meta.json")
+        ]
+        assert len(written) == 1
+        assert json.loads(written[0].read_text()) == {"id": 1}
+
+    def test_no_matching_entries_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+        )
+        out_dir = tmp_path / "out"
+
+        app = _build_app()
+        result = runner.invoke(
+            app,
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "POST /nothing-here",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "no entries matched --match." in result.output.lower()
+        assert not out_dir.exists() or not list(out_dir.iterdir())

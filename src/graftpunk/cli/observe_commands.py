@@ -8,6 +8,7 @@ note); a later part moves them here.
 
 from __future__ import annotations
 
+import fnmatch
 import json as jsonlib
 from pathlib import Path
 from typing import Annotated
@@ -22,12 +23,10 @@ from graftpunk.har.digest import DigestSource, body_params, digest
 from graftpunk.har.naming import capture_filename
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.paths import template_path
-from graftpunk.har.report import render_json, render_markdown
-from graftpunk.logging import get_logger
+from graftpunk.har.report import DEFAULT_ENDPOINT_LIMIT, render_json, render_markdown
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import session_dirname
 
-LOG = get_logger(__name__)
 console = Console()
 
 _DEFAULT_FIXTURE_LIMIT = 5
@@ -97,7 +96,9 @@ def digest_cmd(
     all_hosts: Annotated[
         bool, typer.Option("--all-hosts", help="Model every host, not just the primary one")
     ] = False,
-    limit: Annotated[int, typer.Option("--limit", help="Max endpoints in the markdown form")] = 60,
+    limit: Annotated[
+        int, typer.Option("--limit", help="Max endpoints in the markdown form")
+    ] = DEFAULT_ENDPOINT_LIMIT,
     output: Annotated[
         Path | None, typer.Option("--output", help="Write to a file instead of stdout")
     ] = None,
@@ -120,8 +121,6 @@ def digest_cmd(
 
 
 def _matches_template(entry_method: str, entry_template: str, pattern: str) -> bool:
-    import fnmatch
-
     method_part, _, path_part = pattern.strip().partition(" ")
     if method_part.upper() != entry_method:
         return False

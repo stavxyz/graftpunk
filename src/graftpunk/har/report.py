@@ -17,9 +17,9 @@ from typing import Any
 
 from graftpunk.har.digest import Endpoint, RunDigest, ShapeNode
 
-__all__ = ["render_json", "render_markdown", "summarize_shape"]
+__all__ = ["DEFAULT_ENDPOINT_LIMIT", "render_json", "render_markdown", "summarize_shape"]
 
-_DEFAULT_ENDPOINT_LIMIT = 60
+DEFAULT_ENDPOINT_LIMIT = 60
 _DEFAULT_SUMMARY_DEPTH = 3
 
 
@@ -78,7 +78,7 @@ def _other_host_sort_key(item: tuple[str, int]) -> int:
     return -item[1]
 
 
-def render_markdown(d: RunDigest, *, limit: int = _DEFAULT_ENDPOINT_LIMIT) -> str:
+def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str:
     """A person-readable digest: Summary, Login, Tokens, Cookies, Endpoints, Other hosts."""
     lines: list[str] = ["# Observe digest", ""]
 
