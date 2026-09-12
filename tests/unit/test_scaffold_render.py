@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import ast
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
 from graftpunk.devtools.scaffold.render import (
     _MAX_SCAFFOLD_ENDPOINTS,
+    PLUGIN_NAME_RE,
     ScaffoldSpec,
     class_name_for,
+    module_name_for,
     render,
+    validate_plugin_name,
 )
 from graftpunk.har.digest import (
     DigestSource,
@@ -56,6 +66,60 @@ _ORDERS_ENDPOINT = Endpoint(
     examples=("/orders/1",),
 )
 
+_SEARCH_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/search",
+    methods=("GET",),
+    count=9,
+    statuses=(200,),
+    content_type="application/json",
+    query_params={
+        "q": "str",
+        "page": "int",
+        "per_page": "int",
+        "sort": "str",
+        "filter": "str",
+        "include_meta": "bool",
+    },
+    body_params={},
+    body_kind="none",
+    shape=ShapeNode(kind="object", children={"results": ShapeNode(kind="array")}),
+    custom_headers=(),
+    examples=("/search?q=widget",),
+)
+
+_NOTES_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/orders/{order_id}/notes",
+    methods=("POST",),
+    count=3,
+    statuses=(201,),
+    content_type="application/json",
+    query_params={},
+    body_params={
+        "body": "str",
+        "author": "str",
+        "pinned": "bool",
+        "tags": "list",
+    },
+    body_kind="json",
+    shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
+    custom_headers=(),
+    examples=("/orders/1/notes",),
+)
+
+_PASSWORD_LOGIN_FORM = LoginForm(
+    action="/login",
+    method="POST",
+    fields={"username": "#email", "password": "#pw"},
+    submit="#login-btn",
+    hidden=("_token",),
+    source="page-source.html",
+)
+
+_HEADER_TOKEN = TokenCandidate(kind="header", name="X-CSRF-Token", seen_on=("GET /dashboard",))
+_COOKIE_TOKEN = TokenCandidate(kind="cookie", name="X-CSRF-Token", seen_on=("GET /dashboard",))
+
 
 class TestClassNameFor:
     def test_simple_name(self) -> None:
@@ -63,6 +127,60 @@ class TestClassNameFor:
 
     def test_hyphenated_name(self) -> None:
         assert class_name_for("my-shop") == "MyShopPlugin"
+
+
+class TestValidatePluginName:
+    @pytest.mark.parametrize("name", ["myshop", "my-shop", "my_shop2"])
+    def test_accepts(self, name: str) -> None:
+        validate_plugin_name(name)  # does not raise
+
+    @pytest.mark.parametrize("name", ["2fa-site", "my shop", "my.shop", "-shop", ""])
+    def test_rejects_with_the_message(self, name: str) -> None:
+        with pytest.raises(ValueError, match="must start with a letter and contain only"):
+            validate_plugin_name(name)
+
+    def test_matches_the_public_regex_directly(self) -> None:
+        assert PLUGIN_NAME_RE.fullmatch("my-shop")
+        assert not PLUGIN_NAME_RE.fullmatch("2fa-site")
+
+
+class TestModuleNameFor:
+    def test_hyphens_become_underscores(self) -> None:
+        assert module_name_for("my-shop") == "my_shop"
+
+    def test_already_lowercase_and_clean(self) -> None:
+        assert module_name_for("myshop") == "myshop"
+
+
+class TestScaffoldSpecValidatesItsName:
+    def test_invalid_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="must start with a letter"):
+            ScaffoldSpec(
+                name="2fa-site",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example.com",
+            )
+
+
+class TestPluginNameNormalization:
+    def test_hyphenated_name_produces_an_importable_project(self) -> None:
+        spec = ScaffoldSpec(
+            name="my-shop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        files = render(spec)
+        assert "src/graftpunk_my_shop/__init__.py" in files
+        assert "src/graftpunk_my_shop/plugin.py" in files
+        ast.parse(files["src/graftpunk_my_shop/plugin.py"])
+        test_module = files["tests/test_plugin.py"]
+        ast.parse(test_module)
+        assert "from graftpunk_my_shop.plugin import MyShopPlugin" in test_module
+        pyproject = files["pyproject.toml"]
+        assert 'my-shop = "graftpunk_my_shop.plugin:MyShopPlugin"' in pyproject
+        assert 'packages = ["src/graftpunk_my_shop"]' in pyproject
 
 
 class TestRenderNewProject:
@@ -139,20 +257,12 @@ class TestRenderAddToSuite:
 
 class TestPluginModuleWithLoginForm:
     def test_login_config_uses_the_first_password_form(self) -> None:
-        form = LoginForm(
-            action="/login",
-            method="POST",
-            fields={"username": "#email", "password": "#pw"},
-            submit="#login-btn",
-            hidden=("_token",),
-            source="page-source.html",
-        )
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
             backend="nodriver",
             base_url="https://myshop.example.com",
-            digest=_digest(login_forms=(form,)),
+            digest=_digest(login_forms=(_PASSWORD_LOGIN_FORM,)),
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "login_config = LoginConfig(" in plugin_code
@@ -161,6 +271,9 @@ class TestPluginModuleWithLoginForm:
         assert 'submit="#login-btn"' in plugin_code
         assert 'url="/login"' in plugin_code
         assert "GP-FILL" in plugin_code  # failure/success still need a human
+        assert "from graftpunk.plugins import" in plugin_code
+        assert "LoginConfig" in plugin_code
+        assert "LoginStep" in plugin_code
 
     def test_no_form_found_emits_commented_block_with_observations(self) -> None:
         observation = LoginObservation(
@@ -181,6 +294,20 @@ class TestPluginModuleWithLoginForm:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "# login_config = LoginConfig" in plugin_code
         assert "auth_api" in plugin_code
+
+    def test_no_login_form_omits_the_login_import(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        import_line = next(
+            line for line in plugin_code.splitlines() if line.startswith("from graftpunk.plugins")
+        )
+        assert "LoginConfig" not in import_line
+        assert "LoginStep" not in import_line
 
 
 class TestPluginModuleWithTokens:
@@ -262,8 +389,10 @@ class TestPluginModuleCommandStubs:
             digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
-        assert 'ctx.request_json("GET", f"/orders/{order_id}"' in plugin_code
-        assert 'role="xhr"' in plugin_code
+        assert "return ctx.request_json(" in plugin_code
+        assert '"GET",' in plugin_code
+        assert 'f"/orders/{order_id}",' in plugin_code
+        assert 'role="xhr",' in plugin_code
 
     def test_path_param_becomes_a_required_argument(self) -> None:
         spec = ScaffoldSpec(
@@ -296,7 +425,7 @@ class TestPluginModuleCommandStubs:
             digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
-        assert '"X-Shop-Client": "GP-FILL"' in plugin_code
+        assert '"X-Shop-Client": "GP-FILL",' in plugin_code
 
     def test_html_endpoint_calls_request_text_with_navigation_role(self) -> None:
         html_endpoint = Endpoint(
@@ -321,7 +450,9 @@ class TestPluginModuleCommandStubs:
             digest=_digest(endpoints=(html_endpoint,)),
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
-        assert 'ctx.request_text("GET", "/page", role="navigation")' in plugin_code
+        assert "return ctx.request_text(" in plugin_code
+        assert '"/page",' in plugin_code
+        assert 'role="navigation",' in plugin_code
 
     def test_no_digest_emits_one_gp_fill_stub(self) -> None:
         spec = ScaffoldSpec(
@@ -334,11 +465,33 @@ class TestPluginModuleCommandStubs:
         assert plugin_code.count("@command(") == 1
         assert "GP-FILL" in plugin_code
 
+    def test_empty_endpoints_emits_one_gp_fill_stub(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=()),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert plugin_code.count("@command(") == 1
+        assert "GP-FILL" in plugin_code
+
+    def test_no_trailing_whitespace_on_any_line(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT, _SEARCH_ENDPOINT, _NOTES_ENDPOINT)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        for line in plugin_code.splitlines():
+            assert line == line.rstrip()
+
 
 class TestGeneratedPluginModuleParses:
     def test_ast_parses_with_and_without_a_digest(self) -> None:
-        import ast
-
         bare = ScaffoldSpec(
             name="myshop",
             mode="new_project",
@@ -371,3 +524,66 @@ class TestGeneratedPluginModuleParses:
             ),
         )
         ast.parse(render(full)["src/graftpunk_myshop/plugin.py"])
+
+
+class TestRenderedTreeIsRuffClean:
+    """The generated project is a real ruff target: its own pyproject.toml declares
+    the config, so running ruff against the written-out tree is the actual gate a
+    freshly scaffolded plugin's own CI would run (validation Important 2, 2026-09-12).
+    """
+
+    def _write_tree(self, root: Path, files: dict[str, str]) -> Path:
+        for relative_path, content in files.items():
+            path = root / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        return root
+
+    def _assert_ruff_clean(self, tree: Path, *args: str) -> None:
+        result = subprocess.run(  # noqa: S603 - argv is a fixed ruff invocation, not untrusted input
+            [sys.executable, "-m", "ruff", *args, str(tree)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"ruff {' '.join(args)} failed for {tree}:\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+    def _assert_tree_is_clean(self, tree: Path) -> None:
+        self._assert_ruff_clean(tree, "check")
+        self._assert_ruff_clean(tree, "format", "--check")
+
+    def test_no_digest_project(self, tmp_path: Path) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        tree = self._write_tree(tmp_path / "no_digest", render(spec))
+        self._assert_tree_is_clean(tree)
+
+    def test_endpoints_project(self, tmp_path: Path) -> None:
+        digest = _digest(endpoints=(_SEARCH_ENDPOINT, _NOTES_ENDPOINT))
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=digest,
+        )
+        tree = self._write_tree(tmp_path / "endpoints", render(spec))
+        self._assert_tree_is_clean(tree)
+
+    def test_login_and_token_project(self, tmp_path: Path) -> None:
+        digest = _digest(login_forms=(_PASSWORD_LOGIN_FORM,), tokens=(_HEADER_TOKEN, _COOKIE_TOKEN))
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=digest,
+        )
+        tree = self._write_tree(tmp_path / "login_token", render(spec))
+        self._assert_tree_is_clean(tree)

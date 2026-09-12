@@ -9,15 +9,23 @@ for everything the scaffold emits").
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlparse
 
 from graftpunk.devtools.captures import CAPTURES_DIR
-from graftpunk.har.digest import Endpoint, RunDigest, TokenCandidate
+from graftpunk.har.digest import Endpoint, LoginForm, RunDigest, TokenCandidate
 from graftpunk.har.report import summarize_shape
 
-__all__ = ["ScaffoldSpec", "class_name_for", "render"]
+__all__ = [
+    "PLUGIN_NAME_RE",
+    "ScaffoldSpec",
+    "class_name_for",
+    "module_name_for",
+    "render",
+    "validate_plugin_name",
+]
 
 _MAX_SCAFFOLD_ENDPOINTS = 12
 _PY_TYPE_BY_OBSERVED: dict[str, str] = {
@@ -31,6 +39,46 @@ _PY_TYPE_BY_OBSERVED: dict[str, str] = {
 # nested detail into the docstring.
 _SCAFFOLD_SHAPE_DEPTH = 1
 
+# The line length a generated project's own [tool.ruff] declares (_render_pyproject
+# below): every wrapping decision this module makes for generated content is
+# against this one number, so the two cannot silently drift apart.
+_GENERATED_LINE_LENGTH = 100
+
+# Indentation levels used when a generated command stub is exploded onto
+# multiple lines (a class body; a method body; a call's arguments; an
+# argument dict's entries), one owner each, so the levels cannot drift.
+_L1 = "    "
+_L2 = "        "
+_L3 = "            "
+_L4 = "                "
+_DOCSTRING_WRAP_WIDTH = _GENERATED_LINE_LENGTH - len(_L2)
+
+# A plugin's name becomes a Python identifier fragment (the CLI command, the
+# entry-point key) in more than one generated file; validated once here so
+# render() can never emit a project nothing can import (validation
+# Critical 1/2, 2026-09-12).
+PLUGIN_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+
+
+def validate_plugin_name(name: str) -> None:
+    """Raise if *name* cannot become a valid `gp <name>` command and entry-point key."""
+    if not PLUGIN_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"Plugin name {name!r} must start with a letter and contain only "
+            "letters, digits, hyphens, and underscores"
+        )
+
+
+def module_name_for(name: str) -> str:
+    """*name*, lowercased with every run of non-alphanumeric characters collapsed to one
+    underscore: the Python module fragment (``graftpunk_{module_name_for(name)}``).
+
+    Total: never raises. A name reaching here through ``ScaffoldSpec`` is
+    already validated by ``validate_plugin_name``, but the function makes no
+    assumption of that on its own.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", name.lower())
+
 
 @dataclass(frozen=True)
 class ScaffoldSpec:
@@ -40,6 +88,9 @@ class ScaffoldSpec:
     base_url: str
     digest: RunDigest | None = None
     graftpunk_version: str = ""
+
+    def __post_init__(self) -> None:
+        validate_plugin_name(self.name)
 
 
 def class_name_for(name: str) -> str:
@@ -75,13 +126,24 @@ def _redirect_target_after_credential_post(d: RunDigest) -> str | None:
     return None
 
 
+def _password_login_form(d: RunDigest) -> LoginForm | None:
+    """The first captured login form with a password field, if any.
+
+    The one place that decides "did we capture a usable login form":
+    ``_render_login_config`` and the plugin module's import list
+    (``_needs_login_import``) both call this instead of repeating the same
+    ``"password" in f.fields`` scan (validation Important 1, 2026-09-12).
+    """
+    return next((f for f in d.login_forms if "password" in f.fields), None)
+
+
 def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     if spec.digest is None:
         return [
             "    # GP-FILL: no run digest available.",
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])',
         ]
-    form = next((f for f in spec.digest.login_forms if "password" in f.fields), None)
+    form = _password_login_form(spec.digest)
     if form is None:
         lines = ["    # No login form detected. Observations:"]
         for observation in spec.digest.login:
@@ -137,18 +199,21 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
     unpaired = [c for c in spec.digest.tokens if c not in paired]
     lines: list[str] = []
     if pairs:
-        lines.append("    token_config = TokenConfig(tokens=[")
+        lines.append("    token_config = TokenConfig(")
+        lines.append("        tokens=[")
         for header, source in pairs:
             if source.kind == "meta":
                 lines.append(
-                    f'        Token.from_meta_tag(name="{source.name}", header="{header.name}"),'
+                    f'            Token.from_meta_tag(name="{source.name}", '
+                    f'header="{header.name}"),'
                 )
             else:
                 lines.append(
-                    f'        Token.from_cookie(cookie_name="{source.name}", '
+                    f'            Token.from_cookie(cookie_name="{source.name}", '
                     f'header="{header.name}"),'
                 )
-        lines.append("    ])")
+        lines.append("        ]")
+        lines.append("    )")
     else:
         lines.append(
             "    # token_config = TokenConfig(tokens=["
@@ -165,6 +230,22 @@ def _is_json_endpoint(endpoint: Endpoint) -> bool:
     return endpoint.shape is not None or "json" in endpoint.content_type.lower()
 
 
+def _wrapped_docstring_lines(text: str) -> list[str]:
+    """*text* word-wrapped to fit a generated stub's docstring at ``_L2`` indentation,
+    each returned line already carrying that indentation."""
+    wrapped = textwrap.wrap(text, width=_DOCSTRING_WRAP_WIDTH) or [text]
+    return [f"{_L2}{line}" for line in wrapped]
+
+
+def _exploded_dict_lines(keyword: str, entries: list[tuple[str, str]]) -> list[str]:
+    """A ``keyword={...}`` call argument, one ``key: value,`` entry per line, with a
+    magic trailing comma on the closing brace so ``ruff format`` leaves it exploded."""
+    lines = [f"{_L3}{keyword}=" + "{"]
+    lines.extend(f"{_L4}{key}: {value}," for key, value in entries)
+    lines.append(f"{_L3}" + "},")
+    return lines
+
+
 def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: str) -> list[str]:
     method = endpoint.methods[0]
     name = _command_name(endpoint.template, seen_names)
@@ -174,34 +255,42 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         ("request_json", "xhr", "dict") if is_json else ("request_text", "navigation", "str")
     )
 
-    sig_parts = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
+    params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
     for extra in sorted(set(endpoint.query_params) | set(endpoint.body_params)):
         observed = endpoint.query_params.get(extra) or endpoint.body_params.get(extra, "str")
-        sig_parts.append(f"{extra}: {_PY_TYPE_BY_OBSERVED.get(observed, 'str')} | None = None")
+        params.append(f"{extra}: {_PY_TYPE_BY_OBSERVED.get(observed, 'str')} | None = None")
 
     url_expr = f'f"{endpoint.template}"' if path_params else f'"{endpoint.template}"'
-    call_kwargs = [f'role="{role}"']
+    call_lines = [f'{_L3}"{method}",', f"{_L3}{url_expr},", f'{_L3}role="{role}",']
     if endpoint.query_params:
-        query_dict = ", ".join(f'"{p}": {p}' for p in sorted(endpoint.query_params))
-        call_kwargs.append(f"params={{{query_dict}}}")
+        entries = [(f'"{p}"', p) for p in sorted(endpoint.query_params)]
+        call_lines.extend(_exploded_dict_lines("params", entries))
     if any(m in ("POST", "PUT", "PATCH") for m in endpoint.methods) and endpoint.body_params:
-        body_dict = ", ".join(f'"{p}": {p}' for p in sorted(endpoint.body_params))
-        call_kwargs.append(f"json={{{body_dict}}}")
+        entries = [(f'"{p}"', p) for p in sorted(endpoint.body_params)]
+        call_lines.extend(_exploded_dict_lines("json", entries))
     if endpoint.custom_headers:
-        header_dict = ", ".join(f'"{h}": "GP-FILL"' for h in endpoint.custom_headers)
-        call_kwargs.append(f"headers={{{header_dict}}}")
+        entries = [(f'"{h}"', '"GP-FILL"') for h in endpoint.custom_headers]
+        call_lines.extend(_exploded_dict_lines("headers", entries))
 
-    return [
-        f'    @command(help="GP-FILL: describe {name}")',
-        f"    def {name}({', '.join(sig_parts)}) -> {return_type}:",
-        (
-            f'        """{method} {endpoint.template}: seen {endpoint.count} time(s) in run '
-            f"{run_label}. Shape: "
-            f'{summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."""'
-        ),
-        f'        return ctx.{call}("{method}", {url_expr}, {", ".join(call_kwargs)})',
-        "",
+    summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
+    shape_line = f"Shape: {summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."
+
+    lines = [
+        f'{_L1}@command(help="GP-FILL: describe {name}")',
+        f"{_L1}def {name}(",
     ]
+    lines.extend(f"{_L2}{p}," for p in params)
+    lines.append(f"{_L1}) -> {return_type}:")
+    lines.append(f'{_L2}"""')
+    lines.extend(_wrapped_docstring_lines(summary))
+    lines.append("")
+    lines.extend(_wrapped_docstring_lines(shape_line))
+    lines.append(f'{_L2}"""')
+    lines.append(f"{_L2}return ctx.{call}(")
+    lines.extend(call_lines)
+    lines.append(f"{_L2})")
+    lines.append("")
+    return lines
 
 
 def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
@@ -213,7 +302,7 @@ def _run_label(d: RunDigest) -> str:
 
 
 def _render_command_stubs(spec: ScaffoldSpec) -> list[str]:
-    if spec.digest is None:
+    if spec.digest is None or not spec.digest.endpoints:
         return [
             '    @command(help="GP-FILL: describe this command")',
             "    def example(self, ctx: CommandContext) -> dict:",
@@ -227,9 +316,25 @@ def _render_command_stubs(spec: ScaffoldSpec) -> list[str]:
     return lines
 
 
+def _needs_login_import(spec: ScaffoldSpec) -> bool:
+    return spec.digest is not None and _password_login_form(spec.digest) is not None
+
+
+def _plugins_import_names(*, needs_login_import: bool) -> list[str]:
+    """The names to import from ``graftpunk.plugins``, ordered the way this project's
+    own isort setting (classes, then functions, each alphabetical) expects, so the
+    generated line never needs a second reformatting pass."""
+    classes = ["CommandContext", "SitePlugin"]
+    if needs_login_import:
+        classes += ["LoginConfig", "LoginStep"]
+    return sorted(classes) + ["command"]
+
+
 def _render_plugin_module(spec: ScaffoldSpec) -> str:
     klass = class_name_for(spec.name)
+    needs_login_import = _needs_login_import(spec)
     needs_token_import = spec.digest is not None and bool(_paired_token_candidates(spec.digest))
+    plugins_import = ", ".join(_plugins_import_names(needs_login_import=needs_login_import))
     lines = [
         f'"""{spec.name} plugin.',
         "",
@@ -238,7 +343,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         "",
         "from __future__ import annotations",
         "",
-        "from graftpunk.plugins import CommandContext, LoginConfig, LoginStep, SitePlugin, command",
+        f"from graftpunk.plugins import {plugins_import}",
     ]
     if needs_token_import:
         lines.append("from graftpunk.tokens import Token, TokenConfig")
@@ -261,7 +366,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
 
 
 def _render_pyproject(spec: ScaffoldSpec) -> str:
-    package = f"graftpunk_{spec.name}"
+    package = f"graftpunk_{module_name_for(spec.name)}"
     klass = class_name_for(spec.name)
     floor = spec.graftpunk_version or "0.0.0"
     return (
@@ -287,7 +392,7 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
         f'packages = ["src/{package}"]\n'
         "\n"
         "[tool.ruff]\n"
-        "line-length = 100\n"
+        f"line-length = {_GENERATED_LINE_LENGTH}\n"
         "\n"
         "[tool.ruff.lint]\n"
         'select = ["E", "F", "I", "UP", "B"]\n'
@@ -296,8 +401,9 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
 
 def _render_conftest(spec: ScaffoldSpec) -> str:
     return (
-        'pytest_plugins = ["graftpunk.testing.plugin"]\n'
         "from graftpunk.testing.plugin import site_env_scrubber\n"
+        "\n"
+        'pytest_plugins = ["graftpunk.testing.plugin"]\n'
         "\n"
         f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")\n'
     )
@@ -305,6 +411,10 @@ def _render_conftest(spec: ScaffoldSpec) -> str:
 
 def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     klass = class_name_for(spec.name)
+    # fixture_context is only used by the per-endpoint tests below: importing
+    # it when there is nothing to call it with is an unused import in the
+    # generated file's own ruff run (F401; validation Important 2, 2026-09-12).
+    has_endpoint_tests = spec.digest is not None and bool(spec.digest.endpoints)
     lines = [
         f'"""Tests for the {spec.name} plugin."""',
         "",
@@ -312,8 +422,14 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         "",
         "from pathlib import Path",
         "",
+    ]
+    if has_endpoint_tests:
+        # graftpunk.testing (third-party) sorts before the generated package
+        # (first-party, "src" layout) under the generated project's own isort
+        # settings.
+        lines += ["from graftpunk.testing import fixture_context", ""]
+    lines += [
         f"from {package}.plugin import {klass}",
-        "from graftpunk.testing import fixture_context",
         "",
         'FIXTURES_DIR = Path(__file__).parent / "fixtures"',
         "",
@@ -324,7 +440,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         "",
         "",
     ]
-    if spec.digest is None:
+    if not has_endpoint_tests:
         lines.append("# GP-FILL: add a test per command, against a fixture in tests/fixtures/")
         return "\n".join(lines).rstrip() + "\n"
     seen: set[str] = set()
@@ -375,7 +491,7 @@ def _render_readme(spec: ScaffoldSpec) -> str:
 
 def render(spec: ScaffoldSpec) -> dict[str, str]:
     """Render *spec* into relative-path -> file-content, per its ``mode``."""
-    package = f"graftpunk_{spec.name}"
+    package = f"graftpunk_{module_name_for(spec.name)}"
     plugin_module = _render_plugin_module(spec)
     if spec.mode == "new_project":
         return {

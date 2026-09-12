@@ -46,6 +46,16 @@ _NO_ENTRY_POINT_TABLE = """\
 name = "mysuite"
 """
 
+_EMPTY_ENTRY_POINT_TABLE = """\
+[project]
+name = "mysuite"
+
+[project.entry-points."graftpunk.plugins"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mysuite"]
+"""
+
 _INCLUDE_INSTEAD_OF_PACKAGES = """\
 [project]
 name = "mysuite"
@@ -97,6 +107,18 @@ class TestAddEntryPoint:
         pyproject.write_text(_NO_ENTRY_POINT_TABLE)
         with pytest.raises(PyprojectEditError, match="entry-points"):
             add_entry_point(pyproject, "widgets", "graftpunk_widgets.plugin:WidgetsPlugin")
+
+    def test_appends_to_an_empty_table(self, tmp_path: Path) -> None:
+        import tomllib
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_EMPTY_ENTRY_POINT_TABLE)
+        add_entry_point(pyproject, "widgets", "graftpunk_widgets.plugin:WidgetsPlugin")
+        text = pyproject.read_text()
+        assert 'widgets = "graftpunk_widgets.plugin:WidgetsPlugin"' in text
+        data = tomllib.loads(text)
+        eps = data["project"]["entry-points"]["graftpunk.plugins"]
+        assert eps["widgets"] == "graftpunk_widgets.plugin:WidgetsPlugin"
 
 
 class TestAddWheelPackage:
