@@ -10,10 +10,19 @@ from pathlib import Path
 import pytest
 
 from graftpunk.devtools.scaffold.render import (
+    _GENERATED_LINE_LENGTH,
+    _MAX_COMMAND_NAME,
+    _MAX_PARAM_NAME,
+    _MAX_PLUGIN_NAME,
     _MAX_SCAFFOLD_ENDPOINTS,
     PLUGIN_NAME_RE,
     ScaffoldSpec,
+    _command_name,
+    _dict_entry_lines,
+    _literal_dict_entry_lines,
     _literal_lines,
+    _param_identifier,
+    _url_chunks,
     _wrapped_comment_lines,
     class_name_for,
     module_name_for,
@@ -145,6 +154,53 @@ class TestValidatePluginName:
         assert PLUGIN_NAME_RE.fullmatch("my-shop")
         assert not PLUGIN_NAME_RE.fullmatch("2fa-site")
 
+    def test_accepts_a_name_at_the_cap(self) -> None:
+        validate_plugin_name("a" * _MAX_PLUGIN_NAME)  # does not raise
+
+    def test_rejects_a_name_one_over_the_cap(self) -> None:
+        with pytest.raises(ValueError, match=f"at most {_MAX_PLUGIN_NAME} characters"):
+            validate_plugin_name("a" * (_MAX_PLUGIN_NAME + 1))
+
+
+class TestCommandName:
+    def test_truncates_a_deep_path_to_the_cap(self) -> None:
+        template = "/" + "/".join(f"segment-number-{i}" for i in range(8))
+        name = _command_name(template, set())
+        assert len(name) == _MAX_COMMAND_NAME
+
+    def test_two_paths_truncating_to_the_same_base_stay_unique(self) -> None:
+        first = "/" + "a" * (_MAX_COMMAND_NAME + 5) + "/one"
+        second = "/" + "a" * (_MAX_COMMAND_NAME + 5) + "/two"
+        seen: set[str] = set()
+        first_name = _command_name(first, seen)
+        second_name = _command_name(second, seen)
+        assert first_name == "a" * _MAX_COMMAND_NAME
+        assert second_name == f"{first_name}_2"
+
+    def test_a_path_of_only_placeholders_is_named_root(self) -> None:
+        assert _command_name("/{order_id}", set()) == "root"
+
+
+class TestParamIdentifier:
+    def test_truncates_to_the_cap(self) -> None:
+        identifier = _param_identifier("x" * (_MAX_PARAM_NAME + 20), set())
+        assert identifier == "x" * _MAX_PARAM_NAME
+
+    def test_dedupes_against_names_already_taken(self) -> None:
+        seen = {"self", "ctx"}
+        assert _param_identifier("page", seen) == "page"
+        assert _param_identifier("page", seen) == "page_2"
+        assert _param_identifier("ctx", seen) == "ctx_2"
+
+    def test_a_python_keyword_gains_an_underscore(self) -> None:
+        assert _param_identifier("class", set()) == "class_"
+
+    def test_non_identifier_characters_become_underscores(self) -> None:
+        assert _param_identifier("filter[by].name", set()) == "filter_by__name"
+
+    def test_a_leading_digit_is_prefixed(self) -> None:
+        assert _param_identifier("2fa", set()) == "p_2fa"
+
 
 class TestModuleNameFor:
     def test_hyphens_become_underscores(self) -> None:
@@ -186,6 +242,82 @@ class TestLiteralLines:
         assert "".join(chunks) == value
         for line in lines:
             assert len(line) <= 100
+
+
+class TestDictEntryLines:
+    def test_short_key_renders_on_one_line(self) -> None:
+        assert _dict_entry_lines("page", "page", indent=16) == ['                "page": page,']
+
+    def test_long_key_splits_and_rejoins_exactly(self) -> None:
+        key = "x" * 120
+        indent = 16
+        lines = _dict_entry_lines(key, "identifier", indent=indent)
+        pad = " " * indent
+        continuation_pad = " " * (indent + 4)
+        assert lines[0] == f"{pad}("
+        assert lines[-1] == f"{pad}): identifier,"
+        chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
+        assert "".join(chunks) == key
+        for line in lines:
+            assert len(line) <= _GENERATED_LINE_LENGTH
+
+
+class TestLiteralDictEntryLines:
+    def test_short_pair_renders_on_one_line(self) -> None:
+        assert _literal_dict_entry_lines("username", "#email", indent=16) == [
+            '                "username": "#email",'
+        ]
+
+    def test_a_key_too_wide_for_its_line_splits_alongside_the_value(self) -> None:
+        key = "k" * 110
+        value = "v" * 110
+        indent = 16
+        lines = _literal_dict_entry_lines(key, value, indent=indent)
+        pad = " " * indent
+        continuation_pad = " " * (indent + 4)
+        assert lines[0] == f"{pad}("
+        assert lines[-1] == f"{pad}),"
+        colon_index = lines.index(f"{pad}): (")
+
+        def chunks(from_lines: list[str]) -> str:
+            return "".join(line[len(continuation_pad) + 1 : -1] for line in from_lines)
+
+        key_chunks = chunks(lines[1:colon_index])
+        value_chunks = chunks(lines[colon_index + 1 : -1])
+        assert key_chunks == key
+        assert value_chunks == value
+        for line in lines:
+            assert len(line) <= _GENERATED_LINE_LENGTH
+
+
+class TestUrlChunks:
+    def test_chunks_rejoin_exactly(self) -> None:
+        text = "/api/v2/customer-accounts/{account_id}/payment-methods/default-billing-address"
+        chunks = _url_chunks(text, width=30)
+        assert len(chunks) > 1
+        assert "".join(chunks) == text
+
+    def test_no_chunk_boundary_falls_inside_a_placeholder(self) -> None:
+        text = "/a/{account_id}/b/{payment_method_id}/c"
+        for width in range(4, 40):
+            chunks = _url_chunks(text, width=width)
+            assert "".join(chunks) == text
+            for chunk in chunks:
+                assert chunk.count("{") == chunk.count("}")
+
+    def test_a_single_segment_wider_than_the_width_is_hard_split(self) -> None:
+        text = "/" + "s" * 250
+        chunks = _url_chunks(text, width=40)
+        assert "".join(chunks) == text
+        for chunk in chunks:
+            assert len(chunk) <= 40
+
+    def test_a_chunk_starts_at_a_slash_when_it_can(self) -> None:
+        text = "/alpha/beta/gamma/delta"
+        chunks = _url_chunks(text, width=12)
+        assert "".join(chunks) == text
+        for chunk in chunks[1:]:
+            assert chunk.startswith("/")
 
 
 class TestWrappedCommentLines:
@@ -602,6 +734,34 @@ class TestGeneratedPluginModuleParses:
         )
         ast.parse(render(full)["src/graftpunk_myshop/plugin.py"])
 
+    def test_a_template_with_a_stray_brace_still_parses(self) -> None:
+        # "{year-2024}" is not a placeholder (a hyphen cannot appear in one), so the
+        # braces are literal text inside an f-string and must be doubled.
+        endpoint = Endpoint(
+            host="api.myshop.example.com",
+            template="/reports/{year-2024}/orders/{order_id}",
+            methods=("GET",),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params={},
+            body_params={},
+            body_kind="none",
+            shape=ShapeNode(kind="object", children={}),
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert 'f"/reports/{{year-2024}}/orders/{order_id}",' in plugin_code
+        ast.parse(plugin_code)
+
 
 class TestRenderedTreeIsRuffClean:
     """The generated project is a real ruff target: its own pyproject.toml declares
@@ -609,7 +769,21 @@ class TestRenderedTreeIsRuffClean:
     freshly scaffolded plugin's own CI would run (validation Important 2, 2026-09-12).
     """
 
+    def _assert_within_the_generated_width(self, files: dict[str, str]) -> None:
+        """Every line of every generated Python file fits the width the generated
+        project's own pyproject.toml declares. The property the per-shape wrapping and
+        the identifier caps exist to hold, asserted for every tree this class renders
+        rather than one patched site at a time (validation fix round 4, 2026-09-12)."""
+        for relative_path, content in sorted(files.items()):
+            if not relative_path.endswith(".py"):
+                continue
+            for number, line in enumerate(content.splitlines(), start=1):
+                assert len(line) <= _GENERATED_LINE_LENGTH, (
+                    f"{relative_path}:{number} is {len(line)} characters: {line!r}"
+                )
+
     def _write_tree(self, root: Path, files: dict[str, str]) -> Path:
+        self._assert_within_the_generated_width(files)
         for relative_path, content in files.items():
             path = root / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -679,10 +853,14 @@ class TestRenderedTreeIsRuffClean:
         )
         submit_selector = "#login-form button.btn.btn-primary.submit-button[type='submit']"
         long_header_name = "X-" + "A" * 88
+        # A credential role is the form input's own name when the input is neither
+        # the username nor the password field (har.documents._guess_role), so the
+        # fields dict has a captured site fact on both sides of the colon.
+        long_role = "customer_" + "r" * 80
         form = LoginForm(
             action="/login",
             method="POST",
-            fields={"username": long_selector, "password": "#pw"},
+            fields={"username": long_selector, "password": "#pw", long_role: long_selector},
             submit=submit_selector,
             hidden=(),
             source="page-source.html",
@@ -735,4 +913,129 @@ class TestRenderedTreeIsRuffClean:
         assert "1." in plugin_code
         assert "unpaired token candidate" in plugin_code
         tree = self._write_tree(tmp_path / "long_observation", files)
+        self._assert_tree_is_clean(tree)
+
+    def test_selectors_and_names_carrying_their_own_quotes_project(self, tmp_path: Path) -> None:
+        # har.documents._selector_for builds `form[action="..."] input[name="..."]`
+        # for every login input without an id, which is the common case, and a query
+        # parameter or header name can carry a quote of its own: embedded raw, each
+        # ends its string literal early and the generated module does not parse.
+        quoted_selector = 'form[action="/login"] input[name="username"]'
+        both_quotes_selector = 'form[action="/login"] input[name=\'pw\'][data-x="1"]'
+        form = LoginForm(
+            action="/login",
+            method="POST",
+            fields={"username": quoted_selector, "password": both_quotes_selector},
+            submit='form[action="/login"] button[type="submit"]',
+            hidden=(),
+            source="page-source.html",
+        )
+        endpoint = Endpoint(
+            host="api.myshop.example.com",
+            template='/orders/{order_id}/notes-"quoted"-segment',
+            methods=("GET",),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params={'filter["name"]': "str"},
+            body_params={},
+            body_kind="none",
+            shape=ShapeNode(kind="object", children={}),
+            custom_headers=('X-Shop-"Client"',),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,), login_forms=(form,)),
+        )
+        files = render(spec)
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        ast.parse(plugin_code)
+        assert f"\"username\": '{quoted_selector}'," in plugin_code
+        tree = self._write_tree(tmp_path / "quoted", files)
+        self._assert_tree_is_clean(tree)
+
+    def test_maximal_name_deep_paths_and_wide_parameter_names_project(self, tmp_path: Path) -> None:
+        # Every width-relevant input at once, each at or past the bar the round-4
+        # audit found: the longest name validate_plugin_name accepts (so the class,
+        # module, env prefix, import line and assert are all at their maximum), a
+        # deeply nested template, a template past the width on its own with two
+        # placeholders, parameter names longer than a dict entry can hold, a header
+        # name longer still, and a base_url of 120 characters on a digest that does
+        # have endpoints (so the generated test's fixture_context call carries it).
+        name = "a" + "b" * (_MAX_PLUGIN_NAME - 1)
+        assert len(name) == _MAX_PLUGIN_NAME
+        deep_template = (
+            "/api/v2/customer-accounts/{account_id}/payment-methods/default-billing-address"
+        )
+        assert len(deep_template) == 78
+        wide_template = (
+            "/api/v2/customer-accounts/{account_id}/payment-methods/{payment_method_id}"
+            "/scheduled-deliveries/recurring-orders/preferences-list/default-billing-addresses"
+        )
+        assert len(wide_template) == 155
+        query_41 = "include_related_objects_and_metadata_flag"
+        query_60 = "include_related_objects_and_metadata_and_pricing_breakdown_x"
+        body_60 = "delivery_instructions_for_the_courier_at_the_loading_dock_xy"
+        header_75 = "X-Myshop-Client-Request-Correlation-Identifier-For-Downstream-Traced-Header"
+        assert (len(query_41), len(query_60), len(body_60), len(header_75)) == (41, 60, 60, 75)
+        deep = Endpoint(
+            host="api.myshop.example.com",
+            template=deep_template,
+            methods=("GET",),
+            count=4,
+            statuses=(200,),
+            content_type="application/json",
+            query_params={query_41: "str", query_60: "int"},
+            body_params={},
+            body_kind="none",
+            shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
+            custom_headers=(header_75,),
+            examples=(),
+        )
+        wide = Endpoint(
+            host="api.myshop.example.com",
+            template=wide_template,
+            methods=("POST",),
+            count=2,
+            statuses=(201,),
+            content_type="application/json",
+            query_params={},
+            body_params={body_60: "str"},
+            body_kind="json",
+            shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
+            custom_headers=(),
+            examples=(),
+        )
+        base_url = "https://" + "x" * 100 + ".example.com"
+        assert len(base_url) == 120
+        spec = ScaffoldSpec(
+            name=name,
+            mode="new_project",
+            backend="nodriver",
+            base_url=base_url,
+            digest=_digest(endpoints=(deep, wide)),
+        )
+        files = render(spec)
+        plugin_code = files[f"src/graftpunk_{name}/plugin.py"]
+        # Non-vacuous, and each assertion names which guard fired: both stubs are
+        # present; the 78-character template still fits one line; the 155-character
+        # one split at a "/" boundary; the 75-character header name became a
+        # parenthesised dict key; the 41-character query parameter became a
+        # truncated identifier.
+        assert plugin_code.count("@command(") == 2
+        assert f'f"{deep_template}",' in plugin_code
+        assert 'f"/api/v2/customer-accounts/{account_id}/payment-methods' in plugin_code
+        assert 'f"/scheduled-deliveries' in plugin_code
+        assert f'"{header_75}": "GP-FILL",' not in plugin_code
+        assert '): "GP-FILL",' in plugin_code
+        assert f"{query_41[:_MAX_PARAM_NAME]}: str | None = None," in plugin_code
+        test_code = files["tests/test_plugin.py"]
+        assert "ctx = fixture_context(" in test_code
+        assert f'base_url="{base_url}"' not in test_code  # the long base_url was split
+        assert '        account_id="1",' in test_code  # the wide stub's call exploded
+        tree = self._write_tree(tmp_path / "maximal", files)
         self._assert_tree_is_clean(tree)

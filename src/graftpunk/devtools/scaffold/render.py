@@ -8,6 +8,8 @@ for everything the scaffold emits").
 
 from __future__ import annotations
 
+import json
+import keyword
 import re
 import textwrap
 from dataclasses import dataclass
@@ -53,11 +55,21 @@ _L3 = "            "
 _L4 = "                "
 _DOCSTRING_WRAP_WIDTH = _GENERATED_LINE_LENGTH - len(_L2)
 
+# The three caps that bound every identifier the generator derives from site
+# data or from the user's chosen name. Wrapping alone cannot keep a generated
+# line inside the generated width when the line is one identifier (a def, a
+# call, an assignment target): ruff format never splits an identifier and
+# E501 still applies, so the identifiers are bounded at the point they are
+# derived instead (validation fix round 4, Finding 4, 2026-09-12).
+_MAX_PLUGIN_NAME = 40
+_MAX_COMMAND_NAME = 40
+_MAX_PARAM_NAME = 40
+
 # A plugin's name becomes a Python identifier fragment (the CLI command, the
 # entry-point key) in more than one generated file; validated once here so
 # render() can never emit a project nothing can import (validation
 # Critical 1/2, 2026-09-12).
-PLUGIN_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+PLUGIN_NAME_RE = re.compile(rf"[A-Za-z][A-Za-z0-9_-]{{0,{_MAX_PLUGIN_NAME - 1}}}")
 
 
 def validate_plugin_name(name: str) -> None:
@@ -65,7 +77,8 @@ def validate_plugin_name(name: str) -> None:
     if not PLUGIN_NAME_RE.fullmatch(name):
         raise ValueError(
             f"Plugin name {name!r} must start with a letter and contain only "
-            "letters, digits, hyphens, and underscores"
+            f"letters, digits, hyphens, and underscores, and be at most "
+            f"{_MAX_PLUGIN_NAME} characters"
         )
 
 
@@ -102,9 +115,9 @@ def _env_prefix_for(name: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", name.upper()) + "_"
 
 
-def _command_name(template: str, seen: set[str]) -> str:
-    segments = [s for s in template.strip("/").split("/") if s and not s.startswith("{")]
-    base = re.sub(r"[^a-z0-9_]", "_", "_".join(segments).lower()) or "root"
+def _deduped(base: str, seen: set[str]) -> str:
+    """*base*, or ``{base}_{n}`` for the lowest *n* that is not in *seen*; the result is
+    added to *seen*. The one uniqueness rule for every identifier this module derives."""
     name = base
     counter = 1
     while name in seen:
@@ -112,6 +125,41 @@ def _command_name(template: str, seen: set[str]) -> str:
         name = f"{base}_{counter}"
     seen.add(name)
     return name
+
+
+def _command_name(template: str, seen: set[str]) -> str:
+    """The command method name for *template*, unique within *seen*.
+
+    Truncated to ``_MAX_COMMAND_NAME`` before the uniqueness counter is applied: the
+    name lands in a ``def``, a decorator, and the generated test's own ``def`` and
+    call, none of which any wrapping helper can split, so a deep captured path must
+    not be able to push those past the generated width (validation fix round 4,
+    2026-09-12).
+    """
+    segments = [s for s in template.strip("/").split("/") if s and not s.startswith("{")]
+    base = re.sub(r"[^a-z0-9_]", "_", "_".join(segments).lower())[:_MAX_COMMAND_NAME] or "root"
+    return _deduped(base, seen)
+
+
+def _param_identifier(site_name: str, seen: set[str]) -> str:
+    """A Python identifier for the site parameter *site_name*, unique within *seen*.
+
+    The one owner of every parameter identifier a generated stub declares: a path
+    placeholder, a query parameter, a body parameter. The site's own name is kept as
+    the dict key at the call site, so the sanitisation here is free to rename: every
+    character outside the identifier alphabet becomes an underscore, a leading digit
+    gains a ``p_`` prefix, the result is truncated to ``_MAX_PARAM_NAME``, a Python
+    keyword gains a trailing underscore, and ``_deduped`` makes it unique (so two path
+    segments that template to the same name, or a query parameter colliding with a
+    path placeholder, cannot emit a duplicate argument).
+    """
+    base = re.sub(r"[^A-Za-z0-9_]", "_", site_name)
+    if base and base[0].isdigit():
+        base = f"p_{base}"
+    base = base[:_MAX_PARAM_NAME] or "param"
+    if keyword.iskeyword(base) or keyword.issoftkeyword(base):
+        base = f"{base}_"
+    return _deduped(base, seen)
 
 
 def _redirect_target_after_credential_post(d: RunDigest) -> str | None:
@@ -254,13 +302,109 @@ def _wrapped_docstring_block(text: str, *, indent: int) -> list[str]:
     return [f'{pad}"""', *(f"{pad}{line}" for line in wrapped), f'{pad}"""']
 
 
-def _exploded_dict_lines(keyword: str, entries: list[tuple[str, str]]) -> list[str]:
-    """A ``keyword={...}`` call argument, one ``key: value,`` entry per line, with a
-    magic trailing comma on the closing brace so ``ruff format`` leaves it exploded."""
-    lines = [f"{_L3}{keyword}=" + "{"]
-    lines.extend(f"{_L4}{key}: {value}," for key, value in entries)
+def _quoted(value: str) -> str:
+    """*value* as a complete Python string literal, quotes included.
+
+    A captured site fact carries quoting of its own: ``har.documents`` builds a
+    selector as ``form[action="/login"] input[name="user"]`` whenever the input has no
+    id, and embedding that raw ends the literal at its first inner quote, so the
+    generated module does not parse at all. ``json.dumps`` escapes exactly the
+    characters a literal cannot hold (the quote, the backslash, the control
+    characters) in a form Python reads the same way, and ``ensure_ascii=False`` leaves
+    everything else as written. The quote character is the one ``ruff format`` would
+    settle on (double, unless single quoting costs fewer escapes), so a generated file
+    needs no second formatting pass (validation fix round 4, 2026-09-12).
+    """
+    quote = _quote_char(value)
+    return f"{quote}{_escaped_body(value, quote)}{quote}"
+
+
+def _quote_char(value: str) -> str:
+    """The quote character ``ruff format`` would wrap *value* in: double, unless single
+    quoting would cost fewer escapes."""
+    return "'" if value.count('"') > value.count("'") else '"'
+
+
+def _escaped_body(value: str, quote: str) -> str:
+    """*value* as the body of a *quote*-quoted Python string literal, without the
+    quotes themselves."""
+    body = json.dumps(value, ensure_ascii=False)[1:-1]
+    if quote == "'":
+        body = body.replace('\\"', '"').replace("'", "\\'")
+    return body
+
+
+def _split_key_lines(key: str, *, indent: int) -> list[str]:
+    """The opening of a parenthesised implicit-concatenation dict key: ``(`` at *indent*
+    spaces and one quoted chunk of *key* per line below it.
+
+    The caller supplies the closing line, which always begins ``):`` but differs after
+    the colon by call site (an identifier, a quoted value, another concatenation).
+    A parenthesised concatenation is a valid dict key, and ``ruff format`` leaves it
+    alone once the joined form no longer fits the width.
+    """
+    pad = " " * indent
+    continuation_pad = " " * (indent + 4)
+    # A chunk is quoted after it is cut, so the budget comes off the whole key's own
+    # quoting overhead (its two quotes plus whatever escaping it needs), which is an
+    # upper bound on any one chunk's.
+    overhead = len(_quoted(key)) - len(key)
+    chunk_width = max(1, _GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
+    chunks = textwrap.wrap(
+        key,
+        width=chunk_width,
+        break_long_words=True,
+        break_on_hyphens=False,
+        drop_whitespace=False,
+    ) or [key]
+    return [f"{pad}(", *(f"{continuation_pad}{_quoted(chunk)}" for chunk in chunks)]
+
+
+def _dict_entry_lines(key: str, value: str, *, indent: int) -> list[str]:
+    """One ``"key": value,`` dict entry at *indent* spaces, on one line when that fits
+    the generated width.
+
+    Past that width the key renders as a parenthesised implicit concatenation
+    (``(\\n "par"\\n "t"\\n): value,``), which is a valid dict key and which
+    ``ruff format`` leaves alone once the joined form no longer fits: a site's own
+    parameter or header name is one fact, and it is the dict key, so neither the
+    exploded dict nor any identifier cap can shorten it (validation fix round 4,
+    Finding 4, 2026-09-12).
+    """
+    pad = " " * indent
+    single_line = f"{pad}{_quoted(key)}: {value},"
+    if len(single_line) <= _GENERATED_LINE_LENGTH:
+        return [single_line]
+    return [*_split_key_lines(key, indent=indent), f"{pad}): {value},"]
+
+
+def _exploded_dict_lines(name: str, entries: list[tuple[str, str]]) -> list[str]:
+    """A ``name={...}`` call argument, one ``"key": value,`` entry per line, with a
+    magic trailing comma on the closing brace so ``ruff format`` leaves it exploded.
+    Each *entries* pair is the site's own name for the key (quoted and, if it is too
+    wide, split by ``_dict_entry_lines``) and the value expression."""
+    lines = [f"{_L3}{name}=" + "{"]
+    for key, value in entries:
+        lines.extend(_dict_entry_lines(key, value, indent=len(_L4)))
     lines.append(f"{_L3}" + "},")
     return lines
+
+
+def _call_lines(prefix: str, args: list[str], *, indent: int) -> list[str]:
+    """``{prefix}(arg, arg)`` at *indent* spaces on one line when it fits the generated
+    width, otherwise one argument per line with a magic trailing comma so
+    ``ruff format`` leaves it exploded. Both shapes are stable under the formatter, so
+    the generated file needs no second pass either way."""
+    pad = " " * indent
+    single_line = f"{pad}{prefix}({', '.join(args)})"
+    if len(single_line) <= _GENERATED_LINE_LENGTH:
+        return [single_line]
+    continuation_pad = " " * (indent + 4)
+    return [
+        f"{pad}{prefix}(",
+        *(f"{continuation_pad}{arg}," for arg in args),
+        f"{pad})",
+    ]
 
 
 def _literal_lines(
@@ -279,12 +423,15 @@ def _literal_lines(
     """
     comma = "," if trailing_comma else ""
     pad = " " * indent
-    single_line = f'{pad}{prefix}"{value}"{comma}'
+    quoted = _quoted(value)
+    single_line = f"{pad}{prefix}{quoted}{comma}"
     if len(single_line) <= _GENERATED_LINE_LENGTH:
         return [single_line]
     continuation_pad = " " * (indent + 4)
-    # -2 for the quote characters wrapped around each chunk.
-    chunk_width = max(1, _GENERATED_LINE_LENGTH - len(continuation_pad) - 2)
+    # A chunk is quoted after it is cut, so the budget comes off the whole value's own
+    # quoting overhead (see _split_key_lines).
+    overhead = len(quoted) - len(value)
+    chunk_width = max(1, _GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
     chunks = textwrap.wrap(
         value,
         width=chunk_width,
@@ -293,20 +440,38 @@ def _literal_lines(
         drop_whitespace=False,
     ) or [value]
     lines = [f"{pad}{prefix}("]
-    lines.extend(f'{continuation_pad}"{chunk}"' for chunk in chunks)
+    lines.extend(f"{continuation_pad}{_quoted(chunk)}" for chunk in chunks)
     lines.append(f"{pad}){comma}")
     return lines
 
 
+def _literal_dict_entry_lines(key: str, value: str, *, indent: int) -> list[str]:
+    """One ``"key": "value",`` dict entry where both halves are captured site facts and
+    either can be too wide for a line.
+
+    The key keeps the whole line when it leaves room for the value's opening
+    parenthesis; past that, the key splits too and the value follows on the ``):``
+    line, which ``_literal_lines`` renders by taking ``"): "`` as its prefix.
+    """
+    pad = " " * indent
+    if len(f"{pad}{_quoted(key)}: (") <= _GENERATED_LINE_LENGTH:
+        return _literal_lines(value, indent=indent, prefix=f"{_quoted(key)}: ")
+    return [
+        *_split_key_lines(key, indent=indent),
+        *_literal_lines(value, indent=indent, prefix="): "),
+    ]
+
+
 def _exploded_literal_dict_lines(entries: list[tuple[str, str]], *, indent: int) -> list[str]:
     """The ``fields={...}`` dict on a generated ``LoginStep``: one ``"role": "selector",``
-    entry per line, each selector routed through ``_literal_lines`` since (unlike a
-    stub's parameter dicts) its values are captured site facts that can themselves be
-    too wide for one line."""
+    entry per line. Unlike a stub's parameter dicts, both halves here are captured site
+    facts (a credential role is the form input's own name when it is neither the
+    username nor the password field), so both route through
+    ``_literal_dict_entry_lines``."""
     pad = " " * indent
     lines = [f"{pad}fields={{"]
     for role, selector in entries:
-        lines.extend(_literal_lines(selector, indent=indent + 4, prefix=f'"{role}": '))
+        lines.extend(_literal_dict_entry_lines(role, selector, indent=indent + 4))
     lines.append(f"{pad}}},")
     return lines
 
@@ -339,39 +504,143 @@ def _render_token_call(header: TokenCandidate, source: TokenCandidate, *, indent
     return lines
 
 
+_URL_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z0-9_]+)\}")
+
+
+def _templated_url(template: str, seen: set[str]) -> tuple[str, list[str]]:
+    """*template* with each ``{placeholder}`` renamed to the bounded identifier the stub
+    declares for it, plus those identifiers in the order they appear.
+
+    Renaming is positional, not by name: a path that templates the same placeholder
+    twice (``/orders/1/orders/2`` -> ``/orders/{order_id}/orders/{order_id}``) must
+    still produce two distinct arguments.
+    """
+    identifiers: list[str] = []
+
+    def rename(match: re.Match[str]) -> str:
+        identifier = _param_identifier(match.group(1), seen)
+        identifiers.append(identifier)
+        return f"{{{identifier}}}"
+
+    return _URL_PLACEHOLDER_RE.sub(rename, template), identifiers
+
+
+def _quoted_fstring(text: str) -> str:
+    """*text* as a complete f-string literal: each literal span quoted the way
+    ``_quoted`` quotes it and each brace outside a ``{placeholder}`` doubled, so a
+    captured path holding a stray brace or a quote cannot emit a file that will not
+    parse. The quote character is chosen once, for the whole literal, from the text
+    outside the placeholders (a placeholder is an identifier and holds neither quote).
+    """
+    spans: list[str] = []
+    parts: list[str] = []
+    position = 0
+    for match in _URL_PLACEHOLDER_RE.finditer(text):
+        spans.append(text[position : match.start()])
+        parts.append(match.group(0))
+        position = match.end()
+    spans.append(text[position:])
+    quote = _quote_char("".join(spans))
+    bodies = [_escaped_body(span, quote).replace("{", "{{").replace("}", "}}") for span in spans]
+    woven = [bodies[0]]
+    for placeholder, body in zip(parts, bodies[1:], strict=True):
+        woven.extend([placeholder, body])
+    return f"f{quote}{''.join(woven)}{quote}"
+
+
+def _url_atoms(text: str, *, width: int) -> list[str]:
+    """*text* as the smallest pieces a URL may be split between: a whole
+    ``{placeholder}``, and each ``/``-introduced literal segment (itself hard-split at
+    *width* when one segment is wider than a line can hold)."""
+    atoms: list[str] = []
+    for piece in (p for p in re.split(r"(?=/)", text) if p):
+        atoms.extend(piece[i : i + width] for i in range(0, len(piece), width))
+    return atoms
+
+
+def _url_chunks(text: str, *, width: int) -> list[str]:
+    """*text* split into chunks that each fit *width*, preferring ``/`` boundaries and
+    never splitting inside a ``{placeholder}``. The chunks rejoin to exactly *text*."""
+    atoms: list[str] = []
+    position = 0
+    for match in _URL_PLACEHOLDER_RE.finditer(text):
+        atoms.extend(_url_atoms(text[position : match.start()], width=width))
+        atoms.append(match.group(0))
+        position = match.end()
+    atoms.extend(_url_atoms(text[position:], width=width))
+    chunks: list[str] = []
+    for atom in atoms:
+        if chunks and len(chunks[-1]) + len(atom) <= width:
+            chunks[-1] += atom
+        else:
+            chunks.append(atom)
+    return chunks or [text]
+
+
+def _url_expr_lines(url_text: str, *, is_fstring: bool, indent: int) -> list[str]:
+    """The URL argument of a generated stub's request call: ``f"/a/{id}/b",`` on one
+    line at *indent* spaces when that fits the generated width, otherwise the same
+    string as a parenthesised implicit concatenation split at ``/`` boundaries. A
+    captured path template is one fact ``ruff format`` cannot split for itself, and a
+    deeply nested one is past the width on its own (validation fix round 4, Finding 4,
+    2026-09-12)."""
+    pad = " " * indent
+    render = _quoted_fstring if is_fstring else _quoted
+    single_line = f"{pad}{render(url_text)},"
+    if len(single_line) <= _GENERATED_LINE_LENGTH:
+        return [single_line]
+    continuation_pad = " " * (indent + 4)
+    # A chunk is quoted after it is cut, so the budget comes off the whole template's
+    # own literal overhead (its quotes, its `f`, and any escaping or brace doubling),
+    # which is an upper bound on any one chunk's.
+    overhead = len(render(url_text)) - len(url_text)
+    chunk_width = max(1, _GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
+    lines = [f"{pad}("]
+    lines.extend(
+        f"{continuation_pad}{render(chunk)}" for chunk in _url_chunks(url_text, width=chunk_width)
+    )
+    lines.append(f"{pad}),")
+    return lines
+
+
 def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: str) -> list[str]:
     method = endpoint.methods[0]
     name = _command_name(endpoint.template, seen_names)
-    path_params = re.findall(r"\{([a-zA-Z0-9_]+)\}", endpoint.template)
+    # "self" and "ctx" are taken before any site parameter is named, so a site
+    # parameter called either cannot shadow the stub's own arguments.
+    seen_params = {"self", "ctx"}
+    url_text, path_params = _templated_url(endpoint.template, seen_params)
     is_json = _is_json_endpoint(endpoint)
     call, role, return_type = (
         ("request_json", "xhr", "dict") if is_json else ("request_text", "navigation", "str")
     )
 
     params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
+    identifier_for: dict[str, str] = {}
     for extra in sorted(set(endpoint.query_params) | set(endpoint.body_params)):
         observed = endpoint.query_params.get(extra) or endpoint.body_params.get(extra, "str")
-        params.append(f"{extra}: {_PY_TYPE_BY_OBSERVED.get(observed, 'str')} | None = None")
+        identifier_for[extra] = _param_identifier(extra, seen_params)
+        annotation = _PY_TYPE_BY_OBSERVED.get(observed, "str")
+        params.append(f"{identifier_for[extra]}: {annotation} | None = None")
 
-    url_expr = f'f"{endpoint.template}"' if path_params else f'"{endpoint.template}"'
-    call_lines = [f'{_L3}"{method}",', f"{_L3}{url_expr},", f'{_L3}role="{role}",']
+    call_lines = [f'{_L3}"{method}",']
+    call_lines.extend(_url_expr_lines(url_text, is_fstring=bool(path_params), indent=len(_L3)))
+    call_lines.append(f'{_L3}role="{role}",')
     if endpoint.query_params:
-        entries = [(f'"{p}"', p) for p in sorted(endpoint.query_params)]
+        entries = [(p, identifier_for[p]) for p in sorted(endpoint.query_params)]
         call_lines.extend(_exploded_dict_lines("params", entries))
     if any(m in ("POST", "PUT", "PATCH") for m in endpoint.methods) and endpoint.body_params:
-        entries = [(f'"{p}"', p) for p in sorted(endpoint.body_params)]
+        entries = [(p, identifier_for[p]) for p in sorted(endpoint.body_params)]
         call_lines.extend(_exploded_dict_lines("json", entries))
     if endpoint.custom_headers:
-        entries = [(f'"{h}"', '"GP-FILL"') for h in endpoint.custom_headers]
+        entries = [(h, '"GP-FILL"') for h in endpoint.custom_headers]
         call_lines.extend(_exploded_dict_lines("headers", entries))
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
     shape_line = f"Shape: {summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."
 
-    lines = [
-        f'{_L1}@command(help="GP-FILL: describe {name}")',
-        f"{_L1}def {name}(",
-    ]
+    lines = _call_lines("@command", [f'help="GP-FILL: describe {name}"'], indent=len(_L1))
+    lines.append(f"{_L1}def {name}(")
     lines.extend(f"{_L2}{p}," for p in params)
     lines.append(f"{_L1}) -> {return_type}:")
     lines.append(f'{_L2}"""')
@@ -505,6 +774,18 @@ def _render_conftest(spec: ScaffoldSpec) -> str:
     )
 
 
+def _import_lines(module: str, name: str) -> list[str]:
+    """``from {module} import {name}`` on one line when it fits the generated width,
+    otherwise the parenthesised form with a magic trailing comma. The generated
+    package name and class name are both plugin-name derivatives, so together they
+    can still pass the width even with the name capped at ``_MAX_PLUGIN_NAME``, and
+    ``ruff format`` would split the single line for itself."""
+    single_line = f"from {module} import {name}"
+    if len(single_line) <= _GENERATED_LINE_LENGTH:
+        return [single_line]
+    return [f"from {module} import (", f"{_L1}{name},", ")"]
+
+
 def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     klass = class_name_for(spec.name)
     # fixture_context is only used by the per-endpoint tests below: importing
@@ -525,7 +806,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         # settings.
         lines += ["from graftpunk.testing import fixture_context", ""]
     lines += [
-        f"from {package}.plugin import {klass}",
+        *_import_lines(f"{package}.plugin", klass),
         "",
         'FIXTURES_DIR = Path(__file__).parent / "fixtures"',
         "",
@@ -542,21 +823,32 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     seen: set[str] = set()
     for endpoint in _ordered_endpoints(spec.digest)[:_MAX_SCAFFOLD_ENDPOINTS]:
         name = _command_name(endpoint.template, seen)
-        path_params = re.findall(r"\{([a-zA-Z0-9_]+)\}", endpoint.template)
+        # The same seeding as _render_command_stub, so the identifiers here are
+        # the ones the stub actually declares.
+        _, path_params = _templated_url(endpoint.template, {"self", "ctx"})
         # "1" round-trips through the naming rule (paths.template_path treats
         # an all-digit segment as dynamic): the request this test issues
         # renames back to the endpoint's own template, so it finds the
         # fixture named for it. A literal "GP-FILL" would not: it stays a
         # literal segment and the fixture lookup would 404.
-        args = ", ".join(f'{p}="1"' for p in path_params)
-        call_args = f"ctx{', ' + args if args else ''}"
         lines.append(f"def test_{name}() -> None:")
-        lines.append(
-            f'    ctx = fixture_context(FIXTURES_DIR, plugin_name="{spec.name}", '
-            f'base_url="{spec.base_url}")'
+        # base_url is a captured site fact and plugin_name is the user's own
+        # name, so this call is exploded one keyword argument per line with
+        # both values through _literal_lines (validation fix round 4,
+        # 2026-09-12).
+        lines.append(f"{_L1}ctx = fixture_context(")
+        lines.append(f"{_L2}FIXTURES_DIR,")
+        lines.extend(_literal_lines(spec.name, indent=len(_L2), prefix="plugin_name="))
+        lines.extend(_literal_lines(spec.base_url, indent=len(_L2), prefix="base_url="))
+        lines.append(f"{_L1})")
+        lines.append(f"{_L1}plugin = {klass}()")
+        lines.extend(
+            _call_lines(
+                f"result = plugin.{name}",
+                ["ctx", *(f'{p}="1"' for p in path_params)],
+                indent=len(_L1),
+            )
         )
-        lines.append(f"    plugin = {klass}()")
-        lines.append(f"    result = plugin.{name}({call_args})")
         lines.append("    assert result  # GP-FILL: assert on the shape you expect")
         lines.append("")
         lines.append("")
