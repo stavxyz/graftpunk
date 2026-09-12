@@ -141,6 +141,18 @@ The package gains four modules, each with one job:
 > the HTML extraction, and the templating to leave the digest module so it
 > stays "entries to model". Four modules with one job each is the result.
 
+> **Design note (2026-09-12):** the high-cardinality rule above stated a
+> count and said nothing about what the values at that position have to look
+> like, so nine word-like sibling routes (`/api/orders`, `/api/products`,
+> ...) counted as one family and collapsed into a single `/api/{api_id}`,
+> costing the digest eight endpoints and the scaffold eight stubs. The rule
+> now has two halves: more than `_HIGH_CARDINALITY_THRESHOLD` distinct values
+> at the position, *and* more than `_DYNAMIC_MAJORITY` (half) of those values
+> eligible. Eligibility is `paths.looks_dynamic`, the same predicate
+> `template_path` collapses on, relaxed to also accept any segment carrying a
+> digit, so a slug family (`/products/red-widget-2024`) still collapses while
+> a family of plain words does not.
+
 `src/graftpunk/har/digest.py`:
 
 ```python

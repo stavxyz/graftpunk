@@ -23,10 +23,17 @@ _UUID_RE = re.compile(
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _BASE64_RE = re.compile(r"^[A-Za-z0-9_-]+=*$")
 
-__all__ = ["param_name_for_segment", "template_path"]
+__all__ = ["looks_dynamic", "param_name_for_segment", "template_path"]
 
 
-def _is_dynamic_segment(segment: str) -> bool:
+def looks_dynamic(segment: str) -> bool:
+    """True when *segment* reads as an opaque identifier rather than a word.
+
+    The one owner of that judgement: ``template_path`` collapses on it, and the
+    digest's high-cardinality collapse gates on it (in a relaxed form) so a run
+    of distinct word-like sibling routes is not mistaken for one parameterised
+    family.
+    """
     if not segment:
         return False
     if segment.isdigit():
@@ -73,7 +80,7 @@ def template_path(path: str) -> tuple[str, dict[str, str]]:
     params: dict[str, str] = {}
     result_segments: list[str] = []
     for segment in segments:
-        if _is_dynamic_segment(segment):
+        if looks_dynamic(segment):
             prev = result_segments[-1] if result_segments else ""
             name = param_name_for_segment(prev)
             params[name] = segment

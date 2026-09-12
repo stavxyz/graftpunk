@@ -23,7 +23,7 @@ from graftpunk.har.documents import (
     looks_like_token_name,
 )
 from graftpunk.har.parser import HAREntry, parse_har_file
-from graftpunk.har.paths import param_name_for_segment, template_path
+from graftpunk.har.paths import looks_dynamic, param_name_for_segment, template_path
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -52,6 +52,7 @@ __all__ = [
 _BODY_SAMPLE_THRESHOLD = 256 * 1024  # bodies over this size are sampled for shape only
 _BODY_SAMPLE_SIZE = 64 * 1024
 _HIGH_CARDINALITY_THRESHOLD = 8  # a segment with more distinct values than this collapses too
+_DYNAMIC_MAJORITY = 0.5  # ... but only when more than this fraction of them look like identifiers
 _LOGIN_WINDOW = 20  # entries after a credential post that may carry a redirect/set_cookie
 _SHAPE_MAX_DEPTH = 3
 _SHAPE_MAX_KEYS = 12
@@ -416,6 +417,30 @@ class _EndpointAccumulator:
         )
 
 
+def _collapse_eligible(segment: str) -> bool:
+    """True when *segment* may stand in for a parameter in a collapsed family.
+
+    ``looks_dynamic`` relaxed by one case: any segment carrying a digit. A
+    captured family is often slugs rather than bare ids (``/products/red-widget-
+    2024``), which ``looks_dynamic`` rightly refuses on its own but which a run
+    of many siblings identifies as a parameter position.
+    """
+    return looks_dynamic(segment) or any(ch.isdigit() for ch in segment)
+
+
+def _dynamic_majority(values: set[str]) -> bool:
+    """True when more than ``_DYNAMIC_MAJORITY`` of *values* look like identifiers.
+
+    The eligibility half of the collapse rule. Without it, nine word-like
+    sibling routes (``/api/orders``, ``/api/products``, ...) are one
+    high-cardinality family by count alone and collapse into a single
+    ``/api/{api_id}``, hiding eight endpoints from the digest and eight stubs
+    from the scaffold.
+    """
+    eligible = sum(1 for value in values if _collapse_eligible(value))
+    return eligible > len(values) * _DYNAMIC_MAJORITY
+
+
 def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
     """Map each raw template to its high-cardinality-collapsed form.
 
@@ -426,6 +451,11 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
     common representative at position 0 is not detected. Adequate for a
     digest tool; documented rather than perfected (Task 3 implementation
     note).
+
+    A position collapses only when it passes both halves of the rule: more
+    than ``_HIGH_CARDINALITY_THRESHOLD`` distinct values, and a
+    ``_DYNAMIC_MAJORITY`` of those values eligible under ``_collapse_eligible``
+    (final fix wave, 2026-09-12).
     """
     by_count: dict[int, list[list[str]]] = {}
     for template in templates:
@@ -445,7 +475,7 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
                 continue
             family = [r for r in rows if all(r[j] == rows[0][j] for j in range(count) if j != i)]
             distinct = {r[i] for r in family}
-            if len(distinct) > _HIGH_CARDINALITY_THRESHOLD:
+            if len(distinct) > _HIGH_CARDINALITY_THRESHOLD and _dynamic_majority(distinct):
                 collapse_positions.setdefault(count, set()).add(i)
 
     result: dict[str, str] = {}

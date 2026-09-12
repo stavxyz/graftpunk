@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from graftpunk.har.digest import (
+    _DYNAMIC_MAJORITY,
     _HIGH_CARDINALITY_THRESHOLD,
     _LOGIN_WINDOW,
     _SHAPE_MAX_DEPTH,
@@ -462,6 +463,50 @@ class TestHighCardinalityCollapse:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         templates = {e.template for e in result.endpoints}
         assert templates == {f"/route-{i}" for i in range(_HIGH_CARDINALITY_THRESHOLD + 2)}
+
+
+class TestHighCardinalityEligibility:
+    """A position collapses on count *and* on its values looking like identifiers."""
+
+    def test_word_like_sibling_routes_stay_separate_endpoints(self, tmp_path: Path) -> None:
+        names = [
+            "orders",
+            "products",
+            "users",
+            "carts",
+            "invoices",
+            "shipments",
+            "returns",
+            "coupons",
+            "reviews",
+        ]
+        assert len(names) > _HIGH_CARDINALITY_THRESHOLD
+        entries = [_entry("GET", f"https://api.myshop.example.com/api/{name}") for name in names]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert templates == {f"/api/{name}" for name in names}
+
+    def test_digit_bearing_slug_family_still_collapses(self, tmp_path: Path) -> None:
+        count = _HIGH_CARDINALITY_THRESHOLD + 1
+        entries = [
+            _entry("GET", f"https://api.myshop.example.com/products/red-widget-{2000 + i}")
+            for i in range(count)
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert templates == {"/products/{product_id}"}
+
+    def test_minority_of_eligible_values_does_not_collapse(self, tmp_path: Path) -> None:
+        total = _HIGH_CARDINALITY_THRESHOLD + 3
+        eligible = int(total * _DYNAMIC_MAJORITY)  # a minority of *total*, by definition
+        slugs = [f"red-widget-{2000 + i}" for i in range(eligible)]
+        slugs += [f"red-widget-{chr(ord('a') + i)}" for i in range(total - eligible)]
+        entries = [
+            _entry("GET", f"https://api.myshop.example.com/products/{slug}") for slug in slugs
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert templates == {f"/products/{slug}" for slug in slugs}
 
 
 class TestParseErrorsAndMissingBodies:
