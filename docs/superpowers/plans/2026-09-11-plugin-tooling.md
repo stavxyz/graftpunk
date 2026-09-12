@@ -377,7 +377,7 @@ git commit -m "feat(har): add pure path templating and the capture naming rule"
 
 **Interfaces:**
 - Consumes: nothing outside the standard library (`html.parser`).
-- Produces: `TokenKind = Literal["header", "meta", "hidden_input", "cookie"]`; `LoginForm` (frozen dataclass: `action`, `method`, `fields: dict[str, str]`, `submit: str | None`, `hidden: tuple[str, ...]`, `source: str`); `TokenCandidate` (frozen dataclass: `kind: TokenKind`, `name: str`, `seen_on: tuple[str, ...]`); `extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]`; `extract_token_candidates(html: str, source: str) -> tuple[TokenCandidate, ...]`; `is_login_document(html: str) -> bool`. Task 3 imports `LoginForm`, `TokenCandidate`, `TokenKind`, and the three functions. Task 5's `site_requests.py` imports `is_login_document`.
+- Produces: `TokenKind = Literal["header", "meta", "hidden_input", "cookie"]`; `LoginForm` (frozen dataclass: `action`, `method`, `fields: dict[str, str]`, `submit: str | None`, `hidden: tuple[str, ...]`, `source: str`); `TokenCandidate` (frozen dataclass: `kind: TokenKind`, `name: str`, `seen_on: tuple[str, ...]`); `extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]`; `extract_token_candidates(html: str, source: str) -> tuple[TokenCandidate, ...]`; `is_login_document(html: str) -> bool`; `looks_like_token_name(name: str) -> bool`. Task 3 imports `LoginForm`, `TokenCandidate`, `TokenKind`, the three functions, and `looks_like_token_name` (its header- and cookie-name scans call it instead of re-typing the hint tuple; see Task 3's design note). Task 5's `site_requests.py` imports `is_login_document`.
 
 **Implementation note (deviation from the spec's single code block):** the spec's `har/digest.py` code block defines `TokenKind`, `LoginForm`, and `TokenCandidate` inline, but also has `digest.py` call `documents.extract_login_forms`/`extract_token_candidates`, whose return types are exactly those dataclasses. Defining them in `digest.py` and having `documents.py` import them back would be a circular import (`digest` imports `documents`, `documents` would import `digest`). This plan defines them in `documents.py`, the module that constructs them, and `digest.py` imports them from there (Task 3) so they remain reachable as `graftpunk.har.digest.LoginForm` etc. and, via `har/__init__.py` (Task 4), as `graftpunk.har.LoginForm`. The public import path the spec promises is unaffected; only the defining module differs.
 
@@ -390,10 +390,13 @@ Create `tests/unit/test_har_documents.py`:
 
 from __future__ import annotations
 
+import pytest
+
 from graftpunk.har.documents import (
     extract_login_forms,
     extract_token_candidates,
     is_login_document,
+    looks_like_token_name,
 )
 
 _LOGIN_PAGE = """
@@ -494,6 +497,22 @@ class TestIsLoginDocument:
 
     def test_false_for_ordinary_page(self) -> None:
         assert is_login_document(_NO_LOGIN_PAGE) is False
+
+
+class TestLooksLikeTokenName:
+    """The one predicate digest.py's header and cookie scans call, instead of
+    re-typing the hint tuple (validation net-negative, addressed 2026-09-12)."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["X-CSRF-Token", "xsrf-token", "csrftoken", "Authorization-Token"],
+    )
+    def test_true_for_a_token_like_name(self, name: str) -> None:
+        assert looks_like_token_name(name) is True
+
+    @pytest.mark.parametrize("name", ["Content-Type", "Accept", "session_id"])
+    def test_false_for_an_ordinary_name(self, name: str) -> None:
+        assert looks_like_token_name(name) is False
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -529,11 +548,24 @@ __all__ = [
     "extract_login_forms",
     "extract_token_candidates",
     "is_login_document",
+    "looks_like_token_name",
 ]
 
 _USERNAME_HINTS = ("user", "email", "login", "account")
 _TOKEN_NAME_HINTS = ("csrf", "xsrf", "token")
 _HIDDEN_TOKEN_NAME_HINTS = ("_token", "csrf", "authenticity_token")
+
+
+def looks_like_token_name(name: str) -> bool:
+    """True when *name* (a header, meta, or cookie name) contains a CSRF-token hint.
+
+    The one predicate over ``_TOKEN_NAME_HINTS``: ``digest.py``'s header and
+    cookie scans call this instead of re-typing the substring tuple, so the
+    three-way "csrf, xsrf, token" rule has a single owner (plugin tooling
+    spec, 2026-09-11, "Token candidates").
+    """
+    lowered = name.lower()
+    return any(hint in lowered for hint in _TOKEN_NAME_HINTS)
 
 
 @dataclass(frozen=True)
@@ -686,7 +718,7 @@ def extract_token_candidates(html: str, source: str) -> tuple[TokenCandidate, ..
     parsed = _parse(html)
     candidates: list[TokenCandidate] = []
     for name, _content in parsed.metas:
-        if any(hint in name.lower() for hint in _TOKEN_NAME_HINTS):
+        if looks_like_token_name(name):
             candidates.append(TokenCandidate(kind="meta", name=name, seen_on=(source,)))
     for raw_form in parsed.forms:
         for raw_input in raw_form.inputs:
@@ -737,7 +769,7 @@ git commit -m "feat(har): add login-form and token-candidate extraction from HTM
 
 **Interfaces:**
 - Consumes: `graftpunk.har.parser.parse_har_file`, `HAREntry` (`src/graftpunk/har/parser.py:318` (`def parse_har_file(filepath: Path | str) -> HARParseResult:`)); `graftpunk.har.paths.template_path`, `param_name_for_segment` (Task 1); `graftpunk.har.documents.LoginForm`, `TokenCandidate`, `TokenKind`, `extract_login_forms`, `extract_token_candidates` (Task 2).
-- Produces: `BodyKind`, `ObservationKind`, `DropReason` (`Literal` type aliases); `DigestSource` (frozen dataclass with `from_run_dir`/`from_har` classmethods); `ShapeNode`; `Endpoint`; `LoginObservation`; `RunDigest`; `digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest`. Task 4 (`report.py`) renders a `RunDigest`. Tasks 7 and 9 call `digest()` from the CLI and the scaffold.
+- Produces: `BodyKind`, `ObservationKind`, `DropReason` (`Literal` type aliases); `DigestSource` (frozen dataclass with `from_run_dir`/`from_har` classmethods); `ShapeNode`; `Endpoint`; `LoginObservation`; `RunDigest`; `digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest`; `body_params(entry: HAREntry) -> dict[str, str]` (request body field names to observed type; the one parse both `digest()`'s endpoint accumulation and Task 7's fixtures sidecar use). Task 4 (`report.py`) renders a `RunDigest`. Tasks 7 and 9 call `digest()` from the CLI and the scaffold; Task 7's fixtures command also calls `body_params`.
 
 **Implementation note:** the high-cardinality collapse ("a segment that appears with more than 8 distinct values across a run" also collapses) is a run-wide pass on top of `template_path`'s per-segment rule, so it lives here rather than in `paths.py`, which only ever sees one path at a time. The algorithm below groups templates that share a method and segment count and differ only at one position; it is a best-effort heuristic (documented in its own docstring), not an exhaustive path-family miner, which is adequate for a digest tool and is flagged here as a design choice this plan made, not one the spec dictated.
 
@@ -762,8 +794,10 @@ from graftpunk.har.digest import (
     _LOGIN_WINDOW,
     _SHAPE_MAX_DEPTH,
     _SHAPE_MAX_KEYS,
+    body_params,
     digest,
 )
+from graftpunk.har.parser import parse_har_file
 
 
 def _entry(
@@ -897,6 +931,37 @@ class TestTypeObservation:
         assert endpoint.body_params["quantity"] == "int"
         assert endpoint.body_params["gift"] == "bool"
         assert endpoint.body_params["note"] == "str"
+
+
+class TestBodyParams:
+    """The one owner of body-param parsing: digest()'s endpoint accumulation
+    and the fixtures sidecar (Task 7) both call this directly
+    (validation net-negative, addressed 2026-09-12)."""
+
+    def test_json_body_field_types(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/orders",
+                post_data=json.dumps({"quantity": 3, "gift": True}),
+            )
+        ]
+        (entry,) = parse_har_file(_write_har(tmp_path, entries)).entries
+        assert body_params(entry) == {"quantity": "int", "gift": "bool"}
+
+    def test_form_encoded_body_field_types(self, tmp_path: Path) -> None:
+        entry_dict = _entry("POST", "https://api.myshop.example.com/login")
+        entry_dict["request"]["postData"] = {
+            "mimeType": "application/x-www-form-urlencoded",
+            "text": "username=alice&remember=true",
+        }
+        (entry,) = parse_har_file(_write_har(tmp_path, [entry_dict])).entries
+        assert body_params(entry) == {"username": "str", "remember": "bool"}
+
+    def test_no_body_is_empty(self, tmp_path: Path) -> None:
+        entries = [_entry("GET", "https://api.myshop.example.com/orders")]
+        (entry,) = parse_har_file(_write_har(tmp_path, entries)).entries
+        assert body_params(entry) == {}
 
 
 class TestShapeNode:
@@ -1152,6 +1217,7 @@ from graftpunk.har.documents import (
     TokenKind,
     extract_login_forms,
     extract_token_candidates,
+    looks_like_token_name,
 )
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import param_name_for_segment, template_path
@@ -1175,6 +1241,7 @@ __all__ = [
     "ShapeNode",
     "TokenCandidate",
     "TokenKind",
+    "body_params",
     "digest",
 ]
 
@@ -1185,6 +1252,7 @@ _HIGH_CARDINALITY_THRESHOLD = 8  # a segment with more distinct values than this
 _LOGIN_WINDOW = 20  # entries after a credential post that may carry a redirect/set_cookie
 _SHAPE_MAX_DEPTH = 3
 _SHAPE_MAX_KEYS = 12
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 _EXCLUDE_PATTERNS = [
     r"\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|map)(\?|$)",
@@ -1364,7 +1432,8 @@ def _query_param_types(url: str) -> dict[str, str]:
     return types
 
 
-def _body_param_types(entry: HAREntry) -> tuple[dict[str, str], BodyKind]:
+def _parse_body(entry: HAREntry) -> tuple[dict[str, str], BodyKind]:
+    """The request body's field names and observed types, and which kind it was."""
     post_data = entry.request.post_data
     if not post_data:
         return {}, "none"
@@ -1390,6 +1459,21 @@ def _body_param_types(entry: HAREntry) -> tuple[dict[str, str], BodyKind]:
     if form:
         return {k: ("list" if len(v) > 1 else _observed_type(v[0])) for k, v in form.items()}, "form"
     return {}, "none"
+
+
+def body_params(entry: HAREntry) -> dict[str, str]:
+    """Request body field names to their observed type: JSON object fields,
+    or form-encoded fields when the body is not JSON. Empty when there is no
+    body.
+
+    The one public entry point for "what are this entry's body param
+    names": ``digest()``'s endpoint accumulation and the fixtures command's
+    sidecar (``cli/observe_commands.py``) both call this instead of
+    reimplementing the JSON-then-form parse (validation net-negative,
+    addressed 2026-09-12).
+    """
+    types, _kind = _parse_body(entry)
+    return types
 
 
 def _shape_of(value: Any, depth: int = 0) -> ShapeNode:
@@ -1452,8 +1536,8 @@ def _response_cookie_names(entry: HAREntry) -> list[str]:
 
 def _has_password_field(entry: HAREntry) -> list[str]:
     """Field names on a POST whose body has a password-like field."""
-    body_params, _ = _body_param_types(entry)
-    return [name for name in body_params if any(hint in name.lower() for hint in _PASSWORD_FIELD_HINTS)]
+    field_types = body_params(entry)
+    return [name for name in field_types if any(hint in name.lower() for hint in _PASSWORD_FIELD_HINTS)]
 
 
 class _EndpointAccumulator:
@@ -1479,9 +1563,9 @@ class _EndpointAccumulator:
         content_type = entry.response.content_type or ""
         self.content_types[content_type] = self.content_types.get(content_type, 0) + 1
         self.query_params.update(_query_param_types(entry.request.url))
-        body_params, body_kind = _body_param_types(entry)
-        if body_params:
-            self.body_params.update(body_params)
+        field_types, body_kind = _parse_body(entry)
+        if field_types:
+            self.body_params.update(field_types)
         if body_kind != "none":
             self.body_kind = body_kind
         if self.shape is None:
@@ -1613,11 +1697,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         acc.record(entry, path)
 
         for name in entry.request.headers:
-            if any(h in name.lower() for h in ("csrf", "xsrf", "token")):
+            if looks_like_token_name(name):
                 token_seen.setdefault(("header", name), []).append(f"{method} {raw_template}")
         for cookie in entry.request.cookies + entry.response.cookies:
             cname = cookie.get("name", "")
-            if cname and any(h in cname.lower() for h in ("csrf", "xsrf", "token")):
+            if cname and looks_like_token_name(cname):
                 token_seen.setdefault(("cookie", cname), []).append(f"{method} {raw_template}")
 
         if host == primary_host:
@@ -1641,7 +1725,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         elif method == "POST" and credential_fields:
             kind, fields = "credential_post", tuple(sorted(credential_fields))
         elif credential_post_indexes and index - credential_post_indexes[-1] <= _LOGIN_WINDOW:
-            if entry.response.status in (301, 302, 303, 307, 308):
+            if entry.response.status in _REDIRECT_STATUSES:
                 kind = "redirect"
             elif _response_cookie_names(entry):
                 kind, fields = "set_cookie", tuple(_response_cookie_names(entry))
@@ -1715,6 +1799,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     )
 ```
 
+> **Design note (2026-09-12):** an earlier draft re-typed the substring tuple `("csrf", "xsrf", "token")` inline at both the header loop and the cookie loop above, instead of reusing `documents.py`'s own token-name rule. Validation flagged the duplication (two owners of one "does this name look like a CSRF token" decision, easy to drift apart at either site). `har/documents.py` (Task 2) now exports `looks_like_token_name(name: str) -> bool`, and both loops above call it, so the three-way hint list has exactly one owner.
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_har_digest.py -q`
@@ -1739,12 +1825,12 @@ git commit -m "feat(har): add the RunDigest model and digest() over HAR entries"
 **Files:**
 - Create: `src/graftpunk/har/report.py`
 - Modify: `src/graftpunk/har/__init__.py` (replaced in full; see Step 3)
-- Modify: `src/graftpunk/cli/import_har.py:20` (`from graftpunk.har import (`), lines 20-29
+- Modify: `src/graftpunk/cli/import_har.py:20` (`from graftpunk.har import (`), lines 20-30
 - Test: `tests/unit/test_har_report.py`
 
 **Interfaces:**
 - Consumes: `graftpunk.har.digest.RunDigest`, `Endpoint`, `ShapeNode` (Task 3).
-- Produces: `render_markdown(d: RunDigest, *, limit: int = 60) -> str`; `render_json(d: RunDigest) -> str`. Task 7's `cli/observe_commands.py` calls both. Neither is exported from `graftpunk.har`'s top level (`import graftpunk.har.report` directly), per the spec.
+- Produces: `render_markdown(d: RunDigest, *, limit: int = 60) -> str`; `render_json(d: RunDigest) -> str`; `summarize_shape(shape: ShapeNode | None, *, depth: int = 3) -> str`. Task 7's `cli/observe_commands.py` calls `render_markdown`/`render_json`; Task 8's `devtools/scaffold/render.py` calls `summarize_shape` with its own depth budget instead of keeping a second implementation (see Task 8's design note). None of the three is exported from `graftpunk.har`'s top level (`import graftpunk.har.report` directly), per the spec.
 
 **Note on `cli/import_har.py`:** `import-har` is not removed until Task 10, and today it imports `APIEndpoint`, `AuthFlow`, `HARParseResult`, `detect_auth_flow`, `discover_api_endpoints`, `extract_domain`, and `parse_har_file` from the package top level (`src/graftpunk/cli/import_har.py:20` (`from graftpunk.har import (`)). This task's `__init__.py` rewrite drops those names from `graftpunk.har.__all__` and its imports, which would break `gp import-har` (and `tests/unit/test_import_har.py`, `tests/unit/test_har_generator.py`, `tests/unit/test_har_analyzer.py`, and `TestImportHarCommand`, all still present and still run by the gate) the moment this task lands. Step 3 below also repoints `import_har.py`'s imports at the submodules directly (`graftpunk.har.analyzer`, `graftpunk.har.parser`), which changes nothing about its behaviour and keeps the gate green until Task 10 deletes the file outright.
 
@@ -1912,21 +1998,34 @@ from typing import Any
 
 from graftpunk.har.digest import Endpoint, RunDigest, ShapeNode
 
-__all__ = ["render_json", "render_markdown"]
+__all__ = ["render_json", "render_markdown", "summarize_shape"]
 
 _DEFAULT_ENDPOINT_LIMIT = 60
-_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+_DEFAULT_SUMMARY_DEPTH = 3
 
 
-def _shape_summary(shape: ShapeNode | None) -> str:
+def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DEPTH) -> str:
+    """A one-line human-readable summary of *shape*, recursing up to *depth* levels.
+
+    The one shape-summarising function: the markdown renderer below and the
+    scaffold's generated docstrings (``devtools/scaffold/render.py``) both
+    call this instead of keeping their own divergent formatting, so "what
+    does this endpoint return" reads the same in a digest and in a generated
+    plugin (plugin tooling spec, 2026-09-11; validation net-negative,
+    addressed 2026-09-12).
+    """
     if shape is None:
-        return "(non-JSON)"
+        return "non-JSON"
     if shape.kind in ("string", "number", "boolean", "null"):
         return shape.kind
     if shape.kind == "array":
-        return f"array<{_shape_summary(shape.item)}>"
+        if depth <= 0:
+            return "array<...>"
+        return f"array<{summarize_shape(shape.item, depth=depth - 1)}>"
     if not shape.children:
         return "object{}"
+    if depth <= 0:
+        return "object{...}"
     keys = ", ".join(sorted(shape.children))
     suffix = ", ..." if shape.truncated else ""
     return f"object{{{keys}{suffix}}}"
@@ -1946,7 +2045,7 @@ def _endpoint_block(endpoint: Endpoint) -> list[str]:
         lines.append(f"- body params ({endpoint.body_kind}): {params}")
     if endpoint.custom_headers:
         lines.append(f"- custom headers: {', '.join(endpoint.custom_headers)}")
-    lines.append(f"- shape: {_shape_summary(endpoint.shape)}")
+    lines.append(f"- shape: {summarize_shape(endpoint.shape)}")
     if endpoint.examples:
         lines.append(f"- examples: {', '.join(endpoint.examples)}")
     lines.append("")
@@ -2031,7 +2130,7 @@ def render_json(d: RunDigest) -> str:
     return json.dumps(_jsonable(d), indent=2, sort_keys=True)
 ```
 
-In `src/graftpunk/cli/import_har.py`, replace the import block at lines 20-29 (`src/graftpunk/cli/import_har.py:20` (`from graftpunk.har import (`) through the closing `)` at line 28, plus line 29):
+In `src/graftpunk/cli/import_har.py`, replace the import block at lines 20-30 (`src/graftpunk/cli/import_har.py:20` (`from graftpunk.har import (`) through the closing `)` at line 28, the `graftpunk.har.generator` line at line 29, AND the standalone `from graftpunk.har.parser import HARParseError` at line 30. Dropping line 30 matters: leaving it in place while also adding `HARParseError` to the combined parser import below duplicates the name and `uvx ruff check` fails F811 (redefinition) at this commit.
 
 ```python
 from graftpunk.har.analyzer import (
@@ -2126,6 +2225,7 @@ git commit -m "feat(har): add digest renderers and update graftpunk.har's public
 **Files:**
 - Modify: `src/graftpunk/exceptions.py:60` (`class KeepaliveError(GraftpunkError):`), insert two new classes before it
 - Create: `src/graftpunk/plugins/site_requests.py`
+- Modify: `src/graftpunk/plugins/cli_plugin.py:59` (`from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext`), insert one import line after it
 - Modify: `src/graftpunk/plugins/cli_plugin.py:288` (`class CommandResult:`), insert two new methods on `CommandContext` before it
 - Test: `tests/unit/test_site_requests.py`
 
@@ -2511,7 +2611,15 @@ class SiteRequests:
         return response.text
 ```
 
-In `src/graftpunk/plugins/cli_plugin.py`, insert before `src/graftpunk/plugins/cli_plugin.py:288` (`class CommandResult:`):
+In `src/graftpunk/plugins/cli_plugin.py`, insert one import line after `src/graftpunk/plugins/cli_plugin.py:59` (`from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext`):
+
+```python
+from graftpunk.plugins.site_requests import SiteRequests
+```
+
+> **Design note (2026-09-12):** validation asked whether the two methods below should import `SiteRequests` inside their bodies (to avoid a `cli_plugin` <-> `site_requests` import cycle) or at module level. Checked: `site_requests.py` imports only `graftpunk.exceptions`, `graftpunk.har.documents`, and `graftpunk.logging`, none of which import `graftpunk.plugins` or `graftpunk.plugins.cli_plugin`, so there is no cycle. The import moves to module level, as above; `request_json`/`request_text` below reference `SiteRequests` directly rather than re-importing it on every call.
+
+Insert before `src/graftpunk/plugins/cli_plugin.py:288` (`class CommandResult:`):
 
 ```python
     def request_json(self, method: str, url: str, *, role: str = "xhr", **kwargs: Any) -> Any:
@@ -2520,16 +2628,12 @@ In `src/graftpunk/plugins/cli_plugin.py`, insert before `src/graftpunk/plugins/c
         See :class:`graftpunk.plugins.site_requests.SiteRequests` for the
         role, rejection, and body-shape policy this delegates to.
         """
-        from graftpunk.plugins.site_requests import SiteRequests
-
         return SiteRequests(self.session, self.plugin_name, self.base_url).json(
             method, url, role=role, **kwargs
         )
 
     def request_text(self, method: str, url: str, *, role: str = "navigation", **kwargs: Any) -> str:
         """``SiteRequests(self.session, self.plugin_name, self.base_url).text(...)``."""
-        from graftpunk.plugins.site_requests import SiteRequests
-
         return SiteRequests(self.session, self.plugin_name, self.base_url).text(
             method, url, role=role, **kwargs
         )
@@ -2932,7 +3036,7 @@ git commit -m "feat(testing): add graftpunk.testing (make_context, FixtureSessio
 - Test: `tests/unit/test_observe_commands.py`
 
 **Interfaces:**
-- Consumes: `graftpunk.har.digest.DigestSource`, `RunDigest`, `digest` (Task 3); `graftpunk.har.report.render_json`, `render_markdown` (Task 4); `graftpunk.har.naming.capture_slug`, `graftpunk.har.paths.template_path` (Task 1); `graftpunk.observe.OBSERVE_BASE_DIR` (`src/graftpunk/observe/context.py:100` (`OBSERVE_BASE_DIR = Path.home() / ".local" / "share" / "graftpunk" / "observe"`)); `graftpunk.observe.storage.session_dirname` (`src/graftpunk/observe/storage.py:20` (`def session_dirname(session_name: str) -> str:`)).
+- Consumes: `graftpunk.har.digest.DigestSource`, `RunDigest`, `digest`, `body_params` (Task 3, called by the fixtures sidecar for its field-name list rather than reimplemented; see this task's design note); `graftpunk.har.report.render_json`, `render_markdown` (Task 4); `graftpunk.har.naming.capture_slug`, `graftpunk.har.paths.template_path` (Task 1); `graftpunk.observe.OBSERVE_BASE_DIR` (`src/graftpunk/observe/context.py:100` (`OBSERVE_BASE_DIR = Path.home() / ".local" / "share" / "graftpunk" / "observe"`)); `graftpunk.observe.storage.session_dirname` (`src/graftpunk/observe/storage.py:20` (`def session_dirname(session_name: str) -> str:`)).
 - Produces: `devtools.captures.CAPTURES_DIR = "tests/captures"`, `find_repo_root(start: Path) -> Path | None`, `ensure_ignored(repo_root: Path, relative: str) -> bool`, `is_tracked(path: Path) -> bool`. `cli/observe_commands.resolve_run(session_name: str, run_id: str | None, *, base_dir: Path | None = None) -> Path`, `register(observe_app: typer.Typer) -> None`. Task 9's `cli/scaffold_commands.py` calls `resolve_run` (for `--from-run`) and imports `CAPTURES_DIR`/`ensure_ignored` via `project.py`.
 
 **Implementation note on `OBSERVE_BASE_DIR` patchability:** the existing `TestObserveCLICommands` suite (`tests/unit/test_cli.py:886` (`class TestObserveCLICommands:`)) patches `graftpunk.cli.main.OBSERVE_BASE_DIR` directly (e.g. `patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path)`), which only rebinds that name in `main.py`'s own namespace. If `resolve_run` read a module-level `OBSERVE_BASE_DIR` imported into `observe_commands.py`, those patches would silently stop working the moment `observe_show` started delegating to it, since `observe_commands.py` would hold its own separate binding. `resolve_run` therefore takes `base_dir` as an explicit keyword, defaulting to `graftpunk.observe.OBSERVE_BASE_DIR` only when the caller does not override it; `main.py`'s `observe_show` passes its own (still-patchable) module-level `OBSERVE_BASE_DIR` through explicitly, so every existing `observe show` test keeps working unmodified. `digest_cmd` and `fixtures_cmd` call `resolve_run` with no override, so tests for them patch `graftpunk.cli.observe_commands.OBSERVE_BASE_DIR` instead, the binding that is actually in scope there.
@@ -3327,16 +3431,16 @@ from __future__ import annotations
 import json as jsonlib
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import typer
 from rich.console import Console
 from rich.markup import escape
 
 from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored, find_repo_root, is_tracked
-from graftpunk.har.digest import DigestSource, digest
+from graftpunk.har.digest import DigestSource, body_params, digest
 from graftpunk.har.naming import capture_filename
-from graftpunk.har.parser import HAREntry, parse_har_file
+from graftpunk.har.parser import parse_har_file
 from graftpunk.har.paths import template_path
 from graftpunk.har.report import render_json, render_markdown
 from graftpunk.logging import get_logger
@@ -3437,19 +3541,6 @@ def _matches_template(entry_method: str, entry_template: str, pattern: str) -> b
     return entry_template == path_part or fnmatch.fnmatch(entry_template, path_part)
 
 
-def _body_param_names(entry: HAREntry) -> list[str]:
-    post_data = entry.request.post_data
-    if not post_data:
-        return []
-    try:
-        parsed = jsonlib.loads(post_data)
-    except ValueError:
-        parsed = None
-    if isinstance(parsed, dict):
-        return sorted(parsed.keys())
-    return sorted(parse_qs(post_data, keep_blank_values=True).keys())
-
-
 def fixtures_cmd(
     session: Annotated[str, typer.Argument(metavar="SESSION")],
     run: Annotated[str | None, typer.Argument(metavar="RUN_ID")] = None,
@@ -3527,7 +3618,7 @@ def fixtures_cmd(
                     "url": entry.request.url,
                     "status": entry.response.status,
                     "content_type": content_type,
-                    "body_params": _body_param_names(entry),
+                    "body_params": sorted(body_params(entry)),
                     "captured_at": entry.timestamp.isoformat(),
                 },
                 indent=2,
@@ -3546,6 +3637,8 @@ def register(observe_app: typer.Typer) -> None:
     observe_app.command("digest")(digest_cmd)
     observe_app.command("fixtures")(fixtures_cmd)
 ```
+
+> **Design note (2026-09-12):** an earlier draft of `fixtures_cmd` carried its own `_body_param_names`, reimplementing `har/digest.py`'s JSON-then-form body parse to get field names for the sidecar. Validation flagged the duplication: one decision ("what are this entry's body param names"), two independent implementations that could silently diverge. `har/digest.py` (Task 3) now exports `body_params(entry) -> dict[str, str]`, which `digest()`'s own endpoint accumulation and this sidecar both call; the sidecar takes `sorted(body_params(entry))` for just the names. `HAREntry` and `urllib.parse.parse_qs` are dropped from this module's imports along with the removed function: nothing else here used them.
 
 In `src/graftpunk/cli/main.py`, add the import between the existing `graftpunk.cli.keepalive_commands` and `graftpunk.cli.plugin_commands` imports (`src/graftpunk/cli/main.py:40` (`from graftpunk.cli.keepalive_commands import keepalive_app`)), keeping the `graftpunk.cli.*` block alphabetically ordered (ruff's `I` rule):
 
@@ -3646,7 +3739,7 @@ git commit -m "feat(cli): add gp observe digest and gp observe fixtures"
 - Test: `tests/unit/test_scaffold_pyproject_edit.py`
 
 **Interfaces:**
-- Consumes: `graftpunk.har.digest.RunDigest`, `Endpoint`, `ShapeNode`, `TokenCandidate` (Task 3); `graftpunk.devtools.captures.CAPTURES_DIR` (Task 7).
+- Consumes: `graftpunk.har.digest.RunDigest`, `Endpoint`, `ShapeNode`, `TokenCandidate` (Task 3); `graftpunk.har.report.summarize_shape` (Task 4, called with the scaffold's own depth budget rather than reimplemented); `graftpunk.devtools.captures.CAPTURES_DIR` (Task 7).
 - Produces: `ScaffoldSpec` (frozen dataclass: `name`, `mode: Literal["new_project", "add_to_suite"]`, `backend: Literal["nodriver", "selenium"]`, `base_url`, `digest: RunDigest | None = None`, `graftpunk_version: str = ""`); `class_name_for(name: str) -> str`; `render(spec: ScaffoldSpec) -> dict[str, str]` (relative path -> file content). `add_entry_point(pyproject_path: Path, name: str, target: str) -> None`; `add_wheel_package(pyproject_path: Path, package: str) -> None`; `PyprojectEditError`. Task 9's `project.py` calls `render`, `add_entry_point`, and `add_wheel_package` and builds `ScaffoldSpec` instances; `cli/scaffold_commands.py` builds the initial `ScaffoldSpec` from `--from-run`'s digest.
 
 Render.py and pyproject_edit.py have no dependency on each other: `project.py` (Task 9) is what wires them together, so both can be built and tested independently first.
@@ -4115,12 +4208,17 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from graftpunk.devtools.captures import CAPTURES_DIR
-from graftpunk.har.digest import Endpoint, RunDigest, ShapeNode, TokenCandidate
+from graftpunk.har.digest import Endpoint, RunDigest, TokenCandidate
+from graftpunk.har.report import summarize_shape
 
 __all__ = ["ScaffoldSpec", "class_name_for", "render"]
 
 _MAX_SCAFFOLD_ENDPOINTS = 12
 _PY_TYPE_BY_OBSERVED: dict[str, str] = {"int": "int", "bool": "bool", "list": "list[str]", "str": "str"}
+# A generated stub's docstring is one line: shallower than report.py's own
+# default (3), so a wide response shows its top-level keys without spilling
+# nested detail into the docstring.
+_SCAFFOLD_SHAPE_DEPTH = 1
 
 
 @dataclass(frozen=True)
@@ -4234,14 +4332,6 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
     return lines
 
 
-def _shape_summary(shape: ShapeNode | None) -> str:
-    if shape is None:
-        return "non-JSON"
-    if shape.kind != "object" or not shape.children:
-        return shape.kind
-    return f"object with keys: {', '.join(sorted(shape.children))}"
-
-
 def _is_json_endpoint(endpoint: Endpoint) -> bool:
     return endpoint.shape is not None or "json" in endpoint.content_type.lower()
 
@@ -4275,7 +4365,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         f"    def {name}({', '.join(sig_parts)}) -> {return_type}:",
         (
             f'        """{method} {endpoint.template}: seen {endpoint.count} time(s) in run '
-            f'{run_label}. Shape: {_shape_summary(endpoint.shape)}."""'
+            f'{run_label}. Shape: {summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."""'
         ),
         f'        return ctx.{call}("{method}", {url_expr}, {", ".join(call_kwargs)})',
         "",
@@ -4472,6 +4562,8 @@ def render(spec: ScaffoldSpec) -> dict[str, str]:
         "tests/fixtures/.gitkeep": "",
     }
 ```
+
+> **Design note (2026-09-12):** an earlier draft of `render.py` defined its own `_shape_summary`, whose wording (`"object with keys: ..."`, no array nesting, no truncation marker) diverged from `har/report.py`'s own shape summariser. Validation flagged the two implementations as a single decision (what a shape looks like as one line of text) with two owners that could silently drift. `har/report.py` (Task 4) now exports `summarize_shape(shape, *, depth=3)`; `render.py` imports it and calls it with its own `_SCAFFOLD_SHAPE_DEPTH = 1` budget (a generated stub's docstring is one line, shallower than the digest's default), rather than keeping a second copy.
 
 Create `src/graftpunk/devtools/scaffold/pyproject_edit.py`:
 
@@ -5421,7 +5513,7 @@ git commit -m "refactor: remove gp import-har in favour of gp observe digest and
 
 **Placeholder scan.** No `TBD`, no "add error handling", no "similar to Task N", no un-shown code steps. Every test file has real assertions; every implementation file is complete, runnable Python. The one `or True` I nearly shipped in Task 3's `digest()` draft (the `form_page` classification) was caught during drafting and replaced with a clean `forms_in_entry` reuse before this plan was finalized; there is no dead scaffolding left in any task's code block.
 
-**Type and signature consistency.** `DigestSource`, `RunDigest`, `Endpoint`, `ShapeNode`, `LoginObservation` are defined once in Task 3 and used with those exact field names in Tasks 4, 7, 8, and 9. `LoginForm`, `TokenCandidate`, `TokenKind` are defined once in Task 2 (not Task 3, see the implementation note below) and imported with those spellings everywhere else. `capture_slug(method, path)` and `capture_filename(method, path, content_type)` (Task 1) are called with that exact argument order in Tasks 6, 7, and nowhere are they given a different order. `ctx.request_json`/`ctx.request_text` (Task 5) keep the same keyword-only `role` default (`"xhr"`/`"navigation"`) in every task that calls them, including the generated stubs in Task 8. `resolve_run(session_name, run_id, *, base_dir=None)` (Task 7) is called with that signature from `main.py`, `observe_commands.py`'s own commands, and `scaffold_commands.py`.
+**Type and signature consistency.** `DigestSource`, `RunDigest`, `Endpoint`, `ShapeNode`, `LoginObservation` are defined once in Task 3 and used with those exact field names in Tasks 4, 7, 8, and 9. `LoginForm`, `TokenCandidate`, `TokenKind` are defined once in Task 2 (not Task 3, see the implementation note below) and imported with those spellings everywhere else. `capture_slug(method, path)` and `capture_filename(method, path, content_type)` (Task 1) are called with that exact argument order in Tasks 6, 7, and nowhere are they given a different order. `ctx.request_json`/`ctx.request_text` (Task 5) keep the same keyword-only `role` default (`"xhr"`/`"navigation"`) in every task that calls them, including the generated stubs in Task 8. `resolve_run(session_name, run_id, *, base_dir=None)` (Task 7) is called with that signature from `main.py`, `observe_commands.py`'s own commands, and `scaffold_commands.py`. Three single-owner helpers added in the 2026-09-12 revision keep the same spelling everywhere: `documents.looks_like_token_name(name) -> bool` (Task 2, called from Task 3's header and cookie scans), `report.summarize_shape(shape, *, depth=3) -> str` (Task 4, called from Task 8's stub docstrings with `depth=_SCAFFOLD_SHAPE_DEPTH`), and `digest.body_params(entry) -> dict[str, str]` (Task 3, called from Task 7's fixtures sidecar).
 
 **Deviations from the spec's literal text, and why:**
 
