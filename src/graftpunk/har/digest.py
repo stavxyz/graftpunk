@@ -334,26 +334,24 @@ def _custom_headers(entry: HAREntry) -> tuple[str, ...]:
 
 
 def _response_cookie_names(entry: HAREntry) -> list[str]:
-    """Cookie names this response sets.
+    """Cookie names this response sets: the union of HAR's own
+    ``response.cookies`` array and ``response.set_cookie_names``.
 
-    HAR's own ``response.cookies`` array is the first source, but browser
-    capture tools (and this task's synthetic fixtures) commonly carry the
-    cookie only in a ``Set-Cookie`` response header, so that is the fallback
-    (deviation from the brief's cookies-array-only draft: the brief's own
-    ``test_set_cookie_within_window_is_an_observation`` builds its fixture
-    with ``set_cookies`` going into headers, not the cookies array, so the
-    array-only version cannot pass it; documented in task-3-report.md).
+    ``set_cookie_names`` is parsed at parse time in ``har/parser.py`` from
+    every ``Set-Cookie`` header on the raw response, deduplicated, in
+    order; that is the only place header text is read, since a response can
+    carry more than one ``Set-Cookie`` header and a header dict collapses
+    duplicate names to the last value.
     """
-    names = [c["name"] for c in entry.response.cookies if c.get("name")]
-    if names:
-        return names
-    headers = entry.response.headers
-    set_cookie = headers.get("Set-Cookie") or headers.get("set-cookie")
-    if set_cookie:
-        name = set_cookie.split("=", 1)[0].strip()
-        if name:
-            return [name]
-    return []
+    names: list[str] = []
+    for cookie in entry.response.cookies:
+        name = cookie.get("name", "")
+        if name and name not in names:
+            names.append(name)
+    for name in entry.response.set_cookie_names:
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def _has_password_field(entry: HAREntry) -> list[str]:

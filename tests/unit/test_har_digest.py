@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from graftpunk.har.digest import (
     _HIGH_CARDINALITY_THRESHOLD,
     _LOGIN_WINDOW,
+    _SHAPE_MAX_DEPTH,
     _SHAPE_MAX_KEYS,
     DigestSource,
     body_params,
@@ -61,6 +63,14 @@ def _write_har(tmp_path: Path, entries: list[dict], name: str = "network.har") -
     har_path = tmp_path / name
     har_path.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
     return har_path
+
+
+def _nested_dict(levels: int) -> dict[str, Any]:
+    """A dict nested `levels` deep: {"level0": {"level1": {...: "too deep"}}}."""
+    value: Any = "too deep"
+    for i in reversed(range(levels)):
+        value = {f"level{i}": value}
+    return value
 
 
 class TestPrimaryHostAndHosts:
@@ -214,15 +224,17 @@ class TestShapeNode:
         assert shape.children["id"].kind == "number"
         assert shape.children["paid"].kind == "boolean"
 
-    def test_depth_beyond_3_is_truncated(self, tmp_path: Path) -> None:
-        deeply_nested = {"a": {"b": {"c": {"d": "too deep"}}}}
-        entries = [
-            _entry("GET", "https://api.myshop.example.com/nested", body=json.dumps(deeply_nested))
-        ]
+    def test_depth_beyond_the_max_is_truncated(self, tmp_path: Path) -> None:
+        nested = _nested_dict(_SHAPE_MAX_DEPTH + 1)
+        entries = [_entry("GET", "https://api.myshop.example.com/nested", body=json.dumps(nested))]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         shape = result.endpoints[0].shape
         assert shape is not None
-        node = shape.children["a"].children["b"].children["c"]
+        node = shape
+        for i in range(_SHAPE_MAX_DEPTH):
+            assert node is not None
+            assert node.children is not None
+            node = node.children[f"level{i}"]
         assert node.truncated is True
 
     def test_more_than_12_keys_is_truncated(self, tmp_path: Path) -> None:
@@ -371,6 +383,23 @@ class TestTokenCandidatePairing:
         kinds = {c.kind for c in result.tokens}
         assert "header" in kinds
         assert "meta" in kinds
+
+
+class TestRunLevelCookies:
+    def test_multiple_set_cookie_headers_both_names_appear(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/dashboard",
+                set_cookies=[
+                    "session_id=abc123; Path=/; HttpOnly",
+                    "csrf_token=xyz; Path=/",
+                ],
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert "session_id" in result.cookies
+        assert "csrf_token" in result.cookies
 
 
 class TestDigestSourceFromHar:
