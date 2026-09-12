@@ -38,6 +38,8 @@ from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_prof
 from graftpunk.cli.config_commands import config_app
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
+from graftpunk.cli.observe_commands import register as register_observe_commands
+from graftpunk.cli.observe_commands import resolve_run as resolve_observe_run
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
@@ -204,6 +206,7 @@ observe_app = typer.Typer(
     name="observe",
     help="View and manage observability data (HAR, screenshots, logs).",
 )
+register_observe_commands(observe_app)
 
 
 @observe_app.callback(invoke_without_command=True)
@@ -304,29 +307,9 @@ def observe_show(
     if session_name is None:
         console.print("[red]Session name required. Use --session or pass SESSION argument.[/red]")
         raise typer.Exit(1)
-    # See observe_list: the lookup dir must match the writer's slugified name.
-    session_dir = OBSERVE_BASE_DIR / session_dirname(session_name)
-    if not session_dir.exists() or not session_dir.is_dir():
-        console.print(f"[red]No runs found for session '{escape(session_name)}'[/red]")
-        raise typer.Exit(1)
-
-    if run_id is None:
-        # Use the latest run
-        run_dirs = sorted(
-            [d for d in session_dir.iterdir() if d.is_dir()],
-            key=lambda d: d.name,
-        )
-        if not run_dirs:
-            console.print(f"[red]No runs found for session '{escape(session_name)}'[/red]")
-            raise typer.Exit(1)
-        run_dir = run_dirs[-1]
-    else:
-        run_dir = session_dir / run_id
-        if not run_dir.exists():
-            console.print(
-                f"[red]Run '{escape(run_id)}' not found for session '{escape(session_name)}'[/red]"
-            )
-            raise typer.Exit(1)
+    # base_dir=OBSERVE_BASE_DIR passes main.py's own (test-patchable) global
+    # through explicitly; see observe_commands.resolve_run's docstring.
+    run_dir = resolve_observe_run(session_name, run_id, base_dir=OBSERVE_BASE_DIR)
 
     info = f"[bold]{escape(session_name)}[/bold] / {escape(run_dir.name)}\n"
     info += f"[dim]Path:[/dim] {escape(str(run_dir))}\n"
