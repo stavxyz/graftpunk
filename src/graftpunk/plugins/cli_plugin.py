@@ -57,6 +57,7 @@ from graftpunk.cache import cache_session, get_session_metadata, load_session_fo
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
+from graftpunk.plugins.site_requests import SiteRequests
 from graftpunk.session_scope import operating_session_for, resolve_load_target
 
 LOG = get_logger(__name__)
@@ -282,6 +283,24 @@ class CommandContext:
         same value under the old name for any handler still reading it.
         """
         return self._operating_session_name
+
+    def request_json(self, method: str, url: str, *, role: str = "xhr", **kwargs: Any) -> Any:
+        """``SiteRequests(self.session, self.plugin_name, self.base_url).json(...)``.
+
+        See :class:`graftpunk.plugins.site_requests.SiteRequests` for the
+        role, rejection, and body-shape policy this delegates to.
+        """
+        return SiteRequests(self.session, self.plugin_name, self.base_url).json(
+            method, url, role=role, **kwargs
+        )
+
+    def request_text(
+        self, method: str, url: str, *, role: str = "navigation", **kwargs: Any
+    ) -> str:
+        """``SiteRequests(self.session, self.plugin_name, self.base_url).text(...)``."""
+        return SiteRequests(self.session, self.plugin_name, self.base_url).text(
+            method, url, role=role, **kwargs
+        )
 
 
 @dataclass(frozen=True)

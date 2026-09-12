@@ -1,0 +1,233 @@
+"""SiteRequests and the CommandContext delegates (plugin tooling spec, 2026-09-11)."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pytest
+import requests
+
+from graftpunk.exceptions import CommandError, SessionRejectedError, UnexpectedResponseError
+from graftpunk.graftpunk_session import GraftpunkSession
+from graftpunk.plugins.cli_plugin import CommandContext
+from graftpunk.plugins.site_requests import SiteRequests
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        content_type: str = "application/json",
+        text: str = "{}",
+        request_method: str = "GET",
+        url: str = "https://myshop.example.com/x",
+    ) -> None:
+        self.status_code = status_code
+        self.headers = {"Content-Type": content_type}
+        self.text = text
+        self.url = url
+        self.request = requests.PreparedRequest()
+        self.request.method = request_method
+        self.request.url = url
+
+    def json(self) -> Any:
+        return json.loads(self.text)
+
+
+class _RoleAwareSession:
+    """A duck-typed session with request_with_role, like GraftpunkSession."""
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+        self._response = response
+
+    def request_with_role(self, role: str, method: str, url: str, **kwargs: Any) -> _FakeResponse:
+        self.calls.append((role, method, url))
+        return self._response
+
+
+class TestJsonHappyPath:
+    def test_2xx_json_returns_parsed_body(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200, text=json.dumps({"a": 1})))
+        result = SiteRequests(session, "myshop", "https://myshop.example.com").json(
+            "GET", "/orders"
+        )
+        assert result == {"a": 1}
+
+    def test_relative_url_resolved_against_base_url(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200))
+        SiteRequests(session, "myshop", "https://myshop.example.com/").json("GET", "/orders")
+        assert session.calls[0][2] == "https://myshop.example.com/orders"
+
+    def test_absolute_url_used_as_is(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200))
+        SiteRequests(session, "myshop", "https://myshop.example.com").json(
+            "GET", "https://other.example.com/x"
+        )
+        assert session.calls[0][2] == "https://other.example.com/x"
+
+    def test_default_role_is_xhr(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200))
+        SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/orders")
+        assert session.calls[0][0] == "xhr"
+
+    def test_explicit_role_honoured(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200))
+        SiteRequests(session, "myshop", "https://myshop.example.com").json(
+            "POST", "/submit", role="form"
+        )
+        assert session.calls[0][0] == "form"
+
+
+class TestTextHappyPath:
+    def test_returns_any_2xx_body_as_text(self) -> None:
+        session = _RoleAwareSession(
+            _FakeResponse(200, content_type="text/html", text="<html></html>")
+        )
+        result = SiteRequests(session, "myshop", "https://myshop.example.com").text("GET", "/page")
+        assert result == "<html></html>"
+
+    def test_default_role_is_navigation(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200, content_type="text/html"))
+        SiteRequests(session, "myshop", "https://myshop.example.com").text("GET", "/page")
+        assert session.calls[0][0] == "navigation"
+
+
+class TestRejection:
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_401_and_403_raise_session_rejected(self, status: int) -> None:
+        session = _RoleAwareSession(_FakeResponse(status))
+        with pytest.raises(SessionRejectedError) as exc:
+            SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/orders")
+        assert "gp myshop login" in str(exc.value)
+        assert str(status) in str(exc.value)
+
+    def test_text_also_raises_on_401(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(401, content_type="text/html"))
+        with pytest.raises(SessionRejectedError):
+            SiteRequests(session, "myshop", "https://myshop.example.com").text("GET", "/page")
+
+    def test_html_endpoint_2xx_is_not_mistaken_for_rejection_by_text(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200, content_type="text/html", text="<p>ok</p>"))
+        result = SiteRequests(session, "myshop", "https://myshop.example.com").text("GET", "/page")
+        assert result == "<p>ok</p>"
+
+    def test_other_4xx_raises_command_error(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(404))
+        with pytest.raises(CommandError) as exc:
+            SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/missing")
+        assert not isinstance(exc.value, SessionRejectedError)
+        assert "404" in exc.value.user_message
+
+    def test_5xx_raises_command_error(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(500))
+        with pytest.raises(CommandError):
+            SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/x")
+
+
+class TestUnexpectedResponse:
+    def test_2xx_non_json_body_raises_unexpected_response(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200, content_type="text/csv", text="a,b\n1,2"))
+        with pytest.raises(UnexpectedResponseError) as exc:
+            SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/export")
+        assert "text/csv" in str(exc.value)
+
+    def test_2xx_login_page_raises_session_rejected_not_unexpected_response(self) -> None:
+        login_html = '<form><input type="password" name="pw"></form>'
+        session = _RoleAwareSession(_FakeResponse(200, content_type="text/html", text=login_html))
+        with pytest.raises(SessionRejectedError):
+            SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/orders")
+
+
+class TestPlainSessionHasNoRoles:
+    def test_plain_session_gets_the_request_without_role_headers(self) -> None:
+        class _PlainSession:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def request(self, method: str, url: str, **kwargs: Any) -> _FakeResponse:
+                self.calls.append((method, url))
+                return _FakeResponse(200)
+
+        session = _PlainSession()
+        SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/orders")
+        assert session.calls == [("GET", "https://myshop.example.com/orders")]
+
+    def test_warning_logged_once_per_session_not_once_per_call(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Matches the established structlog assertion pattern in this suite
+        (`tests/unit/test_graftpunk_session.py::test_unknown_default_role_warns`):
+        structlog's configured PrintLogger is captured via capsys, not caplog."""
+
+        class _PlainSession:
+            def request(self, method: str, url: str, **kwargs: Any) -> _FakeResponse:
+                return _FakeResponse(200)
+
+        session = _PlainSession()
+        policy = SiteRequests(session, "myshop", "https://myshop.example.com")
+        policy.json("GET", "/a")
+        policy.json("GET", "/b")
+        second_policy = SiteRequests(session, "myshop", "https://myshop.example.com")
+        second_policy.json("GET", "/c")
+        captured = capsys.readouterr()
+        assert captured.out.count("session_roles_unavailable") == 1
+
+
+class TestCommandContextDelegates:
+    def test_request_json_delegates_to_site_requests(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200, text=json.dumps({"ok": True})))
+        ctx = CommandContext(
+            session=session,  # type: ignore[arg-type]
+            plugin_name="myshop",
+            command_name="orders",
+            api_version=1,
+            base_url="https://myshop.example.com",
+        )
+        assert ctx.request_json("GET", "/orders") == {"ok": True}
+
+    def test_request_text_delegates_to_site_requests(self) -> None:
+        session = _RoleAwareSession(_FakeResponse(200, content_type="text/html", text="<p>hi</p>"))
+        ctx = CommandContext(
+            session=session,  # type: ignore[arg-type]
+            plugin_name="myshop",
+            command_name="page",
+            api_version=1,
+            base_url="https://myshop.example.com",
+        )
+        assert ctx.request_text("GET", "/page") == "<p>hi</p>"
+
+    def test_default_context_session_is_a_graftpunk_session_end_to_end(self) -> None:
+        """A real GraftpunkSession wired through request_with_role, not just the fake."""
+        session = GraftpunkSession()
+        ctx = CommandContext(
+            session=session,
+            plugin_name="myshop",
+            command_name="orders",
+            api_version=1,
+            base_url="https://myshop.example.com",
+        )
+        assert hasattr(ctx.session, "request_with_role")
+
+
+class TestCliOneLineRendering:
+    def test_session_rejected_renders_as_one_line_through_the_cli(self) -> None:
+        from graftpunk.plugins import SitePlugin, command
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        class _RejectingPlugin(SitePlugin):
+            site_name = "myshop"
+            session_name = "myshop"
+            help_text = "test"
+            requires_session = False
+
+            @command(help="Fetch orders")
+            def orders(self, ctx: CommandContext) -> dict:
+                raise SessionRejectedError("myshop", "GET", "/orders", 401)
+
+        result = invoke_plugin_app(_RejectingPlugin(), ["myshop", "orders"])
+        assert result.exit_code == 1
+        assert "gp myshop login" in result.output
+        assert result.output.count("\n") <= 2
