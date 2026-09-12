@@ -424,6 +424,58 @@ Discovery errors are accumulated as `PluginDiscoveryError` / `YAMLDiscoveryError
 
 `PluginParamSpec` is also a frozen dataclass defining CLI parameter specifications (name, type, required, default, help text, is_option flag).
 
+### Building a plugin from a recording
+
+`gp plugin new <name> --from-run SESSION [--run RUN_ID]` fills a scaffold
+from a run's digest: `base_url` from the primary host, `login_config` from
+the first detected login form, `token_config` from paired header/meta or
+header/cookie candidates, and one command stub per endpoint (JSON first, up
+to twelve). `--run` names a specific run instead of the session's newest
+one, and is an error without `--from-run`. Everything the digest could not
+determine is marked `# GP-FILL: <what to fill in>`. `gp plugin new <name>`
+with no `--from-run` scaffolds a bare project from `--url` alone.
+
+A plugin name starts with a letter, uses letters, digits, hyphens, and
+underscores, and is at most 40 characters; the command refuses anything else
+with a message naming the rule. It is also refused when it collides with a
+reserved top-level `gp` command name, which is any command name registered
+on the CLI at the time plugins attach, including `plugin`, `plugins`,
+`session`, `http`, `config`, `keepalive`, and `observe`. Hyphenated names
+are legal and map to an importable package: `gp plugin new my-shop` writes
+`src/graftpunk_my_shop/plugin.py` and `tests/test_my_shop.py`, registers the
+entry point `my-shop = "graftpunk_my_shop.plugin:MyShopPlugin"`, and the
+plugin's own CLI command stays `gp my-shop`. A generated project passes its
+own `ruff check` and `ruff format --check` as written, whatever the captured
+site facts contain (long paths, long parameter names, quotes in selectors):
+the scaffold bounds generated identifiers and wraps wide literals so the
+developer never starts from a red gate.
+
+Generated (and hand-written) commands call two `CommandContext` methods
+instead of the session directly:
+
+- `ctx.request_json(method, url, *, role="xhr", **kwargs) -> Any` sends
+  *url* (relative to `base_url`, or absolute) with role headers and returns
+  the parsed JSON body. A 401 or 403 raises `SessionRejectedError`; a 2xx
+  whose body is a login page also does (a stale session's tell); any other
+  non-JSON 2xx raises `UnexpectedResponseError`; any other 4xx/5xx raises
+  `CommandError`.
+- `ctx.request_text(method, url, *, role="navigation", **kwargs) -> str`
+  returns any 2xx body as text, detecting rejection by status only, so an
+  HTML endpoint's real response is never mistaken for an expired session.
+
+`graftpunk.testing` (pytest-free) supplies `make_context()` for building a
+`CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
+for answering `ctx.request_json`/`request_text` from a file under
+`tests/fixtures/` instead of the network, named the way `gp observe
+fixtures` names captures. `gp observe fixtures` writes a `<file>.meta.json`
+sidecar beside every capture (url, status, content type, body parameter
+names, capture time); `FixtureSession` reads the same sidecar for status and
+content type, so a fixture copied from a capture keeps its recorded status.
+`graftpunk.testing.plugin.site_env_scrubber(prefix)` is a pytest fixture
+(loaded via `pytest_plugins = ["graftpunk.testing.plugin"]` in
+`conftest.py`) that removes prefixed environment variables for the duration
+of each test.
+
 ---
 
 ## Login System
@@ -889,6 +941,9 @@ gp observe show <session>                # Show run details (file list, sizes)
 gp observe clean [session]               # Remove observability data
 gp observe -s <session> go <url>         # Automated capture (waits --wait seconds)
 gp observe -s <session> interactive <url> # Interactive capture (Ctrl+C to stop)
+gp observe digest <session> [<run>]      # Read a run into a digest of hosts, endpoints, login, tokens
+gp observe digest --har <path>           # Digest a bare HAR file instead of a run
+gp observe fixtures <session> --match "<METHOD> <template>"  # Write matching bodies for deriving test fixtures
 ```
 
 ---
