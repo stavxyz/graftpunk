@@ -397,3 +397,21 @@ class TestPyprojectEditErrorRefusedCleanly:
         assert "include" in result.output.lower()
         assert "Traceback" not in result.output
         assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+class TestReservedNamesSnapshot:
+    def test_a_later_site_plugin_name_is_not_in_the_snapshot(self) -> None:
+        """register() snapshots reserved names once, at attach time. A site
+        plugin's own sub-app, mounted onto the same app afterward (exactly
+        what register_plugin_commands does next), must not retroactively
+        become reserved -- the snapshot is not a live query."""
+        from graftpunk.cli.scaffold_commands import register, reserved_cli_names
+
+        app = typer.Typer()
+        register(app)
+        assert "myshop" not in reserved_cli_names()
+
+        site_app = typer.Typer(name="myshop")
+        app.add_typer(site_app)
+
+        assert "myshop" not in reserved_cli_names()
