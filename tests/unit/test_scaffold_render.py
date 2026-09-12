@@ -489,8 +489,12 @@ class TestRenderNewProject:
             base_url="https://myshop.example.com",
         )
         conftest = render(spec)["tests/conftest.py"]
-        assert 'pytest_plugins = ["graftpunk.testing.plugin"]' in conftest
+        assert "from graftpunk.testing.plugin import site_env_scrubber" in conftest
         assert 'site_env_scrubber("MYSHOP_")' in conftest
+        # Naming the module in pytest_plugins as well asks pytest to rewrite
+        # assertions in a module the import already loaded, which it warns
+        # about on every run of the generated suite.
+        assert "pytest_plugins" not in conftest
 
 
 class TestRenderAddToSuite:
@@ -735,6 +739,24 @@ class TestPluginModuleCommandStubs:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert plugin_code.count("@command(") == 1
         assert "GP-FILL" in plugin_code
+
+    def test_an_empty_base_url_carries_the_gp_fill_marker(self) -> None:
+        """With neither --url nor --from-run the attribute renders empty: a grep for
+        GP-FILL has to find the line the author must edit, not only the docstring."""
+        spec = ScaffoldSpec(name="myshop", mode="new_project", backend="nodriver", base_url="")
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert '    base_url = ""  # GP-FILL: base URL' in plugin_code
+        ast.parse(plugin_code)
+
+    def test_a_known_base_url_carries_no_marker(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert '    base_url = "https://myshop.example.com"\n' in plugin_code
 
     def test_no_trailing_whitespace_on_any_line(self) -> None:
         spec = ScaffoldSpec(

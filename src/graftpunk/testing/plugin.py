@@ -1,10 +1,13 @@
 """The pytest half of :mod:`graftpunk.testing`. Load only as a pytest plugin.
 
-A generated ``tests/conftest.py`` declares
-``pytest_plugins = ["graftpunk.testing.plugin"]`` and nothing else:
-everything the generated test suite needs from this module is a fixture, so
-the generated file carries no framework logic of its own to drift from
-graftpunk's (the scaffold rule, plugin tooling spec, 2026-09-11).
+A generated ``tests/conftest.py`` imports :func:`site_env_scrubber` and
+assigns its result to a module-level name, and nothing else: everything the
+generated test suite needs from this module is a fixture, so the generated
+file carries no framework logic of its own to drift from graftpunk's (the
+scaffold rule, plugin tooling spec, 2026-09-11). It deliberately does not
+also name this module in ``pytest_plugins``: that would ask pytest to rewrite
+assertions in a module the import has already loaded, which it warns about,
+and this module has no hooks or fixtures of its own to register that way.
 """
 
 from __future__ import annotations

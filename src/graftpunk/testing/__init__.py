@@ -3,9 +3,9 @@
 Never imports pytest, so a generated project's runtime code (and any
 consumer importing graftpunk without pytest installed) can import this
 module safely. The pytest-dependent half is :mod:`graftpunk.testing.plugin`,
-loaded only via ``pytest_plugins = ["graftpunk.testing.plugin"]``, so the
-import boundary is legible from the import paths themselves (plugin tooling
-spec, 2026-09-11, design note).
+imported only from a test suite's ``conftest.py``, so the import boundary is
+legible from the import paths themselves (plugin tooling spec, 2026-09-11,
+design note).
 """
 
 from __future__ import annotations

@@ -337,6 +337,11 @@ class TestGeneratedProjectPassesItsOwnGate:
             env=env,
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        # A scaffolded project's first run is clean: no warnings summary at all.
+        # The generated conftest used to both import graftpunk.testing.plugin and
+        # list it in pytest_plugins, which pytest reports as a
+        # PytestAssertRewriteWarning (final fix wave, 2026-09-12).
+        assert "warnings summary" not in pytest_result.stdout.lower(), pytest_result.stdout
 
 
 class TestSuiteModeLeavesRestOfPyprojectByteIdentical:

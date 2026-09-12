@@ -471,10 +471,10 @@ fixtures` names captures. `gp observe fixtures` writes a `<file>.meta.json`
 sidecar beside every capture (url, status, content type, body parameter
 names, capture time); `FixtureSession` reads the same sidecar for status and
 content type, so a fixture copied from a capture keeps its recorded status.
-`graftpunk.testing.plugin.site_env_scrubber(prefix)` is a pytest fixture
-(loaded via `pytest_plugins = ["graftpunk.testing.plugin"]` in
-`conftest.py`) that removes prefixed environment variables for the duration
-of each test.
+`graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
+fixture that removes prefixed environment variables for the duration of each
+test; a generated `conftest.py` imports it and assigns the result to a
+module-level name, which is what registers the fixture.
 
 ---
 

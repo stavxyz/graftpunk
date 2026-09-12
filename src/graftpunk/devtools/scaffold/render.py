@@ -767,9 +767,16 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
     lines.append(f'    site_name = "{spec.name}"')
     lines.append(f'    session_name = "{spec.name}"')
     lines.append(f'    help_text = "Commands for {spec.name}"')
-    lines.extend(
-        _literal_lines(spec.base_url, indent=len(_L1), prefix="base_url = ", trailing_comma=False)
+    base_url_lines = _literal_lines(
+        spec.base_url, indent=len(_L1), prefix="base_url = ", trailing_comma=False
     )
+    if not spec.base_url:
+        # Neither --url nor --from-run: the class docstring already says
+        # GP-FILL, but the attribute the author has to edit carried no marker,
+        # so a grep for GP-FILL missed the one line that matters (final fix
+        # wave, 2026-09-12).
+        base_url_lines[-1] += "  # GP-FILL: base URL"
+    lines.extend(base_url_lines)
     lines.append(f'    backend = "{spec.backend}"')
     lines.append("    api_version = 1")
     lines.append("")
@@ -816,10 +823,15 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
 
 
 def _render_conftest(spec: ScaffoldSpec) -> str:
+    # The import alone: naming the module in pytest_plugins as well makes pytest
+    # try to rewrite assertions in a module the import has already loaded, which
+    # it reports as a PytestAssertRewriteWarning on every run of the generated
+    # suite. graftpunk.testing.plugin defines no hooks or fixtures of its own, so
+    # loading it as a plugin buys nothing: site_env_scrubber returns the fixture
+    # object, and the assignment below is what registers it (final fix wave,
+    # 2026-09-12).
     return (
         "from graftpunk.testing.plugin import site_env_scrubber\n"
-        "\n"
-        'pytest_plugins = ["graftpunk.testing.plugin"]\n'
         "\n"
         f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")\n'
     )

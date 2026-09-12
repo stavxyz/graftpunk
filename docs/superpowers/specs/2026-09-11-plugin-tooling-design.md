@@ -394,8 +394,16 @@ legible from the import paths:
   `site_env_scrubber(prefix) -> fixture`, which returns an autouse fixture
   object that removes every environment variable starting with `prefix` for
   each test and restores them afterwards. A generated `conftest.py` is two
-  declarations, `pytest_plugins = ["graftpunk.testing.plugin"]` and
+  declarations, the import of `site_env_scrubber` and
   `scrub_site_env = site_env_scrubber("<NAME>_")`, and no code.
+
+> **Design note (2026-09-12):** the generated `conftest.py` also listed
+> `graftpunk.testing.plugin` in `pytest_plugins`, which made pytest try to
+> rewrite assertions in a module the import on the line above had already
+> loaded: every generated project printed a `PytestAssertRewriteWarning` on
+> its first run. The module defines no hooks or fixtures of its own, so the
+> `pytest_plugins` declaration bought nothing; the import and the assignment
+> are the whole file now.
 
 > **Design note (2026-09-11):** the first draft generated a `make_ctx`
 > helper and an env-scrubbing fixture into every project's `conftest.py`.
@@ -548,7 +556,7 @@ for the rest, with the role the digest saw (`xhr` for JSON calls,
 result; they contain no error handling of their own. Everything the generator
 could not determine is marked with one grep-able marker, `# GP-FILL: <what to
 fill in>`, on the line it belongs to; no other comment style is used for that
-purpose. `tests/conftest.py` is the `pytest_plugins` line plus
+purpose. `tests/conftest.py` is the `site_env_scrubber` import plus
 `scrub_site_env = site_env_scrubber("<NAME>_")`; `tests/test_plugin.py` checks
 the plugin class instantiates and, for each stub command, calls it through
 `fixture_context(FIXTURES_DIR)` against a fixture file in `tests/fixtures/`
