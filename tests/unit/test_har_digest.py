@@ -451,6 +451,18 @@ class TestHighCardinalityCollapse:
         templates = {e.template for e in result.endpoints}
         assert all(t.startswith("/products/item-") for t in templates)
 
+    def test_single_segment_routes_never_collapse(self, tmp_path: Path) -> None:
+        """A single segment has no other position to compare, so the family
+        check would otherwise treat any run of distinct root routes as one
+        high-cardinality family and collapse them all into `/{id}`."""
+        entries = [
+            _entry("GET", f"https://api.myshop.example.com/route-{i}")
+            for i in range(_HIGH_CARDINALITY_THRESHOLD + 2)
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert templates == {f"/route-{i}" for i in range(_HIGH_CARDINALITY_THRESHOLD + 2)}
+
 
 class TestParseErrorsAndMissingBodies:
     def test_malformed_entry_counts_as_dropped_error(self, tmp_path: Path) -> None:

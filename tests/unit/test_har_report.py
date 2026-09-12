@@ -58,15 +58,7 @@ class TestRenderMarkdown:
         assert text.index("/orders") < text.index("/page")
 
     def test_limit_caps_endpoints_shown(self, tmp_path: Path) -> None:
-        # Each entry varies two segments together (not just one) so that
-        # digest()'s high-cardinality collapse (a heuristic over a single
-        # varying position with >8 siblings, documented in
-        # graftpunk.har.digest) does not fold these ten distinct routes
-        # into one templated endpoint; a shared single-segment or
-        # single-position pattern would.
-        entries = [
-            _entry("GET", f"https://api.myshop.example.com/item-{i}/detail-{i}") for i in range(10)
-        ]
+        entries = [_entry("GET", f"https://api.myshop.example.com/item-{i}") for i in range(10)]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         text = render_markdown(result, limit=3)
         assert text.count("### GET /item-") == 3
@@ -83,7 +75,7 @@ class TestRenderMarkdown:
 
     def test_no_planted_secret_appears_in_rendered_output(self, tmp_path: Path) -> None:
         planted_cookie = "session_id=s3cr3t-cookie-value; Path=/"
-        planted_password = "hunter2superSecret"  # noqa: S105 — test fixture, not a credential
+        planted_password = "hunter2superSecret"  # noqa: S105 (test fixture, not a credential)
         entries = [
             {
                 "startedDateTime": "2026-09-10T10:00:00.000Z",
@@ -139,11 +131,7 @@ class TestRenderJson:
         }
 
     def test_is_complete_regardless_of_endpoint_count(self, tmp_path: Path) -> None:
-        # See the comment on test_limit_caps_endpoints_shown: two segments
-        # varying together keep these 80 routes from collapsing into one.
-        entries = [
-            _entry("GET", f"https://api.myshop.example.com/item-{i}/detail-{i}") for i in range(80)
-        ]
+        entries = [_entry("GET", f"https://api.myshop.example.com/item-{i}") for i in range(80)]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         parsed = json.loads(render_json(result))
         assert len(parsed["endpoints"]) == len(result.endpoints) == 80

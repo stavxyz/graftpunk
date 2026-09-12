@@ -434,7 +434,11 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
 
     collapse_positions: dict[int, set[int]] = {}
     for count, rows in by_count.items():
-        if count == 0:
+        if count <= 1:
+            # A single segment has no other position to match, so the family
+            # check below is vacuously true for every row; skip it, or nine
+            # or more distinct root routes (/orders, /products, ...) would
+            # collapse into one {id}.
             continue
         for i in range(count):
             if rows[0][i].startswith("{"):
