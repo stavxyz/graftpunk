@@ -262,10 +262,60 @@ def _is_json_endpoint(endpoint: Endpoint) -> bool:
     return endpoint.shape is not None or "json" in endpoint.content_type.lower()
 
 
+def _escaped_for_docstring(text: str) -> str:
+    """*text* made safe to sit inside a ``\"\"\"`` docstring.
+
+    A captured site fact reaches a generated docstring verbatim: the class
+    docstring carries ``base_url``, a stub's summary carries its template and run
+    label, and its shape line carries captured JSON keys. Embedded raw, a backslash
+    starts an escape sequence nobody wrote (a trailing one swallows the closing
+    quotes) and a ``\"\"\"`` ends the docstring early, so a URL or a key holding
+    either renders a module that does not parse. A trailing quote is escaped too:
+    it would otherwise sit against the closing quotes of the one-line form and
+    close the string one character early (final fix wave, 2026-09-12).
+    """
+    escaped = text.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+    if escaped.endswith('"') and not escaped.endswith('\\"'):
+        escaped = f'{escaped[:-1]}\\"'
+    return escaped
+
+
+def _repaired_escape_splits(lines: list[str]) -> list[str]:
+    """*lines* with any escape sequence that word-wrapping cut in half put back.
+
+    ``textwrap`` breaks an over-long word at a character boundary, which can fall
+    inside the ``\\\\`` or ``\\"`` that :func:`_escaped_for_docstring` introduced;
+    the lone backslash left behind would read as a line continuation inside the
+    docstring. Moving it onto the next line restores the pair exactly, and
+    :func:`_escaped_docstring_wrap` wraps one column short of the budget so the
+    moved character still fits the generated width.
+    """
+    repaired = list(lines)
+    for index in range(len(repaired) - 1):
+        line = repaired[index]
+        if (len(line) - len(line.rstrip("\\"))) % 2:
+            repaired[index] = line[:-1]
+            repaired[index + 1] = f"\\{repaired[index + 1]}"
+    return repaired
+
+
+def _escaped_docstring_wrap(text: str, *, width: int) -> list[str]:
+    """*text* escaped for a docstring, then word-wrapped to *width*.
+
+    Escaping comes first so the width accounting sees the characters that are
+    really emitted, and the repair pass undoes the one thing that ordering can
+    break.
+    """
+    escaped = _escaped_for_docstring(text)
+    wrapped = textwrap.wrap(escaped, width=max(1, width - 1)) or [escaped]
+    return _repaired_escape_splits(wrapped)
+
+
 def _wrapped_docstring_lines(text: str) -> list[str]:
-    """*text* word-wrapped to fit a generated stub's docstring at ``_L2`` indentation,
-    each returned line already carrying that indentation."""
-    wrapped = textwrap.wrap(text, width=_DOCSTRING_WRAP_WIDTH) or [text]
+    """*text* escaped for a docstring and word-wrapped to fit a generated stub's
+    docstring at ``_L2`` indentation, each returned line already carrying that
+    indentation."""
+    wrapped = _escaped_docstring_wrap(text, width=_DOCSTRING_WRAP_WIDTH)
     return [f"{_L2}{line}" for line in wrapped]
 
 
@@ -293,12 +343,13 @@ def _wrapped_comment_lines(text: str, *, indent: int) -> list[str]:
 def _wrapped_docstring_block(text: str, *, indent: int) -> list[str]:
     """A one-line docstring ``\"\"\"{text}\"\"\"`` at *indent* spaces when that fits the
     generated width; otherwise the same text as a multi-line docstring with the
-    closing quotes on their own line (validation fix round 3, 2026-09-12)."""
+    closing quotes on their own line (validation fix round 3, 2026-09-12). *text* is
+    escaped for a docstring in both shapes (final fix wave, 2026-09-12)."""
     pad = " " * indent
-    single_line = f'{pad}"""{text}"""'
+    single_line = f'{pad}"""{_escaped_for_docstring(text)}"""'
     if len(single_line) <= _GENERATED_LINE_LENGTH:
         return [single_line]
-    wrapped = textwrap.wrap(text, width=max(1, _GENERATED_LINE_LENGTH - indent)) or [text]
+    wrapped = _escaped_docstring_wrap(text, width=max(1, _GENERATED_LINE_LENGTH - indent))
     return [f'{pad}"""', *(f"{pad}{line}" for line in wrapped), f'{pad}"""']
 
 

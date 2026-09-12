@@ -5,11 +5,13 @@ from __future__ import annotations
 import ast
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
 from graftpunk.devtools.scaffold.render import (
+    _DOCSTRING_WRAP_WIDTH,
     _GENERATED_LINE_LENGTH,
     _MAX_COMMAND_NAME,
     _MAX_PARAM_NAME,
@@ -24,6 +26,8 @@ from graftpunk.devtools.scaffold.render import (
     _param_identifier,
     _url_chunks,
     _wrapped_comment_lines,
+    _wrapped_docstring_block,
+    _wrapped_docstring_lines,
     class_name_for,
     module_name_for,
     render,
@@ -127,6 +131,15 @@ _PASSWORD_LOGIN_FORM = LoginForm(
     hidden=("_token",),
     source="page-source.html",
 )
+
+
+def _class_docstring(code: str, name: str) -> str:
+    """The docstring of class *name* in *code*, as Python itself reads it back."""
+    for node in ast.parse(code).body:
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return ast.get_docstring(node) or ""
+    raise AssertionError(f"no class {name} in the generated module")
+
 
 _HEADER_TOKEN = TokenCandidate(kind="header", name="X-CSRF-Token", seen_on=("GET /dashboard",))
 _COOKIE_TOKEN = TokenCandidate(kind="cookie", name="X-CSRF-Token", seen_on=("GET /dashboard",))
@@ -344,6 +357,43 @@ class TestWrappedCommentLines:
         assert " ".join(parts) == text
         for line in lines:
             assert len(line) <= 100
+
+
+class TestDocstringEscaping:
+    """Text that reaches a generated docstring reads back unchanged."""
+
+    @staticmethod
+    def _read_back(lines: list[str]) -> str:
+        source = "\n".join(["def f():", '    """', *lines, '    """', "    pass"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SyntaxWarning)
+            module = ast.parse(source)
+        function = module.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        return ast.get_docstring(function) or ""
+
+    def test_a_triple_quote_and_a_backslash_survive_the_round_trip(self) -> None:
+        text = 'GET /a\\b: shape object{"""k", tail\\}'
+        read_back = self._read_back(_wrapped_docstring_lines(text))
+        assert " ".join(read_back.split()) == " ".join(text.split())
+
+    def test_an_escape_cut_in_half_by_wrapping_is_put_back(self) -> None:
+        # One unbroken word long enough that textwrap breaks it mid-character,
+        # with the backslash sitting exactly on the break: the half left behind
+        # would otherwise read as a line continuation inside the docstring.
+        text = "x" * (_DOCSTRING_WRAP_WIDTH - 2) + "\\" + "y" * 60
+        lines = _wrapped_docstring_lines(text)
+        assert len(lines) > 1, "the input must actually wrap for this test to mean anything"
+        assert self._read_back(lines).replace("\n", "") == text
+
+    def test_a_trailing_quote_does_not_close_the_one_line_form_early(self) -> None:
+        block = _wrapped_docstring_block('Commands for https://myshop.example.com/"', indent=0)
+        assert len(block) == 1
+        source = "\n".join(["class C:", f"    {block[0]}", "    pass"])
+        module = ast.parse(source)
+        klass = module.body[0]
+        assert isinstance(klass, ast.ClassDef)
+        assert ast.get_docstring(klass) == 'Commands for https://myshop.example.com/"'
 
 
 class TestScaffoldSpecValidatesItsName:
@@ -762,6 +812,45 @@ class TestGeneratedPluginModuleParses:
         assert 'f"/reports/{{year-2024}}/orders/{order_id}",' in plugin_code
         ast.parse(plugin_code)
 
+    def test_a_template_repeating_a_placeholder_has_no_duplicate_arguments(self) -> None:
+        # /orders/1/orders/2 templates to the same placeholder name twice, and a
+        # `def` with two arguments of one name is a SyntaxError.
+        endpoint = Endpoint(
+            host="api.myshop.example.com",
+            template="/orders/{order_id}/orders/{order_id}",
+            methods=("GET",),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params={"order_id": "str"},
+            body_params={},
+            body_kind="none",
+            shape=ShapeNode(kind="object", children={}),
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        module = ast.parse(plugin_code)
+        stubs = [
+            node
+            for node in ast.walk(module)
+            if isinstance(node, ast.FunctionDef) and node.name != "__init__"
+        ]
+        assert stubs, "the digest has an endpoint, so the module must carry a stub"
+        for stub in stubs:
+            names = [
+                argument.arg
+                for argument in (*stub.args.posonlyargs, *stub.args.args, *stub.args.kwonlyargs)
+            ]
+            assert len(names) == len(set(names)), f"{stub.name} declares {names}"
+
 
 class TestRenderedTreeIsRuffClean:
     """The generated project is a real ruff target: its own pyproject.toml declares
@@ -956,6 +1045,56 @@ class TestRenderedTreeIsRuffClean:
         ast.parse(plugin_code)
         assert f"\"username\": '{quoted_selector}'," in plugin_code
         tree = self._write_tree(tmp_path / "quoted", files)
+        self._assert_tree_is_clean(tree)
+
+    def test_docstring_text_carrying_backslashes_and_triple_quotes_project(
+        self, tmp_path: Path
+    ) -> None:
+        # base_url reaches the class docstring and a captured JSON key reaches the
+        # stub's shape line, both verbatim: a backslash there starts an escape
+        # sequence nobody wrote and a triple quote ends the docstring early (final
+        # fix wave, 2026-09-12). The long key also forces the wrap, so the repair
+        # of an escape cut in half by word-wrapping is exercised, not just skipped.
+        base_url = 'https://myshop.example.com/a\\b/"""c\\'
+        long_key = "k\\" + "x" * 120 + '"""y'
+        endpoint = Endpoint(
+            host="api.myshop.example.com",
+            template="/orders/{order_id}",
+            methods=("GET",),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params={},
+            body_params={},
+            body_kind="none",
+            shape=ShapeNode(
+                kind="object",
+                children={long_key: ShapeNode(kind="string"), 'q\\"""': ShapeNode(kind="number")},
+            ),
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url=base_url,
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        files = render(spec)
+        for relative_path, content in sorted(files.items()):
+            if relative_path.endswith(".py"):
+                with warnings.catch_warnings():
+                    # An invalid escape sequence in a generated docstring is a
+                    # SyntaxWarning, not a SyntaxError, so ast.parse alone would
+                    # pass the very bug this test covers.
+                    warnings.simplefilter("error", SyntaxWarning)
+                    ast.parse(content, filename=relative_path)
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        assert base_url in _class_docstring(plugin_code, "MyshopPlugin"), (
+            "the class docstring must still read back as the base_url it quotes"
+        )
+        tree = self._write_tree(tmp_path / "escaped_docstrings", files)
         self._assert_tree_is_clean(tree)
 
     def test_maximal_name_deep_paths_and_wide_parameter_names_project(self, tmp_path: Path) -> None:
