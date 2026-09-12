@@ -17,17 +17,15 @@ from rich.table import Table
 from rich.text import Text
 
 from graftpunk.config import get_settings
-from graftpunk.har import (
+from graftpunk.har.analyzer import (
     APIEndpoint,
     AuthFlow,
-    HARParseResult,
     detect_auth_flow,
     discover_api_endpoints,
     extract_domain,
-    parse_har_file,
 )
 from graftpunk.har.generator import generate_plugin_code, generate_yaml_plugin
-from graftpunk.har.parser import HARParseError
+from graftpunk.har.parser import HARParseError, HARParseResult, parse_har_file
 from graftpunk.logging import get_logger
 from graftpunk.plugins import infer_site_name
 
