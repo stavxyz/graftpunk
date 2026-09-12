@@ -85,3 +85,18 @@ class TestParamNameForSegment:
     )
     def test_singular_of_previous_segment(self, prev: str, expected: str) -> None:
         assert param_name_for_segment(prev) == expected
+
+    @pytest.mark.parametrize(
+        ("prev", "expected"),
+        [
+            ("status", "status_id"),
+            ("address", "address_id"),
+            ("analysis", "analysis_id"),
+            ("bus", "bus_id"),
+            ("orders", "order_id"),
+        ],
+    )
+    def test_a_word_ending_in_s_is_not_treated_as_a_plural(self, prev: str, expected: str) -> None:
+        """Naive stripping gave statu_id, addres_id, analysi_id and bu_id; the
+        letter before the final s decides, and orders still gives order_id."""
+        assert param_name_for_segment(prev) == expected

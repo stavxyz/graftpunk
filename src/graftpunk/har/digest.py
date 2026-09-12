@@ -634,6 +634,14 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.query_params.update(acc.query_params)
             target.body_params.update(acc.body_params)
             target.custom_headers.update(acc.custom_headers)
+            # The first member of a collapsed family answers for the family, so
+            # a member that happened to redirect or return HTML must not cost
+            # the merged endpoint its response shape or its request body kind
+            # (final fix wave, 2026-09-12).
+            if target.shape is None:
+                target.shape = acc.shape
+            if target.body_kind == "none" and acc.body_kind != "none":
+                target.body_kind = acc.body_kind
             for example in acc.examples:
                 if example not in target.examples and len(target.examples) < 3:
                     target.examples.append(example)

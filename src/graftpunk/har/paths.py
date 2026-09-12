@@ -17,6 +17,12 @@ import re
 _MIN_HEX_LEN = 16
 _MIN_BASE64_LEN = 20
 
+# A trailing "s" after one of these is part of the word, not a plural: naive
+# stripping turned status/address/analysis/bus into statu_id, addres_id,
+# analysi_id, bu_id. Not a general inflector, just the three letters that
+# cover the shapes a URL path actually carries (final fix wave, 2026-09-12).
+_SINGULAR_BEFORE_FINAL_S = frozenset("sui")
+
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
@@ -58,7 +64,11 @@ def param_name_for_segment(prev_segment: str) -> str:
     """
     if not prev_segment or prev_segment.startswith("{"):
         return "id"
-    is_plural = prev_segment.endswith("s") and len(prev_segment) > 1
+    is_plural = (
+        prev_segment.endswith("s")
+        and len(prev_segment) > 1
+        and prev_segment[-2] not in _SINGULAR_BEFORE_FINAL_S
+    )
     singular = prev_segment[:-1] if is_plural else prev_segment
     return f"{singular}_id"
 

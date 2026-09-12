@@ -509,6 +509,36 @@ class TestHighCardinalityEligibility:
         assert templates == {f"/products/{slug}" for slug in slugs}
 
 
+class TestCollapseMergeCarriesShapeAndBodyKind:
+    def test_a_later_members_shape_and_body_kind_survive_the_merge(self, tmp_path: Path) -> None:
+        """The first member of a collapsed family answers for the family, and it may
+        be the one that returned HTML and posted nothing."""
+        count = _HIGH_CARDINALITY_THRESHOLD + 1
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/products/red-widget-2000",
+                content_type="text/html",
+                body="<html></html>",
+            )
+        ]
+        entries += [
+            _entry(
+                "POST",
+                f"https://api.myshop.example.com/products/red-widget-{2000 + i}",
+                body='{"id": 1}',
+                post_data='{"sku": "widget"}',
+            )
+            for i in range(1, count)
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        merged = [e for e in result.endpoints if e.template == "/products/{product_id}"]
+        assert len(merged) == 1, [e.template for e in result.endpoints]
+        assert merged[0].shape is not None
+        assert merged[0].body_kind == "json"
+        assert "sku" in merged[0].body_params
+
+
 class TestParseErrorsAndMissingBodies:
     def test_malformed_entry_counts_as_dropped_error(self, tmp_path: Path) -> None:
         good = _entry("GET", "https://api.myshop.example.com/orders")
