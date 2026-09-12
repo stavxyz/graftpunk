@@ -13,6 +13,7 @@ from graftpunk.devtools.scaffold.render import (
     _MAX_SCAFFOLD_ENDPOINTS,
     PLUGIN_NAME_RE,
     ScaffoldSpec,
+    _literal_lines,
     class_name_for,
     module_name_for,
     render,
@@ -152,6 +153,40 @@ class TestModuleNameFor:
         assert module_name_for("myshop") == "myshop"
 
 
+class TestLiteralLines:
+    def test_short_value_renders_on_one_line(self) -> None:
+        assert _literal_lines("#login-btn", indent=8, prefix="submit=") == [
+            '        submit="#login-btn",'
+        ]
+
+    def test_long_value_with_spaces_reconstructs_exactly(self) -> None:
+        value = (
+            "#login-form div.field-wrapper.username-wrapper > label + "
+            "input[name='username'][type='text'].form-control.input-lg"
+        )
+        assert len(value) > 100
+        indent = 16
+        lines = _literal_lines(value, indent=indent, prefix="submit=")
+        pad = " " * indent
+        continuation_pad = " " * (indent + 4)
+        assert lines[0] == f"{pad}submit=("
+        assert lines[-1] == f"{pad}),"
+        chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
+        assert "".join(chunks) == value
+        for line in lines:
+            assert len(line) <= 100
+
+    def test_long_value_with_no_whitespace_reconstructs_exactly(self) -> None:
+        value = "x" * 90
+        indent = 12
+        lines = _literal_lines(value, indent=indent, prefix="header=")
+        continuation_pad = " " * (indent + 4)
+        chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
+        assert "".join(chunks) == value
+        for line in lines:
+            assert len(line) <= 100
+
+
 class TestScaffoldSpecValidatesItsName:
     def test_invalid_name_raises(self) -> None:
         with pytest.raises(ValueError, match="must start with a letter"):
@@ -181,6 +216,17 @@ class TestPluginNameNormalization:
         pyproject = files["pyproject.toml"]
         assert 'my-shop = "graftpunk_my_shop.plugin:MyShopPlugin"' in pyproject
         assert 'packages = ["src/graftpunk_my_shop"]' in pyproject
+
+    def test_hyphenated_name_in_add_to_suite_mode_uses_the_module_name(self) -> None:
+        spec = ScaffoldSpec(
+            name="my-shop",
+            mode="add_to_suite",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        files = render(spec)
+        assert "tests/test_my_shop.py" in files
+        assert "tests/test_my-shop.py" not in files
 
 
 class TestRenderNewProject:
@@ -323,7 +369,9 @@ class TestPluginModuleWithTokens:
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "from graftpunk.tokens import Token, TokenConfig" in plugin_code
-        assert 'Token.from_meta_tag(name="X-CSRF-Token", header="X-CSRF-Token")' in plugin_code
+        assert "Token.from_meta_tag(" in plugin_code
+        assert 'name="X-CSRF-Token",' in plugin_code
+        assert 'header="X-CSRF-Token",' in plugin_code
 
     def test_paired_header_and_cookie_candidates_use_from_cookie(self) -> None:
         header = TokenCandidate(kind="header", name="X-Csrf", seen_on=("GET /a",))
@@ -336,7 +384,9 @@ class TestPluginModuleWithTokens:
             digest=_digest(tokens=(header, cookie)),
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
-        assert 'Token.from_cookie(cookie_name="X-Csrf", header="X-Csrf")' in plugin_code
+        assert "Token.from_cookie(" in plugin_code
+        assert 'cookie_name="X-Csrf",' in plugin_code
+        assert 'header="X-Csrf",' in plugin_code
 
     def test_unpaired_candidate_is_a_gp_fill_line(self) -> None:
         lone = TokenCandidate(kind="header", name="X-Lonely", seen_on=("GET /a",))
@@ -585,5 +635,44 @@ class TestRenderedTreeIsRuffClean:
             base_url="https://myshop.example.com",
             digest=digest,
         )
-        tree = self._write_tree(tmp_path / "login_token", render(spec))
+        files = render(spec)
+        assert "Token.from_" in files["src/graftpunk_myshop/plugin.py"]
+        tree = self._write_tree(tmp_path / "login_token", files)
+        self._assert_tree_is_clean(tree)
+
+    def test_long_selectors_and_header_name_project(self, tmp_path: Path) -> None:
+        # A username selector well past the generated width, a submit selector
+        # long enough to be typical but still short enough to fit on one line,
+        # and a header name with no whitespace at all: the three shapes
+        # _literal_lines must handle (validation fix round 2, Finding 4,
+        # 2026-09-12).
+        long_selector = (
+            "#login-form div.field-wrapper.username-wrapper > label + "
+            "input[name='username'][type='text'].form-control.input-lg"
+        )
+        submit_selector = "#login-form button.btn.btn-primary.submit-button[type='submit']"
+        long_header_name = "X-" + "A" * 88
+        form = LoginForm(
+            action="/login",
+            method="POST",
+            fields={"username": long_selector, "password": "#pw"},
+            submit=submit_selector,
+            hidden=(),
+            source="page-source.html",
+        )
+        header = TokenCandidate(kind="header", name=long_header_name, seen_on=("GET /dashboard",))
+        cookie = TokenCandidate(kind="cookie", name=long_header_name, seen_on=("GET /dashboard",))
+        digest = _digest(login_forms=(form,), tokens=(header, cookie))
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=digest,
+        )
+        files = render(spec)
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        assert "Token.from_" in plugin_code
+        assert "LoginStep(" in plugin_code
+        tree = self._write_tree(tmp_path / "long_selectors", files)
         self._assert_tree_is_clean(tree)

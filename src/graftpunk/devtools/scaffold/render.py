@@ -155,19 +155,12 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])'
         )
         return lines
-    fields_repr = ", ".join(
-        f'"{role}": "{selector}"' for role, selector in sorted(form.fields.items())
-    )
-    submit_repr = form.submit or "GP-FILL: submit selector"
     hint = _redirect_target_after_credential_post(spec.digest)
-    lines = [
-        "    login_config = LoginConfig(",
-        "        steps=[",
-        f'            LoginStep(fields={{{fields_repr}}}, submit="{submit_repr}"),',
-        "        ],",
-        f'        url="{form.action}",',
-        '        failure="GP-FILL: text on the page indicating login failure",',
-    ]
+    lines = ["    login_config = LoginConfig(", "        steps=["]
+    lines.extend(_render_login_step(form, indent=len(_L3)))
+    lines.append("        ],")
+    lines.extend(_literal_lines(form.action, indent=len(_L2), prefix="url="))
+    lines.append('        failure="GP-FILL: text on the page indicating login failure",')
     if hint:
         lines.append(f"        # candidate success redirect target, from the run: {hint}")
     lines.append('        success="GP-FILL: CSS selector for login success",')
@@ -202,16 +195,7 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
         lines.append("    token_config = TokenConfig(")
         lines.append("        tokens=[")
         for header, source in pairs:
-            if source.kind == "meta":
-                lines.append(
-                    f'            Token.from_meta_tag(name="{source.name}", '
-                    f'header="{header.name}"),'
-                )
-            else:
-                lines.append(
-                    f'            Token.from_cookie(cookie_name="{source.name}", '
-                    f'header="{header.name}"),'
-                )
+            lines.extend(_render_token_call(header, source, indent=len(_L3)))
         lines.append("        ]")
         lines.append("    )")
     else:
@@ -243,6 +227,77 @@ def _exploded_dict_lines(keyword: str, entries: list[tuple[str, str]]) -> list[s
     lines = [f"{_L3}{keyword}=" + "{"]
     lines.extend(f"{_L4}{key}: {value}," for key, value in entries)
     lines.append(f"{_L3}" + "},")
+    return lines
+
+
+def _literal_lines(value: str, *, indent: int, prefix: str = "") -> list[str]:
+    """A quoted Python string literal for a captured site fact (a selector, a URL, a
+    header name): one line, ``{prefix}"{value}",`` at *indent* spaces, when that fits
+    the generated width. Past that width a single quoted string can still overflow on
+    its own even after a call or dict has been exploded one argument per line (a
+    selector or header name is one fact ruff format itself never splits), so this
+    falls back to an implicit string concatenation instead, each chunk from
+    ``textwrap.wrap`` with whitespace preserved so the chunks rejoin to exactly
+    *value* (validation fix round 2, Finding 4, 2026-09-12).
+    """
+    pad = " " * indent
+    single_line = f'{pad}{prefix}"{value}",'
+    if len(single_line) <= _GENERATED_LINE_LENGTH:
+        return [single_line]
+    continuation_pad = " " * (indent + 4)
+    # -2 for the quote characters wrapped around each chunk.
+    chunk_width = max(1, _GENERATED_LINE_LENGTH - len(continuation_pad) - 2)
+    chunks = textwrap.wrap(
+        value,
+        width=chunk_width,
+        break_long_words=True,
+        break_on_hyphens=False,
+        drop_whitespace=False,
+    ) or [value]
+    lines = [f"{pad}{prefix}("]
+    lines.extend(f'{continuation_pad}"{chunk}"' for chunk in chunks)
+    lines.append(f"{pad}),")
+    return lines
+
+
+def _exploded_literal_dict_lines(entries: list[tuple[str, str]], *, indent: int) -> list[str]:
+    """The ``fields={...}`` dict on a generated ``LoginStep``: one ``"role": "selector",``
+    entry per line, each selector routed through ``_literal_lines`` since (unlike a
+    stub's parameter dicts) its values are captured site facts that can themselves be
+    too wide for one line."""
+    pad = " " * indent
+    lines = [f"{pad}fields={{"]
+    for role, selector in entries:
+        lines.extend(_literal_lines(selector, indent=indent + 4, prefix=f'"{role}": '))
+    lines.append(f"{pad}}},")
+    return lines
+
+
+def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
+    """A generated ``LoginStep(...)``, exploded one keyword argument per line so a
+    long selector cannot push the whole call over the generated width."""
+    pad = " " * indent
+    submit_value = form.submit or "GP-FILL: submit selector"
+    lines = [f"{pad}LoginStep("]
+    lines.extend(_exploded_literal_dict_lines(sorted(form.fields.items()), indent=indent + 4))
+    lines.extend(_literal_lines(submit_value, indent=indent + 4, prefix="submit="))
+    lines.append(f"{pad}),")
+    return lines
+
+
+def _render_token_call(header: TokenCandidate, source: TokenCandidate, *, indent: int) -> list[str]:
+    """A generated ``Token.from_meta_tag(...)`` or ``Token.from_cookie(...)``, exploded
+    one keyword argument per line so a long header or cookie name cannot push the
+    whole call over the generated width."""
+    pad = " " * indent
+    if source.kind == "meta":
+        call_name, value_keyword = "Token.from_meta_tag", "name"
+    else:
+        call_name, value_keyword = "Token.from_cookie", "cookie_name"
+    lines = [f"{pad}{call_name}("]
+    lines.extend(_literal_lines(source.name, indent=indent + 4, prefix=f"{value_keyword}="))
+    lines.extend(_literal_lines(header.name, indent=indent + 4, prefix="header="))
+    lines.append(f"{pad}),")
     return lines
 
 
@@ -507,6 +562,6 @@ def render(spec: ScaffoldSpec) -> dict[str, str]:
     return {
         f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
         f"src/{package}/plugin.py": plugin_module,
-        f"tests/test_{spec.name}.py": _render_test_module(spec, package=package),
+        f"tests/test_{module_name_for(spec.name)}.py": _render_test_module(spec, package=package),
         "tests/fixtures/.gitkeep": "",
     }
