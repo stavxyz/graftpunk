@@ -41,6 +41,7 @@ from graftpunk.cli.keepalive_commands import keepalive_app
 from graftpunk.cli.observe_commands import register as register_observe_commands
 from graftpunk.cli.observe_commands import resolve_run as resolve_observe_run
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
+from graftpunk.cli.scaffold_commands import plugin_app
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
 from graftpunk.console import err_console
@@ -730,6 +731,10 @@ app.add_typer(http_app)
 
 # Config subcommand group (defined in config_commands.py)
 app.add_typer(config_app)
+
+# Plugin scaffold subcommand group (defined in scaffold_commands.py); attached
+# before register_plugin_commands(app) runs below so 'plugin' is reserved.
+app.add_typer(plugin_app)
 
 
 @app.command("plugins")
