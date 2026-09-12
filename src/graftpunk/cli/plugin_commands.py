@@ -365,9 +365,18 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
             site_name = plugin.site_name
 
             if site_name in reserved:
-                raise PluginError(
-                    f"Plugin name collision: '{site_name}' is a reserved top-level command name."
+                # Skip only this plugin. Raising here would abort the whole
+                # loop and main.py's handler would then register nothing, so a
+                # user who installed a plugin named after a top-level command
+                # (http, config) would lose every other plugin on upgrade
+                # (final fix wave, 2026-09-12).
+                message = (
+                    f"Plugin name collision: '{site_name}' is a reserved top-level "
+                    "command name. Rename the plugin."
                 )
+                LOG.warning("plugin_reserved_name_collision", plugin=site_name)
+                result.add_error(site_name, message, "registration")
+                continue
 
             # Collision detection: fail fast if two plugins share a site_name
             source = _get_plugin_source(plugin)
@@ -384,8 +393,8 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
             except PluginError as exc:
                 # Contract violation inside this plugin: skip the WHOLE plugin
                 # loudly (recorded + printed via _notify_plugin_errors) rather
-                # than mounting a silently-mangled command tree. The site-name
-                # collision PluginError raised earlier in this loop body still
+                # than mounting a silently-mangled command tree. The duplicate
+                # site_name PluginError raised earlier in this loop body still
                 # propagates via the outer `except PluginError: raise`.
                 LOG.warning("plugin_contract_violation", plugin=site_name, error=str(exc))
                 result.add_error(site_name, str(exc), "registration")

@@ -246,6 +246,36 @@ class TestPluginRegistration:
         ):
             register_plugin_commands(app, notify_errors=False)
 
+    def test_reserved_name_collision_skips_only_the_colliding_plugin(
+        self,
+        isolated_config: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An installed plugin named after a top-level command must not take the
+        others down with it: before the fix the loop raised out, main.py's blanket
+        handler caught it, and the user lost every plugin at once."""
+        from graftpunk.cli.plugin_commands import register_plugin_commands
+        from graftpunk.plugins.cli_plugin import build_plugin_config
+        from graftpunk.plugins.yaml_loader import YAMLCommandDef
+        from graftpunk.plugins.yaml_plugin import create_yaml_site_plugin
+
+        app = typer.Typer()
+        app.add_typer(typer.Typer(name="http"))  # the reserved top-level command
+
+        colliding = create_yaml_site_plugin(
+            build_plugin_config(site_name="http", help_text="Collides with gp http"),
+            [YAMLCommandDef(name="cmd", help_text="", method="GET", url="/", params=())],
+        )
+
+        with patch(DISCOVER_ALL, return_value=(colliding, MockPlugin())):
+            registered = register_plugin_commands(app, notify_errors=True)
+
+        assert registered == {"mocksite": MockPlugin.help_text}
+        attached = [group.typer_instance.info.name for group in app.registered_groups]
+        assert "mocksite" in attached
+        assert attached.count("http") == 1  # the CLI's own, not the plugin's
+        assert "http" in capsys.readouterr().err
+
     def test_register_populates_session_map(self, isolated_config: Path) -> None:
         """Test that register_plugin_commands populates _plugin_session_map."""
         from graftpunk.cli.plugin_commands import (
