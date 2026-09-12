@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from graftpunk.har.paths import param_name_for_segment, template_path
+from graftpunk.har.paths import (
+    _MIN_BASE64_LEN,
+    _MIN_HEX_LEN,
+    param_name_for_segment,
+    template_path,
+)
 
 
 class TestTemplatePath:
@@ -22,17 +27,25 @@ class TestTemplatePath:
         template, params = template_path("/sessions/8f14e45f-ceea-467e-bd3d-46f0e7d1f5a3")
         assert template == "/sessions/{session_id}"
 
-    def test_hex_segment_at_least_16_chars_collapses(self) -> None:
-        template, _ = template_path("/tokens/0123456789abcdef")
+    def test_hex_segment_at_min_length_collapses(self) -> None:
+        segment = "a" * _MIN_HEX_LEN
+        template, _ = template_path(f"/tokens/{segment}")
         assert template == "/tokens/{token_id}"
 
-    def test_hex_segment_under_16_chars_stays_literal(self) -> None:
-        template, _ = template_path("/tokens/abc123")
-        assert template == "/tokens/abc123"
+    def test_hex_segment_under_min_length_stays_literal(self) -> None:
+        segment = "a" * (_MIN_HEX_LEN - 1)
+        template, _ = template_path(f"/tokens/{segment}")
+        assert template == f"/tokens/{segment}"
 
-    def test_base64_like_segment_at_least_20_chars_collapses(self) -> None:
-        template, _ = template_path("/files/QWxhZGRpbjpvcGVuIHNlc2FtZQ")
+    def test_base64_like_segment_at_min_length_collapses(self) -> None:
+        segment = ("z1" * ((_MIN_BASE64_LEN // 2) + 1))[:_MIN_BASE64_LEN]
+        template, _ = template_path(f"/files/{segment}")
         assert template == "/files/{file_id}"
+
+    def test_base64_like_segment_under_min_length_stays_literal(self) -> None:
+        segment = ("z1" * ((_MIN_BASE64_LEN // 2) + 1))[: _MIN_BASE64_LEN - 1]
+        template, _ = template_path(f"/files/{segment}")
+        assert template == f"/files/{segment}"
 
     def test_short_alphabetic_segment_stays_literal(self) -> None:
         template, params = template_path("/products/wireless-mouse")
