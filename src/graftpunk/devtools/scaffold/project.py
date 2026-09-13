@@ -156,7 +156,7 @@ def write_scaffold(
     targets = {target_dir / rel: content for rel, content in files.items()}
     conflicts = sorted(p for p in targets if p.exists())
     if conflicts:
-        LOG.warning("scaffold_write_refused", conflicts=len(conflicts))
+        LOG.debug("scaffold_write_refused", conflicts=len(conflicts))
         raise ScaffoldConflictError(conflicts)
 
     gitignore_updated = False
@@ -178,7 +178,7 @@ def write_scaffold(
             add_wheel_package(existing, package)
         except PyprojectEditError:
             existing.write_text(original_pyproject_text, encoding="utf-8")
-            LOG.warning("scaffold_write_refused", reason="pyproject_edit_error")
+            LOG.debug("scaffold_write_refused", reason="pyproject_edit_error")
             raise
         pyproject_updated = True
 
@@ -201,7 +201,7 @@ def write_scaffold(
                     path=str(existing),
                     error=str(restore_exc),
                 )
-        LOG.warning("scaffold_write_refused", reason="os_error", written=len(written))
+        LOG.debug("scaffold_write_refused", reason="os_error", written=len(written))
         raise
 
     # Last, after every other step has succeeded: the ignore line exists to

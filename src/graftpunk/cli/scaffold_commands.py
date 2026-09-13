@@ -103,7 +103,7 @@ def plugin_new(
 ) -> None:
     """Scaffold a new plugin: a fresh project, or a member of the suite in --dir."""
     if backend not in _SUPPORTED_BACKENDS:
-        LOG.warning("scaffold_refused", reason="bad_backend", backend=backend)
+        LOG.debug("scaffold_refused", reason="bad_backend", backend=backend)
         console.print(
             f"[red]--backend must be one of {_SUPPORTED_BACKENDS}, got '{escape(backend)}'[/red]"
         )
@@ -112,14 +112,14 @@ def plugin_new(
     # above (against a tuple typed `tuple[_BackendName, ...]`): no cast needed.
 
     if name in reserved_cli_names():
-        LOG.warning("scaffold_refused", reason="reserved_name", name=name)
+        LOG.debug("scaffold_refused", reason="reserved_name", name=name)
         console.print(
             f"[red]'{escape(name)}' is a reserved command name and cannot be a plugin name.[/red]"
         )
         raise typer.Exit(1)
 
     if run is not None and from_run is None:
-        LOG.warning("scaffold_refused", reason="run_without_from_run")
+        LOG.debug("scaffold_refused", reason="run_without_from_run")
         console.print("[red]--run requires --from-run.[/red]")
         raise typer.Exit(1)
 
@@ -142,20 +142,20 @@ def plugin_new(
         )
         result = write_scaffold(dir_, spec, force_new=new)
     except ScaffoldConflictError as exc:
-        LOG.warning("scaffold_refused", reason="conflict", conflicts=len(exc.conflicts))
+        LOG.debug("scaffold_refused", reason="conflict", conflicts=len(exc.conflicts))
         console.print("[red]Refusing to overwrite existing file(s):[/red]")
         for path in exc.conflicts:
             console.print(f"  {escape(str(path))}")
         raise typer.Exit(1) from None
     except PyprojectEditError as exc:
-        LOG.warning("scaffold_refused", reason="pyproject_edit_error")
+        LOG.debug("scaffold_refused", reason="pyproject_edit_error")
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
     except OSError as exc:
         # A CLI refusal is a red line and exit 1, never a Rich traceback: an
         # unwritable --dir is the user's mistake to correct, not a crash.
         # write_scaffold has already removed whatever it wrote before failing.
-        LOG.warning("scaffold_refused", reason="os_error", error=str(exc))
+        LOG.debug("scaffold_refused", reason="os_error", error=str(exc))
         target = exc.filename or str(dir_)
         reason = exc.strerror or str(exc)
         console.print(f"[red]Could not write {escape(str(target))}: {escape(reason)}[/red]")
@@ -164,11 +164,11 @@ def plugin_new(
         # Before the ValueError arm below: it is a ValueError subclass, and the
         # two conditions are different (a directory holding someone else's
         # project, versus a name the generator cannot use).
-        LOG.warning("scaffold_refused", reason="not_a_plugin_suite")
+        LOG.debug("scaffold_refused", reason="not_a_plugin_suite")
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
     except ValueError as exc:
-        LOG.warning("scaffold_refused", reason="invalid_name")
+        LOG.debug("scaffold_refused", reason="invalid_name")
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 

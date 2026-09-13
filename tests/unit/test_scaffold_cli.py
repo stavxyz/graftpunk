@@ -6,14 +6,17 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import structlog
 import typer
 from structlog.testing import capture_logs
 from typer.testing import CliRunner
 
 from graftpunk.cli.scaffold_commands import plugin_app
+from graftpunk.logging import configure_logging
 
 runner = CliRunner()
 
@@ -599,6 +602,24 @@ class TestUnwritableTargetDirIsARefusal:
             readonly.chmod(0o700)
 
 
+@contextmanager
+def _captured_debug_logs():
+    """capture_logs, with the level lowered so debug events reach it.
+
+    structlog's filtering bound logger drops a debug call before any processor
+    runs, and capture_logs replaces processors only, so a refusal logged at
+    debug is invisible to it at the CLI's own WARNING default. The previous
+    configuration is restored on the way out.
+    """
+    previous = structlog.get_config()
+    configure_logging(level="DEBUG")
+    try:
+        with capture_logs() as events:
+            yield events
+    finally:
+        structlog.configure(**previous)
+
+
 class TestRefusalReasons:
     """A directory holding someone else's project and a name the generator
     cannot use are different conditions; both logged reason="invalid_name"."""
@@ -609,7 +630,7 @@ class TestRefusalReasons:
 
     def test_a_non_suite_pyproject_logs_its_own_reason(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "unrelated-package"\n')
-        with capture_logs() as events:
+        with _captured_debug_logs() as events:
             result = runner.invoke(
                 _build_app(),
                 ["plugin", "new", "myshop", "--dir", str(tmp_path)],
@@ -619,13 +640,44 @@ class TestRefusalReasons:
         assert self._reasons(events) == ["not_a_plugin_suite"]
 
     def test_an_invalid_name_still_logs_invalid_name(self, tmp_path: Path) -> None:
-        with capture_logs() as events:
+        with _captured_debug_logs() as events:
             result = runner.invoke(
                 _build_app(),
                 ["plugin", "new", "2fa-site", "--dir", str(tmp_path)],
             )
         assert result.exit_code == 1, result.output
         assert self._reasons(events) == ["invalid_name"]
+
+    def test_a_refusal_logs_at_debug_so_the_console_line_stands_alone(self, tmp_path: Path) -> None:
+        """LOG.warning is reserved for an anomaly the console does not report.
+        Every refusal already prints its own red line, and a warning beside it
+        made a plain refusal two lines on two streams."""
+        with _captured_debug_logs() as events:
+            runner.invoke(_build_app(), ["plugin", "new", "2fa-site", "--dir", str(tmp_path)])
+        refusals = [e for e in events if e.get("event") == "scaffold_refused"]
+        assert refusals
+        assert {e["log_level"] for e in refusals} == {"debug"}
+
+    def test_a_conflict_refusal_logs_at_debug_in_both_modules(self, tmp_path: Path) -> None:
+        (tmp_path / "README.md").write_text("already here")
+        with _captured_debug_logs() as events:
+            runner.invoke(
+                _build_app(),
+                [
+                    "plugin",
+                    "new",
+                    "myshop",
+                    "--url",
+                    "https://myshop.example.com",
+                    "--dir",
+                    str(tmp_path),
+                ],
+            )
+        logged = [
+            e for e in events if e.get("event") in {"scaffold_refused", "scaffold_write_refused"}
+        ]
+        assert {e["event"] for e in logged} == {"scaffold_refused", "scaffold_write_refused"}
+        assert {e["log_level"] for e in logged} == {"debug"}
 
 
 class TestReservedNamesSnapshot:
