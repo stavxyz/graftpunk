@@ -504,7 +504,11 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
                 continue
             prev = new_segments[position - 1] if position > 0 else ""
             new_segments[position] = "{" + param_name_for_segment(prev) + "}"
-        new_template = "/" + "/".join(new_segments)
+        # A trailing slash is preserved the way paths.template_path preserves
+        # it, so a collapsed template still names the same route as the one
+        # the accumulator was keyed on (polish round 1, 2026-09-12).
+        trailing = "/" if len(template) > 1 and template.endswith("/") else ""
+        new_template = "/" + "/".join(new_segments) + trailing
         if new_template != template:
             result[template] = new_template
     return result

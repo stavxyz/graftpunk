@@ -550,6 +550,20 @@ class TestCollapseIsScopedToTheFamilyThatQualified:
         assert templates == {"/products/{product_id}", "/products/featured"}
 
 
+class TestCollapsePreservesATrailingSlash:
+    def test_a_family_recorded_with_a_trailing_slash_keeps_it(self, tmp_path: Path) -> None:
+        """paths.template_path preserves a trailing slash exactly as given, so
+        the collapse must too: dropping it renamed the route."""
+        count = _HIGH_CARDINALITY_THRESHOLD + 2
+        entries = [
+            _entry("GET", f"https://api.myshop.example.com/products/red-widget-{2000 + i}/")
+            for i in range(count)
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert templates == {"/products/{product_id}/"}
+
+
 class TestCollapseMergeCarriesShapeAndBodyKind:
     def test_a_later_members_shape_and_body_kind_survive_the_merge(self, tmp_path: Path) -> None:
         """The first member of a collapsed family answers for the family, and it may
