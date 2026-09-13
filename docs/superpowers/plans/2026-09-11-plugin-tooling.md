@@ -2775,7 +2775,7 @@ class TestFixtureSession:
     def test_never_opens_a_socket(self, tmp_path: Path) -> None:
         """No fixture file for this path: still answers 404 rather than connecting."""
         session = FixtureSession(tmp_path)
-        response = session.get("http://169.254.169.254/nonexistent")
+        response = session.get("http://192.0.2.1/nonexistent")
         assert response.status_code == 404
 
 
@@ -5430,7 +5430,7 @@ Record a session, read it, then scaffold:
 
 ```bash
 # 1. Capture: record real traffic (see Observability above)
-gp observe -s mybank interactive https://secure.mybank.com/dashboard
+gp observe -s mybank interactive https://secure.mybank.example.com/dashboard
 
 # 2. Read: a digest of hosts, endpoints, login, and tokens, redacted by construction
 gp observe digest mybank
