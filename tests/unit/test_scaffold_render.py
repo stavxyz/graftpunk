@@ -762,6 +762,34 @@ class TestPluginModuleCommandStubs:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert '"X-Shop-Client": "GP-FILL",' in plugin_code
 
+    def test_a_captured_method_carrying_a_quote_still_parses(self) -> None:
+        """The method is a captured value like any other: interpolated bare it
+        ended its own string literal."""
+        endpoint = Endpoint(
+            host="api.myshop.example.com",
+            template="/orders",
+            methods=('GE"T',),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params={},
+            body_params={},
+            body_kind="none",
+            shape=ShapeNode(kind="object", children={}),
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert """'GE"T',""" in plugin_code
+        ast.parse(plugin_code)
+
     def test_a_get_that_recorded_a_body_declares_no_body_arguments(self) -> None:
         """The body dict is only emitted for a mutating method, so declaring its
         parameters on a GET gave the stub arguments it never used."""

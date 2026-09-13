@@ -704,9 +704,11 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         annotation = _PY_TYPE_BY_OBSERVED.get(observed, "str")
         params.append(f"{identifier_for[extra]}: {annotation} | None = None")
 
-    call_lines = [f'{_L3}"{method}",']
+    # Through _quoted like every other captured value: the method comes from
+    # the capture, so it is not this module's to assume is quote-free.
+    call_lines = [f"{_L3}{_quoted(method)},"]
     call_lines.extend(_url_expr_lines(url_text, is_fstring=bool(path_params), indent=len(_L3)))
-    call_lines.append(f'{_L3}role="{role}",')
+    call_lines.append(f"{_L3}role={_quoted(role)},")
     if endpoint.query_params:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.query_params)]
         call_lines.extend(_exploded_dict_lines("params", entries))
