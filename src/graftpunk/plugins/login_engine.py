@@ -32,14 +32,14 @@ if TYPE_CHECKING:
 # NOT at module scope. This module is on the CLI's eager import path
 # (cli/main.py -> cli/plugin_commands.py -> cli/login_commands.py -> here), so a
 # module-level `from graftpunk import BrowserSession` pulls in the whole browser
-# stack and makes EVERY `gp` invocation — even `gp --version` — fail on a base
+# stack and makes EVERY `gp` invocation, even `gp --version`, fail on a base
 # install without the [browser] extra. See test_cli_import_stays_browser_free.
 
 LOG = get_logger(__name__)
 
 _ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transitions
 _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
-_LOGIN_NAV_TIMEOUT = 60  # seconds — login page may redirect through SSO/IdP chains
+_LOGIN_NAV_TIMEOUT = 60  # seconds: the login page may redirect through SSO and IdP chains
 _FIELD_SETTLE_DELAY = 0.4  # seconds between send_keys and value read-back (see _fill_field)
 _FIELD_FILL_ATTEMPTS = 3  # select+type attempts before giving up on a field
 
@@ -61,7 +61,7 @@ def _resolve_url(base_url: str, url: str) -> str:
     Returns:
         The absolute URL to navigate to.
     """
-    # Absolute when it carries a scheme (http/https, any case — urlsplit
+    # Absolute when it carries a scheme (http/https, any case: urlsplit
     # lower-cases the scheme). Otherwise treat it as a path onto base_url.
     return url if urllib.parse.urlsplit(url).scheme else f"{base_url}{url}"
 
@@ -69,10 +69,10 @@ def _resolve_url(base_url: str, url: str) -> str:
 # TODO: Replace Any type annotations with proper nodriver.Tab / nodriver.Element
 # types once the upstream SyntaxError in nodriver's CDP codegen is fixed for
 # Python 3.14. The bug is in auto-generated CDP domain modules that use invalid
-# syntax. Track: https://github.com/niceno/nodriver — when fixed, add
+# syntax. Track: https://github.com/niceno/nodriver; when fixed, add
 # nodriver.Tab and nodriver.Element to the TYPE_CHECKING import block above.
 async def _select_with_retry(
-    tab: Any,  # nodriver.Tab — can't import due to upstream SyntaxError in CDP codegen
+    tab: Any,  # nodriver.Tab; not imported because of the upstream SyntaxError in CDP codegen
     selector: str,
     *,
     timeout: float | None = None,
@@ -215,7 +215,7 @@ async def _read_field_value(tab: Any, selector: str) -> str | None:
     )
     try:
         result = await tab.evaluate(js, return_by_value=True)
-    except Exception as exc:  # noqa: BLE001 — verification is best-effort
+    except Exception as exc:  # broad by design: verification is best-effort
         LOG.debug("login_field_readback_failed", selector=selector, error=str(exc))
         return None
     if not isinstance(result, str):
@@ -528,7 +528,7 @@ def _extract_and_cache_tokens_selenium(
                         token=t.name,
                         url=_resolve_url(base_url, t.page_url),
                     )
-            except Exception as exc:  # noqa: BLE001 — best-effort token extraction
+            except Exception as exc:  # broad by design: best-effort token extraction
                 LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
 
     tcache = _build_token_cache(token_config, token_results)
@@ -659,7 +659,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                             console=gp_console.err_console,
                             redact=credentials.values(),
                         )
-                    except Exception as exc:  # noqa: BLE001 — diagnostics are best-effort
+                    except Exception as exc:  # broad by design: diagnostics are best-effort
                         LOG.error(
                             "login_observe_save_failed",
                             plugin=plugin.site_name,
@@ -690,7 +690,7 @@ async def _run_nodriver_steps(
     computed; both default to None, which caches under ``plugin.session_name``
     with no recorded identifier.
     """
-    assert plugin.login_config is not None  # noqa: S101 — checked by caller
+    assert plugin.login_config is not None  # noqa: S101 (checked by caller)
     # Top-level wait_for: wait for a specific element before any steps
     # (e.g., a form that appears after a redirect completes)
     if plugin.login_config.wait_for:
@@ -779,7 +779,7 @@ async def _run_nodriver_steps(
     # Extract tokens using the already-open browser (avoids separate launch)
     try:
         await _extract_and_cache_tokens_nodriver(plugin, session, tab, base_url)
-    except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
+    except Exception as exc:  # broad by design: best-effort, login already succeeded
         LOG.warning(
             "login_token_extraction_failed",
             plugin=plugin.site_name,
@@ -938,7 +938,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             # Extract tokens using the already-open browser (avoids separate launch)
             try:
                 _extract_and_cache_tokens_selenium(plugin, session, base_url)
-            except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
+            except Exception as exc:  # broad by design: best-effort, login already succeeded
                 LOG.warning(
                     "login_token_extraction_failed",
                     plugin=plugin.site_name,
