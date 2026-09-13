@@ -74,7 +74,8 @@ class SiteRequests:
             SessionRejectedError: 401/403, or a 2xx whose body is a login
                 page (``har.documents.is_login_document``).
             UnexpectedResponseError: A 2xx whose body is neither JSON nor a
-                login page.
+                login page, or that declares JSON but does not parse as JSON
+                (a truncated response).
             CommandError: Any other 4xx or 5xx.
         """
         response = self._send(method, url, role, **kwargs)
@@ -86,7 +87,14 @@ class SiteRequests:
                     self._plugin_name, method, _path_of(response.url), response.status_code or 0
                 )
             raise UnexpectedResponseError(method, _path_of(response.url), content_type)
-        return response.json()
+        try:
+            return response.json()
+        except ValueError:
+            # A declared content type is not a guarantee. An escaping
+            # JSONDecodeError reached the CLI as a traceback rather than as the
+            # one refusal line every other failure gets (polish round 1,
+            # 2026-09-12).
+            raise UnexpectedResponseError(method, _path_of(response.url), content_type) from None
 
     def text(self, method: str, url: str, *, role: str = "navigation", **kwargs: Any) -> str:
         """Send *method* *url* with role headers; return any 2xx body as text.

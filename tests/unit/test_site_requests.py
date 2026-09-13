@@ -136,6 +136,14 @@ class TestUnexpectedResponse:
             SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/export")
         assert "text/csv" in str(exc.value)
 
+    def test_a_truncated_json_body_raises_unexpected_response(self) -> None:
+        """A declared content type is not a guarantee: the JSONDecodeError used
+        to escape as a traceback."""
+        session = _RoleAwareSession(_FakeResponse(200, text='{"orders": [{"id": 1}'))
+        with pytest.raises(UnexpectedResponseError) as exc:
+            SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/orders")
+        assert "application/json" in str(exc.value)
+
     def test_2xx_login_page_raises_session_rejected_not_unexpected_response(self) -> None:
         login_html = '<form><input type="password" name="pw"></form>'
         session = _RoleAwareSession(_FakeResponse(200, content_type="text/html", text=login_html))
@@ -242,4 +250,27 @@ class TestCliOneLineRendering:
         result = invoke_plugin_app(_RejectingPlugin(), ["myshop", "orders"])
         assert result.exit_code == 1
         assert "gp myshop login" in result.output
+        assert result.output.count("\n") <= 2
+
+    def test_a_truncated_json_body_renders_as_one_line_through_the_cli(self) -> None:
+        from graftpunk.plugins import SitePlugin, command
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        class _TruncatingPlugin(SitePlugin):
+            site_name = "myshop"
+            session_name = "myshop"
+            help_text = "test"
+            requires_session = False
+
+            @command(help="Fetch orders")
+            def orders(self, ctx: CommandContext) -> dict:
+                session = _RoleAwareSession(_FakeResponse(200, text='{"orders": [{"id": 1}'))
+                return SiteRequests(session, "myshop", "https://myshop.example.com").json(
+                    "GET", "/orders"
+                )
+
+        result = invoke_plugin_app(_TruncatingPlugin(), ["myshop", "orders"])
+        assert result.exit_code == 1
+        assert "Traceback" not in result.output
+        assert "not JSON" in result.output
         assert result.output.count("\n") <= 2
