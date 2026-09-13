@@ -633,28 +633,44 @@ async def _wait_for_login_signal_nodriver(
         True when every configured success signal holds, False on a failure signal
         or when the deadline passes (both are logged).
     """
+    from nodriver.core.connection import ProtocolException
+
     loop = asyncio.get_running_loop()
     success_selector = login_config.success
     success_url = login_config.success_url
     url = ""
+    page_text = ""
     success_found: bool | None = None
     while True:
-        page_text = await tab.get_content()
-        url = _tab_url(tab)
-        success_found = None
-        if success_selector:
-            # A bare select capped at one interval: the poll is the retry, and a
-            # tick that blocked inside nodriver would stretch the whole cadence.
-            element = await tab.select(success_selector, timeout=_LOGIN_POLL_INTERVAL)
-            success_found = element is not None
-        verdict = _login_tick_verdict(
-            page_text=page_text,
-            url=url,
-            failure_text=failure_text,
-            success_selector=success_selector,
-            success_url=success_url,
-            success_found=success_found,
-        )
+        try:
+            page_text = await tab.get_content()
+            url = _tab_url(tab)
+            success_found = None
+            if success_selector:
+                # A bare select capped at one interval: the poll is the retry, and a
+                # tick that blocked inside nodriver would stretch the whole cadence.
+                element = await tab.select(success_selector, timeout=_LOGIN_POLL_INTERVAL)
+                success_found = element is not None
+        except ProtocolException as exc:
+            # The document node goes invalid mid-redirect, which is exactly the
+            # window this poll exists for: the tick is unreadable, not failed.
+            LOG.debug(
+                "login_tick_read_failed",
+                plugin=site_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                backend="nodriver",
+            )
+            verdict = _TICK_PENDING
+        else:
+            verdict = _login_tick_verdict(
+                page_text=page_text,
+                url=url,
+                failure_text=failure_text,
+                success_selector=success_selector,
+                success_url=success_url,
+                success_found=success_found,
+            )
         if verdict == _TICK_SUCCESS:
             return True
         if verdict == _TICK_FAILURE:
@@ -695,30 +711,45 @@ def _wait_for_login_signal_selenium(
     deadline: float,
 ) -> bool:
     """The selenium twin of :func:`_wait_for_login_signal_nodriver`."""
-    from selenium.common.exceptions import NoSuchElementException
+    from selenium.common.exceptions import NoSuchElementException, WebDriverException
 
     success_selector = login_config.success
     success_url = login_config.success_url
     url = ""
+    page_text = ""
     success_found: bool | None = None
     while True:
-        page_text = driver.page_source
-        url = _driver_url(driver)
-        success_found = None
-        if success_selector:
-            try:
-                driver.find_element("css selector", success_selector)
-                success_found = True
-            except NoSuchElementException:
-                success_found = False
-        verdict = _login_tick_verdict(
-            page_text=page_text,
-            url=url,
-            failure_text=failure_text,
-            success_selector=success_selector,
-            success_url=success_url,
-            success_found=success_found,
-        )
+        try:
+            page_text = driver.page_source
+            url = _driver_url(driver)
+            success_found = None
+            if success_selector:
+                try:
+                    driver.find_element("css selector", success_selector)
+                    success_found = True
+                except NoSuchElementException:
+                    success_found = False
+        except WebDriverException as exc:
+            # A read taken while the browser is navigating, which is exactly the
+            # window this poll exists for: the tick is unreadable, not failed.
+            # (A missing element is NoSuchElementException, handled above.)
+            LOG.debug(
+                "login_tick_read_failed",
+                plugin=site_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                backend="selenium",
+            )
+            verdict = _TICK_PENDING
+        else:
+            verdict = _login_tick_verdict(
+                page_text=page_text,
+                url=url,
+                failure_text=failure_text,
+                success_selector=success_selector,
+                success_url=success_url,
+                success_found=success_found,
+            )
         if verdict == _TICK_SUCCESS:
             return True
         if verdict == _TICK_FAILURE:

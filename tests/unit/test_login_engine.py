@@ -786,6 +786,7 @@ class _ScriptedNodriverTab:
         urls: tuple[str, ...] = ("https://app.example.com/login",),
         success_from: int | None = None,
         ready_states: tuple[str, ...] = ("complete",),
+        unreadable_ticks: tuple[int, ...] = (),
     ) -> None:
         self.events: list[str] = []
         self.tick = -1
@@ -795,6 +796,7 @@ class _ScriptedNodriverTab:
         self._success_from = success_from
         self._ready_states = ready_states
         self._ready_reads = 0
+        self._unreadable_ticks = unreadable_ticks
         self.send = AsyncMock()
 
     def __getattr__(self, name: str) -> MagicMock:
@@ -815,7 +817,12 @@ class _ScriptedNodriverTab:
         return self._at(self._urls, max(self.tick, 0))
 
     async def get_content(self) -> str:
+        from nodriver.core.connection import ProtocolException
+
         self.tick += 1
+        if self.tick in self._unreadable_ticks:
+            self.events.append(f"tick:{self.tick}:unreadable")
+            raise ProtocolException("Could not find node with given id")
         self.events.append(f"tick:{self.tick}")
         return self._at(self._contents, self.tick)
 
@@ -927,6 +934,26 @@ class TestNodriverLoginSignalPoll:
 
         assert result is True
         assert tab.tick == 3
+        assert "cookies" in tab.events
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_tick_does_not_end_the_login(self) -> None:
+        """A ProtocolException mid-redirect is the window this poll exists for."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            success_selector=".dashboard", success_from=2, unreadable_ticks=(1,)
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert "tick:1:unreadable" in tab.events
         assert "cookies" in tab.events
 
     @pytest.mark.asyncio
@@ -1616,6 +1643,7 @@ class _ScriptedSeleniumDriver:
         urls: tuple[str, ...] = ("https://app.example.com/login",),
         success_from: int | None = None,
         ready_states: tuple[str, ...] = ("complete",),
+        unreadable_ticks: tuple[int, ...] = (),
     ) -> None:
         self.events: list[str] = []
         self.tick = -1
@@ -1625,6 +1653,7 @@ class _ScriptedSeleniumDriver:
         self._success_from = success_from
         self._ready_states = ready_states
         self._ready_reads = 0
+        self._unreadable_ticks = unreadable_ticks
 
     def __getattr__(self, name: str) -> MagicMock:
         """Anything the browser stack asks of a driver that this script does not model."""
@@ -1636,7 +1665,12 @@ class _ScriptedSeleniumDriver:
 
     @property
     def page_source(self) -> str:
+        from selenium.common.exceptions import WebDriverException
+
         self.tick += 1
+        if self.tick in self._unreadable_ticks:
+            self.events.append(f"tick:{self.tick}:unreadable")
+            raise WebDriverException("no such window: target window already closed")
         self.events.append(f"tick:{self.tick}")
         return self._at(self._contents, self.tick)
 
@@ -1741,6 +1775,25 @@ class TestSeleniumLoginSignalPoll:
 
         assert result is True
         assert driver.tick == 3
+        assert "cookies" in driver.events
+
+    def test_an_unreadable_tick_does_not_end_the_login(self) -> None:
+        """A WebDriverException while the browser navigates is not a login failure."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            success_selector=".dashboard", success_from=2, unreadable_ticks=(1,)
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert "tick:1:unreadable" in driver.events
         assert "cookies" in driver.events
 
     def test_failure_text_that_appears_late_ends_the_poll(self) -> None:
