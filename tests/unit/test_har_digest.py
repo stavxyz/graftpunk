@@ -544,6 +544,20 @@ class TestLoginObservations:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert any(o.kind == "auth_api" for o in result.login)
 
+    def test_an_auth_word_inside_a_longer_segment_is_not_an_observation(
+        self, tmp_path: Path
+    ) -> None:
+        """/token matched as a bare substring, so /api/tokens/list was labelled
+        auth_api."""
+        entries = [_entry("GET", "https://api.myshop.example.com/api/tokens/list")]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.login == ()
+
+    def test_an_auth_word_ending_a_segment_is_an_observation(self, tmp_path: Path) -> None:
+        entries = [_entry("POST", "https://api.myshop.example.com/oauth/token", post_data="{}")]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert any(o.kind == "auth_api" for o in result.login)
+
     def test_unrelated_asset_load_is_not_a_login_observation(self, tmp_path: Path) -> None:
         entries = [_entry("GET", "https://api.myshop.example.com/products")]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))

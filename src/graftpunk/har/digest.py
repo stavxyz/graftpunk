@@ -108,7 +108,12 @@ _AUTH_URL_PATTERNS = [
     r"/callback",
     r"/sso",
 ]
-_AUTH_URL_REGEX = re.compile("|".join(_AUTH_URL_PATTERNS), re.IGNORECASE)
+# Each pattern ends at a segment boundary: as bare substrings they labelled
+# /api/tokens/list an auth endpoint (polish round 1, 2026-09-12). Every pattern
+# already begins with "/", which anchors the left side.
+_AUTH_URL_REGEX = re.compile(
+    "|".join(f"(?:{pattern})(?=/|$)" for pattern in _AUTH_URL_PATTERNS), re.IGNORECASE
+)
 
 _STANDARD_REQUEST_HEADERS = frozenset(
     {
