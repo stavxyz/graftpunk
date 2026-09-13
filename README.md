@@ -234,7 +234,7 @@ commands:
 ### Python Plugin (Complex Logic)
 
 ```python
-from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
+from graftpunk.plugins import CommandContext, LoginConfig, LoginStep, SitePlugin, command
 
 
 class MyBankPlugin(SitePlugin):
@@ -245,9 +245,16 @@ class MyBankPlugin(SitePlugin):
 
     login_config = LoginConfig(
         url="/login",
-        fields={"username": "input#email", "password": "input#password"},
-        submit="button[type=submit]",
+        steps=[
+            LoginStep(
+                fields={"username": "input#email", "password": "input#password"},
+                submit="button[type=submit]",
+            ),
+        ],
         success=".dashboard",
+        # The post-submit wait polls for these until it sees them, or gives up
+        # after timeout seconds (30 by default).
+        success_url="*/dashboard*",
     )
 
     @command(help="List all accounts")

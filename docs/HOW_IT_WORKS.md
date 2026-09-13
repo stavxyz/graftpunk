@@ -515,6 +515,9 @@ The top-level login configuration includes:
 - **`wait_for`** — Optional top-level wait for element before any steps begin.
 - **`failure`** — Optional text that indicates login failure.
 - **`success`** — Optional CSS selector that indicates login success.
+- **`success_url`**: Optional glob matched against the whole browser URL after the last step, such as `https://app.example.com/*` or `*/dashboard*`. Use it for a login that finishes on a recognisable URL, on its own or alongside `success`; with both set, both have to hold.
+- **`timeout`**: Seconds to wait after the last step for the success or failure signal (default `30`). Raise it for a login that finishes through a slow identity-provider redirect chain.
+- **`settle`**: Seconds to wait after the success signal, once the document has finished loading, before cookies are captured (default `1`).
 - **`headless`** — Run the login browser headless (default `false`, so a human can solve a CAPTCHA or 2FA prompt). `gp <plugin> login --headless` / `--headful` override it for one invocation in either direction; the flags are offered only on declarative logins (a plugin's own `login()` method cannot honour them).
 
 #### Field filling is verified
@@ -523,7 +526,7 @@ Some server-rendered sites re-render their login form shortly after load (jQuery
 
 #### Diagnosing a failed login
 
-`login` reporting a failure means the page did not reach the expected post-login state. The engine logs what it actually detected — the configured `failure` text, a missing `success` element, or a `Too Many Requests` (rate-limit) page — so read the warning before assuming bad credentials. To capture the whole flow, run `gp --observe=full <plugin> login`: it records an observe run under the plugin's session name whether or not the login succeeds, and prints the run directory. `gp observe list` shows it. With the nodriver backend the run holds a screenshot, the page source, a HAR with response bodies, and console logs; with the selenium backend `BrowserSession` owns the capture, which yields the HAR, console logs, and a screenshot only if the login raised.
+`login` reporting a failure means the page did not reach the expected post-login state. The engine logs what it actually detected: the configured `failure` text, a `Too Many Requests` (rate-limit) page, or the success signal never appearing before `timeout` (that warning names the missing selector or URL pattern and the URL the page ended on). Read the warning before assuming bad credentials, and if the login really does take longer than `timeout`, raise it. To capture the whole flow, run `gp --observe=full <plugin> login`: it records an observe run under the plugin's session name whether or not the login succeeds, and prints the run directory. `gp observe list` shows it. With the nodriver backend the run holds a screenshot, the page source, a HAR with response bodies, and console logs; with the selenium backend `BrowserSession` owns the capture, which yields the HAR, console logs, and a screenshot only if the login raised.
 
 Redirect chains are recorded one HAR entry per hop, linked by `response.redirectURL`, so a login form whose `POST` answers with a `302` shows up as the `POST` (with its status, `Location`, and its redacted body when CDP inlined it — a body CDP did not inline is lost across the redirect and logged as `redirect_hop_post_data_unavailable`) followed by the request it redirected to.
 
@@ -547,6 +550,7 @@ class MyPlugin(SitePlugin):
         url="/login",
         failure="Invalid credentials",
         success=".dashboard",
+        success_url="*/dashboard*",
         steps=[
             LoginStep(
                 fields={"username": "#email", "password": "#password"},
@@ -562,6 +566,7 @@ Or in YAML:
 login:
   url: /login
   failure: "Invalid credentials"
+  success_url: "*/dashboard*"
   steps:
     - fields:
         username: "input#username"
@@ -585,6 +590,10 @@ class MyPlugin(SitePlugin):
         url="/login",
         wait_for="#login-form",
         failure="Invalid credentials",
+        # The identity provider hands control back to the app: wait for its URL,
+        # not for a fixed pause, and give the chain room to finish.
+        success_url="https://app.example.com/*",
+        timeout=60.0,
         steps=[
             LoginStep(
                 fields={"username": "input#signInName"},
@@ -607,6 +616,8 @@ login:
   url: /login
   wait_for: "#login-form"
   failure: "Invalid credentials"
+  success_url: "https://app.example.com/*"
+  timeout: 60
   headless: false  # default; true for sites that need no CAPTCHA/2FA
   steps:
     - fields:
@@ -645,15 +656,17 @@ The declarative engine executes each step in sequence:
    b. Clicks each field element and types the credential value
    c. **(If `submit` is set)** Clicks the submit button
    d. **(If `delay` is set)** Pauses for the specified duration
-4. Checks for failure text in page content
-5. Checks for success element via CSS selector
+4. Polls the page every half second, up to `timeout` seconds, reading the page text and the current URL on each pass. The `failure` text ends the wait as a failure, a `Too Many Requests` page ends it as a failure, and the success signal ends it as a success. The success signal is the `success` element being present, the current URL matching the `success_url` glob, or both when both are configured.
+5. Waits for the document to finish loading, then pauses for `settle` seconds
 6. Transfers cookies and caches the session
 
-Both `failure` and `success` checks run independently — you can use either or both. If neither is configured, a warning is logged advising you to add validation.
+The wait is what makes a slow login work: sites that finish through an identity-provider redirect can take tens of seconds to mint their cookies, and the engine holds until the signal it was told to look for appears. When the timeout passes first, the login fails and the warning names the signal that never appeared and the URL the page ended on.
+
+Configure at least one of `failure`, `success`, and `success_url`. With neither `success` nor `success_url` set there is nothing to wait for, so the engine pauses for `settle` seconds and takes a single verdict from the page text; with none of the three set, that verdict is always success and a warning advises you to add validation.
 
 **Per-step `wait_for` is nodriver-only.** Setting `wait_for` on individual steps requires `backend = "nodriver"`. The top-level `wait_for` is also nodriver-only. Setting `wait_for` on a plugin with `backend = "selenium"` raises a `PluginError` at login time with guidance to switch to the nodriver backend.
 
-**Resilient element selection (nodriver):** During page transitions (cross-origin redirects, SPA navigation), the DOM document node itself can become invalid, causing nodriver's `tab.select()` to throw a `ProtocolException` instead of returning `None`. The login engine wraps all pre-submit element selection calls with a retry helper (`_select_with_retry`) that catches `ProtocolException` and retries with a 30-second deadline and 1-second intervals. This gives the browser time to complete redirects and render the form. The success selector check post-submit does *not* retry — by that point the page has settled, and retrying would mask genuine login failures.
+**Resilient element selection (nodriver):** During page transitions (cross-origin redirects, SPA navigation), the DOM document node itself can become invalid, causing nodriver's `tab.select()` to throw a `ProtocolException` instead of returning `None`. The login engine wraps all pre-submit element selection calls with a retry helper (`_select_with_retry`) that catches `ProtocolException` and retries with a 30-second deadline and 1-second intervals. This gives the browser time to complete redirects and render the form. After the last step the success selector is looked up once per poll pass instead, with no retry inside a pass: the poll is the retry, and each pass has to come back before the next one is due.
 
 **Backend differences in success detection:**
 - **Selenium:** Uses `driver.find_element()` with a try/except for `NoSuchElementException`
@@ -1318,7 +1331,7 @@ This creates: `gp bank accounts list`, `gp bank accounts detail <id>`, `gp bank 
 | `CommandSpec` | `plugins.cli_plugin` | Yes | Command spec: `name`, `handler`, `help_text`, `params`, `timeout`, `max_retries`, `rate_limit`, `requires_session`, `group` |
 | `CommandMetadata` | `plugins.cli_plugin` | Yes | Metadata stored by `@command` decorator on methods |
 | `CommandGroupMeta` | `plugins.cli_plugin` | Yes | Metadata stored by `@command` decorator on classes (command groups) |
-| `LoginConfig` | `plugins.cli_plugin` | Yes | Declarative browser login configuration: `steps`, `url`, `wait_for`, `failure`, `success`, `headless` |
+| `LoginConfig` | `plugins.cli_plugin` | Yes | Declarative browser login configuration: `steps`, `url`, `wait_for`, `failure`, `success`, `success_url`, `headless`, `timeout`, `settle` |
 | `LoginStep` | `plugins.cli_plugin` | Yes | Single step in a login flow: `fields`, `submit`, `wait_for`, `delay` |
 | `PluginConfig` | `plugins.cli_plugin` | Yes | Canonical config: `site_name`, `session_name`, `help_text`, `base_url`, `requires_session`, `backend`, `api_version`, `username_envvar`, `password_envvar`, `login_config`, `plugin_version`, `plugin_author`, `plugin_url` |
 | `PluginParamSpec` | `plugins.cli_plugin` | Yes | CLI parameter specification |
