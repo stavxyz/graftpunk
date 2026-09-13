@@ -70,6 +70,11 @@ _MAX_PLUGIN_NAME = 40
 _MAX_COMMAND_NAME = 40
 _MAX_PARAM_NAME = 40
 
+# Where a camelCase site name becomes a snake_case Python identifier: after a
+# lower or a digit and before an upper, or between the last upper of a run and
+# an upper-lower pair. Both are zero-width, so the substitution only inserts.
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
 # The methods whose stub carries a JSON body dict.
 _MUTATING_METHODS = ("POST", "PUT", "PATCH")
 
@@ -163,19 +168,36 @@ def _command_name(template: str, seen: set[str]) -> str:
     return _deduped(base, seen)
 
 
+def _snake_cased(text: str) -> str:
+    """*text* with each camelCase boundary replaced by an underscore, lowercased.
+
+    A boundary is a lower-or-digit followed by an upper (``keywordSearch``), or the
+    last upper of a run followed by an upper-lower pair (``HTTPServer`` gives
+    ``http_server``). A token that is all upper with no such pair simply lowercases,
+    so ``ID`` gives ``id`` rather than ``i_d``.
+    """
+    return _CAMEL_BOUNDARY_RE.sub("_", text).lower()
+
+
 def _param_identifier(site_name: str, seen: set[str]) -> str:
     """A Python identifier for the site parameter *site_name*, unique within *seen*.
 
     The one owner of every parameter identifier a generated stub declares: a path
     placeholder, a query parameter, a body parameter. The site's own name is kept as
     the dict key at the call site, so the sanitisation here is free to rename: every
-    character outside the identifier alphabet becomes an underscore, a leading digit
-    gains a ``p_`` prefix, the result is truncated to ``_MAX_PARAM_NAME``, a Python
-    keyword gains a trailing underscore, and ``_deduped`` makes it unique (so two path
-    segments that template to the same name, or a query parameter colliding with a
-    path placeholder, cannot emit a duplicate argument).
+    character outside the identifier alphabet becomes an underscore, camelCase becomes
+    snake_case (``keywordSearch`` gives ``keyword_search``, ``recorded-date-range``
+    gives ``recorded_date_range``), a leading digit gains a ``p_`` prefix, the result
+    is truncated to ``_MAX_PARAM_NAME``, a Python keyword gains a trailing underscore,
+    and ``_deduped`` makes it unique (so two path segments that template to the same
+    name, or a query parameter colliding with a path placeholder, cannot emit a
+    duplicate argument).
+
+    Keeping the site's spelling verbatim put ``keywordSearch`` and
+    ``recordedDateRange`` in a Python signature and on the command line, where
+    neither reads as this project's own code (polish round 2, 2026-09-12).
     """
-    base = re.sub(r"[^A-Za-z0-9_]", "_", site_name)
+    base = _snake_cased(re.sub(r"[^A-Za-z0-9_]", "_", site_name))
     if base and base[0].isdigit():
         base = f"p_{base}"
     base = base[:_MAX_PARAM_NAME] or "param"

@@ -125,6 +125,40 @@ _NOTES_ENDPOINT = Endpoint(
     examples=("/orders/1/notes",),
 )
 
+_SITE_NAMED_PARAMS_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/results",
+    methods=("GET",),
+    count=4,
+    statuses=(200,),
+    content_type="application/json",
+    query_params={
+        "keywordSearch": "bool",
+        "recorded-date-range": "str",
+        "searchOcrText": "bool",
+    },
+    body_params={},
+    body_kind="none",
+    shape=ShapeNode(kind="object", children={"rows": ShapeNode(kind="array")}),
+    custom_headers=(),
+    examples=("/results?keywordSearch=false",),
+)
+
+_CAMEL_PATH_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/searchResults/{searchResult_id}",
+    methods=("GET",),
+    count=2,
+    statuses=(200,),
+    content_type="application/json",
+    query_params={},
+    body_params={},
+    body_kind="none",
+    shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
+    custom_headers=(),
+    examples=("/searchResults/1",),
+)
+
 _PASSWORD_LOGIN_FORM = LoginForm(
     action="/login",
     method="POST",
@@ -232,6 +266,19 @@ class TestParamIdentifier:
 
     def test_a_leading_digit_is_prefixed(self) -> None:
         assert _param_identifier("2fa", set()) == "p_2fa"
+
+    def test_camel_case_becomes_snake_case(self) -> None:
+        assert _param_identifier("keywordSearch", set()) == "keyword_search"
+        assert _param_identifier("searchOcrText", set()) == "search_ocr_text"
+
+    def test_kebab_case_becomes_snake_case(self) -> None:
+        assert _param_identifier("recorded-date-range", set()) == "recorded_date_range"
+
+    def test_an_all_caps_token_just_lowercases(self) -> None:
+        assert _param_identifier("ID", set()) == "id"
+
+    def test_an_upper_run_before_a_word_splits_once(self) -> None:
+        assert _param_identifier("HTTPServer", set()) == "http_server"
 
 
 class TestModuleNameFor:
@@ -832,6 +879,40 @@ class TestPluginModuleCommandStubs:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "author: str | None = None" in plugin_code
         assert '"author": author,' in plugin_code
+
+    def test_a_camel_case_site_parameter_is_declared_in_snake_case(self) -> None:
+        """The identifier is this project's own; the dict key stays the site's
+        (polish round 2, 2026-09-12)."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_SITE_NAMED_PARAMS_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "keyword_search: bool | None = None" in plugin_code
+        assert "recorded_date_range: str | None = None" in plugin_code
+        assert "search_ocr_text: bool | None = None" in plugin_code
+        assert '"keywordSearch": keyword_search,' in plugin_code
+        assert '"recorded-date-range": recorded_date_range,' in plugin_code
+        assert "keywordSearch:" not in plugin_code
+        assert "recordedDateRange" not in plugin_code
+
+    def test_a_camel_case_path_placeholder_is_declared_in_snake_case(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_CAMEL_PATH_ENDPOINT,)),
+        )
+        rendered = render(spec)
+        plugin_code = rendered["src/graftpunk_myshop/plugin.py"]
+        test_code = rendered["tests/test_plugin.py"]
+        assert "search_result_id: str," in plugin_code
+        assert 'f"/searchResults/{search_result_id}",' in plugin_code
+        assert 'search_result_id="1"' in test_code
 
     def test_html_endpoint_calls_request_text_with_navigation_role(self) -> None:
         html_endpoint = Endpoint(
