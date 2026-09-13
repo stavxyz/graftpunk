@@ -30,7 +30,7 @@ LOG = get_logger(__name__)
 
 BodyKind = Literal["json", "form", "none"]
 ObservationKind = Literal["form_page", "credential_post", "redirect", "set_cookie", "auth_api"]
-DropReason = Literal["static", "third_party", "error"]
+DropReason = Literal["static", "third_party", "error", "other_scheme"]
 
 __all__ = [
     "BodyKind",
@@ -61,6 +61,14 @@ _SHAPE_MAX_DEPTH = 3
 _SHAPE_MAX_KEYS = 12
 _MAX_ENDPOINT_EXAMPLES = 3  # example paths kept per endpoint, first seen wins
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+
+# The only schemes a captured entry can be an endpoint under. A capture taken
+# before the first navigation holds the browser's own new-tab page: chrome://,
+# chrome-untrusted://, and a data: URL, each of which parses with a netloc that
+# is not a host at all (new-tab-page, resources, theme, and an empty string),
+# and each of which was counted as a host in the digest (polish round 2,
+# 2026-09-12).
+_HTTP_SCHEMES = frozenset({"http", "https"})
 
 # Exclusion is three rules against three parts of the URL, never one substring
 # search over the whole of it: matched anywhere, "analytics" dropped the primary
@@ -634,6 +642,10 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
 def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     """Read *source* into a :class:`RunDigest`.
 
+    An entry whose URL scheme is neither ``http`` nor ``https`` is dropped
+    first, under ``dropped["other_scheme"]``, and never reaches the host
+    counts or any later rule.
+
     Never raises on a malformed entry (the parser already records per-entry
     errors) or on a body file the HAR references but that is missing on
     disk; both count under ``dropped["error"]`` and the digest still
@@ -645,13 +657,20 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         "static": 0,
         "third_party": 0,
         "error": len(parse_result.errors),
+        "other_scheme": 0,
     }
 
     hosts: dict[str, int] = {}
     non_static_hosts: dict[str, int] = {}
     classified: list[tuple[HAREntry, str, bool]] = []
     for entry in entries:
-        host = urlparse(entry.request.url).netloc.lower()
+        parsed_url = urlparse(entry.request.url)
+        # Before every other classification: a non-HTTP entry has no host to
+        # count and no endpoint to derive.
+        if parsed_url.scheme.lower() not in _HTTP_SCHEMES:
+            dropped["other_scheme"] += 1
+            continue
+        host = parsed_url.netloc.lower()
         hosts[host] = hosts.get(host, 0) + 1
         static = _is_static(entry)
         if not static:

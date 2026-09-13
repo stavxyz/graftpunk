@@ -64,6 +64,16 @@ class TestRenderMarkdown:
         text = render_markdown(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
         assert text.index("/orders") < text.index("/page")
 
+    def test_dropped_line_reports_non_http_entries(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "chrome://new-tab-page/", content_type="text/html", body="<html>"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        text = render_markdown(result)
+        assert "other_scheme=1" in text
+        assert "## Other hosts" not in text
+
     def test_limit_caps_endpoints_shown(self, tmp_path: Path) -> None:
         entries = [_entry("GET", f"https://api.myshop.example.com/item-{i}") for i in range(10)]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
@@ -174,6 +184,16 @@ class TestRenderJson:
             "cookies",
             "dropped",
         }
+
+    def test_dropped_carries_every_reason(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "data:text/html,hello", content_type="text/html", body="hello"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        parsed = json.loads(render_json(result))
+        assert set(parsed["dropped"]) == {"static", "third_party", "error", "other_scheme"}
+        assert parsed["dropped"]["other_scheme"] == 1
 
     def test_is_complete_regardless_of_endpoint_count(self, tmp_path: Path) -> None:
         entries = [_entry("GET", f"https://api.myshop.example.com/item-{i}") for i in range(80)]

@@ -235,6 +235,42 @@ class TestStaticAndThirdPartyExclusion:
         assert result.dropped["third_party"] == 0
 
 
+class TestNonHttpSchemes:
+    """A capture taken before the first navigation holds the browser's own
+    new-tab page, whose entries are not HTTP at all (polish round 2,
+    2026-09-12)."""
+
+    def _mixed_har(self, tmp_path: Path) -> Path:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "chrome://new-tab-page/", content_type="text/html", body="<html>"),
+            _entry("GET", "chrome-untrusted://theme/colors.css", content_type="text/css", body=""),
+            _entry("GET", "data:image/png;base64,AAAA", content_type="image/png", body=""),
+            _entry("GET", "blob:https://api.myshop.example.com/1234", body="{}"),
+        ]
+        return _write_har(tmp_path, entries)
+
+    def test_non_http_entries_are_dropped_as_other_scheme(self, tmp_path: Path) -> None:
+        result = digest(DigestSource.from_har(self._mixed_har(tmp_path)))
+        assert result.dropped["other_scheme"] == 4
+
+    def test_a_pseudo_host_never_reaches_the_host_counts(self, tmp_path: Path) -> None:
+        result = digest(DigestSource.from_har(self._mixed_har(tmp_path)))
+        assert set(result.hosts) == {"api.myshop.example.com"}
+        assert result.primary_host == "api.myshop.example.com"
+
+    def test_a_non_http_entry_is_never_an_endpoint(self, tmp_path: Path) -> None:
+        result = digest(DigestSource.from_har(self._mixed_har(tmp_path)))
+        assert [e.template for e in result.endpoints] == ["/orders"]
+
+    def test_the_scheme_rule_runs_before_the_static_rule(self, tmp_path: Path) -> None:
+        """A non-HTTP entry counts once, under its own reason, even when its
+        content type would also have made it static."""
+        result = digest(DigestSource.from_har(self._mixed_har(tmp_path)))
+        assert result.dropped["static"] == 0
+        assert result.dropped["third_party"] == 0
+
+
 class TestTypeObservation:
     def test_query_param_int_type(self, tmp_path: Path) -> None:
         entries = [_entry("GET", "https://api.myshop.example.com/orders?page=1")]

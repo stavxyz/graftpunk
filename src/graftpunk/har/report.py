@@ -102,7 +102,9 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     lines.append(f"- hosts: {len(d.hosts)}, endpoints: {len(d.endpoints)}")
     lines.append(
         f"- dropped: static={d.dropped.get('static', 0)}, "
-        f"third_party={d.dropped.get('third_party', 0)}, error={d.dropped.get('error', 0)}"
+        f"third_party={d.dropped.get('third_party', 0)}, "
+        f"other_scheme={d.dropped.get('other_scheme', 0)}, "
+        f"error={d.dropped.get('error', 0)}"
     )
     lines.append("")
 
