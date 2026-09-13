@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -19,6 +20,13 @@ from graftpunk.cli.scaffold_commands import plugin_app
 from graftpunk.logging import configure_logging
 
 runner = CliRunner()
+
+
+def _plain(text: str) -> str:
+    """*text* without ANSI escapes. Rich colours paths and usage errors when a
+    terminal or FORCE_COLOR is detected, and the codes land inside the words
+    these tests look for; CI and local runs differ on that, the words do not."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _build_app() -> typer.Typer:
@@ -296,7 +304,7 @@ class TestPathListingsDoNotWrapMidWord:
         assert result.exit_code == 0, result.output
         expected = str(target / "src" / "graftpunk_myshop" / "plugin.py")
         assert len(expected) > 80
-        assert expected in result.output
+        assert expected in _plain(result.output)
 
     def test_the_conflict_listing_keeps_whole_paths(self, tmp_path: Path) -> None:
         target = self._deep_target(tmp_path)
@@ -317,7 +325,7 @@ class TestPathListingsDoNotWrapMidWord:
         assert result.exit_code == 1
         expected = str(target / "README.md")
         assert len(expected) > 80
-        assert expected in result.output
+        assert expected in _plain(result.output)
 
 
 class TestNextStepsNamesTheFixtures:
@@ -343,9 +351,10 @@ class TestNextStepsNamesTheFixtures:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Next:" in result.output
-        assert "tests/fixtures/get_orders_{order_id}.json" in result.output
-        assert "gp observe fixtures --help" in result.output
+        plain_output = _plain(result.output)
+        assert "Next:" in plain_output
+        assert "tests/fixtures/get_orders_{order_id}.json" in plain_output
+        assert "gp observe fixtures --help" in plain_output
 
     def test_a_project_with_no_endpoint_stubs_says_nothing(self, tmp_path: Path) -> None:
         result = runner.invoke(
