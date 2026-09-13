@@ -76,6 +76,25 @@ name = "mysuite"
 """
 
 
+_ARRAY_BEFORE_PACKAGES = """\
+[project]
+name = "mysuite"
+
+[project.entry-points."graftpunk.plugins"]
+existing = "mysuite.existing:ExistingPlugin"
+
+[tool.hatch.build.targets.wheel]
+exclude = ["docs"]
+packages = ["src/mysuite"]
+"""
+
+_ENTRY_POINT_TABLE_LAST_NO_TRAILING_NEWLINE = (
+    '[project]\nname = "mysuite"\n\n'
+    '[project.entry-points."graftpunk.plugins"]\n'
+    'existing = "mysuite.existing:ExistingPlugin"'
+)
+
+
 class TestAddEntryPoint:
     def test_appends_a_new_line_to_the_table(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
@@ -120,8 +139,36 @@ class TestAddEntryPoint:
         eps = data["project"]["entry-points"]["graftpunk.plugins"]
         assert eps["widgets"] == "graftpunk_widgets.plugin:WidgetsPlugin"
 
+    def test_a_table_that_is_last_and_has_no_trailing_newline(self, tmp_path: Path) -> None:
+        """The table's pattern needs its last line terminated, so this shape was
+        refused as unlocatable."""
+        import tomllib
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_ENTRY_POINT_TABLE_LAST_NO_TRAILING_NEWLINE)
+        add_entry_point(pyproject, "widgets", "graftpunk_widgets.plugin:WidgetsPlugin")
+        text = pyproject.read_text()
+        assert text.endswith("\n")
+        eps = tomllib.loads(text)["project"]["entry-points"]["graftpunk.plugins"]
+        assert eps == {
+            "existing": "mysuite.existing:ExistingPlugin",
+            "widgets": "graftpunk_widgets.plugin:WidgetsPlugin",
+        }
+
 
 class TestAddWheelPackage:
+    def test_an_array_before_packages_is_still_located(self, tmp_path: Path) -> None:
+        """The span between the header and the packages key stopped at any "[",
+        so an earlier array's own bracket made a known shape unlocatable."""
+        import tomllib
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_ARRAY_BEFORE_PACKAGES)
+        add_wheel_package(pyproject, "src/graftpunk_widgets")
+        wheel = tomllib.loads(pyproject.read_text())["tool"]["hatch"]["build"]["targets"]["wheel"]
+        assert set(wheel["packages"]) == {"src/mysuite", "src/graftpunk_widgets"}
+        assert wheel["exclude"] == ["docs"]
+
     def test_appends_to_a_single_line_array(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(_SINGLE_LINE_ARRAY)
