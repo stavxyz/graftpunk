@@ -21,14 +21,34 @@ __all__ = ["CAPTURES_DIR", "ensure_ignored", "find_repo_root", "is_tracked"]
 _GIT_TIMEOUT_SECONDS = 10
 
 
+def _nearest_existing(start: Path) -> Path:
+    """The closest ancestor of *start* (*start* itself when it exists) that is on disk.
+
+    ``git`` needs a directory that exists to run in. The fixtures command's
+    default target (``./tests/captures``) does not exist on a first run, and
+    running git there raises ``FileNotFoundError``, which read as "not inside a
+    git work tree" and let the command write unscrubbed bodies into a repo with
+    nothing ignoring them (polish round 1, 2026-09-12).
+    """
+    probe = start
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return probe
+
+
 def find_repo_root(start: Path) -> Path | None:
     """The git work tree's root containing *start*, or ``None`` outside one
-    (including when ``git`` is not on ``PATH``)."""
+    (including when ``git`` is not on ``PATH``).
+
+    *start* need not exist yet: the search runs from its nearest existing
+    ancestor, so a target directory this call is about to create is still
+    resolved against the repository that will contain it.
+    """
     argv = ["git", "rev-parse", "--show-toplevel"]
     try:
         result = subprocess.run(  # noqa: S603 - argv is a fixed git invocation, not untrusted input
             argv,
-            cwd=start,
+            cwd=_nearest_existing(start),
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT_SECONDS,

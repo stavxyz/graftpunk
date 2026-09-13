@@ -37,6 +37,20 @@ class TestFindRepoRoot:
     def test_none_outside_a_work_tree(self, tmp_path: Path) -> None:
         assert find_repo_root(tmp_path) is None
 
+    def test_a_path_that_does_not_exist_yet_still_finds_the_root(self, tmp_path: Path) -> None:
+        """The fixtures command's default target does not exist on a first run:
+        the search starts from the nearest existing ancestor rather than failing
+        to launch git at all."""
+        _init_repo(tmp_path)
+        not_yet_created = tmp_path / "tests" / "captures"
+        assert not not_yet_created.exists()
+        assert find_repo_root(not_yet_created) == tmp_path.resolve()
+
+    def test_a_path_that_does_not_exist_yet_outside_a_work_tree_is_none(
+        self, tmp_path: Path
+    ) -> None:
+        assert find_repo_root(tmp_path / "tests" / "captures") is None
+
 
 class TestEnsureIgnored:
     def test_adds_the_line_when_absent(self, tmp_path: Path) -> None:

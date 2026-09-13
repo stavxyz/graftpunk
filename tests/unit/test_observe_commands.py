@@ -67,6 +67,23 @@ def _entry(
     }
 
 
+def _invoke_fixtures(out_dir: Path, *extra: str):
+    """``gp observe fixtures myshop --match "GET /orders/{order_id}" --out <out_dir>``."""
+    return runner.invoke(
+        _build_app(),
+        [
+            "observe",
+            "fixtures",
+            "myshop",
+            "--match",
+            "GET /orders/{order_id}",
+            "--out",
+            str(out_dir),
+            *extra,
+        ],
+    )
+
+
 class TestResolveRun:
     def test_defaults_to_the_newest_run(self, tmp_path: Path) -> None:
         (tmp_path / "myshop" / "20260101-080000").mkdir(parents=True)
@@ -343,7 +360,11 @@ class TestFixturesCommand:
         # No git init here: out_dir is a plain tmp_path directory, not part
         # of this worktree's tree (find_repo_root walks from out_dir, not
         # from the test process's cwd, so it never reaches the repo above).
+        # It is created up front so git really runs and reports "not a work
+        # tree" by its exit status, rather than the command never launching
+        # git at all because the directory is missing.
         out_dir = tmp_path / "no_repo_here" / "captures"
+        out_dir.mkdir(parents=True)
 
         app = _build_app()
         result = runner.invoke(
@@ -395,6 +416,53 @@ class TestFixturesCommand:
         assert result.exit_code == 0, result.output
         assert "no entries matched --match." in result.output.lower()
         assert not out_dir.exists() or not list(out_dir.iterdir())
+
+
+class TestFixturesGitignore:
+    """The first run inside a repo is the one that matters: the default target
+    does not exist yet, and nothing else protects the bodies about to be
+    written there."""
+
+    @staticmethod
+    def _repo_with_a_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+        )
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(["git", "init", "-q"], repo)
+        _git(["git", "config", "user.email", "alice@example.com"], repo)
+        _git(["git", "config", "user.name", "alice"], repo)
+        return repo
+
+    def test_first_run_into_a_directory_that_does_not_exist_yet_adds_the_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        out_dir = repo / "tests" / "captures"
+        assert not out_dir.exists()
+
+        result = _invoke_fixtures(out_dir)
+
+        assert result.exit_code == 0, result.output
+        assert "tests/captures/" in (repo / ".gitignore").read_text()
+        assert list(out_dir.glob("get_orders_*.json"))
+
+    def test_a_second_run_does_not_duplicate_the_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        out_dir = repo / "tests" / "captures"
+
+        _invoke_fixtures(out_dir)
+        _invoke_fixtures(out_dir)
+
+        assert (repo / ".gitignore").read_text().count("tests/captures/") == 1
 
 
 class TestMatchPatternValidation:
