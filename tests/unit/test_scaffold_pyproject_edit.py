@@ -139,6 +139,44 @@ class TestAddEntryPoint:
         eps = data["project"]["entry-points"]["graftpunk.plugins"]
         assert eps["widgets"] == "graftpunk_widgets.plugin:WidgetsPlugin"
 
+    def test_the_blank_line_before_the_next_table_survives(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_SINGLE_LINE_ARRAY)
+        add_entry_point(pyproject, "widgets", "graftpunk_widgets.plugin:WidgetsPlugin")
+        lines = pyproject.read_text().splitlines()
+        header_index = lines.index("[tool.hatch.build.targets.wheel]")
+        assert lines[header_index - 1] == ""
+        assert lines[header_index - 2] == 'widgets = "graftpunk_widgets.plugin:WidgetsPlugin"'
+
+    def test_two_adds_leave_both_entries_in_the_same_table(self, tmp_path: Path) -> None:
+        import tomllib
+
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_SINGLE_LINE_ARRAY)
+        add_entry_point(pyproject, "widgets", "graftpunk_widgets.plugin:WidgetsPlugin")
+        add_entry_point(pyproject, "gadgets", "graftpunk_gadgets.plugin:GadgetsPlugin")
+        text = pyproject.read_text()
+        eps = tomllib.loads(text)["project"]["entry-points"]["graftpunk.plugins"]
+        assert eps == {
+            "existing": "mysuite.existing:ExistingPlugin",
+            "widgets": "graftpunk_widgets.plugin:WidgetsPlugin",
+            "gadgets": "graftpunk_gadgets.plugin:GadgetsPlugin",
+        }
+        lines = text.splitlines()
+        assert lines[lines.index("[tool.hatch.build.targets.wheel]") - 1] == ""
+        assert tomllib.loads(text)["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
+            "src/mysuite"
+        ]
+
+    def test_an_empty_table_keeps_its_separator_too(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_EMPTY_ENTRY_POINT_TABLE)
+        add_entry_point(pyproject, "widgets", "graftpunk_widgets.plugin:WidgetsPlugin")
+        lines = pyproject.read_text().splitlines()
+        header_index = lines.index("[tool.hatch.build.targets.wheel]")
+        assert lines[header_index - 1] == ""
+        assert lines[header_index - 2] == 'widgets = "graftpunk_widgets.plugin:WidgetsPlugin"'
+
     def test_a_table_that_is_last_and_has_no_trailing_newline(self, tmp_path: Path) -> None:
         """The table's pattern needs its last line terminated, so this shape was
         refused as unlocatable."""

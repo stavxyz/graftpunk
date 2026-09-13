@@ -61,10 +61,27 @@ def add_entry_point(pyproject_path: Path, name: str, target: str) -> None:
             f'{name} = "{target}"'
         )
     header, body = match.group(1), match.group(2)
-    new_text = (
-        text[: match.start()] + header + body + f'{name} = "{target}"\n' + text[match.end() :]
-    )
+    new_text = text[: match.start()] + header + _body_with_entry(body, name, target)
+    new_text += text[match.end() :]
     pyproject_path.write_text(new_text, encoding="utf-8")
+
+
+def _body_with_entry(body: str, name: str, target: str) -> str:
+    """*body* with ``name = "target"`` appended after its last entry, ahead of
+    whatever blank lines separated the table from what follows it.
+
+    The pattern's body runs to the next table header, so it carries that
+    separator. Appending past it glued the new entry to the next header, and a
+    second add then read as part of that table (polish round 2, 2026-09-12).
+    """
+    entry = f'{name} = "{target}"\n'
+    entries = body.rstrip("\n")
+    blank_lines = body[len(entries) :]
+    if not entries:
+        return f"{entry}{blank_lines}"
+    # The first newline of blank_lines terminates the last existing entry, so
+    # it is re-emitted before the new entry rather than kept as a separator.
+    return f"{entries}\n{entry}{blank_lines[1:]}"
 
 
 def _append_to_array(array_text: str, item: str) -> str:
