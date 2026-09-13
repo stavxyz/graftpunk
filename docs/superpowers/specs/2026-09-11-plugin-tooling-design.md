@@ -280,6 +280,19 @@ Rules the digest applies:
   bare HAR from another tool simply has none to resolve. Bodies over 256 KB are
   sampled (first 64 KB) for shape only; nothing about a body is ever printed
   verbatim.
+
+> **Design note (2026-09-12, polish round 1):** the sampling above is gone. A
+> fixed-size prefix of a JSON body is never itself valid JSON, so parsing one
+> could only ever fail, and every body over the threshold reported
+> `shape: non-JSON` (and the generated docstring said `Shape: non-JSON.`),
+> which is a false claim about the endpoint. The body is now parsed whole; it
+> is already in memory. The 256 KB constant stays as the line above which a
+> parse failure is reported as `SHAPE_UNAVAILABLE` ("shape unavailable: body
+> over the sampling threshold") rather than as non-JSON, since a capture
+> routinely truncates a body that large. The 64 KB constant is removed.
+> `ShapeNode.kind` gains `"unavailable"` to carry that third state, distinct
+> from `shape=None` (the endpoint returns no JSON at all); the scaffold omits
+> the shape line entirely for it.
 - **Primary host** is the host that answered the most non-static requests;
   hosts sharing its registrable domain count as primary. Other hosts are
   reported by count only unless `--all-hosts`.
@@ -326,7 +339,7 @@ Rules the digest applies:
   value, or credential. The markdown renderer therefore has nothing to redact.
 - **Size**: the markdown renderer's `limit` (default 60) caps the endpoint
   list; the markdown for the 2026-09-10 capture should come out under 400
-  lines. Every threshold in this section (256 KB, 64 KB, 8 distinct values,
+  lines. Every threshold in this section (256 KB, 8 distinct values,
   16 hex characters, 20 characters, 20 entries, depth 3, 12 keys, 60, 400) is
   a named constant in the module that applies it, so the tests assert the
   names rather than repeat the literals.

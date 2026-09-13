@@ -17,10 +17,19 @@ from typing import Any
 
 from graftpunk.har.digest import Endpoint, RunDigest, ShapeNode
 
-__all__ = ["DEFAULT_ENDPOINT_LIMIT", "render_json", "render_markdown", "summarize_shape"]
+__all__ = [
+    "DEFAULT_ENDPOINT_LIMIT",
+    "SHAPE_UNAVAILABLE_SUMMARY",
+    "render_json",
+    "render_markdown",
+    "summarize_shape",
+]
 
 DEFAULT_ENDPOINT_LIMIT = 60
 _DEFAULT_SUMMARY_DEPTH = 3
+
+SHAPE_UNAVAILABLE_SUMMARY = "shape unavailable: body over the sampling threshold"
+"""How :data:`graftpunk.har.digest.SHAPE_UNAVAILABLE` reads in a digest."""
 
 
 def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DEPTH) -> str:
@@ -35,6 +44,8 @@ def summarize_shape(shape: ShapeNode | None, *, depth: int = _DEFAULT_SUMMARY_DE
     """
     if shape is None:
         return "non-JSON"
+    if shape.kind == "unavailable":
+        return SHAPE_UNAVAILABLE_SUMMARY
     if shape.kind in ("string", "number", "boolean", "null"):
         return shape.kind
     if shape.kind == "array":

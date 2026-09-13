@@ -40,6 +40,7 @@ __all__ = [
     "LoginForm",
     "LoginObservation",
     "ObservationKind",
+    "SHAPE_UNAVAILABLE",
     "RunDigest",
     "ShapeNode",
     "TokenCandidate",
@@ -49,8 +50,10 @@ __all__ = [
 ]
 
 # -- thresholds, every one a named constant (plugin tooling spec, "Rules the digest applies") --
-_BODY_SAMPLE_THRESHOLD = 256 * 1024  # bodies over this size are sampled for shape only
-_BODY_SAMPLE_SIZE = 64 * 1024
+# A body over this size that does not parse is reported as "shape unavailable"
+# rather than as non-JSON: a capture routinely truncates a body this large, and
+# claiming the endpoint returns non-JSON would be false.
+_BODY_SAMPLE_THRESHOLD = 256 * 1024
 _HIGH_CARDINALITY_THRESHOLD = 8  # a segment with more distinct values than this collapses too
 _DYNAMIC_MAJORITY = 0.5  # ... but only when more than this fraction of them look like identifiers
 _LOGIN_WINDOW = 20  # entries after a credential post that may carry a redirect/set_cookie
@@ -158,12 +161,26 @@ class DigestSource:
 
 @dataclass(frozen=True)
 class ShapeNode:
-    """The shape of one JSON value: its kind, and (for objects/arrays) its children."""
+    """The shape of one JSON value: its kind, and (for objects/arrays) its children.
 
-    kind: Literal["object", "array", "string", "number", "boolean", "null"]
+    ``kind="unavailable"`` is the one node that is not a JSON value: it marks a
+    JSON response whose shape could not be read (see
+    :data:`SHAPE_UNAVAILABLE`), distinct from ``shape=None``, which means the
+    endpoint does not return JSON at all.
+    """
+
+    kind: Literal["object", "array", "string", "number", "boolean", "null", "unavailable"]
     children: dict[str, ShapeNode] | None = None  # objects: key -> node, at most _SHAPE_MAX_KEYS
     item: ShapeNode | None = None  # arrays: the first element's node
     truncated: bool = False  # keys beyond the cap or depth beyond the cap were dropped
+
+
+SHAPE_UNAVAILABLE = ShapeNode(kind="unavailable")
+"""A JSON response too large to have been captured whole: its shape is unknown.
+
+Reporting it as non-JSON would be a false claim about the endpoint, and the
+generated docstring said ``Shape: non-JSON.`` for every one of them (polish
+round 1, 2026-09-12)."""
 
 
 @dataclass(frozen=True)
@@ -353,16 +370,24 @@ def _body_missing(entry: HAREntry) -> bool:
 
 
 def _response_shape(entry: HAREntry) -> ShapeNode | None:
+    """The shape of *entry*'s JSON response body, ``SHAPE_UNAVAILABLE`` when a
+    body over ``_BODY_SAMPLE_THRESHOLD`` does not parse, or ``None`` when the
+    endpoint does not return JSON.
+
+    The body is parsed whole; it is already in memory. Parsing a fixed-size
+    prefix of it could never succeed, so every large body reported non-JSON and
+    the generated docstring said so (polish round 1, 2026-09-12).
+    """
     content_type = (entry.response.content_type or "").lower()
     if "json" not in content_type or not entry.response.body:
         return None
 
     text = entry.response.body
-    if len(text.encode("utf-8", errors="ignore")) > _BODY_SAMPLE_THRESHOLD:
-        text = text[:_BODY_SAMPLE_SIZE]
     try:
         parsed = json.loads(text)
     except ValueError:
+        if len(text.encode("utf-8", errors="ignore")) > _BODY_SAMPLE_THRESHOLD:
+            return SHAPE_UNAVAILABLE
         return None
     return _shape_of(parsed)
 
@@ -436,8 +461,12 @@ class _EndpointAccumulator:
             self.body_params.update(field_types)
         if body_kind != "none":
             self.body_kind = body_kind
-        if self.shape is None:
-            self.shape = _response_shape(entry)
+        # A real shape supersedes an unavailable one: within a family the first
+        # member that was captured whole answers for the rest.
+        if self.shape is None or self.shape == SHAPE_UNAVAILABLE:
+            observed = _response_shape(entry)
+            if observed is not None:
+                self.shape = observed
         self.custom_headers.update(_custom_headers(entry))
         if path not in self.examples and len(self.examples) < 3:
             self.examples.append(path)
@@ -701,7 +730,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # a member that happened to redirect or return HTML must not cost
             # the merged endpoint its response shape or its request body kind
             # (final fix wave, 2026-09-12).
-            if target.shape is None:
+            if (
+                target.shape is None or target.shape == SHAPE_UNAVAILABLE
+            ) and acc.shape is not None:
                 target.shape = acc.shape
             if target.body_kind == "none" and acc.body_kind != "none":
                 target.body_kind = acc.body_kind

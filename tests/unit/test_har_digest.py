@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from graftpunk.har.digest import (
+    _BODY_SAMPLE_THRESHOLD,
     _DYNAMIC_MAJORITY,
     _FORM_CONTENT_TYPE,
     _HIGH_CARDINALITY_THRESHOLD,
@@ -14,6 +15,7 @@ from graftpunk.har.digest import (
     _MAX_FIELD_NAME_LEN,
     _SHAPE_MAX_DEPTH,
     _SHAPE_MAX_KEYS,
+    SHAPE_UNAVAILABLE,
     DigestSource,
     _parse_body,
     body_params,
@@ -319,6 +321,34 @@ class TestShapeNode:
         assert shape is not None
         assert shape.truncated is True
         assert len(shape.children) == _SHAPE_MAX_KEYS
+
+    def test_a_json_body_over_the_threshold_still_reports_its_shape(self, tmp_path: Path) -> None:
+        """The body is parsed whole. Parsing a fixed-size prefix of it could
+        never succeed, so every large body reported non-JSON."""
+        padding = "x" * _BODY_SAMPLE_THRESHOLD
+        body = json.dumps({"id": 1, "padding": padding})
+        assert len(body.encode("utf-8")) > _BODY_SAMPLE_THRESHOLD
+        entries = [_entry("GET", "https://api.myshop.example.com/big", body=body)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        shape = result.endpoints[0].shape
+        assert shape is not None
+        assert shape.kind == "object"
+        assert shape.children is not None
+        assert shape.children["id"].kind == "number"
+
+    def test_an_unparseable_body_over_the_threshold_is_unavailable_not_non_json(
+        self, tmp_path: Path
+    ) -> None:
+        truncated = '{"orders": [' + '{"id": 1},' * 40000
+        assert len(truncated.encode("utf-8")) > _BODY_SAMPLE_THRESHOLD
+        entries = [_entry("GET", "https://api.myshop.example.com/big", body=truncated)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].shape == SHAPE_UNAVAILABLE
+
+    def test_a_small_unparseable_json_body_is_still_shapeless(self, tmp_path: Path) -> None:
+        entries = [_entry("GET", "https://api.myshop.example.com/broken", body="not json at all")]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].shape is None
 
     def test_non_json_response_has_no_shape(self, tmp_path: Path) -> None:
         entries = [

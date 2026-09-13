@@ -16,6 +16,7 @@ Example usage:
 """
 
 from graftpunk.har.digest import (
+    SHAPE_UNAVAILABLE,
     DigestSource,
     Endpoint,
     LoginForm,
@@ -43,6 +44,7 @@ __all__ = [
     "ParseError",
     "parse_har_file",
     # Digest
+    "SHAPE_UNAVAILABLE",
     "DigestSource",
     "Endpoint",
     "LoginForm",

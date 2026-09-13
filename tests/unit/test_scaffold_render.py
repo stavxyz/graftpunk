@@ -34,6 +34,7 @@ from graftpunk.devtools.scaffold.render import (
     validate_plugin_name,
 )
 from graftpunk.har.digest import (
+    SHAPE_UNAVAILABLE,
     DigestSource,
     Endpoint,
     LoginForm,
@@ -779,6 +780,48 @@ class TestPluginModuleCommandStubs:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         for line in plugin_code.splitlines():
             assert line == line.rstrip()
+
+
+class TestUnavailableShapeIsOmittedFromTheDocstring:
+    def test_no_shape_line_when_the_shape_could_not_be_read(self) -> None:
+        """An unavailable shape is not a fact about the site, and the docstring
+        used to claim `Shape: non-JSON.` for every body over the threshold."""
+        endpoint = Endpoint(
+            host="api.myshop.example.com",
+            template="/orders",
+            methods=("GET",),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params={},
+            body_params={},
+            body_kind="none",
+            shape=SHAPE_UNAVAILABLE,
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "Shape:" not in plugin_code
+        assert "return ctx.request_json(" in plugin_code
+        ast.parse(plugin_code)
+
+    def test_a_known_shape_still_carries_the_line(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "Shape: object{id}." in plugin_code
 
 
 class TestGeneratedPluginModuleParses:

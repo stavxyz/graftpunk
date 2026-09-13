@@ -17,7 +17,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from graftpunk.devtools.captures import CAPTURES_DIR
-from graftpunk.har.digest import Endpoint, LoginForm, RunDigest, TokenCandidate
+from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
 from graftpunk.har.report import summarize_shape
 
 __all__ = [
@@ -691,7 +691,9 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         call_lines.extend(_exploded_dict_lines("headers", entries))
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
-    shape_line = f"Shape: {summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."
+    # An unavailable shape is not a fact about the site, so the docstring says
+    # nothing rather than guessing (polish round 1, 2026-09-12).
+    shape_known = endpoint.shape is None or endpoint.shape != SHAPE_UNAVAILABLE
 
     lines = _call_lines("@command", [f'help="GP-FILL: describe {name}"'], indent=len(_L1))
     lines.append(f"{_L1}def {name}(")
@@ -699,8 +701,10 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     lines.append(f"{_L1}) -> {return_type}:")
     lines.append(f'{_L2}"""')
     lines.extend(_wrapped_docstring_lines(summary))
-    lines.append("")
-    lines.extend(_wrapped_docstring_lines(shape_line))
+    if shape_known:
+        shape_line = f"Shape: {summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."
+        lines.append("")
+        lines.extend(_wrapped_docstring_lines(shape_line))
     lines.append(f'{_L2}"""')
     lines.append(f"{_L2}return ctx.{call}(")
     lines.extend(call_lines)

@@ -7,8 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from graftpunk.har.digest import DigestSource, digest
-from graftpunk.har.report import render_json, render_markdown
+from graftpunk.har.digest import SHAPE_UNAVAILABLE, DigestSource, digest
+from graftpunk.har.report import (
+    SHAPE_UNAVAILABLE_SUMMARY,
+    render_json,
+    render_markdown,
+    summarize_shape,
+)
 
 _EXPECTED_MAX_MARKDOWN_LINES = 400
 _LARGE_RUN_ENTRY_COUNT = 700
@@ -139,6 +144,18 @@ class TestRenderMarkdown:
         for planted in ("SECRET-ACCT-99", "hunter2superSecret"):
             assert planted not in markdown
             assert planted not in rendered_json
+
+
+class TestUnavailableShape:
+    def test_summarize_shape_names_it_rather_than_calling_it_non_json(self) -> None:
+        assert summarize_shape(SHAPE_UNAVAILABLE) == SHAPE_UNAVAILABLE_SUMMARY
+        assert summarize_shape(None) == "non-JSON"
+
+    def test_the_markdown_digest_prints_the_message(self, tmp_path: Path) -> None:
+        truncated = '{"orders": [' + '{"id": 1},' * 40000
+        entries = [_entry("GET", "https://api.myshop.example.com/big", body=truncated)]
+        text = render_markdown(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
+        assert f"- shape: {SHAPE_UNAVAILABLE_SUMMARY}" in text
 
 
 class TestRenderJson:
