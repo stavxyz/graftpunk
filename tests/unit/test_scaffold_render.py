@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import subprocess
 import sys
 import warnings
@@ -780,6 +781,107 @@ class TestPluginModuleCommandStubs:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         for line in plugin_code.splitlines():
             assert line == line.rstrip()
+
+
+_LOGIN_PAGE_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/login",
+    methods=("GET",),
+    count=1,
+    statuses=(200,),
+    content_type="text/html",
+    query_params={},
+    body_params={},
+    body_kind="none",
+    shape=None,
+    custom_headers=(),
+    examples=("/login",),
+)
+
+_CREDENTIAL_POST_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/login",
+    methods=("POST",),
+    count=1,
+    statuses=(302,),
+    content_type="text/html",
+    query_params={},
+    body_params={"username": "str", "password": "str"},
+    body_kind="form",
+    shape=None,
+    custom_headers=(),
+    examples=("/login",),
+)
+
+_FORM_PAGE_OBSERVATION = LoginObservation(
+    order=1,
+    method="GET",
+    url="https://api.myshop.example.com/login",
+    status=200,
+    kind="form_page",
+    fields=(),
+)
+
+_CREDENTIAL_POST_OBSERVATION = LoginObservation(
+    order=2,
+    method="POST",
+    url="https://api.myshop.example.com/login",
+    status=302,
+    kind="credential_post",
+    fields=("password", "username"),
+)
+
+
+class TestLoginFlowEndpointsAreNotCommandStubs:
+    """login_config owns the login form's GET and the credential POST. Rendered
+    as stubs they were wrong for the developer and their generated tests could
+    only fail."""
+
+    @staticmethod
+    def _spec(*endpoints: Endpoint) -> ScaffoldSpec:
+        return ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(
+                endpoints=endpoints,
+                login_forms=(_PASSWORD_LOGIN_FORM,),
+                login=(_FORM_PAGE_OBSERVATION, _CREDENTIAL_POST_OBSERVATION),
+            ),
+        )
+
+    def test_no_login_stub_beside_a_real_endpoint(self) -> None:
+        files = render(
+            self._spec(_LOGIN_PAGE_ENDPOINT, _CREDENTIAL_POST_ENDPOINT, _ORDERS_ENDPOINT)
+        )
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        assert plugin_code.count("@command(") == 1
+        assert "def login(" not in plugin_code
+        assert "def login_2(" not in plugin_code
+        assert "login_config = LoginConfig(" in plugin_code
+        ast.parse(plugin_code)
+        test_code = files["tests/test_plugin.py"]
+        assert "def test_login(" not in test_code
+        ast.parse(test_code)
+
+    def test_a_run_with_nothing_but_the_login_flow_falls_back_to_the_gp_fill_stub(self) -> None:
+        files = render(self._spec(_LOGIN_PAGE_ENDPOINT, _CREDENTIAL_POST_ENDPOINT))
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        assert plugin_code.count("@command(") == 1
+        assert "def example(self, ctx: CommandContext)" in plugin_code
+        ast.parse(plugin_code)
+        test_code = files["tests/test_plugin.py"]
+        assert "fixture_context" not in test_code
+        ast.parse(test_code)
+
+    def test_an_endpoint_that_is_not_part_of_the_login_flow_keeps_its_stub(self) -> None:
+        """The same path under another method is a different endpoint."""
+        other_method = dataclasses.replace(_LOGIN_PAGE_ENDPOINT, methods=("DELETE",))
+        files = render(self._spec(other_method))
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        assert "def login(" in plugin_code
+        ast.parse(plugin_code)
 
 
 class TestUnavailableShapeIsOmittedFromTheDocstring:

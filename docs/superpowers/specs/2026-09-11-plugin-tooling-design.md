@@ -641,6 +641,16 @@ content).
   endpoint are passed explicitly in the stub's call so the developer sees
   them.
 
+> **Design note (2026-09-12, polish round 1):** "one stub command per
+> endpoint" excludes the login flow. An endpoint that appears in
+> `RunDigest.login` with kind `form_page` or `credential_post`, matched on
+> method and templated path, gets no stub and no generated test: `login_config`
+> above already owns it. A run holding the login form GET `/login` and the
+> credential POST `/login` rendered `login` and `login_2` stubs calling
+> `request_text`, which are wrong for the developer and whose generated tests
+> could only fail. The digest's own endpoint list is unchanged; only the
+> scaffold skips them.
+
 YAML plugins remain supported at runtime, and this part generates Python
 only; a `--format yaml` scaffold is out of scope here and part C decides
 whether to add it. `examples/templates/python_template.py` is deleted, since

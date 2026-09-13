@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from graftpunk.devtools.captures import CAPTURES_DIR
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
+from graftpunk.har.paths import template_path
 from graftpunk.har.report import summarize_shape
 
 __all__ = [
@@ -713,16 +714,48 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     return lines
 
 
+_LOGIN_FLOW_KINDS = ("form_page", "credential_post")
+
+
+def _login_flow_endpoints(d: RunDigest) -> set[tuple[str, str]]:
+    """The ``(method, templated path)`` pairs ``login_config`` owns.
+
+    The login form's own GET and the credential POST are the login flow, which
+    the generated ``login_config`` drives. Rendered as command stubs they were
+    wrong for the developer and their generated tests could only fail (polish
+    round 1, 2026-09-12). The digest's own endpoint list is unchanged; only the
+    scaffold skips them.
+    """
+    owned: set[tuple[str, str]] = set()
+    for observation in d.login:
+        if observation.kind not in _LOGIN_FLOW_KINDS:
+            continue
+        template, _ = template_path(urlparse(observation.url).path or "/")
+        owned.add((observation.method.upper(), template))
+    return owned
+
+
 def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
-    return sorted(d.endpoints, key=lambda e: (not _is_json_endpoint(e), -e.count, e.template))
+    """The endpoints the scaffold renders a stub for, most useful first."""
+    owned = _login_flow_endpoints(d)
+    kept = [e for e in d.endpoints if not all((m, e.template) in owned for m in e.methods)]
+    return sorted(kept, key=lambda e: (not _is_json_endpoint(e), -e.count, e.template))
 
 
 def _run_label(d: RunDigest) -> str:
     return f"{d.source.session}/{d.source.run_id}" if d.source.session else "the supplied HAR"
 
 
+def _stub_endpoints(spec: ScaffoldSpec) -> list[Endpoint]:
+    """The endpoints this spec renders stubs and generated tests for."""
+    if spec.digest is None:
+        return []
+    return _ordered_endpoints(spec.digest)[:_MAX_SCAFFOLD_ENDPOINTS]
+
+
 def _render_command_stubs(spec: ScaffoldSpec) -> list[str]:
-    if spec.digest is None or not spec.digest.endpoints:
+    endpoints = _stub_endpoints(spec)
+    if spec.digest is None or not endpoints:
         return [
             '    @command(help="GP-FILL: describe this command")',
             "    def example(self, ctx: CommandContext) -> dict:",
@@ -731,7 +764,7 @@ def _render_command_stubs(spec: ScaffoldSpec) -> list[str]:
         ]
     seen_names: set[str] = set()
     lines: list[str] = []
-    for endpoint in _ordered_endpoints(spec.digest)[:_MAX_SCAFFOLD_ENDPOINTS]:
+    for endpoint in endpoints:
         lines.extend(_render_command_stub(endpoint, seen_names, _run_label(spec.digest)))
     return lines
 
@@ -861,7 +894,8 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     # fixture_context is only used by the per-endpoint tests below: importing
     # it when there is nothing to call it with is an unused import in the
     # generated file's own ruff run (F401; validation Important 2, 2026-09-12).
-    has_endpoint_tests = spec.digest is not None and bool(spec.digest.endpoints)
+    endpoints = _stub_endpoints(spec)
+    has_endpoint_tests = bool(endpoints)
     lines = [
         f'"""Tests for the {spec.name} plugin."""',
         "",
@@ -891,7 +925,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         lines.append("# GP-FILL: add a test per command, against a fixture in tests/fixtures/")
         return "\n".join(lines).rstrip() + "\n"
     seen: set[str] = set()
-    for endpoint in _ordered_endpoints(spec.digest)[:_MAX_SCAFFOLD_ENDPOINTS]:
+    for endpoint in endpoints:
         name = _command_name(endpoint.template, seen)
         # The same seeding as _render_command_stub, so the identifiers here are
         # the ones the stub actually declares.
