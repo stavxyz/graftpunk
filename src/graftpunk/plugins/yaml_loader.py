@@ -394,6 +394,15 @@ def parse_yaml_plugin(
                 f"Plugin '{filepath}': login.headless must be true or false, got {headless!r}."
             )
 
+        # The text keys have the same hole the numbers do: LoginConfig checks them
+        # with .strip(), which a number or a list answers with an AttributeError
+        # naming neither the file nor the key (polish round 1).
+        for key in ("url", "failure", "success", "success_url", "wait_for"):
+            if key in login_block and not isinstance(login_block[key], str):
+                raise PluginError(
+                    f"Plugin '{filepath}': login.{key} must be a string, got {login_block[key]!r}."
+                )
+
         # timeout and settle are passed only when the file sets them, so their
         # defaults live in LoginConfig alone and cannot drift from it here.
         numbers: dict[str, float] = {}

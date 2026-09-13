@@ -741,6 +741,38 @@ commands:
         with pytest.raises(PluginError, match="settle must be non-negative"):
             parse_yaml_plugin(yaml_file)
 
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("success_url", "7"),
+            ("url", "42"),
+            ("failure", "[a, b]"),
+            ("success", "true"),
+            ("wait_for", "3.5"),
+        ],
+    )
+    def test_a_non_string_text_key_names_the_file_and_the_key(
+        self, tmp_path: Path, key: str, value: str
+    ) -> None:
+        """A number or a list where text belongs is a plugin error, not an AttributeError."""
+        yaml_content = f"""
+site_name: mysite
+base_url: "https://example.com"
+login:
+  {key}: {value}
+  steps:
+    - fields:
+        username: "input#email"
+      submit: "button[type=submit]"
+commands:
+  search:
+    url: "/api/search"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        with pytest.raises(PluginError, match=f"login.{key} must be a string"):
+            parse_yaml_plugin(yaml_file)
+
 
 class TestYAMLResourceLimits:
     """Tests for resource limit fields on YAML commands."""
