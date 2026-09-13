@@ -95,6 +95,37 @@ class TestPrimaryHostAndHosts:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert result.primary_host == "api.myshop.example.com"
 
+    def test_a_document_host_outranks_a_busier_beacon_host(self, tmp_path: Path) -> None:
+        """A page-driven site answers its own pages and serves the rest as
+        assets, so a telemetry endpoint can out-count it on non-static requests
+        alone (polish round 2, 2026-09-12)."""
+        entries = [
+            _entry(
+                "GET",
+                "https://myshop.example.com/records/search",
+                content_type="text/html; charset=utf-8",
+                body="<html><body>results</body></html>",
+            ),
+            _entry(
+                "GET",
+                "https://myshop.example.com/records/1",
+                content_type="text/html; charset=utf-8",
+                body="<html><body>one</body></html>",
+            ),
+        ]
+        entries += [_entry("POST", f"https://sessions.telemetry.example.net/{i}") for i in range(5)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.primary_host == "myshop.example.com"
+        assert result.dropped["third_party"] == 5
+
+    def test_an_api_only_run_still_elects_on_count_alone(self, tmp_path: Path) -> None:
+        """Nothing served HTML, so the document half of the rule decides
+        nothing and the busiest non-static host wins as it always did."""
+        entries = [_entry("GET", "https://api.myshop.example.com/orders")]
+        entries += [_entry("GET", f"https://api.other.example.org/t/{i}") for i in range(3)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.primary_host == "api.other.example.org"
+
     def test_hosts_dict_counts_every_host(self, tmp_path: Path) -> None:
         entries = [
             _entry("GET", "https://api.myshop.example.com/orders"),

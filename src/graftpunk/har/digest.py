@@ -287,6 +287,28 @@ def _scope_root(primary_host: str) -> str:
     return primary_host if len(labels) <= 2 else ".".join(labels[1:])
 
 
+def _primary_host(non_static_hosts: dict[str, int], document_hosts: set[str]) -> str:
+    """The host the run was against: the one that answered the most non-static
+    requests, with a host that served an HTML document preferred over one that
+    did not. Empty when nothing survived the static rule.
+
+    The document half of the rule decides a case count alone gets wrong. A
+    page-driven site answers its own pages and serves the rest of its traffic
+    as assets, while a third-party telemetry endpoint answers a handful of
+    non-static POSTs; on a real recording the site served three documents and
+    an error-reporting host four beacons, so count alone made the beacon host
+    primary and the site third party (polish round 2, 2026-09-12). A capture
+    with no HTML in it at all (an API-only run) falls back to the count, which
+    is what it always was. Ties keep the first host seen, so the run's own
+    first request still wins one.
+    """
+    return max(
+        non_static_hosts,
+        key=lambda host: (host in document_hosts, non_static_hosts[host]),
+        default="",
+    )
+
+
 def _in_scope(host: str, root: str) -> bool:
     """True when *host* is *root* or a subdomain of it."""
     return bool(root) and (host == root or host.endswith(f".{root}"))
@@ -687,6 +709,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
 
     hosts: dict[str, int] = {}
     non_static_hosts: dict[str, int] = {}
+    document_hosts: set[str] = set()
     classified: list[tuple[HAREntry, str, bool]] = []
     for entry in entries:
         parsed_url = urlparse(entry.request.url)
@@ -700,9 +723,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         static = _is_static(entry)
         if not static:
             non_static_hosts[host] = non_static_hosts.get(host, 0) + 1
+            if "html" in (entry.response.content_type or "").lower():
+                document_hosts.add(host)
         classified.append((entry, host, static))
 
-    primary_host = max(non_static_hosts, key=lambda h: non_static_hosts[h], default="")
+    primary_host = _primary_host(non_static_hosts, document_hosts)
     scope_root = _scope_root(primary_host) if primary_host else ""
 
     accumulators: dict[tuple[str, str], _EndpointAccumulator] = {}

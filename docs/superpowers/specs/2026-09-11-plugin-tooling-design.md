@@ -309,6 +309,17 @@ Rules the digest applies:
 > deliberate: a primary host that is a public suffix plus one label is its own
 > root, which keeps its subdomains in scope and can never degrade to the bare
 > suffix.
+
+> **Design note (2026-09-12, polish round 2):** "most non-static requests" is
+> no longer the whole election. A host that served an HTML document is
+> preferred over one that did not, and the count decides within each group. A
+> page-driven site answers its own pages and serves everything else as assets,
+> so it can be out-counted on non-static requests by a third-party telemetry
+> endpoint answering a handful of beacons: on a real recording the site served
+> three documents and an error-reporting host four beacons, which made the
+> beacon host primary and put the whole site out of scope. A capture with no
+> HTML in it (an API-only run) falls back to the count alone, and a tie still
+> keeps the first host seen.
 - **Static and tracking exclusion** reuses the analyzer's exclusion patterns
   (the `EXCLUDE_PATTERNS` list at
   `src/graftpunk/har/analyzer.py:58` (`EXCLUDE_PATTERNS = [`), compiled once
