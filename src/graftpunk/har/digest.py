@@ -49,7 +49,7 @@ __all__ = [
     "digest",
 ]
 
-# -- thresholds, every one a named constant (plugin tooling spec, "Rules the digest applies") --
+# Thresholds, every one a named constant (plugin tooling spec, "Rules the digest applies").
 # A body over this size that does not parse is reported as "shape unavailable"
 # rather than as non-JSON: a capture routinely truncates a body this large, and
 # claiming the endpoint returns non-JSON would be false.

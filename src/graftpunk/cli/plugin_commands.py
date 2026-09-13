@@ -341,13 +341,13 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
         PluginError: If two plugins register the same site_name.
     """
     # A previous call on this same app (a reload) left its plugin sub-apps
-    # mounted -- typer has no unmount -- so app.registered_groups still
+    # mounted, since typer has no unmount, so app.registered_groups still
     # carries their names. Subtracting the previous call's own plugin names
     # keeps a plugin from colliding with the stale copy of itself; a name
     # reserved by the CLI itself was never in this dict and is unaffected.
     # This reserved set is local to this call, not cached module state: a
     # cache written here would be clobbered by every other call this
-    # process makes against some other (often disposable) Typer app -- see
+    # process makes against some other (often disposable) Typer app. See
     # graftpunk.cli.scaffold_commands.register()'s docstring, where the CLI's
     # own snapshot of these names is taken and explained.
     previous_plugin_names = set(_registered_plugin_sources)

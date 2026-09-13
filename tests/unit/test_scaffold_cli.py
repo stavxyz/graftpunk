@@ -734,7 +734,7 @@ class TestReservedNamesSnapshot:
         """register() snapshots reserved names once, at attach time. A site
         plugin's own sub-app, mounted onto the same app afterward (exactly
         what register_plugin_commands does next), must not retroactively
-        become reserved -- the snapshot is not a live query."""
+        become reserved: the snapshot is not a live query."""
         from graftpunk.cli.scaffold_commands import register, reserved_cli_names
 
         app = typer.Typer()
