@@ -1,5 +1,6 @@
 """Tests for YAML plugin loader."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -771,6 +772,41 @@ commands:
         yaml_file = tmp_path / "test.yaml"
         yaml_file.write_text(yaml_content)
         with pytest.raises(PluginError, match=f"login.{key} must be a string"):
+            parse_yaml_plugin(yaml_file)
+
+    @pytest.mark.parametrize(
+        ("step", "message"),
+        [
+            (
+                '    - fields:\n        username: "#user"\n      wait_for: 3.5\n',
+                "step #1: 'wait_for' must be a string",
+            ),
+            ("    - submit: 42\n", "step #1: 'submit' must be a string"),
+            ('    - submit: "#go"\n      delay: "soon"\n', "step #1: 'delay' must be a number"),
+            ("    - fields: [username, password]\n", "step #1: 'fields' must be a mapping"),
+            (
+                "    - fields:\n        username: 7\n",
+                "step #1: 'fields' must map credential names to CSS selectors",
+            ),
+        ],
+    )
+    def test_a_step_key_of_the_wrong_type_names_the_step_and_the_key(
+        self, tmp_path: Path, step: str, message: str
+    ) -> None:
+        """A step key has the same hole the login block's own keys had."""
+        yaml_content = f"""
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+  steps:
+{step}commands:
+  search:
+    url: "/api/search"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        with pytest.raises(PluginError, match=re.escape(message)):
             parse_yaml_plugin(yaml_file)
 
 

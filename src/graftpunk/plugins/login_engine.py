@@ -766,7 +766,7 @@ async def _run_nodriver_steps(
             session.current_url = tab.url or login_target
         else:
             session.current_url = login_target
-    except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
+    except Exception as exc:  # broad by design: the URL is display metadata, not the login
         LOG.debug("login_url_capture_failed", error=str(exc), backend="nodriver")
         session.current_url = login_target
 
@@ -924,7 +924,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             # Capture current URL before caching (used for domain display)
             try:
                 session.current_url = session.driver.current_url
-            except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
+            except Exception as exc:  # broad by design: the URL is display metadata, not the login
                 LOG.debug("login_url_capture_failed", error=str(exc), backend="selenium")
                 session.current_url = login_target
 

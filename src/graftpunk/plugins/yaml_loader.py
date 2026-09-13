@@ -272,6 +272,38 @@ def validate_yaml_schema(data: dict[str, Any], filepath: Path) -> None:
                 )
 
 
+def _check_login_step_types(step_dict: dict[str, Any], *, filepath: Path, number: int) -> None:
+    """Settle one login step's key types here, where the file and the step are known.
+
+    LoginStep validates with ``.strip()`` and iterates ``fields``, so a number, a
+    list, or a mapping of the wrong shape escapes as an AttributeError naming
+    neither the file nor the key. The login block's own keys are checked the same
+    way a few lines below (tidy round, 2026-09-13).
+    """
+    where = f"Plugin '{filepath}': login step #{number}"
+    for key in ("submit", "wait_for"):
+        if key in step_dict and not isinstance(step_dict[key], str):
+            raise PluginError(f"{where}: '{key}' must be a string, got {step_dict[key]!r}.")
+    if "delay" in step_dict:
+        delay = step_dict["delay"]
+        if isinstance(delay, bool) or not isinstance(delay, (int, float)):
+            raise PluginError(f"{where}: 'delay' must be a number, got {delay!r}.")
+    if "fields" not in step_dict:
+        return
+    fields = step_dict["fields"]
+    if not isinstance(fields, dict):
+        raise PluginError(
+            f"{where}: 'fields' must be a mapping of credential name to CSS "
+            f"selector, got {fields!r}."
+        )
+    for name, selector in fields.items():
+        if not isinstance(name, str) or not isinstance(selector, str):
+            raise PluginError(
+                f"{where}: 'fields' must map credential names to CSS selectors as "
+                f"strings, got {name!r}: {selector!r}."
+            )
+
+
 def parse_yaml_plugin(
     filepath: Path,
 ) -> YAMLPluginBundle:
@@ -375,6 +407,7 @@ def parse_yaml_plugin(
                     f"Plugin '{filepath}': login step #{i + 1} must be a mapping, "
                     f"not {type(step_dict).__name__}."
                 )
+            _check_login_step_types(step_dict, filepath=filepath, number=i + 1)
             try:
                 step = LoginStep(
                     fields=step_dict.get("fields", {}),  # type: ignore[no-matching-overload]

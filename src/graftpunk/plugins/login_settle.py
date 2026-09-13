@@ -38,6 +38,12 @@ _NO_SIGNAL_GRACE = 3.0
 _RATE_LIMIT_MARKERS = ("too many requests",)
 
 
+def _rate_limit_marker_in(page_text: str) -> bool:
+    """Whether this page reads as a response from the site's rate limiter."""
+    lowered = page_text.lower()
+    return any(marker in lowered for marker in _RATE_LIMIT_MARKERS)
+
+
 def _warn_no_login_validation(site_name: str) -> None:
     """Log a warning when no login validation is configured."""
     LOG.warning(
@@ -94,7 +100,7 @@ def _check_login_result(*, page_text: str, failure_text: str, site_name: str) ->
     # A rate-limited response is a page from the site's limiter, not a verdict on
     # the credentials, and nothing on this path speaks for the login, so the
     # marker rules.
-    if any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+    if _rate_limit_marker_in(page_text):
         _warn_rate_limited(site_name)
         return False
 
@@ -224,7 +230,7 @@ def _login_tick_verdict(
     )
     if failure_text and failure_text.lower() in lowered:
         return _TICK_FAILURE_TEXT
-    if success_found is not True and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+    if success_found is not True and _rate_limit_marker_in(page_text):
         return _TICK_RATE_LIMITED
     return _TICK_SUCCESS if signal_holds else _TICK_PENDING
 
@@ -305,6 +311,28 @@ def _debug_unknown_baseline(
     )
 
 
+def _debug_rate_limit_marker(*, site_name: str, url: str, backend: str) -> None:
+    """Note a rate-limit marker on a page that did not end the tick.
+
+    A found success element vetoes the marker (see ``_login_tick_verdict``), so a
+    page carrying both leaves the poll waiting for whatever signal is still missing
+    and, often enough, timing out on it. The timeout warning names that signal and
+    says nothing about the limiter, so the trail says it here instead. Logged once
+    per wait, on the first tick that shows it (tidy round, 2026-09-13).
+    """
+    LOG.debug(
+        "login_rate_limit_marker_seen",
+        plugin=site_name,
+        backend=backend,
+        url=url,
+        hint=(
+            "The page carries a 'Too Many Requests' marker, and the configured "
+            "success element is on it, so the wait went on. A login that times out "
+            "from here may be rate limited rather than misconfigured."
+        ),
+    )
+
+
 def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend: str) -> None:
     """Note that a login with no success signal spends neither ``timeout`` nor ``settle``.
 
@@ -373,33 +401,41 @@ class _TickReading(NamedTuple):
     ``page_text`` is also empty on a tick that was read but did not need the
     document (see ``_page_text_decides``); that tick has no error, and the rules
     that read page text are exactly the ones that were not going to decide it.
+    ``page_asked`` tells the two apart, so a caller can say whether a page text of
+    ``""`` is a page it read or a page it never asked for.
     """
 
     page_text: str
     url: str
     success_found: bool | None
     error: str = ""
+    page_asked: bool = False
 
 
 class _ReadWindow:
-    """What a wait has read so far: the last tick it managed to read, or why it read none.
+    """What a wait has read so far: the last tick it got an answer from, or why it got none.
 
     Both waits rule on the last reading they got, so a tick that fails after a good
-    one must not replace that reading with nothing, and a window of nothing but
-    failures has to be told apart from a window whose pages were all clean: the
-    first has confirmed nothing about the login, and the empty page text it leaves
-    behind would read as "the failure text is not on the page" (tidy round,
-    2026-09-13; extended to the signal poll in polish round 1).
+    one must not replace that reading with nothing, and a window that got nothing at
+    all has to be told apart from a window whose pages were all clean: the first has
+    confirmed nothing about the login, and the empty page text it leaves behind would
+    read as "the failure text is not on the page" (tidy round, 2026-09-13; extended
+    to the signal poll in polish round 1).
 
-    A tick counts as read when it came back without an error, including a signal
-    poll's tick that did not need the document at all: the browser answered, which
-    is what "unreadable" is about.
+    ``page_read`` means a tick asked for the document and got it, which is what makes
+    ``page_text`` worth ruling on. ``answered`` is the wider question the poll asks at
+    its deadline: did the browser hand back anything at all? A tick that wanted only
+    the URL (a ``success_url`` with no failure text to look for) raises no error when
+    the browser is gone, because the URL read answers an unreachable tab with an empty
+    string, so "no error" is not proof of life; a URL, an element probe, or a document
+    is (tidy round, 2026-09-13).
     """
 
     def __init__(self) -> None:
+        self.answered = False
         self.page_read = False
         self.page_text = ""
-        self.error = "the page was never read"
+        self.error = "the browser reported neither a page nor a URL"
         self.url = ""
         self.success_found: bool | None = None
 
@@ -409,9 +445,12 @@ class _ReadWindow:
         if reading.error:
             self.error = reading.error
             return
-        self.page_read = True
-        self.page_text = reading.page_text
+        if reading.page_asked:
+            self.page_read = True
+            self.page_text = reading.page_text
         self.success_found = reading.success_found
+        if reading.url or reading.page_asked or reading.success_found is not None:
+            self.answered = True
 
 
 async def _read_login_tick_nodriver(
@@ -449,8 +488,8 @@ async def _read_login_tick_nodriver(
             exc_type=type(exc).__name__,
             backend="nodriver",
         )
-        return _TickReading("", url, None, error=str(exc))
-    return _TickReading(page_text, url, success_found)
+        return _TickReading("", url, None, error=str(exc), page_asked=want_page_text)
+    return _TickReading(page_text, url, success_found, page_asked=want_page_text)
 
 
 def _read_login_tick_selenium(
@@ -486,12 +525,12 @@ def _read_login_tick_selenium(
             exc_type=type(exc).__name__,
             backend="selenium",
         )
-        return _TickReading("", url, None, error=str(exc))
-    return _TickReading(page_text, url, success_found)
+        return _TickReading("", url, None, error=str(exc), page_asked=want_page_text)
+    return _TickReading(page_text, url, success_found, page_asked=want_page_text)
 
 
 def _warn_login_page_unreadable(*, site_name: str, error: str, url: str) -> None:
-    """Warn that no tick of the wait ever read the page.
+    """Warn that no tick of the wait ever got an answer out of the browser.
 
     A login whose page could not be read even once has not been confirmed by
     anything, and the empty page text it leaves behind reads as "no failure text
@@ -532,18 +571,20 @@ async def _wait_for_login_signal_nodriver(
     not yet replaced. *pre_submit_url* is the URL read just before the last submit,
     and a URL signal counts only once the page has moved off it.
 
-    A poll whose every tick failed to read is reported as an unreadable page rather
-    than as a missing signal: the signal was never looked at, so naming it would
-    send an author after the wrong thing (polish round 1).
+    A poll the browser never answered, whether because every tick raised or because
+    a URL-only tick got nothing back, is reported as an unreadable page rather than
+    as a missing signal: the signal was never looked at, so naming it would send an
+    author after the wrong thing (polish round 1).
 
     Returns:
         True when every configured success signal holds, False on a failure signal,
-        on a window that read nothing, or when the deadline passes (all are logged).
+        on a window nothing answered, or when the deadline passes (all are logged).
     """
     loop = asyncio.get_running_loop()
     success_selector = login_config.success
     success_url = login_config.success_url
     last = _ReadWindow()
+    marker_noted = False
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
         url = tab_url(tab)
@@ -579,10 +620,13 @@ async def _wait_for_login_signal_nodriver(
                 verdict=verdict, site_name=site_name, failure_text=failure_text
             )
             return False
+        if not marker_noted and _rate_limit_marker_in(reading.page_text):
+            _debug_rate_limit_marker(site_name=site_name, url=reading.url, backend="nodriver")
+            marker_noted = True
         if loop.time() >= deadline:
             break
 
-    if not last.page_read:
+    if not last.answered:
         _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
         return False
     _warn_login_signal_timeout(
@@ -608,6 +652,7 @@ def _wait_for_login_signal_selenium(
     success_selector = login_config.success
     success_url = login_config.success_url
     last = _ReadWindow()
+    marker_noted = False
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
         url = driver_url(driver)
@@ -643,10 +688,13 @@ def _wait_for_login_signal_selenium(
                 verdict=verdict, site_name=site_name, failure_text=failure_text
             )
             return False
+        if not marker_noted and _rate_limit_marker_in(reading.page_text):
+            _debug_rate_limit_marker(site_name=site_name, url=reading.url, backend="selenium")
+            marker_noted = True
         if time.monotonic() >= deadline:
             break
 
-    if not last.page_read:
+    if not last.answered:
         _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
         return False
     _warn_login_signal_timeout(
