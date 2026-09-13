@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 from typing import Annotated, Literal
@@ -16,7 +17,7 @@ from graftpunk.cli.plugin_commands import derive_reserved_cli_names
 from graftpunk.devtools.captures import CAPTURES_DIR
 from graftpunk.devtools.scaffold.project import ScaffoldConflictError, write_scaffold
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
-from graftpunk.devtools.scaffold.render import ScaffoldSpec
+from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.logging import get_logger
 
@@ -166,3 +167,24 @@ def plugin_new(
         console.print(f"  {escape(str(path))}")
     if result.gitignore_updated:
         console.print(f"[dim]Added {escape(CAPTURES_DIR)}/ to .gitignore[/dim]")
+    _print_next_steps(dataclasses.replace(spec, mode=result.mode))
+
+
+def _print_next_steps(spec: ScaffoldSpec) -> None:
+    """Name the fixture each generated endpoint test looks for.
+
+    A ``--from-run`` project's suite fails on its first run until those files
+    exist, and nothing in the output said so (polish round 1, 2026-09-12). The
+    paths come from the same rule the generated tests use, so this list is what
+    ``FixtureSession`` will go looking for.
+    """
+    targets = fixture_paths(spec)
+    if not targets:
+        return
+    console.print("[bold]Next:[/bold] the endpoint tests fail until these fixtures exist:")
+    for relative in targets:
+        console.print(f"  {escape(relative)}", soft_wrap=True)
+    console.print(
+        "[dim]Derive each one from a capture of the same name: gp observe fixtures --help[/dim]",
+        soft_wrap=True,
+    )

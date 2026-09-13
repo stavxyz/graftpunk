@@ -267,6 +267,50 @@ class TestPluginNewFromRun:
         assert "myshop/run-2" not in plugin_code
 
 
+class TestNextStepsNamesTheFixtures:
+    def test_the_fixture_path_for_a_templated_endpoint_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A --from-run project's suite fails on its first run until the
+        fixtures exist, and nothing in the output said so."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            url="https://api.myshop.example.com/orders/1",
+            body='{"id": 1}',
+        )
+        target = tmp_path / "out"
+
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Next:" in result.output
+        assert "tests/fixtures/get_orders_{order_id}.json" in result.output
+        assert "gp observe fixtures --help" in result.output
+
+    def test_a_project_with_no_endpoint_stubs_says_nothing(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--url",
+                "https://myshop.example.com",
+                "--dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Next:" not in result.output
+
+
 class TestGeneratedProjectPassesItsOwnGate:
     def test_new_project_is_ruff_clean(self, tmp_path: Path) -> None:
         result = runner.invoke(

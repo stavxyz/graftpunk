@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from graftpunk.devtools.captures import CAPTURES_DIR
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
+from graftpunk.har.naming import capture_filename
 from graftpunk.har.paths import template_path
 from graftpunk.har.report import summarize_shape
 
@@ -25,6 +26,7 @@ __all__ = [
     "PLUGIN_NAME_RE",
     "ScaffoldSpec",
     "class_name_for",
+    "fixture_paths",
     "fixtures_root",
     "module_name_for",
     "render",
@@ -914,6 +916,20 @@ def fixtures_root(spec: ScaffoldSpec) -> str:
     if spec.mode == "add_to_suite":
         return f"tests/fixtures/{module_name_for(spec.name)}/"
     return "tests/fixtures/"
+
+
+def fixture_paths(spec: ScaffoldSpec) -> list[str]:
+    """The fixture file each generated endpoint test looks for, project-relative.
+
+    One per rendered stub, named by ``har.naming`` from the same method,
+    template, and content type the stub's own request carries, so the list the
+    CLI prints is the list ``FixtureSession`` will go looking for.
+    """
+    return [
+        f"{fixtures_root(spec)}"
+        f"{capture_filename(endpoint.methods[0], endpoint.template, endpoint.content_type)}"
+        for endpoint in _stub_endpoints(spec)
+    ]
 
 
 def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
