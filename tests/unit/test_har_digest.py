@@ -509,6 +509,47 @@ class TestHighCardinalityEligibility:
         assert templates == {f"/products/{slug}" for slug in slugs}
 
 
+class TestCollapseIsScopedToTheFamilyThatQualified:
+    def test_siblings_of_the_same_depth_outside_the_family_stay_literal(
+        self, tmp_path: Path
+    ) -> None:
+        """One slug family used to collapse every template of its segment count:
+        /account/profile and /account/settings became /account/{account_id} and
+        merged, and /api/health became /api/{api_id}."""
+        slug_count = 80
+        assert slug_count > _HIGH_CARDINALITY_THRESHOLD
+        entries = [
+            _entry("GET", f"https://api.myshop.example.com/products/red-widget-{2000 + i}")
+            for i in range(slug_count)
+        ]
+        entries += [
+            _entry("GET", "https://api.myshop.example.com/api/health"),
+            _entry("GET", "https://api.myshop.example.com/account/profile"),
+            _entry("GET", "https://api.myshop.example.com/account/settings"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert templates == {
+            "/products/{product_id}",
+            "/api/health",
+            "/account/profile",
+            "/account/settings",
+        }
+
+    def test_an_ineligible_value_inside_the_family_stays_literal(self, tmp_path: Path) -> None:
+        """The family qualifies on its values as a whole; a word-like member of
+        it is still not an identifier and keeps its own template."""
+        slug_count = _HIGH_CARDINALITY_THRESHOLD + 2
+        entries = [
+            _entry("GET", f"https://api.myshop.example.com/products/red-widget-{2000 + i}")
+            for i in range(slug_count)
+        ]
+        entries.append(_entry("GET", "https://api.myshop.example.com/products/featured"))
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert templates == {"/products/{product_id}", "/products/featured"}
+
+
 class TestCollapseMergeCarriesShapeAndBodyKind:
     def test_a_later_members_shape_and_body_kind_survive_the_merge(self, tmp_path: Path) -> None:
         """The first member of a collapsed family answers for the family, and it may

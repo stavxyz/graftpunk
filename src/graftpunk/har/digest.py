@@ -441,55 +441,69 @@ def _dynamic_majority(values: set[str]) -> bool:
     return eligible > len(values) * _DYNAMIC_MAJORITY
 
 
+def _family_key(segments: list[str], position: int) -> tuple[str, ...]:
+    """The segments of *segments* other than *position*: what makes two paths
+    members of the same endpoint family for the collapse rule."""
+    return tuple(segment for index, segment in enumerate(segments) if index != position)
+
+
 def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
     """Map each raw template to its high-cardinality-collapsed form.
 
-    Best-effort: groups templates sharing a segment count, and within a
-    group compares each literal position against the first template's other
-    positions to approximate "the same family of endpoints". This is a
-    heuristic, not an exhaustive path-family miner: a run whose family has no
-    common representative at position 0 is not detected. Adequate for a
-    digest tool; documented rather than perfected (Task 3 implementation
-    note).
+    A family is the set of templates of one segment count that agree on every
+    segment but one; that one position collapses when it passes both halves of
+    the rule: more than ``_HIGH_CARDINALITY_THRESHOLD`` distinct values across
+    the family, and a ``_DYNAMIC_MAJORITY`` of those values eligible under
+    ``_collapse_eligible``.
 
-    A position collapses only when it passes both halves of the rule: more
-    than ``_HIGH_CARDINALITY_THRESHOLD`` distinct values, and a
-    ``_DYNAMIC_MAJORITY`` of those values eligible under ``_collapse_eligible``
-    (final fix wave, 2026-09-12).
+    A qualifying family names the position and its own key, and only a template
+    belonging to that family, whose own segment there is eligible, is
+    re-templated. Keyed by segment count alone, one slug family turned every
+    sibling route of the same depth into a parameter (``/account/profile`` and
+    ``/account/settings`` merged into ``/account/{account_id}``) (polish round
+    1, 2026-09-12).
     """
     by_count: dict[int, list[list[str]]] = {}
     for template in templates:
         segments = template.strip("/").split("/") if template.strip("/") else []
         by_count.setdefault(len(segments), []).append(segments)
 
-    collapse_positions: dict[int, set[int]] = {}
+    # segment count -> the (position, family key) pairs that qualify.
+    collapse_families: dict[int, set[tuple[int, tuple[str, ...]]]] = {}
     for count, rows in by_count.items():
         if count <= 1:
-            # A single segment has no other position to match, so the family
-            # check below is vacuously true for every row; skip it, or nine
-            # or more distinct root routes (/orders, /products, ...) would
-            # collapse into one {id}.
+            # A single segment has no other position to match, so every row
+            # would share one empty family key; skip it, or nine or more
+            # distinct root routes (/orders, /products, ...) would collapse
+            # into one {id}.
             continue
-        for i in range(count):
-            if rows[0][i].startswith("{"):
-                continue
-            family = [r for r in rows if all(r[j] == rows[0][j] for j in range(count) if j != i)]
-            distinct = {r[i] for r in family}
-            if len(distinct) > _HIGH_CARDINALITY_THRESHOLD and _dynamic_majority(distinct):
-                collapse_positions.setdefault(count, set()).add(i)
+        for position in range(count):
+            families: dict[tuple[str, ...], set[str]] = {}
+            for row in rows:
+                if row[position].startswith("{"):
+                    continue
+                families.setdefault(_family_key(row, position), set()).add(row[position])
+            for key, distinct in families.items():
+                if len(distinct) > _HIGH_CARDINALITY_THRESHOLD and _dynamic_majority(distinct):
+                    collapse_families.setdefault(count, set()).add((position, key))
 
     result: dict[str, str] = {}
     for template in templates:
-        segments = template.strip("/").split("/") if template.strip("/") else []
-        positions = collapse_positions.get(len(segments), set())
-        if not positions:
+        stripped = template.strip("/")
+        segments = stripped.split("/") if stripped else []
+        families_here = collapse_families.get(len(segments), set())
+        if not families_here:
             continue
         new_segments = list(segments)
-        for i in sorted(positions):
-            if new_segments[i].startswith("{"):
+        for position, key in sorted(families_here):
+            if new_segments[position].startswith("{"):
                 continue
-            prev = new_segments[i - 1] if i > 0 else ""
-            new_segments[i] = "{" + param_name_for_segment(prev) + "}"
+            if _family_key(segments, position) != key:
+                continue
+            if not _collapse_eligible(segments[position]):
+                continue
+            prev = new_segments[position - 1] if position > 0 else ""
+            new_segments[position] = "{" + param_name_for_segment(prev) + "}"
         new_template = "/" + "/".join(new_segments)
         if new_template != template:
             result[template] = new_template

@@ -135,3 +135,14 @@ class TestRenderJson:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         parsed = json.loads(render_json(result))
         assert len(parsed["endpoints"]) == len(result.endpoints) == 80
+
+    def test_is_complete_for_two_segment_paths_too(self, tmp_path: Path) -> None:
+        """A single-segment path never reaches the high-cardinality collapse
+        (the rule skips a segment count of one), so the case above cannot show
+        that eighty word-like siblings survive it: this one can."""
+        names = [f"{chr(97 + i // 26)}{chr(97 + i % 26)}-listing" for i in range(80)]
+        assert len(set(names)) == 80
+        entries = [_entry("GET", f"https://api.myshop.example.com/api/{name}") for name in names]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        parsed = json.loads(render_json(result))
+        assert len(parsed["endpoints"]) == len(result.endpoints) == 80

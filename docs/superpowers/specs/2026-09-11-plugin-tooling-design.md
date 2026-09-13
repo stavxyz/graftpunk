@@ -153,6 +153,17 @@ The package gains four modules, each with one job:
 > digit, so a slug family (`/products/red-widget-2024`) still collapses while
 > a family of plain words does not.
 
+> **Design note (2026-09-12, polish round 1):** "more than 8 distinct values
+> across a run" is now scoped to the family that qualified, not to every
+> template of the same segment count. A family is the set of templates that
+> agree on every segment but one, and a qualifying family carries its own key
+> (the tuple of its other segments) alongside the position. Only a template
+> belonging to that family, whose own segment at that position is eligible,
+> is re-templated. Without the scoping, one slug family under `/products/`
+> turned every two-segment sibling into a parameter: `/account/profile` and
+> `/account/settings` merged into `/account/{account_id}`, and `/api/health`
+> became `/api/{api_id}`.
+
 `src/graftpunk/har/digest.py`:
 
 ```python
