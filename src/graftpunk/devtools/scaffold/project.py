@@ -162,12 +162,19 @@ def write_scaffold(
         for path, content in targets.items():
             created_dirs.extend(_missing_parents(path.parent))
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
             written.append(path)
+            path.write_text(content, encoding="utf-8")
     except OSError:
         _undo_writes(written, created_dirs)
         if existing is not None and original_pyproject_text is not None:
-            existing.write_text(original_pyproject_text, encoding="utf-8")
+            try:
+                existing.write_text(original_pyproject_text, encoding="utf-8")
+            except OSError as restore_exc:
+                LOG.warning(
+                    "scaffold_pyproject_restore_failed",
+                    path=str(existing),
+                    error=str(restore_exc),
+                )
         LOG.warning("scaffold_write_refused", reason="os_error", written=len(written))
         raise
 

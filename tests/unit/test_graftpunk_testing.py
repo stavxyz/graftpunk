@@ -110,7 +110,6 @@ class TestSiteEnvScrubber:
         monkeypatch.setenv("OTHER_VAR", "kept")
         pytester.makepyfile(
             conftest="""
-            pytest_plugins = ["graftpunk.testing.plugin"]
             from graftpunk.testing.plugin import site_env_scrubber
             scrub_site_env = site_env_scrubber("MYSHOP_")
             """,

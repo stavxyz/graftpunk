@@ -183,3 +183,64 @@ class TestAWriteFailureLeavesNoPartialTree:
         leftovers = sorted(p for p in tmp_path.rglob("*") if p.is_file())
         assert leftovers == [], f"a refused write left {leftovers} behind"
         assert not (tmp_path / "src" / "graftpunk_myshop").exists()
+
+    def test_a_short_write_that_touches_the_file_is_still_cleaned_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A short write (disk fills mid-write) leaves the file sitting on
+        disk before the ``OSError`` surfaces. It must be recorded as written
+        so cleanup removes it too, not only files that never touched disk.
+        """
+        real_write_text = Path.write_text
+        failing_name = "plugin.py"
+
+        def write_text_touching_then_failing(self: Path, *args: object, **kwargs: object) -> int:
+            if self.name == failing_name:
+                self.touch()
+                raise OSError(28, "No space left on device", str(self))
+            return real_write_text(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+        monkeypatch.setattr(Path, "write_text", write_text_touching_then_failing)
+
+        with pytest.raises(OSError, match="No space left on device"):
+            write_scaffold(tmp_path, _spec())
+
+        monkeypatch.undo()
+        leftovers = sorted(p for p in tmp_path.rglob("*") if p.is_file())
+        assert leftovers == [], f"a refused write left {leftovers} behind"
+        assert not (tmp_path / "src" / "graftpunk_myshop").exists()
+
+
+class TestPyprojectRestoredAfterRenderedFileFailure:
+    def test_pyproject_restored_when_a_rendered_file_write_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In add-to-suite mode the pyproject.toml edits happen before any
+        rendered file is written. When a rendered file then fails to write,
+        pyproject.toml must come back byte-identical, the same guarantee
+        TestPyprojectEditFailureLeavesSuiteUntouched checks for a
+        PyprojectEditError, exercised here for an OSError from the render
+        pass instead (the restore now goes through its own guarded try, see
+        the docstring for write_scaffold's OSError handling).
+        """
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_SUITE_PYPROJECT)
+        original = pyproject.read_text()
+
+        real_write_text = Path.write_text
+        failing_name = "plugin.py"
+
+        def write_text_failing_on_the_plugin_module(
+            self: Path, *args: object, **kwargs: object
+        ) -> int:
+            if self.name == failing_name:
+                raise OSError(28, "No space left on device", str(self))
+            return real_write_text(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+        monkeypatch.setattr(Path, "write_text", write_text_failing_on_the_plugin_module)
+
+        with pytest.raises(OSError, match="No space left on device"):
+            write_scaffold(tmp_path, _spec("widgets"))
+
+        monkeypatch.undo()
+        assert pyproject.read_text() == original

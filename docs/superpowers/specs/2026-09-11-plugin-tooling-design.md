@@ -462,6 +462,16 @@ query, the status, the content type, the request body parameter names, and
 the capture timestamp, so provenance travels with the file and a fixture
 derived from it keeps its status and type.
 
+> **Design note (2026-09-12):** a `--match` value is validated up front:
+> partitioning `METHOD template` on a blank template or an unrecognized
+> method refuses with a red line and exits 1, rather than silently matching
+> nothing and leaving a typo indistinguishable from an empty run. An entry
+> whose captured body is not text (the parser returns no body for a binary
+> content type, an image or a font among them) is skipped with a dim line
+> naming the content type, and skipping it never consumes a `--limit` slot,
+> so a run of binary and text responses interleaved still yields `--limit`
+> text fixtures per template.
+
 The "captures never enter git" rule has one owner, `src/graftpunk/devtools/captures.py`:
 `CAPTURES_DIR = "tests/captures"`, `ensure_ignored(repo_root, relative) ->
 bool` (adds the line to the root `.gitignore` when absent, returns whether it

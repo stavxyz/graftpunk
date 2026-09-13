@@ -275,8 +275,11 @@ def _escaped_for_docstring(text: str) -> str:
     close the string one character early (final fix wave, 2026-09-12).
     """
     escaped = text.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-    if escaped.endswith('"') and not escaped.endswith('\\"'):
-        escaped = f'{escaped[:-1]}\\"'
+    if escaped.endswith('"'):
+        trailing = escaped[:-1]
+        backslashes = len(trailing) - len(trailing.rstrip("\\"))
+        if backslashes % 2 == 0:
+            escaped = f'{trailing}\\"'
     return escaped
 
 

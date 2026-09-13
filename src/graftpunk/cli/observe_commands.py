@@ -75,7 +75,8 @@ def _refuse_write(path: Path, exc: OSError) -> NoReturn:
     ``--out`` directory is the user's to correct (final fix wave, 2026-09-12).
     """
     target = exc.filename or str(path)
-    console.print(f"[red]Could not write {escape(str(target))}: {escape(exc.strerror or '')}[/red]")
+    reason = exc.strerror or str(exc)
+    console.print(f"[red]Could not write {escape(str(target))}: {escape(reason)}[/red]")
     raise typer.Exit(1) from None
 
 

@@ -395,6 +395,16 @@ class TestDocstringEscaping:
         assert isinstance(klass, ast.ClassDef)
         assert ast.get_docstring(klass) == 'Commands for https://myshop.example.com/"'
 
+    def test_a_backslash_before_the_trailing_quote_still_gets_escaped(self) -> None:
+        text = 'a\\"'
+        block = _wrapped_docstring_block(text, indent=0)
+        assert len(block) == 1
+        source = "\n".join(["class C:", f"    {block[0]}", "    pass"])
+        module = ast.parse(source)
+        klass = module.body[0]
+        assert isinstance(klass, ast.ClassDef)
+        assert ast.get_docstring(klass) == text
+
 
 class TestScaffoldSpecValidatesItsName:
     def test_invalid_name_raises(self) -> None:
