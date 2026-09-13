@@ -8,6 +8,7 @@ on a base install (no [browser] extra). The login bodies import it lazily from
 ``graftpunk`` at call time, so ``graftpunk`` is where the patch has to land.
 """
 
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -844,7 +845,19 @@ class _ScriptedNodriverTab:
             return AsyncMock() if found else None
         return AsyncMock()
 
-    async def evaluate(self, expression: str) -> str:
+    async def evaluate(self, expression: str, **kwargs: Any) -> str:
+        """The document-readiness read, and the field read-back the steps make.
+
+        ``_read_field_value`` evaluates its own JS with ``return_by_value=True``;
+        without ``**kwargs`` that call raised TypeError, which the engine swallows
+        as "cannot verify", so this double skipped the read-back by accident. It is
+        answered here as "the field is there, its value could not be read", which
+        is the same verdict on purpose: the script models pages, not field values.
+        That read is deliberately not recorded, because ``events`` is the order of
+        the post-submit wait and a read from the steps would interleave with it.
+        """
+        if expression != "document.readyState":
+            return json.dumps({"found": True, "value": None})
         self.events.append("document_ready_read")
         state = self._at(self._ready_states, self._ready_reads)
         self._ready_reads += 1
