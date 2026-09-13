@@ -387,6 +387,74 @@ class TestGeneratedProjectPassesItsOwnGate:
         # PytestAssertRewriteWarning (final fix wave, 2026-09-12).
         assert "warnings summary" not in pytest_result.stdout.lower(), pytest_result.stdout
 
+    def test_a_project_with_login_and_token_blocks_imports_and_instantiates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rendered tree carrying both blocks was only ever parsed, never
+        imported: a LoginConfig or TokenConfig the framework rejects at
+        construction time is a runtime failure ast.parse cannot see."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        login_page = (
+            '<meta name="X-CSRF-Token" content="abc">'
+            '<form action="/login" method="post">'
+            '<input type="email" name="email" id="email-field">'
+            '<input type="password" name="password" id="pw">'
+            '<button type="submit" id="go">Go</button>'
+            "</form>"
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=login_page,
+            ),
+            _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}'),
+        ]
+        # The header half of the token pair: the meta tag above supplies the
+        # value, this request carries it back.
+        entries[1]["request"]["headers"] = [{"name": "X-CSRF-Token", "value": "abc"}]
+        har = {"log": {"version": "1.2", "entries": entries}}
+        (run_dir / "network.har").write_text(json.dumps(har))
+
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "login_config = LoginConfig(" in plugin_code
+        assert "token_config = TokenConfig(" in plugin_code
+
+        script = (
+            "from graftpunk_myshop.plugin import MyshopPlugin\n"
+            "plugin = MyshopPlugin()\n"
+            "assert plugin.site_name == 'myshop'\n"
+            "assert plugin.login_config is not None\n"
+            "assert plugin.token_config is not None\n"
+            "print('OK')\n"
+        )
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        run = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=60
+        )
+        assert run.returncode == 0, run.stdout + run.stderr
+        assert "OK" in run.stdout
+
 
 class TestSuiteModeLeavesRestOfPyprojectByteIdentical:
     def test_only_the_two_known_edits_change(self, tmp_path: Path) -> None:
