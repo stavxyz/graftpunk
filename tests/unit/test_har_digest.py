@@ -118,6 +118,28 @@ class TestPrimaryHostAndHosts:
         assert result.primary_host == "myshop.example.com"
         assert result.dropped["third_party"] == 5
 
+    def test_an_html_error_page_does_not_make_a_host_a_document_host(self, tmp_path: Path) -> None:
+        """Only a served page counts: a beacon host answering one HTML 500
+        must not join the document group and then win on count."""
+        entries = [
+            _entry(
+                "GET",
+                "https://myshop.example.com/records/search",
+                content_type="text/html; charset=utf-8",
+                body="<html><body>results</body></html>",
+            ),
+            _entry(
+                "POST",
+                "https://sessions.telemetry.example.net/collect",
+                status=500,
+                content_type="text/html; charset=utf-8",
+                body="<html><body>server error</body></html>",
+            ),
+        ]
+        entries += [_entry("POST", f"https://sessions.telemetry.example.net/{i}") for i in range(4)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.primary_host == "myshop.example.com"
+
     def test_an_api_only_run_still_elects_on_count_alone(self, tmp_path: Path) -> None:
         """Nothing served HTML, so the document half of the rule decides
         nothing and the busiest non-static host wins as it always did."""

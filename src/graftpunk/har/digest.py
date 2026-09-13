@@ -277,11 +277,13 @@ def _scope_root(primary_host: str) -> str:
     Taking the last two labels instead needs a public suffix list to be
     correct, and without one a site under a two-label public suffix (a
     country-code second-level domain) made every host sharing that suffix a
-    first party (polish round 1, 2026-09-12). The parent rule needs no list,
-    and its one limitation is deliberate: a primary host that is a public
-    suffix plus one label has two labels too many to shorten, so it is its own
-    root, which keeps its subdomains in scope (correct) and can never degrade
-    to the bare suffix.
+    first party (polish round 1, 2026-09-12). The parent rule needs no list.
+    The residual it accepts: a primary host of the form ``name.<two-label
+    public suffix>`` (``mybank.co.uk``) has three labels, so it scopes to the
+    bare suffix and every host under that suffix counts as first party for
+    that capture. Sites normally record from a ``www`` or ``app`` subdomain,
+    which scopes correctly; a bare apex under such a suffix is the one shape
+    this rule gets wrong.
     """
     labels = primary_host.split(".")
     return primary_host if len(labels) <= 2 else ".".join(labels[1:])
@@ -723,7 +725,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         static = _is_static(entry)
         if not static:
             non_static_hosts[host] = non_static_hosts.get(host, 0) + 1
-            if "html" in (entry.response.content_type or "").lower():
+            # Only a page that was actually served counts as a document: a
+            # third-party host answering one HTML error page must not join
+            # the document group and then win the election on count.
+            served_html = "html" in (entry.response.content_type or "").lower()
+            if served_html and 200 <= entry.response.status < 300:
                 document_hosts.add(host)
         classified.append((entry, host, static))
 

@@ -55,8 +55,9 @@ def _normalised_arguments(mapping: Any) -> Any:
     A generated command stub declares each site parameter ``... | None = None``
     and passes the lot, so ``None`` is the stub's way of saying "the caller did
     not ask for this parameter": sending it would add an empty value the site
-    never saw. Anything that is not a mapping (a raw string or bytes body) is
-    returned as it came.
+    never saw. Anything that is not a mapping (a raw string or bytes body, or a
+    list of pairs) is returned as it came, booleans included; a generated stub
+    never passes that shape.
     """
     if not isinstance(mapping, Mapping):
         return mapping

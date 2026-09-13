@@ -305,10 +305,13 @@ Rules the digest applies:
 > domain, and the host itself when it has two labels or fewer:
 > `shop.team.example.com` scopes to `team.example.com`, `www.example.com` to
 > `example.com`. A host is in scope when it equals that root or is a
-> subdomain of it. No public suffix list is involved. The one limitation is
-> deliberate: a primary host that is a public suffix plus one label is its own
-> root, which keeps its subdomains in scope and can never degrade to the bare
-> suffix.
+> subdomain of it. No public suffix list is involved. The residual the
+> no-list rule accepts: a primary host of the form `name.<two-label public
+> suffix>` (`mybank.co.uk`) has three labels, so it scopes to the bare suffix
+> and every host under that suffix counts as first party for that capture.
+> Sites normally record from a `www` or `app` subdomain, which scopes
+> correctly; a bare apex under such a suffix is the one shape this rule gets
+> wrong.
 
 > **Design note (2026-09-12, polish round 2):** "most non-static requests" is
 > no longer the whole election. A host that served an HTML document is
