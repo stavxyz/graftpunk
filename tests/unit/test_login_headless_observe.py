@@ -46,6 +46,8 @@ def _make_plugin(backend: str, *, headless: bool = False) -> SitePlugin:
         url="/login",
         failure="Bad login.",
         headless=headless,
+        timeout=0.05,
+        settle=0.0,
     )
     return P()
 

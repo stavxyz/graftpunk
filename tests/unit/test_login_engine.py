@@ -8,6 +8,7 @@ on a base install (no [browser] extra). The login bodies import it lazily from
 ``graftpunk`` at call time, so ``graftpunk`` is where the patch has to land.
 """
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,6 +36,8 @@ class DeclarativeHN(SitePlugin):
         ],
         url="/login",
         failure="Bad login.",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -55,6 +58,8 @@ class DeclarativeQuotes(SitePlugin):
         ],
         url="/login",
         success="a[href='/logout']",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -261,7 +266,8 @@ class TestDeclarativeLoginEngine:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            # Only sleep: the post-submit poll reads time.monotonic for its deadline.
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -285,6 +291,8 @@ class DeclarativeFailureText(SitePlugin):
         ],
         url="/login",
         failure="Invalid credentials",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -481,6 +489,8 @@ class TestLoginFieldMapping:
                 ],
                 url="/login",
                 failure="Invalid",
+                timeout=0.05,
+                settle=0.0,
             )
 
         plugin = EmailPlugin()
@@ -532,6 +542,8 @@ class TestLoginFieldMapping:
                 ],
                 url="/login",
                 failure="Invalid",
+                timeout=0.05,
+                settle=0.0,
             )
 
         plugin = EmailPlugin()
@@ -582,6 +594,8 @@ class DeclarativeNodriverSuccess(SitePlugin):
         ],
         url="/login",
         success=".dashboard",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -601,6 +615,8 @@ class DeclarativeNodriverNoValidation(SitePlugin):
             ),
         ],
         url="/login",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -622,6 +638,8 @@ class DeclarativeSeleniumBoth(SitePlugin):
         url="/login",
         failure="Invalid credentials",
         success=".dashboard",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -748,6 +766,316 @@ class TestNodriverLoginValidationPaths:
             plugin="ndnoval",
             hint="Consider adding login_failure or login_success to validate login result",
         )
+
+
+class _ScriptedNodriverTab:
+    """A nodriver tab that answers the post-submit poll from a script.
+
+    Each ``get_content`` is one poll tick: ``contents`` and ``urls`` are read by
+    tick index and their last entry repeats for every later tick, the success
+    selector starts resolving on tick ``success_from`` (never, when it is None),
+    and ``ready_states`` answers the document-ready wait one read at a time.
+    ``events`` records what the engine did, in order.
+    """
+
+    def __init__(
+        self,
+        *,
+        success_selector: str = "",
+        contents: tuple[str, ...] = ("<html>Signing in</html>",),
+        urls: tuple[str, ...] = ("https://app.example.com/login",),
+        success_from: int | None = None,
+        ready_states: tuple[str, ...] = ("complete",),
+    ) -> None:
+        self.events: list[str] = []
+        self.tick = -1
+        self._success_selector = success_selector
+        self._contents = contents
+        self._urls = urls
+        self._success_from = success_from
+        self._ready_states = ready_states
+        self._ready_reads = 0
+        self.send = AsyncMock()
+
+    def __getattr__(self, name: str) -> MagicMock:
+        """Anything the browser stack asks of a tab that this script does not model.
+
+        A plain MagicMock, as the hand-built tabs elsewhere in this file use: the
+        capture backend registers its handlers synchronously, and an AsyncMock
+        there leaves coroutines nobody awaits.
+        """
+        return MagicMock()
+
+    @staticmethod
+    def _at(script: tuple[str, ...], index: int) -> str:
+        return script[min(index, len(script) - 1)]
+
+    @property
+    def url(self) -> str:
+        return self._at(self._urls, max(self.tick, 0))
+
+    async def get_content(self) -> str:
+        self.tick += 1
+        self.events.append(f"tick:{self.tick}")
+        return self._at(self._contents, self.tick)
+
+    async def select(self, selector: str, timeout: float | None = None) -> Any:
+        if selector and selector == self._success_selector:
+            found = self._success_from is not None and self.tick >= self._success_from
+            return AsyncMock() if found else None
+        return AsyncMock()
+
+    async def evaluate(self, expression: str) -> str:
+        self.events.append("document_ready_read")
+        state = self._at(self._ready_states, self._ready_reads)
+        self._ready_reads += 1
+        return state
+
+
+def _nodriver_session_for(tab: _ScriptedNodriverTab) -> tuple[MagicMock, MagicMock]:
+    """A mock BrowserSession serving *tab*, recording its cookie capture on the tab."""
+    mock_bs, instance = _make_nodriver_mock_bs()
+    instance.driver = MagicMock()
+    instance.driver.get = AsyncMock(return_value=tab)
+
+    async def _capture_cookies() -> None:
+        tab.events.append("cookies")
+
+    instance.transfer_nodriver_cookies_to_session = AsyncMock(side_effect=_capture_cookies)
+    return mock_bs, instance
+
+
+def _warning_kwargs(mock_log: MagicMock, event: str) -> dict[str, Any]:
+    """The keyword arguments of the single LOG.warning call for *event*."""
+    calls = [call for call in mock_log.warning.call_args_list if call[0][0] == event]
+    assert len(calls) == 1, f"expected one {event!r} warning, got {mock_log.warning.call_args_list}"
+    return dict(calls[0][1])
+
+
+class DeclarativeNodriverPoll(SitePlugin):
+    """Nodriver plugin with a success element and room to poll for it."""
+
+    site_name = "ndpoll"
+    session_name = "ndpoll"
+    help_text = "ND Poll"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        steps=[LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")],
+        url="/login",
+        failure="Invalid credentials",
+        success=".dashboard",
+        timeout=5.0,
+        settle=0.0,
+    )
+
+
+class DeclarativeNodriverUrlOnly(SitePlugin):
+    """Nodriver plugin whose only success signal is the landing URL."""
+
+    site_name = "ndurl"
+    session_name = "ndurl"
+    help_text = "ND URL"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        steps=[LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")],
+        url="/login",
+        success_url="*/dashboard*",
+        timeout=0.2,
+        settle=0.0,
+    )
+
+
+class DeclarativeNodriverBothSignals(SitePlugin):
+    """Nodriver plugin that requires both the element and the URL."""
+
+    site_name = "ndboth"
+    session_name = "ndboth"
+    help_text = "ND Both"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        steps=[LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")],
+        url="/login",
+        success=".dashboard",
+        success_url="*/dashboard*",
+        timeout=0.2,
+        settle=0.0,
+    )
+
+
+_LOGIN_CREDENTIALS = {"username": "alice", "password": "secret"}  # noqa: S106
+
+
+class TestNodriverLoginSignalPoll:
+    """The post-submit wait polls for the configured signal (nodriver)."""
+
+    @pytest.mark.asyncio
+    async def test_success_element_found_after_several_ticks(self) -> None:
+        """A success element that only appears on a later tick still succeeds."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=3)
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert tab.tick == 3
+        assert "cookies" in tab.events
+
+    @pytest.mark.asyncio
+    async def test_failure_text_that_appears_late_ends_the_poll(self) -> None:
+        """Failure text arriving after a few ticks fails the login there and then."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            success_selector=".dashboard",
+            contents=(
+                "<html>Signing in</html>",
+                "<html>Signing in</html>",
+                "<html>Invalid credentials</html>",
+            ),
+            success_from=None,
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert tab.tick == 2  # stopped on the tick that showed the text
+        assert "cookies" not in tab.events
+        assert _warning_kwargs(mock_log, "login_failure_text_detected")["text"] == (
+            "Invalid credentials"
+        )
+
+    @pytest.mark.asyncio
+    async def test_url_alone_can_be_the_success_signal(self) -> None:
+        """With success_url and no success selector, the landing URL decides."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            urls=(
+                "https://app.example.com/login",
+                "https://app.example.com/sso/callback",
+                "https://app.example.com/dashboard?welcome=1",
+            ),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert tab.tick == 2
+        assert "cookies" in tab.events
+
+    @pytest.mark.asyncio
+    async def test_both_signals_configured_needs_both(self) -> None:
+        """A matching URL is not enough while the configured element never appears."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            success_selector=".dashboard",
+            urls=("https://app.example.com/dashboard",),
+            success_from=None,
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverBothSignals())(
+                _LOGIN_CREDENTIALS
+            )
+
+        assert result is False
+        assert "cookies" not in tab.events
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success element '.dashboard'"
+        assert warning["url"] == "https://app.example.com/dashboard"
+
+    @pytest.mark.asyncio
+    async def test_timeout_names_the_url_pattern_and_the_final_url(self) -> None:
+        """A URL that never matches times out, naming the pattern and where it ended."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(urls=("https://app.example.com/login?error=mfa",))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert tab.tick > 0  # it polled rather than checking once
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success URL pattern '*/dashboard*'"
+        assert warning["url"] == "https://app.example.com/login?error=mfa"
+        assert warning["timeout"] == "0.2s"
+
+    @pytest.mark.asyncio
+    async def test_cookies_are_captured_after_the_document_finishes_loading(self) -> None:
+        """The engine waits out a still-loading document before capturing cookies."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            success_selector=".dashboard",
+            success_from=0,
+            ready_states=("loading", "complete"),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert tab.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_page_beats_a_later_success(self) -> None:
+        """A rate-limit page ends the wait instead of polling on for the element."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            success_selector=".dashboard",
+            contents=("<html>Too Many Requests</html>", "<html>dashboard</html>"),
+            success_from=1,
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert tab.tick == 0
+        assert "cookies" not in tab.events
+        assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "ndpoll"
 
 
 class TestCheckLoginResult:
@@ -938,6 +1266,155 @@ class TestCheckLoginResult:
         mock_warn.assert_not_called()
 
 
+class TestLoginTickVerdict:
+    """Direct tests for the rule both backends poll with."""
+
+    @staticmethod
+    def _verdict(
+        *,
+        page_text: str = "<html>Signing in</html>",
+        url: str = "https://app.example.com/login",
+        failure_text: str = "",
+        success_selector: str = "",
+        success_url: str = "",
+        success_found: bool | None = None,
+    ) -> str:
+        from graftpunk.plugins.login_engine import _login_tick_verdict
+
+        return _login_tick_verdict(
+            page_text=page_text,
+            url=url,
+            failure_text=failure_text,
+            success_selector=success_selector,
+            success_url=success_url,
+            success_found=success_found,
+        )
+
+    def test_element_not_found_yet_is_pending(self) -> None:
+        """A configured element that is not on the page yet keeps the poll going."""
+        assert self._verdict(success_selector=".dashboard", success_found=False) == "pending"
+
+    def test_element_found_is_success(self) -> None:
+        """The configured element on the page ends the poll successfully."""
+        assert self._verdict(success_selector=".dashboard", success_found=True) == "success"
+
+    def test_url_glob_matches_the_whole_url(self) -> None:
+        """A host-anchored glob matches the URL it was written for."""
+        assert (
+            self._verdict(
+                url="https://app.example.com/dashboard?welcome=1",
+                success_url="https://app.example.com/*",
+            )
+            == "success"
+        )
+
+    def test_path_glob_matches_any_host(self) -> None:
+        """A path glob with a leading wildcard matches whatever host the login lands on."""
+        assert (
+            self._verdict(url="https://sso.example.com/dashboard", success_url="*/dashboard*")
+            == "success"
+        )
+
+    def test_url_glob_is_case_sensitive(self) -> None:
+        """The URL match is fnmatchcase: a pattern in another case does not match."""
+        assert (
+            self._verdict(url="https://app.example.com/dashboard", success_url="*/Dashboard*")
+            == "pending"
+        )
+
+    def test_both_signals_need_both(self) -> None:
+        """A matching URL without the element is still pending, and with it succeeds."""
+        assert (
+            self._verdict(
+                url="https://app.example.com/dashboard",
+                success_selector=".dashboard",
+                success_url="*/dashboard*",
+                success_found=False,
+            )
+            == "pending"
+        )
+        assert (
+            self._verdict(
+                url="https://app.example.com/dashboard",
+                success_selector=".dashboard",
+                success_url="*/dashboard*",
+                success_found=True,
+            )
+            == "success"
+        )
+
+    def test_failure_text_beats_the_success_element(self) -> None:
+        """The configured failure text decides even on a tick where the element is there."""
+        assert (
+            self._verdict(
+                page_text="<html>Invalid credentials</html>",
+                failure_text="Invalid credentials",
+                success_selector=".dashboard",
+                success_found=True,
+            )
+            == "failure"
+        )
+
+    def test_failure_text_matches_case_insensitively(self) -> None:
+        """Failure text is matched case-insensitively, as it always was."""
+        assert (
+            self._verdict(
+                page_text="<html>INVALID CREDENTIALS</html>",
+                failure_text="Invalid credentials",
+                success_selector=".dashboard",
+                success_found=False,
+            )
+            == "failure"
+        )
+
+    def test_rate_limit_page_is_a_failure_while_the_signal_is_missing(self) -> None:
+        """A rate-limit page ends the poll rather than waiting out the timeout."""
+        assert (
+            self._verdict(
+                page_text="<html>Too Many Requests</html>",
+                success_selector=".dashboard",
+                success_found=False,
+            )
+            == "failure"
+        )
+
+    def test_a_holding_signal_keeps_its_veto_over_the_rate_limit_marker(self) -> None:
+        """Raw HTML can carry the marker text on a real post-login page."""
+        assert (
+            self._verdict(
+                page_text="<html>dashboard<script>{'err':'Too Many Requests'}</script></html>",
+                success_selector=".dashboard",
+                success_found=True,
+            )
+            == "success"
+        )
+
+    def test_missing_signals_name_every_signal_that_does_not_hold(self) -> None:
+        """The timeout warning's text comes from this list."""
+        from graftpunk.plugins.login_engine import _missing_login_signals
+
+        assert _missing_login_signals(
+            url="https://app.example.com/login",
+            success_found=False,
+            success_selector=".dashboard",
+            success_url="*/dashboard*",
+        ) == ["success element '.dashboard'", "success URL pattern '*/dashboard*'"]
+
+    def test_missing_signals_is_empty_when_both_hold(self) -> None:
+        """Nothing is missing once the element is found and the URL matches."""
+        from graftpunk.plugins.login_engine import _missing_login_signals
+
+        assert (
+            _missing_login_signals(
+                url="https://app.example.com/dashboard",
+                success_found=True,
+                success_selector=".dashboard",
+                success_url="*/dashboard*",
+            )
+            == []
+        )
+
+
 class TestLoginConfigNoneGuard:
     """Tests for login_config=None guard paths in generated login methods."""
 
@@ -1122,6 +1599,289 @@ class TestSeleniumLoginValidationPaths:
         assert result is True
 
 
+class _ScriptedSeleniumDriver:
+    """A selenium driver that answers the post-submit poll from a script.
+
+    The twin of :class:`_ScriptedNodriverTab`: each ``page_source`` read is one
+    poll tick, ``urls`` gives the URL for that tick, the success selector starts
+    resolving on tick ``success_from``, and ``ready_states`` answers the
+    document-ready wait one read at a time.
+    """
+
+    def __init__(
+        self,
+        *,
+        success_selector: str = "",
+        contents: tuple[str, ...] = ("<html>Signing in</html>",),
+        urls: tuple[str, ...] = ("https://app.example.com/login",),
+        success_from: int | None = None,
+        ready_states: tuple[str, ...] = ("complete",),
+    ) -> None:
+        self.events: list[str] = []
+        self.tick = -1
+        self._success_selector = success_selector
+        self._contents = contents
+        self._urls = urls
+        self._success_from = success_from
+        self._ready_states = ready_states
+        self._ready_reads = 0
+
+    def __getattr__(self, name: str) -> MagicMock:
+        """Anything the browser stack asks of a driver that this script does not model."""
+        return MagicMock()
+
+    @staticmethod
+    def _at(script: tuple[str, ...], index: int) -> str:
+        return script[min(index, len(script) - 1)]
+
+    @property
+    def page_source(self) -> str:
+        self.tick += 1
+        self.events.append(f"tick:{self.tick}")
+        return self._at(self._contents, self.tick)
+
+    @property
+    def current_url(self) -> str:
+        return self._at(self._urls, max(self.tick, 0))
+
+    def find_element(self, by: str, value: str) -> MagicMock:
+        from selenium.common.exceptions import NoSuchElementException
+
+        if value and value == self._success_selector:
+            found = self._success_from is not None and self.tick >= self._success_from
+            if not found:
+                raise NoSuchElementException(value)
+        return MagicMock()
+
+    def execute_script(self, script: str) -> str:
+        self.events.append("document_ready_read")
+        state = self._at(self._ready_states, self._ready_reads)
+        self._ready_reads += 1
+        return state
+
+
+def _selenium_session_for(driver: _ScriptedSeleniumDriver) -> tuple[MagicMock, MagicMock]:
+    """A mock BrowserSession serving *driver*, recording its cookie capture on it."""
+    mock_bs, instance = _make_selenium_mock_bs()
+    instance.driver = driver
+    instance.transfer_driver_cookies_to_session = MagicMock(
+        side_effect=lambda: driver.events.append("cookies")
+    )
+    return mock_bs, instance
+
+
+class DeclarativeSeleniumPoll(SitePlugin):
+    """Selenium plugin with a success element and room to poll for it."""
+
+    site_name = "selpoll"
+    session_name = "selpoll"
+    help_text = "Sel Poll"
+    base_url = "https://example.com"
+    backend = "selenium"
+    login_config = LoginConfig(
+        steps=[LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")],
+        url="/login",
+        failure="Invalid credentials",
+        success=".dashboard",
+        timeout=5.0,
+        settle=0.0,
+    )
+
+
+class DeclarativeSeleniumUrlOnly(SitePlugin):
+    """Selenium plugin whose only success signal is the landing URL."""
+
+    site_name = "selurl"
+    session_name = "selurl"
+    help_text = "Sel URL"
+    base_url = "https://example.com"
+    backend = "selenium"
+    login_config = LoginConfig(
+        steps=[LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")],
+        url="/login",
+        success_url="*/dashboard*",
+        timeout=0.2,
+        settle=0.0,
+    )
+
+
+class DeclarativeSeleniumBothSignals(SitePlugin):
+    """Selenium plugin that requires both the element and the URL."""
+
+    site_name = "selboth2"
+    session_name = "selboth2"
+    help_text = "Sel Both Signals"
+    base_url = "https://example.com"
+    backend = "selenium"
+    login_config = LoginConfig(
+        steps=[LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")],
+        url="/login",
+        success=".dashboard",
+        success_url="*/dashboard*",
+        timeout=0.2,
+        settle=0.0,
+    )
+
+
+class TestSeleniumLoginSignalPoll:
+    """The post-submit wait polls for the configured signal (selenium)."""
+
+    def test_success_element_found_after_several_ticks(self) -> None:
+        """A success element that only appears on a later tick still succeeds."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(success_selector=".dashboard", success_from=3)
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert driver.tick == 3
+        assert "cookies" in driver.events
+
+    def test_failure_text_that_appears_late_ends_the_poll(self) -> None:
+        """Failure text arriving after a few ticks fails the login there and then."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            success_selector=".dashboard",
+            contents=(
+                "<html>Signing in</html>",
+                "<html>Signing in</html>",
+                "<html>Invalid credentials</html>",
+            ),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert driver.tick == 2
+        assert "cookies" not in driver.events
+        assert _warning_kwargs(mock_log, "login_failure_text_detected")["text"] == (
+            "Invalid credentials"
+        )
+
+    def test_url_alone_can_be_the_success_signal(self) -> None:
+        """With success_url and no success selector, the landing URL decides."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            urls=(
+                "https://app.example.com/login",
+                "https://app.example.com/sso/callback",
+                "https://app.example.com/dashboard?welcome=1",
+            ),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = generate_login_method(DeclarativeSeleniumUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert driver.tick == 2
+        assert "cookies" in driver.events
+
+    def test_both_signals_configured_needs_both(self) -> None:
+        """A matching URL is not enough while the configured element never appears."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            success_selector=".dashboard",
+            urls=("https://app.example.com/dashboard",),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumBothSignals())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in driver.events
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success element '.dashboard'"
+        assert warning["url"] == "https://app.example.com/dashboard"
+
+    def test_timeout_names_the_url_pattern_and_the_final_url(self) -> None:
+        """A URL that never matches times out, naming the pattern and where it ended."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(urls=("https://app.example.com/login?error=mfa",))
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert driver.tick > 0  # it polled rather than checking once
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success URL pattern '*/dashboard*'"
+        assert warning["url"] == "https://app.example.com/login?error=mfa"
+        assert warning["timeout"] == "0.2s"
+
+    def test_cookies_are_captured_after_the_document_finishes_loading(self) -> None:
+        """The engine waits out a still-loading document before capturing cookies."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            success_selector=".dashboard",
+            success_from=0,
+            ready_states=("loading", "complete"),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert driver.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
+
+    def test_rate_limit_page_beats_a_later_success(self) -> None:
+        """A rate-limit page ends the wait instead of polling on for the element."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            success_selector=".dashboard",
+            contents=("<html>Too Many Requests</html>", "<html>dashboard</html>"),
+            success_from=1,
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert driver.tick == 0
+        assert "cookies" not in driver.events
+        assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "selpoll"
+
+
 class TestLoginTimeTokenExtraction:
     """Tests for token extraction during login (nodriver path)."""
 
@@ -1146,6 +1906,8 @@ class TestLoginTimeTokenExtraction:
                 ],
                 url="/login",
                 success=".dashboard",
+                timeout=0.05,
+                settle=0.0,
             )
             token_config = TokenConfig(
                 tokens=(
@@ -1264,6 +2026,8 @@ class TestSeleniumTokenExtraction:
                 ],
                 url="/login",
                 success=".dashboard",
+                timeout=0.05,
+                settle=0.0,
             )
             token_config = TokenConfig(tokens=(Token.from_cookie("sid", "X-Session"),))
 
@@ -1364,6 +2128,8 @@ class TestSeleniumWaitForRaises:
                 ],
                 url="/login",
                 wait_for="#form",
+                timeout=0.05,
+                settle=0.0,
             )
 
         plugin = SeleniumWaitFor()
@@ -1401,6 +2167,8 @@ class TestSeleniumWaitForRaises:
                     ),
                 ],
                 url="/login",
+                timeout=0.05,
+                settle=0.0,
             )
 
         plugin = SeleniumStepWaitFor()
@@ -1441,6 +2209,8 @@ class DeclarativeMultiStep(SitePlugin):
         ],
         url="/login",
         success=".dashboard",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -1462,6 +2232,8 @@ class DeclarativeStepWithDelay(SitePlugin):
         ],
         url="/login",
         success=".dashboard",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -1483,6 +2255,8 @@ class DeclarativeTopLevelWaitFor(SitePlugin):
         url="/login",
         wait_for="#login-form",
         success=".dashboard",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -1514,6 +2288,8 @@ class DeclarativeThreeStepLogin(SitePlugin):
         ],
         url="/login",
         success=".dashboard",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -1799,13 +2575,11 @@ class TestNodriverMultiStepLogin:
 
         assert result is True
         # Four sleep calls: one settle per filled field (2, from _fill_field),
-        # the step delay (0.5), and the post-submit delay (patched to ~0).
-        from graftpunk.plugins.login_engine import _POST_SUBMIT_DELAY
-
+        # the step delay (0.5), and the settle after the success signal.
         assert mock_sleep.call_count == 4
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
-        assert _POST_SUBMIT_DELAY in sleep_calls
+        assert plugin.login_config.settle in sleep_calls
 
     @pytest.mark.asyncio
     async def test_step_without_submit_skips_click(self) -> None:
@@ -1830,6 +2604,8 @@ class TestNodriverMultiStepLogin:
                     ),
                 ],
                 url="/login",
+                timeout=0.05,
+                settle=0.0,
             )
 
         plugin = NoSubmitStep()
@@ -1953,6 +2729,8 @@ class DeclarativeSeleniumMultiStep(SitePlugin):
         ],
         url="/login",
         success=".dashboard",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -1974,6 +2752,8 @@ class DeclarativeSeleniumStepWithDelay(SitePlugin):
         ],
         url="/login",
         success=".dashboard",
+        timeout=0.05,
+        settle=0.0,
     )
 
 
@@ -2132,13 +2912,12 @@ class TestSeleniumMultiStepLogin:
             result = login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Exactly two sleep calls: step delay (0.5) and post-submit delay (patched to 0)
-        from graftpunk.plugins.login_engine import _POST_SUBMIT_DELAY
-
+        # Exactly two sleep calls: the step delay (0.5) and the settle after
+        # the success signal.
         assert mock_sleep.call_count == 2
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
-        assert _POST_SUBMIT_DELAY in sleep_calls
+        assert plugin.login_config.settle in sleep_calls
 
     def test_step_without_submit_skips_click(self) -> None:
         """Step without submit selector skips the click action."""
@@ -2162,6 +2941,8 @@ class TestSeleniumMultiStepLogin:
                     ),
                 ],
                 url="/login",
+                timeout=0.05,
+                settle=0.0,
             )
 
         plugin = SeleniumNoSubmitStep()

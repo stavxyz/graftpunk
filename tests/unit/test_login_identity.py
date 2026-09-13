@@ -277,6 +277,8 @@ class TestEngineChainThreading:
             login_config = LoginConfig(
                 steps=[LoginStep(fields={"username": "#u"}, submit="#go")],
                 url="/login",
+                timeout=0.05,
+                settle=0.0,
             )
 
         login = generate_login_method(NodriverPlugin())
@@ -323,6 +325,8 @@ class TestEngineChainThreading:
                 steps=[LoginStep(fields={"username": "#u"}, submit="#go")],
                 url="/login",
                 success="#ok",
+                timeout=0.05,
+                settle=0.0,
             )
 
         login = generate_login_method(QuotesPlugin())

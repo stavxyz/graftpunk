@@ -8,6 +8,7 @@ and session caching automatically.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import re
 import time
@@ -20,7 +21,7 @@ from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import cache_login_session
 
 if TYPE_CHECKING:
-    from graftpunk.plugins.cli_plugin import SitePlugin
+    from graftpunk.plugins.cli_plugin import LoginConfig, SitePlugin
 
 # NOTE: `BrowserSession` is imported lazily inside the two login bodies below,
 # NOT at module scope. This module is on the CLI's eager import path
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
 LOG = get_logger(__name__)
 
-_POST_SUBMIT_DELAY = 3  # seconds to wait after form submission for page to settle
+_LOGIN_POLL_INTERVAL = 0.5  # seconds between post-submit checks for the login signal
 _ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transitions
 _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
 _LOGIN_NAV_TIMEOUT = 60  # seconds — login page may redirect through SSO/IdP chains
@@ -504,6 +505,329 @@ def _check_login_result(
     return True
 
 
+# One poll tick's reading of the page, before the deadline is consulted.
+_TICK_PENDING = "pending"
+_TICK_SUCCESS = "success"
+_TICK_FAILURE = "failure"
+
+
+def _success_signal_configured(login_config: LoginConfig) -> bool:
+    """Whether there is a post-submit success signal to wait for at all."""
+    return bool(login_config.success or login_config.success_url)
+
+
+def _missing_login_signals(
+    *,
+    url: str,
+    success_found: bool | None,
+    success_selector: str,
+    success_url: str,
+) -> list[str]:
+    """The configured success signals that do not hold for this reading of the page.
+
+    Empty when every configured signal holds, so ``not _missing_login_signals(...)``
+    is the success test and the same list names what never appeared in the timeout
+    warning.
+    """
+    missing: list[str] = []
+    if success_selector and success_found is not True:
+        missing.append(f"success element '{success_selector}'")
+    if success_url and not fnmatch.fnmatchcase(url, success_url):
+        missing.append(f"success URL pattern '{success_url}'")
+    return missing
+
+
+def _login_tick_verdict(
+    *,
+    page_text: str,
+    url: str,
+    failure_text: str,
+    success_selector: str,
+    success_url: str,
+    success_found: bool | None,
+) -> str:
+    """Decide one post-submit poll tick from what the page shows right now.
+
+    Pure, and the single rule both backends poll with: the configured failure text
+    ends the wait, a rate-limit page ends it too, every configured success signal
+    holding ends it successfully, and anything else is still pending.
+
+    A found success signal keeps its veto over the rate-limit marker, as in
+    ``_check_login_result``: page_text is raw HTML, and an inlined i18n bundle or
+    error catalogue on a real post-login page can carry the marker text.
+
+    Returns:
+        One of ``_TICK_SUCCESS``, ``_TICK_FAILURE``, ``_TICK_PENDING``.
+    """
+    lowered = page_text.lower()
+    signal_holds = bool(success_selector or success_url) and not _missing_login_signals(
+        url=url,
+        success_found=success_found,
+        success_selector=success_selector,
+        success_url=success_url,
+    )
+    if failure_text and failure_text.lower() in lowered:
+        return _TICK_FAILURE
+    if not signal_holds and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+        return _TICK_FAILURE
+    return _TICK_SUCCESS if signal_holds else _TICK_PENDING
+
+
+def _warn_login_signal_timeout(
+    *,
+    site_name: str,
+    missing: list[str],
+    url: str,
+    timeout: float,
+) -> None:
+    """Warn that the configured success signal never appeared before the deadline."""
+    LOG.warning(
+        "login_signal_timeout",
+        plugin=site_name,
+        missing=" and ".join(missing),
+        url=url,
+        timeout=f"{timeout:g}s",
+        hint=(
+            "The page never showed the configured login success signal. Raise "
+            "LoginConfig.timeout when the site redirects slowly, or correct the "
+            "signal to match the page the login actually lands on."
+        ),
+    )
+
+
+def _tab_url(tab: Any) -> str:
+    """The nodriver tab's current URL, or an empty string when it cannot be read."""
+    try:
+        url = tab.url
+    except Exception as exc:  # noqa: BLE001 — the URL is one input to the poll, not the login
+        LOG.debug("login_url_read_failed", error=str(exc), backend="nodriver")
+        return ""
+    return url if isinstance(url, str) else ""
+
+
+def _driver_url(driver: Any) -> str:
+    """The selenium driver's current URL, or an empty string when it cannot be read."""
+    try:
+        url = driver.current_url
+    except Exception as exc:  # noqa: BLE001 — the URL is one input to the poll, not the login
+        LOG.debug("login_url_read_failed", error=str(exc), backend="selenium")
+        return ""
+    return url if isinstance(url, str) else ""
+
+
+async def _wait_for_login_signal_nodriver(
+    *,
+    tab: Any,  # nodriver.Tab
+    login_config: LoginConfig,
+    failure_text: str,
+    site_name: str,
+    deadline: float,
+) -> bool:
+    """Poll the tab until the login signal, the failure signal, or *deadline*.
+
+    Sites that finish their login through an identity-provider redirect mint their
+    cookies tens of seconds after the submit, so the engine waits for the signal it
+    is configured to look for rather than for a fixed delay.
+
+    Returns:
+        True when every configured success signal holds, False on a failure signal
+        or when the deadline passes (both are logged).
+    """
+    loop = asyncio.get_running_loop()
+    success_selector = login_config.success
+    success_url = login_config.success_url
+    url = ""
+    success_found: bool | None = None
+    while True:
+        page_text = await tab.get_content()
+        url = _tab_url(tab)
+        success_found = None
+        if success_selector:
+            # A bare select capped at one interval: the poll is the retry, and a
+            # tick that blocked inside nodriver would stretch the whole cadence.
+            element = await tab.select(success_selector, timeout=_LOGIN_POLL_INTERVAL)
+            success_found = element is not None
+        verdict = _login_tick_verdict(
+            page_text=page_text,
+            url=url,
+            failure_text=failure_text,
+            success_selector=success_selector,
+            success_url=success_url,
+            success_found=success_found,
+        )
+        if verdict == _TICK_SUCCESS:
+            return True
+        if verdict == _TICK_FAILURE:
+            # Called for the warning that names which signal decided it; the
+            # verdict above is what returns.
+            _check_login_result(
+                page_text=page_text,
+                failure_text=failure_text,
+                success_found=success_found,
+                success_selector=success_selector,
+                site_name=site_name,
+            )
+            return False
+        if loop.time() >= deadline:
+            break
+        await asyncio.sleep(_LOGIN_POLL_INTERVAL)
+
+    _warn_login_signal_timeout(
+        site_name=site_name,
+        missing=_missing_login_signals(
+            url=url,
+            success_found=success_found,
+            success_selector=success_selector,
+            success_url=success_url,
+        ),
+        url=url,
+        timeout=login_config.timeout,
+    )
+    return False
+
+
+def _wait_for_login_signal_selenium(
+    *,
+    driver: Any,  # selenium WebDriver
+    login_config: LoginConfig,
+    failure_text: str,
+    site_name: str,
+    deadline: float,
+) -> bool:
+    """The selenium twin of :func:`_wait_for_login_signal_nodriver`."""
+    from selenium.common.exceptions import NoSuchElementException
+
+    success_selector = login_config.success
+    success_url = login_config.success_url
+    url = ""
+    success_found: bool | None = None
+    while True:
+        page_text = driver.page_source
+        url = _driver_url(driver)
+        success_found = None
+        if success_selector:
+            try:
+                driver.find_element("css selector", success_selector)
+                success_found = True
+            except NoSuchElementException:
+                success_found = False
+        verdict = _login_tick_verdict(
+            page_text=page_text,
+            url=url,
+            failure_text=failure_text,
+            success_selector=success_selector,
+            success_url=success_url,
+            success_found=success_found,
+        )
+        if verdict == _TICK_SUCCESS:
+            return True
+        if verdict == _TICK_FAILURE:
+            # Called for the warning that names which signal decided it; the
+            # verdict above is what returns.
+            _check_login_result(
+                page_text=page_text,
+                failure_text=failure_text,
+                success_found=success_found,
+                success_selector=success_selector,
+                site_name=site_name,
+            )
+            return False
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_LOGIN_POLL_INTERVAL)
+
+    _warn_login_signal_timeout(
+        site_name=site_name,
+        missing=_missing_login_signals(
+            url=url,
+            success_found=success_found,
+            success_selector=success_selector,
+            success_url=success_url,
+        ),
+        url=url,
+        timeout=login_config.timeout,
+    )
+    return False
+
+
+async def _await_document_ready_nodriver(tab: Any, *, deadline: float, site_name: str) -> None:
+    """Wait until the tab reports ``document.readyState == "complete"``, or *deadline*.
+
+    Best-effort: the success signal can appear on a document still fetching the
+    response that carries the session cookie, and cookies captured a moment later
+    are the point of the wait. A readyState that cannot be read (a protocol error
+    mid-redirect, a backend that does not evaluate) is not a login failure, so it
+    ends the wait rather than the login.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            state = await tab.evaluate("document.readyState")
+        except Exception as exc:  # noqa: BLE001 — readiness is best-effort, see docstring
+            LOG.debug(
+                "login_document_ready_unavailable",
+                plugin=site_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                backend="nodriver",
+            )
+            return
+        if not isinstance(state, str):
+            LOG.debug(
+                "login_document_ready_unreadable",
+                plugin=site_name,
+                state_type=type(state).__name__,
+                backend="nodriver",
+            )
+            return
+        if state == "complete":
+            return
+        if loop.time() >= deadline:
+            LOG.debug(
+                "login_document_ready_timeout",
+                plugin=site_name,
+                state=state,
+                backend="nodriver",
+            )
+            return
+        await asyncio.sleep(_LOGIN_POLL_INTERVAL)
+
+
+def _await_document_ready_selenium(driver: Any, *, deadline: float, site_name: str) -> None:
+    """The selenium twin of :func:`_await_document_ready_nodriver`."""
+    while True:
+        try:
+            state = driver.execute_script("return document.readyState")
+        except Exception as exc:  # noqa: BLE001 — readiness is best-effort, see the nodriver twin
+            LOG.debug(
+                "login_document_ready_unavailable",
+                plugin=site_name,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                backend="selenium",
+            )
+            return
+        if not isinstance(state, str):
+            LOG.debug(
+                "login_document_ready_unreadable",
+                plugin=site_name,
+                state_type=type(state).__name__,
+                backend="selenium",
+            )
+            return
+        if state == "complete":
+            return
+        if time.monotonic() >= deadline:
+            LOG.debug(
+                "login_document_ready_timeout",
+                plugin=site_name,
+                state=state,
+                backend="selenium",
+            )
+            return
+        time.sleep(_LOGIN_POLL_INTERVAL)
+
+
 def _build_token_cache(
     token_config: Any,
     token_results: dict[str, str],
@@ -814,27 +1138,34 @@ async def _run_nodriver_steps(
         if step.delay > 0:
             await asyncio.sleep(step.delay)
 
-    # Fixed delay to allow page to settle after all steps complete
-    await asyncio.sleep(_POST_SUBMIT_DELAY)
-
-    # Check success/failure
-    page_text = await tab.get_content()
-    success_selector = plugin.login_config.success
-    success_found: bool | None = None
-    if success_selector:
-        # Bare select (no retry): page has settled after submit delay;
-        # retrying here would mask genuine login failures.
-        success_element = await tab.select(success_selector)
-        success_found = success_element is not None
-
-    if not _check_login_result(
-        page_text=page_text,
-        failure_text=failure_text,
-        success_found=success_found,
-        success_selector=success_selector or "",
-        site_name=plugin.site_name,
-    ):
-        return False
+    login_config = plugin.login_config
+    if _success_signal_configured(login_config):
+        # Wait for the configured signal, not for a guessed delay: a login that
+        # finishes through an identity-provider redirect can take tens of seconds.
+        deadline = asyncio.get_running_loop().time() + login_config.timeout
+        if not await _wait_for_login_signal_nodriver(
+            tab=tab,
+            login_config=login_config,
+            failure_text=failure_text,
+            site_name=plugin.site_name,
+            deadline=deadline,
+        ):
+            return False
+        await _await_document_ready_nodriver(tab, deadline=deadline, site_name=plugin.site_name)
+        await asyncio.sleep(login_config.settle)
+    else:
+        # No success signal to wait for: settle once, then take the single
+        # verdict (which warns when nothing validates the login at all).
+        await asyncio.sleep(login_config.settle)
+        page_text = await tab.get_content()
+        if not _check_login_result(
+            page_text=page_text,
+            failure_text=failure_text,
+            success_found=None,
+            success_selector="",
+            site_name=plugin.site_name,
+        ):
+            return False
 
     # Capture current URL before caching (used for domain display)
     try:
@@ -869,7 +1200,6 @@ async def _run_nodriver_steps(
 def _generate_selenium_login(plugin: SitePlugin) -> Any:
     """Generate sync login method for selenium backend."""
     import selenium.common.exceptions
-    from selenium.common.exceptions import NoSuchElementException
 
     def login(
         credentials: dict[str, str],
@@ -903,7 +1233,6 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         login_url = plugin.login_config.url
         login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
-        success_selector = plugin.login_config.success
         run_headless = plugin.login_config.headless if headless is None else headless
 
         from graftpunk import BrowserSession  # lazy: browser stack ([browser] extra)
@@ -981,27 +1310,35 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 if step.delay > 0:
                     time.sleep(step.delay)
 
-            # Fixed delay to allow page to settle after all steps complete
-            time.sleep(_POST_SUBMIT_DELAY)
-
-            # Check success/failure
-            page_text = session.driver.page_source
-            success_found: bool | None = None
-            if success_selector:
-                try:
-                    session.driver.find_element("css selector", success_selector)
-                    success_found = True
-                except NoSuchElementException:
-                    success_found = False
-
-            if not _check_login_result(
-                page_text=page_text,
-                failure_text=failure_text,
-                success_found=success_found,
-                success_selector=success_selector or "",
-                site_name=plugin.site_name,
-            ):
-                return False
+            if _success_signal_configured(plugin.login_config):
+                # Wait for the configured signal, not for a guessed delay: a login
+                # that finishes through an identity-provider redirect can take tens
+                # of seconds.
+                deadline = time.monotonic() + plugin.login_config.timeout
+                if not _wait_for_login_signal_selenium(
+                    driver=session.driver,
+                    login_config=plugin.login_config,
+                    failure_text=failure_text,
+                    site_name=plugin.site_name,
+                    deadline=deadline,
+                ):
+                    return False
+                _await_document_ready_selenium(
+                    session.driver, deadline=deadline, site_name=plugin.site_name
+                )
+                time.sleep(plugin.login_config.settle)
+            else:
+                # No success signal to wait for: settle once, then take the single
+                # verdict (which warns when nothing validates the login at all).
+                time.sleep(plugin.login_config.settle)
+                if not _check_login_result(
+                    page_text=session.driver.page_source,
+                    failure_text=failure_text,
+                    success_found=None,
+                    success_selector="",
+                    site_name=plugin.site_name,
+                ):
+                    return False
 
             # Capture current URL before caching (used for domain display)
             try:
