@@ -656,6 +656,59 @@ class TestLoginObservations:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert any(o.kind == "redirect" for o in result.login)
 
+    def test_a_redirecting_credential_post_carries_its_target(self, tmp_path: Path) -> None:
+        """The common shape: the POST itself answers 302, so it is the only record."""
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/login",
+                status=302,
+                body="",
+                post_data=json.dumps({"password": "x"}),
+                response_headers={"Location": "https://api.myshop.example.com/dashboard?welcome=1"},
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (observation,) = [o for o in result.login if o.kind == "credential_post"]
+        assert observation.redirect_to == "/dashboard"
+
+    def test_a_following_redirect_carries_its_own_target(self, tmp_path: Path) -> None:
+        """Each hop of the chain records where it sent the client next."""
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/login",
+                status=302,
+                body="",
+                post_data=json.dumps({"password": "x"}),
+                response_headers={"Location": "/auth/callback"},
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/auth/callback",
+                status=302,
+                body="",
+                response_headers={"Location": "/dashboard"},
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        targets = [o.redirect_to for o in result.login]
+        assert targets == ["/auth/callback", "/dashboard"]
+
+    def test_a_non_redirect_observation_carries_no_target(self, tmp_path: Path) -> None:
+        """A 200 has nowhere it sent the client, whatever headers it carries."""
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/login",
+                post_data=json.dumps({"password": "x"}),
+                response_headers={"Location": "/dashboard"},
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (observation,) = [o for o in result.login if o.kind == "credential_post"]
+        assert observation.redirect_to == ""
+
     def test_redirect_outside_window_is_not_an_observation(self, tmp_path: Path) -> None:
         entries = [
             _entry(

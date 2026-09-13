@@ -206,16 +206,24 @@ def _param_identifier(site_name: str, seen: set[str]) -> str:
     return _deduped(base, seen)
 
 
-def _redirect_target_after_credential_post(d: RunDigest) -> str | None:
-    """The path a credential post redirected to, if any: a candidate for `success_url`."""
+def _login_landing_path(d: RunDigest) -> str:
+    """The path the login's redirect chain came to rest on, or an empty string.
+
+    Every observation whose own status is a 3xx carries the path it sent the
+    client to, the credential post included: a login whose POST answers 302 is
+    one observation, not a post plus a redirect, so reading a later observation's
+    own URL would name the page that redirected rather than the landing page
+    (controller finding, fix round 1). The last target in the window is the end of
+    the chain.
+    """
+    landing = ""
     posted = False
     for observation in d.login:
         if observation.kind == "credential_post":
             posted = True
-            continue
-        if posted and observation.kind == "redirect":
-            return urlparse(observation.url).path
-    return None
+        if posted and observation.redirect_to:
+            landing = observation.redirect_to
+    return landing
 
 
 def _success_url_pattern(redirect_path: str) -> str | None:
@@ -260,8 +268,8 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])'
         )
         return lines
-    redirect_path = _redirect_target_after_credential_post(spec.digest)
-    pattern = _success_url_pattern(redirect_path) if redirect_path else None
+    landing_path = _login_landing_path(spec.digest)
+    pattern = _success_url_pattern(landing_path) if landing_path else None
     lines = ["    login_config = LoginConfig(", "        steps=["]
     lines.extend(_render_login_step(form, indent=len(_L3)))
     lines.append("        ],")
