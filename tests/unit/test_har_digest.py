@@ -192,20 +192,21 @@ class TestStaticAndThirdPartyExclusion:
         assert result.dropped["third_party"] == 1
         assert all(e.host == "api.myshop.example.com" for e in result.endpoints)
 
-    def test_a_multi_label_public_suffix_does_not_widen_the_scope(self, tmp_path: Path) -> None:
-        """The last two labels of shop.example.co.uk are co.uk, which made every
-        *.co.uk host a first party. The scope root is the primary host's parent
-        domain instead."""
+    def test_a_deep_primary_host_does_not_widen_the_scope(self, tmp_path: Path) -> None:
+        """Taking the last two labels made every host sharing them a first
+        party, which under a two-label public suffix pulls in the whole
+        country-code domain. The scope root is the primary host's parent
+        instead: team.example.com here, so other.example.com is third party."""
         entries = [
-            _entry("GET", "https://shop.example.co.uk/orders"),
-            _entry("GET", "https://shop.example.co.uk/orders/2"),
-            _entry("GET", "https://api.example.co.uk/data"),
-            _entry("GET", "https://other.co.uk/data"),
+            _entry("GET", "https://shop.team.example.com/orders"),
+            _entry("GET", "https://shop.team.example.com/orders/2"),
+            _entry("GET", "https://api.team.example.com/data"),
+            _entry("GET", "https://other.example.com/data"),
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
-        assert result.primary_host == "shop.example.co.uk"
+        assert result.primary_host == "shop.team.example.com"
         hosts = {e.host for e in result.endpoints}
-        assert hosts == {"shop.example.co.uk", "api.example.co.uk"}
+        assert hosts == {"shop.team.example.com", "api.team.example.com"}
         assert result.dropped["third_party"] == 1
 
     def test_a_two_label_primary_host_keeps_its_own_subtree(self, tmp_path: Path) -> None:

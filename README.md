@@ -382,7 +382,7 @@ Record a session, read it, then scaffold:
 
 ```bash
 # 1. Capture: record real traffic (see Observability above)
-gp observe -s mybank interactive https://secure.mybank.com/dashboard
+gp observe -s mybank interactive https://secure.mybank.example.com/dashboard
 
 # 2. Read: a digest of hosts, endpoints, login, and tokens, redacted by construction
 gp observe digest mybank

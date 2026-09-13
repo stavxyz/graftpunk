@@ -246,18 +246,19 @@ def _scope_root(primary_host: str) -> str:
     """The domain whose subtree counts as the site, derived from *primary_host*.
 
     *primary_host* itself when it has two labels or fewer, otherwise
-    *primary_host* minus its first label: ``shop.example.co.uk`` gives
-    ``example.co.uk`` and ``www.example.com`` gives ``example.com``. A host is
-    in scope when it equals the root or is a subdomain of it
+    *primary_host* minus its first label: ``shop.team.example.com`` gives
+    ``team.example.com`` and ``www.example.com`` gives ``example.com``. A host
+    is in scope when it equals the root or is a subdomain of it
     (:func:`_in_scope`).
 
     Taking the last two labels instead needs a public suffix list to be
-    correct, and without one it made every ``*.co.uk`` host a first party
-    (polish round 1, 2026-09-12). The parent rule needs no list, and its one
-    limitation is deliberate: a primary host that is a public suffix plus one
-    label (``example.co.uk``) has two labels too many to shorten, so it is its
-    own root, which keeps ``other.example.co.uk`` in scope (correct) and
-    cannot degrade to ``co.uk``.
+    correct, and without one a site under a two-label public suffix (a
+    country-code second-level domain) made every host sharing that suffix a
+    first party (polish round 1, 2026-09-12). The parent rule needs no list,
+    and its one limitation is deliberate: a primary host that is a public
+    suffix plus one label has two labels too many to shorten, so it is its own
+    root, which keeps its subdomains in scope (correct) and can never degrade
+    to the bare suffix.
     """
     labels = primary_host.split(".")
     return primary_host if len(labels) <= 2 else ".".join(labels[1:])
