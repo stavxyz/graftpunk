@@ -124,6 +124,18 @@ def write_scaffold(
     resolved_spec = dataclasses.replace(spec, mode=mode)
     files = render(resolved_spec)
 
+    # A .gitkeep only exists to put an empty directory in git, so one whose
+    # directory is already there is nothing to write. render() stays pure and
+    # does not know the filesystem; this module does. Without it, adding a
+    # second plugin to a suite refused on the .gitkeep the first add created
+    # (polish round 1, 2026-09-12).
+    if mode == "add_to_suite":
+        files = {
+            relative: content
+            for relative, content in files.items()
+            if not (relative.endswith("/.gitkeep") and (target_dir / relative).parent.is_dir())
+        }
+
     # Conflict detection runs before anything else is touched, in either
     # mode: a refusal here must never have edited pyproject.toml either.
     targets = {target_dir / rel: content for rel, content in files.items()}

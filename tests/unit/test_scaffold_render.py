@@ -539,8 +539,51 @@ class TestRenderAddToSuite:
             "src/graftpunk_widgets/__init__.py",
             "src/graftpunk_widgets/plugin.py",
             "tests/test_widgets.py",
-            "tests/fixtures/.gitkeep",
+            "tests/fixtures/widgets/.gitkeep",
         }
+
+    def test_each_suite_member_owns_its_fixture_directory(self) -> None:
+        """Two plugins in one suite with a GET /orders between them would claim
+        the same fixture file if they shared one directory."""
+        widgets = render(
+            ScaffoldSpec(
+                name="widgets",
+                mode="add_to_suite",
+                backend="nodriver",
+                base_url="https://myshop.example.com",
+            )
+        )
+        gadgets = render(
+            ScaffoldSpec(
+                name="gadgets",
+                mode="add_to_suite",
+                backend="nodriver",
+                base_url="https://myshop.example.com",
+            )
+        )
+        assert "tests/fixtures/widgets/.gitkeep" in widgets
+        assert "tests/fixtures/gadgets/.gitkeep" in gadgets
+        assert (
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "widgets"'
+            in widgets["tests/test_widgets.py"]
+        )
+        assert (
+            'FIXTURES_DIR = Path(__file__).parent / "fixtures" / "gadgets"'
+            in gadgets["tests/test_gadgets.py"]
+        )
+
+    def test_a_new_project_keeps_the_flat_fixtures_directory(self) -> None:
+        files = render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example.com",
+            )
+        )
+        assert "tests/fixtures/.gitkeep" in files
+        test_module = files["tests/test_plugin.py"]
+        assert 'FIXTURES_DIR = Path(__file__).parent / "fixtures"\n' in test_module
 
 
 class TestPluginModuleWithLoginForm:

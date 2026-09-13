@@ -107,6 +107,35 @@ class TestAddToSuiteMode:
         assert (tmp_path / "tests" / "test_my_shop.py").exists()
 
 
+class TestASecondPluginInTheSameSuite:
+    def test_both_plugins_land_with_their_own_fixture_directories(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
+
+        write_scaffold(tmp_path, _spec("widgets"))
+        result = write_scaffold(tmp_path, _spec("gadgets"))
+
+        assert result.mode == "add_to_suite"
+        assert (tmp_path / "src" / "graftpunk_widgets" / "plugin.py").exists()
+        assert (tmp_path / "src" / "graftpunk_gadgets" / "plugin.py").exists()
+        assert (tmp_path / "tests" / "fixtures" / "widgets" / ".gitkeep").exists()
+        assert (tmp_path / "tests" / "fixtures" / "gadgets" / ".gitkeep").exists()
+        text = (tmp_path / "pyproject.toml").read_text()
+        assert 'widgets = "graftpunk_widgets.plugin:WidgetsPlugin"' in text
+        assert 'gadgets = "graftpunk_gadgets.plugin:GadgetsPlugin"' in text
+
+    def test_an_existing_fixtures_directory_is_not_a_conflict(self, tmp_path: Path) -> None:
+        """A .gitkeep exists only to put an empty directory in git, so one whose
+        directory is already there is nothing to write."""
+        (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
+        (tmp_path / "tests" / "fixtures" / "widgets").mkdir(parents=True)
+        (tmp_path / "tests" / "fixtures" / "widgets" / ".gitkeep").write_text("")
+
+        result = write_scaffold(tmp_path, _spec("widgets"))
+
+        assert result.mode == "add_to_suite"
+        assert (tmp_path / "src" / "graftpunk_widgets" / "plugin.py").exists()
+
+
 class TestConflicts:
     def test_existing_target_file_refuses_before_writing_anything(self, tmp_path: Path) -> None:
         (tmp_path / "README.md").write_text("already here")

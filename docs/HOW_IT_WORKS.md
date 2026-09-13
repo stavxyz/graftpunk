@@ -467,7 +467,9 @@ instead of the session directly:
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
 for answering `ctx.request_json`/`request_text` from a file under
 `tests/fixtures/` instead of the network, named the way `gp observe
-fixtures` names captures. `gp observe fixtures` writes a `<file>.meta.json`
+fixtures` names captures. A plugin added to an existing suite gets
+`tests/fixtures/<module>/` of its own, since fixture names are per endpoint
+and two plugins in one suite can share an endpoint path. `gp observe fixtures` writes a `<file>.meta.json`
 sidecar beside every capture (url, status, content type, body parameter
 names, capture time); `FixtureSession` reads the same sidecar for status and
 content type, so a fixture copied from a capture keeps its recorded status.

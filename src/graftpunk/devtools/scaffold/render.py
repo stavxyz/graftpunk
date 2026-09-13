@@ -25,6 +25,7 @@ __all__ = [
     "PLUGIN_NAME_RE",
     "ScaffoldSpec",
     "class_name_for",
+    "fixtures_root",
     "module_name_for",
     "render",
     "validate_plugin_name",
@@ -901,6 +902,28 @@ def _import_lines(module: str, name: str) -> list[str]:
     return [f"from {module} import (", f"{_L1}{name},", ")"]
 
 
+def fixtures_root(spec: ScaffoldSpec) -> str:
+    """Where *spec*'s generated tests look for fixtures, relative to the project root.
+
+    A suite holds several plugins and each names its fixtures for its own
+    endpoints, so a suite member owns a subdirectory rather than sharing one
+    directory with its siblings: two plugins with a ``GET /orders`` between them
+    would otherwise claim the same file (polish round 1, 2026-09-12). This is
+    also the directory ``gp plugin new``'s ``Next:`` line points the developer at.
+    """
+    if spec.mode == "add_to_suite":
+        return f"tests/fixtures/{module_name_for(spec.name)}/"
+    return "tests/fixtures/"
+
+
+def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
+    """The generated ``FIXTURES_DIR`` assignment's right-hand side."""
+    base = 'Path(__file__).parent / "fixtures"'
+    if spec.mode == "add_to_suite":
+        return f'{base} / "{module_name_for(spec.name)}"'
+    return base
+
+
 def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     klass = class_name_for(spec.name)
     # fixture_context is only used by the per-endpoint tests below: importing
@@ -924,7 +947,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     lines += [
         *_import_lines(f"{package}.plugin", klass),
         "",
-        'FIXTURES_DIR = Path(__file__).parent / "fixtures"',
+        f"FIXTURES_DIR = {_fixtures_dir_expression(spec)}",
         "",
         "",
         "def test_plugin_instantiates() -> None:",
@@ -934,7 +957,8 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         "",
     ]
     if not has_endpoint_tests:
-        lines.append("# GP-FILL: add a test per command, against a fixture in tests/fixtures/")
+        marker = f"# GP-FILL: add a test per command, against a fixture in {fixtures_root(spec)}"
+        lines.append(marker)
         return "\n".join(lines).rstrip() + "\n"
     seen: set[str] = set()
     for endpoint in endpoints:
@@ -1012,5 +1036,5 @@ def render(spec: ScaffoldSpec) -> dict[str, str]:
         f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
         f"src/{package}/plugin.py": plugin_module,
         f"tests/test_{module_name_for(spec.name)}.py": _render_test_module(spec, package=package),
-        "tests/fixtures/.gitkeep": "",
+        f"{fixtures_root(spec)}.gitkeep": "",
     }

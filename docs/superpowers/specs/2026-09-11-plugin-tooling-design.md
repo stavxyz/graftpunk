@@ -580,6 +580,17 @@ Two modes, decided by the working directory (or `--dir`):
   project in `--dir` instead. A `pyproject.toml` without the entry-point group
   is a different project: the command refuses and explains both modes.
 
+> **Design note (2026-09-12, polish round 1):** a suite member owns
+> `tests/fixtures/<module>/` rather than sharing `tests/fixtures/` with its
+> siblings, and its generated `FIXTURES_DIR` points there. Fixtures are named
+> for an endpoint's method and templated path, so two plugins in one suite with
+> a `GET /orders` between them would claim the same file. Each add emits
+> `tests/fixtures/<module>/.gitkeep`, and `write_scaffold` drops any `.gitkeep`
+> whose directory already exists: that file exists only to put an empty
+> directory under version control, and refusing on one the previous add created
+> made every second plugin in a suite impossible to create. `render()` stays
+> pure; `project.py` makes that filesystem decision.
+
 `pyproject_edit.py` reads the file with `tomllib` to find the two tables and
 writes textually, and it edits exactly two shapes: a `[project.entry-points."graftpunk.plugins"]`
 table (a new `name = "..."` line appended to that table) and a multi-line

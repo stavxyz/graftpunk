@@ -376,6 +376,50 @@ class TestSuiteModeLeavesRestOfPyprojectByteIdentical:
         assert 'existing = "mysuite.existing:ExistingPlugin"' in after
 
 
+class TestTwoPluginsInOneSuite:
+    def test_the_second_add_succeeds_and_leaves_the_rest_of_pyproject_alone(
+        self, tmp_path: Path
+    ) -> None:
+        """The second add used to refuse on the tests/fixtures/.gitkeep the
+        first one created."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "mysuite"\n\n'
+            '[project.entry-points."graftpunk.plugins"]\n'
+            'existing = "mysuite.existing:ExistingPlugin"\n\n'
+            "[tool.hatch.build.targets.wheel]\n"
+            'packages = ["src/mysuite"]\n\n'
+            "[tool.ruff]\n"
+            "line-length = 88\n"
+        )
+        for name in ("widgets", "gadgets"):
+            result = runner.invoke(
+                _build_app(),
+                [
+                    "plugin",
+                    "new",
+                    name,
+                    "--url",
+                    "https://myshop.example.com",
+                    "--dir",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+
+        assert (tmp_path / "src" / "graftpunk_widgets" / "plugin.py").exists()
+        assert (tmp_path / "src" / "graftpunk_gadgets" / "plugin.py").exists()
+        assert (tmp_path / "tests" / "fixtures" / "widgets" / ".gitkeep").exists()
+        assert (tmp_path / "tests" / "fixtures" / "gadgets" / ".gitkeep").exists()
+        after = pyproject.read_text()
+        assert 'widgets = "graftpunk_widgets.plugin:WidgetsPlugin"' in after
+        assert 'gadgets = "graftpunk_gadgets.plugin:GadgetsPlugin"' in after
+        assert '"src/graftpunk_widgets"' in after
+        assert '"src/graftpunk_gadgets"' in after
+        assert 'existing = "mysuite.existing:ExistingPlugin"' in after
+        assert "line-length = 88" in after
+
+
 class TestPyprojectEditErrorRefusedCleanly:
     def test_include_only_wheel_table_refuses_without_a_traceback(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
