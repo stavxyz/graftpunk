@@ -135,6 +135,65 @@ class TestStaticAndThirdPartyExclusion:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert result.dropped["static"] == 1
 
+    def test_a_hashed_asset_with_an_unlisted_extension_is_static(self, tmp_path: Path) -> None:
+        """The extension list caught .js and .css but not ._hs, so a hashed
+        hyperscript asset became an endpoint, a command stub, and a generated
+        test (polish round 2, 2026-09-12)."""
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/vendor/custom.4a0ba46ee0b6b964b44b2909b6._hs",
+                content_type="text/hyperscript",
+                body="on click log 'hi'",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["static"] == 1
+        assert all("vendor" not in e.template for e in result.endpoints)
+
+    def test_a_content_type_parameter_does_not_hide_a_static_type(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/bundle",
+                content_type="text/css; charset=utf-8",
+                body="body{}",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["static"] == 1
+
+    def test_a_json_response_under_an_unusual_path_is_kept(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/vendor/custom.4a0ba46ee0b6b964b44b2909b6._hs",
+                content_type="application/json",
+                body='{"ok": true}',
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["static"] == 0
+        assert any("vendor" in e.template for e in result.endpoints)
+
+    def test_an_html_page_is_kept(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/records/search",
+                content_type="text/html; charset=utf-8",
+                body="<html><body>results</body></html>",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["static"] == 0
+        templates = {e.template for e in result.endpoints}
+        assert "/records/search" in templates
+
     def test_a_first_party_analytics_path_is_kept(self, tmp_path: Path) -> None:
         """The word analytics names a tracker host, not a path: matched anywhere
         in the URL it dropped the primary host's own reporting endpoint."""

@@ -94,12 +94,27 @@ _EXCLUDE_HOST_REGEX = re.compile("|".join(_EXCLUDE_HOST_PATTERNS), re.IGNORECASE
 # A whole path segment, never a substring of one: /pixel is a tracking pixel,
 # /pixelate-image is an endpoint.
 _EXCLUDE_PATH_SEGMENTS = frozenset({"pixel", "beacon"})
-_STATIC_CONTENT_TYPE_PREFIXES = (
-    "image/",
-    "font/",
-    "text/css",
-    "application/javascript",
-    "text/javascript",
+# A response of one of these main types is an asset whatever its URL says.
+_STATIC_MAIN_TYPES = frozenset({"image", "font", "audio", "video"})
+# The asset types whose main type is shared with real endpoints (text/* and
+# application/* both carry documents and data), so each is listed whole. An
+# extension list alone missed a hashed asset with an unusual extension:
+# /vendor/custom.<hash>._hs, served as text/hyperscript, became an endpoint, a
+# command stub, and a generated test (polish round 2, 2026-09-12).
+_STATIC_CONTENT_TYPES = frozenset(
+    {
+        "text/css",
+        "text/javascript",
+        "application/javascript",
+        "application/x-javascript",
+        "application/ecmascript",
+        "text/hyperscript",
+        "application/wasm",
+        "application/font-woff",
+        "application/font-woff2",
+        "application/vnd.ms-fontobject",
+        "image/svg+xml",
+    }
 )
 
 _AUTH_URL_PATTERNS = [
@@ -278,7 +293,15 @@ def _in_scope(host: str, root: str) -> bool:
 
 
 def _is_static(entry: HAREntry) -> bool:
-    """True when *entry* is an asset, a tracker, or a beacon rather than an endpoint."""
+    """True when *entry* is an asset, a tracker, or a beacon rather than an endpoint.
+
+    The content-type rule reads the response's type rather than its file
+    extension, so an asset served under a hashed name with an extension nobody
+    listed is still recognised: its main type is one of
+    ``_STATIC_MAIN_TYPES``, or its full type (parameters stripped) is one of
+    ``_STATIC_CONTENT_TYPES``. The extension and host rules are unchanged and
+    still catch an asset whose response declared no type at all.
+    """
     parsed = urlparse(entry.request.url)
     if _ASSET_EXTENSION_RE.search(parsed.path):
         return True
@@ -286,8 +309,10 @@ def _is_static(entry: HAREntry) -> bool:
         return True
     if any(segment.lower() in _EXCLUDE_PATH_SEGMENTS for segment in parsed.path.split("/")):
         return True
-    content_type = (entry.response.content_type or "").lower()
-    return any(content_type.startswith(p) for p in _STATIC_CONTENT_TYPE_PREFIXES)
+    content_type = (entry.response.content_type or "").split(";")[0].strip().lower()
+    if not content_type:
+        return False
+    return content_type.split("/")[0] in _STATIC_MAIN_TYPES or content_type in _STATIC_CONTENT_TYPES
 
 
 def _observed_type(value: str) -> str:

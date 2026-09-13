@@ -170,7 +170,7 @@ The package gains four modules, each with one job:
 BodyKind = Literal["json", "form", "none"]
 ObservationKind = Literal["form_page", "credential_post", "redirect", "set_cookie", "auth_api"]
 TokenKind = Literal["header", "meta", "hidden_input", "cookie"]
-DropReason = Literal["static", "third_party", "error"]
+DropReason = Literal["static", "third_party", "error", "other_scheme"]
 
 @dataclass(frozen=True)
 class DigestSource:
@@ -314,6 +314,28 @@ Rules the digest applies:
 > netloc only, since each names a host rather than a path. `pixel` and
 > `beacon` match a whole path segment, so `/pixel` is dropped and
 > `/pixelate-image` is not.
+
+> **Design note (2026-09-12, polish round 2):** the content-type half of the
+> rule no longer names four families in prose. A real recording served
+> `/vendor/custom.<32 hex>._hs` as `text/hyperscript`: no listed extension, no
+> listed type, so it became an endpoint, a command stub, and a generated test.
+> A response is static when its main type is `image`, `font`, `audio`, or
+> `video` (`_STATIC_MAIN_TYPES`), or when its full type with parameters
+> stripped is in `_STATIC_CONTENT_TYPES` (`text/css`, `text/javascript`,
+> `application/javascript`, `application/x-javascript`,
+> `application/ecmascript`, `text/hyperscript`, `application/wasm`,
+> `application/font-woff`, `application/font-woff2`,
+> `application/vnd.ms-fontobject`, `image/svg+xml`). The extension and host
+> rules are unchanged, and still catch an asset whose response declared no
+> content type at all.
+
+> **Design note (2026-09-12, polish round 2):** `DropReason` gains
+> `other_scheme`. A capture taken before the first navigation holds the
+> browser's own new-tab page (`chrome://`, `chrome-untrusted://`, and a
+> `data:` URL), whose netloc is not a host: those entries were counted as
+> hosts and listed under "Other hosts". An entry whose scheme is neither
+> `http` nor `https` is now dropped ahead of every other rule, so it reaches
+> neither the host counts nor the endpoint list.
 - **Types** are observed, not declared: a query value that always parses as an
   integer is `int`, `true`/`false` is `bool`, repeated keys are `list`, else
   `str`. Values are never retained.
