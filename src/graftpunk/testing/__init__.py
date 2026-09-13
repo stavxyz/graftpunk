@@ -30,6 +30,12 @@ _CONTENT_TYPE_BY_SUFFIX: dict[str, str] = {
     ".xml": "application/xml",
 }
 _DEFAULT_FIXTURE_CONTENT_TYPE = "application/octet-stream"
+_PREFERRED_FIXTURE_SUFFIX = ".json"
+
+
+def _fixture_preference(path: Path) -> tuple[int, str]:
+    """Sort key for the fixture files sharing one stem: ``.json`` first, then name order."""
+    return (0 if path.suffix == _PREFERRED_FIXTURE_SUFFIX else 1, path.name)
 
 
 def make_context(
@@ -76,8 +82,11 @@ class FixtureSession(GraftpunkSession):
     The lookup matches the base stem only, so the ``_1``, ``_2`` files
     ``gp observe fixtures`` writes for repeated captures of one template are
     never consulted: a second recorded response becomes a fixture by being
-    copied onto the base name. When a stem has several extensions, the first
-    in sorted order is used.
+    copied onto the base name. When a stem has several extensions, ``.json``
+    wins and the rest follow in sorted order: an endpoint whose fixture
+    directory holds both a ``.html`` and a ``.json`` for one stem is a JSON
+    endpoint with an error page beside it, and plain sorted order served the
+    error page (polish round 1, 2026-09-12).
     """
 
     def __init__(self, fixtures_dir: Path | str, **kwargs: Any) -> None:
@@ -90,9 +99,12 @@ class FixtureSession(GraftpunkSession):
         path = urlparse(url).path or "/"
         stem = capture_slug(method, path)
         matches = sorted(
-            p
-            for p in self._fixtures_dir.glob(f"{stem}.*")
-            if p.is_file() and not p.name.endswith(".meta.json")
+            (
+                p
+                for p in self._fixtures_dir.glob(f"{stem}.*")
+                if p.is_file() and not p.name.endswith(".meta.json")
+            ),
+            key=_fixture_preference,
         )
         response = requests.Response()
         response.request = requests.PreparedRequest()

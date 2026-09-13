@@ -80,6 +80,22 @@ class TestFixtureSession:
         assert response.status_code == 200
         assert response.headers["Content-Type"] == "text/html"
 
+    def test_json_wins_when_a_stem_has_several_extensions(self, tmp_path: Path) -> None:
+        """Plain sorted order served the .html error page beside a JSON
+        endpoint's own fixture."""
+        (tmp_path / "get_orders.html").write_text("<html>error</html>")
+        (tmp_path / "get_orders.json").write_text('{"orders": []}')
+        session = FixtureSession(tmp_path)
+        response = session.get("https://myshop.example.com/orders")
+        assert response.headers["Content-Type"] == "application/json"
+        assert response.json() == {"orders": []}
+
+    def test_without_a_json_fixture_the_first_in_sorted_order_is_used(self, tmp_path: Path) -> None:
+        (tmp_path / "get_orders.html").write_text("<html></html>")
+        (tmp_path / "get_orders.txt").write_text("plain")
+        session = FixtureSession(tmp_path)
+        assert session.get("https://myshop.example.com/orders").text == "<html></html>"
+
     def test_never_opens_a_socket(self, tmp_path: Path) -> None:
         """No fixture file for this path: still answers 404 rather than connecting."""
         session = FixtureSession(tmp_path)
