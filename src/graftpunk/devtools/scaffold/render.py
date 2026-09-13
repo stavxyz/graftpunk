@@ -351,10 +351,13 @@ def _escaped_docstring_wrap(text: str, *, width: int) -> list[str]:
 
     Escaping comes first so the width accounting sees the characters that are
     really emitted, and the repair pass undoes the one thing that ordering can
-    break.
+    break. ``break_on_hyphens=False`` for the same reason the comment wrapper
+    sets it: every hyphen in this text belongs to a captured fact (a session
+    name, a path segment, a JSON key), and breaking at one rendered a run label
+    as ``run myshop-\\nrun-1`` (polish round 2, 2026-09-12).
     """
     escaped = _escaped_for_docstring(text)
-    wrapped = textwrap.wrap(escaped, width=max(1, width - 1)) or [escaped]
+    wrapped = textwrap.wrap(escaped, width=max(1, width - 1), break_on_hyphens=False) or [escaped]
     return _repaired_escape_splits(wrapped)
 
 

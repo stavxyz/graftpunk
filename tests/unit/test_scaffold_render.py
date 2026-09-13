@@ -159,6 +159,23 @@ _CAMEL_PATH_ENDPOINT = Endpoint(
     examples=("/searchResults/1",),
 )
 
+# Long enough that its stub's one-line summary pushes the run label past the
+# docstring wrap width, so the label is what the wrapper has to place.
+_LONG_TEMPLATE_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/records/search-results/by-recorded-date-range/detail",
+    methods=("GET",),
+    count=3,
+    statuses=(200,),
+    content_type="application/json",
+    query_params={},
+    body_params={},
+    body_kind="none",
+    shape=ShapeNode(kind="object", children={"rows": ShapeNode(kind="array")}),
+    custom_headers=(),
+    examples=("/records/search-results/by-recorded-date-range/detail",),
+)
+
 _PASSWORD_LOGIN_FORM = LoginForm(
     action="/login",
     method="POST",
@@ -423,6 +440,40 @@ class TestWrappedCommentLines:
         assert " ".join(parts) == text
         for line in lines:
             assert len(line) <= 100
+
+
+class TestDocstringWrappingKeepsHyphenatedFactsWhole:
+    """A hyphen in this text belongs to a captured fact, never to a word the
+    wrapper may break (polish round 2, 2026-09-12)."""
+
+    # Long enough to leave room for "myshop-" but not for the whole label, so
+    # a hyphen-breaking wrapper would split it exactly there.
+    _FILLER = "x" * 75
+    _LABEL = "myshop-tirekick/2026-09-11T22-19-05Z"
+
+    def test_a_run_label_is_never_split_at_its_hyphen(self) -> None:
+        lines = _wrapped_docstring_lines(f"{self._FILLER} run {self._LABEL}.")
+        assert len(lines) > 1, "the input must actually wrap for this test to mean anything"
+        assert any(self._LABEL in line for line in lines)
+
+    def test_the_generated_stub_docstring_carries_the_whole_run_label(self) -> None:
+        digest_with_hyphenated_run = dataclasses.replace(
+            _digest(endpoints=(_LONG_TEMPLATE_ENDPOINT,)),
+            source=DigestSource(
+                har_path=Path("network.har"),
+                session="myshop-tirekick",
+                run_id="2026-09-11T22-19-05Z",
+            ),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=digest_with_hyphenated_run,
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "myshop-tirekick/2026-09-11T22-19-05Z" in plugin_code
 
 
 class TestDocstringEscaping:
