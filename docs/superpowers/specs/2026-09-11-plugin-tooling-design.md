@@ -296,6 +296,19 @@ Rules the digest applies:
 - **Primary host** is the host that answered the most non-static requests;
   hosts sharing its registrable domain count as primary. Other hosts are
   reported by count only unless `--all-hosts`.
+
+> **Design note (2026-09-12, polish round 1):** "registrable domain" was
+> implemented as the primary host's last two labels, which needs a public
+> suffix list to be correct. Without one, a site under a two-label public
+> suffix (a country-code second-level domain such as `co.uk`) made every host
+> sharing that suffix a first party. Scope is now the primary host's parent
+> domain, and the host itself when it has two labels or fewer:
+> `shop.team.example.com` scopes to `team.example.com`, `www.example.com` to
+> `example.com`. A host is in scope when it equals that root or is a
+> subdomain of it. No public suffix list is involved. The one limitation is
+> deliberate: a primary host that is a public suffix plus one label is its own
+> root, which keeps its subdomains in scope and can never degrade to the bare
+> suffix.
 - **Static and tracking exclusion** reuses the analyzer's exclusion patterns
   (the `EXCLUDE_PATTERNS` list at
   `src/graftpunk/har/analyzer.py:58` (`EXCLUDE_PATTERNS = [`), compiled once
