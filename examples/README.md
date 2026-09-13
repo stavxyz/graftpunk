@@ -97,13 +97,19 @@ Both YAML and Python plugins support declarative login configuration.
 
 ## Creating Your Own
 
-1. Copy a template from `templates/`:
-   - `yaml_template.yaml` for YAML plugins
-   - `python_template.py` for Python plugins
+**YAML plugins:**
 
-2. Save or symlink to `~/.config/graftpunk/plugins/`
+1. Copy `templates/yaml_template.yaml`.
+2. Save or symlink it to `~/.config/graftpunk/plugins/`.
+3. Run `gp plugins` to verify discovery.
 
-3. Run `gp plugins` to verify discovery
+**Python plugins:**
+
+1. Run `gp plugin new <name>` (add `--from-run <session>` to pre-fill it from a recording).
+2. Install the generated package in editable mode, for example `uv pip install -e .` or `pip install -e .`.
+3. Run `gp plugins` to verify discovery.
+
+See the main README's "From recording to plugin" section for the full workflow.
 
 ## Plugin Discovery
 

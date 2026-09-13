@@ -33,6 +33,9 @@ class HARRequest:
     cookies: list[dict[str, Any]]
     post_data: str | None = None
     query_string: list[dict[str, str]] = field(default_factory=list)
+    # HAR's own postData.mimeType: what the request declared its body to be,
+    # for captures that carry no Content-Type request header.
+    post_data_mime_type: str | None = None
 
 
 @dataclass
@@ -47,6 +50,9 @@ class HARResponse:
     body: str | None = None
     body_size: int = 0
     body_file: str | None = None  # relative path to body file on disk
+    # names only, never values; a response can carry more than one Set-Cookie
+    # header and the headers dict above collapses duplicates to the last one
+    set_cookie_names: tuple[str, ...] = ()
 
 
 @dataclass
@@ -132,6 +138,27 @@ def _parse_cookies(cookies_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _parse_set_cookie_names(headers_list: list[dict[str, str]]) -> tuple[str, ...]:
+    """The NAME of every ``Set-Cookie`` header in *headers_list*, in order, deduplicated.
+
+    Values are never stored. Reads the raw headers list (not the
+    ``_parse_headers`` dict), because that dict collapses duplicate header
+    names to the last value and a response can carry more than one
+    ``Set-Cookie`` header.
+    """
+    names: list[str] = []
+    for header in headers_list:
+        if header.get("name", "").lower() != "set-cookie":
+            continue
+        value = header.get("value", "")
+        if "=" not in value:
+            continue
+        name = value.split("=", 1)[0].strip()
+        if name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 _TEXT_CONTENT_KEYWORDS = ("json", "html", "text", "xml", "javascript", "css")
 
 
@@ -151,10 +178,12 @@ def _parse_request(request_data: dict[str, Any]) -> HARRequest:
         Parsed HARRequest object.
     """
     post_data = None
+    post_data_mime_type = None
     if "postData" in request_data:
         post_data_obj = request_data["postData"]
         if isinstance(post_data_obj, dict):
             post_data = post_data_obj.get("text", "")
+            post_data_mime_type = post_data_obj.get("mimeType")
         elif isinstance(post_data_obj, str):
             post_data = post_data_obj
 
@@ -165,6 +194,7 @@ def _parse_request(request_data: dict[str, Any]) -> HARRequest:
         cookies=_parse_cookies(request_data.get("cookies", [])),
         post_data=post_data,
         query_string=request_data.get("queryString", []),
+        post_data_mime_type=post_data_mime_type,
     )
 
 
@@ -179,8 +209,10 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
     Returns:
         Parsed HARResponse object.
     """
-    headers = _parse_headers(response_data.get("headers", []))
+    raw_headers = response_data.get("headers", [])
+    headers = _parse_headers(raw_headers)
     content_type = headers.get("Content-Type") or headers.get("content-type")
+    set_cookie_names = _parse_set_cookie_names(raw_headers)
 
     # Extract body content
     body = None
@@ -215,6 +247,7 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
         body=body,
         body_size=body_size,
         body_file=body_file,
+        set_cookie_names=set_cookie_names,
     )
 
 

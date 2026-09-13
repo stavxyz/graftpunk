@@ -57,6 +57,36 @@ class CommandError(PluginError):
         super().__init__(user_message)
 
 
+class SessionRejectedError(CommandError):
+    """A command's live request was refused by the site: 401, 403, or a login page on a 2xx.
+
+    Distinct from :class:`SessionExpiredError` (the cached blob itself
+    failed to load) and :class:`SessionInvalidatedError` (token extraction
+    found the site wants a fresh login): this one means a request the
+    session actually sent came back rejected.
+    """
+
+    def __init__(self, plugin_name: str, method: str, path: str, status: int) -> None:
+        self.plugin_name = plugin_name
+        self.method = method
+        self.path = path
+        self.status = status
+        super().__init__(
+            f"The site rejected the cached session ({status} on {method} {path}). "
+            f"Run: gp {plugin_name} login"
+        )
+
+
+class UnexpectedResponseError(CommandError):
+    """``request_json`` got a 2xx whose body is neither JSON nor a login page."""
+
+    def __init__(self, method: str, path: str, content_type: str) -> None:
+        self.method = method
+        self.path = path
+        self.content_type = content_type
+        super().__init__(f"{method} {path} returned {content_type or 'no content type'}, not JSON")
+
+
 class KeepaliveError(GraftpunkError):
     """Raised when a keepalive operation fails."""
 

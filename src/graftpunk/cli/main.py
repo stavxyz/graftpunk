@@ -10,7 +10,6 @@ import shutil
 import signal
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -38,6 +37,8 @@ from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_prof
 from graftpunk.cli.config_commands import config_app
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
+from graftpunk.cli.observe_commands import register as register_observe_commands
+from graftpunk.cli.observe_commands import resolve_run as resolve_observe_run
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
@@ -204,6 +205,7 @@ observe_app = typer.Typer(
     name="observe",
     help="View and manage observability data (HAR, screenshots, logs).",
 )
+register_observe_commands(observe_app)
 
 
 @observe_app.callback(invoke_without_command=True)
@@ -304,29 +306,9 @@ def observe_show(
     if session_name is None:
         console.print("[red]Session name required. Use --session or pass SESSION argument.[/red]")
         raise typer.Exit(1)
-    # See observe_list: the lookup dir must match the writer's slugified name.
-    session_dir = OBSERVE_BASE_DIR / session_dirname(session_name)
-    if not session_dir.exists() or not session_dir.is_dir():
-        console.print(f"[red]No runs found for session '{escape(session_name)}'[/red]")
-        raise typer.Exit(1)
-
-    if run_id is None:
-        # Use the latest run
-        run_dirs = sorted(
-            [d for d in session_dir.iterdir() if d.is_dir()],
-            key=lambda d: d.name,
-        )
-        if not run_dirs:
-            console.print(f"[red]No runs found for session '{escape(session_name)}'[/red]")
-            raise typer.Exit(1)
-        run_dir = run_dirs[-1]
-    else:
-        run_dir = session_dir / run_id
-        if not run_dir.exists():
-            console.print(
-                f"[red]Run '{escape(run_id)}' not found for session '{escape(session_name)}'[/red]"
-            )
-            raise typer.Exit(1)
+    # base_dir=OBSERVE_BASE_DIR passes main.py's own (test-patchable) global
+    # through explicitly; see observe_commands.resolve_run's docstring.
+    run_dir = resolve_observe_run(session_name, run_id, base_dir=OBSERVE_BASE_DIR)
 
     info = f"[bold]{escape(session_name)}[/bold] / {escape(run_dir.name)}\n"
     info += f"[dim]Path:[/dim] {escape(str(run_dir))}\n"
@@ -791,85 +773,18 @@ def plugins() -> None:
     )
 
 
-@app.command("import-har")
-def import_har_cmd(
-    har_file: Annotated[
-        Path,
-        typer.Argument(
-            help="Path to HAR file to import",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-        ),
-    ],
-    name: Annotated[
-        str,
-        typer.Option(
-            "--name",
-            "-n",
-            help="Plugin name (default: inferred from domain)",
-        ),
-    ] = "",
-    output: Annotated[
-        Path | None,
-        typer.Option(
-            "--output",
-            "-o",
-            help="Output file path (default: ~/.config/graftpunk/plugins/)",
-        ),
-    ] = None,
-    format_type: Annotated[
-        str,
-        typer.Option(
-            "--format",
-            "-f",
-            help="Output format: python or yaml",
-        ),
-    ] = "python",
-    discover_api: Annotated[
-        bool,
-        typer.Option(
-            "--discover-api/--no-discover-api",
-            help="Discover API endpoints from requests",
-        ),
-    ] = True,
-    dry_run: Annotated[
-        bool,
-        typer.Option(
-            "--dry-run",
-            help="Show what would be generated without writing files",
-        ),
-    ] = False,
-) -> None:
-    """Import HAR file and generate a graftpunk plugin.
-
-    Analyzes HTTP traffic captured in HAR format to detect authentication
-    flows and API endpoints, then generates a plugin you can customize.
-
-    \b
-    Examples:
-        gp import-har auth-flow.har --name mysite
-        gp import-har capture.har --format yaml --dry-run
-        gp import-har api-trace.har -o ./my_plugin.py
-    """
-    from graftpunk.cli.import_har import import_har
-
-    import_har(
-        har_file=har_file,
-        name=name,
-        output=output,
-        format_type=format_type,
-        discover_api=discover_api,
-        dry_run=dry_run,
-    )
-
-
 # Register plugin commands dynamically at module load time so they appear in --help.
-# Plugin sub-apps are attached with app.add_typer() at import time (below).
+# Plugin sub-apps (including the scaffold's plugin_app, below) are attached
+# with app.add_typer() at import time.
 _registered_plugins: dict[str, str] = {}
 try:
     from graftpunk.cli.plugin_commands import register_plugin_commands
+    from graftpunk.cli.scaffold_commands import register as register_scaffold_commands
+
+    # Attaches plugin_app and snapshots the reserved top-level names from
+    # *app* right before plugin discovery mounts any site plugin's own
+    # sub-app, so the snapshot never includes an installed plugin's name.
+    register_scaffold_commands(app)
 
     _registered_plugins = register_plugin_commands(app)
     if _registered_plugins:

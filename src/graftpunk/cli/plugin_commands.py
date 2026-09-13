@@ -284,6 +284,45 @@ def _build_site_app(plugin: CLIPluginProtocol, result: PluginDiscoveryResult) ->
     return site_app
 
 
+def _group_name(info: Any) -> str | None:
+    """The name of one ``typer.Typer`` sub-app registration, however it was added.
+
+    ``info.name`` is a real string only when ``add_typer(..., name=...)``
+    overrode it; otherwise it is a ``DefaultPlaceholder`` (falsy), and the
+    real name lives on the attached Typer's own ``info.name``. Verified
+    empirically against the pinned ``typer`` version's ``registered_groups``
+    shape, not assumed from its docs.
+    """
+    if isinstance(info.name, str) and info.name:
+        return info.name
+    typer_instance = getattr(info, "typer_instance", None)
+    inner_info = getattr(typer_instance, "info", None)
+    inner_name = getattr(inner_info, "name", None)
+    return inner_name if isinstance(inner_name, str) else None
+
+
+def derive_reserved_cli_names(app: typer.Typer) -> frozenset[str]:
+    """Every top-level command and group name already on *app*, at attach time.
+
+    'plugin', 'plugins', 'session', 'http', 'config', 'keepalive', 'observe'
+    today, and whatever else ``main.py`` has registered by the time plugins
+    attach, derived rather than hardcoded so a new top-level command reserves
+    its own name automatically (plugin tooling spec, 2026-09-11). Two callers:
+    ``register_plugin_commands`` below skips an installed plugin whose
+    ``site_name`` is in here, and ``graftpunk.cli.scaffold_commands.register``
+    snapshots the set so ``gp plugin new`` can refuse such a name up front.
+    """
+    names: set[str] = set()
+    for command_info in getattr(app, "registered_commands", []):
+        if isinstance(command_info.name, str) and command_info.name:
+            names.add(command_info.name)
+    for group_info in getattr(app, "registered_groups", []):
+        name = _group_name(group_info)
+        if name:
+            names.add(name)
+    return frozenset(names)
+
+
 def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) -> dict[str, str]:
     """Discover and register all plugin commands with a Typer app.
 
@@ -301,9 +340,21 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     Raises:
         PluginError: If two plugins register the same site_name.
     """
+    # A previous call on this same app (a reload) left its plugin sub-apps
+    # mounted, since typer has no unmount, so app.registered_groups still
+    # carries their names. Subtracting the previous call's own plugin names
+    # keeps a plugin from colliding with the stale copy of itself; a name
+    # reserved by the CLI itself was never in this dict and is unaffected.
+    # This reserved set is local to this call, not cached module state: a
+    # cache written here would be clobbered by every other call this
+    # process makes against some other (often disposable) Typer app. See
+    # graftpunk.cli.scaffold_commands.register()'s docstring, where the CLI's
+    # own snapshot of these names is taken and explained.
+    previous_plugin_names = set(_registered_plugin_sources)
     _registered_plugin_sources.clear()
     _plugin_session_map.clear()
     _registered_plugins_for_teardown.clear()
+    reserved = derive_reserved_cli_names(app) - previous_plugin_names
     result = PluginDiscoveryResult()
 
     # Use shared discovery (clear cache so CLI always gets fresh results)
@@ -315,6 +366,20 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
     for plugin in all_plugins:
         try:
             site_name = plugin.site_name
+
+            if site_name in reserved:
+                # Skip only this plugin. Raising here would abort the whole
+                # loop and main.py's handler would then register nothing, so a
+                # user who installed a plugin named after a top-level command
+                # (http, config) would lose every other plugin on upgrade
+                # (final fix wave, 2026-09-12).
+                message = (
+                    f"Plugin name collision: '{site_name}' is a reserved top-level "
+                    "command name. Rename the plugin."
+                )
+                LOG.warning("plugin_reserved_name_collision", plugin=site_name)
+                result.add_error(site_name, message, "registration")
+                continue
 
             # Collision detection: fail fast if two plugins share a site_name
             source = _get_plugin_source(plugin)
@@ -331,8 +396,8 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
             except PluginError as exc:
                 # Contract violation inside this plugin: skip the WHOLE plugin
                 # loudly (recorded + printed via _notify_plugin_errors) rather
-                # than mounting a silently-mangled command tree. The site-name
-                # collision PluginError raised earlier in this loop body still
+                # than mounting a silently-mangled command tree. The duplicate
+                # site_name PluginError raised earlier in this loop body still
                 # propagates via the outer `except PluginError: raise`.
                 LOG.warning("plugin_contract_violation", plugin=site_name, error=str(exc))
                 result.add_error(site_name, str(exc), "registration")

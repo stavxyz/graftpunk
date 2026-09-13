@@ -424,6 +424,69 @@ Discovery errors are accumulated as `PluginDiscoveryError` / `YAMLDiscoveryError
 
 `PluginParamSpec` is also a frozen dataclass defining CLI parameter specifications (name, type, required, default, help text, is_option flag).
 
+### Building a plugin from a recording
+
+`gp plugin new <name> --from-run SESSION [--run RUN_ID]` fills a scaffold
+from a run's digest: `base_url` from the primary host, `login_config` from
+the first detected login form, `token_config` from paired header/meta or
+header/cookie candidates, and one command stub per endpoint (JSON first, up
+to twelve). `--run` names a specific run instead of the session's newest
+one, and is an error without `--from-run`. Everything the digest could not
+determine is marked `# GP-FILL: <what to fill in>`. `gp plugin new <name>`
+with no `--from-run` scaffolds a bare project from `--url` alone.
+
+A plugin name starts with a letter, uses letters, digits, hyphens, and
+underscores, and is at most 40 characters; the command refuses anything else
+with a message naming the rule. It is also refused when it collides with a
+reserved top-level `gp` command name, which is any command name registered
+on the CLI at the time plugins attach, including `plugin`, `plugins`,
+`session`, `http`, `config`, `keepalive`, and `observe`. Hyphenated names
+are legal and map to an importable package: `gp plugin new my-shop` writes
+`src/graftpunk_my_shop/plugin.py` and `tests/test_my_shop.py`, registers the
+entry point `my-shop = "graftpunk_my_shop.plugin:MyShopPlugin"`, and the
+plugin's own CLI command stays `gp my-shop`. A generated project passes its
+own `ruff check` and `ruff format --check` as written, whatever the captured
+site facts contain (long paths, long parameter names, quotes in selectors):
+the scaffold bounds generated identifiers and wraps wide literals so the
+developer never starts from a red gate.
+
+Generated (and hand-written) commands call two `CommandContext` methods
+instead of the session directly:
+
+- `ctx.request_json(method, url, *, role="xhr", **kwargs) -> Any` sends
+  *url* (relative to `base_url`, or absolute) with role headers and returns
+  the parsed JSON body. A 401 or 403 raises `SessionRejectedError`; a 2xx
+  whose body is a login page also does (a stale session's tell); any other
+  non-JSON 2xx raises `UnexpectedResponseError`; any other 4xx/5xx raises
+  `CommandError`.
+- `ctx.request_text(method, url, *, role="navigation", **kwargs) -> str`
+  returns any 2xx body as text, detecting rejection by status only, so an
+  HTML endpoint's real response is never mistaken for an expired session.
+
+Both helpers normalise a `params` or `data` mapping before sending it, so a
+command can pass Python values and the site still sees what it recorded.
+`True` and `False` go out as `true` and `false`, not as `requests`' own
+`True`/`False`, and a key whose value is `None` is dropped from the request
+entirely. That second rule is what makes a generated stub's
+`keyword_search: bool | None = None` mean "omit this parameter unless the
+caller asked for it".
+
+`graftpunk.testing` (pytest-free) supplies `make_context()` for building a
+`CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
+for answering `ctx.request_json`/`request_text` from a file under
+`tests/fixtures/` instead of the network, named the way `gp observe
+fixtures` names captures. A plugin added to an existing suite gets
+`tests/fixtures/<module>/` of its own, since fixture names are per endpoint
+and two plugins in one suite can share an endpoint path. `gp observe
+fixtures` writes a `<file>.meta.json` sidecar beside every capture (url,
+status, content type, body parameter names, capture time); `FixtureSession`
+reads the same sidecar for status and content type, so a fixture copied from
+a capture keeps its recorded status.
+`graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
+fixture that removes prefixed environment variables for the duration of each
+test; a generated `conftest.py` imports it and assigns the result to a
+module-level name, which is what registers the fixture.
+
 ---
 
 ## Login System
@@ -889,6 +952,9 @@ gp observe show <session>                # Show run details (file list, sizes)
 gp observe clean [session]               # Remove observability data
 gp observe -s <session> go <url>         # Automated capture (waits --wait seconds)
 gp observe -s <session> interactive <url> # Interactive capture (Ctrl+C to stop)
+gp observe digest <session> [<run>]      # Read a run into a digest of hosts, endpoints, login, tokens
+gp observe digest --har <path>           # Digest a bare HAR file instead of a run
+gp observe fixtures <session> --match "<METHOD> <template>"  # Write matching bodies for deriving test fixtures
 ```
 
 ---
@@ -972,8 +1038,8 @@ This is distinct from `SessionExpiredError`, which means the *cached* session fa
 The `gp http` command makes authenticated HTTP requests using cached session cookies and browser headers, without writing a plugin:
 
 ```bash
-gp http get -s mybank https://secure.mybank.com/api/accounts
-gp http post -s mybank https://secure.mybank.com/api/transfer --data '{"amount": 100}'
+gp http get -s mybank https://secure.mybank.example.com/api/accounts
+gp http post -s mybank https://secure.mybank.example.com/api/transfer --data '{"amount": 100}'
 ```
 
 All HTTP methods are supported: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
@@ -985,9 +1051,9 @@ The session is loaded as a `GraftpunkSession` with full browser header replay, s
 By default, `gp http` sends navigation-style headers. Some API endpoints expect XHR headers instead. The `--role` flag selects the correct combination of `Sec-Fetch-*`, `Accept`, and `X-Requested-With` headers:
 
 ```bash
-gp http get -s mybank --role xhr https://secure.mybank.com/api/status
-gp http post -s mybank --role form https://secure.mybank.com/submit
-gp http get -s mybank --role navigate https://secure.mybank.com/page
+gp http get -s mybank --role xhr https://secure.mybank.example.com/api/status
+gp http post -s mybank --role form https://secure.mybank.example.com/submit
+gp http get -s mybank --role navigate https://secure.mybank.example.com/page
 ```
 
 Three built-in roles are registered at import time via `register_role()`: `navigation`, `xhr`, and `form`. The CLI accepts `navigate` as a shorthand alias for `navigation` via `_ROLE_ALIASES`. Plugins can define custom roles via a `header_roles` dict — these are merged into the session at request time, so `--role api` (or any custom name) works the same way.
@@ -1001,7 +1067,7 @@ Under the hood, `--role` calls `session.request_with_role()` directly with the r
 `gp observe go` opens a URL in an authenticated browser session and captures network traffic, screenshots, and console logs:
 
 ```bash
-gp observe -s mybank go https://secure.mybank.com/dashboard
+gp observe -s mybank go https://secure.mybank.example.com/dashboard
 ```
 
 This:
@@ -1018,10 +1084,10 @@ Useful for debugging API interactions and discovering undocumented endpoints.
 Interactive mode keeps the browser open for manual exploration while recording all network traffic:
 
 ```bash
-gp observe -s mybank interactive https://secure.mybank.com/dashboard
+gp observe -s mybank interactive https://secure.mybank.example.com/dashboard
 
 # Or as a flag on observe go:
-gp observe -s mybank go --interactive https://secure.mybank.com/dashboard
+gp observe -s mybank go --interactive https://secure.mybank.example.com/dashboard
 ```
 
 This:

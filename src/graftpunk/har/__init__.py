@@ -1,27 +1,31 @@
-"""HAR (HTTP Archive) file parsing and analysis.
+"""HAR (HTTP Archive) parsing and the run digest.
 
-This module provides tools for importing HAR files captured from browser
-developer tools and generating graftpunk plugins from them.
+Everything that understands a HAR file: the parser, and the digest that
+turns entries into a readable RunDigest.
 
 Example usage:
-    from graftpunk.har import parse_har_file, detect_auth_flow, generate_plugin_code
+    from pathlib import Path
 
-    result = parse_har_file("auth-flow.har")
-    if result.has_errors:
-        print(f"Warning: {len(result.errors)} entries failed to parse")
-    auth_flow = detect_auth_flow(result.entries)
-    code = generate_plugin_code("mysite", "example.com", auth_flow, endpoints)
+    from graftpunk.har import parse_har_file
+    from graftpunk.har.digest import DigestSource, digest
+    from graftpunk.har.report import render_markdown
+
+    result = parse_har_file("network.har")
+    source = DigestSource.from_har(Path("network.har"))
+    print(render_markdown(digest(source)))
 """
 
-from graftpunk.har.analyzer import (
-    APIEndpoint,
-    AuthFlow,
-    AuthStep,
-    detect_auth_flow,
-    discover_api_endpoints,
-    extract_domain,
+from graftpunk.har.digest import (
+    SHAPE_UNAVAILABLE,
+    DigestSource,
+    Endpoint,
+    LoginForm,
+    LoginObservation,
+    RunDigest,
+    ShapeNode,
+    TokenCandidate,
+    digest,
 )
-from graftpunk.har.generator import generate_plugin_code
 from graftpunk.har.parser import (
     HAREntry,
     HARParseResult,
@@ -39,13 +43,14 @@ __all__ = [
     "HARResponse",
     "ParseError",
     "parse_har_file",
-    # Analyzer
-    "APIEndpoint",
-    "AuthFlow",
-    "AuthStep",
-    "detect_auth_flow",
-    "discover_api_endpoints",
-    "extract_domain",
-    # Generator
-    "generate_plugin_code",
+    # Digest
+    "SHAPE_UNAVAILABLE",
+    "DigestSource",
+    "Endpoint",
+    "LoginForm",
+    "LoginObservation",
+    "RunDigest",
+    "ShapeNode",
+    "TokenCandidate",
+    "digest",
 ]

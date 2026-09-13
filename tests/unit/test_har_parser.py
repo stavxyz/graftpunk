@@ -209,6 +209,34 @@ class TestHARResponse:
         assert response.content_type is None
         assert response.body is None
         assert response.body_size == 0
+        assert response.set_cookie_names == ()
+
+    def test_multiple_set_cookie_headers_all_names_captured(self) -> None:
+        """Every Set-Cookie header's name is kept, not just the last one."""
+        response = _parse_response(
+            {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [
+                    {"name": "Set-Cookie", "value": "session_id=abc123; Path=/"},
+                    {"name": "Set-Cookie", "value": "csrf_token=xyz; HttpOnly"},
+                ],
+                "cookies": [],
+            }
+        )
+        assert response.set_cookie_names == ("session_id", "csrf_token")
+
+    def test_no_set_cookie_headers_is_empty(self) -> None:
+        """A response with no Set-Cookie header has an empty tuple, not None."""
+        response = _parse_response(
+            {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "cookies": [],
+            }
+        )
+        assert response.set_cookie_names == ()
 
 
 class TestTimestampParsing:
