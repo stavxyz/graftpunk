@@ -21,6 +21,7 @@ import fnmatch
 import time
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
+from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 
 if TYPE_CHECKING:
@@ -548,6 +549,15 @@ async def _read_login_tick_nodriver(
         if success_selector:
             # query_selector returns immediately, found or not: the poll is the
             # retry, and a probe that slept inside nodriver would stretch the cadence.
+            #
+            # A selector the browser rejects as malformed is not told apart here, as
+            # the selenium twin tells it apart. nodriver 0.48.1's Tab.query_selector
+            # re-raises whatever ProtocolException the CDP call returned, and
+            # ProtocolException carries only the CDP error's message and its generic
+            # server-error code, the same pair a node that went invalid mid-navigation
+            # arrives with. Classifying a bad selector by message text would be
+            # guessing at a string the protocol does not promise, so it stays a
+            # transient tick here and the wait ends in a timeout (polish round 2).
             element = await tab.query_selector(success_selector)
             success_found = element is not None
     except Exception as exc:  # broad by design: an unreadable tick is pending, see above
@@ -575,8 +585,17 @@ def _read_login_tick_selenium(
     A missing element is NoSuchElementException and reads as "not yet"; any other
     WebDriverException is a read taken while the browser was navigating, so the
     tick is unreadable rather than failed.
+
+    A selector the browser rejects as malformed is the exception to that: it is an
+    InvalidSelectorException on every tick, so the wait would spend its whole budget
+    and end by blaming the browser for a page it read perfectly well. The selector
+    cannot become valid, so it ends the login there and then (polish round 2).
     """
-    from selenium.common.exceptions import NoSuchElementException, WebDriverException
+    from selenium.common.exceptions import (
+        InvalidSelectorException,
+        NoSuchElementException,
+        WebDriverException,
+    )
 
     try:
         page_text = driver.page_source if want_page_text else ""
@@ -587,6 +606,12 @@ def _read_login_tick_selenium(
                 success_found = True
             except NoSuchElementException:
                 success_found = False
+    except InvalidSelectorException as exc:
+        raise PluginError(
+            f"LoginConfig.success is not a valid CSS selector: '{success_selector}'. "
+            "The browser rejected it, so no page can ever match it. Correct the "
+            "selector in the plugin's login configuration."
+        ) from exc
     except WebDriverException as exc:
         LOG.debug(
             "login_tick_read_failed",

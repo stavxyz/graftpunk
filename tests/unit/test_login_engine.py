@@ -2984,6 +2984,38 @@ class TestSeleniumLoginSignalPoll:
         assert result is True
         assert driver.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
 
+    def test_a_malformed_success_selector_ends_the_login_naming_it(self) -> None:
+        """A selector the browser rejects cannot come good on a later tick.
+
+        Every tick would raise the same way, so the wait used to spend its whole
+        budget and report the page as unreadable, blaming the browser for a
+        configuration error.
+        """
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class _RejectingSelectorDriver(_ScriptedSeleniumDriver):
+            """A driver that rejects the success selector the way a browser does."""
+
+            def find_element(self, by: str, value: str) -> MagicMock:
+                from selenium.common.exceptions import InvalidSelectorException
+
+                if value == self._success_selector:
+                    raise InvalidSelectorException(f"invalid selector: {value}")
+                return super().find_element(by, value)
+
+        driver = _RejectingSelectorDriver(success_selector=".dashboard")
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            pytest.raises(PluginError) as raised,
+        ):
+            generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert "'.dashboard'" in str(raised.value)
+        assert "cookies" not in driver.events
+
     def test_a_selector_only_login_reports_a_rate_limit_page_at_its_deadline(self) -> None:
         """The selenium twin: the deadline tick reads the page, so the limiter is named."""
         from graftpunk.plugins.login_engine import generate_login_method
