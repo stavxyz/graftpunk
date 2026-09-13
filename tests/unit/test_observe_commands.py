@@ -464,6 +464,23 @@ class TestFixturesGitignore:
 
         assert (repo / ".gitignore").read_text().count("tests/captures/") == 1
 
+    def test_a_tracked_path_refusal_leaves_gitignore_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ignore line protects files this command writes, so a run that
+        refuses to write anything must not leave the edit behind."""
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        out_dir = repo / "tests" / "captures"
+        out_dir.mkdir(parents=True)
+        (out_dir / "get_orders_{order_id}.json").write_text("{}")
+        _git(["git", "add", "-A"], repo)
+        _git(["git", "commit", "-q", "-m", "seed"], repo)
+
+        result = _invoke_fixtures(out_dir)
+
+        assert result.exit_code == 1, result.output
+        assert not (repo / ".gitignore").exists()
+
 
 class TestMatchPatternValidation:
     @pytest.mark.parametrize("pattern", ["/orders", "ORDERS /orders", "GET", "GET   "])

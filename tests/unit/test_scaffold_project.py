@@ -244,3 +244,29 @@ class TestPyprojectRestoredAfterRenderedFileFailure:
 
         monkeypatch.undo()
         assert pyproject.read_text() == original
+
+    def test_gitignore_is_not_edited_when_a_rendered_file_write_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ignore line protects the files this call writes, so a refusal
+        must leave .gitignore exactly as it was found."""
+        (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("*.pyc\n")
+
+        real_write_text = Path.write_text
+
+        def write_text_failing_on_the_plugin_module(
+            self: Path, *args: object, **kwargs: object
+        ) -> int:
+            if self.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(self))
+            return real_write_text(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+        monkeypatch.setattr(Path, "write_text", write_text_failing_on_the_plugin_module)
+
+        with pytest.raises(OSError, match="No space left on device"):
+            write_scaffold(tmp_path, _spec("widgets"))
+
+        monkeypatch.undo()
+        assert gitignore.read_text() == "*.pyc\n"

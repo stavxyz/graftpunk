@@ -195,6 +195,19 @@ def fixtures_cmd(
         raise typer.Exit(1)
 
     target_dir = out if out is not None else Path.cwd() / CAPTURES_DIR
+
+    if not allow_tracked and target_dir.exists():
+        tracked = [p for p in sorted(target_dir.rglob("*")) if p.is_file() and is_tracked(p)]
+        if tracked:
+            console.print("[red]Refusing to write: these paths are tracked by git:[/red]")
+            for path in tracked:
+                console.print(f"  {escape(str(path))}")
+            console.print("[dim]Pass --allow-tracked to write anyway.[/dim]")
+            raise typer.Exit(1)
+
+    # Below the tracked-path check: the ignore line exists to protect files
+    # this command is about to write, so a refusal must not leave an edited
+    # .gitignore behind (polish round 1, 2026-09-12).
     repo_root = find_repo_root(target_dir)
     if repo_root is not None:
         try:
@@ -208,15 +221,6 @@ def fixtures_cmd(
             "[yellow]Not inside a git work tree: nothing protects this directory "
             "from being committed.[/yellow]"
         )
-
-    if not allow_tracked and target_dir.exists():
-        tracked = [p for p in sorted(target_dir.rglob("*")) if p.is_file() and is_tracked(p)]
-        if tracked:
-            console.print("[red]Refusing to write: these paths are tracked by git:[/red]")
-            for path in tracked:
-                console.print(f"  {escape(str(path))}")
-            console.print("[dim]Pass --allow-tracked to write anyway.[/dim]")
-            raise typer.Exit(1)
 
     try:
         target_dir.mkdir(parents=True, exist_ok=True)

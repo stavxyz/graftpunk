@@ -154,7 +154,6 @@ def write_scaffold(
             LOG.warning("scaffold_write_refused", reason="pyproject_edit_error")
             raise
         pyproject_updated = True
-        gitignore_updated = ensure_ignored(target_dir, CAPTURES_DIR)
 
     written: list[Path] = []
     created_dirs: list[Path] = []
@@ -177,6 +176,12 @@ def write_scaffold(
                 )
         LOG.warning("scaffold_write_refused", reason="os_error", written=len(written))
         raise
+
+    # Last, after every other step has succeeded: the ignore line exists to
+    # protect files this call wrote, so a refusal further up must not leave an
+    # edited .gitignore behind (polish round 1, 2026-09-12).
+    if mode == "add_to_suite":
+        gitignore_updated = ensure_ignored(target_dir, CAPTURES_DIR)
 
     LOG.info("scaffold_written", mode=mode, target_dir=str(target_dir), files=len(targets))
     return ScaffoldResult(
