@@ -780,11 +780,12 @@ class TestNodriverLoginValidationPaths:
 class _ScriptedNodriverTab:
     """A nodriver tab that answers the post-submit poll from a script.
 
-    Each ``get_content`` is one poll tick: ``contents`` and ``urls`` are read by
-    tick index and their last entry repeats for every later tick, the success
-    selector starts resolving on tick ``success_from`` (never, when it is None),
-    and ``ready_states`` answers the document-ready wait one read at a time.
-    ``events`` records what the engine did, in order.
+    Each URL read is one poll tick, since that is the read the wait makes every
+    tick and before anything else: ``contents`` and ``urls`` are read by tick index
+    and their last entry repeats for every later tick, the success selector starts
+    resolving on tick ``success_from`` (never, when it is None), and ``ready_states``
+    answers the document-ready wait one read at a time. ``events`` records what the
+    engine did, in order, and a tick that never asked for the page records nothing.
     """
 
     def __init__(
@@ -798,7 +799,9 @@ class _ScriptedNodriverTab:
         unreadable_ticks: tuple[int, ...] = (),
     ) -> None:
         self.events: list[str] = []
-        self.tick = -1
+        self.tick = 0
+        self._url_reads = 0
+        self._wait_over = False
         self._success_selector = success_selector
         self._contents = contents
         self._urls = urls
@@ -823,13 +826,22 @@ class _ScriptedNodriverTab:
 
     @property
     def url(self) -> str | None:
-        """The scripted URL, which nodriver leaves as None while a tab navigates."""
-        return self._at(self._urls, max(self.tick, 0))
+        """The scripted URL, which nodriver leaves as None while a tab navigates.
+
+        This read is what moves the script on: the wait reads the URL once per tick
+        and before anything else, and the engine's own read just before the submit
+        takes the same tick 0 URL (the page the submit was clicked from). Reads
+        after the wait is over, such as the engine capturing the URL for display,
+        leave the script where it stopped.
+        """
+        if not self._wait_over:
+            self.tick = max(self._url_reads - 1, 0)
+            self._url_reads += 1
+        return self._at(self._urls, self.tick)
 
     async def get_content(self) -> str:
         from nodriver.core.connection import ProtocolException
 
-        self.tick += 1
         if self.tick in self._unreadable_ticks:
             self.events.append(f"tick:{self.tick}:unreadable")
             raise ProtocolException("Could not find node with given id")
@@ -858,6 +870,7 @@ class _ScriptedNodriverTab:
         """
         if expression != "document.readyState":
             return json.dumps({"found": True, "value": None})
+        self._wait_over = True
         self.events.append("document_ready_read")
         state = self._at(self._ready_states, self._ready_reads)
         self._ready_reads += 1
@@ -1105,6 +1118,33 @@ class TestNodriverLoginSignalPoll:
         assert result is True
         assert tab.tick == 2
         assert "cookies" in tab.events
+
+    @pytest.mark.asyncio
+    async def test_a_url_only_poll_reads_the_page_only_when_the_url_arrives(self) -> None:
+        """No failure text to look for, so the document is fetched once: at the landing URL.
+
+        The fetch still happens there, because the rate-limit marker vetoes a URL
+        signal on the tick it starts to hold.
+        """
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            urls=(
+                "https://app.example.com/login",
+                "https://app.example.com/sso/callback",
+                "https://app.example.com/dashboard?welcome=1",
+            ),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert tab.events == ["tick:2", "document_ready_read", "cookies"]
 
     @pytest.mark.asyncio
     async def test_a_glob_matching_the_login_page_never_reports_success(self) -> None:
@@ -2224,9 +2264,9 @@ class TestSeleniumLoginValidationPaths:
 class _ScriptedSeleniumDriver:
     """A selenium driver that answers the post-submit poll from a script.
 
-    The twin of :class:`_ScriptedNodriverTab`: each ``page_source`` read is one
-    poll tick, ``urls`` gives the URL for that tick, the success selector starts
-    resolving on tick ``success_from``, and ``ready_states`` answers the
+    The twin of :class:`_ScriptedNodriverTab`: each ``current_url`` read is one
+    poll tick, ``contents`` gives the page for that tick, the success selector
+    starts resolving on tick ``success_from``, and ``ready_states`` answers the
     document-ready wait one read at a time.
     """
 
@@ -2241,7 +2281,9 @@ class _ScriptedSeleniumDriver:
         unreadable_ticks: tuple[int, ...] = (),
     ) -> None:
         self.events: list[str] = []
-        self.tick = -1
+        self.tick = 0
+        self._url_reads = 0
+        self._wait_over = False
         self._success_selector = success_selector
         self._contents = contents
         self._urls = urls
@@ -2262,7 +2304,6 @@ class _ScriptedSeleniumDriver:
     def page_source(self) -> str:
         from selenium.common.exceptions import WebDriverException
 
-        self.tick += 1
         if self.tick in self._unreadable_ticks:
             self.events.append(f"tick:{self.tick}:unreadable")
             raise WebDriverException("no such window: target window already closed")
@@ -2271,15 +2312,19 @@ class _ScriptedSeleniumDriver:
 
     @property
     def current_url(self) -> str:
-        """The scripted URL for this tick.
+        """The scripted URL for this tick, and the read that moves the script on.
 
-        An empty entry stands for a read the driver cannot answer: selenium raises
-        there, and ``driver_url`` turns that into the empty string the poll reads as
-        "no URL".
+        The wait reads the URL once per tick and before anything else, as in the
+        nodriver twin. An empty entry stands for a read the driver cannot answer:
+        selenium raises there, and ``driver_url`` turns that into the empty string
+        the poll reads as "no URL".
         """
         from selenium.common.exceptions import WebDriverException
 
-        url = self._at(self._urls, max(self.tick, 0))
+        if not self._wait_over:
+            self.tick = max(self._url_reads - 1, 0)
+            self._url_reads += 1
+        url = self._at(self._urls, self.tick)
         if not url:
             raise WebDriverException("no such window: target window already closed")
         return url
@@ -2294,6 +2339,7 @@ class _ScriptedSeleniumDriver:
         return MagicMock()
 
     def execute_script(self, script: str) -> str:
+        self._wait_over = True
         self.events.append("document_ready_read")
         state = self._at(self._ready_states, self._ready_reads)
         self._ready_reads += 1
@@ -2513,6 +2559,28 @@ class TestSeleniumLoginSignalPoll:
         assert result is True
         assert driver.tick == 2
         assert "cookies" in driver.events
+
+    def test_a_url_only_poll_reads_the_page_only_when_the_url_arrives(self) -> None:
+        """The selenium twin: one page_source read, on the tick the URL matched."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            urls=(
+                "https://app.example.com/login",
+                "https://app.example.com/sso/callback",
+                "https://app.example.com/dashboard?welcome=1",
+            ),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = generate_login_method(DeclarativeSeleniumUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert driver.events == ["tick:2", "document_ready_read", "cookies"]
 
     def test_a_glob_matching_the_login_page_never_reports_success(self) -> None:
         """The probe that cached a pre-login session: the URL never changed."""

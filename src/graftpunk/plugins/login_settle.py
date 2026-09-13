@@ -161,6 +161,26 @@ def _missing_login_signals(
     return missing
 
 
+def _page_text_decides(
+    *, failure_text: str, url: str, pre_submit_url: str, success_url: str
+) -> bool:
+    """Whether this tick's verdict can turn on the page text.
+
+    The page text is the whole document and the expensive part of a tick, and only
+    two rules read it: the configured failure text, and the rate-limit marker,
+    which vetoes a URL signal on the tick it starts to hold (a limiter answering
+    the post-submit redirect serves its 429 body at the landing URL itself). A tick
+    with no failure text to look for, on a URL that has not arrived, is decided by
+    the success element alone, so it leaves the document where it is (polish round
+    1).
+    """
+    if failure_text:
+        return True
+    return bool(success_url) and _url_signal_holds(
+        url=url, pre_submit_url=pre_submit_url, success_url=success_url
+    )
+
+
 def _login_tick_verdict(
     *,
     page_text: str,
@@ -314,6 +334,10 @@ class _TickReading(NamedTuple):
     ``error`` is empty on a tick that was read. A tick that could not be read
     carries the error text instead, with no page text, so a caller can both keep
     waiting and say afterwards why it never saw a page.
+
+    ``page_text`` is also empty on a tick that was read but did not need the
+    document (see ``_page_text_decides``); that tick has no error, and the rules
+    that read page text are exactly the ones that were not going to decide it.
     """
 
     page_text: str
@@ -331,6 +355,10 @@ class _ReadWindow:
     first has confirmed nothing about the login, and the empty page text it leaves
     behind would read as "the failure text is not on the page" (tidy round,
     2026-09-13; extended to the signal poll in polish round 1).
+
+    A tick counts as read when it came back without an error, including a signal
+    poll's tick that did not need the document at all: the browser answered, which
+    is what "unreadable" is about.
     """
 
     def __init__(self) -> None:
@@ -353,10 +381,16 @@ class _ReadWindow:
 
 async def _read_login_tick_nodriver(
     tab: Any,  # nodriver.Tab
+    *,
+    url: str,
     success_selector: str,
+    want_page_text: bool,
     site_name: str,
 ) -> _TickReading:
     """One tick's reading of the tab, or a reading carrying the error instead.
+
+    The caller has already read *url*, which every tick needs, and says through
+    *want_page_text* whether the document can decide this tick at all.
 
     A ProtocolException means the document node went invalid mid-navigation, which
     is the window this poll exists for (see ``_select_with_retry``): the tick is
@@ -365,8 +399,7 @@ async def _read_login_tick_nodriver(
     from nodriver.core.connection import ProtocolException
 
     try:
-        page_text = await tab.get_content()
-        url = _tab_url(tab)
+        page_text = await tab.get_content() if want_page_text else ""
         success_found: bool | None = None
         if success_selector:
             # query_selector returns immediately, found or not: the poll is the
@@ -381,13 +414,16 @@ async def _read_login_tick_nodriver(
             exc_type=type(exc).__name__,
             backend="nodriver",
         )
-        return _TickReading("", _tab_url(tab), None, error=str(exc))
+        return _TickReading("", url, None, error=str(exc))
     return _TickReading(page_text, url, success_found)
 
 
 def _read_login_tick_selenium(
     driver: Any,  # selenium WebDriver
+    *,
+    url: str,
     success_selector: str,
+    want_page_text: bool,
     site_name: str,
 ) -> _TickReading:
     """The selenium twin of :func:`_read_login_tick_nodriver`.
@@ -399,8 +435,7 @@ def _read_login_tick_selenium(
     from selenium.common.exceptions import NoSuchElementException, WebDriverException
 
     try:
-        page_text = driver.page_source
-        url = _driver_url(driver)
+        page_text = driver.page_source if want_page_text else ""
         success_found: bool | None = None
         if success_selector:
             try:
@@ -416,7 +451,7 @@ def _read_login_tick_selenium(
             exc_type=type(exc).__name__,
             backend="selenium",
         )
-        return _TickReading("", _driver_url(driver), None, error=str(exc))
+        return _TickReading("", url, None, error=str(exc))
     return _TickReading(page_text, url, success_found)
 
 
@@ -476,7 +511,19 @@ async def _wait_for_login_signal_nodriver(
     last = _ReadWindow()
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
-        reading = await _read_login_tick_nodriver(tab, success_selector, site_name)
+        url = _tab_url(tab)
+        reading = await _read_login_tick_nodriver(
+            tab,
+            url=url,
+            success_selector=success_selector,
+            want_page_text=_page_text_decides(
+                failure_text=failure_text,
+                url=url,
+                pre_submit_url=pre_submit_url,
+                success_url=success_url,
+            ),
+            site_name=site_name,
+        )
         last.record(reading)
         if reading.error:
             verdict = _TICK_PENDING
@@ -528,7 +575,19 @@ def _wait_for_login_signal_selenium(
     last = _ReadWindow()
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
-        reading = _read_login_tick_selenium(driver, success_selector, site_name)
+        url = _driver_url(driver)
+        reading = _read_login_tick_selenium(
+            driver,
+            url=url,
+            success_selector=success_selector,
+            want_page_text=_page_text_decides(
+                failure_text=failure_text,
+                url=url,
+                pre_submit_url=pre_submit_url,
+                success_url=success_url,
+            ),
+            site_name=site_name,
+        )
         last.record(reading)
         if reading.error:
             verdict = _TICK_PENDING
@@ -592,7 +651,14 @@ async def _watch_for_failure_nodriver(
     last = _ReadWindow()
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
-        reading = await _read_login_tick_nodriver(tab, "", site_name)
+        reading = await _read_login_tick_nodriver(
+            tab,
+            url=_tab_url(tab),
+            success_selector="",
+            # The page text is this window's only signal, so it is read every tick.
+            want_page_text=True,
+            site_name=site_name,
+        )
         last.record(reading)
         if not reading.error and _failure_showing(
             page_text=reading.page_text, failure_text=failure_text
@@ -619,7 +685,14 @@ def _watch_for_failure_selenium(
     last = _ReadWindow()
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
-        reading = _read_login_tick_selenium(driver, "", site_name)
+        reading = _read_login_tick_selenium(
+            driver,
+            url=_driver_url(driver),
+            success_selector="",
+            # The page text is this window's only signal, so it is read every tick.
+            want_page_text=True,
+            site_name=site_name,
+        )
         last.record(reading)
         if not reading.error and _failure_showing(
             page_text=reading.page_text, failure_text=failure_text
