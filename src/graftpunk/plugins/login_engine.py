@@ -19,8 +19,8 @@ from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import cache_login_session
 from graftpunk.plugins.login_settle import (
-    _driver_url,
-    _tab_url,
+    driver_url,
+    tab_url,
     wait_for_login_outcome_nodriver,
     wait_for_login_outcome_selenium,
 )
@@ -735,7 +735,7 @@ async def _run_nodriver_steps(
                         f"using selector '{step.submit}'. "
                         "Check your plugin's login step configuration."
                     )
-                pre_submit_url = _tab_url(tab)
+                pre_submit_url = tab_url(tab)
                 submit_clicked = True
                 await submit.click()
             except PluginError:
@@ -758,7 +758,7 @@ async def _run_nodriver_steps(
         login_config=login_config,
         failure_text=failure_text,
         site_name=plugin.site_name,
-        pre_submit_url=pre_submit_url if submit_clicked else _tab_url(tab),
+        pre_submit_url=pre_submit_url if submit_clicked else tab_url(tab),
     ):
         return False
 
@@ -896,7 +896,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 if step.submit:
                     try:
                         submit_el = session.driver.find_element("css selector", step.submit)
-                        pre_submit_url = _driver_url(session.driver)
+                        pre_submit_url = driver_url(session.driver)
                         submit_clicked = True
                         submit_el.click()
                     except (
@@ -919,7 +919,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 login_config=plugin.login_config,
                 failure_text=failure_text,
                 site_name=plugin.site_name,
-                pre_submit_url=pre_submit_url if submit_clicked else _driver_url(session.driver),
+                pre_submit_url=pre_submit_url if submit_clicked else driver_url(session.driver),
             ):
                 return False
 

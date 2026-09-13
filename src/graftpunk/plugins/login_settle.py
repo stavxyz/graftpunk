@@ -7,8 +7,10 @@ for the configured success or failure signal, the rule one tick is decided by,
 the document-readiness wait, and the grace window a login with no success signal
 spends watching for its failure text.
 
-``login_engine`` drives it through ``wait_for_login_outcome_nodriver`` and
-``wait_for_login_outcome_selenium``; everything else here is internal to the wait.
+``login_engine`` drives the wait through ``wait_for_login_outcome_nodriver`` and
+``wait_for_login_outcome_selenium``, and reads the URL a submit was clicked from
+through ``tab_url`` and ``driver_url``, which answer an unreadable URL with an
+empty string rather than raising. Everything else here is internal to the wait.
 """
 
 from __future__ import annotations
@@ -311,7 +313,7 @@ def _poll_sleep_seconds(remaining: float) -> float:
     return min(_LOGIN_POLL_INTERVAL, max(0.0, remaining))
 
 
-def _tab_url(tab: Any) -> str:
+def tab_url(tab: Any) -> str:
     """The nodriver tab's current URL, or an empty string when it cannot be read."""
     try:
         url = tab.url
@@ -321,7 +323,7 @@ def _tab_url(tab: Any) -> str:
     return url if isinstance(url, str) else ""
 
 
-def _driver_url(driver: Any) -> str:
+def driver_url(driver: Any) -> str:
     """The selenium driver's current URL, or an empty string when it cannot be read."""
     try:
         url = driver.current_url
@@ -514,7 +516,7 @@ async def _wait_for_login_signal_nodriver(
     last = _ReadWindow()
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
-        url = _tab_url(tab)
+        url = tab_url(tab)
         reading = await _read_login_tick_nodriver(
             tab,
             url=url,
@@ -578,7 +580,7 @@ def _wait_for_login_signal_selenium(
     last = _ReadWindow()
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
-        url = _driver_url(driver)
+        url = driver_url(driver)
         reading = _read_login_tick_selenium(
             driver,
             url=url,
@@ -656,7 +658,7 @@ async def _watch_for_failure_nodriver(
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
         reading = await _read_login_tick_nodriver(
             tab,
-            url=_tab_url(tab),
+            url=tab_url(tab),
             success_selector="",
             # The page text is this window's only signal, so it is read every tick.
             want_page_text=True,
@@ -690,7 +692,7 @@ def _watch_for_failure_selenium(
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
         reading = _read_login_tick_selenium(
             driver,
-            url=_driver_url(driver),
+            url=driver_url(driver),
             success_selector="",
             # The page text is this window's only signal, so it is read every tick.
             want_page_text=True,
