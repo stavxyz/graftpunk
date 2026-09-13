@@ -181,9 +181,12 @@ def _login_tick_verdict(
     ends the wait, a rate-limit page ends it too, every configured success signal
     holding ends it successfully, and anything else is still pending.
 
-    A found success signal keeps its veto over the rate-limit marker, as in
-    ``_check_login_result``: page_text is raw HTML, and an inlined i18n bundle or
-    error catalogue on a real post-login page can carry the marker text.
+    Only a *found success element* vetoes the rate-limit marker: page_text is raw
+    HTML, and an inlined i18n bundle or error catalogue on a real post-login page
+    can carry the marker text. A URL glob carries no such weight, because a
+    limiter answering the post-submit redirect serves its 429 body at the landing
+    URL itself; letting the glob veto the marker there captured cookies off the
+    limiter's page and cached a dead session (polish round 1, 2026-09-13).
 
     Returns:
         ``_TICK_SUCCESS``, ``_TICK_PENDING``, or the reason the tick failed:
@@ -199,7 +202,7 @@ def _login_tick_verdict(
     )
     if failure_text and failure_text.lower() in lowered:
         return _TICK_FAILURE_TEXT
-    if not signal_holds and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+    if success_found is not True and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
         return _TICK_RATE_LIMITED
     return _TICK_SUCCESS if signal_holds else _TICK_PENDING
 

@@ -1201,18 +1201,17 @@ class TestNodriverLoginSignalPoll:
         assert tab.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
 
     @pytest.mark.asyncio
-    async def test_a_rate_limit_page_under_a_present_element_is_still_explained(self) -> None:
-        """The narrow case: the element is there, the URL has not moved, the page is a 429.
+    async def test_a_rate_limit_body_at_the_landing_url_is_not_a_success(self) -> None:
+        """The limiter answers the post-submit redirect, so its 429 body is at the glob.
 
-        The wait fails, and the user gets the rate-limit warning rather than silence.
+        A URL glob alone must not override the marker: the wait fails with the
+        rate-limit warning instead of capturing cookies off the limiter's page.
         """
         from graftpunk.plugins.login_engine import generate_login_method
 
         tab = _ScriptedNodriverTab(
-            success_selector=".dashboard",
-            success_from=0,
-            contents=("<html>Too Many Requests</html>",),
-            urls=("https://app.example.com/login",),
+            contents=("<html>Signing in</html>", "<html>Too Many Requests</html>"),
+            urls=("https://app.example.com/login", "https://app.example.com/dashboard"),
         )
         mock_bs, _instance = _nodriver_session_for(tab)
 
@@ -1221,13 +1220,11 @@ class TestNodriverLoginSignalPoll:
             patch("graftpunk.plugins.cli_plugin.cache_session"),
             patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
-            result = await generate_login_method(DeclarativeNodriverBothSignals())(
-                _LOGIN_CREDENTIALS
-            )
+            result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
 
         assert result is False
         assert "cookies" not in tab.events
-        assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "ndboth"
+        assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "ndurl"
 
     @pytest.mark.asyncio
     async def test_a_url_of_none_mid_redirect_keeps_the_poll_going(self) -> None:
@@ -1870,7 +1867,7 @@ class TestLoginTickVerdict:
             == "rate_limited"
         )
 
-    def test_a_holding_signal_keeps_its_veto_over_the_rate_limit_marker(self) -> None:
+    def test_a_found_element_keeps_its_veto_over_the_rate_limit_marker(self) -> None:
         """Raw HTML can carry the marker text on a real post-login page."""
         assert (
             self._verdict(
@@ -1879,6 +1876,32 @@ class TestLoginTickVerdict:
                 success_found=True,
             )
             == "success"
+        )
+
+    def test_a_found_element_vetoes_the_marker_even_before_the_url_moves(self) -> None:
+        """The element's veto is the element's own: the tick is pending, not failed."""
+        assert (
+            self._verdict(
+                page_text="<html>dashboard<script>{'err':'Too Many Requests'}</script></html>",
+                url="https://app.example.com/login",
+                pre_submit_url="https://app.example.com/login",
+                success_selector=".dashboard",
+                success_url="*/dashboard*",
+                success_found=True,
+            )
+            == "pending"
+        )
+
+    def test_a_url_only_success_never_vetoes_the_rate_limit_marker(self) -> None:
+        """A limiter answering the redirect serves its 429 body at the landing URL."""
+        assert (
+            self._verdict(
+                page_text="<html><h1>Too Many Requests</h1></html>",
+                url="https://app.example.com/dashboard",
+                pre_submit_url="https://app.example.com/login",
+                success_url="*/dashboard*",
+            )
+            == "rate_limited"
         )
 
     def test_a_url_that_has_not_changed_is_not_a_signal(self) -> None:
