@@ -998,6 +998,48 @@ class TestNodriverLoginSignalPoll:
         assert "cookies" in tab.events
 
     @pytest.mark.asyncio
+    async def test_a_poll_that_never_reads_the_page_blames_the_page(self) -> None:
+        """Every tick raised, so the signal was never looked at: say that instead."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class UnreadablePlugin(SitePlugin):
+            site_name = "ndunread"
+            session_name = "ndunread"
+            help_text = "ND Unreadable"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                failure="Invalid credentials",
+                success=".dashboard",
+                timeout=0.2,
+                settle=0.0,
+            )
+
+        tab = _ScriptedNodriverTab(
+            success_selector=".dashboard",
+            urls=("https://app.example.com/login",),
+            unreadable_ticks=tuple(range(1000)),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(UnreadablePlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in tab.events
+        warning = _warning_kwargs(mock_log, "login_page_unreadable")
+        assert "Could not find node" in warning["error"]
+        assert warning["url"] == "https://app.example.com/login"
+        timeouts = [c for c in mock_log.warning.call_args_list if c[0][0] == "login_signal_timeout"]
+        assert timeouts == []
+
+    @pytest.mark.asyncio
     async def test_failure_text_that_appears_late_ends_the_poll(self) -> None:
         """Failure text arriving after a few ticks fails the login there and then."""
         from graftpunk.plugins.login_engine import generate_login_method
@@ -2366,6 +2408,47 @@ class TestSeleniumLoginSignalPoll:
         assert result is True
         assert "tick:1:unreadable" in driver.events
         assert "cookies" in driver.events
+
+    def test_a_poll_that_never_reads_the_page_blames_the_page(self) -> None:
+        """The selenium twin: a driver whose every read raises never saw the signal."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class UnreadableSeleniumPlugin(SitePlugin):
+            site_name = "selunread"
+            session_name = "selunread"
+            help_text = "Sel Unreadable"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                failure="Invalid credentials",
+                success=".dashboard",
+                timeout=0.2,
+                settle=0.0,
+            )
+
+        driver = _ScriptedSeleniumDriver(
+            success_selector=".dashboard",
+            urls=("https://app.example.com/login",),
+            unreadable_ticks=tuple(range(1000)),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(UnreadableSeleniumPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in driver.events
+        warning = _warning_kwargs(mock_log, "login_page_unreadable")
+        assert "no such window" in warning["error"]
+        assert warning["url"] == "https://app.example.com/login"
+        timeouts = [c for c in mock_log.warning.call_args_list if c[0][0] == "login_signal_timeout"]
+        assert timeouts == []
 
     def test_failure_text_that_appears_late_ends_the_poll(self) -> None:
         """Failure text arriving after a few ticks fails the login there and then."""

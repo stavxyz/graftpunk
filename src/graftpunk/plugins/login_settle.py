@@ -322,6 +322,35 @@ class _TickReading(NamedTuple):
     error: str = ""
 
 
+class _ReadWindow:
+    """What a wait has read so far: the last tick it managed to read, or why it read none.
+
+    Both waits rule on the last reading they got, so a tick that fails after a good
+    one must not replace that reading with nothing, and a window of nothing but
+    failures has to be told apart from a window whose pages were all clean: the
+    first has confirmed nothing about the login, and the empty page text it leaves
+    behind would read as "the failure text is not on the page" (tidy round,
+    2026-09-13; extended to the signal poll in polish round 1).
+    """
+
+    def __init__(self) -> None:
+        self.page_read = False
+        self.page_text = ""
+        self.error = "the page was never read"
+        self.url = ""
+        self.success_found: bool | None = None
+
+    def record(self, reading: _TickReading) -> None:
+        """Fold one tick's reading into the window."""
+        self.url = reading.url
+        if reading.error:
+            self.error = reading.error
+            return
+        self.page_read = True
+        self.page_text = reading.page_text
+        self.success_found = reading.success_found
+
+
 async def _read_login_tick_nodriver(
     tab: Any,  # nodriver.Tab
     success_selector: str,
@@ -392,11 +421,13 @@ def _read_login_tick_selenium(
 
 
 def _warn_login_page_unreadable(*, site_name: str, error: str, url: str) -> None:
-    """Warn that no tick of the window ever read the page.
+    """Warn that no tick of the wait ever read the page.
 
     A login whose page could not be read even once has not been confirmed by
     anything, and the empty page text it leaves behind reads as "no failure text
-    on the page", which is not a success (tidy round, 2026-09-13).
+    on the page", which is not a success (tidy round, 2026-09-13). Both the signal
+    poll and the grace window end this way, so the reason is the same one either
+    of them reports.
     """
     LOG.warning(
         "login_page_unreadable",
@@ -431,31 +462,33 @@ async def _wait_for_login_signal_nodriver(
     not yet replaced. *pre_submit_url* is the URL read just before the last submit,
     and a URL signal counts only once the page has moved off it.
 
+    A poll whose every tick failed to read is reported as an unreadable page rather
+    than as a missing signal: the signal was never looked at, so naming it would
+    send an author after the wrong thing (polish round 1).
+
     Returns:
-        True when every configured success signal holds, False on a failure signal
-        or when the deadline passes (both are logged).
+        True when every configured success signal holds, False on a failure signal,
+        on a window that read nothing, or when the deadline passes (all are logged).
     """
     loop = asyncio.get_running_loop()
     success_selector = login_config.success
     success_url = login_config.success_url
-    url = ""
-    success_found: bool | None = None
+    last = _ReadWindow()
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
         reading = await _read_login_tick_nodriver(tab, success_selector, site_name)
+        last.record(reading)
         if reading.error:
-            url = reading.url
             verdict = _TICK_PENDING
         else:
-            url, success_found = reading.url, reading.success_found
             verdict = _login_tick_verdict(
                 page_text=reading.page_text,
-                url=url,
+                url=reading.url,
                 pre_submit_url=pre_submit_url,
                 failure_text=failure_text,
                 success_selector=success_selector,
                 success_url=success_url,
-                success_found=success_found,
+                success_found=reading.success_found,
             )
         if verdict == _TICK_SUCCESS:
             return True
@@ -467,12 +500,15 @@ async def _wait_for_login_signal_nodriver(
         if loop.time() >= deadline:
             break
 
+    if not last.page_read:
+        _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
+        return False
     _warn_login_signal_timeout(
         login_config=login_config,
         site_name=site_name,
-        url=url,
+        url=last.url,
         pre_submit_url=pre_submit_url,
-        success_found=success_found,
+        success_found=last.success_found,
     )
     return False
 
@@ -489,24 +525,22 @@ def _wait_for_login_signal_selenium(
     """The selenium twin of :func:`_wait_for_login_signal_nodriver`."""
     success_selector = login_config.success
     success_url = login_config.success_url
-    url = ""
-    success_found: bool | None = None
+    last = _ReadWindow()
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
         reading = _read_login_tick_selenium(driver, success_selector, site_name)
+        last.record(reading)
         if reading.error:
-            url = reading.url
             verdict = _TICK_PENDING
         else:
-            url, success_found = reading.url, reading.success_found
             verdict = _login_tick_verdict(
                 page_text=reading.page_text,
-                url=url,
+                url=reading.url,
                 pre_submit_url=pre_submit_url,
                 failure_text=failure_text,
                 success_selector=success_selector,
                 success_url=success_url,
-                success_found=success_found,
+                success_found=reading.success_found,
             )
         if verdict == _TICK_SUCCESS:
             return True
@@ -518,40 +552,17 @@ def _wait_for_login_signal_selenium(
         if time.monotonic() >= deadline:
             break
 
+    if not last.page_read:
+        _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
+        return False
     _warn_login_signal_timeout(
         login_config=login_config,
         site_name=site_name,
-        url=url,
+        url=last.url,
         pre_submit_url=pre_submit_url,
-        success_found=success_found,
+        success_found=last.success_found,
     )
     return False
-
-
-class _UnreadWindow:
-    """What a watch window has seen so far: the last page it read, or why it read none.
-
-    The grace window rules on the last page it managed to read, so a tick that
-    fails after a good one must not replace that page text with nothing, and a
-    window of nothing but failures has to be told apart from a window whose pages
-    were all clean (tidy round, 2026-09-13).
-    """
-
-    def __init__(self) -> None:
-        self.page_read = False
-        self.page_text = ""
-        self.error = "the page was never read"
-        self.url = ""
-
-    def record(self, reading: _TickReading) -> None:
-        """Fold one tick's reading into the window."""
-        if reading.error:
-            self.error = reading.error
-            self.url = reading.url
-            return
-        self.page_read = True
-        self.page_text = reading.page_text
-        self.url = reading.url
 
 
 async def _watch_for_failure_nodriver(
@@ -578,7 +589,7 @@ async def _watch_for_failure_nodriver(
         never readable.
     """
     loop = asyncio.get_running_loop()
-    last = _UnreadWindow()
+    last = _ReadWindow()
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
         reading = await _read_login_tick_nodriver(tab, "", site_name)
@@ -605,7 +616,7 @@ def _watch_for_failure_selenium(
     deadline: float,
 ) -> bool:
     """The selenium twin of :func:`_watch_for_failure_nodriver`."""
-    last = _UnreadWindow()
+    last = _ReadWindow()
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
         reading = _read_login_tick_selenium(driver, "", site_name)
