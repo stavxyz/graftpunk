@@ -699,8 +699,13 @@ async def _run_nodriver_steps(
         await _wait_for_element(tab, plugin.login_config.wait_for, "Login page")
 
     # The URL the last submit was clicked from: a success_url signal counts only
-    # once the page has moved off it (see _missing_login_signals).
+    # once the page has moved off it (see _missing_login_signals). The flag tells
+    # "no submit was clicked", where the URL at the start of the wait is the right
+    # baseline, from "the read at click time came back empty", where re-reading
+    # after the steps would take the post-login URL as the baseline and no later
+    # URL could ever differ from it (polish round 1).
     pre_submit_url = ""
+    submit_clicked = False
     # Execute each step in sequence: wait_for -> fill fields -> submit -> delay
     for step_idx, step in enumerate(plugin.login_config.steps, start=1):
         # Step-level wait_for: wait for element before this step
@@ -731,6 +736,7 @@ async def _run_nodriver_steps(
                         "Check your plugin's login step configuration."
                     )
                 pre_submit_url = _tab_url(tab)
+                submit_clicked = True
                 await submit.click()
             except PluginError:
                 raise
@@ -752,7 +758,7 @@ async def _run_nodriver_steps(
         login_config=login_config,
         failure_text=failure_text,
         site_name=plugin.site_name,
-        pre_submit_url=pre_submit_url or _tab_url(tab),
+        pre_submit_url=pre_submit_url if submit_clicked else _tab_url(tab),
     ):
         return False
 
@@ -856,9 +862,11 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     "the nodriver backend. Set backend='nodriver' or remove wait_for."
                 )
 
-            # The URL the last submit was clicked from: a success_url signal counts
-            # only once the page has moved off it (see _missing_login_signals).
+            # The URL the last submit was clicked from, and whether one was clicked
+            # at all: the nodriver path above carries the same pair, for the same
+            # reason (see the comment there).
             pre_submit_url = ""
+            submit_clicked = False
             # Execute each step in sequence
             for step_idx, step in enumerate(plugin.login_config.steps, start=1):
                 # Step-level wait_for is not supported for selenium
@@ -889,6 +897,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     try:
                         submit_el = session.driver.find_element("css selector", step.submit)
                         pre_submit_url = _driver_url(session.driver)
+                        submit_clicked = True
                         submit_el.click()
                     except (
                         selenium.common.exceptions.WebDriverException,
@@ -910,7 +919,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 login_config=plugin.login_config,
                 failure_text=failure_text,
                 site_name=plugin.site_name,
-                pre_submit_url=pre_submit_url or _driver_url(session.driver),
+                pre_submit_url=pre_submit_url if submit_clicked else _driver_url(session.driver),
             ):
                 return False
 

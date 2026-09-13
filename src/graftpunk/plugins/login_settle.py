@@ -138,6 +138,23 @@ def _success_signal_configured(login_config: LoginConfig) -> bool:
     return bool(login_config.success or login_config.success_url)
 
 
+def _url_signal_holds(*, url: str, pre_submit_url: str, success_url: str) -> bool:
+    """Whether the URL half of the success signal holds for this reading of the page.
+
+    A URL signal means a navigation happened, so it counts only once the URL differs
+    from *pre_submit_url*, the one read just before the last submit: a glob loose
+    enough to match the login page itself (``*example.com*``) would otherwise report
+    success on the first tick and cache a pre-login session (fix round 1).
+
+    An empty *pre_submit_url* is not a baseline but the absence of one (the read came
+    back empty, which nodriver does mid-navigation), and every readable URL differs
+    from it, which handed the same loose glob the same false success. With no known
+    baseline the URL signal cannot be confirmed at all, so it never holds; the wait
+    says so in its debug trail and in the timeout warning (polish round 1).
+    """
+    return bool(pre_submit_url) and url != pre_submit_url and fnmatch.fnmatchcase(url, success_url)
+
+
 def _missing_login_signals(
     *,
     url: str,
@@ -151,16 +168,13 @@ def _missing_login_signals(
     Empty when every configured signal holds, so ``not _missing_login_signals(...)``
     is the success test and the same list names what never appeared in the timeout
     warning.
-
-    A URL signal means a navigation happened, so it counts only once the URL differs
-    from *pre_submit_url*, the one read just before the last submit: a glob loose
-    enough to match the login page itself (``*example.com*``) would otherwise report
-    success on the first tick and cache a pre-login session (fix round 1).
     """
     missing: list[str] = []
     if success_selector and success_found is not True:
         missing.append(f"success element '{success_selector}'")
-    if success_url and not (url != pre_submit_url and fnmatch.fnmatchcase(url, success_url)):
+    if success_url and not _url_signal_holds(
+        url=url, pre_submit_url=pre_submit_url, success_url=success_url
+    ):
         missing.append(f"success URL pattern '{success_url}'")
     return missing
 
@@ -242,16 +256,46 @@ def _warn_login_signal_timeout(
         success_selector=login_config.success,
         success_url=login_config.success_url,
     )
+    hint = (
+        "The page never showed the configured login success signal. Raise "
+        "LoginConfig.timeout when the site redirects slowly, or correct the "
+        "signal to match the page the login actually lands on."
+    )
+    if login_config.success_url and not pre_submit_url:
+        hint += (
+            " The URL before submit could not be read, so a URL signal cannot "
+            "be confirmed; use a `success` selector for this site."
+        )
     LOG.warning(
         "login_signal_timeout",
         plugin=site_name,
         missing=" and ".join(missing),
         url=url,
         timeout=f"{login_config.timeout:g}s",
+        hint=hint,
+    )
+
+
+def _debug_unknown_baseline(
+    *, login_config: LoginConfig, site_name: str, pre_submit_url: str, backend: str
+) -> None:
+    """Note in the debug trail that a configured ``success_url`` cannot be confirmed.
+
+    The baseline is the URL read just before the submit, and nodriver leaves a
+    tab's URL unreadable mid-navigation. Without it the URL signal never holds, so
+    a login configured only that way waits out its whole timeout; an author reading
+    the trail should find the reason at the start of the wait, not infer it.
+    """
+    if not login_config.success_url or pre_submit_url:
+        return
+    LOG.debug(
+        "login_pre_submit_url_unknown",
+        plugin=site_name,
+        backend=backend,
+        success_url=login_config.success_url,
         hint=(
-            "The page never showed the configured login success signal. Raise "
-            "LoginConfig.timeout when the site redirects slowly, or correct the "
-            "signal to match the page the login actually lands on."
+            "The URL before submit could not be read, so a URL signal cannot be "
+            "confirmed; use a `success` selector for this site."
         ),
     )
 
@@ -732,6 +776,12 @@ async def wait_for_login_outcome_nodriver(
             site_name=site_name,
             deadline=asyncio.get_running_loop().time() + _NO_SIGNAL_GRACE,
         )
+    _debug_unknown_baseline(
+        login_config=login_config,
+        site_name=site_name,
+        pre_submit_url=pre_submit_url,
+        backend="nodriver",
+    )
     deadline = asyncio.get_running_loop().time() + login_config.timeout
     if not await _wait_for_login_signal_nodriver(
         tab=tab,
@@ -763,6 +813,12 @@ def wait_for_login_outcome_selenium(
             site_name=site_name,
             deadline=time.monotonic() + _NO_SIGNAL_GRACE,
         )
+    _debug_unknown_baseline(
+        login_config=login_config,
+        site_name=site_name,
+        pre_submit_url=pre_submit_url,
+        backend="selenium",
+    )
     deadline = time.monotonic() + login_config.timeout
     if not _wait_for_login_signal_selenium(
         driver=driver,

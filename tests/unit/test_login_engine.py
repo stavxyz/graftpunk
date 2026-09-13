@@ -871,6 +871,13 @@ def _warning_kwargs(mock_log: MagicMock, event: str) -> dict[str, Any]:
     return dict(calls[0][1])
 
 
+def _debug_kwargs(mock_log: MagicMock, event: str) -> dict[str, Any]:
+    """The keyword arguments of the single LOG.debug call for *event*."""
+    calls = [call for call in mock_log.debug.call_args_list if call[0][0] == event]
+    assert len(calls) == 1, f"expected one {event!r} debug event, got {calls}"
+    return dict(calls[0][1])
+
+
 class DeclarativeNodriverPoll(SitePlugin):
     """Nodriver plugin with a success element and room to poll for it."""
 
@@ -1079,6 +1086,80 @@ class TestNodriverLoginSignalPoll:
         assert warning["missing"] == "success URL pattern '*example.com*'"
 
     @pytest.mark.asyncio
+    async def test_an_unreadable_pre_submit_url_leaves_the_url_signal_unconfirmable(
+        self,
+    ) -> None:
+        """nodriver reports no URL at click time, so there is no baseline to move off.
+
+        The loose glob matches every later URL; without a baseline the wait must not
+        take that as a navigation, and it says why it could not.
+        """
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class LooseUrlPlugin(SitePlugin):
+            site_name = "ndnobase"
+            session_name = "ndnobase"
+            help_text = "ND No Baseline"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                success_url="*example.com*",
+                timeout=0.2,
+                settle=0.0,
+            )
+
+        tab = _ScriptedNodriverTab(urls=(None, "https://app.example.com/dashboard"))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(LooseUrlPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in tab.events
+        assert _debug_kwargs(mock_log, "login_pre_submit_url_unknown")["backend"] == "nodriver"
+        hint = _warning_kwargs(mock_log, "login_signal_timeout")["hint"]
+        assert "URL before submit could not be read" in hint
+
+    @pytest.mark.asyncio
+    async def test_a_step_with_no_submit_measures_from_the_url_at_the_wait_start(self) -> None:
+        """With no submit to click, the URL the wait starts on is the baseline."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class NoSubmitPlugin(SitePlugin):
+            site_name = "ndnosubmit"
+            session_name = "ndnosubmit"
+            help_text = "ND No Submit"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"})],
+                url="/login",
+                success_url="*/dashboard*",
+                timeout=5.0,
+                settle=0.0,
+            )
+
+        tab = _ScriptedNodriverTab(
+            urls=("https://app.example.com/login", "https://app.example.com/dashboard"),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(NoSubmitPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert "cookies" in tab.events
+
+    @pytest.mark.asyncio
     async def test_the_same_glob_succeeds_once_the_page_navigates(self) -> None:
         """A URL that changes on a later tick is the navigation the rule asks for."""
         from graftpunk.plugins.login_engine import generate_login_method
@@ -1232,7 +1313,7 @@ class TestNodriverLoginSignalPoll:
         from graftpunk.plugins.login_engine import generate_login_method
 
         tab = _ScriptedNodriverTab(
-            urls=(None, None, "https://app.example.com/dashboard"),
+            urls=("https://app.example.com/login", None, "https://app.example.com/dashboard"),
         )
         mock_bs, _instance = _nodriver_session_for(tab)
 
@@ -1926,6 +2007,30 @@ class TestLoginTickVerdict:
             == "success"
         )
 
+    def test_an_unknown_baseline_is_not_a_navigation(self) -> None:
+        """With no URL read before the submit there is nothing a move can be measured
+        against, so a matching URL is not yet a signal."""
+        assert (
+            self._verdict(
+                url="https://app.example.com/dashboard",
+                pre_submit_url="",
+                success_url="*/dashboard*",
+            )
+            == "pending"
+        )
+
+    def test_missing_signals_report_the_url_pattern_with_an_unknown_baseline(self) -> None:
+        """The timeout warning names the URL pattern as missing, matching URL or not."""
+        from graftpunk.plugins.login_settle import _missing_login_signals
+
+        assert _missing_login_signals(
+            url="https://app.example.com/dashboard",
+            pre_submit_url="",
+            success_found=None,
+            success_selector="",
+            success_url="*/dashboard*",
+        ) == ["success URL pattern '*/dashboard*'"]
+
     def test_missing_signals_name_every_signal_that_does_not_hold(self) -> None:
         """The timeout warning's text comes from this list."""
         from graftpunk.plugins.login_settle import _missing_login_signals
@@ -2189,7 +2294,18 @@ class _ScriptedSeleniumDriver:
 
     @property
     def current_url(self) -> str:
-        return self._at(self._urls, max(self.tick, 0))
+        """The scripted URL for this tick.
+
+        An empty entry stands for a read the driver cannot answer: selenium raises
+        there, and ``driver_url`` turns that into the empty string the poll reads as
+        "no URL".
+        """
+        from selenium.common.exceptions import WebDriverException
+
+        url = self._at(self._urls, max(self.tick, 0))
+        if not url:
+            raise WebDriverException("no such window: target window already closed")
+        return url
 
     def find_element(self, by: str, value: str) -> MagicMock:
         from selenium.common.exceptions import NoSuchElementException
@@ -2412,6 +2528,40 @@ class TestSeleniumLoginSignalPoll:
         assert "cookies" not in driver.events
         warning = _warning_kwargs(mock_log, "login_signal_timeout")
         assert warning["missing"] == "success URL pattern '*example.com*'"
+
+    def test_an_unreadable_pre_submit_url_leaves_the_url_signal_unconfirmable(self) -> None:
+        """The selenium twin: no baseline, so a matching URL is not a navigation."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class NoBaselineSeleniumPlugin(SitePlugin):
+            site_name = "selnobase"
+            session_name = "selnobase"
+            help_text = "Sel No Baseline"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                success_url="*example.com*",
+                timeout=0.2,
+                settle=0.0,
+            )
+
+        driver = _ScriptedSeleniumDriver(urls=("", "https://app.example.com/dashboard"))
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(NoBaselineSeleniumPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in driver.events
+        assert _debug_kwargs(mock_log, "login_pre_submit_url_unknown")["backend"] == "selenium"
+        hint = _warning_kwargs(mock_log, "login_signal_timeout")["hint"]
+        assert "URL before submit could not be read" in hint
 
     def test_the_same_glob_succeeds_once_the_page_navigates(self) -> None:
         """A URL that changes on a later tick is the navigation the rule asks for."""
