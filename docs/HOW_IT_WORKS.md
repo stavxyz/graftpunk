@@ -662,7 +662,7 @@ The declarative engine executes each step in sequence:
 
 The wait is what makes a slow login work: sites that finish through an identity-provider redirect can take tens of seconds to mint their cookies, and the engine holds until the signal it was told to look for appears. When the timeout passes first, the login fails and the warning names the signal that never appeared and the URL the page ended on.
 
-Write both signals so they cannot match the login page itself. An element that is already on the form, or a glob as loose as `*example.com*`, would otherwise be satisfied before the submit has navigated anywhere, and the session cached would be the one from before the login. The engine guards the URL half of that (a `success_url` counts only once the page has moved off the URL the submit was clicked from) and delays the first pass by one interval, but a `success` element that the form and the landing page share is beyond its reach.
+Write both signals so they cannot match the login page itself. An element that is already on the form, or a glob as loose as `*example.com*`, would otherwise be satisfied before the submit has navigated anywhere, and the session cached would be the one from before the login. The engine guards the URL half of that (a `success_url` counts only once the page has moved off the URL the submit was clicked from) and delays the first pass by one interval, but a `success` element that the form and the landing page share is beyond its reach. That guard needs the URL the submit was clicked from: when the browser could not read it (nodriver reports no URL while a tab navigates), a `success_url` cannot be confirmed at all and the login waits out its timeout, so a site where that happens needs a `success` selector.
 
 Configure at least one of `failure`, `success`, and `success_url`. With neither `success` nor `success_url` set there is nothing to wait for, so the engine watches the page for three seconds for the `failure` text (and for a rate-limit page), stops the moment either shows, and then takes the single verdict it has always taken from the page text. `timeout` and `settle` play no part on that path. With none of the three set, the verdict is always success and a warning advises you to add validation.
 
@@ -672,7 +672,7 @@ Configure at least one of `failure`, `success`, and `success_url`. With neither 
 
 **Backend differences in success detection:**
 - **Selenium:** Uses `driver.find_element()` with a try/except for `NoSuchElementException`
-- **NoDriver:** Uses `await tab.select(selector)` and checks for `None` return (nodriver does not raise on timeout)
+- **NoDriver:** Before the submit, element lookups go through `_select_with_retry` around `await tab.select(selector)`, which returns `None` rather than raising when the element is not there yet. Each pass of the post-submit poll calls `await tab.query_selector(selector)` once instead and checks for a `None` return: the pass does not wait, because the poll is the retry.
 
 ### 2. Custom Login Method (Python)
 
