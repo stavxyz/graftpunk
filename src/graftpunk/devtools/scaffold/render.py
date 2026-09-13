@@ -65,6 +65,9 @@ _DOCSTRING_WRAP_WIDTH = _GENERATED_LINE_LENGTH - len(_L2)
 # call, an assignment target): ruff format never splits an identifier and
 # E501 still applies, so the identifiers are bounded at the point they are
 # derived instead (validation fix round 4, Finding 4, 2026-09-12).
+# The methods whose stub carries a JSON body dict.
+_MUTATING_METHODS = ("POST", "PUT", "PATCH")
+
 _MAX_PLUGIN_NAME = 40
 _MAX_COMMAND_NAME = 40
 _MAX_PARAM_NAME = 40
@@ -685,9 +688,17 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         ("request_json", "xhr", "dict") if is_json else ("request_text", "navigation", "str")
     )
 
+    # A body dict is only emitted for a mutating method, so the body parameters
+    # only become arguments when it is: a GET that happened to record a body got
+    # arguments the stub never used (polish round 1, 2026-09-12).
+    emits_body = bool(endpoint.body_params) and any(
+        m in _MUTATING_METHODS for m in endpoint.methods
+    )
+    body_params_declared = set(endpoint.body_params) if emits_body else set()
+
     params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
     identifier_for: dict[str, str] = {}
-    for extra in sorted(set(endpoint.query_params) | set(endpoint.body_params)):
+    for extra in sorted(set(endpoint.query_params) | body_params_declared):
         observed = endpoint.query_params.get(extra) or endpoint.body_params.get(extra, "str")
         identifier_for[extra] = _param_identifier(extra, seen_params)
         annotation = _PY_TYPE_BY_OBSERVED.get(observed, "str")
@@ -699,7 +710,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     if endpoint.query_params:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.query_params)]
         call_lines.extend(_exploded_dict_lines("params", entries))
-    if any(m in ("POST", "PUT", "PATCH") for m in endpoint.methods) and endpoint.body_params:
+    if emits_body:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.body_params)]
         call_lines.extend(_exploded_dict_lines("json", entries))
     if endpoint.custom_headers:

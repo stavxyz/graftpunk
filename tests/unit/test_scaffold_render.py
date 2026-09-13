@@ -762,6 +762,49 @@ class TestPluginModuleCommandStubs:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert '"X-Shop-Client": "GP-FILL",' in plugin_code
 
+    def test_a_get_that_recorded_a_body_declares_no_body_arguments(self) -> None:
+        """The body dict is only emitted for a mutating method, so declaring its
+        parameters on a GET gave the stub arguments it never used."""
+        endpoint = Endpoint(
+            host="api.myshop.example.com",
+            template="/search",
+            methods=("GET",),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params={"q": "str"},
+            body_params={"filters": "str", "cursor": "str"},
+            body_kind="json",
+            shape=ShapeNode(kind="object", children={}),
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "q: str | None = None" in plugin_code
+        assert "filters" not in plugin_code
+        assert "cursor" not in plugin_code
+        assert "json={" not in plugin_code
+        ast.parse(plugin_code)
+
+    def test_a_post_still_declares_its_body_arguments(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_NOTES_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "author: str | None = None" in plugin_code
+        assert '"author": author,' in plugin_code
+
     def test_html_endpoint_calls_request_text_with_navigation_role(self) -> None:
         html_endpoint = Endpoint(
             host="api.myshop.example.com",
