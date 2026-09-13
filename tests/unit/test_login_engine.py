@@ -791,7 +791,7 @@ class _ScriptedNodriverTab:
         *,
         success_selector: str = "",
         contents: tuple[str, ...] = ("<html>Signing in</html>",),
-        urls: tuple[str, ...] = ("https://app.example.com/login",),
+        urls: tuple[str | None, ...] = ("https://app.example.com/login",),
         success_from: int | None = None,
         ready_states: tuple[str, ...] = ("complete",),
         unreadable_ticks: tuple[int, ...] = (),
@@ -817,11 +817,12 @@ class _ScriptedNodriverTab:
         return MagicMock()
 
     @staticmethod
-    def _at(script: tuple[str, ...], index: int) -> str:
+    def _at(script: tuple[Any, ...], index: int) -> Any:
         return script[min(index, len(script) - 1)]
 
     @property
-    def url(self) -> str:
+    def url(self) -> str | None:
+        """The scripted URL, which nodriver leaves as None while a tab navigates."""
         return self._at(self._urls, max(self.tick, 0))
 
     async def get_content(self) -> str:
@@ -1174,6 +1175,71 @@ class TestNodriverLoginSignalPoll:
 
         assert result is True
         assert tab.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
+
+    @pytest.mark.asyncio
+    async def test_a_url_of_none_mid_redirect_keeps_the_poll_going(self) -> None:
+        """nodriver reports no URL while a tab navigates; the poll waits it out."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            urls=(None, None, "https://app.example.com/dashboard"),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert tab.tick == 2
+
+    @pytest.mark.asyncio
+    async def test_a_url_that_is_never_readable_times_out_with_an_empty_url(self) -> None:
+        """The warning says where the page ended even when that is nowhere at all."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(urls=(None,))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["url"] == ""
+        assert warning["missing"] == "success URL pattern '*/dashboard*'"
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_below_one_interval_still_runs_a_tick_and_ends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each sleep is clamped to what is left, so a short timeout costs its own length."""
+        import time as time_module
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        monkeypatch.setattr("graftpunk.plugins.login_engine._LOGIN_POLL_INTERVAL", 30.0)
+        tab = _ScriptedNodriverTab(success_selector=".dashboard")
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            started = time_module.monotonic()
+            # DeclarativeNodriverSuccess has timeout=0.05, a fraction of the interval.
+            result = await generate_login_method(DeclarativeNodriverSuccess())(_LOGIN_CREDENTIALS)
+            elapsed = time_module.monotonic() - started
+
+        assert result is False
+        assert tab.tick == 0  # it read the page once rather than sleeping past the deadline
+        assert elapsed < 5.0  # an unclamped first sleep would be the 30 second interval
 
     @pytest.mark.asyncio
     async def test_rate_limit_page_beats_a_later_success(self) -> None:
@@ -2247,6 +2313,31 @@ class TestSeleniumLoginSignalPoll:
 
         assert result is True
         assert driver.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
+
+    def test_a_timeout_below_one_interval_still_runs_a_tick_and_ends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each sleep is clamped to what is left, so a short timeout costs its own length."""
+        import time as time_module
+
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        monkeypatch.setattr("graftpunk.plugins.login_engine._LOGIN_POLL_INTERVAL", 30.0)
+        driver = _ScriptedSeleniumDriver(success_selector="a[href='/logout']")
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            started = time_module.monotonic()
+            # DeclarativeQuotes has timeout=0.05, a fraction of the interval.
+            result = generate_login_method(DeclarativeQuotes())(_LOGIN_CREDENTIALS)
+            elapsed = time_module.monotonic() - started
+
+        assert result is False
+        assert driver.tick == 0
+        assert elapsed < 5.0  # an unclamped first sleep would be the 30 second interval
 
     def test_rate_limit_page_beats_a_later_success(self) -> None:
         """A rate-limit page ends the wait instead of polling on for the element."""
