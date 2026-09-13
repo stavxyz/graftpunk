@@ -1537,6 +1537,39 @@ class TestNodriverLoginSignalPoll:
         assert timeouts == []
 
     @pytest.mark.asyncio
+    async def test_a_timeout_with_nothing_missing_names_the_tick_that_failed(self) -> None:
+        """The element was found on an early tick and the URL moved on a tick that raised.
+
+        Both signals then hold on the window without any one tick having seen them
+        together, so the warning has no signal to name and says which end of it
+        failed instead of logging an empty `missing`.
+        """
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            success_selector=".dashboard",
+            success_from=0,
+            urls=("https://app.example.com/login", "https://app.example.com/dashboard"),
+            unreadable_ticks=tuple(range(1, 1000)),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverBothSignals())(
+                _LOGIN_CREDENTIALS
+            )
+
+        assert result is False
+        assert "cookies" not in tab.events
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "nothing: the deciding tick could not be read"
+        assert "Could not find node" in warning["error"]
+
+    @pytest.mark.asyncio
     async def test_a_url_of_none_mid_redirect_keeps_the_poll_going(self) -> None:
         """nodriver reports no URL while a tab navigates; the poll waits it out."""
         from graftpunk.plugins.login_engine import generate_login_method

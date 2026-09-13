@@ -261,11 +261,19 @@ def _warn_login_signal_timeout(
     url: str,
     pre_submit_url: str,
     success_found: bool | None,
+    last_error: str,
 ) -> None:
     """Warn that the configured success signal never appeared before the deadline.
 
     The one place both backends report a timeout from, so the message cannot drift
     between them.
+
+    Nothing can be missing here and the wait still time out: a tick that errored
+    after the URL had moved leaves the window holding that URL beside an element
+    probe from an earlier tick, so every configured signal reads as holding on a
+    page no single tick ever saw whole. The deciding tick is the one that failed,
+    and the warning says that and carries *last_error* rather than logging an empty
+    ``missing`` (polish round 2).
     """
     missing = _missing_login_signals(
         url=url,
@@ -274,11 +282,23 @@ def _warn_login_signal_timeout(
         success_selector=login_config.success,
         success_url=login_config.success_url,
     )
-    hint = (
-        "The page never showed the configured login success signal. Raise "
-        "LoginConfig.timeout when the site redirects slowly, or correct the "
-        "signal to match the page the login actually lands on."
-    )
+    fields: dict[str, str] = {}
+    if missing:
+        missing_text = " and ".join(missing)
+        hint = (
+            "The page never showed the configured login success signal. Raise "
+            "LoginConfig.timeout when the site redirects slowly, or correct the "
+            "signal to match the page the login actually lands on."
+        )
+    else:
+        missing_text = "nothing: the deciding tick could not be read"
+        fields["error"] = last_error
+        hint = (
+            "Every configured signal holds on what the wait last read, but the "
+            "tick that would have decided it could not be read, so the login was "
+            "never confirmed. Raise LoginConfig.timeout to allow more ticks, and "
+            "run with --observe=full to capture what the browser was doing."
+        )
     if login_config.success_url and not pre_submit_url:
         hint += (
             " The URL before submit could not be read, so a URL signal cannot "
@@ -287,10 +307,11 @@ def _warn_login_signal_timeout(
     LOG.warning(
         "login_signal_timeout",
         plugin=site_name,
-        missing=" and ".join(missing),
+        missing=missing_text,
         url=url,
         timeout=f"{login_config.timeout:g}s",
         hint=hint,
+        **fields,
     )
 
 
@@ -728,6 +749,7 @@ async def _wait_for_login_signal_nodriver(
         url=last.url,
         pre_submit_url=pre_submit_url,
         success_found=last.success_found,
+        last_error=last.error,
     )
     return False
 
@@ -794,6 +816,7 @@ def _wait_for_login_signal_selenium(
         url=last.url,
         pre_submit_url=pre_submit_url,
         success_found=last.success_found,
+        last_error=last.error,
     )
     return False
 
