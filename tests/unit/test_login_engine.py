@@ -1614,6 +1614,60 @@ class TestNoSignalGraceWindow:
         )
 
     @pytest.mark.asyncio
+    async def test_a_timeout_this_path_cannot_use_is_said_out_loud(self) -> None:
+        """Raising timeout on a signal-less login changes nothing, and the trail says so."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class RaisedTimeoutPlugin(SitePlugin):
+            site_name = "ndtiming"
+            session_name = "ndtiming"
+            help_text = "ND Timing"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                failure="Invalid credentials",
+                timeout=90.0,
+            )
+
+        tab = _ScriptedNodriverTab(contents=("<html>Welcome</html>",))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(RaisedTimeoutPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        event = _debug_kwargs(mock_log, "login_no_signal_ignores_timing")
+        assert event["timeout"] == "90s"
+        assert "settle" not in event  # it kept the default, so it is not worth naming
+
+    @pytest.mark.asyncio
+    async def test_a_login_that_set_no_timing_says_nothing_about_it(self) -> None:
+        """The event is for a plugin that set a value, not for every signal-less login."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(contents=("<html>Welcome</html>",))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverFailureOnly())(
+                _LOGIN_CREDENTIALS
+            )
+
+        assert result is True
+        events = [c[0][0] for c in mock_log.debug.call_args_list]
+        assert "login_no_signal_ignores_timing" not in events
+
+    @pytest.mark.asyncio
     async def test_nodriver_a_page_that_never_reads_is_a_failure(self) -> None:
         """Nothing was read, so nothing confirms the login: it fails, and says why."""
         from graftpunk.plugins.login_engine import generate_login_method

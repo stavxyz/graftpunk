@@ -16,6 +16,7 @@ empty string rather than raising. Everything else here is internal to the wait.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import fnmatch
 import time
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -301,6 +302,35 @@ def _debug_unknown_baseline(
             "The URL before submit could not be read, so a URL signal cannot be "
             "confirmed; use a `success` selector for this site."
         ),
+    )
+
+
+def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend: str) -> None:
+    """Note that a login with no success signal spends neither ``timeout`` nor ``settle``.
+
+    There is nothing to wait for on that path, so the wait is the grace window and
+    both fields go unread. An author who raised ``timeout`` and saw the login give
+    up at the same moment as before needs the trail to say why (polish round 1).
+    """
+    defaults = {f.name: f.default for f in dataclasses.fields(login_config)}
+    set_by_plugin = {
+        name: getattr(login_config, name)
+        for name in ("timeout", "settle")
+        if getattr(login_config, name) != defaults[name]
+    }
+    if not set_by_plugin:
+        return
+    LOG.debug(
+        "login_no_signal_ignores_timing",
+        plugin=site_name,
+        backend=backend,
+        grace=f"{_NO_SIGNAL_GRACE:g}s",
+        hint=(
+            "This login configures no success signal, so it watches for its failure "
+            "text across the grace window and uses neither timeout nor settle. Set "
+            "success or success_url to have the engine wait for a signal."
+        ),
+        **{name: f"{value:g}s" for name, value in set_by_plugin.items()},
     )
 
 
@@ -830,6 +860,7 @@ async def wait_for_login_outcome_nodriver(
         True when the login stands, False when it does not (the reason is logged).
     """
     if not _success_signal_configured(login_config):
+        _debug_ignored_timings(login_config=login_config, site_name=site_name, backend="nodriver")
         return await _watch_for_failure_nodriver(
             tab=tab,
             failure_text=failure_text,
@@ -867,6 +898,7 @@ def wait_for_login_outcome_selenium(
 ) -> bool:
     """The selenium twin of :func:`wait_for_login_outcome_nodriver`."""
     if not _success_signal_configured(login_config):
+        _debug_ignored_timings(login_config=login_config, site_name=site_name, backend="selenium")
         return _watch_for_failure_selenium(
             driver=driver,
             failure_text=failure_text,
