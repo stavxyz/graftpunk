@@ -753,10 +753,12 @@ class TestPluginModuleWithLoginForm:
         plugin_code = render(self._login_spec(pre_login_redirect, _CREDENTIAL_POST_OBSERVATION))[
             "src/graftpunk_myshop/plugin.py"
         ]
-        assert 'success_url="GP-FILL: glob for the URL the login lands on",' in plugin_code
+        assert "# GP-FILL: success_url, a glob matched against the whole URL" in plugin_code
+        # A GP-FILL literal would be a configured signal the engine polls for.
+        assert "success_url=" not in plugin_code
 
-    def test_success_url_is_a_gp_fill_line_when_no_redirect_was_observed(self) -> None:
-        """With nothing to copy from the run, success_url is left to be filled in."""
+    def test_success_url_is_a_comment_when_no_redirect_was_observed(self) -> None:
+        """With nothing to copy from the run, success_url is left unset and explained."""
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
@@ -765,7 +767,28 @@ class TestPluginModuleWithLoginForm:
             digest=_digest(login_forms=(_PASSWORD_LOGIN_FORM,)),
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
-        assert 'success_url="GP-FILL: glob for the URL the login lands on",' in plugin_code
+        assert "# GP-FILL: success_url, a glob matched against the whole URL" in plugin_code
+        # A GP-FILL literal would be a configured signal the engine polls for.
+        assert "success_url=" not in plugin_code
+
+    def test_a_glob_metacharacter_in_the_observed_path_is_escaped(self) -> None:
+        """A path the site spells with brackets must not become glob syntax."""
+        from fnmatch import fnmatchcase
+
+        bracketed_redirect = LoginObservation(
+            order=3,
+            method="GET",
+            url="https://app.myshop.example.com/auth/callback",
+            status=302,
+            kind="redirect",
+            fields=(),
+            redirect_to="/a[b]/c",
+        )
+        plugin_code = render(self._login_spec(_CREDENTIAL_POST_OBSERVATION, bracketed_redirect))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        assert '        success_url="*/a[[]b]/c*",\n' in plugin_code
+        assert fnmatchcase("https://app.myshop.example.com/a[b]/c?x=1", "*/a[[]b]/c*")
 
     def test_a_redirect_to_the_site_root_yields_no_pattern(self) -> None:
         """``*/*`` would match the login page too, so the root is left to be filled in."""
@@ -781,7 +804,9 @@ class TestPluginModuleWithLoginForm:
         plugin_code = render(self._login_spec(_CREDENTIAL_POST_OBSERVATION, root_redirect))[
             "src/graftpunk_myshop/plugin.py"
         ]
-        assert 'success_url="GP-FILL: glob for the URL the login lands on",' in plugin_code
+        assert "# GP-FILL: success_url, a glob matched against the whole URL" in plugin_code
+        # A GP-FILL literal would be a configured signal the engine polls for.
+        assert "success_url=" not in plugin_code
 
     def test_no_form_found_emits_commented_block_with_observations(self) -> None:
         observation = LoginObservation(

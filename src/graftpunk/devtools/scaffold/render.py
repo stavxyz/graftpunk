@@ -8,6 +8,7 @@ for everything the scaffold emits").
 
 from __future__ import annotations
 
+import glob
 import json
 import keyword
 import re
@@ -233,10 +234,14 @@ def _success_url_pattern(redirect_path: str) -> str | None:
     path gets a leading wildcard for the host (the login often lands on a different
     one than it started from) and a trailing wildcard for the query the site adds.
     A redirect to the site root is every URL's prefix and would match the login page
-    itself, so it yields no pattern and the caller emits a GP-FILL line instead.
+    itself, so it yields no pattern and the caller emits a comment instead.
+
+    The path itself is escaped: ``[``, ``]``, ``*`` and ``?`` are glob syntax, and a
+    site that puts one in a path (``/a[b]/c``) would otherwise widen or break the
+    pattern the engine matches with (polish round 1).
     """
     path = redirect_path.rstrip("/")
-    return f"*{path}*" if path.startswith("/") else None
+    return f"*{glob.escape(path)}*" if path.startswith("/") else None
 
 
 def _password_login_form(d: RunDigest) -> LoginForm | None:
@@ -281,7 +286,18 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         # this URL after submit, and an element check is still worth filling in.
         lines.extend(_literal_lines(pattern, indent=len(_L2), prefix="success_url="))
     else:
-        lines.append('        success_url="GP-FILL: glob for the URL the login lands on",')
+        # No landing URL was observed, so there is nothing to copy. A GP-FILL string
+        # here would be a configured signal: the engine would poll for that literal
+        # until the timeout and fail naming it, even for an author who filled in
+        # success instead. The hint is a comment, and the field stays unset.
+        lines.extend(
+            _wrapped_comment_lines(
+                "GP-FILL: success_url, a glob matched against the whole URL this login "
+                "lands on, e.g. */dashboard*. This run observed no redirect after the "
+                "credential post.",
+                indent=len(_L2),
+            )
+        )
     lines.append("    )")
     return lines
 
