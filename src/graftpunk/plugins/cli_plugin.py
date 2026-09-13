@@ -538,16 +538,17 @@ class LoginConfig:
             Empty string (default) means use base_url directly.
         failure: Text on the page indicating login failure.
         success: CSS selector for an element indicating login success.
-        success_url: Glob matched against the whole browser URL after the last
-            step, e.g. ``https://app.example.com/*`` or ``*/dashboard*``. Empty
-            string (default) leaves the URL out of the success signal. With
-            both this and ``success`` set, both have to hold.
         wait_for: CSS selector to wait for before any steps execute.
             Empty string (default) means no explicit wait.
         headless: Run the login browser headless. Defaults to False (a visible
             window) so a human can solve a CAPTCHA or 2FA prompt; set True for
             sites that need neither. ``gp <plugin> login --headless`` overrides
             this per invocation.
+        success_url: Glob matched against the whole browser URL after the last
+            step, e.g. ``https://app.example.com/*`` or ``*/dashboard*``. It
+            counts only once the URL differs from the one the last submit was
+            clicked from. Empty string (default) leaves the URL out of the
+            success signal. With both this and ``success`` set, both have to hold.
         timeout: Seconds to wait after the last step for the configured success
             or failure signal. Defaults to 30.0. Raise it for a login that
             finishes through a slow identity-provider redirect chain.
@@ -559,9 +560,11 @@ class LoginConfig:
     url: str = ""
     failure: str = ""
     success: str = ""
-    success_url: str = ""
     wait_for: str = ""
     headless: bool = False
+    # The post-submit wait's own fields come last, after headless, so adding them
+    # left every existing positional argument where it was (tidy round, 2026-09-13).
+    success_url: str = ""
     timeout: float = 30.0
     settle: float = 1.0
 

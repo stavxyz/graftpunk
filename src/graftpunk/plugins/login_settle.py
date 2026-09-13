@@ -44,6 +44,31 @@ def _warn_no_login_validation(site_name: str) -> None:
     )
 
 
+def _warn_rate_limited(site_name: str) -> None:
+    """Log a warning when the page came from the site's rate limiter."""
+    LOG.warning(
+        "login_rate_limited",
+        plugin=site_name,
+        hint=(
+            "The site returned a 'Too Many Requests' page. This is not a "
+            "credentials problem; wait before retrying."
+        ),
+    )
+
+
+def _warn_failure_text(site_name: str, failure_text: str) -> None:
+    """Log a warning when the configured failure text is on the page."""
+    LOG.warning(
+        "login_failure_text_detected",
+        plugin=site_name,
+        text=failure_text,
+        hint=(
+            "The configured failure text is on the page. Sites show it for "
+            "wrong credentials, but also for an empty or malformed submission."
+        ),
+    )
+
+
 def _check_login_result(
     *,
     page_text: str,
@@ -73,26 +98,11 @@ def _check_login_result(
     # bundle or error catalogue on a real post-login page can contain the
     # marker text. Only refine a failure, never veto a success.
     if success_found is not True and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
-        LOG.warning(
-            "login_rate_limited",
-            plugin=site_name,
-            hint=(
-                "The site returned a 'Too Many Requests' page. This is not a "
-                "credentials problem; wait before retrying."
-            ),
-        )
+        _warn_rate_limited(site_name)
         return False
 
     if failure_text and failure_text.lower() in lowered:
-        LOG.warning(
-            "login_failure_text_detected",
-            plugin=site_name,
-            text=failure_text,
-            hint=(
-                "The configured failure text is on the page. Sites show it for "
-                "wrong credentials, but also for an empty or malformed submission."
-            ),
-        )
+        _warn_failure_text(site_name, failure_text)
         return False
 
     if success_found is False:
@@ -113,10 +123,14 @@ def _check_login_result(
     return True
 
 
-# One poll tick's reading of the page, before the deadline is consulted.
+# One poll tick's reading of the page, before the deadline is consulted. A failing
+# tick names its reason, so the loop that ends on it can log that reason and no
+# failure the wait returns is left unexplained (tidy round, 2026-09-13).
 _TICK_PENDING = "pending"
 _TICK_SUCCESS = "success"
-_TICK_FAILURE = "failure"
+_TICK_FAILURE_TEXT = "failure_text"
+_TICK_RATE_LIMITED = "rate_limited"
+_TICK_FAILURES = (_TICK_FAILURE_TEXT, _TICK_RATE_LIMITED)
 
 
 def _success_signal_configured(login_config: LoginConfig) -> bool:
@@ -172,7 +186,8 @@ def _login_tick_verdict(
     error catalogue on a real post-login page can carry the marker text.
 
     Returns:
-        One of ``_TICK_SUCCESS``, ``_TICK_FAILURE``, ``_TICK_PENDING``.
+        ``_TICK_SUCCESS``, ``_TICK_PENDING``, or the reason the tick failed:
+        ``_TICK_FAILURE_TEXT`` or ``_TICK_RATE_LIMITED``.
     """
     lowered = page_text.lower()
     signal_holds = bool(success_selector or success_url) and not _missing_login_signals(
@@ -183,10 +198,25 @@ def _login_tick_verdict(
         success_url=success_url,
     )
     if failure_text and failure_text.lower() in lowered:
-        return _TICK_FAILURE
+        return _TICK_FAILURE_TEXT
     if not signal_holds and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
-        return _TICK_FAILURE
+        return _TICK_RATE_LIMITED
     return _TICK_SUCCESS if signal_holds else _TICK_PENDING
+
+
+def _warn_login_tick_failure(*, verdict: str, site_name: str, failure_text: str) -> None:
+    """Log the warning that names why this tick ended the wait.
+
+    Every failure the wait returns carries one. ``_check_login_result`` weighs a
+    found success element against the rate-limit marker and stays silent when the
+    element wins, which left a rate-limited tick with a present element (and a
+    success_url that had not moved) reported as a failure with nothing said about
+    it (tidy round, 2026-09-13).
+    """
+    if verdict == _TICK_RATE_LIMITED:
+        _warn_rate_limited(site_name)
+    elif verdict == _TICK_FAILURE_TEXT:
+        _warn_failure_text(site_name, failure_text)
 
 
 def _warn_login_signal_timeout(
@@ -253,19 +283,25 @@ def _driver_url(driver: Any) -> str:
 
 
 class _TickReading(NamedTuple):
-    """One readable poll tick: what the page said, where it was, what was found."""
+    """One poll tick: what the page said, where it was, what was found.
+
+    ``error`` is empty on a tick that was read. A tick that could not be read
+    carries the error text instead, with no page text, so a caller can both keep
+    waiting and say afterwards why it never saw a page.
+    """
 
     page_text: str
     url: str
     success_found: bool | None
+    error: str = ""
 
 
 async def _read_login_tick_nodriver(
     tab: Any,  # nodriver.Tab
     success_selector: str,
     site_name: str,
-) -> _TickReading | None:
-    """One tick's reading of the tab, or None when the page could not be read.
+) -> _TickReading:
+    """One tick's reading of the tab, or a reading carrying the error instead.
 
     A ProtocolException means the document node went invalid mid-navigation, which
     is the window this poll exists for (see ``_select_with_retry``): the tick is
@@ -290,7 +326,7 @@ async def _read_login_tick_nodriver(
             exc_type=type(exc).__name__,
             backend="nodriver",
         )
-        return None
+        return _TickReading("", _tab_url(tab), None, error=str(exc))
     return _TickReading(page_text, url, success_found)
 
 
@@ -298,7 +334,7 @@ def _read_login_tick_selenium(
     driver: Any,  # selenium WebDriver
     success_selector: str,
     site_name: str,
-) -> _TickReading | None:
+) -> _TickReading:
     """The selenium twin of :func:`_read_login_tick_nodriver`.
 
     A missing element is NoSuchElementException and reads as "not yet"; any other
@@ -325,8 +361,28 @@ def _read_login_tick_selenium(
             exc_type=type(exc).__name__,
             backend="selenium",
         )
-        return None
+        return _TickReading("", _driver_url(driver), None, error=str(exc))
     return _TickReading(page_text, url, success_found)
+
+
+def _warn_login_page_unreadable(*, site_name: str, error: str, url: str) -> None:
+    """Warn that no tick of the window ever read the page.
+
+    A login whose page could not be read even once has not been confirmed by
+    anything, and the empty page text it leaves behind reads as "no failure text
+    on the page", which is not a success (tidy round, 2026-09-13).
+    """
+    LOG.warning(
+        "login_page_unreadable",
+        plugin=site_name,
+        error=error,
+        url=url,
+        hint=(
+            "The page could not be read at any point after the submit, so the "
+            "login cannot be confirmed. The browser may have closed or navigated "
+            "away; run with --observe=full to capture what happened."
+        ),
+    )
 
 
 async def _wait_for_login_signal_nodriver(
@@ -357,17 +413,17 @@ async def _wait_for_login_signal_nodriver(
     success_selector = login_config.success
     success_url = login_config.success_url
     url = ""
-    page_text = ""
     success_found: bool | None = None
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
         reading = await _read_login_tick_nodriver(tab, success_selector, site_name)
-        if reading is None:
+        if reading.error:
+            url = reading.url
             verdict = _TICK_PENDING
         else:
-            page_text, url, success_found = reading
+            url, success_found = reading.url, reading.success_found
             verdict = _login_tick_verdict(
-                page_text=page_text,
+                page_text=reading.page_text,
                 url=url,
                 pre_submit_url=pre_submit_url,
                 failure_text=failure_text,
@@ -377,15 +433,9 @@ async def _wait_for_login_signal_nodriver(
             )
         if verdict == _TICK_SUCCESS:
             return True
-        if verdict == _TICK_FAILURE:
-            # Called for the warning that names which signal decided it; the
-            # verdict above is what returns.
-            _check_login_result(
-                page_text=page_text,
-                failure_text=failure_text,
-                success_found=success_found,
-                success_selector=success_selector,
-                site_name=site_name,
+        if verdict in _TICK_FAILURES:
+            _warn_login_tick_failure(
+                verdict=verdict, site_name=site_name, failure_text=failure_text
             )
             return False
         if loop.time() >= deadline:
@@ -414,17 +464,17 @@ def _wait_for_login_signal_selenium(
     success_selector = login_config.success
     success_url = login_config.success_url
     url = ""
-    page_text = ""
     success_found: bool | None = None
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
         reading = _read_login_tick_selenium(driver, success_selector, site_name)
-        if reading is None:
+        if reading.error:
+            url = reading.url
             verdict = _TICK_PENDING
         else:
-            page_text, url, success_found = reading
+            url, success_found = reading.url, reading.success_found
             verdict = _login_tick_verdict(
-                page_text=page_text,
+                page_text=reading.page_text,
                 url=url,
                 pre_submit_url=pre_submit_url,
                 failure_text=failure_text,
@@ -434,15 +484,9 @@ def _wait_for_login_signal_selenium(
             )
         if verdict == _TICK_SUCCESS:
             return True
-        if verdict == _TICK_FAILURE:
-            # Called for the warning that names which signal decided it; the
-            # verdict above is what returns.
-            _check_login_result(
-                page_text=page_text,
-                failure_text=failure_text,
-                success_found=success_found,
-                success_selector=success_selector,
-                site_name=site_name,
+        if verdict in _TICK_FAILURES:
+            _warn_login_tick_failure(
+                verdict=verdict, site_name=site_name, failure_text=failure_text
             )
             return False
         if time.monotonic() >= deadline:
@@ -456,6 +500,32 @@ def _wait_for_login_signal_selenium(
         success_found=success_found,
     )
     return False
+
+
+class _UnreadWindow:
+    """What a watch window has seen so far: the last page it read, or why it read none.
+
+    The grace window rules on the last page it managed to read, so a tick that
+    fails after a good one must not replace that page text with nothing, and a
+    window of nothing but failures has to be told apart from a window whose pages
+    were all clean (tidy round, 2026-09-13).
+    """
+
+    def __init__(self) -> None:
+        self.page_read = False
+        self.page_text = ""
+        self.error = "the page was never read"
+        self.url = ""
+
+    def record(self, reading: _TickReading) -> None:
+        """Fold one tick's reading into the window."""
+        if reading.error:
+            self.error = reading.error
+            self.url = reading.url
+            return
+        self.page_read = True
+        self.page_text = reading.page_text
+        self.url = reading.url
 
 
 async def _watch_for_failure_nodriver(
@@ -473,22 +543,31 @@ async def _watch_for_failure_nodriver(
     the moment either shows, and the verdict and its warnings are the single check
     this path has always taken.
 
+    A window in which no tick could be read at all ends in failure: the page said
+    nothing, and an empty page text passed to the verdict would read as "the
+    failure text is not on the page", which is not a confirmation of anything.
+
     Returns:
-        True when the login stands, False when the page said otherwise.
+        True when the login stands, False when the page said otherwise or was
+        never readable.
     """
     loop = asyncio.get_running_loop()
-    page_text = ""
+    last = _UnreadWindow()
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
         reading = await _read_login_tick_nodriver(tab, "", site_name)
-        if reading is not None:
-            page_text = reading.page_text
-            if _failure_showing(page_text=page_text, failure_text=failure_text):
-                break
+        last.record(reading)
+        if not reading.error and _failure_showing(
+            page_text=reading.page_text, failure_text=failure_text
+        ):
+            break
         if loop.time() >= deadline:
             break
+    if not last.page_read:
+        _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
+        return False
     return _check_login_result(
-        page_text=page_text,
+        page_text=last.page_text,
         failure_text=failure_text,
         success_found=None,
         success_selector="",
@@ -504,18 +583,22 @@ def _watch_for_failure_selenium(
     deadline: float,
 ) -> bool:
     """The selenium twin of :func:`_watch_for_failure_nodriver`."""
-    page_text = ""
+    last = _UnreadWindow()
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
         reading = _read_login_tick_selenium(driver, "", site_name)
-        if reading is not None:
-            page_text = reading.page_text
-            if _failure_showing(page_text=page_text, failure_text=failure_text):
-                break
+        last.record(reading)
+        if not reading.error and _failure_showing(
+            page_text=reading.page_text, failure_text=failure_text
+        ):
+            break
         if time.monotonic() >= deadline:
             break
+    if not last.page_read:
+        _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
+        return False
     return _check_login_result(
-        page_text=page_text,
+        page_text=last.page_text,
         failure_text=failure_text,
         success_found=None,
         success_selector="",
@@ -539,7 +622,7 @@ def _failure_showing(*, page_text: str, failure_text: str) -> bool:
             success_url="",
             success_found=None,
         )
-        == _TICK_FAILURE
+        in _TICK_FAILURES
     )
 
 
@@ -583,7 +666,7 @@ async def _await_document_ready_nodriver(tab: Any, *, deadline: float, site_name
                 backend="nodriver",
             )
             return
-        await asyncio.sleep(_LOGIN_POLL_INTERVAL)
+        await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
 
 
 def _await_document_ready_selenium(driver: Any, *, deadline: float, site_name: str) -> None:
@@ -618,7 +701,7 @@ def _await_document_ready_selenium(driver: Any, *, deadline: float, site_name: s
                 backend="selenium",
             )
             return
-        time.sleep(_LOGIN_POLL_INTERVAL)
+        time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
 
 
 async def wait_for_login_outcome_nodriver(
