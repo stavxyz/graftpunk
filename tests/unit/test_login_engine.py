@@ -711,8 +711,13 @@ class TestNodriverLoginValidationPaths:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_nodriver_login_success_selector_unknown_error_propagates(self) -> None:
-        """Unknown error during success selector check propagates instead of returning False."""
+    async def test_nodriver_login_success_selector_connection_error_fails_the_login(self) -> None:
+        """A connection error from the probe is the browser leaving, not a login verdict.
+
+        It used to propagate out of login() while the selenium twin failed cleanly.
+        Every unreadable tick is pending now, and a wait that never got an answer
+        reports the page as unreadable (polish round 2).
+        """
         from graftpunk.plugins.login_engine import generate_login_method
 
         plugin = DeclarativeNodriverSuccess()
@@ -738,9 +743,13 @@ class TestNodriverLoginValidationPaths:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            pytest.raises(ConnectionError, match="WebDriver session crashed"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
-            await login_method({"username": "user", "password": "test"})  # noqa: S106
+            result = await login_method({"username": "user", "password": "test"})  # noqa: S106
+
+        assert result is False
+        warning = _warning_kwargs(mock_log, "login_page_unreadable")
+        assert "WebDriver session crashed" in warning["error"]
 
     @pytest.mark.asyncio
     async def test_nodriver_login_no_validation_configured(self) -> None:
@@ -1022,6 +1031,49 @@ class TestNodriverLoginSignalPoll:
         assert result is True
         assert "tick:1:unreadable" in tab.events
         assert "cookies" in tab.events
+
+    @pytest.mark.asyncio
+    async def test_a_read_error_that_is_not_a_protocol_error_still_fails_cleanly(self) -> None:
+        """A closed browser surfaces as a websockets or connection error, not a protocol one.
+
+        Catching only ProtocolException let that error out of login() on nodriver
+        while the selenium twin failed cleanly with a warning.
+        """
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class _ClosedBrowserTab(_ScriptedNodriverTab):
+            """A tab whose post-submit reads raise the way a browser that went away does.
+
+            The steps run first and need their own selectors to resolve, so only the
+            reads the wait makes are answered this way.
+            """
+
+            async def get_content(self) -> str:
+                raise RuntimeError("no close frame received or sent")
+
+            async def query_selector(self, selector: str) -> Any:
+                if selector == self._success_selector:
+                    raise RuntimeError("no close frame received or sent")
+                return await super().query_selector(selector)
+
+        tab = _ClosedBrowserTab(success_selector=".dashboard", urls=(None,))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverSuccess())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in tab.events
+        assert "no close frame" in _warning_kwargs(mock_log, "login_page_unreadable")["error"]
+        read_failures = [
+            call for call in mock_log.debug.call_args_list if call[0][0] == "login_tick_read_failed"
+        ]
+        assert read_failures
+        assert all(call[1]["exc_type"] == "RuntimeError" for call in read_failures)
 
     @pytest.mark.asyncio
     async def test_a_poll_that_never_reads_the_page_blames_the_page(self) -> None:

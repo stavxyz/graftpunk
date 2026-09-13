@@ -537,9 +537,11 @@ async def _read_login_tick_nodriver(
     A ProtocolException means the document node went invalid mid-navigation, which
     is the window this poll exists for (see ``_select_with_retry``): the tick is
     unreadable, not failed, so the caller treats it as pending and keeps waiting.
+    A closed browser reaches here as something else again (a websockets error, a
+    connection error), and catching only the protocol error let that one out of
+    ``login()`` while the selenium twin failed cleanly, so every read failure is
+    treated the same way and named by ``exc_type`` in the trail (polish round 2).
     """
-    from nodriver.core.connection import ProtocolException
-
     try:
         page_text = await tab.get_content() if want_page_text else ""
         success_found: bool | None = None
@@ -548,7 +550,7 @@ async def _read_login_tick_nodriver(
             # retry, and a probe that slept inside nodriver would stretch the cadence.
             element = await tab.query_selector(success_selector)
             success_found = element is not None
-    except ProtocolException as exc:
+    except Exception as exc:  # broad by design: an unreadable tick is pending, see above
         LOG.debug(
             "login_tick_read_failed",
             plugin=site_name,
