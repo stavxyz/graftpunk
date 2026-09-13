@@ -764,7 +764,7 @@ class TestNodriverLoginValidationPaths:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -987,7 +987,7 @@ class TestNodriverLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
 
@@ -1047,7 +1047,7 @@ class TestNodriverLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await generate_login_method(LooseUrlPlugin())(_LOGIN_CREDENTIALS)
 
@@ -1121,7 +1121,7 @@ class TestNodriverLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await generate_login_method(DeclarativeNodriverBothSignals())(
                 _LOGIN_CREDENTIALS
@@ -1144,7 +1144,7 @@ class TestNodriverLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
 
@@ -1206,7 +1206,7 @@ class TestNodriverLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
 
@@ -1224,7 +1224,7 @@ class TestNodriverLoginSignalPoll:
 
         from graftpunk.plugins.login_engine import generate_login_method
 
-        monkeypatch.setattr("graftpunk.plugins.login_engine._LOGIN_POLL_INTERVAL", 30.0)
+        monkeypatch.setattr("graftpunk.plugins.login_settle._LOGIN_POLL_INTERVAL", 30.0)
         tab = _ScriptedNodriverTab(success_selector=".dashboard")
         mock_bs, _instance = _nodriver_session_for(tab)
 
@@ -1256,7 +1256,7 @@ class TestNodriverLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
 
@@ -1306,7 +1306,7 @@ class TestNoSignalGraceWindow:
         """The site renders its error a moment after the submit, inside the window."""
         from graftpunk.plugins.login_engine import generate_login_method
 
-        monkeypatch.setattr("graftpunk.plugins.login_engine._NO_SIGNAL_GRACE", 1.0)
+        monkeypatch.setattr("graftpunk.plugins.login_settle._NO_SIGNAL_GRACE", 1.0)
         tab = _ScriptedNodriverTab(
             contents=(
                 "<html>Signing in</html>",
@@ -1319,7 +1319,7 @@ class TestNoSignalGraceWindow:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await generate_login_method(DeclarativeNodriverFailureOnly())(
                 _LOGIN_CREDENTIALS
@@ -1344,7 +1344,7 @@ class TestNoSignalGraceWindow:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = await generate_login_method(DeclarativeNodriverNoValidation())(
                 _LOGIN_CREDENTIALS
@@ -1361,7 +1361,7 @@ class TestNoSignalGraceWindow:
         """The selenium twin: the error arrives a tick or two in, and still decides."""
         from graftpunk.plugins.login_engine import generate_login_method
 
-        monkeypatch.setattr("graftpunk.plugins.login_engine._NO_SIGNAL_GRACE", 1.0)
+        monkeypatch.setattr("graftpunk.plugins.login_settle._NO_SIGNAL_GRACE", 1.0)
         driver = _ScriptedSeleniumDriver(
             contents=(
                 "<html>Signing in</html>",
@@ -1374,7 +1374,7 @@ class TestNoSignalGraceWindow:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = generate_login_method(DeclarativeSeleniumFailureOnly())(_LOGIN_CREDENTIALS)
 
@@ -1408,9 +1408,9 @@ class TestCheckLoginResult:
 
     def test_rate_limited_page_returns_false_and_logs_rate_limit(self) -> None:
         """A 'Too Many Requests' page is not a credentials failure (issue #148 item 2)."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
-        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
             result = _check_login_result(
                 page_text="<html><title>429 Too Many Requests</title></html>",
                 failure_text="These credentials do not match",
@@ -1425,9 +1425,9 @@ class TestCheckLoginResult:
     def test_rate_limit_marker_never_vetoes_a_found_success_element(self) -> None:
         """page_text is raw HTML; a post-login page's inlined JS can contain the
         marker. A found success element is the stronger signal."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
-        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
             result = _check_login_result(
                 page_text='<script>i18n={"e429":"Too many requests"}</script><div id=dash>',
                 failure_text="Bad login.",
@@ -1439,9 +1439,9 @@ class TestCheckLoginResult:
         mock_log.warning.assert_not_called()
 
     def test_rate_limit_detection_is_case_insensitive(self) -> None:
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
-        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
             result = _check_login_result(
                 page_text="<h1>TOO MANY REQUESTS</h1>",
                 failure_text="",
@@ -1454,9 +1454,9 @@ class TestCheckLoginResult:
 
     def test_failure_warning_carries_still_on_login_page_hint(self) -> None:
         """The failure-text warning must not read as a credentials verdict."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
-        with patch("graftpunk.plugins.login_engine.LOG") as mock_log:
+        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
             _check_login_result(
                 page_text="<html>Bad login.</html>",
                 failure_text="Bad login.",
@@ -1469,7 +1469,7 @@ class TestCheckLoginResult:
 
     def test_failure_text_present_returns_false(self) -> None:
         """Returns False when failure text is found in page text (case-insensitive)."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
         result = _check_login_result(
             page_text="<html>Bad login. Try again.</html>",
@@ -1482,7 +1482,7 @@ class TestCheckLoginResult:
 
     def test_failure_text_case_insensitive(self) -> None:
         """Failure text matching is case-insensitive."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
         result = _check_login_result(
             page_text="<html>INVALID CREDENTIALS</html>",
@@ -1495,7 +1495,7 @@ class TestCheckLoginResult:
 
     def test_success_selector_found_returns_true(self) -> None:
         """Returns True when success element was found."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
         result = _check_login_result(
             page_text="<html>Dashboard</html>",
@@ -1508,7 +1508,7 @@ class TestCheckLoginResult:
 
     def test_success_selector_not_found_returns_false(self) -> None:
         """Returns False when success element was not found."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
         result = _check_login_result(
             page_text="<html>Login page</html>",
@@ -1521,7 +1521,7 @@ class TestCheckLoginResult:
 
     def test_neither_failure_nor_success_returns_true(self) -> None:
         """Returns True (optimistic) when neither failure nor success is configured."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
         result = _check_login_result(
             page_text="<html>Something</html>",
@@ -1534,9 +1534,9 @@ class TestCheckLoginResult:
 
     def test_neither_configured_logs_warning(self) -> None:
         """Logs a no-validation warning when neither failure_text nor success_selector set."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
-        with patch("graftpunk.plugins.login_engine._warn_no_login_validation") as mock_warn:
+        with patch("graftpunk.plugins.login_settle._warn_no_login_validation") as mock_warn:
             _check_login_result(
                 page_text="<html>Something</html>",
                 failure_text="",
@@ -1548,7 +1548,7 @@ class TestCheckLoginResult:
 
     def test_empty_failure_text_with_success_found_returns_true(self) -> None:
         """Empty failure_text + success found returns True without warning."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
         result = _check_login_result(
             page_text="<html>Welcome</html>",
@@ -1561,7 +1561,7 @@ class TestCheckLoginResult:
 
     def test_failure_text_takes_priority_over_success(self) -> None:
         """Failure text check runs before success check; returns False even if success_found."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
         result = _check_login_result(
             page_text="<html>Bad login. Dashboard link here.</html>",
@@ -1574,11 +1574,11 @@ class TestCheckLoginResult:
 
     def test_failure_text_not_in_page_with_success_none(self) -> None:
         """Failure text configured but not in page, no success selector -> True with warning."""
-        from graftpunk.plugins.login_engine import _check_login_result
+        from graftpunk.plugins.login_settle import _check_login_result
 
         # failure_text is set but not found in page, success_found is None
         # -> no failure detected, no success configured -> True + warning
-        with patch("graftpunk.plugins.login_engine._warn_no_login_validation") as mock_warn:
+        with patch("graftpunk.plugins.login_settle._warn_no_login_validation") as mock_warn:
             result = _check_login_result(
                 page_text="<html>Welcome</html>",
                 failure_text="Bad login.",
@@ -1605,7 +1605,7 @@ class TestLoginTickVerdict:
         success_url: str = "",
         success_found: bool | None = None,
     ) -> str:
-        from graftpunk.plugins.login_engine import _login_tick_verdict
+        from graftpunk.plugins.login_settle import _login_tick_verdict
 
         return _login_tick_verdict(
             page_text=page_text,
@@ -1740,7 +1740,7 @@ class TestLoginTickVerdict:
 
     def test_missing_signals_name_every_signal_that_does_not_hold(self) -> None:
         """The timeout warning's text comes from this list."""
-        from graftpunk.plugins.login_engine import _missing_login_signals
+        from graftpunk.plugins.login_settle import _missing_login_signals
 
         assert _missing_login_signals(
             url="https://app.example.com/login",
@@ -1752,7 +1752,7 @@ class TestLoginTickVerdict:
 
     def test_missing_signals_is_empty_when_both_hold(self) -> None:
         """Nothing is missing once the element is found and the URL has changed."""
-        from graftpunk.plugins.login_engine import _missing_login_signals
+        from graftpunk.plugins.login_settle import _missing_login_signals
 
         assert (
             _missing_login_signals(
@@ -2138,7 +2138,7 @@ class TestSeleniumLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
 
@@ -2196,7 +2196,7 @@ class TestSeleniumLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = generate_login_method(LooseUrlSeleniumPlugin())(_LOGIN_CREDENTIALS)
 
@@ -2263,7 +2263,7 @@ class TestSeleniumLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = generate_login_method(DeclarativeSeleniumBothSignals())(_LOGIN_CREDENTIALS)
 
@@ -2283,7 +2283,7 @@ class TestSeleniumLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = generate_login_method(DeclarativeSeleniumUrlOnly())(_LOGIN_CREDENTIALS)
 
@@ -2322,7 +2322,7 @@ class TestSeleniumLoginSignalPoll:
 
         from graftpunk.plugins.login_engine import generate_login_method
 
-        monkeypatch.setattr("graftpunk.plugins.login_engine._LOGIN_POLL_INTERVAL", 30.0)
+        monkeypatch.setattr("graftpunk.plugins.login_settle._LOGIN_POLL_INTERVAL", 30.0)
         driver = _ScriptedSeleniumDriver(success_selector="a[href='/logout']")
         mock_bs, _instance = _selenium_session_for(driver)
 
@@ -2353,7 +2353,7 @@ class TestSeleniumLoginSignalPoll:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
         ):
             result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
 
