@@ -453,6 +453,56 @@ class _ReadWindow:
             self.answered = True
 
 
+class _TickDecision(NamedTuple):
+    """What one tick's reading means to the loop that took it.
+
+    ``verdict`` ends the wait unless it is ``_TICK_PENDING``. ``note_marker`` asks
+    for the one debug event a pending tick can owe (see ``_debug_rate_limit_marker``),
+    and is False once the loop has already logged it.
+    """
+
+    verdict: _TickVerdict
+    note_marker: bool
+
+
+def _decide_login_tick(
+    *,
+    reading: _TickReading,
+    window: _ReadWindow,
+    login_config: LoginConfig,
+    failure_text: str,
+    pre_submit_url: str,
+    marker_noted: bool,
+) -> _TickDecision:
+    """Fold one tick into *window* and rule on it: the step both poll loops share.
+
+    The backends differ in how they sleep and how they read a tick, and in nothing
+    else. Everything between the read and the loop's own returns lives here, so a
+    rule cannot land on one backend and not the other (polish round 2). The only
+    effect is the reading folded into *window*; the verdict is decided from the
+    reading alone.
+
+    A tick that could not be read decides nothing and is pending: the poll is the
+    retry for the mid-navigation window this wait exists for.
+    """
+    window.record(reading)
+    if reading.error:
+        return _TickDecision(_TICK_PENDING, False)
+    verdict = _login_tick_verdict(
+        page_text=reading.page_text,
+        url=reading.url,
+        pre_submit_url=pre_submit_url,
+        failure_text=failure_text,
+        success_selector=login_config.success,
+        success_url=login_config.success_url,
+        success_found=reading.success_found,
+    )
+    note_marker = (
+        verdict == _TICK_PENDING and not marker_noted and _rate_limit_marker_in(reading.page_text)
+    )
+    return _TickDecision(verdict, note_marker)
+
+
 async def _read_login_tick_nodriver(
     tab: Any,  # nodriver.Tab
     *,
@@ -600,27 +650,22 @@ async def _wait_for_login_signal_nodriver(
             ),
             site_name=site_name,
         )
-        last.record(reading)
-        if reading.error:
-            verdict = _TICK_PENDING
-        else:
-            verdict = _login_tick_verdict(
-                page_text=reading.page_text,
-                url=reading.url,
-                pre_submit_url=pre_submit_url,
-                failure_text=failure_text,
-                success_selector=success_selector,
-                success_url=success_url,
-                success_found=reading.success_found,
-            )
-        if verdict == _TICK_SUCCESS:
+        decision = _decide_login_tick(
+            reading=reading,
+            window=last,
+            login_config=login_config,
+            failure_text=failure_text,
+            pre_submit_url=pre_submit_url,
+            marker_noted=marker_noted,
+        )
+        if decision.verdict == _TICK_SUCCESS:
             return True
-        if verdict in _TICK_FAILURES:
+        if decision.verdict in _TICK_FAILURES:
             _warn_login_tick_failure(
-                verdict=verdict, site_name=site_name, failure_text=failure_text
+                verdict=decision.verdict, site_name=site_name, failure_text=failure_text
             )
             return False
-        if not marker_noted and _rate_limit_marker_in(reading.page_text):
+        if decision.note_marker:
             _debug_rate_limit_marker(site_name=site_name, url=reading.url, backend="nodriver")
             marker_noted = True
         if loop.time() >= deadline:
@@ -668,27 +713,22 @@ def _wait_for_login_signal_selenium(
             ),
             site_name=site_name,
         )
-        last.record(reading)
-        if reading.error:
-            verdict = _TICK_PENDING
-        else:
-            verdict = _login_tick_verdict(
-                page_text=reading.page_text,
-                url=reading.url,
-                pre_submit_url=pre_submit_url,
-                failure_text=failure_text,
-                success_selector=success_selector,
-                success_url=success_url,
-                success_found=reading.success_found,
-            )
-        if verdict == _TICK_SUCCESS:
+        decision = _decide_login_tick(
+            reading=reading,
+            window=last,
+            login_config=login_config,
+            failure_text=failure_text,
+            pre_submit_url=pre_submit_url,
+            marker_noted=marker_noted,
+        )
+        if decision.verdict == _TICK_SUCCESS:
             return True
-        if verdict in _TICK_FAILURES:
+        if decision.verdict in _TICK_FAILURES:
             _warn_login_tick_failure(
-                verdict=verdict, site_name=site_name, failure_text=failure_text
+                verdict=decision.verdict, site_name=site_name, failure_text=failure_text
             )
             return False
-        if not marker_noted and _rate_limit_marker_in(reading.page_text):
+        if decision.note_marker:
             _debug_rate_limit_marker(site_name=site_name, url=reading.url, backend="selenium")
             marker_noted = True
         if time.monotonic() >= deadline:
