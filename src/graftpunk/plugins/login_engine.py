@@ -632,7 +632,7 @@ def _tab_url(tab: Any) -> str:
     """The nodriver tab's current URL, or an empty string when it cannot be read."""
     try:
         url = tab.url
-    except Exception as exc:  # noqa: BLE001 — the URL is one input to the poll, not the login
+    except Exception as exc:  # noqa: BLE001: the URL is one input to the poll, not the login
         LOG.debug("login_url_read_failed", error=str(exc), backend="nodriver")
         return ""
     return url if isinstance(url, str) else ""
@@ -642,7 +642,7 @@ def _driver_url(driver: Any) -> str:
     """The selenium driver's current URL, or an empty string when it cannot be read."""
     try:
         url = driver.current_url
-    except Exception as exc:  # noqa: BLE001 — the URL is one input to the poll, not the login
+    except Exception as exc:  # noqa: BLE001: the URL is one input to the poll, not the login
         LOG.debug("login_url_read_failed", error=str(exc), backend="selenium")
         return ""
     return url if isinstance(url, str) else ""
@@ -952,7 +952,7 @@ async def _await_document_ready_nodriver(tab: Any, *, deadline: float, site_name
     while True:
         try:
             state = await tab.evaluate("document.readyState")
-        except Exception as exc:  # noqa: BLE001 — readiness is best-effort, see docstring
+        except Exception as exc:  # noqa: BLE001: readiness is best-effort, see docstring
             LOG.debug(
                 "login_document_ready_unavailable",
                 plugin=site_name,
@@ -987,7 +987,7 @@ def _await_document_ready_selenium(driver: Any, *, deadline: float, site_name: s
     while True:
         try:
             state = driver.execute_script("return document.readyState")
-        except Exception as exc:  # noqa: BLE001 — readiness is best-effort, see the nodriver twin
+        except Exception as exc:  # noqa: BLE001: readiness is best-effort, see the nodriver twin
             LOG.debug(
                 "login_document_ready_unavailable",
                 plugin=site_name,
