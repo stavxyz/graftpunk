@@ -57,6 +57,7 @@ _L1 = "    "
 _L2 = "        "
 _L3 = "            "
 _L4 = "                "
+_INDENT_STEP = 4  # the step between the levels above, and one nesting level anywhere else
 _DOCSTRING_WRAP_WIDTH = _GENERATED_LINE_LENGTH - len(_L2)
 
 # The three caps that bound every identifier the generator derives from site
@@ -65,12 +66,12 @@ _DOCSTRING_WRAP_WIDTH = _GENERATED_LINE_LENGTH - len(_L2)
 # call, an assignment target): ruff format never splits an identifier and
 # E501 still applies, so the identifiers are bounded at the point they are
 # derived instead (validation fix round 4, Finding 4, 2026-09-12).
-# The methods whose stub carries a JSON body dict.
-_MUTATING_METHODS = ("POST", "PUT", "PATCH")
-
 _MAX_PLUGIN_NAME = 40
 _MAX_COMMAND_NAME = 40
 _MAX_PARAM_NAME = 40
+
+# The methods whose stub carries a JSON body dict.
+_MUTATING_METHODS = ("POST", "PUT", "PATCH")
 
 # A plugin's name becomes a Python identifier fragment (the CLI command, the
 # entry-point key) in more than one generated file; validated once here so
@@ -123,8 +124,10 @@ def _env_prefix_for(name: str) -> str:
 
 
 def _deduped(base: str, seen: set[str]) -> str:
-    """*base*, or ``{base}_{n}`` for the lowest *n* that is not in *seen*; the result is
-    added to *seen*. The one uniqueness rule for every identifier this module derives."""
+    """*base* when it is free, else the first of ``{base}_2``, ``{base}_3``, ... that is
+    not in *seen*; the result is added to *seen*. The counter starts at 2 because the
+    unsuffixed name is the first of the series. The one uniqueness rule for every
+    identifier this module derives."""
     name = base
     counter = 1
     while name in seen:
@@ -417,7 +420,7 @@ def _split_key_lines(key: str, *, indent: int) -> list[str]:
     alone once the joined form no longer fits the width.
     """
     pad = " " * indent
-    continuation_pad = " " * (indent + 4)
+    continuation_pad = " " * (indent + _INDENT_STEP)
     # A chunk is quoted after it is cut, so the budget comes off the whole key's own
     # quoting overhead (its two quotes plus whatever escaping it needs), which is an
     # upper bound on any one chunk's.
@@ -472,7 +475,7 @@ def _call_lines(prefix: str, args: list[str], *, indent: int) -> list[str]:
     single_line = f"{pad}{prefix}({', '.join(args)})"
     if len(single_line) <= _GENERATED_LINE_LENGTH:
         return [single_line]
-    continuation_pad = " " * (indent + 4)
+    continuation_pad = " " * (indent + _INDENT_STEP)
     return [
         f"{pad}{prefix}(",
         *(f"{continuation_pad}{arg}," for arg in args),
@@ -500,7 +503,7 @@ def _literal_lines(
     single_line = f"{pad}{prefix}{quoted}{comma}"
     if len(single_line) <= _GENERATED_LINE_LENGTH:
         return [single_line]
-    continuation_pad = " " * (indent + 4)
+    continuation_pad = " " * (indent + _INDENT_STEP)
     # A chunk is quoted after it is cut, so the budget comes off the whole value's own
     # quoting overhead (see _split_key_lines).
     overhead = len(quoted) - len(value)
@@ -544,7 +547,7 @@ def _exploded_literal_dict_lines(entries: list[tuple[str, str]], *, indent: int)
     pad = " " * indent
     lines = [f"{pad}fields={{"]
     for role, selector in entries:
-        lines.extend(_literal_dict_entry_lines(role, selector, indent=indent + 4))
+        lines.extend(_literal_dict_entry_lines(role, selector, indent=indent + _INDENT_STEP))
     lines.append(f"{pad}}},")
     return lines
 
@@ -555,8 +558,10 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     pad = " " * indent
     submit_value = form.submit or "GP-FILL: submit selector"
     lines = [f"{pad}LoginStep("]
-    lines.extend(_exploded_literal_dict_lines(sorted(form.fields.items()), indent=indent + 4))
-    lines.extend(_literal_lines(submit_value, indent=indent + 4, prefix="submit="))
+    lines.extend(
+        _exploded_literal_dict_lines(sorted(form.fields.items()), indent=indent + _INDENT_STEP)
+    )
+    lines.extend(_literal_lines(submit_value, indent=indent + _INDENT_STEP, prefix="submit="))
     lines.append(f"{pad}),")
     return lines
 
@@ -571,8 +576,10 @@ def _render_token_call(header: TokenCandidate, source: TokenCandidate, *, indent
     else:
         call_name, value_keyword = "Token.from_cookie", "cookie_name"
     lines = [f"{pad}{call_name}("]
-    lines.extend(_literal_lines(source.name, indent=indent + 4, prefix=f"{value_keyword}="))
-    lines.extend(_literal_lines(header.name, indent=indent + 4, prefix="header="))
+    lines.extend(
+        _literal_lines(source.name, indent=indent + _INDENT_STEP, prefix=f"{value_keyword}=")
+    )
+    lines.extend(_literal_lines(header.name, indent=indent + _INDENT_STEP, prefix="header="))
     lines.append(f"{pad}),")
     return lines
 
@@ -662,7 +669,7 @@ def _url_expr_lines(url_text: str, *, is_fstring: bool, indent: int) -> list[str
     single_line = f"{pad}{render(url_text)},"
     if len(single_line) <= _GENERATED_LINE_LENGTH:
         return [single_line]
-    continuation_pad = " " * (indent + 4)
+    continuation_pad = " " * (indent + _INDENT_STEP)
     # A chunk is quoted after it is cut, so the budget comes off the whole template's
     # own literal overhead (its quotes, its `f`, and any escaping or brace doubling),
     # which is an upper bound on any one chunk's.
