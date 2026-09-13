@@ -69,22 +69,18 @@ def _warn_failure_text(site_name: str, failure_text: str) -> None:
     )
 
 
-def _check_login_result(
-    *,
-    page_text: str,
-    failure_text: str,
-    success_found: bool | None,
-    success_selector: str,
-    site_name: str,
-) -> bool:
-    """Check login result using failure text and success selector.
+def _check_login_result(*, page_text: str, failure_text: str, site_name: str) -> bool:
+    """Rule on the last page a login with no success signal was able to read.
+
+    The two grace-window watchers are the only callers, and a login on that path
+    has no success signal by definition, so the page text and the configured
+    failure text are everything there is to go on. The element-versus-marker rule
+    belongs to ``_login_tick_verdict``, which the signal poll decides its ticks
+    with (polish round 1).
 
     Args:
         page_text: Current page text/source content.
         failure_text: Text to search for indicating failure (empty = skip).
-        success_found: True if success element was found, False if not,
-            None if no selector configured.
-        success_selector: The CSS selector used (for logging).
         site_name: Plugin name (for logging).
 
     Returns:
@@ -92,12 +88,10 @@ def _check_login_result(
     """
     lowered = page_text.lower()
 
-    # A rate-limited response is a page from the site's limiter, not a verdict
-    # on the credentials. It never contains the success element, so a found
-    # success element always wins: page_text is raw HTML, and an inlined i18n
-    # bundle or error catalogue on a real post-login page can contain the
-    # marker text. Only refine a failure, never veto a success.
-    if success_found is not True and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
+    # A rate-limited response is a page from the site's limiter, not a verdict on
+    # the credentials, and nothing on this path speaks for the login, so the
+    # marker rules.
+    if any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
         _warn_rate_limited(site_name)
         return False
 
@@ -105,19 +99,7 @@ def _check_login_result(
         _warn_failure_text(site_name, failure_text)
         return False
 
-    if success_found is False:
-        LOG.warning(
-            "login_success_element_not_found",
-            plugin=site_name,
-            selector=success_selector,
-            hint=(
-                "The page never showed the configured success element. The login "
-                "may still be on the form, or the site may have redirected elsewhere."
-            ),
-        )
-        return False
-
-    if not failure_text and success_found is None:
+    if not failure_text:
         _warn_no_login_validation(site_name)
 
     return True
@@ -224,11 +206,8 @@ def _login_tick_verdict(
 def _warn_login_tick_failure(*, verdict: str, site_name: str, failure_text: str) -> None:
     """Log the warning that names why this tick ended the wait.
 
-    Every failure the wait returns carries one. ``_check_login_result`` weighs a
-    found success element against the rate-limit marker and stays silent when the
-    element wins, which left a rate-limited tick with a present element (and a
-    success_url that had not moved) reported as a failure with nothing said about
-    it (tidy round, 2026-09-13).
+    Every failure the wait returns carries one, so a login reported as failed is
+    never left unexplained (tidy round, 2026-09-13).
     """
     if verdict == _TICK_RATE_LIMITED:
         _warn_rate_limited(site_name)
@@ -614,11 +593,7 @@ async def _watch_for_failure_nodriver(
         _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
         return False
     return _check_login_result(
-        page_text=last.page_text,
-        failure_text=failure_text,
-        success_found=None,
-        success_selector="",
-        site_name=site_name,
+        page_text=last.page_text, failure_text=failure_text, site_name=site_name
     )
 
 
@@ -645,11 +620,7 @@ def _watch_for_failure_selenium(
         _warn_login_page_unreadable(site_name=site_name, error=last.error, url=last.url)
         return False
     return _check_login_result(
-        page_text=last.page_text,
-        failure_text=failure_text,
-        success_found=None,
-        success_selector="",
-        site_name=site_name,
+        page_text=last.page_text, failure_text=failure_text, site_name=site_name
     )
 
 

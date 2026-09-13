@@ -1657,29 +1657,11 @@ class TestCheckLoginResult:
             result = _check_login_result(
                 page_text="<html><title>429 Too Many Requests</title></html>",
                 failure_text="These credentials do not match",
-                success_found=False,
-                success_selector="#dashboard",
                 site_name="test",
             )
         assert result is False
         events = [c.args[0] for c in mock_log.warning.call_args_list]
         assert events == ["login_rate_limited"]
-
-    def test_rate_limit_marker_never_vetoes_a_found_success_element(self) -> None:
-        """page_text is raw HTML; a post-login page's inlined JS can contain the
-        marker. A found success element is the stronger signal."""
-        from graftpunk.plugins.login_settle import _check_login_result
-
-        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
-            result = _check_login_result(
-                page_text='<script>i18n={"e429":"Too many requests"}</script><div id=dash>',
-                failure_text="Bad login.",
-                success_found=True,
-                success_selector="#dash",
-                site_name="test",
-            )
-        assert result is True
-        mock_log.warning.assert_not_called()
 
     def test_rate_limit_detection_is_case_insensitive(self) -> None:
         from graftpunk.plugins.login_settle import _check_login_result
@@ -1688,8 +1670,6 @@ class TestCheckLoginResult:
             result = _check_login_result(
                 page_text="<h1>TOO MANY REQUESTS</h1>",
                 failure_text="",
-                success_found=None,
-                success_selector="",
                 site_name="test",
             )
         assert result is False
@@ -1703,8 +1683,6 @@ class TestCheckLoginResult:
             _check_login_result(
                 page_text="<html>Bad login.</html>",
                 failure_text="Bad login.",
-                success_found=None,
-                success_selector="",
                 site_name="test",
             )
         kwargs = mock_log.warning.call_args.kwargs
@@ -1717,8 +1695,6 @@ class TestCheckLoginResult:
         result = _check_login_result(
             page_text="<html>Bad login. Try again.</html>",
             failure_text="Bad login.",
-            success_found=None,
-            success_selector="",
             site_name="test",
         )
         assert result is False
@@ -1730,34 +1706,6 @@ class TestCheckLoginResult:
         result = _check_login_result(
             page_text="<html>INVALID CREDENTIALS</html>",
             failure_text="invalid credentials",
-            success_found=None,
-            success_selector="",
-            site_name="test",
-        )
-        assert result is False
-
-    def test_success_selector_found_returns_true(self) -> None:
-        """Returns True when success element was found."""
-        from graftpunk.plugins.login_settle import _check_login_result
-
-        result = _check_login_result(
-            page_text="<html>Dashboard</html>",
-            failure_text="",
-            success_found=True,
-            success_selector=".dashboard",
-            site_name="test",
-        )
-        assert result is True
-
-    def test_success_selector_not_found_returns_false(self) -> None:
-        """Returns False when success element was not found."""
-        from graftpunk.plugins.login_settle import _check_login_result
-
-        result = _check_login_result(
-            page_text="<html>Login page</html>",
-            failure_text="",
-            success_found=False,
-            success_selector=".dashboard",
             site_name="test",
         )
         assert result is False
@@ -1769,64 +1717,38 @@ class TestCheckLoginResult:
         result = _check_login_result(
             page_text="<html>Something</html>",
             failure_text="",
-            success_found=None,
-            success_selector="",
             site_name="test",
         )
         assert result is True
 
     def test_neither_configured_logs_warning(self) -> None:
-        """Logs a no-validation warning when neither failure_text nor success_selector set."""
+        """Logs a no-validation warning when the plugin configured no failure text.
+
+        This path only runs with no success signal configured, so an empty
+        failure text means nothing validates the login at all.
+        """
         from graftpunk.plugins.login_settle import _check_login_result
 
         with patch("graftpunk.plugins.login_settle._warn_no_login_validation") as mock_warn:
             _check_login_result(
                 page_text="<html>Something</html>",
                 failure_text="",
-                success_found=None,
-                success_selector="",
                 site_name="testplugin",
             )
             mock_warn.assert_called_once_with("testplugin")
 
-    def test_empty_failure_text_with_success_found_returns_true(self) -> None:
-        """Empty failure_text + success found returns True without warning."""
+    def test_failure_text_not_in_page_stands_without_the_warning(self) -> None:
+        """A configured failure text that never showed is a login that stands.
+
+        Nothing is warned about: the failure text is the validation this plugin
+        has, and it was read.
+        """
         from graftpunk.plugins.login_settle import _check_login_result
 
-        result = _check_login_result(
-            page_text="<html>Welcome</html>",
-            failure_text="",
-            success_found=True,
-            success_selector=".dashboard",
-            site_name="test",
-        )
-        assert result is True
-
-    def test_failure_text_takes_priority_over_success(self) -> None:
-        """Failure text check runs before success check; returns False even if success_found."""
-        from graftpunk.plugins.login_settle import _check_login_result
-
-        result = _check_login_result(
-            page_text="<html>Bad login. Dashboard link here.</html>",
-            failure_text="Bad login.",
-            success_found=True,
-            success_selector=".dashboard",
-            site_name="test",
-        )
-        assert result is False
-
-    def test_failure_text_not_in_page_with_success_none(self) -> None:
-        """Failure text configured but not in page, no success selector -> True with warning."""
-        from graftpunk.plugins.login_settle import _check_login_result
-
-        # failure_text is set but not found in page, success_found is None
-        # -> no failure detected, no success configured -> True + warning
         with patch("graftpunk.plugins.login_settle._warn_no_login_validation") as mock_warn:
             result = _check_login_result(
                 page_text="<html>Welcome</html>",
                 failure_text="Bad login.",
-                success_found=None,
-                success_selector="",
                 site_name="test",
             )
         assert result is True
