@@ -134,6 +134,53 @@ class TestStaticAndThirdPartyExclusion:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert result.dropped["static"] == 1
 
+    def test_a_first_party_analytics_path_is_kept(self, tmp_path: Path) -> None:
+        """The word analytics names a tracker host, not a path: matched anywhere
+        in the URL it dropped the primary host's own reporting endpoint."""
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "https://api.myshop.example.com/api/analytics/summary"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert "/api/analytics/summary" in templates
+        assert result.dropped["static"] == 0
+
+    def test_an_asset_host_is_still_dropped(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "https://cdn.example.com/app.js", content_type="text/plain", body="x=1"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["static"] == 1
+        assert all("app.js" not in e.template for e in result.endpoints)
+
+    def test_a_tracker_host_is_still_dropped(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "https://analytics.example.net/collect"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["static"] == 1
+
+    def test_a_tracking_pixel_path_segment_is_dropped(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "https://api.myshop.example.com/pixel"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["static"] == 1
+
+    def test_a_segment_merely_containing_an_excluded_word_is_kept(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "https://api.myshop.example.com/pixelate-image"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        templates = {e.template for e in result.endpoints}
+        assert "/pixelate-image" in templates
+        assert result.dropped["static"] == 0
+
     def test_third_party_host_dropped_without_all_hosts(self, tmp_path: Path) -> None:
         entries = [
             _entry("GET", "https://api.myshop.example.com/orders"),

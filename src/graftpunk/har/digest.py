@@ -61,21 +61,30 @@ _SHAPE_MAX_DEPTH = 3
 _SHAPE_MAX_KEYS = 12
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
-_EXCLUDE_PATTERNS = [
-    r"\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|map)(\?|$)",
+# Exclusion is three rules against three parts of the URL, never one substring
+# search over the whole of it: matched anywhere, "analytics" dropped the primary
+# host's own /api/analytics/summary and "static." dropped /static-report
+# (polish round 1, 2026-09-12).
+_ASSET_EXTENSION_RE = re.compile(
+    r"\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|map)$", re.IGNORECASE
+)
+# A third-party tracker or an asset host: these name a host, not a path, so a
+# first-party path that happens to spell one of them stays in the digest.
+_EXCLUDE_HOST_PATTERNS = [
     r"google-analytics",
     r"googletagmanager",
     r"facebook\.com",
     r"analytics",
     r"tracking",
-    r"pixel",
-    r"beacon",
     r"cdn\.",
     r"static\.",
     r"assets\.",
     r"fonts\.",
 ]
-_EXCLUDE_REGEX = re.compile("|".join(_EXCLUDE_PATTERNS), re.IGNORECASE)
+_EXCLUDE_HOST_REGEX = re.compile("|".join(_EXCLUDE_HOST_PATTERNS), re.IGNORECASE)
+# A whole path segment, never a substring of one: /pixel is a tracking pixel,
+# /pixelate-image is an endpoint.
+_EXCLUDE_PATH_SEGMENTS = frozenset({"pixel", "beacon"})
 _STATIC_CONTENT_TYPE_PREFIXES = (
     "image/",
     "font/",
@@ -254,7 +263,13 @@ def _in_scope(host: str, root: str) -> bool:
 
 
 def _is_static(entry: HAREntry) -> bool:
-    if _EXCLUDE_REGEX.search(entry.request.url):
+    """True when *entry* is an asset, a tracker, or a beacon rather than an endpoint."""
+    parsed = urlparse(entry.request.url)
+    if _ASSET_EXTENSION_RE.search(parsed.path):
+        return True
+    if _EXCLUDE_HOST_REGEX.search(parsed.netloc):
+        return True
+    if any(segment.lower() in _EXCLUDE_PATH_SEGMENTS for segment in parsed.path.split("/")):
         return True
     content_type = (entry.response.content_type or "").lower()
     return any(content_type.startswith(p) for p in _STATIC_CONTENT_TYPE_PREFIXES)

@@ -302,6 +302,18 @@ Rules the digest applies:
   into `EXCLUDE_REGEX` at `src/graftpunk/har/analyzer.py:73` (`EXCLUDE_REGEX = re.compile("|".join(EXCLUDE_PATTERNS), re.IGNORECASE)`)),
   which move into the digest module, extended with a content-type rule:
   image, font, CSS, and JavaScript responses are static regardless of URL.
+
+> **Design note (2026-09-12, polish round 1):** the analyzer's list is no
+> longer reused verbatim. It was one alternation searched over the whole URL,
+> so every pattern matched anywhere: `/api/analytics/summary` on the primary
+> host was dropped as a tracker, and `cdn.`, `static.`, `assets.` matched any
+> path spelling them. Exclusion is now three rules against three parts of the
+> URL. The asset extensions match the end of the path. The tracker and asset
+> host names (`google-analytics`, `googletagmanager`, `facebook.com`,
+> `analytics`, `tracking`, `cdn.`, `static.`, `assets.`, `fonts.`) match the
+> netloc only, since each names a host rather than a path. `pixel` and
+> `beacon` match a whole path segment, so `/pixel` is dropped and
+> `/pixelate-image` is not.
 - **Types** are observed, not declared: a query value that always parses as an
   integer is `int`, `true`/`false` is `bool`, repeated keys are `list`, else
   `str`. Values are never retained.
