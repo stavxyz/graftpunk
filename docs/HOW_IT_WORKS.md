@@ -501,24 +501,24 @@ Define login configuration with CSS selectors. The login engine generates the br
 
 Each step in a login flow can include:
 
-- **`fields`** — Dict mapping credential names to CSS selectors. Can be empty for click-only steps.
-- **`submit`** — CSS selector for the submit button (optional).
-- **`wait_for`** — CSS selector to wait for before this step executes (nodriver only).
-- **`delay`** — Seconds to pause after submit (optional).
+- **`fields`**: Dict mapping credential names to CSS selectors. Can be empty for click-only steps.
+- **`submit`**: CSS selector for the submit button (optional).
+- **`wait_for`**: CSS selector to wait for before this step executes (nodriver only).
+- **`delay`**: Seconds to pause after submit (optional).
 
 #### LoginConfig Fields
 
 The top-level login configuration includes:
 
-- **`steps`** — Required list of `LoginStep` objects defining the login flow.
-- **`url`** — Optional login page path (appended to `base_url`), or an absolute URL (used as-is) when the login form lives on a different host than `base_url`.
-- **`wait_for`** — Optional top-level wait for element before any steps begin.
-- **`failure`** — Optional text that indicates login failure.
-- **`success`** — Optional CSS selector that indicates login success.
+- **`steps`**: Required list of `LoginStep` objects defining the login flow.
+- **`url`**: Optional login page path (appended to `base_url`), or an absolute URL (used as-is) when the login form lives on a different host than `base_url`.
+- **`wait_for`**: Optional top-level wait for element before any steps begin.
+- **`failure`**: Optional text that indicates login failure.
+- **`success`**: Optional CSS selector that indicates login success.
 - **`success_url`**: Optional glob matched against the whole browser URL after the last step, such as `https://app.example.com/*` or `*/dashboard*`. It counts only once the URL differs from the one the last submit was clicked from, so a glob that also matches the login page reports nothing rather than reporting success too early. Use it for a login that finishes on a recognisable URL, on its own or alongside `success`; with both set, both have to hold.
 - **`timeout`**: Seconds to wait after the last step for the success or failure signal (default `30`). Raise it for a login that finishes through a slow identity-provider redirect chain.
 - **`settle`**: Seconds to wait after the success signal, once the document has finished loading, before cookies are captured (default `1`). A login with no success signal never reaches it.
-- **`headless`** — Run the login browser headless (default `false`, so a human can solve a CAPTCHA or 2FA prompt). `gp <plugin> login --headless` / `--headful` override it for one invocation in either direction; the flags are offered only on declarative logins (a plugin's own `login()` method cannot honour them).
+- **`headless`**: Run the login browser headless (default `false`, so a human can solve a CAPTCHA or 2FA prompt). `gp <plugin> login --headless` / `--headful` override it for one invocation in either direction; the flags are offered only on declarative logins (a plugin's own `login()` method cannot honour them).
 
 #### Field filling is verified
 
