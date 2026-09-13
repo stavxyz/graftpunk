@@ -311,7 +311,7 @@ class TestEngineChainThreading:
         assert mock_cache.call_args[0][1] == "myshop@alice"
         assert getattr(mock_cache.call_args[0][0], GP_ACCOUNT_ATTR) == "alice"
 
-    def test_selenium_flow_caches_under_the_threaded_name(self) -> None:
+    def test_selenium_flow_caches_under_the_threaded_name(self, _fast_login_timings) -> None:  # noqa: ANN001
         from unittest.mock import MagicMock
 
         from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin

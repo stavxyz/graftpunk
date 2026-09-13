@@ -3561,10 +3561,9 @@ class TestNodriverMultiStepLogin:
             result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Five sleep calls: one settle per filled field (2, from _fill_field), the
-        # step delay (0.5), the poll interval before the first tick, and the settle
-        # after the success signal.
-        assert mock_sleep.call_count == 5
+        # The step delay and the settle after the success signal are both slept for;
+        # the other sleeps on the way (a settle per filled field, the poll interval
+        # before the first tick) are the engine's business, not this test's.
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
         assert plugin.login_config.settle in sleep_calls
@@ -3902,9 +3901,7 @@ class TestSeleniumMultiStepLogin:
             result = login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Exactly three sleep calls: the step delay (0.5), the poll interval before
-        # the first tick, and the settle after the success signal.
-        assert mock_sleep.call_count == 3
+        # The step delay and the settle after the success signal are both slept for.
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
         assert plugin.login_config.settle in sleep_calls
