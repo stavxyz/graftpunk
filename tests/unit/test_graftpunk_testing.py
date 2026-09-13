@@ -97,9 +97,15 @@ class TestFixtureSession:
         assert session.get("https://myshop.example.com/orders").text == "<html></html>"
 
     def test_never_opens_a_socket(self, tmp_path: Path) -> None:
-        """No fixture file for this path: still answers 404 rather than connecting."""
+        """No fixture file for this path: still answers 404 rather than connecting.
+
+        The address is RFC 5737 TEST-NET-1, reserved for documentation. The
+        cloud metadata address it used to name is a live endpoint on any cloud
+        instance, so a regression here would have reached for credentials
+        rather than simply failing.
+        """
         session = FixtureSession(tmp_path)
-        response = session.get("http://169.254.169.254/nonexistent")
+        response = session.get("http://192.0.2.1/nonexistent")
         assert response.status_code == 404
 
 
