@@ -59,6 +59,7 @@ _DYNAMIC_MAJORITY = 0.5  # ... but only when more than this fraction of them loo
 _LOGIN_WINDOW = 20  # entries after a credential post that may carry a redirect/set_cookie
 _SHAPE_MAX_DEPTH = 3
 _SHAPE_MAX_KEYS = 12
+_MAX_ENDPOINT_EXAMPLES = 3  # example paths kept per endpoint, first seen wins
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 # Exclusion is three rules against three parts of the URL, never one substring
@@ -509,7 +510,7 @@ class _EndpointAccumulator:
             if observed is not None:
                 self.shape = observed
         self.custom_headers.update(_custom_headers(entry))
-        if path not in self.examples and len(self.examples) < 3:
+        if path not in self.examples and len(self.examples) < _MAX_ENDPOINT_EXAMPLES:
             self.examples.append(path)
 
     def finish(self, template: str) -> Endpoint:
@@ -778,7 +779,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             if target.body_kind == "none" and acc.body_kind != "none":
                 target.body_kind = acc.body_kind
             for example in acc.examples:
-                if example not in target.examples and len(target.examples) < 3:
+                if example not in target.examples and len(target.examples) < _MAX_ENDPOINT_EXAMPLES:
                     target.examples.append(example)
 
     endpoints = tuple(

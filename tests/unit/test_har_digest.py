@@ -12,6 +12,7 @@ from graftpunk.har.digest import (
     _FORM_CONTENT_TYPE,
     _HIGH_CARDINALITY_THRESHOLD,
     _LOGIN_WINDOW,
+    _MAX_ENDPOINT_EXAMPLES,
     _MAX_FIELD_NAME_LEN,
     _SHAPE_MAX_DEPTH,
     _SHAPE_MAX_KEYS,
@@ -616,6 +617,17 @@ class TestDigestSourceFromHar:
         assert source.page_source == run_dir / "page-source.html"
         assert source.session == "myshop"
         assert source.run_id == run_dir.name
+
+
+class TestEndpointExamples:
+    def test_examples_stop_at_the_cap(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", f"https://api.myshop.example.com/orders/{i}")
+            for i in range(_MAX_ENDPOINT_EXAMPLES + 4)
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = [e for e in result.endpoints if e.template == "/orders/{order_id}"]
+        assert len(endpoint.examples) == _MAX_ENDPOINT_EXAMPLES
 
 
 class TestEveryEndpointPresent:
