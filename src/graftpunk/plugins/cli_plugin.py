@@ -12,7 +12,7 @@ Example Python plugin:
 
         @command(help="List accounts")
         def accounts(self, ctx: CommandContext):
-            return ctx.session.get("https://mybank.com/api/accounts").json()
+            return ctx.session.get("https://mybank.example.com/api/accounts").json()
 
 Example YAML plugin (in ~/.config/graftpunk/plugins/mybank.yaml):
     site_name: mybank
@@ -20,7 +20,7 @@ Example YAML plugin (in ~/.config/graftpunk/plugins/mybank.yaml):
     commands:
       accounts:
         help: "List accounts"
-        url: "https://mybank.com/api/accounts"
+        url: "https://mybank.example.com/api/accounts"
 """
 
 # TODO(refactor): This file is ~977 lines, exceeding the 800-line project limit.
@@ -859,11 +859,11 @@ class SitePlugin:
 
             @command(help="List accounts")
             def accounts(self, ctx: CommandContext) -> dict:
-                return ctx.session.get("https://mybank.com/api/accounts").json()
+                return ctx.session.get("https://mybank.example.com/api/accounts").json()
 
             @command(help="Get statements")
             def statements(self, ctx: CommandContext, month: str) -> dict:
-                return ctx.session.get(f"https://mybank.com/api/statements/{month}").json()
+                return ctx.session.get(f"https://mybank.example.com/api/statements/{month}").json()
     """
 
     site_name: str = ""

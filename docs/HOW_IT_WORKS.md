@@ -1037,8 +1037,8 @@ This is distinct from `SessionExpiredError`, which means the *cached* session fa
 The `gp http` command makes authenticated HTTP requests using cached session cookies and browser headers, without writing a plugin:
 
 ```bash
-gp http get -s mybank https://secure.mybank.com/api/accounts
-gp http post -s mybank https://secure.mybank.com/api/transfer --data '{"amount": 100}'
+gp http get -s mybank https://secure.mybank.example.com/api/accounts
+gp http post -s mybank https://secure.mybank.example.com/api/transfer --data '{"amount": 100}'
 ```
 
 All HTTP methods are supported: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
@@ -1050,9 +1050,9 @@ The session is loaded as a `GraftpunkSession` with full browser header replay, s
 By default, `gp http` sends navigation-style headers. Some API endpoints expect XHR headers instead. The `--role` flag selects the correct combination of `Sec-Fetch-*`, `Accept`, and `X-Requested-With` headers:
 
 ```bash
-gp http get -s mybank --role xhr https://secure.mybank.com/api/status
-gp http post -s mybank --role form https://secure.mybank.com/submit
-gp http get -s mybank --role navigate https://secure.mybank.com/page
+gp http get -s mybank --role xhr https://secure.mybank.example.com/api/status
+gp http post -s mybank --role form https://secure.mybank.example.com/submit
+gp http get -s mybank --role navigate https://secure.mybank.example.com/page
 ```
 
 Three built-in roles are registered at import time via `register_role()`: `navigation`, `xhr`, and `form`. The CLI accepts `navigate` as a shorthand alias for `navigation` via `_ROLE_ALIASES`. Plugins can define custom roles via a `header_roles` dict — these are merged into the session at request time, so `--role api` (or any custom name) works the same way.
@@ -1066,7 +1066,7 @@ Under the hood, `--role` calls `session.request_with_role()` directly with the r
 `gp observe go` opens a URL in an authenticated browser session and captures network traffic, screenshots, and console logs:
 
 ```bash
-gp observe -s mybank go https://secure.mybank.com/dashboard
+gp observe -s mybank go https://secure.mybank.example.com/dashboard
 ```
 
 This:
@@ -1083,10 +1083,10 @@ Useful for debugging API interactions and discovering undocumented endpoints.
 Interactive mode keeps the browser open for manual exploration while recording all network traffic:
 
 ```bash
-gp observe -s mybank interactive https://secure.mybank.com/dashboard
+gp observe -s mybank interactive https://secure.mybank.example.com/dashboard
 
 # Or as a flag on observe go:
-gp observe -s mybank go --interactive https://secure.mybank.com/dashboard
+gp observe -s mybank go --interactive https://secure.mybank.example.com/dashboard
 ```
 
 This:

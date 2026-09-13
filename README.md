@@ -200,7 +200,7 @@ For straightforward HTTP calls, no Python needed:
 ```yaml
 # ~/.config/graftpunk/plugins/mybank.yaml
 site_name: mybank
-base_url: "https://secure.mybank.com"
+base_url: "https://secure.mybank.example.com"
 
 login:
   url: /login
@@ -239,7 +239,7 @@ from graftpunk.plugins import CommandContext, LoginConfig, SitePlugin, command
 
 class MyBankPlugin(SitePlugin):
     site_name = "mybank"
-    base_url = "https://secure.mybank.com"
+    base_url = "https://secure.mybank.example.com"
     backend = "nodriver"  # or "selenium"
     api_version = 1
 
@@ -339,15 +339,15 @@ names it yourself.
 Make authenticated requests using cached sessions without writing a plugin:
 
 ```bash
-gp http get -s mybank https://secure.mybank.com/api/accounts
-gp http post -s mybank https://secure.mybank.com/api/transfer --data '{"amount": 100}'
+gp http get -s mybank https://secure.mybank.example.com/api/accounts
+gp http post -s mybank https://secure.mybank.example.com/api/transfer --data '{"amount": 100}'
 ```
 
 Use `--role` to set browser header roles (built-in or plugin-defined):
 
 ```bash
-gp http get -s mybank --role xhr https://secure.mybank.com/api/status
-gp http get -s mybank --role api https://secure.mybank.com/v2/data  # custom plugin role
+gp http get -s mybank --role xhr https://secure.mybank.example.com/api/status
+gp http get -s mybank --role api https://secure.mybank.example.com/v2/data  # custom plugin role
 ```
 
 Supports all HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`.
@@ -358,13 +358,13 @@ Capture browser activity for debugging:
 
 ```bash
 # Open authenticated browser and capture network traffic
-gp observe -s mybank go https://secure.mybank.com/dashboard
+gp observe -s mybank go https://secure.mybank.example.com/dashboard
 
 # Interactive mode — browse manually, Ctrl+C to save
-gp observe -s mybank interactive https://secure.mybank.com/dashboard
+gp observe -s mybank interactive https://secure.mybank.example.com/dashboard
 
 # Or use the --interactive flag on observe go
-gp observe -s mybank go --interactive https://secure.mybank.com/dashboard
+gp observe -s mybank go --interactive https://secure.mybank.example.com/dashboard
 
 # View captured data
 gp observe list
