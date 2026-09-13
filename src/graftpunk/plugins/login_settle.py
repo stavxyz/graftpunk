@@ -174,7 +174,7 @@ def _missing_login_signals(
 
 
 def _page_text_decides(
-    *, failure_text: str, url: str, pre_submit_url: str, success_url: str
+    *, failure_text: str, url: str, pre_submit_url: str, success_url: str, last_tick: bool
 ) -> bool:
     """Whether this tick's verdict can turn on the page text.
 
@@ -185,8 +185,14 @@ def _page_text_decides(
     with no failure text to look for, on a URL that has not arrived, is decided by
     the success element alone, so it leaves the document where it is (polish round
     1).
+
+    The deadline tick reads the page whatever the configuration says. A login whose
+    only signal is a ``success`` selector otherwise never fetched a document at all,
+    so a site answering the submit with its rate-limit page burned the whole timeout
+    and the warning pointed at the selector instead of the limiter (polish round 2).
+    That costs one extra document read per failed wait and none per successful one.
     """
-    if failure_text:
+    if failure_text or last_tick:
         return True
     return bool(success_url) and _url_signal_holds(
         url=url, pre_submit_url=pre_submit_url, success_url=success_url
@@ -360,6 +366,18 @@ def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend
         ),
         **{name: f"{value:g}s" for name, value in set_by_plugin.items()},
     )
+
+
+def _is_deadline_tick(remaining: float) -> bool:
+    """Whether the tick that follows a sleep of *remaining* is the last one of the wait.
+
+    Each sleep is clamped to what is left of the budget, so a tick entered with one
+    poll interval or less to go lands at the deadline and nothing follows it. Both
+    loops ask this once, before the sleep, and use the answer both to read the page
+    on that tick (see ``_page_text_decides``) and to stop after it, so the tick that
+    reads the page is exactly the tick the wait ends on (polish round 2).
+    """
+    return remaining <= _LOGIN_POLL_INTERVAL
 
 
 def _poll_sleep_seconds(remaining: float) -> float:
@@ -636,7 +654,9 @@ async def _wait_for_login_signal_nodriver(
     last = _ReadWindow()
     marker_noted = False
     while True:
-        await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
+        remaining = deadline - loop.time()
+        last_tick = _is_deadline_tick(remaining)
+        await asyncio.sleep(_poll_sleep_seconds(remaining))
         url = tab_url(tab)
         reading = await _read_login_tick_nodriver(
             tab,
@@ -647,6 +667,7 @@ async def _wait_for_login_signal_nodriver(
                 url=url,
                 pre_submit_url=pre_submit_url,
                 success_url=success_url,
+                last_tick=last_tick,
             ),
             site_name=site_name,
         )
@@ -668,7 +689,7 @@ async def _wait_for_login_signal_nodriver(
         if decision.note_marker:
             _debug_rate_limit_marker(site_name=site_name, url=reading.url, backend="nodriver")
             marker_noted = True
-        if loop.time() >= deadline:
+        if last_tick:
             break
 
     if not last.answered:
@@ -699,7 +720,9 @@ def _wait_for_login_signal_selenium(
     last = _ReadWindow()
     marker_noted = False
     while True:
-        time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
+        remaining = deadline - time.monotonic()
+        last_tick = _is_deadline_tick(remaining)
+        time.sleep(_poll_sleep_seconds(remaining))
         url = driver_url(driver)
         reading = _read_login_tick_selenium(
             driver,
@@ -710,6 +733,7 @@ def _wait_for_login_signal_selenium(
                 url=url,
                 pre_submit_url=pre_submit_url,
                 success_url=success_url,
+                last_tick=last_tick,
             ),
             site_name=site_name,
         )
@@ -731,7 +755,7 @@ def _wait_for_login_signal_selenium(
         if decision.note_marker:
             _debug_rate_limit_marker(site_name=site_name, url=reading.url, backend="selenium")
             marker_noted = True
-        if time.monotonic() >= deadline:
+        if last_tick:
             break
 
     if not last.answered:

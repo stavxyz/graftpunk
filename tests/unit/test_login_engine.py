@@ -1453,6 +1453,38 @@ class TestNodriverLoginSignalPoll:
         assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "ndurl"
 
     @pytest.mark.asyncio
+    async def test_a_selector_only_login_reports_a_rate_limit_page_at_its_deadline(self) -> None:
+        """The deadline tick reads the page, so a timeout can be blamed on the limiter.
+
+        A login whose only signal is a `success` selector gives no rule a reason to
+        fetch the document on an ordinary tick, so this wait used to burn its whole
+        budget and name the selector for a page the site's rate limiter served.
+        """
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            success_selector=".dashboard",
+            success_from=None,
+            contents=("<html>Too Many Requests</html>",),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverSuccess())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in tab.events
+        # One document read for the whole wait, on the tick that ended it.
+        assert [event for event in tab.events if event.startswith("tick:")] == [f"tick:{tab.tick}"]
+        assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "ndsuccess"
+        timeouts = [c for c in mock_log.warning.call_args_list if c[0][0] == "login_signal_timeout"]
+        assert timeouts == []
+
+    @pytest.mark.asyncio
     async def test_a_url_of_none_mid_redirect_keeps_the_poll_going(self) -> None:
         """nodriver reports no URL while a tab navigates; the poll waits it out."""
         from graftpunk.plugins.login_engine import generate_login_method
@@ -1473,14 +1505,14 @@ class TestNodriverLoginSignalPoll:
 
     @pytest.mark.asyncio
     async def test_a_url_that_is_never_readable_is_a_dead_tab_not_a_missing_signal(self) -> None:
-        """A URL-only poll asks the browser for nothing else, so silence is the verdict.
+        """A tab that answers neither a URL nor a page has confirmed nothing.
 
-        The tab answered no URL for the whole window and was never asked for a page,
-        so nothing confirms or denies the signal and the wait blames the browser.
+        Nothing here can tell the URL signal apart from a dead browser, so the wait
+        blames the browser rather than naming a signal it never got to look at.
         """
         from graftpunk.plugins.login_engine import generate_login_method
 
-        tab = _ScriptedNodriverTab(urls=(None,))
+        tab = _ScriptedNodriverTab(urls=(None,), unreadable_ticks=tuple(range(1000)))
         mock_bs, _instance = _nodriver_session_for(tab)
 
         with (
@@ -1494,7 +1526,7 @@ class TestNodriverLoginSignalPoll:
 
         assert result is False
         warning = _warning_kwargs(mock_log, "login_page_unreadable")
-        assert warning["error"] == "the browser reported neither a page nor a URL"
+        assert "Could not find node" in warning["error"]
         assert warning["url"] == ""
         timeouts = [c for c in mock_log.warning.call_args_list if c[0][0] == "login_signal_timeout"]
         assert timeouts == []
@@ -2900,11 +2932,39 @@ class TestSeleniumLoginSignalPoll:
         assert result is True
         assert driver.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
 
-    def test_a_url_that_is_never_readable_is_a_dead_tab_not_a_missing_signal(self) -> None:
-        """The selenium twin: a driver that answers no URL is a driver that said nothing."""
+    def test_a_selector_only_login_reports_a_rate_limit_page_at_its_deadline(self) -> None:
+        """The selenium twin: the deadline tick reads the page, so the limiter is named."""
         from graftpunk.plugins.login_engine import generate_login_method
 
-        driver = _ScriptedSeleniumDriver(urls=("",))
+        driver = _ScriptedSeleniumDriver(
+            success_selector="a[href='/logout']",
+            success_from=None,
+            contents=("<html>Too Many Requests</html>",),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeQuotes())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in driver.events
+        # One document read for the whole wait, on the tick that ended it.
+        assert [event for event in driver.events if event.startswith("tick:")] == [
+            f"tick:{driver.tick}"
+        ]
+        assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "quotes"
+        timeouts = [c for c in mock_log.warning.call_args_list if c[0][0] == "login_signal_timeout"]
+        assert timeouts == []
+
+    def test_a_url_that_is_never_readable_is_a_dead_tab_not_a_missing_signal(self) -> None:
+        """The selenium twin: a driver that answers neither a URL nor a page said nothing."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(urls=("",), unreadable_ticks=tuple(range(1000)))
         mock_bs, _instance = _selenium_session_for(driver)
 
         with (
@@ -2916,7 +2976,7 @@ class TestSeleniumLoginSignalPoll:
 
         assert result is False
         warning = _warning_kwargs(mock_log, "login_page_unreadable")
-        assert warning["error"] == "the browser reported neither a page nor a URL"
+        assert "target window already closed" in warning["error"]
         assert warning["url"] == ""
         timeouts = [c for c in mock_log.warning.call_args_list if c[0][0] == "login_signal_timeout"]
         assert timeouts == []
