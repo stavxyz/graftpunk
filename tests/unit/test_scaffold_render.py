@@ -192,8 +192,25 @@ class TestCommandName:
         assert first_name == "a" * _MAX_COMMAND_NAME
         assert second_name == f"{first_name}_2"
 
-    def test_a_path_of_only_placeholders_is_named_root(self) -> None:
-        assert _command_name("/{order_id}", set()) == "root"
+    def test_the_root_path_is_named_root(self) -> None:
+        assert _command_name("/", set()) == "root"
+
+    def test_a_placeholder_becomes_a_by_part(self) -> None:
+        assert _command_name("/{order_id}", set()) == "by_order_id"
+
+    def test_sibling_endpoints_read_as_what_they_fetch(self) -> None:
+        """Dropping the placeholder named the second sibling api_orders_2."""
+        seen: set[str] = set()
+        assert _command_name("/api/orders", seen) == "api_orders"
+        assert _command_name("/api/orders/{order_id}", seen) == "api_orders_by_order_id"
+
+    def test_every_placeholder_contributes_a_by_part(self) -> None:
+        assert _command_name("/a/{x}/b/{y}", set()) == "a_by_x_b_by_y"
+
+    def test_the_counter_is_left_for_a_true_collision(self) -> None:
+        seen: set[str] = set()
+        assert _command_name("/api/orders", seen) == "api_orders"
+        assert _command_name("/api/orders", seen) == "api_orders_2"
 
 
 class TestParamIdentifier:

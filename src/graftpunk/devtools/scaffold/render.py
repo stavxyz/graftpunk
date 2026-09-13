@@ -131,14 +131,26 @@ def _deduped(base: str, seen: set[str]) -> str:
 def _command_name(template: str, seen: set[str]) -> str:
     """The command method name for *template*, unique within *seen*.
 
+    A placeholder becomes a ``by_<param>`` part rather than being dropped, so
+    sibling endpoints read as what they are: ``/api/orders`` is ``api_orders``,
+    ``/api/orders/{order_id}`` is ``api_orders_by_order_id``, and
+    ``/a/{x}/b/{y}`` is ``a_by_x_b_by_y``. Dropping them named the second
+    sibling ``api_orders_2``, which says nothing about what it fetches (polish
+    round 1, 2026-09-12). The counter is left for a true collision: the same
+    template under another method, or two names equal after truncation.
+
     Truncated to ``_MAX_COMMAND_NAME`` before the uniqueness counter is applied: the
     name lands in a ``def``, a decorator, and the generated test's own ``def`` and
     call, none of which any wrapping helper can split, so a deep captured path must
     not be able to push those past the generated width (validation fix round 4,
     2026-09-12).
     """
-    segments = [s for s in template.strip("/").split("/") if s and not s.startswith("{")]
-    base = re.sub(r"[^a-z0-9_]", "_", "_".join(segments).lower())[:_MAX_COMMAND_NAME] or "root"
+    parts = [
+        f"by_{segment[1:-1]}" if segment.startswith("{") and segment.endswith("}") else segment
+        for segment in template.strip("/").split("/")
+        if segment
+    ]
+    base = re.sub(r"[^a-z0-9_]", "_", "_".join(parts).lower())[:_MAX_COMMAND_NAME] or "root"
     return _deduped(base, seen)
 
 
