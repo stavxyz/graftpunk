@@ -9,6 +9,7 @@ the "session expired" primitive).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -22,12 +23,44 @@ LOG = get_logger(__name__)
 
 _REJECTED_STATUSES = frozenset({401, 403})
 _ROLES_WARNED_ATTR = "_gp_roles_unavailable_warned"
+# The request arguments whose values a site reads as text, so a Python value
+# has to be spelled the way the site spells it.
+_NORMALISED_ARGUMENTS = ("params", "data")
+# What a site means by a boolean. ``requests`` serialises a Python bool with
+# str(), which sends "True"/"False": a site that recorded "keywordSearch=false"
+# does not recognise either (polish round 2, 2026-09-12).
+_BOOLEAN_TEXT = {True: "true", False: "false"}
 
 __all__ = ["SiteRequests"]
 
 
 def _path_of(url: str | None) -> str:
     return urlparse(url or "").path or "/"
+
+
+def _normalised_value(value: Any) -> Any:
+    """One ``params``/``data`` value as the site spells it: a bool becomes
+    ``"true"``/``"false"``, a sequence has each of its items normalised and its
+    ``None`` items dropped, anything else is passed through untouched."""
+    if isinstance(value, bool):
+        return _BOOLEAN_TEXT[value]
+    if isinstance(value, (list, tuple)):
+        return [_normalised_value(item) for item in value if item is not None]
+    return value
+
+
+def _normalised_arguments(mapping: Any) -> Any:
+    """*mapping* with every value normalised and every ``None``-valued key dropped.
+
+    A generated command stub declares each site parameter ``... | None = None``
+    and passes the lot, so ``None`` is the stub's way of saying "the caller did
+    not ask for this parameter": sending it would add an empty value the site
+    never saw. Anything that is not a mapping (a raw string or bytes body) is
+    returned as it came.
+    """
+    if not isinstance(mapping, Mapping):
+        return mapping
+    return {key: _normalised_value(value) for key, value in mapping.items() if value is not None}
 
 
 class SiteRequests:
@@ -49,6 +82,9 @@ class SiteRequests:
 
     def _send(self, method: str, url: str, role: str, **kwargs: Any) -> requests.Response:
         full_url = self._resolve(url)
+        for name in _NORMALISED_ARGUMENTS:
+            if name in kwargs:
+                kwargs[name] = _normalised_arguments(kwargs[name])
         request_with_role = getattr(self._session, "request_with_role", None)
         if callable(request_with_role):
             return request_with_role(role, method, full_url, **kwargs)
@@ -69,6 +105,10 @@ class SiteRequests:
 
     def json(self, method: str, url: str, *, role: str = "xhr", **kwargs: Any) -> Any:
         """Send *method* *url* with role headers; return the parsed JSON body.
+
+        A ``params`` or ``data`` mapping is normalised first: ``True`` and
+        ``False`` are sent as ``"true"`` and ``"false"``, and a key whose value
+        is ``None`` is left out of the request entirely.
 
         Raises:
             SessionRejectedError: 401/403, or a 2xx whose body is a login
@@ -98,6 +138,11 @@ class SiteRequests:
 
     def text(self, method: str, url: str, *, role: str = "navigation", **kwargs: Any) -> str:
         """Send *method* *url* with role headers; return any 2xx body as text.
+
+        A ``params`` or ``data`` mapping is normalised the way :meth:`json`
+        normalises it: ``True`` and ``False`` are sent as ``"true"`` and
+        ``"false"``, and a key whose value is ``None`` is left out of the
+        request entirely.
 
         Rejection is detected by status only, so an HTML endpoint's real
         2xx body is never mistaken for an expired session.

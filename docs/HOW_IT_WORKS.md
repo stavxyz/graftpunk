@@ -463,6 +463,14 @@ instead of the session directly:
   returns any 2xx body as text, detecting rejection by status only, so an
   HTML endpoint's real response is never mistaken for an expired session.
 
+Both helpers normalise a `params` or `data` mapping before sending it, so a
+command can pass Python values and the site still sees what it recorded.
+`True` and `False` go out as `true` and `false`, not as `requests`' own
+`True`/`False`, and a key whose value is `None` is dropped from the request
+entirely. That second rule is what makes a generated stub's
+`keyword_search: bool | None = None` mean "omit this parameter unless the
+caller asked for it".
+
 `graftpunk.testing` (pytest-free) supplies `make_context()` for building a
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
 for answering `ctx.request_json`/`request_text` from a file under

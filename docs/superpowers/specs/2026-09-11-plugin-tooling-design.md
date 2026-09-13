@@ -421,6 +421,19 @@ and the policy has its own file and tests. The policy:
   status only, so an HTML endpoint is never mistaken for an expired session.
 - Neither helper returns a partial result; both raise typed errors only.
 
+> **Design note (2026-09-12, polish round 2):** the helpers gained one more
+> rule, before the request goes out. A `params` or `data` mapping has `True`
+> and `False` replaced by `"true"` and `"false"`, and every key whose value is
+> `None` removed. A real recording sent `keywordSearch=false`; the digest typed
+> it `bool`, so the stub declares `keyword_search: bool | None = None` and
+> passes it in `params=`, and `requests` serialises a Python bool with `str()`,
+> which would have sent `keywordSearch=True`. The scaffold rule forbids fixing
+> that in generated code (a generated line is a site fact or a call into the
+> public API, never logic), so the framework helper owns it. The `None` rule is
+> the other half of the same stub shape: `None` is how a stub says the caller
+> did not ask for the parameter, and sending it would add a value the site
+> never saw.
+
 `SessionRejectedError` and `UnexpectedResponseError` are new `CommandError`
 subclasses in `src/graftpunk/exceptions.py`; the CLI already renders a
 `CommandError` through its `user_message` as one clean line

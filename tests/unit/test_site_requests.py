@@ -151,6 +151,97 @@ class TestUnexpectedResponse:
             SiteRequests(session, "myshop", "https://myshop.example.com").json("GET", "/orders")
 
 
+class _RecordingAdapter(requests.adapters.HTTPAdapter):
+    """Answers every request from memory, keeping the PreparedRequest.
+
+    The assertions below are about the bytes `requests` actually builds (the
+    query string, the form body), so the test has to go through a real
+    `requests.Session` and stop at the transport rather than at a fake session
+    object. No socket is opened: `send` never calls up.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[requests.PreparedRequest] = []
+
+    def send(self, request: requests.PreparedRequest, **kwargs: Any) -> requests.Response:
+        self.sent.append(request)
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "application/json"
+        response._content = b"{}"
+        response.url = request.url or ""
+        response.request = request
+        return response
+
+
+class TestParamsAndDataNormalisation:
+    """A stub declares `keyword_search: bool | None = None` and passes it
+    straight through, so the helper owns the spelling (polish round 2,
+    2026-09-12)."""
+
+    @staticmethod
+    def _session() -> tuple[requests.Session, _RecordingAdapter]:
+        session = requests.Session()
+        adapter = _RecordingAdapter()
+        session.mount("https://", adapter)
+        return session, adapter
+
+    def test_a_false_query_parameter_is_sent_as_the_site_spells_it(self) -> None:
+        session, adapter = self._session()
+        SiteRequests(session, "myshop", "https://myshop.example.com").json(
+            "GET", "/results", params={"keywordSearch": False, "searchType": True}
+        )
+        url = adapter.sent[0].url or ""
+        assert "keywordSearch=false" in url
+        assert "searchType=true" in url
+        assert "True" not in url and "False" not in url
+
+    def test_a_none_query_parameter_is_left_out_entirely(self) -> None:
+        session, adapter = self._session()
+        SiteRequests(session, "myshop", "https://myshop.example.com").json(
+            "GET", "/results", params={"keywordSearch": False, "searchValue": None, "page": 2}
+        )
+        url = adapter.sent[0].url or ""
+        assert "searchValue" not in url
+        assert "keywordSearch=false" in url
+        assert "page=2" in url
+
+    def test_a_form_body_is_normalised_the_same_way(self) -> None:
+        session, adapter = self._session()
+        SiteRequests(session, "myshop", "https://myshop.example.com").json(
+            "POST", "/results", data={"keywordSearch": False, "searchValue": None, "page": 2}
+        )
+        body = adapter.sent[0].body
+        assert body == "keywordSearch=false&page=2"
+
+    def test_text_normalises_its_query_too(self) -> None:
+        session, adapter = self._session()
+        SiteRequests(session, "myshop", "https://myshop.example.com").text(
+            "GET", "/page", params={"keywordSearch": False, "searchValue": None}
+        )
+        url = adapter.sent[0].url or ""
+        assert "keywordSearch=false" in url
+        assert "searchValue" not in url
+
+    def test_a_repeated_parameter_keeps_every_value(self) -> None:
+        session, adapter = self._session()
+        SiteRequests(session, "myshop", "https://myshop.example.com").json(
+            "GET", "/results", params={"tag": ["new", None, True]}
+        )
+        url = adapter.sent[0].url or ""
+        assert "tag=new" in url
+        assert "tag=true" in url
+        assert url.count("tag=") == 2
+
+    def test_a_raw_string_body_is_passed_through(self) -> None:
+        session, adapter = self._session()
+        SiteRequests(session, "myshop", "https://myshop.example.com").json(
+            "POST", "/results", data="keywordSearch=false"
+        )
+        assert adapter.sent[0].body == "keywordSearch=false"
+
+
 class TestPlainSessionHasNoRoles:
     def test_plain_session_gets_the_request_without_role_headers(self) -> None:
         class _PlainSession:
