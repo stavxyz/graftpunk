@@ -271,6 +271,55 @@ class TestPluginNewFromRun:
         assert "myshop/run-2" not in plugin_code
 
 
+class TestPathListingsDoNotWrapMidWord:
+    """Console.print's default wrapping breaks a path at 80 columns, so a
+    listing meant to be copied could not be."""
+
+    @staticmethod
+    def _deep_target(tmp_path: Path) -> Path:
+        return tmp_path / "a-fairly-long-directory-name" / "and-another-one-here" / "myshop"
+
+    def test_the_written_file_listing_keeps_whole_paths(self, tmp_path: Path) -> None:
+        target = self._deep_target(tmp_path)
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--url",
+                "https://myshop.example.com",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        expected = str(target / "src" / "graftpunk_myshop" / "plugin.py")
+        assert len(expected) > 80
+        assert expected in result.output
+
+    def test_the_conflict_listing_keeps_whole_paths(self, tmp_path: Path) -> None:
+        target = self._deep_target(tmp_path)
+        target.mkdir(parents=True)
+        (target / "README.md").write_text("already here")
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--url",
+                "https://myshop.example.com",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 1
+        expected = str(target / "README.md")
+        assert len(expected) > 80
+        assert expected in result.output
+
+
 class TestNextStepsNamesTheFixtures:
     def test_the_fixture_path_for_a_templated_endpoint_is_named(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

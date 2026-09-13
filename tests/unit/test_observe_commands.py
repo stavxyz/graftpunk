@@ -482,6 +482,30 @@ class TestFixturesGitignore:
         assert not (repo / ".gitignore").exists()
 
 
+class TestWroteListingDoesNotWrapMidWord:
+    def test_a_long_written_path_appears_whole(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Console.print's default wrapping breaks a path at 80 columns, so the
+        listing could not be copied."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+        )
+        out_dir = tmp_path / "a-fairly-long-directory-name" / "and-another-one-here" / "captures"
+
+        result = _invoke_fixtures(out_dir)
+
+        assert result.exit_code == 0, result.output
+        expected = str(out_dir / "get_orders_{order_id}.json")
+        assert len(expected) > 80
+        assert expected in result.output
+
+
 class TestLimitMustBePositive:
     """A zero or negative --limit shows nothing and writes nothing, with no
     explanation; Typer refuses it at parse time instead."""

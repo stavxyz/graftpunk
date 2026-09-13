@@ -145,7 +145,7 @@ def plugin_new(
         LOG.debug("scaffold_refused", reason="conflict", conflicts=len(exc.conflicts))
         console.print("[red]Refusing to overwrite existing file(s):[/red]")
         for path in exc.conflicts:
-            console.print(f"  {escape(str(path))}")
+            console.print(f"  {escape(str(path))}", soft_wrap=True)
         raise typer.Exit(1) from None
     except PyprojectEditError as exc:
         LOG.debug("scaffold_refused", reason="pyproject_edit_error")
@@ -175,7 +175,10 @@ def plugin_new(
     LOG.info("scaffold_written", mode=result.mode, dir=str(dir_))
     console.print(f"[green]{result.mode.replace('_', ' ').title()}:[/green]")
     for path in result.written:
-        console.print(f"  {escape(str(path))}")
+        # soft_wrap: Console.print's default wrapping breaks a path mid-word at
+        # 80 columns, so a listing meant to be copied could not be (polish round
+        # 1, 2026-09-12).
+        console.print(f"  {escape(str(path))}", soft_wrap=True)
     if result.gitignore_updated:
         console.print(f"[dim]Added {escape(CAPTURES_DIR)}/ to .gitignore[/dim]")
     _print_next_steps(dataclasses.replace(spec, mode=result.mode))

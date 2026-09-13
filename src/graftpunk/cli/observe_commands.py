@@ -201,7 +201,7 @@ def fixtures_cmd(
         if tracked:
             console.print("[red]Refusing to write: these paths are tracked by git:[/red]")
             for path in tracked:
-                console.print(f"  {escape(str(path))}")
+                console.print(f"  {escape(str(path))}", soft_wrap=True)
             console.print("[dim]Pass --allow-tracked to write anyway.[/dim]")
             raise typer.Exit(1)
 
@@ -276,7 +276,9 @@ def fixtures_cmd(
         except OSError as exc:
             _refuse_write(file_path, exc)
         written.append(file_path)
-        console.print(f"[green]Wrote:[/green] {escape(str(file_path))}")
+        # soft_wrap: see digest_cmd. A path listing that breaks mid-word at 80
+        # columns cannot be copied (polish round 1, 2026-09-12).
+        console.print(f"[green]Wrote:[/green] {escape(str(file_path))}", soft_wrap=True)
 
     if not written:
         console.print("[yellow]No entries matched --match.[/yellow]")
