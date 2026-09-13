@@ -515,7 +515,7 @@ The top-level login configuration includes:
 - **`wait_for`** — Optional top-level wait for element before any steps begin.
 - **`failure`** — Optional text that indicates login failure.
 - **`success`** — Optional CSS selector that indicates login success.
-- **`success_url`**: Optional glob matched against the whole browser URL after the last step, such as `https://app.example.com/*` or `*/dashboard*`. Use it for a login that finishes on a recognisable URL, on its own or alongside `success`; with both set, both have to hold.
+- **`success_url`**: Optional glob matched against the whole browser URL after the last step, such as `https://app.example.com/*` or `*/dashboard*`. It counts only once the URL differs from the one the last submit was clicked from, so a glob that also matches the login page reports nothing rather than reporting success too early. Use it for a login that finishes on a recognisable URL, on its own or alongside `success`; with both set, both have to hold.
 - **`timeout`**: Seconds to wait after the last step for the success or failure signal (default `30`). Raise it for a login that finishes through a slow identity-provider redirect chain.
 - **`settle`**: Seconds to wait after the success signal, once the document has finished loading, before cookies are captured (default `1`).
 - **`headless`** — Run the login browser headless (default `false`, so a human can solve a CAPTCHA or 2FA prompt). `gp <plugin> login --headless` / `--headful` override it for one invocation in either direction; the flags are offered only on declarative logins (a plugin's own `login()` method cannot honour them).
@@ -656,11 +656,13 @@ The declarative engine executes each step in sequence:
    b. Clicks each field element and types the credential value
    c. **(If `submit` is set)** Clicks the submit button
    d. **(If `delay` is set)** Pauses for the specified duration
-4. Polls the page every half second, up to `timeout` seconds, reading the page text and the current URL on each pass. The `failure` text ends the wait as a failure, a `Too Many Requests` page ends it as a failure, and the success signal ends it as a success. The success signal is the `success` element being present, the current URL matching the `success_url` glob, or both when both are configured.
+4. Polls the page every half second, up to `timeout` seconds, starting one interval after the last step rather than immediately. Each pass reads the page text and the current URL. The `failure` text ends the wait as a failure, a `Too Many Requests` page ends it as a failure, and the success signal ends it as a success. The success signal is the `success` element being present, the URL having moved off the one the last submit was clicked from and matching the `success_url` glob, or both when both are configured.
 5. Waits for the document to finish loading, then pauses for `settle` seconds
 6. Transfers cookies and caches the session
 
 The wait is what makes a slow login work: sites that finish through an identity-provider redirect can take tens of seconds to mint their cookies, and the engine holds until the signal it was told to look for appears. When the timeout passes first, the login fails and the warning names the signal that never appeared and the URL the page ended on.
+
+Write both signals so they cannot match the login page itself. An element that is already on the form, or a glob as loose as `*example.com*`, would otherwise be satisfied before the submit has navigated anywhere, and the session cached would be the one from before the login. The engine guards the URL half of that (a `success_url` counts only once the page has moved off the URL the submit was clicked from) and delays the first pass by one interval, but a `success` element that the form and the landing page share is beyond its reach.
 
 Configure at least one of `failure`, `success`, and `success_url`. With neither `success` nor `success_url` set there is nothing to wait for, so the engine pauses for `settle` seconds and takes a single verdict from the page text; with none of the three set, that verdict is always success and a warning advises you to add validation.
 

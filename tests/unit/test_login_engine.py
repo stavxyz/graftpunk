@@ -205,7 +205,7 @@ class TestDeclarativeLoginEngine:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -226,7 +226,7 @@ class TestDeclarativeLoginEngine:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session") as cache,
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             result = login_method(
                 {"username": "user", "password": "test"},  # noqa: S106
@@ -313,7 +313,7 @@ class TestSeleniumFailureTextPath:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             result = login_method({"username": "user", "password": "wrong"})  # noqa: S106
 
@@ -337,7 +337,7 @@ class TestSeleniumFailureTextPath:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             result = login_method({"username": "user", "password": "correct"})  # noqa: S106
 
@@ -407,7 +407,7 @@ class TestLoginEngineExceptionPaths:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             with pytest.raises(ConnectionError, match="Refused"):
                 login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -428,7 +428,7 @@ class TestLoginEngineExceptionPaths:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             with pytest.raises(RuntimeError, match="Crash"):
                 login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -461,7 +461,7 @@ class TestLoginEngineExceptionPaths:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             pytest.raises(ConnectionError, match="WebDriver session crashed"),
         ):
             login_method({"username": "user", "password": "test"})  # noqa: S106
@@ -514,7 +514,7 @@ class TestLoginFieldMapping:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             result = login_method({"email": "myuser", "password": "mypass"})  # noqa: S106
 
@@ -567,7 +567,7 @@ class TestLoginFieldMapping:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             # Only pass password, no email key
             result = login_method({"password": "mypass"})  # noqa: S106
@@ -1011,13 +1011,97 @@ class TestNodriverLoginSignalPoll:
         assert "cookies" in tab.events
 
     @pytest.mark.asyncio
+    async def test_a_glob_matching_the_login_page_never_reports_success(self) -> None:
+        """The probe that cached a pre-login session: the URL never changed."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class LooseUrlPlugin(SitePlugin):
+            site_name = "ndloose"
+            session_name = "ndloose"
+            help_text = "ND Loose"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                success_url="*example.com*",
+                timeout=0.2,
+                settle=0.0,
+            )
+
+        tab = _ScriptedNodriverTab(urls=("https://app.example.com/login",))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await generate_login_method(LooseUrlPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in tab.events
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success URL pattern '*example.com*'"
+
+    @pytest.mark.asyncio
+    async def test_the_same_glob_succeeds_once_the_page_navigates(self) -> None:
+        """A URL that changes on a later tick is the navigation the rule asks for."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(
+            urls=(
+                "https://app.example.com/login",
+                "https://app.example.com/login",
+                "https://app.example.com/login",
+                "https://app.example.com/dashboard",
+            ),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = await generate_login_method(DeclarativeNodriverUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert tab.tick == 3
+        assert "cookies" in tab.events
+
+    @pytest.mark.asyncio
+    async def test_the_first_tick_comes_after_one_poll_interval(self) -> None:
+        """An element already on the login page must not be read before the submit lands."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        async def _record_sleep(seconds: float) -> None:
+            tab.events.append("sleep")
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch(
+                "graftpunk.plugins.login_engine.asyncio.sleep",
+                new=AsyncMock(side_effect=_record_sleep),
+            ),
+        ):
+            result = await generate_login_method(DeclarativeNodriverPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        first_tick = tab.events.index("tick:0")
+        assert tab.events[first_tick - 1] == "sleep"
+
+    @pytest.mark.asyncio
     async def test_both_signals_configured_needs_both(self) -> None:
         """A matching URL is not enough while the configured element never appears."""
         from graftpunk.plugins.login_engine import generate_login_method
 
         tab = _ScriptedNodriverTab(
             success_selector=".dashboard",
-            urls=("https://app.example.com/dashboard",),
+            urls=("https://app.example.com/login", "https://app.example.com/dashboard"),
             success_from=None,
         )
         mock_bs, _instance = _nodriver_session_for(tab)
@@ -1301,6 +1385,7 @@ class TestLoginTickVerdict:
         *,
         page_text: str = "<html>Signing in</html>",
         url: str = "https://app.example.com/login",
+        pre_submit_url: str = "https://app.example.com/login",
         failure_text: str = "",
         success_selector: str = "",
         success_url: str = "",
@@ -1311,6 +1396,7 @@ class TestLoginTickVerdict:
         return _login_tick_verdict(
             page_text=page_text,
             url=url,
+            pre_submit_url=pre_submit_url,
             failure_text=failure_text,
             success_selector=success_selector,
             success_url=success_url,
@@ -1416,24 +1502,48 @@ class TestLoginTickVerdict:
             == "success"
         )
 
+    def test_a_url_that_has_not_changed_is_not_a_signal(self) -> None:
+        """A glob loose enough to match the login page must not report success there."""
+        assert (
+            self._verdict(
+                url="https://app.example.com/login",
+                pre_submit_url="https://app.example.com/login",
+                success_url="*example.com*",
+            )
+            == "pending"
+        )
+
+    def test_the_same_glob_holds_once_the_page_has_moved(self) -> None:
+        """The rule is a navigation, not a stricter pattern."""
+        assert (
+            self._verdict(
+                url="https://app.example.com/dashboard",
+                pre_submit_url="https://app.example.com/login",
+                success_url="*example.com*",
+            )
+            == "success"
+        )
+
     def test_missing_signals_name_every_signal_that_does_not_hold(self) -> None:
         """The timeout warning's text comes from this list."""
         from graftpunk.plugins.login_engine import _missing_login_signals
 
         assert _missing_login_signals(
             url="https://app.example.com/login",
+            pre_submit_url="https://app.example.com/login",
             success_found=False,
             success_selector=".dashboard",
             success_url="*/dashboard*",
         ) == ["success element '.dashboard'", "success URL pattern '*/dashboard*'"]
 
     def test_missing_signals_is_empty_when_both_hold(self) -> None:
-        """Nothing is missing once the element is found and the URL matches."""
+        """Nothing is missing once the element is found and the URL has changed."""
         from graftpunk.plugins.login_engine import _missing_login_signals
 
         assert (
             _missing_login_signals(
                 url="https://app.example.com/dashboard",
+                pre_submit_url="https://app.example.com/login",
                 success_found=True,
                 success_selector=".dashboard",
                 success_url="*/dashboard*",
@@ -1558,7 +1668,7 @@ class TestLoginEngineHeaderCapture:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -1594,7 +1704,7 @@ class TestSeleniumLoginValidationPaths:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -1619,7 +1729,7 @@ class TestSeleniumLoginValidationPaths:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             result = login_method({"username": "user", "password": "test"})  # noqa: S106
 
@@ -1847,13 +1957,91 @@ class TestSeleniumLoginSignalPoll:
         assert driver.tick == 2
         assert "cookies" in driver.events
 
+    def test_a_glob_matching_the_login_page_never_reports_success(self) -> None:
+        """The probe that cached a pre-login session: the URL never changed."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class LooseUrlSeleniumPlugin(SitePlugin):
+            site_name = "selloose"
+            session_name = "selloose"
+            help_text = "Sel Loose"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                success_url="*example.com*",
+                timeout=0.2,
+                settle=0.0,
+            )
+
+        driver = _ScriptedSeleniumDriver(urls=("https://app.example.com/login",))
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = generate_login_method(LooseUrlSeleniumPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in driver.events
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success URL pattern '*example.com*'"
+
+    def test_the_same_glob_succeeds_once_the_page_navigates(self) -> None:
+        """A URL that changes on a later tick is the navigation the rule asks for."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            urls=(
+                "https://app.example.com/login",
+                "https://app.example.com/login",
+                "https://app.example.com/login",
+                "https://app.example.com/dashboard",
+            ),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = generate_login_method(DeclarativeSeleniumUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert driver.tick == 3
+        assert "cookies" in driver.events
+
+    def test_the_first_tick_comes_after_one_poll_interval(self) -> None:
+        """An element already on the login page must not be read before the submit lands."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch(
+                "graftpunk.plugins.login_engine.time.sleep",
+                side_effect=lambda seconds: driver.events.append("sleep"),
+            ),
+        ):
+            result = generate_login_method(DeclarativeSeleniumPoll())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        first_tick = driver.events.index("tick:0")
+        assert driver.events[first_tick - 1] == "sleep"
+
     def test_both_signals_configured_needs_both(self) -> None:
         """A matching URL is not enough while the configured element never appears."""
         from graftpunk.plugins.login_engine import generate_login_method
 
         driver = _ScriptedSeleniumDriver(
             success_selector=".dashboard",
-            urls=("https://app.example.com/dashboard",),
+            urls=("https://app.example.com/login", "https://app.example.com/dashboard"),
         )
         mock_bs, _instance = _selenium_session_for(driver)
 
@@ -2105,7 +2293,7 @@ class TestSeleniumTokenExtraction:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -2143,7 +2331,7 @@ class TestSeleniumTokenExtraction:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -2234,7 +2422,7 @@ class TestSeleniumWaitForRaises:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             pytest.raises(PluginError, match="Step 2.*step.wait_for is not supported for selenium"),
         ):
             login_method({"username": "user", "password": "pass"})  # noqa: S106
@@ -2627,9 +2815,10 @@ class TestNodriverMultiStepLogin:
             result = await login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Four sleep calls: one settle per filled field (2, from _fill_field),
-        # the step delay (0.5), and the settle after the success signal.
-        assert mock_sleep.call_count == 4
+        # Five sleep calls: one settle per filled field (2, from _fill_field), the
+        # step delay (0.5), the poll interval before the first tick, and the settle
+        # after the success signal.
+        assert mock_sleep.call_count == 5
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
         assert plugin.login_config.settle in sleep_calls
@@ -2841,7 +3030,7 @@ class TestSeleniumMultiStepLogin:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -2885,7 +3074,7 @@ class TestSeleniumMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -2924,7 +3113,7 @@ class TestSeleniumMultiStepLogin:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,
@@ -2965,9 +3154,9 @@ class TestSeleniumMultiStepLogin:
             result = login_method({"username": "user", "password": "pass"})  # noqa: S106
 
         assert result is True
-        # Exactly two sleep calls: the step delay (0.5) and the settle after
-        # the success signal.
-        assert mock_sleep.call_count == 2
+        # Exactly three sleep calls: the step delay (0.5), the poll interval before
+        # the first tick, and the settle after the success signal.
+        assert mock_sleep.call_count == 3
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 0.5 in sleep_calls
         assert plugin.login_config.settle in sleep_calls
@@ -3031,7 +3220,7 @@ class TestSeleniumMultiStepLogin:
         with (
             patch("graftpunk.BrowserSession", mock_bs),
             patch("graftpunk.plugins.cli_plugin.cache_session"),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch(
                 "graftpunk.observe.capture.create_capture_backend",
                 return_value=mock_capture,

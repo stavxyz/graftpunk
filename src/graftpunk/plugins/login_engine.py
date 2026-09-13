@@ -519,6 +519,7 @@ def _success_signal_configured(login_config: LoginConfig) -> bool:
 def _missing_login_signals(
     *,
     url: str,
+    pre_submit_url: str,
     success_found: bool | None,
     success_selector: str,
     success_url: str,
@@ -528,11 +529,16 @@ def _missing_login_signals(
     Empty when every configured signal holds, so ``not _missing_login_signals(...)``
     is the success test and the same list names what never appeared in the timeout
     warning.
+
+    A URL signal means a navigation happened, so it counts only once the URL differs
+    from *pre_submit_url*, the one read just before the last submit: a glob loose
+    enough to match the login page itself (``*example.com*``) would otherwise report
+    success on the first tick and cache a pre-login session (fix round 1).
     """
     missing: list[str] = []
     if success_selector and success_found is not True:
         missing.append(f"success element '{success_selector}'")
-    if success_url and not fnmatch.fnmatchcase(url, success_url):
+    if success_url and not (url != pre_submit_url and fnmatch.fnmatchcase(url, success_url)):
         missing.append(f"success URL pattern '{success_url}'")
     return missing
 
@@ -541,6 +547,7 @@ def _login_tick_verdict(
     *,
     page_text: str,
     url: str,
+    pre_submit_url: str,
     failure_text: str,
     success_selector: str,
     success_url: str,
@@ -562,6 +569,7 @@ def _login_tick_verdict(
     lowered = page_text.lower()
     signal_holds = bool(success_selector or success_url) and not _missing_login_signals(
         url=url,
+        pre_submit_url=pre_submit_url,
         success_found=success_found,
         success_selector=success_selector,
         success_url=success_url,
@@ -575,24 +583,45 @@ def _login_tick_verdict(
 
 def _warn_login_signal_timeout(
     *,
+    login_config: LoginConfig,
     site_name: str,
-    missing: list[str],
     url: str,
-    timeout: float,
+    pre_submit_url: str,
+    success_found: bool | None,
 ) -> None:
-    """Warn that the configured success signal never appeared before the deadline."""
+    """Warn that the configured success signal never appeared before the deadline.
+
+    The one place both backends report a timeout from, so the message cannot drift
+    between them.
+    """
+    missing = _missing_login_signals(
+        url=url,
+        pre_submit_url=pre_submit_url,
+        success_found=success_found,
+        success_selector=login_config.success,
+        success_url=login_config.success_url,
+    )
     LOG.warning(
         "login_signal_timeout",
         plugin=site_name,
         missing=" and ".join(missing),
         url=url,
-        timeout=f"{timeout:g}s",
+        timeout=f"{login_config.timeout:g}s",
         hint=(
             "The page never showed the configured login success signal. Raise "
             "LoginConfig.timeout when the site redirects slowly, or correct the "
             "signal to match the page the login actually lands on."
         ),
     )
+
+
+def _poll_sleep_seconds(remaining: float) -> float:
+    """One poll interval, or what is left of the budget when that is less.
+
+    Sleeping a whole interval past the deadline would make a ``timeout`` smaller
+    than the interval cost the interval instead (fix round 1).
+    """
+    return min(_LOGIN_POLL_INTERVAL, max(0.0, remaining))
 
 
 def _tab_url(tab: Any) -> str:
@@ -622,12 +651,18 @@ async def _wait_for_login_signal_nodriver(
     failure_text: str,
     site_name: str,
     deadline: float,
+    pre_submit_url: str,
 ) -> bool:
     """Poll the tab until the login signal, the failure signal, or *deadline*.
 
     Sites that finish their login through an identity-provider redirect mint their
     cookies tens of seconds after the submit, so the engine waits for the signal it
     is configured to look for rather than for a fixed delay.
+
+    The first tick comes one interval in, not immediately: a success element that
+    was already on the login page would otherwise be read on a page the submit has
+    not yet replaced. *pre_submit_url* is the URL read just before the last submit,
+    and a URL signal counts only once the page has moved off it.
 
     Returns:
         True when every configured success signal holds, False on a failure signal
@@ -642,6 +677,7 @@ async def _wait_for_login_signal_nodriver(
     page_text = ""
     success_found: bool | None = None
     while True:
+        await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
         try:
             page_text = await tab.get_content()
             url = _tab_url(tab)
@@ -666,6 +702,7 @@ async def _wait_for_login_signal_nodriver(
             verdict = _login_tick_verdict(
                 page_text=page_text,
                 url=url,
+                pre_submit_url=pre_submit_url,
                 failure_text=failure_text,
                 success_selector=success_selector,
                 success_url=success_url,
@@ -686,18 +723,13 @@ async def _wait_for_login_signal_nodriver(
             return False
         if loop.time() >= deadline:
             break
-        await asyncio.sleep(_LOGIN_POLL_INTERVAL)
 
     _warn_login_signal_timeout(
+        login_config=login_config,
         site_name=site_name,
-        missing=_missing_login_signals(
-            url=url,
-            success_found=success_found,
-            success_selector=success_selector,
-            success_url=success_url,
-        ),
         url=url,
-        timeout=login_config.timeout,
+        pre_submit_url=pre_submit_url,
+        success_found=success_found,
     )
     return False
 
@@ -709,6 +741,7 @@ def _wait_for_login_signal_selenium(
     failure_text: str,
     site_name: str,
     deadline: float,
+    pre_submit_url: str,
 ) -> bool:
     """The selenium twin of :func:`_wait_for_login_signal_nodriver`."""
     from selenium.common.exceptions import NoSuchElementException, WebDriverException
@@ -719,6 +752,7 @@ def _wait_for_login_signal_selenium(
     page_text = ""
     success_found: bool | None = None
     while True:
+        time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
         try:
             page_text = driver.page_source
             url = _driver_url(driver)
@@ -745,6 +779,7 @@ def _wait_for_login_signal_selenium(
             verdict = _login_tick_verdict(
                 page_text=page_text,
                 url=url,
+                pre_submit_url=pre_submit_url,
                 failure_text=failure_text,
                 success_selector=success_selector,
                 success_url=success_url,
@@ -765,18 +800,13 @@ def _wait_for_login_signal_selenium(
             return False
         if time.monotonic() >= deadline:
             break
-        time.sleep(_LOGIN_POLL_INTERVAL)
 
     _warn_login_signal_timeout(
+        login_config=login_config,
         site_name=site_name,
-        missing=_missing_login_signals(
-            url=url,
-            success_found=success_found,
-            success_selector=success_selector,
-            success_url=success_url,
-        ),
         url=url,
-        timeout=login_config.timeout,
+        pre_submit_url=pre_submit_url,
+        success_found=success_found,
     )
     return False
 
@@ -1127,6 +1157,9 @@ async def _run_nodriver_steps(
     if plugin.login_config.wait_for:
         await _wait_for_element(tab, plugin.login_config.wait_for, "Login page")
 
+    # The URL the last submit was clicked from: a success_url signal counts only
+    # once the page has moved off it (see _missing_login_signals).
+    pre_submit_url = ""
     # Execute each step in sequence: wait_for -> fill fields -> submit -> delay
     for step_idx, step in enumerate(plugin.login_config.steps, start=1):
         # Step-level wait_for: wait for element before this step
@@ -1156,6 +1189,7 @@ async def _run_nodriver_steps(
                         f"using selector '{step.submit}'. "
                         "Check your plugin's login step configuration."
                     )
+                pre_submit_url = _tab_url(tab)
                 await submit.click()
             except PluginError:
                 raise
@@ -1180,6 +1214,7 @@ async def _run_nodriver_steps(
             failure_text=failure_text,
             site_name=plugin.site_name,
             deadline=deadline,
+            pre_submit_url=pre_submit_url or _tab_url(tab),
         ):
             return False
         await _await_document_ready_nodriver(tab, deadline=deadline, site_name=plugin.site_name)
@@ -1298,6 +1333,9 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     "the nodriver backend. Set backend='nodriver' or remove wait_for."
                 )
 
+            # The URL the last submit was clicked from: a success_url signal counts
+            # only once the page has moved off it (see _missing_login_signals).
+            pre_submit_url = ""
             # Execute each step in sequence
             for step_idx, step in enumerate(plugin.login_config.steps, start=1):
                 # Step-level wait_for is not supported for selenium
@@ -1327,6 +1365,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 if step.submit:
                     try:
                         submit_el = session.driver.find_element("css selector", step.submit)
+                        pre_submit_url = _driver_url(session.driver)
                         submit_el.click()
                     except (
                         selenium.common.exceptions.WebDriverException,
@@ -1352,6 +1391,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     failure_text=failure_text,
                     site_name=plugin.site_name,
                     deadline=deadline,
+                    pre_submit_url=pre_submit_url or _driver_url(session.driver),
                 ):
                     return False
                 _await_document_ready_selenium(

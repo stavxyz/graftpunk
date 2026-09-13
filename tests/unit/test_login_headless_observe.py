@@ -196,7 +196,7 @@ class TestEngineHeadless:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             login({"username": "u", "password": "p"})
 
@@ -208,7 +208,7 @@ class TestEngineHeadless:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             login({"username": "u", "password": "p"}, headless=True)
 
@@ -304,7 +304,7 @@ class TestEngineObserve:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch("graftpunk.observe.capture.create_capture_backend") as ccb,
         ):
             login({"username": "u", "password": "p"}, observe_mode="full")

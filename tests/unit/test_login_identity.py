@@ -339,7 +339,7 @@ class TestEngineChainThreading:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch("graftpunk.plugins.cli_plugin.cache_session") as mock_cache,
         ):
             result = login(
