@@ -394,19 +394,21 @@ def parse_yaml_plugin(
                 f"Plugin '{filepath}': login.headless must be true or false, got {headless!r}."
             )
 
-        def _login_number(key: str, default: float) -> float:
-            """login.<key> as a float, or a PluginError naming the file and the key.
-
-            YAML hands back whatever the document holds, and a comparison against a
-            string in LoginConfig's own validation raises a TypeError with no file
-            name in it, so the type is settled here where the file is known.
-            """
-            raw = login_block.get(key, default)
+        # timeout and settle are passed only when the file sets them, so their
+        # defaults live in LoginConfig alone and cannot drift from it here.
+        numbers: dict[str, float] = {}
+        for key in ("timeout", "settle"):
+            if key not in login_block:
+                continue
+            raw = login_block[key]
+            # YAML hands back whatever the document holds, and a comparison against
+            # a string inside LoginConfig raises a TypeError with no file name in
+            # it, so the type is settled here where the file is known.
             if isinstance(raw, bool) or not isinstance(raw, (int, float)):
                 raise PluginError(
                     f"Plugin '{filepath}': login.{key} must be a number, got {raw!r}."
                 )
-            return float(raw)
+            numbers[key] = float(raw)
 
         try:
             login_config = LoginConfig(
@@ -417,8 +419,7 @@ def parse_yaml_plugin(
                 success=login_block.get("success", ""),
                 success_url=login_block.get("success_url", ""),
                 headless=headless,
-                timeout=_login_number("timeout", 30.0),
-                settle=_login_number("settle", 1.0),
+                **numbers,
             )
         except ValueError as exc:
             raise PluginError(f"Plugin '{filepath}': login block is invalid: {exc}") from exc
