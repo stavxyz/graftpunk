@@ -393,14 +393,35 @@ def parse_yaml_plugin(
             raise PluginError(
                 f"Plugin '{filepath}': login.headless must be true or false, got {headless!r}."
             )
-        login_config = LoginConfig(
-            steps=steps,
-            url=login_block.get("url", ""),
-            wait_for=login_block.get("wait_for", ""),
-            failure=login_block.get("failure", ""),
-            success=login_block.get("success", ""),
-            headless=headless,
-        )
+
+        def _login_number(key: str, default: float) -> float:
+            """login.<key> as a float, or a PluginError naming the file and the key.
+
+            YAML hands back whatever the document holds, and a comparison against a
+            string in LoginConfig's own validation raises a TypeError with no file
+            name in it, so the type is settled here where the file is known.
+            """
+            raw = login_block.get(key, default)
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise PluginError(
+                    f"Plugin '{filepath}': login.{key} must be a number, got {raw!r}."
+                )
+            return float(raw)
+
+        try:
+            login_config = LoginConfig(
+                steps=steps,
+                url=login_block.get("url", ""),
+                wait_for=login_block.get("wait_for", ""),
+                failure=login_block.get("failure", ""),
+                success=login_block.get("success", ""),
+                success_url=login_block.get("success_url", ""),
+                headless=headless,
+                timeout=_login_number("timeout", 30.0),
+                settle=_login_number("settle", 1.0),
+            )
+        except ValueError as exc:
+            raise PluginError(f"Plugin '{filepath}': login block is invalid: {exc}") from exc
 
     # Parse token config
     tokens_block = data.get("tokens")

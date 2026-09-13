@@ -538,20 +538,32 @@ class LoginConfig:
             Empty string (default) means use base_url directly.
         failure: Text on the page indicating login failure.
         success: CSS selector for an element indicating login success.
+        success_url: Glob matched against the whole browser URL after the last
+            step, e.g. ``https://app.example.com/*`` or ``*/dashboard*``. Empty
+            string (default) leaves the URL out of the success signal. With
+            both this and ``success`` set, both have to hold.
         wait_for: CSS selector to wait for before any steps execute.
             Empty string (default) means no explicit wait.
         headless: Run the login browser headless. Defaults to False (a visible
             window) so a human can solve a CAPTCHA or 2FA prompt; set True for
             sites that need neither. ``gp <plugin> login --headless`` overrides
             this per invocation.
+        timeout: Seconds to wait after the last step for the configured success
+            or failure signal. Defaults to 30.0. Raise it for a login that
+            finishes through a slow identity-provider redirect chain.
+        settle: Seconds to wait after the success signal, once the document has
+            finished loading, before cookies are captured. Defaults to 1.0.
     """
 
     steps: tuple[LoginStep, ...] | list[LoginStep]  # Always tuple after __post_init__
     url: str = ""
     failure: str = ""
     success: str = ""
+    success_url: str = ""
     wait_for: str = ""
     headless: bool = False
+    timeout: float = 30.0
+    settle: float = 1.0
 
     def __post_init__(self) -> None:
         # Convert list to tuple for immutability and validate each element
@@ -577,6 +589,14 @@ class LoginConfig:
         # Validate success non-whitespace when non-empty
         if self.success and not self.success.strip():
             raise ValueError("LoginConfig.success must not be whitespace")
+        # Validate success_url non-whitespace when non-empty
+        if self.success_url and not self.success_url.strip():
+            raise ValueError("LoginConfig.success_url must not be whitespace")
+        # Validate the post-submit poll budget and the settle pause
+        if self.timeout <= 0:
+            raise ValueError(f"LoginConfig.timeout must be positive, got {self.timeout}")
+        if self.settle < 0:
+            raise ValueError(f"LoginConfig.settle must be non-negative, got {self.settle}")
         if not isinstance(self.headless, bool):
             raise TypeError(
                 f"LoginConfig.headless must be bool, got {type(self.headless).__name__}"

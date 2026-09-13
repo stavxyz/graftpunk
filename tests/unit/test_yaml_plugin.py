@@ -124,6 +124,30 @@ class TestLoginProperties:
         assert plugin.login_config.failure == "Bad login"
         assert plugin.login_config.success == "Welcome"
 
+    def test_settle_poll_fields_survive_the_plugin_class(self) -> None:
+        """success_url, timeout, and settle are readable off the built plugin.
+
+        create_yaml_site_plugin builds its class attributes from
+        ``dataclasses.asdict(config)``, which deep-converts the LoginConfig to a
+        plain dict; the plugin has to carry the dataclass itself, new fields and all.
+        """
+        config = _make_config(
+            login_config=LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                success=".dashboard",
+                success_url="*/dashboard*",
+                timeout=45.0,
+                settle=2.5,
+            ),
+        )
+        plugin = create_yaml_site_plugin(config, [])
+
+        assert plugin.login_config is not None
+        assert plugin.login_config.success_url == "*/dashboard*"
+        assert plugin.login_config.timeout == 45.0
+        assert plugin.login_config.settle == 2.5
+
     def test_login_properties_without_login_config(self) -> None:
         """When login is not configured, login_config is None."""
         config = _make_config()
