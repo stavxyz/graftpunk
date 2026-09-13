@@ -144,6 +144,37 @@ class TestStaticAndThirdPartyExclusion:
         assert result.dropped["third_party"] == 1
         assert all(e.host == "api.myshop.example.com" for e in result.endpoints)
 
+    def test_a_multi_label_public_suffix_does_not_widen_the_scope(self, tmp_path: Path) -> None:
+        """The last two labels of shop.example.co.uk are co.uk, which made every
+        *.co.uk host a first party. The scope root is the primary host's parent
+        domain instead."""
+        entries = [
+            _entry("GET", "https://shop.example.co.uk/orders"),
+            _entry("GET", "https://shop.example.co.uk/orders/2"),
+            _entry("GET", "https://api.example.co.uk/data"),
+            _entry("GET", "https://other.co.uk/data"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.primary_host == "shop.example.co.uk"
+        hosts = {e.host for e in result.endpoints}
+        assert hosts == {"shop.example.co.uk", "api.example.co.uk"}
+        assert result.dropped["third_party"] == 1
+
+    def test_a_two_label_primary_host_keeps_its_own_subtree(self, tmp_path: Path) -> None:
+        # "other." rather than "cdn."/"assets.": those are static-exclusion
+        # patterns, and this test is about the scope rule, not that one.
+        entries = [
+            _entry("GET", "https://www.example.com/orders"),
+            _entry("GET", "https://www.example.com/orders/2"),
+            _entry("GET", "https://api.example.com/data"),
+            _entry("GET", "https://other.example.net/data"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.primary_host == "www.example.com"
+        hosts = {e.host for e in result.endpoints}
+        assert hosts == {"www.example.com", "api.example.com"}
+        assert result.dropped["third_party"] == 1
+
     def test_all_hosts_models_every_host(self, tmp_path: Path) -> None:
         entries = [
             _entry("GET", "https://api.myshop.example.com/orders"),
