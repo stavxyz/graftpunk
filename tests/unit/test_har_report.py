@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.report import render_json, render_markdown
 
@@ -109,6 +111,32 @@ class TestRenderMarkdown:
         markdown = render_markdown(result)
         rendered_json = render_json(result)
         for planted in (planted_password, "s3cr3t-cookie-value", "unshown-header-value-999"):
+            assert planted not in markdown
+            assert planted not in rendered_json
+
+    @pytest.mark.parametrize(
+        ("mime_type", "body_text"),
+        [
+            (
+                "application/xml",
+                "<login><account>SECRET-ACCT-99</account>"
+                "<password>hunter2superSecret</password></login>",
+            ),
+            ("application/json", '["SECRET-ACCT-99", "hunter2superSecret"]'),
+            ("text/plain", "SECRET-ACCT-99 hunter2superSecret"),
+        ],
+    )
+    def test_a_non_form_request_body_never_reaches_the_output(
+        self, tmp_path: Path, mime_type: str, body_text: str
+    ) -> None:
+        """parse_qs returns the whole body as one key for anything that is not a
+        form, so the body itself used to render as a 'body param' name."""
+        entry = _entry("POST", "https://api.myshop.example.com/login")
+        entry["request"]["postData"] = {"mimeType": mime_type, "text": body_text}
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [entry])))
+        markdown = render_markdown(result)
+        rendered_json = render_json(result)
+        for planted in ("SECRET-ACCT-99", "hunter2superSecret"):
             assert planted not in markdown
             assert planted not in rendered_json
 

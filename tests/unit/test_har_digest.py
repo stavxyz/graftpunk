@@ -8,11 +8,14 @@ from typing import Any
 
 from graftpunk.har.digest import (
     _DYNAMIC_MAJORITY,
+    _FORM_CONTENT_TYPE,
     _HIGH_CARDINALITY_THRESHOLD,
     _LOGIN_WINDOW,
+    _MAX_FIELD_NAME_LEN,
     _SHAPE_MAX_DEPTH,
     _SHAPE_MAX_KEYS,
     DigestSource,
+    _parse_body,
     body_params,
     digest,
 )
@@ -206,6 +209,76 @@ class TestBodyParams:
         entries = [_entry("GET", "https://api.myshop.example.com/orders")]
         (entry,) = parse_har_file(_write_har(tmp_path, entries)).entries
         assert body_params(entry) == {}
+
+
+class TestNonFormBodiesHaveNoFieldNames:
+    """parse_qs returns the whole text as one key for anything that is not a
+    form, which put an XML credential post's entire body (values included) into
+    Endpoint.body_params and everything downstream of it."""
+
+    @staticmethod
+    def _parsed(tmp_path: Path, *, mime_type: str, text: str) -> tuple[dict[str, str], str]:
+        entry_dict = _entry("POST", "https://api.myshop.example.com/submit")
+        entry_dict["request"]["postData"] = {"mimeType": mime_type, "text": text}
+        (entry,) = parse_har_file(_write_har(tmp_path, [entry_dict])).entries
+        return _parse_body(entry)
+
+    def test_json_object_is_a_json_body_with_field_names(self, tmp_path: Path) -> None:
+        types, kind = self._parsed(
+            tmp_path, mime_type="application/json", text=json.dumps({"quantity": 3})
+        )
+        assert (types, kind) == ({"quantity": "int"}, "json")
+
+    def test_json_array_is_a_json_body_with_no_field_names(self, tmp_path: Path) -> None:
+        types, kind = self._parsed(
+            tmp_path, mime_type="application/json", text=json.dumps([{"sku": "a"}, {"sku": "b"}])
+        )
+        assert (types, kind) == ({}, "json")
+
+    def test_json_scalar_is_a_json_body_with_no_field_names(self, tmp_path: Path) -> None:
+        types, kind = self._parsed(tmp_path, mime_type="application/json", text='"just-a-string"')
+        assert (types, kind) == ({}, "json")
+
+    def test_an_xml_credential_post_yields_nothing(self, tmp_path: Path) -> None:
+        xml = "<login><account>SECRET-ACCT-99</account><password>hunter2</password></login>"
+        types, kind = self._parsed(tmp_path, mime_type="application/xml", text=xml)
+        assert (types, kind) == ({}, "none")
+
+    def test_plain_text_yields_nothing(self, tmp_path: Path) -> None:
+        types, kind = self._parsed(
+            tmp_path, mime_type="text/plain", text="a sentence with no equals sign"
+        )
+        assert (types, kind) == ({}, "none")
+
+    def test_a_form_body_declared_as_something_else_is_not_read_as_a_form(
+        self, tmp_path: Path
+    ) -> None:
+        types, kind = self._parsed(tmp_path, mime_type="text/plain", text="username=alice")
+        assert (types, kind) == ({}, "none")
+
+    def test_a_field_name_past_the_cap_disqualifies_the_body(self, tmp_path: Path) -> None:
+        long_name = "f" * (_MAX_FIELD_NAME_LEN + 1)
+        types, kind = self._parsed(
+            tmp_path, mime_type=_FORM_CONTENT_TYPE, text=f"{long_name}=value"
+        )
+        assert (types, kind) == ({}, "none")
+
+    def test_a_field_name_at_the_cap_is_accepted(self, tmp_path: Path) -> None:
+        name = "f" * _MAX_FIELD_NAME_LEN
+        types, kind = self._parsed(tmp_path, mime_type=_FORM_CONTENT_TYPE, text=f"{name}=value")
+        assert (types, kind) == ({name: "str"}, "form")
+
+    def test_an_xml_credential_post_is_not_a_login_observation(self, tmp_path: Path) -> None:
+        """No field names means no password hint: the digest reports no
+        credential post rather than one whose 'field name' is the body."""
+        entry_dict = _entry("POST", "https://api.myshop.example.com/submit")
+        entry_dict["request"]["postData"] = {
+            "mimeType": "application/xml",
+            "text": "<login><account>SECRET-ACCT-99</account><password>hunter2</password></login>",
+        }
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [entry_dict])))
+        assert not any(o.kind == "credential_post" for o in result.login)
+        assert "SECRET-ACCT-99" not in repr(result)
 
 
 class TestShapeNode:

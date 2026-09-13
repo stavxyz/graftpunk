@@ -121,6 +121,13 @@ _STANDARD_REQUEST_HEADER_PREFIXES = ("sec-ch-", "sec-fetch-", "accept")
 
 _PASSWORD_FIELD_HINTS = ("password", "passwd", "pwd")
 
+_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+_MAX_FIELD_NAME_LEN = 64  # a form field name past this is not a field name
+# The character class carries no whitespace, "<", or "{" by construction, so a
+# body that is really XML, JSON, or prose cannot present itself as one enormous
+# field name (polish round 1, 2026-09-12).
+_FORM_FIELD_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-\[\]]*")
+
 
 @dataclass(frozen=True)
 class DigestSource:
@@ -237,39 +244,77 @@ def _query_param_types(url: str) -> dict[str, str]:
     return types
 
 
+def _plausible_field_name(name: str) -> bool:
+    """True when *name* reads as a form field name rather than as body text."""
+    return len(name) <= _MAX_FIELD_NAME_LEN and bool(_FORM_FIELD_NAME_RE.fullmatch(name))
+
+
+def _declared_request_content_type(entry: HAREntry) -> str:
+    """What the request said its body was: the ``Content-Type`` request header,
+    or HAR's own ``postData.mimeType`` when the capture carries no such header.
+    Empty when the request declared neither."""
+    for name, value in entry.request.headers.items():
+        if name.lower() == "content-type":
+            return value.split(";")[0].strip().lower()
+    declared = entry.request.post_data_mime_type or ""
+    return declared.split(";")[0].strip().lower()
+
+
+def _json_body_types(parsed: dict[str, Any]) -> dict[str, str]:
+    types: dict[str, str] = {}
+    for key, value in parsed.items():
+        if isinstance(value, bool):
+            types[key] = "bool"
+        elif isinstance(value, (int, float)):
+            types[key] = "int"
+        elif isinstance(value, list):
+            types[key] = "list"
+        else:
+            types[key] = "str"
+    return types
+
+
 def _parse_body(entry: HAREntry) -> tuple[dict[str, str], BodyKind]:
-    """The request body's field names and observed types, and which kind it was."""
+    """The request body's field names and observed types, and which kind it was.
+
+    A body is read as a form only when it really looks like one: the request
+    declared no content type other than ``application/x-www-form-urlencoded``,
+    the text carries an ``=``, and every key ``parse_qs`` returns is a plausible
+    field name. ``parse_qs`` returns the whole text as a single key for anything
+    else, so falling through to it put an XML credential post's entire body
+    (values included) into ``Endpoint.body_params``, the rendered digest, the
+    fixtures sidecar, and generated plugin source (polish round 1, 2026-09-12).
+
+    A JSON array or scalar is still a JSON body; it just has no field names.
+    """
     post_data = entry.request.post_data
     if not post_data:
         return {}, "none"
 
     try:
         parsed = json.loads(post_data)
-        if isinstance(parsed, dict):
-            types: dict[str, str] = {}
-            for key, value in parsed.items():
-                if isinstance(value, bool):
-                    types[key] = "bool"
-                elif isinstance(value, (int, float)):
-                    types[key] = "int"
-                elif isinstance(value, list):
-                    types[key] = "list"
-                else:
-                    types[key] = "str"
-            return types, "json"
     except (ValueError, TypeError):
         pass
+    else:
+        return (_json_body_types(parsed), "json") if isinstance(parsed, dict) else ({}, "json")
+
+    declared = _declared_request_content_type(entry)
+    if declared and declared != _FORM_CONTENT_TYPE:
+        return {}, "none"
+    if "=" not in post_data:
+        return {}, "none"
     form = parse_qs(post_data, keep_blank_values=True)
-    if form:
-        types = {k: ("list" if len(v) > 1 else _observed_type(v[0])) for k, v in form.items()}
-        return types, "form"
-    return {}, "none"
+    if not form or not all(_plausible_field_name(name) for name in form):
+        return {}, "none"
+    types = {k: ("list" if len(v) > 1 else _observed_type(v[0])) for k, v in form.items()}
+    return types, "form"
 
 
 def body_params(entry: HAREntry) -> dict[str, str]:
     """Request body field names to their observed type: JSON object fields,
-    or form-encoded fields when the body is not JSON. Empty when there is no
-    body.
+    or form-encoded fields when the body is a form. Empty when there is no
+    body, and empty for every other shape (a JSON array or scalar, XML, plain
+    text), which has no field names to report.
 
     The one public entry point for "what are this entry's body param
     names": ``digest()``'s endpoint accumulation and the fixtures command's

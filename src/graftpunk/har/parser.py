@@ -33,6 +33,9 @@ class HARRequest:
     cookies: list[dict[str, Any]]
     post_data: str | None = None
     query_string: list[dict[str, str]] = field(default_factory=list)
+    # HAR's own postData.mimeType: what the request declared its body to be,
+    # for captures that carry no Content-Type request header.
+    post_data_mime_type: str | None = None
 
 
 @dataclass
@@ -175,10 +178,12 @@ def _parse_request(request_data: dict[str, Any]) -> HARRequest:
         Parsed HARRequest object.
     """
     post_data = None
+    post_data_mime_type = None
     if "postData" in request_data:
         post_data_obj = request_data["postData"]
         if isinstance(post_data_obj, dict):
             post_data = post_data_obj.get("text", "")
+            post_data_mime_type = post_data_obj.get("mimeType")
         elif isinstance(post_data_obj, str):
             post_data = post_data_obj
 
@@ -189,6 +194,7 @@ def _parse_request(request_data: dict[str, Any]) -> HARRequest:
         cookies=_parse_cookies(request_data.get("cookies", [])),
         post_data=post_data,
         query_string=request_data.get("queryString", []),
+        post_data_mime_type=post_data_mime_type,
     )
 
 
