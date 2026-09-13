@@ -482,6 +482,45 @@ class TestFixturesGitignore:
         assert not (repo / ".gitignore").exists()
 
 
+class TestLimitMustBePositive:
+    """A zero or negative --limit shows nothing and writes nothing, with no
+    explanation; Typer refuses it at parse time instead."""
+
+    def test_digest_refuses_a_zero_limit(self, tmp_path: Path) -> None:
+        har_path = tmp_path / "network.har"
+        har_path.write_text(
+            json.dumps(
+                {
+                    "log": {
+                        "version": "1.2",
+                        "entries": [_entry("GET", "https://api.myshop.example.com/orders")],
+                    }
+                }
+            )
+        )
+        result = runner.invoke(
+            _build_app(), ["observe", "digest", "--har", str(har_path), "--limit", "0"]
+        )
+        assert result.exit_code != 0
+        assert "--limit" in result.output
+
+    def test_fixtures_refuses_a_negative_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+        )
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir, "--limit", "-1")
+        assert result.exit_code != 0
+        assert not out_dir.exists()
+
+
 class TestMatchPatternValidation:
     @pytest.mark.parametrize("pattern", ["/orders", "ORDERS /orders", "GET", "GET   "])
     def test_a_pattern_that_is_not_method_plus_template_is_refused(

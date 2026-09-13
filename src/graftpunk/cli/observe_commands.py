@@ -112,7 +112,7 @@ def digest_cmd(
         bool, typer.Option("--all-hosts", help="Model every host, not just the primary one")
     ] = False,
     limit: Annotated[
-        int, typer.Option("--limit", help="Max endpoints in the markdown form")
+        int, typer.Option("--limit", min=1, help="Max endpoints in the markdown form")
     ] = DEFAULT_ENDPOINT_LIMIT,
     output: Annotated[
         Path | None, typer.Option("--output", help="Write to a file instead of stdout")
@@ -172,7 +172,7 @@ def fixtures_cmd(
     ] = [],  # noqa: B006 - Typer reads this default at decoration time, never mutated per-call
     out: Annotated[Path | None, typer.Option("--out", help=f"Defaults to ./{CAPTURES_DIR}")] = None,
     limit: Annotated[
-        int, typer.Option("--limit", help="Max files per matched template")
+        int, typer.Option("--limit", min=1, help="Max files per matched template")
     ] = _DEFAULT_FIXTURE_LIMIT,
     allow_tracked: Annotated[
         bool, typer.Option("--allow-tracked", help="Write even onto a tracked path")
