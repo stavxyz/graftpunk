@@ -61,7 +61,12 @@ def find_repo_root(start: Path) -> Path | None:
 
 
 def ensure_ignored(repo_root: Path, relative: str) -> bool:
-    """Add *relative* to the root ``.gitignore`` if it is not already covered.
+    """Add ``<relative>/`` to the root ``.gitignore`` unless that exact line is there.
+
+    The check is exact-line only, against each line stripped of whitespace and
+    of a trailing slash. It does not ask git whether the path is already
+    ignored, so a pattern that covers *relative* some other way (a parent
+    directory, a glob, an exclude file) still gets the explicit line.
 
     Returns:
         True when the line was added, False when it was already present.
