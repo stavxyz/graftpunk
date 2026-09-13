@@ -13,7 +13,7 @@ import json
 import re
 import time
 import urllib.parse
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from graftpunk import console as gp_console
 from graftpunk.exceptions import PluginError
@@ -33,6 +33,10 @@ if TYPE_CHECKING:
 LOG = get_logger(__name__)
 
 _LOGIN_POLL_INTERVAL = 0.5  # seconds between post-submit checks for the login signal
+# Seconds a login with no configured success signal watches for its failure signal.
+# The engine slept this long before the poll existed, and a site that renders its
+# error a second or two after the submit needs the window to say anything at all.
+_NO_SIGNAL_GRACE = 3.0
 _ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transitions
 _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
 _LOGIN_NAV_TIMEOUT = 60  # seconds — login page may redirect through SSO/IdP chains
@@ -644,6 +648,83 @@ def _driver_url(driver: Any) -> str:
     return url if isinstance(url, str) else ""
 
 
+class _TickReading(NamedTuple):
+    """One readable poll tick: what the page said, where it was, what was found."""
+
+    page_text: str
+    url: str
+    success_found: bool | None
+
+
+async def _read_login_tick_nodriver(
+    tab: Any,  # nodriver.Tab
+    success_selector: str,
+    site_name: str,
+) -> _TickReading | None:
+    """One tick's reading of the tab, or None when the page could not be read.
+
+    A ProtocolException means the document node went invalid mid-navigation, which
+    is the window this poll exists for (see ``_select_with_retry``): the tick is
+    unreadable, not failed, so the caller treats it as pending and keeps waiting.
+    """
+    from nodriver.core.connection import ProtocolException
+
+    try:
+        page_text = await tab.get_content()
+        url = _tab_url(tab)
+        success_found: bool | None = None
+        if success_selector:
+            # query_selector returns immediately, found or not: the poll is the
+            # retry, and a probe that slept inside nodriver would stretch the cadence.
+            element = await tab.query_selector(success_selector)
+            success_found = element is not None
+    except ProtocolException as exc:
+        LOG.debug(
+            "login_tick_read_failed",
+            plugin=site_name,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+            backend="nodriver",
+        )
+        return None
+    return _TickReading(page_text, url, success_found)
+
+
+def _read_login_tick_selenium(
+    driver: Any,  # selenium WebDriver
+    success_selector: str,
+    site_name: str,
+) -> _TickReading | None:
+    """The selenium twin of :func:`_read_login_tick_nodriver`.
+
+    A missing element is NoSuchElementException and reads as "not yet"; any other
+    WebDriverException is a read taken while the browser was navigating, so the
+    tick is unreadable rather than failed.
+    """
+    from selenium.common.exceptions import NoSuchElementException, WebDriverException
+
+    try:
+        page_text = driver.page_source
+        url = _driver_url(driver)
+        success_found: bool | None = None
+        if success_selector:
+            try:
+                driver.find_element("css selector", success_selector)
+                success_found = True
+            except NoSuchElementException:
+                success_found = False
+    except WebDriverException as exc:
+        LOG.debug(
+            "login_tick_read_failed",
+            plugin=site_name,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+            backend="selenium",
+        )
+        return None
+    return _TickReading(page_text, url, success_found)
+
+
 async def _wait_for_login_signal_nodriver(
     *,
     tab: Any,  # nodriver.Tab
@@ -668,8 +749,6 @@ async def _wait_for_login_signal_nodriver(
         True when every configured success signal holds, False on a failure signal
         or when the deadline passes (both are logged).
     """
-    from nodriver.core.connection import ProtocolException
-
     loop = asyncio.get_running_loop()
     success_selector = login_config.success
     success_url = login_config.success_url
@@ -678,27 +757,11 @@ async def _wait_for_login_signal_nodriver(
     success_found: bool | None = None
     while True:
         await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
-        try:
-            page_text = await tab.get_content()
-            url = _tab_url(tab)
-            success_found = None
-            if success_selector:
-                # A bare select capped at one interval: the poll is the retry, and a
-                # tick that blocked inside nodriver would stretch the whole cadence.
-                element = await tab.select(success_selector, timeout=_LOGIN_POLL_INTERVAL)
-                success_found = element is not None
-        except ProtocolException as exc:
-            # The document node goes invalid mid-redirect, which is exactly the
-            # window this poll exists for: the tick is unreadable, not failed.
-            LOG.debug(
-                "login_tick_read_failed",
-                plugin=site_name,
-                error=str(exc),
-                exc_type=type(exc).__name__,
-                backend="nodriver",
-            )
+        reading = await _read_login_tick_nodriver(tab, success_selector, site_name)
+        if reading is None:
             verdict = _TICK_PENDING
         else:
+            page_text, url, success_found = reading
             verdict = _login_tick_verdict(
                 page_text=page_text,
                 url=url,
@@ -744,8 +807,6 @@ def _wait_for_login_signal_selenium(
     pre_submit_url: str,
 ) -> bool:
     """The selenium twin of :func:`_wait_for_login_signal_nodriver`."""
-    from selenium.common.exceptions import NoSuchElementException, WebDriverException
-
     success_selector = login_config.success
     success_url = login_config.success_url
     url = ""
@@ -753,29 +814,11 @@ def _wait_for_login_signal_selenium(
     success_found: bool | None = None
     while True:
         time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
-        try:
-            page_text = driver.page_source
-            url = _driver_url(driver)
-            success_found = None
-            if success_selector:
-                try:
-                    driver.find_element("css selector", success_selector)
-                    success_found = True
-                except NoSuchElementException:
-                    success_found = False
-        except WebDriverException as exc:
-            # A read taken while the browser is navigating, which is exactly the
-            # window this poll exists for: the tick is unreadable, not failed.
-            # (A missing element is NoSuchElementException, handled above.)
-            LOG.debug(
-                "login_tick_read_failed",
-                plugin=site_name,
-                error=str(exc),
-                exc_type=type(exc).__name__,
-                backend="selenium",
-            )
+        reading = _read_login_tick_selenium(driver, success_selector, site_name)
+        if reading is None:
             verdict = _TICK_PENDING
         else:
+            page_text, url, success_found = reading
             verdict = _login_tick_verdict(
                 page_text=page_text,
                 url=url,
@@ -809,6 +852,91 @@ def _wait_for_login_signal_selenium(
         success_found=success_found,
     )
     return False
+
+
+async def _watch_for_failure_nodriver(
+    *,
+    tab: Any,  # nodriver.Tab
+    failure_text: str,
+    site_name: str,
+    deadline: float,
+) -> bool:
+    """Watch a login with no success signal for its failure signal, then rule on it.
+
+    There is nothing to wait *for* here, so the engine spends the window it always
+    spent (the retired fixed post-submit delay) watching for the one signal such a
+    plugin does have: the ``failure`` text, and the rate-limit page. It ends early
+    the moment either shows, and the verdict and its warnings are the single check
+    this path has always taken.
+
+    Returns:
+        True when the login stands, False when the page said otherwise.
+    """
+    loop = asyncio.get_running_loop()
+    page_text = ""
+    while True:
+        await asyncio.sleep(_poll_sleep_seconds(deadline - loop.time()))
+        reading = await _read_login_tick_nodriver(tab, "", site_name)
+        if reading is not None:
+            page_text = reading.page_text
+            if _failure_showing(page_text=page_text, failure_text=failure_text):
+                break
+        if loop.time() >= deadline:
+            break
+    return _check_login_result(
+        page_text=page_text,
+        failure_text=failure_text,
+        success_found=None,
+        success_selector="",
+        site_name=site_name,
+    )
+
+
+def _watch_for_failure_selenium(
+    *,
+    driver: Any,  # selenium WebDriver
+    failure_text: str,
+    site_name: str,
+    deadline: float,
+) -> bool:
+    """The selenium twin of :func:`_watch_for_failure_nodriver`."""
+    page_text = ""
+    while True:
+        time.sleep(_poll_sleep_seconds(deadline - time.monotonic()))
+        reading = _read_login_tick_selenium(driver, "", site_name)
+        if reading is not None:
+            page_text = reading.page_text
+            if _failure_showing(page_text=page_text, failure_text=failure_text):
+                break
+        if time.monotonic() >= deadline:
+            break
+    return _check_login_result(
+        page_text=page_text,
+        failure_text=failure_text,
+        success_found=None,
+        success_selector="",
+        site_name=site_name,
+    )
+
+
+def _failure_showing(*, page_text: str, failure_text: str) -> bool:
+    """Whether this reading of the page already says the login failed.
+
+    The same rule ``_login_tick_verdict`` applies, asked of a page with no success
+    signal to weigh it against.
+    """
+    return (
+        _login_tick_verdict(
+            page_text=page_text,
+            url="",
+            pre_submit_url="",
+            failure_text=failure_text,
+            success_selector="",
+            success_url="",
+            success_found=None,
+        )
+        == _TICK_FAILURE
+    )
 
 
 async def _await_document_ready_nodriver(tab: Any, *, deadline: float, site_name: str) -> None:
@@ -1220,16 +1348,14 @@ async def _run_nodriver_steps(
         await _await_document_ready_nodriver(tab, deadline=deadline, site_name=plugin.site_name)
         await asyncio.sleep(login_config.settle)
     else:
-        # No success signal to wait for: settle once, then take the single
-        # verdict (which warns when nothing validates the login at all).
-        await asyncio.sleep(login_config.settle)
-        page_text = await tab.get_content()
-        if not _check_login_result(
-            page_text=page_text,
+        # No success signal to wait for: watch for the failure signal across the
+        # grace window, then take the single verdict (which warns when nothing
+        # validates the login at all). settle plays no part on this path.
+        if not await _watch_for_failure_nodriver(
+            tab=tab,
             failure_text=failure_text,
-            success_found=None,
-            success_selector="",
             site_name=plugin.site_name,
+            deadline=asyncio.get_running_loop().time() + _NO_SIGNAL_GRACE,
         ):
             return False
 
@@ -1399,15 +1525,14 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 )
                 time.sleep(plugin.login_config.settle)
             else:
-                # No success signal to wait for: settle once, then take the single
-                # verdict (which warns when nothing validates the login at all).
-                time.sleep(plugin.login_config.settle)
-                if not _check_login_result(
-                    page_text=session.driver.page_source,
+                # No success signal to wait for: watch for the failure signal across
+                # the grace window, then take the single verdict (which warns when
+                # nothing validates the login at all). settle plays no part here.
+                if not _watch_for_failure_selenium(
+                    driver=session.driver,
                     failure_text=failure_text,
-                    success_found=None,
-                    success_selector="",
                     site_name=plugin.site_name,
+                    deadline=time.monotonic() + _NO_SIGNAL_GRACE,
                 ):
                     return False
 

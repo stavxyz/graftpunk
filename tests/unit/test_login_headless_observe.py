@@ -76,6 +76,7 @@ def _nodriver_tab(page: str = "<html>Bad login.</html>") -> MagicMock:
     element.clear_input = AsyncMock(side_effect=lambda: state.__setitem__("value", ""))
     tab = MagicMock()
     tab.select = AsyncMock(return_value=element)
+    tab.query_selector = tab.select
     tab.evaluate = AsyncMock(
         side_effect=lambda *a, **k: json.dumps({"found": True, "value": state["value"]})
     )

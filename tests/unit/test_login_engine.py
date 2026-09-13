@@ -125,6 +125,7 @@ class TestDeclarativeLoginEngine:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
         mock_tab.send = AsyncMock()
 
@@ -152,6 +153,7 @@ class TestDeclarativeLoginEngine:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Bad login.</html>")
         mock_tab.send = AsyncMock()
 
@@ -357,6 +359,7 @@ class TestLoginEngineExceptionPaths:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(side_effect=RuntimeError("Element vanished"))
+        mock_tab.query_selector = mock_tab.select
         mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -380,6 +383,7 @@ class TestLoginEngineExceptionPaths:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(side_effect=RuntimeError("Boom"))
+        mock_tab.query_selector = mock_tab.select
         mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -666,6 +670,7 @@ class TestNodriverLoginValidationPaths:
             return mock_element
 
         mock_tab.select = AsyncMock(side_effect=select_side_effect)
+        mock_tab.query_selector = mock_tab.select
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -687,6 +692,7 @@ class TestNodriverLoginValidationPaths:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
         mock_tab.send = AsyncMock()
 
@@ -723,6 +729,7 @@ class TestNodriverLoginValidationPaths:
             return mock_element
 
         mock_tab.select = AsyncMock(side_effect=select_side_effect)
+        mock_tab.query_selector = mock_tab.select
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -745,6 +752,7 @@ class TestNodriverLoginValidationPaths:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
         mock_tab.send = AsyncMock()
 
@@ -827,6 +835,9 @@ class _ScriptedNodriverTab:
         return self._at(self._contents, self.tick)
 
     async def select(self, selector: str, timeout: float | None = None) -> Any:
+        return await self.query_selector(selector)
+
+    async def query_selector(self, selector: str) -> Any:
         if selector and selector == self._success_selector:
             found = self._success_from is not None and self.tick >= self._success_from
             return AsyncMock() if found else None
@@ -1187,6 +1198,143 @@ class TestNodriverLoginSignalPoll:
         assert tab.tick == 0
         assert "cookies" not in tab.events
         assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "ndpoll"
+
+
+class DeclarativeNodriverFailureOnly(SitePlugin):
+    """Nodriver plugin whose only signal is its failure text."""
+
+    site_name = "ndfailonly"
+    session_name = "ndfailonly"
+    help_text = "ND Failure Only"
+    base_url = "https://example.com"
+    backend = "nodriver"
+    login_config = LoginConfig(
+        steps=[LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")],
+        url="/login",
+        failure="Invalid credentials",
+    )
+
+
+class DeclarativeSeleniumFailureOnly(SitePlugin):
+    """Selenium plugin whose only signal is its failure text."""
+
+    site_name = "selfailonly"
+    session_name = "selfailonly"
+    help_text = "Sel Failure Only"
+    base_url = "https://example.com"
+    backend = "selenium"
+    login_config = LoginConfig(
+        steps=[LoginStep(fields={"username": "#user", "password": "#pass"}, submit="#submit")],
+        url="/login",
+        failure="Invalid credentials",
+    )
+
+
+class TestNoSignalGraceWindow:
+    """A login with no success signal still watches for its failure signal."""
+
+    @pytest.mark.asyncio
+    async def test_nodriver_error_rendered_late_in_the_window_still_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The site renders its error a moment after the submit, inside the window."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        monkeypatch.setattr("graftpunk.plugins.login_engine._NO_SIGNAL_GRACE", 1.0)
+        tab = _ScriptedNodriverTab(
+            contents=(
+                "<html>Signing in</html>",
+                "<html>Signing in</html>",
+                "<html>Invalid credentials</html>",
+            ),
+        )
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverFailureOnly())(
+                _LOGIN_CREDENTIALS
+            )
+
+        assert result is False
+        assert tab.tick == 2  # it was still watching when the error rendered
+        assert "cookies" not in tab.events
+        assert _warning_kwargs(mock_log, "login_failure_text_detected")["text"] == (
+            "Invalid credentials"
+        )
+
+    @pytest.mark.asyncio
+    async def test_nodriver_a_clean_page_succeeds_after_the_window(self) -> None:
+        """Nothing to validate against: the window passes, the login stands, and
+        the warning that nothing validates it is logged as before."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        tab = _ScriptedNodriverTab(contents=("<html>Welcome</html>",))
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = await generate_login_method(DeclarativeNodriverNoValidation())(
+                _LOGIN_CREDENTIALS
+            )
+
+        assert result is True
+        assert tab.tick >= 0  # the window was watched, not skipped
+        assert "cookies" in tab.events
+        assert _warning_kwargs(mock_log, "login_no_validation_configured")["plugin"] == "ndnoval"
+
+    def test_selenium_error_rendered_late_in_the_window_still_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The selenium twin: the error arrives a tick or two in, and still decides."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        monkeypatch.setattr("graftpunk.plugins.login_engine._NO_SIGNAL_GRACE", 1.0)
+        driver = _ScriptedSeleniumDriver(
+            contents=(
+                "<html>Signing in</html>",
+                "<html>Signing in</html>",
+                "<html>Invalid credentials</html>",
+            ),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_engine.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumFailureOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert driver.tick == 2
+        assert "cookies" not in driver.events
+        assert _warning_kwargs(mock_log, "login_failure_text_detected")["text"] == (
+            "Invalid credentials"
+        )
+
+    def test_selenium_a_clean_page_succeeds_after_the_window(self) -> None:
+        """A page that never shows the failure text keeps the login."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(contents=("<html>Welcome</html>",))
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+        ):
+            result = generate_login_method(DeclarativeSeleniumFailureOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        assert driver.tick >= 0
+        assert "cookies" in driver.events
 
 
 class TestCheckLoginResult:
@@ -1619,6 +1767,7 @@ class TestLoginEngineHeaderCapture:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -2163,6 +2312,7 @@ class TestLoginTimeTokenExtraction:
         mock_element = AsyncMock()
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="Welcome to dashboard")
         mock_tab.url = "https://example.com/dashboard"
 
@@ -2214,6 +2364,7 @@ class TestLoginTimeTokenExtraction:
         mock_element = AsyncMock()
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome back!</html>")
         mock_tab.url = "https://news.ycombinator.com/news"
 
@@ -2578,6 +2729,7 @@ class TestNodriverMultiStepLogin:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -2627,6 +2779,7 @@ class TestNodriverMultiStepLogin:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -2673,6 +2826,7 @@ class TestNodriverMultiStepLogin:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
+        mock_tab.query_selector = mock_tab.select
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -2714,6 +2868,7 @@ class TestNodriverMultiStepLogin:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
+        mock_tab.query_selector = mock_tab.select
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -2755,6 +2910,7 @@ class TestNodriverMultiStepLogin:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
+        mock_tab.query_selector = mock_tab.select
 
         mock_bs, instance = _make_nodriver_mock_bs()
         instance.driver = MagicMock()
@@ -2789,6 +2945,7 @@ class TestNodriverMultiStepLogin:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -2864,6 +3021,7 @@ class TestNodriverMultiStepLogin:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -2907,6 +3065,7 @@ class TestNodriverMultiStepLogin:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Dashboard</html>")
 
         mock_bs, instance = _make_nodriver_mock_bs()

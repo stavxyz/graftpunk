@@ -285,6 +285,7 @@ class TestEngineChainThreading:
 
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=AsyncMock())
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
         mock_tab.send = AsyncMock()
 

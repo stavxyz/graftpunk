@@ -517,7 +517,7 @@ The top-level login configuration includes:
 - **`success`** — Optional CSS selector that indicates login success.
 - **`success_url`**: Optional glob matched against the whole browser URL after the last step, such as `https://app.example.com/*` or `*/dashboard*`. It counts only once the URL differs from the one the last submit was clicked from, so a glob that also matches the login page reports nothing rather than reporting success too early. Use it for a login that finishes on a recognisable URL, on its own or alongside `success`; with both set, both have to hold.
 - **`timeout`**: Seconds to wait after the last step for the success or failure signal (default `30`). Raise it for a login that finishes through a slow identity-provider redirect chain.
-- **`settle`**: Seconds to wait after the success signal, once the document has finished loading, before cookies are captured (default `1`).
+- **`settle`**: Seconds to wait after the success signal, once the document has finished loading, before cookies are captured (default `1`). A login with no success signal never reaches it.
 - **`headless`** — Run the login browser headless (default `false`, so a human can solve a CAPTCHA or 2FA prompt). `gp <plugin> login --headless` / `--headful` override it for one invocation in either direction; the flags are offered only on declarative logins (a plugin's own `login()` method cannot honour them).
 
 #### Field filling is verified
@@ -664,7 +664,7 @@ The wait is what makes a slow login work: sites that finish through an identity-
 
 Write both signals so they cannot match the login page itself. An element that is already on the form, or a glob as loose as `*example.com*`, would otherwise be satisfied before the submit has navigated anywhere, and the session cached would be the one from before the login. The engine guards the URL half of that (a `success_url` counts only once the page has moved off the URL the submit was clicked from) and delays the first pass by one interval, but a `success` element that the form and the landing page share is beyond its reach.
 
-Configure at least one of `failure`, `success`, and `success_url`. With neither `success` nor `success_url` set there is nothing to wait for, so the engine pauses for `settle` seconds and takes a single verdict from the page text; with none of the three set, that verdict is always success and a warning advises you to add validation.
+Configure at least one of `failure`, `success`, and `success_url`. With neither `success` nor `success_url` set there is nothing to wait for, so the engine watches the page for three seconds for the `failure` text (and for a rate-limit page), stops the moment either shows, and then takes the single verdict it has always taken from the page text. `timeout` and `settle` play no part on that path. With none of the three set, the verdict is always success and a warning advises you to add validation.
 
 **Per-step `wait_for` is nodriver-only.** Setting `wait_for` on individual steps requires `backend = "nodriver"`. The top-level `wait_for` is also nodriver-only. Setting `wait_for` on a plugin with `backend = "selenium"` raises a `PluginError` at login time with guidance to switch to the nodriver backend.
 
