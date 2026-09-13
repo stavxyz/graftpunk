@@ -207,7 +207,7 @@ def _param_identifier(site_name: str, seen: set[str]) -> str:
 
 
 def _redirect_target_after_credential_post(d: RunDigest) -> str | None:
-    """The path a credential post redirected to, if any: a candidate for `success`."""
+    """The path a credential post redirected to, if any: a candidate for `success_url`."""
     posted = False
     for observation in d.login:
         if observation.kind == "credential_post":
@@ -216,6 +216,19 @@ def _redirect_target_after_credential_post(d: RunDigest) -> str | None:
         if posted and observation.kind == "redirect":
             return urlparse(observation.url).path
     return None
+
+
+def _success_url_pattern(redirect_path: str) -> str | None:
+    """*redirect_path* as a ``success_url`` glob, or None when it says nothing useful.
+
+    The login engine matches ``success_url`` against the whole URL, so the observed
+    path gets a leading wildcard for the host (the login often lands on a different
+    one than it started from) and a trailing wildcard for the query the site adds.
+    A redirect to the site root is every URL's prefix and would match the login page
+    itself, so it yields no pattern and the caller emits a GP-FILL line instead.
+    """
+    path = redirect_path.rstrip("/")
+    return f"*{path}*" if path.startswith("/") else None
 
 
 def _password_login_form(d: RunDigest) -> LoginForm | None:
@@ -247,16 +260,20 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])'
         )
         return lines
-    hint = _redirect_target_after_credential_post(spec.digest)
+    redirect_path = _redirect_target_after_credential_post(spec.digest)
+    pattern = _success_url_pattern(redirect_path) if redirect_path else None
     lines = ["    login_config = LoginConfig(", "        steps=["]
     lines.extend(_render_login_step(form, indent=len(_L3)))
     lines.append("        ],")
     lines.extend(_literal_lines(form.action, indent=len(_L2), prefix="url="))
     lines.append('        failure="GP-FILL: text on the page indicating login failure",')
-    if hint:
-        text = f"candidate success redirect target, from the run: {hint}"
-        lines.extend(_wrapped_comment_lines(text, indent=len(_L2)))
     lines.append('        success="GP-FILL: CSS selector for login success",')
+    if pattern:
+        # What the run saw the credential post redirect to: the engine polls for
+        # this URL after submit, and an element check is still worth filling in.
+        lines.extend(_literal_lines(pattern, indent=len(_L2), prefix="success_url="))
+    else:
+        lines.append('        success_url="GP-FILL: glob for the URL the login lands on",')
     lines.append("    )")
     return lines
 
