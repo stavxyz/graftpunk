@@ -15,7 +15,11 @@ import graftpunk
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.plugin_commands import derive_reserved_cli_names
 from graftpunk.devtools.captures import CAPTURES_DIR
-from graftpunk.devtools.scaffold.project import ScaffoldConflictError, write_scaffold
+from graftpunk.devtools.scaffold.project import (
+    NotAPluginSuiteError,
+    ScaffoldConflictError,
+    write_scaffold,
+)
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths
 from graftpunk.har.digest import DigestSource, digest
@@ -155,6 +159,13 @@ def plugin_new(
         target = exc.filename or str(dir_)
         reason = exc.strerror or str(exc)
         console.print(f"[red]Could not write {escape(str(target))}: {escape(reason)}[/red]")
+        raise typer.Exit(1) from None
+    except NotAPluginSuiteError as exc:
+        # Before the ValueError arm below: it is a ValueError subclass, and the
+        # two conditions are different (a directory holding someone else's
+        # project, versus a name the generator cannot use).
+        LOG.warning("scaffold_refused", reason="not_a_plugin_suite")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
     except ValueError as exc:
         LOG.warning("scaffold_refused", reason="invalid_name")

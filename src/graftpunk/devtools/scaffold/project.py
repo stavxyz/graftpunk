@@ -24,7 +24,12 @@ from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
 
-__all__ = ["ScaffoldConflictError", "ScaffoldResult", "write_scaffold"]
+__all__ = [
+    "NotAPluginSuiteError",
+    "ScaffoldConflictError",
+    "ScaffoldResult",
+    "write_scaffold",
+]
 
 PLUGINS_ENTRY_POINT_GROUP = "graftpunk.plugins"
 
@@ -58,6 +63,16 @@ def _undo_writes(written: list[Path], created_dirs: list[Path]) -> None:
     for directory in reversed(created_dirs):
         with contextlib.suppress(OSError):
             directory.rmdir()
+
+
+class NotAPluginSuiteError(ValueError):
+    """*target_dir* holds a ``pyproject.toml`` that is a different kind of project.
+
+    Its own class so the CLI can tell it apart from the ``ValueError`` an
+    invalid plugin name raises: both used to log ``reason="invalid_name"``
+    (polish round 1, 2026-09-12). A ``ValueError`` subclass, so a caller that
+    only cares that the call refused still catches it.
+    """
 
 
 class ScaffoldConflictError(Exception):
@@ -102,8 +117,8 @@ def write_scaffold(
     Raises:
         ScaffoldConflictError: A target path already exists. Nothing is
             written; the check runs before any file is touched.
-        ValueError: *target_dir* has a ``pyproject.toml`` that does not
-            declare the ``graftpunk.plugins`` entry-point group: a
+        NotAPluginSuiteError: *target_dir* has a ``pyproject.toml`` that does
+            not declare the ``graftpunk.plugins`` entry-point group: a
             different kind of project.
         PyprojectEditError: In suite mode, ``pyproject.toml`` could not be
             edited (see ``pyproject_edit.py``). ``pyproject.toml`` is
@@ -113,7 +128,7 @@ def write_scaffold(
     """
     existing = None if force_new else _existing_pyproject(target_dir)
     if existing is not None and not _declares_plugin_group(existing):
-        raise ValueError(
+        raise NotAPluginSuiteError(
             f"{existing} exists but does not declare "
             f'[project.entry-points."{PLUGINS_ENTRY_POINT_GROUP}"]. '
             "This does not look like a graftpunk plugin suite. Use --new to start a fresh "

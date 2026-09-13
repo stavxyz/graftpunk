@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import typer
+from structlog.testing import capture_logs
 from typer.testing import CliRunner
 
 from graftpunk.cli.scaffold_commands import plugin_app
@@ -596,6 +597,35 @@ class TestUnwritableTargetDirIsARefusal:
         finally:
             # Restored so pytest's own tmp_path cleanup can remove the tree.
             readonly.chmod(0o700)
+
+
+class TestRefusalReasons:
+    """A directory holding someone else's project and a name the generator
+    cannot use are different conditions; both logged reason="invalid_name"."""
+
+    @staticmethod
+    def _reasons(events: list[dict]) -> list[str]:
+        return [e.get("reason") for e in events if e.get("event") == "scaffold_refused"]
+
+    def test_a_non_suite_pyproject_logs_its_own_reason(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "unrelated-package"\n')
+        with capture_logs() as events:
+            result = runner.invoke(
+                _build_app(),
+                ["plugin", "new", "myshop", "--dir", str(tmp_path)],
+            )
+        assert result.exit_code == 1, result.output
+        assert "entry-point" in result.output.lower()
+        assert self._reasons(events) == ["not_a_plugin_suite"]
+
+    def test_an_invalid_name_still_logs_invalid_name(self, tmp_path: Path) -> None:
+        with capture_logs() as events:
+            result = runner.invoke(
+                _build_app(),
+                ["plugin", "new", "2fa-site", "--dir", str(tmp_path)],
+            )
+        assert result.exit_code == 1, result.output
+        assert self._reasons(events) == ["invalid_name"]
 
 
 class TestReservedNamesSnapshot:
