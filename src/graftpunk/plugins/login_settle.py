@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import time
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
 from graftpunk.logging import get_logger
 
@@ -107,12 +107,15 @@ def _check_login_result(*, page_text: str, failure_text: str, site_name: str) ->
 
 # One poll tick's reading of the page, before the deadline is consulted. A failing
 # tick names its reason, so the loop that ends on it can log that reason and no
-# failure the wait returns is left unexplained (tidy round, 2026-09-13).
-_TICK_PENDING = "pending"
-_TICK_SUCCESS = "success"
-_TICK_FAILURE_TEXT = "failure_text"
-_TICK_RATE_LIMITED = "rate_limited"
-_TICK_FAILURES = (_TICK_FAILURE_TEXT, _TICK_RATE_LIMITED)
+# failure the wait returns is left unexplained (tidy round, 2026-09-13). The four
+# values are a closed set, named once here, so a typo in one of them is a type
+# error rather than a tick that silently never matches (polish round 1).
+_TickVerdict = Literal["pending", "success", "failure_text", "rate_limited"]
+_TICK_PENDING: Final[_TickVerdict] = "pending"
+_TICK_SUCCESS: Final[_TickVerdict] = "success"
+_TICK_FAILURE_TEXT: Final[_TickVerdict] = "failure_text"
+_TICK_RATE_LIMITED: Final[_TickVerdict] = "rate_limited"
+_TICK_FAILURES: Final = (_TICK_FAILURE_TEXT, _TICK_RATE_LIMITED)
 
 
 def _success_signal_configured(login_config: LoginConfig) -> bool:
@@ -190,7 +193,7 @@ def _login_tick_verdict(
     success_selector: str,
     success_url: str,
     success_found: bool | None,
-) -> str:
+) -> _TickVerdict:
     """Decide one post-submit poll tick from what the page shows right now.
 
     Pure, and the single rule both backends poll with: the configured failure text
@@ -223,7 +226,7 @@ def _login_tick_verdict(
     return _TICK_SUCCESS if signal_holds else _TICK_PENDING
 
 
-def _warn_login_tick_failure(*, verdict: str, site_name: str, failure_text: str) -> None:
+def _warn_login_tick_failure(*, verdict: _TickVerdict, site_name: str, failure_text: str) -> None:
     """Log the warning that names why this tick ended the wait.
 
     Every failure the wait returns carries one, so a login reported as failed is
