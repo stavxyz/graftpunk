@@ -42,8 +42,6 @@ _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
 _LOGIN_NAV_TIMEOUT = 60  # seconds — login page may redirect through SSO/IdP chains
 _FIELD_SETTLE_DELAY = 0.4  # seconds between send_keys and value read-back (see _fill_field)
 _FIELD_FILL_ATTEMPTS = 3  # select+type attempts before giving up on a field
-# The wait that follows the last step lives in login_settle, which owns the poll,
-# its constants, and the verdict one tick is decided by.
 
 
 def _resolve_url(base_url: str, url: str) -> str:
