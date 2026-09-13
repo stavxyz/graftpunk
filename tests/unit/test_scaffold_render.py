@@ -1095,6 +1095,33 @@ _CREDENTIAL_POST_OBSERVATION = LoginObservation(
 )
 
 
+# /account/login is one member of a family the digest collapsed, so the
+# endpoint's final template no longer spells the login path.
+_COLLAPSED_ACCOUNT_FAMILY = Endpoint(
+    host="api.myshop.example.com",
+    template="/account/{account_id}",
+    methods=("GET",),
+    count=11,
+    statuses=(200,),
+    content_type="text/html",
+    query_params={},
+    body_params={},
+    body_kind="none",
+    shape=None,
+    custom_headers=(),
+    examples=("/account/login", "/account/2024-07", "/account/2024-08"),
+)
+
+_COLLAPSED_FORM_PAGE_OBSERVATION = LoginObservation(
+    order=1,
+    method="GET",
+    url="https://api.myshop.example.com/account/login",
+    status=200,
+    kind="form_page",
+    fields=(),
+)
+
+
 class TestLoginFlowEndpointsAreNotCommandStubs:
     """login_config owns the login form's GET and the credential POST. Rendered
     as stubs they were wrong for the developer and their generated tests could
@@ -1145,6 +1172,30 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
         assert "def login(" in plugin_code
         ast.parse(plugin_code)
+
+    def test_a_login_path_inside_a_collapsed_family_is_still_owned(self) -> None:
+        """The digest's high-cardinality collapse can re-template the endpoint
+        the login observation belongs to, so templating the observation's raw
+        path no longer finds it (polish round 2, 2026-09-12)."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(
+                endpoints=(_COLLAPSED_ACCOUNT_FAMILY, _ORDERS_ENDPOINT),
+                login_forms=(_PASSWORD_LOGIN_FORM,),
+                login=(_COLLAPSED_FORM_PAGE_OBSERVATION,),
+            ),
+        )
+        files = render(spec)
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        assert "def account_by_account_id(" not in plugin_code
+        assert plugin_code.count("@command(") == 1
+        ast.parse(plugin_code)
+        test_code = files["tests/test_plugin.py"]
+        assert "def test_account_by_account_id(" not in test_code
+        ast.parse(test_code)
 
 
 class TestUnavailableShapeIsOmittedFromTheDocstring:

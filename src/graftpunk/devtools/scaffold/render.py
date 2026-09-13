@@ -777,21 +777,48 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
 _LOGIN_FLOW_KINDS = ("form_page", "credential_post")
 
 
+def _template_covers_path(template: str, path: str) -> bool:
+    """True when *path* is one of the paths *template* stands for: the same number
+    of segments, each of the template's either a ``{placeholder}`` or that segment
+    spelled exactly."""
+    template_segments = template.strip("/").split("/") if template.strip("/") else []
+    path_segments = path.strip("/").split("/") if path.strip("/") else []
+    if len(template_segments) != len(path_segments):
+        return False
+    return all(
+        (segment.startswith("{") and segment.endswith("}")) or segment == observed
+        for segment, observed in zip(template_segments, path_segments, strict=True)
+    )
+
+
 def _login_flow_endpoints(d: RunDigest) -> set[tuple[str, str]]:
-    """The ``(method, templated path)`` pairs ``login_config`` owns.
+    """The ``(method, template)`` pairs ``login_config`` owns, as the endpoints
+    themselves are keyed.
 
     The login form's own GET and the credential POST are the login flow, which
     the generated ``login_config`` drives. Rendered as command stubs they were
     wrong for the developer and their generated tests could only fail (polish
     round 1, 2026-09-12). The digest's own endpoint list is unchanged; only the
     scaffold skips them.
+
+    An observation carries the raw path, and the endpoint it belongs to may have
+    been re-templated by the digest's high-cardinality collapse, so templating
+    the path alone missed it and the stub came back (polish round 2,
+    2026-09-12). Each observation claims every endpoint of its method whose
+    final template covers its path, plus its own templated path for a run whose
+    login flow produced no endpoint at all.
     """
     owned: set[tuple[str, str]] = set()
     for observation in d.login:
         if observation.kind not in _LOGIN_FLOW_KINDS:
             continue
-        template, _ = template_path(urlparse(observation.url).path or "/")
-        owned.add((observation.method.upper(), template))
+        method = observation.method.upper()
+        path = urlparse(observation.url).path or "/"
+        template, _ = template_path(path)
+        owned.add((method, template))
+        for endpoint in d.endpoints:
+            if method in endpoint.methods and _template_covers_path(endpoint.template, path):
+                owned.add((method, endpoint.template))
     return owned
 
 
