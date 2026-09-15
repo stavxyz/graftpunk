@@ -228,6 +228,13 @@ class TestObserveBrowserStaysALeaf:
                 for alias in node.names
                 if alias.name.startswith("graftpunk.cli")
             }
+            | {
+                # A relative import (from . import observe_commands) has no
+                # module prefix to match on, so it is caught by its level.
+                "." * node.level + (node.module or "")
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.level > 0
+            }
         )
 
         assert cli_imports == []

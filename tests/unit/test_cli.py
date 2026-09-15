@@ -1241,7 +1241,9 @@ class TestObserveGoCommand:
             patch(
                 "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="mysite"
             ),
-            patch("graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock),
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as mock_go,
             patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
@@ -1249,6 +1251,8 @@ class TestObserveGoCommand:
                 ["observe", "--session", "mysite", "go", "--wait", "10", "https://example.com"],
             )
         mock_asyncio.run.assert_called_once()
+        # The wait value the user passed is what reaches the coroutine.
+        assert mock_go.call_args.args[2] == 10.0
         assert result.exit_code == 0
 
     def test_observe_go_no_session_interactive_flag(self):

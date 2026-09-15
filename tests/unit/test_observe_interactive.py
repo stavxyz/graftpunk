@@ -371,6 +371,9 @@ class TestObserveGoInteractiveFlag:
             patch(
                 "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
             ) as _mock_interactive,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as _mock_go,
             patch("graftpunk.logging.suppress_asyncio_noise"),
             patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
@@ -388,6 +391,8 @@ class TestObserveGoInteractiveFlag:
 
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+        _mock_interactive.assert_called_once()
+        _mock_go.assert_not_called()
 
     def test_observe_go_interactive_flag_in_help(self) -> None:
         """Test that --interactive/-i flag appears in observe go --help."""
