@@ -48,8 +48,8 @@ def _fake_response() -> MagicMock:
 
 
 async def _run_observe_go_with_fake_browser(base_dir: Path, namespace: str) -> None:
-    """Drive ``_run_observe_go`` against a fake browser, real ObserveStorage."""
-    from graftpunk.cli.main import _run_observe_go
+    """Drive ``run_observe_go`` against a fake browser, real ObserveStorage."""
+    from graftpunk.cli.observe_browser import run_observe_go
 
     tab = MagicMock()
     tab.sleep = AsyncMock()
@@ -74,10 +74,10 @@ async def _run_observe_go_with_fake_browser(base_dir: Path, namespace: str) -> N
 
     with (
         patch.dict("sys.modules", {"nodriver": nodriver}),
-        patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base_dir),
+        patch("graftpunk.cli.observe_browser.OBSERVE_BASE_DIR", base_dir),
         patch("graftpunk.observe.capture.NodriverCaptureBackend", return_value=backend),
     ):
-        await _run_observe_go(
+        await run_observe_go(
             namespace, "https://example.com", 0.0, 5 * 1024 * 1024, session_name=None
         )
 
@@ -93,7 +93,7 @@ class TestHttpWriterReaderRoundTrip:
         assert storage is not None, "labelled session names must not break the HAR save"
         assert storage.run_dir.parent.name == session_dirname(name)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", name])
 
         assert result.exit_code == 0, result.output
@@ -115,8 +115,8 @@ class TestHttpWriterReaderRoundTrip:
             _save_observe_data(name, "GET", "https://example.com", _fake_response())
 
         with (
-            patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path),
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value=name),
+            patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path),
+            patch("graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value=name),
         ):
             result = runner.invoke(app, ["observe", "--session", name, "list"])
 
@@ -155,7 +155,7 @@ class TestHttpObserveUsesTheResolvedName:
         assert (tmp_path / "myshop-alice").is_dir()
         assert not (tmp_path / "myshop").exists()
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             found = runner.invoke(root_app, ["observe", "show", "myshop@alice"])
             listed = runner.invoke(root_app, ["observe", "--session", "myshop@alice", "list"])
 
@@ -206,7 +206,7 @@ class TestBuildObserveContextWriterReaderRoundTrip:
         assert ctx._storage.run_dir.parent.name == session_dirname(name)
         assert (tmp_path / session_dirname(name)).is_dir()
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", name])
 
         assert result.exit_code == 0, result.output
@@ -223,7 +223,7 @@ class TestObserveGoWriterReaderRoundTrip:
 
         assert (tmp_path / session_dirname(name)).is_dir()
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", name])
 
         assert result.exit_code == 0, result.output

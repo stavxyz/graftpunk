@@ -188,7 +188,7 @@ class TestEveryLaunchSiteIsWiredUp:
     def test_the_sites_are_the_three_this_suite_knows_about(self) -> None:
         assert set(self._launch_sites()) == {
             "backends/nodriver.py",
-            "cli/main.py",
+            "cli/observe_browser.py",
             "tokens.py",
         }
 

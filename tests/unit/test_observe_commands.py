@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 from graftpunk.cli.observe_commands import (  # noqa: F401
     digest_cmd,
     fixtures_cmd,
-    register,
+    observe_app,
     resolve_run,
 )
 
@@ -44,8 +44,6 @@ def _git(argv: list[str], cwd: Path) -> None:
 
 def _build_app() -> typer.Typer:
     app = typer.Typer()
-    observe_app = typer.Typer(name="observe")
-    register(observe_app)
     app.add_typer(observe_app)
     return app
 
@@ -147,7 +145,7 @@ class TestDigestCommand:
         # usage never hits this: main.py's bootstrap always calls
         # configure_logging() before a command runs. This test bypasses
         # that bootstrap (it builds the Typer app directly from
-        # observe_commands.register), so it restores the same guarantee
+        # observe_commands.observe_app), so it restores the same guarantee
         # explicitly. Deviation from the brief, which asserted on
         # result.output without this.
         from graftpunk.logging import configure_logging
