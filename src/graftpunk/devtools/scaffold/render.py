@@ -243,9 +243,11 @@ def _success_url_pattern(redirect_path: str) -> str | None:
     A redirect to the site root is every URL's prefix and would match the login page
     itself, so it yields no pattern and the caller emits a comment instead.
 
-    The path itself is escaped: ``[``, ``]``, ``*`` and ``?`` are glob syntax, and a
-    site that puts one in a path (``/a[b]/c``) would otherwise widen or break the
-    pattern the engine matches with (polish round 1).
+    The path itself is escaped: ``[``, ``*`` and ``?`` are glob syntax, and a site
+    that puts one in a path (``/a[b]/c``) would otherwise widen or break the pattern
+    the engine matches with (polish round 1). ``glob.escape`` leaves a bare ``]``
+    alone and needs to: once the ``[`` before it is escaped, nothing opens a bracket
+    expression for it to close, so it is a literal already (polish round 2).
     """
     path = redirect_path.rstrip("/")
     return f"*{glob.escape(path)}*" if path.startswith("/") else None

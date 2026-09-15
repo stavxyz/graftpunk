@@ -733,7 +733,7 @@ commands:
     def test_non_numeric_timeout_names_the_key(self, tmp_path: Path) -> None:
         """A string timeout is a plugin error naming login.timeout, not a TypeError."""
         yaml_file = self._write(tmp_path, '  timeout: "soon"\n')
-        with pytest.raises(PluginError, match="login.timeout must be a number"):
+        with pytest.raises(PluginError, match=re.escape("login.timeout must be a number")):
             parse_yaml_plugin(yaml_file)
 
     def test_negative_settle_is_a_plugin_error(self, tmp_path: Path) -> None:
@@ -771,7 +771,7 @@ commands:
 """
         yaml_file = tmp_path / "test.yaml"
         yaml_file.write_text(yaml_content)
-        with pytest.raises(PluginError, match=f"login.{key} must be a string"):
+        with pytest.raises(PluginError, match=re.escape(f"login.{key} must be a string")):
             parse_yaml_plugin(yaml_file)
 
     @pytest.mark.parametrize(
