@@ -3230,6 +3230,79 @@ class TestSeleniumLoginSignalPoll:
         assert "cookies" not in driver.events
         assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "selpoll"
 
+    def test_a_rate_limit_body_at_the_landing_url_is_not_a_success(self) -> None:
+        """The selenium twin: a URL glob alone must not override the marker.
+
+        The limiter answers the post-submit redirect, so its 429 body is served at
+        the very URL the glob matches.
+        """
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        driver = _ScriptedSeleniumDriver(
+            contents=("<html>Signing in</html>", "<html>Too Many Requests</html>"),
+            urls=("https://app.example.com/login", "https://app.example.com/dashboard"),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(DeclarativeSeleniumUrlOnly())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in driver.events
+        assert _warning_kwargs(mock_log, "login_rate_limited")["plugin"] == "selurl"
+
+    def test_a_rate_limit_marker_under_a_found_element_reaches_the_debug_trail(self) -> None:
+        """The selenium twin: the element vetoes the marker, so the wait times out on the URL.
+
+        The timeout warning names the URL pattern and says nothing about a limiter,
+        which is what the debug event is for.
+        """
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class BothSignalsRateLimited(SitePlugin):
+            site_name = "selmarker"
+            session_name = "selmarker"
+            help_text = "Sel Marker"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                failure="Invalid credentials",
+                success=".dashboard",
+                success_url="*/dashboard*",
+                timeout=0.2,
+                settle=0.0,
+            )
+
+        driver = _ScriptedSeleniumDriver(
+            success_selector=".dashboard",
+            success_from=0,
+            contents=("<html>Too Many Requests</html>",),
+            urls=("https://app.example.com/login",),
+        )
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch("graftpunk.plugins.login_settle.LOG") as mock_log,
+        ):
+            result = generate_login_method(BothSignalsRateLimited())(_LOGIN_CREDENTIALS)
+
+        assert result is False
+        assert "cookies" not in driver.events
+        # One event for the window, however many ticks showed the marker.
+        event = _debug_kwargs(mock_log, "login_rate_limit_marker_seen")
+        assert event["url"] == "https://app.example.com/login"
+        assert event["backend"] == "selenium"
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success URL pattern '*/dashboard*'"
+
 
 class TestLoginTimeTokenExtraction:
     """Tests for token extraction during login (nodriver path)."""
