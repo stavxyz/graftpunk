@@ -304,6 +304,9 @@ class TestObserveGoInteractiveFlag:
                 "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="mysite"
             ),
             patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as _mock_go,
+            patch(
                 "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
             ) as _mock_interactive,
             patch("graftpunk.logging.suppress_asyncio_noise"),
@@ -322,8 +325,11 @@ class TestObserveGoInteractiveFlag:
             )
 
         assert result.exit_code == 0
-        # asyncio.run should have been called with the interactive coroutine
+        # asyncio.run should have been called with the interactive coroutine,
+        # not the go one
         mock_asyncio.run.assert_called_once()
+        _mock_interactive.assert_called_once()
+        _mock_go.assert_not_called()
 
     def test_without_interactive_flag_calls_run_observe_go(self) -> None:
         """Test that observe go without --interactive calls run_observe_go."""
@@ -351,8 +357,10 @@ class TestObserveGoInteractiveFlag:
             )
 
         assert result.exit_code == 0
-        # asyncio.run should have been called with the go coroutine (not interactive)
+        # asyncio.run should have been called with the go coroutine, not interactive
         mock_asyncio.run.assert_called_once()
+        _mock_go.assert_called_once()
+        _mock_interactive.assert_not_called()
 
     def test_interactive_short_flag(self) -> None:
         """Test that observe go -i also delegates to run_observe_interactive."""
