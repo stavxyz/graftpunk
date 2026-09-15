@@ -80,7 +80,6 @@ class TestSelectWithRetry:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
-        mock_tab.query_selector = mock_tab.select
 
         result = await _select_with_retry(mock_tab, "input#name")
         assert result is mock_element
@@ -97,7 +96,6 @@ class TestSelectWithRetry:
         # Fail twice with ProtocolException, succeed on third
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=[exc, exc, mock_element])
-        mock_tab.query_selector = mock_tab.select
 
         result = await _select_with_retry(mock_tab, "input#name", timeout=10, interval=0.01)
         assert result is mock_element
@@ -111,7 +109,6 @@ class TestSelectWithRetry:
         mock_tab = MagicMock()
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=exc)
-        mock_tab.query_selector = mock_tab.select
 
         with pytest.raises(ProtocolException):
             await _select_with_retry(mock_tab, "input#name", timeout=0.1, interval=0.01)
@@ -121,7 +118,6 @@ class TestSelectWithRetry:
         """Returns None when select returns None and timeout expires (no exception)."""
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(return_value=None)
-        mock_tab.query_selector = mock_tab.select
 
         result = await _select_with_retry(mock_tab, "input#gone", timeout=0.1, interval=0.01)
         assert result is None
@@ -131,7 +127,6 @@ class TestSelectWithRetry:
         """Non-ProtocolException errors propagate immediately (no retry)."""
         mock_tab = MagicMock()
         mock_tab.select = AsyncMock(side_effect=RuntimeError("unexpected"))
-        mock_tab.query_selector = mock_tab.select
 
         with pytest.raises(RuntimeError, match="unexpected"):
             await _select_with_retry(mock_tab, "input#name")
@@ -169,7 +164,6 @@ class TestSelectWithRetry:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
-        mock_tab.query_selector = mock_tab.select
 
         # With a 30s total timeout, the first per-attempt cap should be 5.0
         await _select_with_retry(mock_tab, "input#name", timeout=30, interval=1)
@@ -184,7 +178,6 @@ class TestSelectWithRetry:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(side_effect=[None, None, mock_element])
-        mock_tab.query_selector = mock_tab.select
 
         result = await _select_with_retry(mock_tab, "input#name", timeout=10, interval=0.01)
         assert result is mock_element
@@ -200,7 +193,6 @@ class TestSelectWithRetry:
 
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=[None, exc, None, mock_element])
-        mock_tab.query_selector = mock_tab.select
 
         result = await _select_with_retry(mock_tab, "input#name", timeout=10, interval=0.01)
         assert result is mock_element
