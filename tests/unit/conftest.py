@@ -156,12 +156,20 @@ def _fast_login_timings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch login engine timing constants so tests don't wait real time.
 
     _ELEMENT_WAIT_TIMEOUT (30s) causes deadline-based loops to spin for 30
-    real seconds even when asyncio.sleep is mocked.  _POST_SUBMIT_DELAY (3s)
-    causes a real asyncio.sleep(3) in tests that don't mock sleep.
+    real seconds even when asyncio.sleep is mocked.  _LOGIN_POLL_INTERVAL
+    (0.5s) is a real sleep between post-submit signal checks.
     _ELEMENT_RETRY_INTERVAL (1s) adds real delay between retry attempts in
     _select_with_retry's deadline loop.
+
+    _NO_SIGNAL_GRACE (3s) is how long a login with no success signal watches
+    for its failure signal, in real seconds.
+
+    The post-submit poll's own budget is LoginConfig.timeout, which is per
+    plugin rather than a module constant: a test whose login never shows its
+    success signal sets a small timeout on its own LoginConfig.
     """
-    monkeypatch.setattr("graftpunk.plugins.login_engine._POST_SUBMIT_DELAY", 0.001)
+    monkeypatch.setattr("graftpunk.plugins.login_settle._LOGIN_POLL_INTERVAL", 0.001)
+    monkeypatch.setattr("graftpunk.plugins.login_settle._NO_SIGNAL_GRACE", 0.01)
     monkeypatch.setattr("graftpunk.plugins.login_engine._ELEMENT_WAIT_TIMEOUT", 0.05)
     monkeypatch.setattr("graftpunk.plugins.login_engine._ELEMENT_RETRY_INTERVAL", 0.001)
     monkeypatch.setattr("graftpunk.plugins.login_engine._LOGIN_NAV_TIMEOUT", 0.05)

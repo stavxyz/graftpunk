@@ -46,6 +46,8 @@ def _make_plugin(backend: str, *, headless: bool = False) -> SitePlugin:
         url="/login",
         failure="Bad login.",
         headless=headless,
+        timeout=0.05,
+        settle=0.0,
     )
     return P()
 
@@ -74,6 +76,7 @@ def _nodriver_tab(page: str = "<html>Bad login.</html>") -> MagicMock:
     element.clear_input = AsyncMock(side_effect=lambda: state.__setitem__("value", ""))
     tab = MagicMock()
     tab.select = AsyncMock(return_value=element)
+    tab.query_selector = tab.select
     tab.evaluate = AsyncMock(
         side_effect=lambda *a, **k: json.dumps({"found": True, "value": state["value"]})
     )
@@ -194,7 +197,7 @@ class TestEngineHeadless:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             login({"username": "u", "password": "p"})
 
@@ -206,7 +209,7 @@ class TestEngineHeadless:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
         ):
             login({"username": "u", "password": "p"}, headless=True)
 
@@ -302,7 +305,7 @@ class TestEngineObserve:
 
         with (
             patch("graftpunk.BrowserSession", mock_bs),
-            patch("graftpunk.plugins.login_engine.time"),
+            patch("graftpunk.plugins.login_engine.time.sleep"),
             patch("graftpunk.observe.capture.create_capture_backend") as ccb,
         ):
             login({"username": "u", "password": "p"}, observe_mode="full")

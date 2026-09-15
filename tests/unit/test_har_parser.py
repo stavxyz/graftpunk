@@ -210,6 +210,45 @@ class TestHARResponse:
         assert response.body is None
         assert response.body_size == 0
         assert response.set_cookie_names == ()
+        assert response.redirect_url == ""
+
+    def test_redirect_url_comes_from_the_har_field(self) -> None:
+        """Chrome records the target in the entry's own redirectURL."""
+        response = _parse_response(
+            {
+                "status": 302,
+                "statusText": "Found",
+                "headers": [{"name": "Location", "value": "/ignored"}],
+                "cookies": [],
+                "redirectURL": "https://app.example.com/dashboard",
+            }
+        )
+        assert response.redirect_url == "https://app.example.com/dashboard"
+
+    def test_redirect_url_falls_back_to_the_location_header(self) -> None:
+        """Recorders that leave redirectURL empty still carry Location."""
+        response = _parse_response(
+            {
+                "status": 302,
+                "statusText": "Found",
+                "headers": [{"name": "location", "value": "/dashboard"}],
+                "cookies": [],
+                "redirectURL": "",
+            }
+        )
+        assert response.redirect_url == "/dashboard"
+
+    def test_redirect_url_is_empty_without_either(self) -> None:
+        """Neither source present means no target, not a guess."""
+        response = _parse_response(
+            {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [{"name": "Content-Type", "value": "text/html"}],
+                "cookies": [],
+            }
+        )
+        assert response.redirect_url == ""
 
     def test_multiple_set_cookie_headers_all_names_captured(self) -> None:
         """Every Set-Cookie header's name is kept, not just the last one."""

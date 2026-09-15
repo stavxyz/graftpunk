@@ -53,6 +53,9 @@ class HARResponse:
     # names only, never values; a response can carry more than one Set-Cookie
     # header and the headers dict above collapses duplicates to the last one
     set_cookie_names: tuple[str, ...] = ()
+    # where a redirect sent the client: the HAR's own redirectURL when the
+    # recorder filled it in, else the Location header, else empty
+    redirect_url: str = ""
 
 
 @dataclass
@@ -248,7 +251,24 @@ def _parse_response(response_data: dict[str, Any], base_dir: Path | None = None)
         body_size=body_size,
         body_file=body_file,
         set_cookie_names=set_cookie_names,
+        redirect_url=_redirect_url(response_data, headers),
     )
+
+
+def _redirect_url(response_data: dict[str, Any], headers: dict[str, str]) -> str:
+    """Where this response sent the client, or an empty string.
+
+    Chrome writes the target into the HAR's own ``redirectURL`` field; other
+    recorders leave that empty and only carry the ``Location`` header, so both
+    are read, in that order.
+    """
+    recorded = response_data.get("redirectURL")
+    if isinstance(recorded, str) and recorded:
+        return recorded
+    for name, value in headers.items():
+        if name.lower() == "location" and isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _parse_timestamp(started: str) -> datetime:

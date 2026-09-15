@@ -18,6 +18,12 @@ from graftpunk import console as gp_console
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import cache_login_session
+from graftpunk.plugins.login_settle import (
+    driver_url,
+    tab_url,
+    wait_for_login_outcome_nodriver,
+    wait_for_login_outcome_selenium,
+)
 
 if TYPE_CHECKING:
     from graftpunk.plugins.cli_plugin import SitePlugin
@@ -26,20 +32,16 @@ if TYPE_CHECKING:
 # NOT at module scope. This module is on the CLI's eager import path
 # (cli/main.py -> cli/plugin_commands.py -> cli/login_commands.py -> here), so a
 # module-level `from graftpunk import BrowserSession` pulls in the whole browser
-# stack and makes EVERY `gp` invocation — even `gp --version` — fail on a base
+# stack and makes EVERY `gp` invocation, even `gp --version`, fail on a base
 # install without the [browser] extra. See test_cli_import_stays_browser_free.
 
 LOG = get_logger(__name__)
 
-_POST_SUBMIT_DELAY = 3  # seconds to wait after form submission for page to settle
 _ELEMENT_WAIT_TIMEOUT = 30  # seconds to wait for element during page transitions
 _ELEMENT_RETRY_INTERVAL = 1.0  # seconds between retry attempts
-_LOGIN_NAV_TIMEOUT = 60  # seconds — login page may redirect through SSO/IdP chains
+_LOGIN_NAV_TIMEOUT = 60  # seconds: the login page may redirect through SSO and IdP chains
 _FIELD_SETTLE_DELAY = 0.4  # seconds between send_keys and value read-back (see _fill_field)
 _FIELD_FILL_ATTEMPTS = 3  # select+type attempts before giving up on a field
-# Page text that identifies a rate-limited response (HTTP 429 body) rather than
-# a login outcome. Matched case-insensitively against the post-submit page.
-_RATE_LIMIT_MARKERS = ("too many requests",)
 
 
 def _resolve_url(base_url: str, url: str) -> str:
@@ -59,7 +61,7 @@ def _resolve_url(base_url: str, url: str) -> str:
     Returns:
         The absolute URL to navigate to.
     """
-    # Absolute when it carries a scheme (http/https, any case — urlsplit
+    # Absolute when it carries a scheme (http/https, any case: urlsplit
     # lower-cases the scheme). Otherwise treat it as a path onto base_url.
     return url if urllib.parse.urlsplit(url).scheme else f"{base_url}{url}"
 
@@ -67,10 +69,10 @@ def _resolve_url(base_url: str, url: str) -> str:
 # TODO: Replace Any type annotations with proper nodriver.Tab / nodriver.Element
 # types once the upstream SyntaxError in nodriver's CDP codegen is fixed for
 # Python 3.14. The bug is in auto-generated CDP domain modules that use invalid
-# syntax. Track: https://github.com/niceno/nodriver — when fixed, add
+# syntax. Track: https://github.com/niceno/nodriver; when fixed, add
 # nodriver.Tab and nodriver.Element to the TYPE_CHECKING import block above.
 async def _select_with_retry(
-    tab: Any,  # nodriver.Tab — can't import due to upstream SyntaxError in CDP codegen
+    tab: Any,  # nodriver.Tab; not imported because of the upstream SyntaxError in CDP codegen
     selector: str,
     *,
     timeout: float | None = None,
@@ -213,7 +215,7 @@ async def _read_field_value(tab: Any, selector: str) -> str | None:
     )
     try:
         result = await tab.evaluate(js, return_by_value=True)
-    except Exception as exc:  # noqa: BLE001 — verification is best-effort
+    except Exception as exc:  # broad by design: verification is best-effort
         LOG.debug("login_field_readback_failed", selector=selector, error=str(exc))
         return None
     if not isinstance(result, str):
@@ -426,84 +428,6 @@ def _start_login_capture(
     return capture, storage
 
 
-def _warn_no_login_validation(site_name: str) -> None:
-    """Log a warning when no login validation is configured."""
-    LOG.warning(
-        "login_no_validation_configured",
-        plugin=site_name,
-        hint="Consider adding login_failure or login_success to validate login result",
-    )
-
-
-def _check_login_result(
-    *,
-    page_text: str,
-    failure_text: str,
-    success_found: bool | None,
-    success_selector: str,
-    site_name: str,
-) -> bool:
-    """Check login result using failure text and success selector.
-
-    Args:
-        page_text: Current page text/source content.
-        failure_text: Text to search for indicating failure (empty = skip).
-        success_found: True if success element was found, False if not,
-            None if no selector configured.
-        success_selector: The CSS selector used (for logging).
-        site_name: Plugin name (for logging).
-
-    Returns:
-        True if login appears successful, False if it failed.
-    """
-    lowered = page_text.lower()
-
-    # A rate-limited response is a page from the site's limiter, not a verdict
-    # on the credentials. It never contains the success element, so a found
-    # success element always wins: page_text is raw HTML, and an inlined i18n
-    # bundle or error catalogue on a real post-login page can contain the
-    # marker text. Only refine a failure, never veto a success.
-    if success_found is not True and any(marker in lowered for marker in _RATE_LIMIT_MARKERS):
-        LOG.warning(
-            "login_rate_limited",
-            plugin=site_name,
-            hint=(
-                "The site returned a 'Too Many Requests' page. This is not a "
-                "credentials problem; wait before retrying."
-            ),
-        )
-        return False
-
-    if failure_text and failure_text.lower() in lowered:
-        LOG.warning(
-            "login_failure_text_detected",
-            plugin=site_name,
-            text=failure_text,
-            hint=(
-                "The configured failure text is on the page. Sites show it for "
-                "wrong credentials, but also for an empty or malformed submission."
-            ),
-        )
-        return False
-
-    if success_found is False:
-        LOG.warning(
-            "login_success_element_not_found",
-            plugin=site_name,
-            selector=success_selector,
-            hint=(
-                "The page never showed the configured success element. The login "
-                "may still be on the form, or the site may have redirected elsewhere."
-            ),
-        )
-        return False
-
-    if not failure_text and success_found is None:
-        _warn_no_login_validation(site_name)
-
-    return True
-
-
 def _build_token_cache(
     token_config: Any,
     token_results: dict[str, str],
@@ -604,7 +528,7 @@ def _extract_and_cache_tokens_selenium(
                         token=t.name,
                         url=_resolve_url(base_url, t.page_url),
                     )
-            except Exception as exc:  # noqa: BLE001 — best-effort token extraction
+            except Exception as exc:  # broad by design: best-effort token extraction
                 LOG.warning("login_token_extraction_failed", token=t.name, error=str(exc))
 
     tcache = _build_token_cache(token_config, token_results)
@@ -735,7 +659,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
                             console=gp_console.err_console,
                             redact=credentials.values(),
                         )
-                    except Exception as exc:  # noqa: BLE001 — diagnostics are best-effort
+                    except Exception as exc:  # broad by design: diagnostics are best-effort
                         LOG.error(
                             "login_observe_save_failed",
                             plugin=plugin.site_name,
@@ -766,12 +690,20 @@ async def _run_nodriver_steps(
     computed; both default to None, which caches under ``plugin.session_name``
     with no recorded identifier.
     """
-    assert plugin.login_config is not None  # noqa: S101 — checked by caller
+    assert plugin.login_config is not None  # noqa: S101 (checked by caller)
     # Top-level wait_for: wait for a specific element before any steps
     # (e.g., a form that appears after a redirect completes)
     if plugin.login_config.wait_for:
         await _wait_for_element(tab, plugin.login_config.wait_for, "Login page")
 
+    # The URL the last submit was clicked from: a success_url signal counts only
+    # once the page has moved off it (see _missing_login_signals). The flag tells
+    # "no submit was clicked", where the URL at the start of the wait is the right
+    # baseline, from "the read at click time came back empty", where re-reading
+    # after the steps would take the post-login URL as the baseline and no later
+    # URL could ever differ from it (polish round 1).
+    pre_submit_url = ""
+    submit_clicked = False
     # Execute each step in sequence: wait_for -> fill fields -> submit -> delay
     for step_idx, step in enumerate(plugin.login_config.steps, start=1):
         # Step-level wait_for: wait for element before this step
@@ -801,6 +733,8 @@ async def _run_nodriver_steps(
                         f"using selector '{step.submit}'. "
                         "Check your plugin's login step configuration."
                     )
+                pre_submit_url = tab_url(tab)
+                submit_clicked = True
                 await submit.click()
             except PluginError:
                 raise
@@ -814,25 +748,15 @@ async def _run_nodriver_steps(
         if step.delay > 0:
             await asyncio.sleep(step.delay)
 
-    # Fixed delay to allow page to settle after all steps complete
-    await asyncio.sleep(_POST_SUBMIT_DELAY)
-
-    # Check success/failure
-    page_text = await tab.get_content()
-    success_selector = plugin.login_config.success
-    success_found: bool | None = None
-    if success_selector:
-        # Bare select (no retry): page has settled after submit delay;
-        # retrying here would mask genuine login failures.
-        success_element = await tab.select(success_selector)
-        success_found = success_element is not None
-
-    if not _check_login_result(
-        page_text=page_text,
+    login_config = plugin.login_config
+    # The page settles on its own schedule after the last step: login_settle owns
+    # the wait, whichever signals this plugin configured.
+    if not await wait_for_login_outcome_nodriver(
+        tab=tab,
+        login_config=login_config,
         failure_text=failure_text,
-        success_found=success_found,
-        success_selector=success_selector or "",
         site_name=plugin.site_name,
+        pre_submit_url=pre_submit_url if submit_clicked else tab_url(tab),
     ):
         return False
 
@@ -842,7 +766,7 @@ async def _run_nodriver_steps(
             session.current_url = tab.url or login_target
         else:
             session.current_url = login_target
-    except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
+    except Exception as exc:  # broad by design: the URL is display metadata, not the login
         LOG.debug("login_url_capture_failed", error=str(exc), backend="nodriver")
         session.current_url = login_target
 
@@ -855,7 +779,7 @@ async def _run_nodriver_steps(
     # Extract tokens using the already-open browser (avoids separate launch)
     try:
         await _extract_and_cache_tokens_nodriver(plugin, session, tab, base_url)
-    except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
+    except Exception as exc:  # broad by design: best-effort, login already succeeded
         LOG.warning(
             "login_token_extraction_failed",
             plugin=plugin.site_name,
@@ -869,7 +793,6 @@ async def _run_nodriver_steps(
 def _generate_selenium_login(plugin: SitePlugin) -> Any:
     """Generate sync login method for selenium backend."""
     import selenium.common.exceptions
-    from selenium.common.exceptions import NoSuchElementException
 
     def login(
         credentials: dict[str, str],
@@ -903,7 +826,6 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         login_url = plugin.login_config.url
         login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
-        success_selector = plugin.login_config.success
         run_headless = plugin.login_config.headless if headless is None else headless
 
         from graftpunk import BrowserSession  # lazy: browser stack ([browser] extra)
@@ -938,6 +860,11 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                     "the nodriver backend. Set backend='nodriver' or remove wait_for."
                 )
 
+            # The URL the last submit was clicked from, and whether one was clicked
+            # at all: the nodriver path above carries the same pair, for the same
+            # reason (see the comment there).
+            pre_submit_url = ""
+            submit_clicked = False
             # Execute each step in sequence
             for step_idx, step in enumerate(plugin.login_config.steps, start=1):
                 # Step-level wait_for is not supported for selenium
@@ -967,6 +894,8 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 if step.submit:
                     try:
                         submit_el = session.driver.find_element("css selector", step.submit)
+                        pre_submit_url = driver_url(session.driver)
+                        submit_clicked = True
                         submit_el.click()
                     except (
                         selenium.common.exceptions.WebDriverException,
@@ -981,32 +910,21 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
                 if step.delay > 0:
                     time.sleep(step.delay)
 
-            # Fixed delay to allow page to settle after all steps complete
-            time.sleep(_POST_SUBMIT_DELAY)
-
-            # Check success/failure
-            page_text = session.driver.page_source
-            success_found: bool | None = None
-            if success_selector:
-                try:
-                    session.driver.find_element("css selector", success_selector)
-                    success_found = True
-                except NoSuchElementException:
-                    success_found = False
-
-            if not _check_login_result(
-                page_text=page_text,
+            # The page settles on its own schedule after the last step: login_settle
+            # owns the wait, whichever signals this plugin configured.
+            if not wait_for_login_outcome_selenium(
+                driver=session.driver,
+                login_config=plugin.login_config,
                 failure_text=failure_text,
-                success_found=success_found,
-                success_selector=success_selector or "",
                 site_name=plugin.site_name,
+                pre_submit_url=pre_submit_url if submit_clicked else driver_url(session.driver),
             ):
                 return False
 
             # Capture current URL before caching (used for domain display)
             try:
                 session.current_url = session.driver.current_url
-            except Exception as exc:  # noqa: BLE001 — URL is optional metadata for display
+            except Exception as exc:  # broad by design: the URL is display metadata, not the login
                 LOG.debug("login_url_capture_failed", error=str(exc), backend="selenium")
                 session.current_url = login_target
 
@@ -1020,7 +938,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
             # Extract tokens using the already-open browser (avoids separate launch)
             try:
                 _extract_and_cache_tokens_selenium(plugin, session, base_url)
-            except Exception as exc:  # noqa: BLE001 — best-effort; login already succeeded
+            except Exception as exc:  # broad by design: best-effort, login already succeeded
                 LOG.warning(
                     "login_token_extraction_failed",
                     plugin=plugin.site_name,

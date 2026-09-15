@@ -218,6 +218,7 @@ class TestLoginRetryIntegration:
         # select() fails with ProtocolException on first call, succeeds after
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=[exc, mock_element, mock_element, mock_element])
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
         mock_tab.send = AsyncMock()
 
@@ -289,6 +290,7 @@ class TestLoginWaitFor:
         mock_tab = MagicMock()
         # select always returns None (element never appears)
         mock_tab.select = AsyncMock(return_value=None)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -315,6 +317,7 @@ class TestLoginWaitFor:
         mock_tab = MagicMock()
         exc = ProtocolException({"code": -32000, "message": "Could not find node"})
         mock_tab.select = AsyncMock(side_effect=exc)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.send = AsyncMock()
 
         mock_bs, instance = _make_nodriver_mock_bs()
@@ -339,6 +342,7 @@ class TestLoginWaitFor:
         mock_tab = MagicMock()
         mock_element = AsyncMock()
         mock_tab.select = AsyncMock(return_value=mock_element)
+        mock_tab.query_selector = mock_tab.select
         mock_tab.get_content = AsyncMock(return_value="<html>Welcome</html>")
         mock_tab.send = AsyncMock()
 

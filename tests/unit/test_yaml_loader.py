@@ -1,5 +1,6 @@
 """Tests for YAML plugin loader."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -683,6 +684,129 @@ commands:
         yaml_file = tmp_path / "test.yaml"
         yaml_file.write_text(yaml_content)
         with pytest.raises(PluginError, match="step #1 must be a mapping"):
+            parse_yaml_plugin(yaml_file)
+
+
+class TestYAMLLoginSettlePoll:
+    """The login block's success_url, timeout, and settle keys."""
+
+    @staticmethod
+    def _write(tmp_path: Path, login_keys: str) -> Path:
+        yaml_content = f"""
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+{login_keys}  steps:
+    - fields:
+        username: "input#email"
+        password: "input#pass"
+      submit: "button[type=submit]"
+commands:
+  search:
+    url: "/api/search"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        return yaml_file
+
+    def test_keys_are_parsed(self, tmp_path: Path) -> None:
+        """success_url, timeout, and settle reach the LoginConfig."""
+        yaml_file = self._write(
+            tmp_path,
+            '  success_url: "*/dashboard*"\n  timeout: 45\n  settle: 2.5\n',
+        )
+        config, _commands, _headers = parse_yaml_plugin(yaml_file)
+        assert config.login_config is not None
+        assert config.login_config.success_url == "*/dashboard*"
+        assert config.login_config.timeout == 45.0
+        assert config.login_config.settle == 2.5
+
+    def test_defaults_when_absent(self, tmp_path: Path) -> None:
+        """A login block without the three keys keeps the dataclass defaults."""
+        config, _commands, _headers = parse_yaml_plugin(self._write(tmp_path, ""))
+        assert config.login_config is not None
+        assert config.login_config.success_url == ""
+        assert config.login_config.timeout == 30.0
+        assert config.login_config.settle == 1.0
+
+    def test_non_numeric_timeout_names_the_key(self, tmp_path: Path) -> None:
+        """A string timeout is a plugin error naming login.timeout, not a TypeError."""
+        yaml_file = self._write(tmp_path, '  timeout: "soon"\n')
+        with pytest.raises(PluginError, match=re.escape("login.timeout must be a number")):
+            parse_yaml_plugin(yaml_file)
+
+    def test_negative_settle_is_a_plugin_error(self, tmp_path: Path) -> None:
+        """LoginConfig's own validation surfaces as a PluginError naming the file."""
+        yaml_file = self._write(tmp_path, "  settle: -1\n")
+        with pytest.raises(PluginError, match="settle must be non-negative"):
+            parse_yaml_plugin(yaml_file)
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("success_url", "7"),
+            ("url", "42"),
+            ("failure", "[a, b]"),
+            ("success", "true"),
+            ("wait_for", "3.5"),
+        ],
+    )
+    def test_a_non_string_text_key_names_the_file_and_the_key(
+        self, tmp_path: Path, key: str, value: str
+    ) -> None:
+        """A number or a list where text belongs is a plugin error, not an AttributeError."""
+        yaml_content = f"""
+site_name: mysite
+base_url: "https://example.com"
+login:
+  {key}: {value}
+  steps:
+    - fields:
+        username: "input#email"
+      submit: "button[type=submit]"
+commands:
+  search:
+    url: "/api/search"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        with pytest.raises(PluginError, match=re.escape(f"login.{key} must be a string")):
+            parse_yaml_plugin(yaml_file)
+
+    @pytest.mark.parametrize(
+        ("step", "message"),
+        [
+            (
+                '    - fields:\n        username: "#user"\n      wait_for: 3.5\n',
+                "step #1: 'wait_for' must be a string",
+            ),
+            ("    - submit: 42\n", "step #1: 'submit' must be a string"),
+            ('    - submit: "#go"\n      delay: "soon"\n', "step #1: 'delay' must be a number"),
+            ("    - fields: [username, password]\n", "step #1: 'fields' must be a mapping"),
+            (
+                "    - fields:\n        username: 7\n",
+                "step #1: 'fields' must map credential names to CSS selectors",
+            ),
+        ],
+    )
+    def test_a_step_key_of_the_wrong_type_names_the_step_and_the_key(
+        self, tmp_path: Path, step: str, message: str
+    ) -> None:
+        """A step key has the same hole the login block's own keys had."""
+        yaml_content = f"""
+site_name: mysite
+base_url: "https://example.com"
+login:
+  url: "/login"
+  steps:
+{step}commands:
+  search:
+    url: "/api/search"
+"""
+        yaml_file = tmp_path / "test.yaml"
+        yaml_file.write_text(yaml_content)
+        with pytest.raises(PluginError, match=re.escape(message)):
             parse_yaml_plugin(yaml_file)
 
 

@@ -51,6 +51,36 @@ class TestRenderMarkdown:
         assert text.index("## Summary") < text.index("## Login") < text.index("## Tokens")
         assert text.index("## Tokens") < text.index("## Cookies") < text.index("## Endpoints")
 
+    def test_a_redirecting_login_observation_shows_where_it_went(self, tmp_path: Path) -> None:
+        """The landing path is what a reader needs for success_url, so it is on the line."""
+        credential_post = {
+            "startedDateTime": "2026-09-10T10:00:00.000Z",
+            "time": 5,
+            "request": {
+                "method": "POST",
+                "url": "https://api.myshop.example.com/login",
+                "headers": [],
+                "cookies": [],
+                "queryString": [],
+                "postData": {
+                    "mimeType": "application/json",
+                    "text": json.dumps({"password": "x"}),
+                },
+            },
+            "response": {
+                "status": 302,
+                "statusText": "Found",
+                "headers": [{"name": "Location", "value": "/dashboard?welcome=1"}],
+                "cookies": [],
+                "content": {"mimeType": "text/html", "text": "", "size": 0},
+            },
+        }
+        text = render_markdown(
+            digest(DigestSource.from_har(_write_har(tmp_path, [credential_post])))
+        )
+        login_line = next(line for line in text.splitlines() if "credential_post" in line)
+        assert login_line.endswith("-> /dashboard")
+
     def test_json_endpoints_ordered_before_non_json(self, tmp_path: Path) -> None:
         entries = [
             _entry(

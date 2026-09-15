@@ -272,6 +272,38 @@ def validate_yaml_schema(data: dict[str, Any], filepath: Path) -> None:
                 )
 
 
+def _check_login_step_types(step_dict: dict[str, Any], *, filepath: Path, number: int) -> None:
+    """Settle one login step's key types here, where the file and the step are known.
+
+    LoginStep validates with ``.strip()`` and iterates ``fields``, so a number, a
+    list, or a mapping of the wrong shape escapes as an AttributeError naming
+    neither the file nor the key. The login block's own keys are checked the same
+    way a few lines below (tidy round, 2026-09-13).
+    """
+    where = f"Plugin '{filepath}': login step #{number}"
+    for key in ("submit", "wait_for"):
+        if key in step_dict and not isinstance(step_dict[key], str):
+            raise PluginError(f"{where}: '{key}' must be a string, got {step_dict[key]!r}.")
+    if "delay" in step_dict:
+        delay = step_dict["delay"]
+        if isinstance(delay, bool) or not isinstance(delay, (int, float)):
+            raise PluginError(f"{where}: 'delay' must be a number, got {delay!r}.")
+    if "fields" not in step_dict:
+        return
+    fields = step_dict["fields"]
+    if not isinstance(fields, dict):
+        raise PluginError(
+            f"{where}: 'fields' must be a mapping of credential name to CSS "
+            f"selector, got {fields!r}."
+        )
+    for name, selector in fields.items():
+        if not isinstance(name, str) or not isinstance(selector, str):
+            raise PluginError(
+                f"{where}: 'fields' must map credential names to CSS selectors as "
+                f"strings, got {name!r}: {selector!r}."
+            )
+
+
 def parse_yaml_plugin(
     filepath: Path,
 ) -> YAMLPluginBundle:
@@ -375,6 +407,7 @@ def parse_yaml_plugin(
                     f"Plugin '{filepath}': login step #{i + 1} must be a mapping, "
                     f"not {type(step_dict).__name__}."
                 )
+            _check_login_step_types(step_dict, filepath=filepath, number=i + 1)
             try:
                 step = LoginStep(
                     fields=step_dict.get("fields", {}),  # type: ignore[no-matching-overload]
@@ -393,14 +426,45 @@ def parse_yaml_plugin(
             raise PluginError(
                 f"Plugin '{filepath}': login.headless must be true or false, got {headless!r}."
             )
-        login_config = LoginConfig(
-            steps=steps,
-            url=login_block.get("url", ""),
-            wait_for=login_block.get("wait_for", ""),
-            failure=login_block.get("failure", ""),
-            success=login_block.get("success", ""),
-            headless=headless,
-        )
+
+        # The text keys have the same hole the numbers do: LoginConfig checks them
+        # with .strip(), which a number or a list answers with an AttributeError
+        # naming neither the file nor the key (polish round 1).
+        for key in ("url", "failure", "success", "success_url", "wait_for"):
+            if key in login_block and not isinstance(login_block[key], str):
+                raise PluginError(
+                    f"Plugin '{filepath}': login.{key} must be a string, got {login_block[key]!r}."
+                )
+
+        # timeout and settle are passed only when the file sets them, so their
+        # defaults live in LoginConfig alone and cannot drift from it here.
+        numbers: dict[str, float] = {}
+        for key in ("timeout", "settle"):
+            if key not in login_block:
+                continue
+            raw = login_block[key]
+            # YAML hands back whatever the document holds, and a comparison against
+            # a string inside LoginConfig raises a TypeError with no file name in
+            # it, so the type is settled here where the file is known.
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise PluginError(
+                    f"Plugin '{filepath}': login.{key} must be a number, got {raw!r}."
+                )
+            numbers[key] = float(raw)
+
+        try:
+            login_config = LoginConfig(
+                steps=steps,
+                url=login_block.get("url", ""),
+                wait_for=login_block.get("wait_for", ""),
+                failure=login_block.get("failure", ""),
+                success=login_block.get("success", ""),
+                success_url=login_block.get("success_url", ""),
+                headless=headless,
+                **numbers,
+            )
+        except ValueError as exc:
+            raise PluginError(f"Plugin '{filepath}': login block is invalid: {exc}") from exc
 
     # Parse token config
     tokens_block = data.get("tokens")

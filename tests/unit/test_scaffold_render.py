@@ -704,6 +704,112 @@ class TestPluginModuleWithLoginForm:
         assert "LoginConfig" in plugin_code
         assert "LoginStep" in plugin_code
 
+    @staticmethod
+    def _login_spec(*observations: LoginObservation) -> ScaffoldSpec:
+        return ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(_PASSWORD_LOGIN_FORM,), login=observations),
+        )
+
+    def test_success_url_comes_from_a_redirecting_credential_post(self) -> None:
+        """The POST that answers 302 is the only observation, and it carries the path."""
+        plugin_code = render(self._login_spec(_REDIRECTING_CREDENTIAL_POST))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        assert '        success_url="*/dashboard*",\n' in plugin_code
+        # The element check is still a human's job, and a GP-FILL literal would be a
+        # second configured signal the engine polls for and never finds.
+        assert "# GP-FILL: success, a CSS selector for an element" in plugin_code
+        assert "success=" not in plugin_code
+
+    def test_success_url_comes_from_the_end_of_a_redirect_chain(self) -> None:
+        """A post to /auth/callback to /dashboard prefills the last hop, not the first."""
+        post_to_callback = LoginObservation(
+            order=2,
+            method="POST",
+            url="https://api.myshop.example.com/login",
+            status=302,
+            kind="credential_post",
+            fields=("password", "username"),
+            redirect_to="/auth/callback",
+        )
+        plugin_code = render(self._login_spec(post_to_callback, _DASHBOARD_REDIRECT_OBSERVATION))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        assert '        success_url="*/dashboard*",\n' in plugin_code
+
+    def test_a_redirect_before_the_credential_post_is_not_the_landing_page(self) -> None:
+        """Only the span from the credential post onwards says where the login ended."""
+        pre_login_redirect = LoginObservation(
+            order=1,
+            method="GET",
+            url="https://api.myshop.example.com/account",
+            status=302,
+            kind="redirect",
+            fields=(),
+            redirect_to="/login",
+        )
+        plugin_code = render(self._login_spec(pre_login_redirect, _CREDENTIAL_POST_OBSERVATION))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        assert "# GP-FILL: success_url, a glob matched against the whole URL" in plugin_code
+        # A GP-FILL literal would be a configured signal the engine polls for.
+        assert "success_url=" not in plugin_code
+
+    def test_success_url_is_a_comment_when_no_redirect_was_observed(self) -> None:
+        """With nothing to copy from the run, success_url is left unset and explained."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(_PASSWORD_LOGIN_FORM,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "# GP-FILL: success_url, a glob matched against the whole URL" in plugin_code
+        # A GP-FILL literal would be a configured signal the engine polls for.
+        assert "success_url=" not in plugin_code
+
+    def test_a_glob_metacharacter_in_the_observed_path_is_escaped(self) -> None:
+        """A path the site spells with brackets must not become glob syntax."""
+        from fnmatch import fnmatchcase
+
+        bracketed_redirect = LoginObservation(
+            order=3,
+            method="GET",
+            url="https://app.myshop.example.com/auth/callback",
+            status=302,
+            kind="redirect",
+            fields=(),
+            redirect_to="/a[b]/c",
+        )
+        plugin_code = render(self._login_spec(_CREDENTIAL_POST_OBSERVATION, bracketed_redirect))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        assert '        success_url="*/a[[]b]/c*",\n' in plugin_code
+        assert fnmatchcase("https://app.myshop.example.com/a[b]/c?x=1", "*/a[[]b]/c*")
+
+    def test_a_redirect_to_the_site_root_yields_no_pattern(self) -> None:
+        """``*/*`` would match the login page too, so the root is left to be filled in."""
+        root_redirect = LoginObservation(
+            order=3,
+            method="GET",
+            url="https://app.myshop.example.com/auth/callback",
+            status=302,
+            kind="redirect",
+            fields=(),
+            redirect_to="/",
+        )
+        plugin_code = render(self._login_spec(_CREDENTIAL_POST_OBSERVATION, root_redirect))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        assert "# GP-FILL: success_url, a glob matched against the whole URL" in plugin_code
+        # A GP-FILL literal would be a configured signal the engine polls for.
+        assert "success_url=" not in plugin_code
+
     def test_no_form_found_emits_commented_block_with_observations(self) -> None:
         observation = LoginObservation(
             order=1,
@@ -1094,6 +1200,28 @@ _CREDENTIAL_POST_OBSERVATION = LoginObservation(
     fields=("password", "username"),
 )
 
+_DASHBOARD_REDIRECT_OBSERVATION = LoginObservation(
+    order=3,
+    method="GET",
+    url="https://app.myshop.example.com/auth/callback",
+    status=302,
+    kind="redirect",
+    fields=(),
+    redirect_to="/dashboard",
+)
+
+# The common shape: the credential post itself answers 302, so the digest records
+# no separate redirect observation and the post carries the landing path.
+_REDIRECTING_CREDENTIAL_POST = LoginObservation(
+    order=2,
+    method="POST",
+    url="https://api.myshop.example.com/login",
+    status=302,
+    kind="credential_post",
+    fields=("password", "username"),
+    redirect_to="/dashboard",
+)
+
 
 # /account/login is one member of a family the digest collapsed, so the
 # endpoint's final template no longer spells the login path.
@@ -1419,6 +1547,33 @@ class TestRenderedTreeIsRuffClean:
         files = render(spec)
         assert "Token.from_" in files["src/graftpunk_myshop/plugin.py"]
         tree = self._write_tree(tmp_path / "login_token", files)
+        self._assert_tree_is_clean(tree)
+
+    def test_long_redirect_path_project(self, tmp_path: Path) -> None:
+        # A redirect path past the generated width: success_url is a captured site
+        # fact like the selectors, so it wraps the same way rather than overflowing.
+        long_redirect = LoginObservation(
+            order=3,
+            method="GET",
+            url="https://app.myshop.example.com/auth/callback",
+            status=302,
+            kind="redirect",
+            fields=(),
+            redirect_to="/" + "/".join(["account-overview"] * 6),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(
+                login_forms=(_PASSWORD_LOGIN_FORM,),
+                login=(_CREDENTIAL_POST_OBSERVATION, long_redirect),
+            ),
+        )
+        files = render(spec)
+        assert "success_url=" in files["src/graftpunk_myshop/plugin.py"]
+        tree = self._write_tree(tmp_path / "long_redirect", files)
         self._assert_tree_is_clean(tree)
 
     def test_long_selectors_and_header_name_project(self, tmp_path: Path) -> None:

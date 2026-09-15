@@ -544,6 +544,20 @@ class LoginConfig:
             window) so a human can solve a CAPTCHA or 2FA prompt; set True for
             sites that need neither. ``gp <plugin> login --headless`` overrides
             this per invocation.
+        success_url: Glob matched against the whole browser URL after the last
+            step, e.g. ``https://app.example.com/*`` or ``*/dashboard*``. It
+            counts only once the URL differs from the one the last submit was
+            clicked from. Empty string (default) leaves the URL out of the
+            success signal. With both this and ``success`` set, both have to hold.
+        timeout: Seconds to wait after the last step for the configured success
+            or failure signal. Defaults to 30.0. Raise it for a login that
+            finishes through a slow identity-provider redirect chain. It is the
+            budget for the whole post-submit wait, not for the poll alone: the
+            wait for the document to finish loading spends what the poll left,
+            so a signal that arrives at the deadline is followed by no readiness
+            wait at all.
+        settle: Seconds to wait after the success signal, once the document has
+            finished loading, before cookies are captured. Defaults to 1.0.
     """
 
     steps: tuple[LoginStep, ...] | list[LoginStep]  # Always tuple after __post_init__
@@ -552,6 +566,11 @@ class LoginConfig:
     success: str = ""
     wait_for: str = ""
     headless: bool = False
+    # The post-submit wait's own fields come last, after headless, so adding them
+    # left every existing positional argument where it was (tidy round, 2026-09-13).
+    success_url: str = ""
+    timeout: float = 30.0
+    settle: float = 1.0
 
     def __post_init__(self) -> None:
         # Convert list to tuple for immutability and validate each element
@@ -577,6 +596,21 @@ class LoginConfig:
         # Validate success non-whitespace when non-empty
         if self.success and not self.success.strip():
             raise ValueError("LoginConfig.success must not be whitespace")
+        # Validate success_url non-whitespace when non-empty
+        if self.success_url and not self.success_url.strip():
+            raise ValueError("LoginConfig.success_url must not be whitespace")
+        # Validate the post-submit poll budget and the settle pause. The type check
+        # comes first: a string reached the comparison below as a raw TypeError from
+        # the interpreter, and True passed it as the number 1, which is a one second
+        # budget nobody asked for (polish round 2).
+        for name in ("timeout", "settle"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"LoginConfig.{name} must be a number, got {type(value).__name__}")
+        if self.timeout <= 0:
+            raise ValueError(f"LoginConfig.timeout must be positive, got {self.timeout}")
+        if self.settle < 0:
+            raise ValueError(f"LoginConfig.settle must be non-negative, got {self.settle}")
         if not isinstance(self.headless, bool):
             raise TypeError(
                 f"LoginConfig.headless must be bool, got {type(self.headless).__name__}"

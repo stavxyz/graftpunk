@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from graftpunk.har.documents import (
     LoginForm,
@@ -250,6 +250,11 @@ class LoginObservation:
     kind: ObservationKind
     # field NAMES on a credential post, or cookie names on a set_cookie; never values
     fields: tuple[str, ...]
+    # where a 3xx sent the client: the target's path, query stripped, on any
+    # observation whose own status is a redirect. A credential post that answers
+    # 302 carries its landing path here and is never a separate observation, so
+    # this is the only record of where a login ended up.
+    redirect_to: str = ""
 
 
 @dataclass(frozen=True)
@@ -523,6 +528,22 @@ def _response_cookie_names(entry: HAREntry) -> list[str]:
         if name not in names:
             names.append(name)
     return names
+
+
+def _redirect_target_path(entry: HAREntry) -> str:
+    """The path a 3xx response sent the client to, query stripped.
+
+    Empty for any response that is not a redirect, and for a redirect whose
+    recorder kept neither ``redirectURL`` nor a ``Location`` header. A relative
+    target is resolved against the request's own URL, so a ``Location: /dashboard``
+    and an absolute one both reduce to ``/dashboard``.
+    """
+    if entry.response.status not in _REDIRECT_STATUSES:
+        return ""
+    target = entry.response.redirect_url
+    if not target:
+        return ""
+    return urlparse(urljoin(entry.request.url, target)).path
 
 
 def _has_password_field(entry: HAREntry) -> list[str]:
@@ -816,6 +837,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                     status=entry.response.status,
                     kind=kind,
                     fields=fields,
+                    redirect_to=_redirect_target_path(entry),
                 )
             )
             if kind == "credential_post":

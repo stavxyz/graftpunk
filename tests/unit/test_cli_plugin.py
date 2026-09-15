@@ -37,7 +37,10 @@ class TestLoginConfig:
         assert cfg.url == ""
         assert cfg.failure == ""
         assert cfg.success == ""
+        assert cfg.success_url == ""
         assert cfg.wait_for == ""
+        assert cfg.timeout == 30.0
+        assert cfg.settle == 1.0
 
     def test_create_with_all_fields(self) -> None:
         """LoginConfig can be created with all optional fields set."""
@@ -126,6 +129,72 @@ class TestLoginConfig:
         step = LoginStep(fields={"u": "#u"})
         with pytest.raises(TypeError, match=r"steps\[1\] must be LoginStep, got str"):
             LoginConfig(steps=[step, "invalid"])  # type: ignore[list-item]
+
+
+class TestLoginConfigSettlePoll:
+    """The three fields that bound the post-submit wait."""
+
+    def test_success_url_is_kept_as_written(self) -> None:
+        """A success_url glob survives construction unchanged."""
+        step = LoginStep(fields={"u": "#u"})
+        cfg = LoginConfig(steps=[step], success_url="*/dashboard*")
+        assert cfg.success_url == "*/dashboard*"
+
+    def test_whitespace_success_url_raises(self) -> None:
+        """LoginConfig rejects whitespace-only success_url."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(ValueError, match="success_url must not be whitespace"):
+            LoginConfig(steps=[step], success_url="   ")
+
+    def test_timeout_and_settle_are_kept_as_written(self) -> None:
+        """Explicit timeout and settle values survive construction."""
+        step = LoginStep(fields={"u": "#u"})
+        cfg = LoginConfig(steps=[step], timeout=45.0, settle=0.0)
+        assert cfg.timeout == 45.0
+        assert cfg.settle == 0.0
+
+    def test_zero_timeout_raises(self) -> None:
+        """A zero timeout leaves no room for a single poll tick."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            LoginConfig(steps=[step], timeout=0)
+
+    def test_negative_timeout_raises(self) -> None:
+        """LoginConfig rejects a negative timeout."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            LoginConfig(steps=[step], timeout=-1.0)
+
+    def test_negative_settle_raises(self) -> None:
+        """LoginConfig rejects a negative settle."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(ValueError, match="settle must be non-negative"):
+            LoginConfig(steps=[step], settle=-0.5)
+
+    def test_boolean_timeout_raises(self) -> None:
+        """True is an int in Python, so it passed as a one second budget."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(TypeError, match="timeout must be a number, got bool"):
+            LoginConfig(steps=[step], timeout=True)
+
+    def test_string_timeout_raises_with_the_field_named(self) -> None:
+        """A string used to reach the comparison and raise a bare TypeError."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(TypeError, match="timeout must be a number, got str"):
+            LoginConfig(steps=[step], timeout="30")
+
+    def test_boolean_settle_raises(self) -> None:
+        """The settle pause takes the same check as the budget."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(TypeError, match="settle must be a number, got bool"):
+            LoginConfig(steps=[step], settle=False)
+
+    def test_an_integer_timeout_is_accepted(self) -> None:
+        """A whole number of seconds is a number: only bool is carved out of int."""
+        step = LoginStep(fields={"u": "#u"})
+        cfg = LoginConfig(steps=[step], timeout=45, settle=0)
+        assert cfg.timeout == 45
+        assert cfg.settle == 0
 
 
 class TestLoginStep:

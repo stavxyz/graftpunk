@@ -112,8 +112,10 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
     if d.login:
         for obs in d.login:
             field_note = f" ({', '.join(obs.fields)})" if obs.fields else ""
+            redirect_note = f" -> {obs.redirect_to}" if obs.redirect_to else ""
             lines.append(
-                f"{obs.order}. {obs.method} {obs.url} [{obs.status}] {obs.kind}{field_note}"
+                f"{obs.order}. {obs.method} {obs.url} [{obs.status}] "
+                f"{obs.kind}{field_note}{redirect_note}"
             )
     else:
         lines.append("(no login observations)")

@@ -8,6 +8,7 @@ for everything the scaffold emits").
 
 from __future__ import annotations
 
+import glob
 import json
 import keyword
 import re
@@ -206,16 +207,50 @@ def _param_identifier(site_name: str, seen: set[str]) -> str:
     return _deduped(base, seen)
 
 
-def _redirect_target_after_credential_post(d: RunDigest) -> str | None:
-    """The path a credential post redirected to, if any: a candidate for `success`."""
+def _login_landing_path(d: RunDigest) -> str:
+    """The path the login's redirect chain came to rest on, or an empty string.
+
+    Every observation whose own status is a 3xx carries the path it sent the
+    client to, the credential post included: a login whose POST answers 302 is
+    one observation, not a post plus a redirect, so reading a later observation's
+    own URL would name the page that redirected rather than the landing page
+    (controller finding, fix round 1). The last target in the window is the end of
+    the chain.
+
+    "The window" is the digest's: it classifies the entries after a credential post
+    up to its own ``_LOGIN_WINDOW`` limit, so a login whose redirect chain runs
+    longer than that ends with an intermediate hop as its last classified target,
+    and the pattern rendered from it names a page the login passes through rather
+    than the one it rests on. No captured login has come close to that limit, so
+    this is stated rather than bounded (polish round 2).
+    """
+    landing = ""
     posted = False
     for observation in d.login:
         if observation.kind == "credential_post":
             posted = True
-            continue
-        if posted and observation.kind == "redirect":
-            return urlparse(observation.url).path
-    return None
+        if posted and observation.redirect_to:
+            landing = observation.redirect_to
+    return landing
+
+
+def _success_url_pattern(redirect_path: str) -> str | None:
+    """*redirect_path* as a ``success_url`` glob, or None when it says nothing useful.
+
+    The login engine matches ``success_url`` against the whole URL, so the observed
+    path gets a leading wildcard for the host (the login often lands on a different
+    one than it started from) and a trailing wildcard for the query the site adds.
+    A redirect to the site root is every URL's prefix and would match the login page
+    itself, so it yields no pattern and the caller emits a comment instead.
+
+    The path itself is escaped: ``[``, ``*`` and ``?`` are glob syntax, and a site
+    that puts one in a path (``/a[b]/c``) would otherwise widen or break the pattern
+    the engine matches with (polish round 1). ``glob.escape`` leaves a bare ``]``
+    alone and needs to: once the ``[`` before it is escaped, nothing opens a bracket
+    expression for it to close, so it is a literal already (polish round 2).
+    """
+    path = redirect_path.rstrip("/")
+    return f"*{glob.escape(path)}*" if path.startswith("/") else None
 
 
 def _password_login_form(d: RunDigest) -> LoginForm | None:
@@ -247,16 +282,43 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])'
         )
         return lines
-    hint = _redirect_target_after_credential_post(spec.digest)
+    landing_path = _login_landing_path(spec.digest)
+    pattern = _success_url_pattern(landing_path) if landing_path else None
     lines = ["    login_config = LoginConfig(", "        steps=["]
     lines.extend(_render_login_step(form, indent=len(_L3)))
     lines.append("        ],")
     lines.extend(_literal_lines(form.action, indent=len(_L2), prefix="url="))
     lines.append('        failure="GP-FILL: text on the page indicating login failure",')
-    if hint:
-        text = f"candidate success redirect target, from the run: {hint}"
-        lines.extend(_wrapped_comment_lines(text, indent=len(_L2)))
-    lines.append('        success="GP-FILL: CSS selector for login success",')
+    # Nothing observed says which element marks the landing page, and a GP-FILL
+    # literal here would be a configured signal: the engine would poll for that
+    # selector until the timeout and fail naming it, which is what round 1 removed
+    # for success_url. The hint is a comment and the field stays unset, so a fresh
+    # scaffold whose success_url was pre-filled has exactly one signal, which is
+    # the intended state (polish round 2).
+    lines.extend(
+        _wrapped_comment_lines(
+            "GP-FILL: success, a CSS selector for an element that is on the page this "
+            "login lands on and not on the login form itself.",
+            indent=len(_L2),
+        )
+    )
+    if pattern:
+        # What the run saw the credential post redirect to: the engine polls for
+        # this URL after submit, and an element check is still worth filling in.
+        lines.extend(_literal_lines(pattern, indent=len(_L2), prefix="success_url="))
+    else:
+        # No landing URL was observed, so there is nothing to copy. A GP-FILL string
+        # here would be a configured signal: the engine would poll for that literal
+        # until the timeout and fail naming it, even for an author who filled in
+        # success instead. The hint is a comment, and the field stays unset.
+        lines.extend(
+            _wrapped_comment_lines(
+                "GP-FILL: success_url, a glob matched against the whole URL this login "
+                "lands on, e.g. */dashboard*. This run observed no redirect after the "
+                "credential post.",
+                indent=len(_L2),
+            )
+        )
     lines.append("    )")
     return lines
 
