@@ -551,7 +551,11 @@ class LoginConfig:
             success signal. With both this and ``success`` set, both have to hold.
         timeout: Seconds to wait after the last step for the configured success
             or failure signal. Defaults to 30.0. Raise it for a login that
-            finishes through a slow identity-provider redirect chain.
+            finishes through a slow identity-provider redirect chain. It is the
+            budget for the whole post-submit wait, not for the poll alone: the
+            wait for the document to finish loading spends what the poll left,
+            so a signal that arrives at the deadline is followed by no readiness
+            wait at all.
         settle: Seconds to wait after the success signal, once the document has
             finished loading, before cookies are captured. Defaults to 1.0.
     """
