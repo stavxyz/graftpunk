@@ -2097,13 +2097,14 @@ class TestCheckLoginResult:
         """
         from graftpunk.plugins.login_settle import _check_login_result
 
-        with patch("graftpunk.plugins.login_settle._warn_no_login_validation") as mock_warn:
+        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
             _check_login_result(
                 page_text="<html>Something</html>",
                 failure_text="",
                 site_name="testplugin",
             )
-            mock_warn.assert_called_once_with("testplugin")
+
+        assert _warning_kwargs(mock_log, "login_no_validation_configured")["plugin"] == "testplugin"
 
     def test_failure_text_not_in_page_stands_without_the_warning(self) -> None:
         """A configured failure text that never showed is a login that stands.
@@ -2113,15 +2114,15 @@ class TestCheckLoginResult:
         """
         from graftpunk.plugins.login_settle import _check_login_result
 
-        with patch("graftpunk.plugins.login_settle._warn_no_login_validation") as mock_warn:
+        with patch("graftpunk.plugins.login_settle.LOG") as mock_log:
             result = _check_login_result(
                 page_text="<html>Welcome</html>",
                 failure_text="Bad login.",
                 site_name="test",
             )
+
         assert result is True
-        # No warning because failure_text is set (non-empty)
-        mock_warn.assert_not_called()
+        assert mock_log.warning.call_args_list == []
 
 
 class TestLoginTickVerdict:
