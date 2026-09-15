@@ -118,14 +118,14 @@ async def setup_observe_session(
                 f"[dim]Use --no-session to proceed without cookies.[/dim]"
             )
             return None
-        except Exception as exc:  # noqa: BLE001 — CLI boundary: user-friendly error
+        except Exception as exc:  # broad by design: CLI boundary, user-friendly error
             LOG.error("session_load_failed", session_name=session_name, error=str(exc))
             console.print(
                 f"[red]Failed to load session '{escape(session_name)}': {escape(str(exc))}[/red]"
             )
             return None
     else:
-        console.print("[dim]No session — opening browser without cookies[/dim]")
+        console.print("[dim]No session: opening the browser without cookies[/dim]")
 
     # Arm the termination handlers on this thread: signal dispositions can
     # only be set from the main thread, so arming inside the sweep's worker
@@ -173,7 +173,7 @@ async def setup_observe_session(
         else:
             raise RuntimeError(
                 f"Failed to connect to browser after {max_attempts} attempts. "
-                "Chrome may be slow to start — try again, or check for stale "
+                "Chrome may be slow to start; try again, or check for stale "
                 "Chrome processes."
             ) from last_exc
     finally:
@@ -193,7 +193,7 @@ async def setup_observe_session(
             console.print(msg)
 
         run_id = make_run_id()
-        # The run dir is keyed by the slugified session name — the same
+        # The run dir is keyed by the slugified session name, the same
         # mapping every observe reader applies (#151).
         storage = ObserveStorage(OBSERVE_BASE_DIR, session_dirname(namespace), run_id)
         bodies_dir = storage.run_dir / "bodies"
