@@ -13,6 +13,7 @@ from graftpunk import chrome_orphans, signals
 from graftpunk.browser_launch import (
     CleanupReport,
     arm_termination_handlers,
+    browser_connect_failure_message,
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import ChromeProcess
@@ -203,3 +204,11 @@ class TestEveryLaunchSiteIsWiredUp:
         }
 
         assert {name: gaps for name, gaps in missing.items() if gaps} == {}
+
+
+class TestTheConnectFailureMessage:
+    def test_it_names_the_attempt_count_and_the_remedy(self) -> None:
+        assert browser_connect_failure_message(3) == (
+            "Failed to connect to browser after 3 attempts. Chrome may be "
+            "slow to start; try again, or check for stale Chrome processes."
+        )

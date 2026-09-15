@@ -35,7 +35,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from graftpunk.backends.base import Cookie
-from graftpunk.browser_launch import arm_termination_handlers, prepare_browser_launch
+from graftpunk.browser_launch import (
+    arm_termination_handlers,
+    browser_connect_failure_message,
+    prepare_browser_launch,
+)
 from graftpunk.chrome_orphans import (
     base_browser_args,
     remove_browser_temp_profile,
@@ -387,11 +391,7 @@ class NoDriverBackend:
                     )
                     await asyncio.sleep(1.0 * attempt)
 
-        raise BrowserError(
-            f"Failed to connect to browser after {_max_attempts} attempts. "
-            "Chrome may be slow to start — try again, or check for stale "
-            "Chrome processes."
-        ) from last_exc
+        raise BrowserError(browser_connect_failure_message(_max_attempts)) from last_exc
 
     def start(
         self,

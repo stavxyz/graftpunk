@@ -140,3 +140,16 @@ def prepare_browser_launch() -> CleanupReport:
         profiles_removed = []
 
     return CleanupReport(reaped=reaped, profiles_removed=profiles_removed)
+
+
+def browser_connect_failure_message(attempts: int) -> str:
+    """The message all three launch sites raise after exhausting connect retries.
+
+    One wording, hoisted here so the backend, ``gp observe`` and browser token
+    extraction cannot drift from each other (#96).
+    """
+    return (
+        f"Failed to connect to browser after {attempts} attempts. "
+        "Chrome may be slow to start; try again, or check for stale "
+        "Chrome processes."
+    )
