@@ -175,7 +175,7 @@ def _make_request(
     session: requests.Session
     resolved: str | None = None
     if no_session:
-        gp_console.info("No session — making unauthenticated request")
+        gp_console.info("No session: making an unauthenticated request")
         session = requests.Session()
     else:
         resolved = session_name or resolve_session(None)
