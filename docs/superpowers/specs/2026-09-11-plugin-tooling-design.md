@@ -27,8 +27,8 @@ Building a new graftpunk plugin today starts from a recording and ends with a
 hand-built project, and the two starting points the framework offers for the
 middle are stale:
 
-- `gp import-har` (`src/graftpunk/cli/main.py:794` (`@app.command("import-har")`))
-  generates handlers whose first parameter is a raw `requests.Session`
+- `gp import-har` (removed by part B, #199; was `@app.command("import-har")` in
+  `src/graftpunk/cli/main.py`) generates handlers whose first parameter is a raw `requests.Session`
   (`src/graftpunk/har/generator.py:91` (`    params = ["self", "session: requests.Session"]`)),
   a shape the framework has not accepted since command handlers started
   receiving a `CommandContext`. It surfaces a detected login only as a comment
