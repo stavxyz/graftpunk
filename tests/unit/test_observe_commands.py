@@ -42,6 +42,13 @@ def _git(argv: list[str], cwd: Path) -> None:
     subprocess.run(argv, cwd=cwd, check=True)  # noqa: S603
 
 
+@pytest.fixture(autouse=True)
+def _no_session_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep GRAFTPUNK_SESSION unset, so resolve_session(None) stays harmless
+    for every test in this module, as _build_app's comment assumes."""
+    monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+
+
 def _build_app() -> typer.Typer:
     # Mounts the real observe sub-app, so observe_callback runs before every
     # command here; these tests rely on resolve_session(None) being harmless.

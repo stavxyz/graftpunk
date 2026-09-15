@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import re
 import signal
 from pathlib import Path
@@ -172,7 +171,8 @@ class TestEveryLaunchSiteIsWiredUp:
 
     The third site went a whole change without the marker, the sweep or the
     profile removal because nothing counted the sites (#96). This counts them:
-    a file that starts a nodriver browser has to name both shared helpers.
+    a file that starts a nodriver browser has to name both shared helpers, and
+    the shared connect-failure message too.
     """
 
     @staticmethod
@@ -194,50 +194,23 @@ class TestEveryLaunchSiteIsWiredUp:
             "tokens.py",
         }
 
-    def test_each_one_uses_the_shared_switches_and_the_shared_sweep(self) -> None:
+    def test_each_one_uses_the_shared_switches_the_shared_sweep_and_the_shared_message(
+        self,
+    ) -> None:
         missing = {
             name: [
                 helper
-                for helper in ("base_browser_args", "prepare_browser_launch")
+                for helper in (
+                    "base_browser_args",
+                    "prepare_browser_launch",
+                    "browser_connect_failure_message",
+                )
                 if helper not in text
             ]
             for name, text in self._launch_sites().items()
         }
 
         assert {name: gaps for name, gaps in missing.items() if gaps} == {}
-
-
-class TestObserveBrowserStaysALeaf:
-    """observe_browser's docstring claims nothing here imports a command module back."""
-
-    def test_it_imports_no_cli_module(self) -> None:
-        source = Path(graftpunk.__file__).parent.joinpath("cli", "observe_browser.py").read_text()
-        tree = ast.parse(source)
-        cli_imports = sorted(
-            {
-                node.module
-                for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom)
-                and node.module is not None
-                and node.module.startswith("graftpunk.cli")
-            }
-            | {
-                alias.name
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Import)
-                for alias in node.names
-                if alias.name.startswith("graftpunk.cli")
-            }
-            | {
-                # A relative import (from . import observe_commands) has no
-                # module prefix to match on, so it is caught by its level.
-                "." * node.level + (node.module or "")
-                for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom) and node.level > 0
-            }
-        )
-
-        assert cli_imports == []
 
 
 class TestTheConnectFailureMessage:

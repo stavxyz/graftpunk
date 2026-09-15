@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from graftpunk.cli.main import app
 from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
+from graftpunk.plugins import infer_site_name
 
 runner = CliRunner()
 
@@ -1204,12 +1205,16 @@ class TestObserveGoCommand:
     def test_with_no_session_flag_proceeds(self):
         """observe go --no-session should infer namespace from URL and proceed."""
         with (
-            patch("graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock),
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as mock_go,
             patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(app, ["observe", "--no-session", "go", "https://example.com"])
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+        assert mock_go.call_args.args[0] == infer_site_name("https://example.com")
+        assert mock_go.call_args.kwargs["session_name"] is None
 
     def test_session_and_no_session_conflict(self):
         """observe --session X --no-session should fail."""
@@ -1258,7 +1263,12 @@ class TestObserveGoCommand:
     def test_observe_go_no_session_interactive_flag(self):
         """observe go --no-session --interactive should proceed without cookies."""
         with (
-            patch("graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock),
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
+            ) as mock_interactive,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as mock_go,
             patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
             patch("graftpunk.logging.suppress_asyncio_noise"),
         ):
@@ -1268,6 +1278,8 @@ class TestObserveGoCommand:
             )
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+        mock_interactive.assert_called_once()
+        mock_go.assert_not_called()
 
 
 class TestResolveObserveContext:

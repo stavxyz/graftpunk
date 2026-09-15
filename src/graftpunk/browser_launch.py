@@ -146,7 +146,7 @@ def browser_connect_failure_message(attempts: int) -> str:
     """The message all three launch sites raise after exhausting connect retries.
 
     One wording, hoisted here so the backend, ``gp observe`` and browser token
-    extraction cannot drift from each other (#96).
+    extraction cannot drift from each other (polish round 1, 2026-09-15).
     """
     return (
         f"Failed to connect to browser after {attempts} attempts. "

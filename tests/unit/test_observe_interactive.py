@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from graftpunk.cli.main import app
+from graftpunk.plugins import infer_site_name
 
 runner = CliRunner()
 
@@ -49,7 +50,9 @@ class TestObserveInteractiveCommandRegistered:
     def test_observe_interactive_with_no_session_flag_proceeds(self) -> None:
         """observe interactive --no-session should infer namespace and proceed."""
         with (
-            patch("graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock),
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
+            ) as mock_interactive,
             patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
@@ -57,6 +60,8 @@ class TestObserveInteractiveCommandRegistered:
             )
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+        assert mock_interactive.call_args.args[0] == infer_site_name("https://example.com")
+        assert mock_interactive.call_args.kwargs["session_name"] is None
 
 
 class TestRunObserveInteractiveSavesOnStop:
