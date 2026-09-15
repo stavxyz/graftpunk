@@ -216,6 +216,13 @@ def _login_landing_path(d: RunDigest) -> str:
     own URL would name the page that redirected rather than the landing page
     (controller finding, fix round 1). The last target in the window is the end of
     the chain.
+
+    "The window" is the digest's: it classifies the entries after a credential post
+    up to its own ``_LOGIN_WINDOW`` limit, so a login whose redirect chain runs
+    longer than that ends with an intermediate hop as its last classified target,
+    and the pattern rendered from it names a page the login passes through rather
+    than the one it rests on. No captured login has come close to that limit, so
+    this is stated rather than bounded (polish round 2).
     """
     landing = ""
     posted = False
@@ -280,7 +287,19 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     lines.append("        ],")
     lines.extend(_literal_lines(form.action, indent=len(_L2), prefix="url="))
     lines.append('        failure="GP-FILL: text on the page indicating login failure",')
-    lines.append('        success="GP-FILL: CSS selector for login success",')
+    # Nothing observed says which element marks the landing page, and a GP-FILL
+    # literal here would be a configured signal: the engine would poll for that
+    # selector until the timeout and fail naming it, which is what round 1 removed
+    # for success_url. The hint is a comment and the field stays unset, so a fresh
+    # scaffold whose success_url was pre-filled has exactly one signal, which is
+    # the intended state (polish round 2).
+    lines.extend(
+        _wrapped_comment_lines(
+            "GP-FILL: success, a CSS selector for an element that is on the page this "
+            "login lands on and not on the login form itself.",
+            indent=len(_L2),
+        )
+    )
     if pattern:
         # What the run saw the credential post redirect to: the engine polls for
         # this URL after submit, and an element check is still worth filling in.

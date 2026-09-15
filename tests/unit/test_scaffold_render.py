@@ -720,8 +720,10 @@ class TestPluginModuleWithLoginForm:
             "src/graftpunk_myshop/plugin.py"
         ]
         assert '        success_url="*/dashboard*",\n' in plugin_code
-        # The element check is still a human's job.
-        assert 'success="GP-FILL: CSS selector for login success",' in plugin_code
+        # The element check is still a human's job, and a GP-FILL literal would be a
+        # second configured signal the engine polls for and never finds.
+        assert "# GP-FILL: success, a CSS selector for an element" in plugin_code
+        assert "success=" not in plugin_code
 
     def test_success_url_comes_from_the_end_of_a_redirect_chain(self) -> None:
         """A post to /auth/callback to /dashboard prefills the last hop, not the first."""
