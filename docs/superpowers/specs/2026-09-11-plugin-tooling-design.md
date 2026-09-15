@@ -547,6 +547,13 @@ in `main.py` for this part, to keep its diff to the new commands now that the
 > have a named owner (part C), for the shared run resolution to move now,
 > and for the precedent of `register()` to be named correctly.
 
+> **Design note (2026-09-15):** `observe clean` does not resolve a run; the
+> sentence overstated the helper's reach. It removes a session directory (or
+> the whole base directory) and never looked a run up. `gp observe show` is
+> the only other caller of `resolve_run` in the CLI. Part C also retired
+> `register()`: `observe_commands.py` now owns `observe_app` and attaches all
+> seven commands at import time, and `main.py` just adds the sub-app.
+
 ### `gp observe fixtures <session> [<run>] --match "<METHOD> <template>" [--out DIR] [--limit N] [--allow-tracked]`
 
 Writes captured response bodies exactly as recorded, for the developer or the
