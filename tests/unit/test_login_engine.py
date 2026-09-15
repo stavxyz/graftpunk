@@ -1485,6 +1485,46 @@ class TestNodriverLoginSignalPoll:
         assert tab.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
 
     @pytest.mark.asyncio
+    async def test_settle_pauses_between_the_ready_document_and_the_cookies(self) -> None:
+        """The settle pause is the last thing before the capture, at the length configured."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class SettlingPlugin(SitePlugin):
+            site_name = "ndsettle"
+            session_name = "ndsettle"
+            help_text = "ND Settle"
+            base_url = "https://example.com"
+            backend = "nodriver"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                success=".dashboard",
+                timeout=5.0,
+                settle=0.05,
+            )
+
+        tab = _ScriptedNodriverTab(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _nodriver_session_for(tab)
+
+        async def _record_sleep(seconds: float) -> None:
+            tab.events.append(f"sleep:{seconds}")
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch(
+                "graftpunk.plugins.login_settle.asyncio.sleep",
+                new=AsyncMock(side_effect=_record_sleep),
+            ),
+        ):
+            result = await generate_login_method(SettlingPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        last_ready = len(tab.events) - 1 - tab.events[::-1].index("document_ready_read")
+        cookies = tab.events.index("cookies")
+        assert tab.events[last_ready + 1 : cookies] == ["sleep:0.05"]
+
+    @pytest.mark.asyncio
     async def test_a_rate_limit_body_at_the_landing_url_is_not_a_success(self) -> None:
         """The limiter answers the post-submit redirect, so its 429 body is at the glob.
 
@@ -3024,6 +3064,42 @@ class TestSeleniumLoginSignalPoll:
 
         assert result is True
         assert driver.events == ["tick:0", "document_ready_read", "document_ready_read", "cookies"]
+
+    def test_settle_pauses_between_the_ready_document_and_the_cookies(self) -> None:
+        """The selenium twin: the configured pause is the last thing before the capture."""
+        from graftpunk.plugins.login_engine import generate_login_method
+
+        class SettlingSeleniumPlugin(SitePlugin):
+            site_name = "selsettle"
+            session_name = "selsettle"
+            help_text = "Sel Settle"
+            base_url = "https://example.com"
+            backend = "selenium"
+            login_config = LoginConfig(
+                steps=[LoginStep(fields={"username": "#user"}, submit="#submit")],
+                url="/login",
+                success=".dashboard",
+                timeout=5.0,
+                settle=0.05,
+            )
+
+        driver = _ScriptedSeleniumDriver(success_selector=".dashboard", success_from=0)
+        mock_bs, _instance = _selenium_session_for(driver)
+
+        with (
+            patch("graftpunk.BrowserSession", mock_bs),
+            patch("graftpunk.plugins.cli_plugin.cache_session"),
+            patch(
+                "graftpunk.plugins.login_settle.time.sleep",
+                side_effect=lambda seconds: driver.events.append(f"sleep:{seconds}"),
+            ),
+        ):
+            result = generate_login_method(SettlingSeleniumPlugin())(_LOGIN_CREDENTIALS)
+
+        assert result is True
+        last_ready = len(driver.events) - 1 - driver.events[::-1].index("document_ready_read")
+        cookies = driver.events.index("cookies")
+        assert driver.events[last_ready + 1 : cookies] == ["sleep:0.05"]
 
     def test_a_malformed_success_selector_ends_the_login_naming_it(self) -> None:
         """A selector the browser rejects cannot come good on a later tick.
