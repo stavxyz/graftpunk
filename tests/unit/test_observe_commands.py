@@ -43,6 +43,8 @@ def _git(argv: list[str], cwd: Path) -> None:
 
 
 def _build_app() -> typer.Typer:
+    # Mounts the real observe sub-app, so observe_callback runs before every
+    # command here; these tests rely on resolve_session(None) being harmless.
     app = typer.Typer()
     app.add_typer(observe_app)
     return app

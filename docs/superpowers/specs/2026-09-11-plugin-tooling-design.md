@@ -515,7 +515,7 @@ legible from the import paths:
 ### `gp observe digest <session> [<run>] [--json] [--all-hosts] [--limit N] [--output PATH]` and `gp observe digest --har PATH`
 
 Resolves the run like `gp observe show`
-(`src/graftpunk/cli/main.py:289` (`@observe_app.command("show")`)): session
+(`src/graftpunk/cli/observe_commands.py:388` (`@observe_app.command("show")`)): session
 through `session_dirname`
 (`src/graftpunk/observe/storage.py:20` (`def session_dirname(session_name: str) -> str:`)),
 run defaulting to the newest, then builds `DigestSource.from_run_dir` and

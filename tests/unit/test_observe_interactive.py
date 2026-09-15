@@ -297,7 +297,7 @@ class TestRunObserveInteractiveSavesOnStop:
 class TestObserveGoInteractiveFlag:
     """Test that observe go --interactive delegates to run_observe_interactive."""
 
-    def test_interactive_flag_callsrun_observe_interactive(self) -> None:
+    def test_interactive_flag_calls_run_observe_interactive(self) -> None:
         """Test that observe go --interactive calls run_observe_interactive."""
         with (
             patch(
@@ -325,7 +325,7 @@ class TestObserveGoInteractiveFlag:
         # asyncio.run should have been called with the interactive coroutine
         mock_asyncio.run.assert_called_once()
 
-    def test_without_interactive_flag_callsrun_observe_go(self) -> None:
+    def test_without_interactive_flag_calls_run_observe_go(self) -> None:
         """Test that observe go without --interactive calls run_observe_go."""
         with (
             patch(
