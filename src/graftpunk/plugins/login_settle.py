@@ -468,7 +468,9 @@ class _ReadWindow:
     the URL (a ``success_url`` with no failure text to look for) raises no error when
     the browser is gone, because the URL read answers an unreachable tab with an empty
     string, so "no error" is not proof of life; a URL, an element probe, or a document
-    is (tidy round, 2026-09-13).
+    is (tidy round, 2026-09-13). A URL counts even on a tick that went on to fail, so
+    a browser that answers where it is while its documents fail is reported as a
+    missing signal and not as a dead browser (polish round 2).
     """
 
     def __init__(self) -> None:
@@ -482,6 +484,13 @@ class _ReadWindow:
     def record(self, reading: _TickReading) -> None:
         """Fold one tick's reading into the window."""
         self.url = reading.url
+        if reading.url:
+            # A URL is the browser answering, whatever the rest of the tick did. A
+            # tick that read one and then failed its document has told the wait the
+            # browser is there, which is the question `answered` asks, so the wait
+            # reports the signal it never saw rather than blaming the browser
+            # (polish round 2).
+            self.answered = True
         if reading.error:
             self.error = reading.error
             return

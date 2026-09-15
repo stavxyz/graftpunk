@@ -1076,8 +1076,12 @@ class TestNodriverLoginSignalPoll:
         assert all(call[1]["exc_type"] == "RuntimeError" for call in read_failures)
 
     @pytest.mark.asyncio
-    async def test_a_poll_that_never_reads_the_page_blames_the_page(self) -> None:
-        """Every tick raised, so the signal was never looked at: say that instead."""
+    async def test_a_poll_whose_pages_fail_while_the_url_answers_names_the_signal(self) -> None:
+        """A browser that says where it is has answered, so the missing signal is the news.
+
+        Only a browser that answered nothing at all gets the page read blamed for
+        the login (the dead-tab tests below).
+        """
         from graftpunk.plugins.login_engine import generate_login_method
 
         class UnreadablePlugin(SitePlugin):
@@ -1111,11 +1115,13 @@ class TestNodriverLoginSignalPoll:
 
         assert result is False
         assert "cookies" not in tab.events
-        warning = _warning_kwargs(mock_log, "login_page_unreadable")
-        assert "Could not find node" in warning["error"]
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success element '.dashboard'"
         assert warning["url"] == "https://app.example.com/login"
-        timeouts = [c for c in mock_log.warning.call_args_list if c[0][0] == "login_signal_timeout"]
-        assert timeouts == []
+        unreadable = [
+            c for c in mock_log.warning.call_args_list if c[0][0] == "login_page_unreadable"
+        ]
+        assert unreadable == []
 
     @pytest.mark.asyncio
     async def test_failure_text_that_appears_late_ends_the_poll(self) -> None:
@@ -2695,8 +2701,8 @@ class TestSeleniumLoginSignalPoll:
         assert "tick:1:unreadable" in driver.events
         assert "cookies" in driver.events
 
-    def test_a_poll_that_never_reads_the_page_blames_the_page(self) -> None:
-        """The selenium twin: a driver whose every read raises never saw the signal."""
+    def test_a_poll_whose_pages_fail_while_the_url_answers_names_the_signal(self) -> None:
+        """The selenium twin: a driver that answers a URL has answered."""
         from graftpunk.plugins.login_engine import generate_login_method
 
         class UnreadableSeleniumPlugin(SitePlugin):
@@ -2730,11 +2736,13 @@ class TestSeleniumLoginSignalPoll:
 
         assert result is False
         assert "cookies" not in driver.events
-        warning = _warning_kwargs(mock_log, "login_page_unreadable")
-        assert "no such window" in warning["error"]
+        warning = _warning_kwargs(mock_log, "login_signal_timeout")
+        assert warning["missing"] == "success element '.dashboard'"
         assert warning["url"] == "https://app.example.com/login"
-        timeouts = [c for c in mock_log.warning.call_args_list if c[0][0] == "login_signal_timeout"]
-        assert timeouts == []
+        unreadable = [
+            c for c in mock_log.warning.call_args_list if c[0][0] == "login_page_unreadable"
+        ]
+        assert unreadable == []
 
     def test_failure_text_that_appears_late_ends_the_poll(self) -> None:
         """Failure text arriving after a few ticks fails the login there and then."""
