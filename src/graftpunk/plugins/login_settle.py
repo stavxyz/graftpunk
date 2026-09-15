@@ -262,6 +262,7 @@ def _warn_login_signal_timeout(
     pre_submit_url: str,
     success_found: bool | None,
     last_error: str,
+    page_read: bool,
 ) -> None:
     """Warn that the configured success signal never appeared before the deadline.
 
@@ -290,6 +291,15 @@ def _warn_login_signal_timeout(
             "LoginConfig.timeout when the site redirects slowly, or correct the "
             "signal to match the page the login actually lands on."
         )
+        if not page_read:
+            # The browser answered with a URL but never handed back a document,
+            # so the element was never probed: say so, or the warning blames a
+            # signal nothing ever looked at (polish round 2).
+            fields["error"] = last_error
+            hint += (
+                " No page could be read during the wait, so the success element "
+                "was never looked for; the last read error is attached."
+            )
     else:
         missing_text = "nothing: the deciding tick could not be read"
         fields["error"] = last_error
@@ -759,6 +769,7 @@ async def _wait_for_login_signal_nodriver(
         pre_submit_url=pre_submit_url,
         success_found=last.success_found,
         last_error=last.error,
+        page_read=last.page_read,
     )
     return False
 
@@ -826,6 +837,7 @@ def _wait_for_login_signal_selenium(
         pre_submit_url=pre_submit_url,
         success_found=last.success_found,
         last_error=last.error,
+        page_read=last.page_read,
     )
     return False
 

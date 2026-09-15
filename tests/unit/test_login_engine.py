@@ -1117,6 +1117,7 @@ class TestNodriverLoginSignalPoll:
         assert "cookies" not in tab.events
         warning = _warning_kwargs(mock_log, "login_signal_timeout")
         assert warning["missing"] == "success element '.dashboard'"
+        assert warning["error"], "the read error is attached when no page was ever read"
         assert warning["url"] == "https://app.example.com/login"
         unreadable = [
             c for c in mock_log.warning.call_args_list if c[0][0] == "login_page_unreadable"
@@ -2779,6 +2780,7 @@ class TestSeleniumLoginSignalPoll:
         assert "cookies" not in driver.events
         warning = _warning_kwargs(mock_log, "login_signal_timeout")
         assert warning["missing"] == "success element '.dashboard'"
+        assert warning["error"], "the read error is attached when no page was ever read"
         assert warning["url"] == "https://app.example.com/login"
         unreadable = [
             c for c in mock_log.warning.call_args_list if c[0][0] == "login_page_unreadable"
