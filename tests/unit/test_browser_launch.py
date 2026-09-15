@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import signal
 from pathlib import Path
@@ -204,6 +205,32 @@ class TestEveryLaunchSiteIsWiredUp:
         }
 
         assert {name: gaps for name, gaps in missing.items() if gaps} == {}
+
+
+class TestObserveBrowserStaysALeaf:
+    """observe_browser's docstring claims nothing here imports a command module back."""
+
+    def test_it_imports_no_cli_module(self) -> None:
+        source = Path(graftpunk.__file__).parent.joinpath("cli", "observe_browser.py").read_text()
+        tree = ast.parse(source)
+        cli_imports = sorted(
+            {
+                node.module
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom)
+                and node.module is not None
+                and node.module.startswith("graftpunk.cli")
+            }
+            | {
+                alias.name
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Import)
+                for alias in node.names
+                if alias.name.startswith("graftpunk.cli")
+            }
+        )
+
+        assert cli_imports == []
 
 
 class TestTheConnectFailureMessage:
