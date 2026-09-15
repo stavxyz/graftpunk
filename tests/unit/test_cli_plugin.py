@@ -171,6 +171,31 @@ class TestLoginConfigSettlePoll:
         with pytest.raises(ValueError, match="settle must be non-negative"):
             LoginConfig(steps=[step], settle=-0.5)
 
+    def test_boolean_timeout_raises(self) -> None:
+        """True is an int in Python, so it passed as a one second budget."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(TypeError, match="timeout must be a number, got bool"):
+            LoginConfig(steps=[step], timeout=True)
+
+    def test_string_timeout_raises_with_the_field_named(self) -> None:
+        """A string used to reach the comparison and raise a bare TypeError."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(TypeError, match="timeout must be a number, got str"):
+            LoginConfig(steps=[step], timeout="30")
+
+    def test_boolean_settle_raises(self) -> None:
+        """The settle pause takes the same check as the budget."""
+        step = LoginStep(fields={"u": "#u"})
+        with pytest.raises(TypeError, match="settle must be a number, got bool"):
+            LoginConfig(steps=[step], settle=False)
+
+    def test_an_integer_timeout_is_accepted(self) -> None:
+        """A whole number of seconds is a number: only bool is carved out of int."""
+        step = LoginStep(fields={"u": "#u"})
+        cfg = LoginConfig(steps=[step], timeout=45, settle=0)
+        assert cfg.timeout == 45
+        assert cfg.settle == 0
+
 
 class TestLoginStep:
     """Tests for the LoginStep frozen dataclass."""

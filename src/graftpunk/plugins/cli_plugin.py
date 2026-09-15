@@ -599,7 +599,14 @@ class LoginConfig:
         # Validate success_url non-whitespace when non-empty
         if self.success_url and not self.success_url.strip():
             raise ValueError("LoginConfig.success_url must not be whitespace")
-        # Validate the post-submit poll budget and the settle pause
+        # Validate the post-submit poll budget and the settle pause. The type check
+        # comes first: a string reached the comparison below as a raw TypeError from
+        # the interpreter, and True passed it as the number 1, which is a one second
+        # budget nobody asked for (polish round 2).
+        for name in ("timeout", "settle"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"LoginConfig.{name} must be a number, got {type(value).__name__}")
         if self.timeout <= 0:
             raise ValueError(f"LoginConfig.timeout must be positive, got {self.timeout}")
         if self.settle < 0:
