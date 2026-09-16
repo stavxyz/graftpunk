@@ -13,6 +13,7 @@ from graftpunk import chrome_orphans, signals
 from graftpunk.browser_launch import (
     CleanupReport,
     arm_termination_handlers,
+    browser_connect_failure_message,
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import ChromeProcess
@@ -170,7 +171,8 @@ class TestEveryLaunchSiteIsWiredUp:
 
     The third site went a whole change without the marker, the sweep or the
     profile removal because nothing counted the sites (#96). This counts them:
-    a file that starts a nodriver browser has to name both shared helpers.
+    a file that starts a nodriver browser has to name both shared helpers, and
+    the shared connect-failure message too.
     """
 
     @staticmethod
@@ -188,18 +190,32 @@ class TestEveryLaunchSiteIsWiredUp:
     def test_the_sites_are_the_three_this_suite_knows_about(self) -> None:
         assert set(self._launch_sites()) == {
             "backends/nodriver.py",
-            "cli/main.py",
+            "cli/observe_browser.py",
             "tokens.py",
         }
 
-    def test_each_one_uses_the_shared_switches_and_the_shared_sweep(self) -> None:
+    def test_each_one_uses_the_shared_switches_the_shared_sweep_and_the_shared_message(
+        self,
+    ) -> None:
         missing = {
             name: [
                 helper
-                for helper in ("base_browser_args", "prepare_browser_launch")
+                for helper in (
+                    "base_browser_args",
+                    "prepare_browser_launch",
+                    "browser_connect_failure_message",
+                )
                 if helper not in text
             ]
             for name, text in self._launch_sites().items()
         }
 
         assert {name: gaps for name, gaps in missing.items() if gaps} == {}
+
+
+class TestTheConnectFailureMessage:
+    def test_it_names_the_attempt_count_and_the_remedy(self) -> None:
+        assert browser_connect_failure_message(3) == (
+            "Failed to connect to browser after 3 attempts. Chrome may be "
+            "slow to start; try again, or check for stale Chrome processes."
+        )

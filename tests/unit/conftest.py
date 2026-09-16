@@ -19,6 +19,7 @@ _CONSOLE_LOCATIONS = (
     ("graftpunk.cli.keepalive_commands", "console"),
     ("graftpunk.cli.plugin_runtime", "_format_console"),
     ("graftpunk.cli.observe_commands", "console"),
+    ("graftpunk.cli.observe_browser", "console"),
     ("graftpunk.cli.scaffold_commands", "console"),
 )
 

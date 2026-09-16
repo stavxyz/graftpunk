@@ -15,6 +15,7 @@ import requests
 from graftpunk.browser_launch import (
     NodriverBrowserHandle,
     arm_termination_handlers,
+    browser_connect_failure_message,
     prepare_browser_launch,
 )
 from graftpunk.chrome_orphans import base_browser_args, remove_browser_temp_profile
@@ -78,11 +79,7 @@ async def nodriver_start(*, headless: bool = True) -> Any:
                 )
                 await asyncio.sleep(1.0 * attempt)
 
-    raise RuntimeError(
-        f"Failed to connect to browser after {max_attempts} attempts. "
-        "Chrome may be slow to start — try again, or check for stale "
-        "Chrome processes."
-    ) from last_exc
+    raise RuntimeError(browser_connect_failure_message(max_attempts)) from last_exc
 
 
 def _deregister_nodriver_browser(browser: Any) -> None:

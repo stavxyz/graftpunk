@@ -27,8 +27,8 @@ Building a new graftpunk plugin today starts from a recording and ends with a
 hand-built project, and the two starting points the framework offers for the
 middle are stale:
 
-- `gp import-har` (`src/graftpunk/cli/main.py:794` (`@app.command("import-har")`))
-  generates handlers whose first parameter is a raw `requests.Session`
+- `gp import-har` (removed by part B, #199; was `@app.command("import-har")` in
+  `src/graftpunk/cli/main.py`) generates handlers whose first parameter is a raw `requests.Session`
   (`src/graftpunk/har/generator.py:91` (`    params = ["self", "session: requests.Session"]`)),
   a shape the framework has not accepted since command handlers started
   receiving a `CommandContext`. It surfaces a detected login only as a comment
@@ -515,7 +515,7 @@ legible from the import paths:
 ### `gp observe digest <session> [<run>] [--json] [--all-hosts] [--limit N] [--output PATH]` and `gp observe digest --har PATH`
 
 Resolves the run like `gp observe show`
-(`src/graftpunk/cli/main.py:289` (`@observe_app.command("show")`)): session
+(`src/graftpunk/cli/observe_commands.py:388` (`@observe_app.command("show")`)): session
 through `session_dirname`
 (`src/graftpunk/observe/storage.py:20` (`def session_dirname(session_name: str) -> str:`)),
 run defaulting to the newest, then builds `DigestSource.from_run_dir` and
@@ -546,6 +546,15 @@ in `main.py` for this part, to keep its diff to the new commands now that the
 > New code goes in its own module; the rerun asked for the interim split to
 > have a named owner (part C), for the shared run resolution to move now,
 > and for the precedent of `register()` to be named correctly.
+
+> **Design note (2026-09-15):** `observe clean` does not resolve a run; the
+> sentence overstated the helper's reach. It removes a session directory (or
+> the whole base directory) and never looked a run up. `resolve_run`'s callers
+> are `gp observe show`, `gp observe digest`, `gp observe fixtures`, and
+> `gp plugin new --from-run` (`src/graftpunk/cli/scaffold_commands.py`), the
+> last of which is why the helper keeps its `base_dir` default. Part C also retired
+> `register()`: `observe_commands.py` now owns `observe_app` and attaches all
+> seven commands at import time, and `main.py` just adds the sub-app.
 
 ### `gp observe fixtures <session> [<run>] --match "<METHOD> <template>" [--out DIR] [--limit N] [--allow-tracked]`
 

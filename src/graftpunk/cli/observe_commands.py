@@ -1,15 +1,17 @@
-"""``gp observe digest`` and ``gp observe fixtures``, and the shared run resolver.
+"""The ``gp observe`` sub-app: every command, and the shared run resolver.
 
-Takes ownership of ``resolve_run``, which ``gp observe show`` also uses. The
-five existing observe commands stay in ``main.py`` for this part, so its
-diff is limited to the new commands (plugin tooling spec, 2026-09-11, design
-note); a later part moves them here.
+Owns ``observe_app`` and all seven commands (``list``, ``show``, ``clean``,
+``go``, ``interactive``, ``digest``, ``fixtures``). ``main.py`` imports the
+sub-app and attaches it; the browser machinery the capture commands drive
+lives in the leaf module ``observe_browser``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import json as jsonlib
+import shutil
 from pathlib import Path
 from typing import Annotated, NoReturn
 from urllib.parse import urlparse
@@ -17,31 +19,44 @@ from urllib.parse import urlparse
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.panel import Panel
+from rich.table import Table
 
+from graftpunk.cli.observe_browser import run_observe_go, run_observe_interactive
+from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored, find_repo_root, is_tracked
 from graftpunk.har.digest import DigestSource, body_params, digest
 from graftpunk.har.naming import capture_filename
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.paths import template_path
 from graftpunk.har.report import DEFAULT_ENDPOINT_LIMIT, render_json, render_markdown
+from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import session_dirname
+from graftpunk.plugins import infer_site_name
+from graftpunk.session_context import resolve_session
 
 console = Console()
+LOG = get_logger(__name__)
 
 _DEFAULT_FIXTURE_LIMIT = 5
 _HTTP_METHODS = frozenset(
     {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
 )
 
+observe_app = typer.Typer(
+    name="observe",
+    help="View and manage observability data (HAR, screenshots, logs).",
+)
+
 
 def resolve_run(session_name: str, run_id: str | None, *, base_dir: Path | None = None) -> Path:
     """The run directory (session[, run]) means: the newest run when *run_id* is omitted.
 
-    ``base_dir`` defaults to :data:`graftpunk.observe.OBSERVE_BASE_DIR`;
-    callers that need a patchable module-level default (``gp observe show``
-    in ``main.py``) pass their own binding through explicitly instead of
-    relying on this module's.
+    ``base_dir`` defaults to this module's ``OBSERVE_BASE_DIR`` binding, which
+    every production caller relies on; the keyword exists for tests that
+    resolve against a temporary tree (its four callers are in
+    ``tests/unit/test_observe_commands.py``).
 
     Raises:
         typer.Exit: No runs exist for the session, or the named run is missing.
@@ -284,7 +299,272 @@ def fixtures_cmd(
         console.print("[yellow]No entries matched --match.[/yellow]")
 
 
-def register(observe_app: typer.Typer) -> None:
-    """Attach ``digest`` and ``fixtures`` to *observe_app*."""
-    observe_app.command("digest")(digest_cmd)
-    observe_app.command("fixtures")(fixtures_cmd)
+# Attached here, above the decorated commands below, because Typer lists
+# commands in attachment order and these two led `gp observe --help` when
+# main.py called register() before defining the rest.
+observe_app.command("digest")(digest_cmd)
+observe_app.command("fixtures")(fixtures_cmd)
+
+
+@observe_app.callback(invoke_without_command=True)
+def observe_callback(
+    ctx: typer.Context,
+    session: Annotated[
+        str | None,
+        typer.Option("--session", "-s", help="Session name to scope observe commands to"),
+    ] = None,
+    no_session: Annotated[
+        bool,
+        typer.Option("--no-session", help="Run without loading a cached session"),
+    ] = False,
+) -> None:
+    """View and manage observability data (HAR, screenshots, logs)."""
+    if no_session and session:
+        console.print("[red]Cannot use --session and --no-session together.[/red]")
+        raise typer.Exit(1)
+
+    obj = ctx.ensure_object(dict)
+    obj["observe_no_session"] = no_session
+
+    if no_session:
+        obj["observe_session"] = None
+    else:
+        resolved = resolve_session(session)
+        if resolved and session:
+            resolved = resolve_session_name_or_exit(resolved)
+        obj["observe_session"] = resolved
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
+        raise typer.Exit(0)
+
+
+@observe_app.command("list")
+def observe_list(ctx: typer.Context) -> None:
+    """List all observability runs."""
+    if not OBSERVE_BASE_DIR.exists():
+        console.print("[dim]No observe data found.[/dim]")
+        return
+
+    observe_session = ctx.ensure_object(dict).get("observe_session")
+
+    runs: list[tuple[str, str]] = []
+    if observe_session:
+        # The writer (opt-in login capture) slugifies the session name into
+        # its run-dir name (e.g. "myshop@alice" -> "myshop-alice"); the
+        # lookup must apply the identical transformation or labelled runs
+        # are undiscoverable (#151).
+        session_dir = OBSERVE_BASE_DIR / session_dirname(observe_session)
+        if session_dir.is_dir():
+            for run_dir in sorted(session_dir.iterdir()):
+                if run_dir.is_dir():
+                    runs.append((session_dir.name, run_dir.name))
+    else:
+        for session_dir in sorted(OBSERVE_BASE_DIR.iterdir()):
+            if not session_dir.is_dir():
+                continue
+            for run_dir in sorted(session_dir.iterdir()):
+                if run_dir.is_dir():
+                    runs.append((session_dir.name, run_dir.name))
+
+    if not runs:
+        console.print("[dim]No observe runs found.[/dim]")
+        return
+
+    table = Table(
+        title="Observe Runs",
+        title_style="bold",
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    table.add_column("Session", style="cyan")
+    table.add_column("Run ID", style="white")
+
+    for session_name, run_id in runs:
+        table.add_row(escape(session_name), escape(run_id))
+
+    console.print(table)
+    console.print(f"\n[dim]{len(runs)} run(s)[/dim]")
+
+
+@observe_app.command("show")
+def observe_show(
+    ctx: typer.Context,
+    session_name: Annotated[
+        str | None,
+        typer.Argument(help="Session name to show runs for", metavar="SESSION"),
+    ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Argument(help="Specific run ID (default: latest)", metavar="RUN_ID"),
+    ] = None,
+) -> None:
+    """Show details of an observability run."""
+    if session_name is None:
+        session_name = ctx.ensure_object(dict).get("observe_session")
+    if session_name is None:
+        console.print("[red]Session name required. Use --session or pass SESSION argument.[/red]")
+        raise typer.Exit(1)
+    run_dir = resolve_run(session_name, run_id)
+
+    info = f"[bold]{escape(session_name)}[/bold] / {escape(run_dir.name)}\n"
+    info += f"[dim]Path:[/dim] {escape(str(run_dir))}\n"
+
+    # List files in the run directory
+    files = sorted(run_dir.iterdir())
+    file_list = []
+    for f in files:
+        if f.is_dir():
+            subfiles = list(f.iterdir())
+            file_list.append(f"  {escape(f.name)}/ ({len(subfiles)} files)")
+        else:
+            size = f.stat().st_size
+            file_list.append(f"  {escape(f.name)} ({size} bytes)")
+
+    if file_list:
+        info += "[dim]Contents:[/dim]\n" + "\n".join(file_list)
+
+    console.print(Panel(info.strip(), border_style="cyan"))
+
+
+@observe_app.command("clean")
+def observe_clean(
+    ctx: typer.Context,
+    session_name: Annotated[
+        str | None,
+        typer.Argument(help="Session to clean (omit to clean all)", metavar="SESSION"),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Skip confirmation prompt"),
+    ] = False,
+) -> None:
+    """Remove observability data."""
+    if session_name is None:
+        session_name = ctx.ensure_object(dict).get("observe_session")
+    if not OBSERVE_BASE_DIR.exists():
+        console.print("[dim]No observe data to clean.[/dim]")
+        return
+
+    if session_name:
+        # See observe_list: the lookup dir must match the writer's slugified name.
+        target = OBSERVE_BASE_DIR / session_dirname(session_name)
+        if not target.exists():
+            console.print(f"[dim]No data for session '{escape(session_name)}'[/dim]")
+            return
+        if not force:
+            confirm = typer.confirm(f"Remove observe data for '{session_name}'?")
+            if not confirm:
+                console.print("[dim]Cancelled[/dim]")
+                return
+        shutil.rmtree(target)
+        console.print(f"[green]Removed observe data for '{escape(session_name)}'[/green]")
+    else:
+        if not force:
+            confirm = typer.confirm("Remove all observe data?")
+            if not confirm:
+                console.print("[dim]Cancelled[/dim]")
+                return
+        shutil.rmtree(OBSERVE_BASE_DIR)
+        console.print("[green]Removed all observe data[/green]")
+
+
+def _resolve_observe_context(ctx: typer.Context, url: str) -> tuple[str, str | None]:
+    """Resolve observe namespace and session name from context.
+
+    Returns:
+        Tuple of (namespace, session_name). ``session_name`` is ``None``
+        when ``--no-session`` is set or no session is available.
+
+    Raises:
+        typer.Exit: If no session is specified and ``--no-session`` is not set.
+    """
+    obj = ctx.ensure_object(dict)
+    no_session = obj.get("observe_no_session", False)
+    session_name: str | None = None if no_session else obj.get("observe_session")
+
+    if session_name:
+        return session_name, session_name
+
+    if no_session:
+        inferred = infer_site_name(url)
+        if not inferred:
+            LOG.warning("namespace_inference_failed", url=url, fallback="unknown")
+            inferred = "unknown"
+        return inferred, None
+
+    # No session and no --no-session: require a session (original behavior)
+    console.print(
+        "[red]No session specified. Use --session, GRAFTPUNK_SESSION, "
+        "gp session use, or --no-session.[/red]"
+    )
+    raise typer.Exit(1)
+
+
+@observe_app.command("go")
+def observe_go(
+    ctx: typer.Context,
+    url: Annotated[
+        str,
+        typer.Argument(help="The URL to navigate to and capture"),
+    ],
+    wait: Annotated[
+        float,
+        typer.Option("--wait", "-w", help="Seconds to wait after page load"),
+    ] = 3.0,
+    max_body_size: Annotated[
+        int,
+        typer.Option("--max-body-size", help="Max response body size in bytes (default 5MB)"),
+    ] = 5 * 1024 * 1024,
+    interactive: Annotated[
+        bool,
+        typer.Option("--interactive", "-i", help="Keep browser open for manual exploration"),
+    ] = False,
+) -> None:
+    """Open a URL in a browser and capture observability data.
+
+    Opens a nodriver browser, injects cached session cookies (if available),
+    navigates to the URL, and captures screenshots, page source, and HAR data.
+
+    Use --no-session to open the browser without cookies.
+    """
+    namespace, session_name = _resolve_observe_context(ctx, url)
+
+    if interactive:
+        from graftpunk.logging import suppress_asyncio_noise
+
+        with suppress_asyncio_noise():
+            asyncio.run(
+                run_observe_interactive(namespace, url, max_body_size, session_name=session_name)
+            )
+        return
+
+    asyncio.run(run_observe_go(namespace, url, wait, max_body_size, session_name=session_name))
+
+
+@observe_app.command("interactive")
+def observe_interactive(
+    ctx: typer.Context,
+    url: Annotated[
+        str,
+        typer.Argument(help="The starting URL to navigate to"),
+    ],
+    max_body_size: Annotated[
+        int,
+        typer.Option("--max-body-size", help="Max response body size in bytes (default 5MB)"),
+    ] = 5 * 1024 * 1024,
+) -> None:
+    """Record an interactive browser session into a HAR file.
+
+    Opens a browser, navigates to the URL, and records all network traffic
+    while you click around. Press Ctrl+C to stop and save.
+
+    Use --no-session to open the browser without cookies.
+    """
+    namespace, session_name = _resolve_observe_context(ctx, url)
+
+    from graftpunk.logging import suppress_asyncio_noise
+
+    with suppress_asyncio_noise():
+        asyncio.run(
+            run_observe_interactive(namespace, url, max_body_size, session_name=session_name)
+        )

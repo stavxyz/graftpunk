@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 from graftpunk.cli.observe_commands import (  # noqa: F401
     digest_cmd,
     fixtures_cmd,
-    register,
+    observe_app,
     resolve_run,
 )
 
@@ -42,10 +42,17 @@ def _git(argv: list[str], cwd: Path) -> None:
     subprocess.run(argv, cwd=cwd, check=True)  # noqa: S603
 
 
+@pytest.fixture(autouse=True)
+def _no_session_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep GRAFTPUNK_SESSION unset, so resolve_session(None) stays harmless
+    for every test in this module, as _build_app's comment assumes."""
+    monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+
+
 def _build_app() -> typer.Typer:
+    # Mounts the real observe sub-app, so observe_callback runs before every
+    # command here; these tests rely on resolve_session(None) being harmless.
     app = typer.Typer()
-    observe_app = typer.Typer(name="observe")
-    register(observe_app)
     app.add_typer(observe_app)
     return app
 
@@ -147,7 +154,7 @@ class TestDigestCommand:
         # usage never hits this: main.py's bootstrap always calls
         # configure_logging() before a command runs. This test bypasses
         # that bootstrap (it builds the Typer app directly from
-        # observe_commands.register), so it restores the same guarantee
+        # observe_commands.observe_app), so it restores the same guarantee
         # explicitly. Deviation from the brief, which asserted on
         # result.output without this.
         from graftpunk.logging import configure_logging

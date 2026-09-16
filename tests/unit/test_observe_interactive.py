@@ -1,4 +1,4 @@
-"""Tests for the observe interactive command and _run_observe_interactive function."""
+"""Tests for the observe interactive command and run_observe_interactive function."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from graftpunk.cli.main import app
+from graftpunk.plugins import infer_site_name
 
 runner = CliRunner()
 
@@ -49,24 +50,28 @@ class TestObserveInteractiveCommandRegistered:
     def test_observe_interactive_with_no_session_flag_proceeds(self) -> None:
         """observe interactive --no-session should infer namespace and proceed."""
         with (
-            patch("graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock),
-            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
+            ) as mock_interactive,
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
                 app, ["observe", "--no-session", "interactive", "https://example.com"]
             )
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+        assert mock_interactive.call_args.args[0] == infer_site_name("https://example.com")
+        assert mock_interactive.call_args.kwargs["session_name"] is None
 
 
 class TestRunObserveInteractiveSavesOnStop:
-    """Test the async _run_observe_interactive function end-to-end."""
+    """Test the async run_observe_interactive function end-to-end."""
 
     @pytest.mark.asyncio
     async def test_saves_har_screenshot_and_logs_on_stop(self, tmp_path: Path) -> None:
-        """Test that _run_observe_interactive saves HAR, screenshot, page source,
+        """Test that run_observe_interactive saves HAR, screenshot, page source,
         and console logs when the stop event fires."""
-        from graftpunk.cli.main import _run_observe_interactive
+        from graftpunk.cli.observe_browser import run_observe_interactive
 
         # Mock session
         mock_session = MagicMock()
@@ -110,7 +115,7 @@ class TestRunObserveInteractiveSavesOnStop:
         mock_loop.add_signal_handler = MagicMock()
         mock_loop.remove_signal_handler = MagicMock()
 
-        # Mock nodriver module for the lazy import inside _run_observe_interactive
+        # Mock nodriver module for the lazy import inside run_observe_interactive
         mock_nodriver = MagicMock()
         mock_nodriver.start = AsyncMock(return_value=mock_browser)
 
@@ -136,7 +141,7 @@ class TestRunObserveInteractiveSavesOnStop:
             patch("asyncio.get_running_loop", return_value=mock_loop),
             patch("asyncio.Event", return_value=already_set_event),
         ):
-            await _run_observe_interactive(
+            await run_observe_interactive(
                 "test-session",
                 "https://example.com",
                 5 * 1024 * 1024,
@@ -183,7 +188,7 @@ class TestRunObserveInteractiveSavesOnStop:
         """Session not found raises typer.Exit(1) — browser is never started."""
         import typer
 
-        from graftpunk.cli.main import _run_observe_interactive
+        from graftpunk.cli.observe_browser import run_observe_interactive
         from graftpunk.exceptions import SessionNotFoundError
 
         mock_nodriver = MagicMock()
@@ -197,7 +202,7 @@ class TestRunObserveInteractiveSavesOnStop:
             ) as mock_load,
             pytest.raises(typer.Exit) as exc_info,
         ):
-            await _run_observe_interactive(
+            await run_observe_interactive(
                 "nonexistent-session",
                 "https://example.com",
                 5 * 1024 * 1024,
@@ -215,7 +220,7 @@ class TestRunObserveInteractiveSavesOnStop:
         """Session expired raises typer.Exit(1) with --no-session hint."""
         import typer
 
-        from graftpunk.cli.main import _run_observe_interactive
+        from graftpunk.cli.observe_browser import run_observe_interactive
         from graftpunk.exceptions import SessionExpiredError
 
         mock_nodriver = MagicMock()
@@ -229,7 +234,7 @@ class TestRunObserveInteractiveSavesOnStop:
             ),
             pytest.raises(typer.Exit) as exc_info,
         ):
-            await _run_observe_interactive(
+            await run_observe_interactive(
                 "expired-session",
                 "https://example.com",
                 5 * 1024 * 1024,
@@ -242,7 +247,7 @@ class TestRunObserveInteractiveSavesOnStop:
     @pytest.mark.asyncio
     async def test_no_session_name_opens_browser_without_cookies(self) -> None:
         """When session_name=None, browser opens without cookies."""
-        from graftpunk.cli.main import _run_observe_interactive
+        from graftpunk.cli.observe_browser import run_observe_interactive
 
         mock_tab = MagicMock()
         mock_browser = MagicMock()
@@ -280,7 +285,7 @@ class TestRunObserveInteractiveSavesOnStop:
             patch("asyncio.get_running_loop", return_value=mock_loop),
             patch("asyncio.Event", return_value=already_set_event),
         ):
-            await _run_observe_interactive(
+            await run_observe_interactive(
                 "example",
                 "https://example.com",
                 5 * 1024 * 1024,
@@ -295,17 +300,22 @@ class TestRunObserveInteractiveSavesOnStop:
 
 
 class TestObserveGoInteractiveFlag:
-    """Test that observe go --interactive delegates to _run_observe_interactive."""
+    """Test that observe go --interactive delegates to run_observe_interactive."""
 
     def test_interactive_flag_calls_run_observe_interactive(self) -> None:
-        """Test that observe go --interactive calls _run_observe_interactive."""
+        """Test that observe go --interactive calls run_observe_interactive."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
             patch(
-                "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="mysite"
+            ),
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as _mock_go,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
             ) as _mock_interactive,
             patch("graftpunk.logging.suppress_asyncio_noise"),
-            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
                 app,
@@ -320,18 +330,25 @@ class TestObserveGoInteractiveFlag:
             )
 
         assert result.exit_code == 0
-        # asyncio.run should have been called with the interactive coroutine
+        # asyncio.run should have been called with the interactive coroutine,
+        # not the go one
         mock_asyncio.run.assert_called_once()
+        _mock_interactive.assert_called_once()
+        _mock_go.assert_not_called()
 
     def test_without_interactive_flag_calls_run_observe_go(self) -> None:
-        """Test that observe go without --interactive calls _run_observe_go."""
+        """Test that observe go without --interactive calls run_observe_go."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
-            patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock) as _mock_go,
             patch(
-                "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="mysite"
+            ),
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as _mock_go,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
             ) as _mock_interactive,
-            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
                 app,
@@ -345,18 +362,25 @@ class TestObserveGoInteractiveFlag:
             )
 
         assert result.exit_code == 0
-        # asyncio.run should have been called with the go coroutine (not interactive)
+        # asyncio.run should have been called with the go coroutine, not interactive
         mock_asyncio.run.assert_called_once()
+        _mock_go.assert_called_once()
+        _mock_interactive.assert_not_called()
 
     def test_interactive_short_flag(self) -> None:
-        """Test that observe go -i also delegates to _run_observe_interactive."""
+        """Test that observe go -i also delegates to run_observe_interactive."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
             patch(
-                "graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="mysite"
+            ),
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
             ) as _mock_interactive,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as _mock_go,
             patch("graftpunk.logging.suppress_asyncio_noise"),
-            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
                 app,
@@ -372,6 +396,8 @@ class TestObserveGoInteractiveFlag:
 
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+        _mock_interactive.assert_called_once()
+        _mock_go.assert_not_called()
 
     def test_observe_go_interactive_flag_in_help(self) -> None:
         """Test that --interactive/-i flag appears in observe go --help."""
@@ -388,7 +414,7 @@ class TestSetupObserveSessionSigintIsolation:
     async def test_sigint_ignored_during_nodriver_start(self, tmp_path: Path) -> None:
         """SIGINT handler is set to SIG_IGN while nodriver.start() executes,
         then restored to the original handler afterward."""
-        from graftpunk.cli.main import _setup_observe_session
+        from graftpunk.cli.observe_browser import setup_observe_session
 
         captured_handler: list[signal.Handlers] = []
 
@@ -424,7 +450,7 @@ class TestSetupObserveSessionSigintIsolation:
                 return_value=mock_storage,
             ),
         ):
-            result = await _setup_observe_session(
+            result = await setup_observe_session(
                 "test-ns",
                 "https://example.com",
                 5 * 1024 * 1024,
@@ -436,7 +462,7 @@ class TestSetupObserveSessionSigintIsolation:
         assert len(captured_handler) == 1, "nodriver.start should have been called exactly once"
         # During nodriver.start(), SIGINT should have been SIG_IGN
         assert captured_handler[0] is signal.SIG_IGN
-        # After _setup_observe_session returns, the original handler is restored
+        # After setup_observe_session returns, the original handler is restored
         assert signal.getsignal(signal.SIGINT) == original_handler
 
         # Verify the session actually returned successfully
@@ -445,7 +471,7 @@ class TestSetupObserveSessionSigintIsolation:
     @pytest.mark.asyncio
     async def test_sigint_restored_even_if_nodriver_start_raises(self) -> None:
         """If nodriver.start() raises, the original SIGINT handler is still restored."""
-        from graftpunk.cli.main import _setup_observe_session
+        from graftpunk.cli.observe_browser import setup_observe_session
 
         async def failing_nodriver_start(**kwargs: object) -> None:
             raise RuntimeError("browser launch failed")
@@ -459,7 +485,7 @@ class TestSetupObserveSessionSigintIsolation:
             patch.dict("sys.modules", {"nodriver": mock_nodriver}),
             pytest.raises(RuntimeError, match="browser launch failed"),
         ):
-            await _setup_observe_session(
+            await setup_observe_session(
                 "test-ns",
                 "https://example.com",
                 5 * 1024 * 1024,
@@ -495,7 +521,7 @@ class TestObserveBrowserHygiene:
     @pytest.mark.asyncio
     async def test_the_shared_switches_reach_nodriver_start(self, tmp_path: Path) -> None:
         from graftpunk.chrome_orphans import base_browser_args
-        from graftpunk.cli.main import _setup_observe_session
+        from graftpunk.cli.observe_browser import setup_observe_session
 
         started: list = []
 
@@ -516,7 +542,7 @@ class TestObserveBrowserHygiene:
             ),
             patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
         ):
-            await _setup_observe_session(
+            await setup_observe_session(
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
             )
 
@@ -528,7 +554,7 @@ class TestObserveBrowserHygiene:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from graftpunk.browser_launch import CleanupReport
-        from graftpunk.cli.main import _setup_observe_session
+        from graftpunk.cli.observe_browser import setup_observe_session
 
         order: list[str] = []
 
@@ -536,7 +562,7 @@ class TestObserveBrowserHygiene:
             order.append("sweep")
             return CleanupReport()
 
-        monkeypatch.setattr("graftpunk.cli.main.prepare_browser_launch", fake_prepare)
+        monkeypatch.setattr("graftpunk.cli.observe_browser.prepare_browser_launch", fake_prepare)
 
         async def fake_start(**kwargs: object) -> MagicMock:
             order.append("start")
@@ -555,7 +581,7 @@ class TestObserveBrowserHygiene:
             ),
             patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
         ):
-            await _setup_observe_session(
+            await setup_observe_session(
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
             )
 
@@ -567,11 +593,11 @@ class TestObserveBrowserHygiene:
     ) -> None:
         from graftpunk.browser_launch import CleanupReport
         from graftpunk.chrome_orphans import ChromeProcess
-        from graftpunk.cli.main import _setup_observe_session
+        from graftpunk.cli.observe_browser import setup_observe_session
 
         orphan = ChromeProcess(pid=4242, ppid=1, args="", owner_pid=999999, user_data_dir=None)
         monkeypatch.setattr(
-            "graftpunk.cli.main.prepare_browser_launch",
+            "graftpunk.cli.observe_browser.prepare_browser_launch",
             lambda: CleanupReport(reaped=[orphan]),
         )
         mock_nodriver = MagicMock()
@@ -587,7 +613,7 @@ class TestObserveBrowserHygiene:
             ),
             patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
         ):
-            await _setup_observe_session(
+            await setup_observe_session(
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
             )
 
@@ -597,7 +623,7 @@ class TestObserveBrowserHygiene:
     async def test_the_browser_is_registered_for_signals_and_released_on_stop(
         self, tmp_path: Path
     ) -> None:
-        from graftpunk.cli.main import _run_observe_go
+        from graftpunk.cli.observe_browser import run_observe_go
         from graftpunk.signals import live_browsers
 
         registered: list = []
@@ -617,9 +643,9 @@ class TestObserveBrowserHygiene:
                 return_value=self._capture_backend(),
             ),
             patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
-            patch("graftpunk.cli.main.save_observe_run", new=record_then_save),
+            patch("graftpunk.cli.observe_browser.save_observe_run", new=record_then_save),
         ):
-            await _run_observe_go(
+            await run_observe_go(
                 "test-ns", "https://example.com", 0.0, 5 * 1024 * 1024, session_name=None
             )
 
@@ -634,7 +660,7 @@ class TestObserveBrowserHygiene:
         """The leak fix at the second launch site: observe made the directory too."""
         import tempfile
 
-        from graftpunk.cli.main import _run_observe_go
+        from graftpunk.cli.observe_browser import run_observe_go
 
         temp_root = tmp_path / "tmp"
         temp_root.mkdir()
@@ -653,9 +679,9 @@ class TestObserveBrowserHygiene:
                 return_value=self._capture_backend(),
             ),
             patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
-            patch("graftpunk.cli.main.save_observe_run", new_callable=AsyncMock),
+            patch("graftpunk.cli.observe_browser.save_observe_run", new_callable=AsyncMock),
         ):
-            await _run_observe_go(
+            await run_observe_go(
                 "test-ns", "https://example.com", 0.0, 5 * 1024 * 1024, session_name=None
             )
 
@@ -668,7 +694,7 @@ class TestObserveBrowserHygiene:
         import tempfile
 
         from graftpunk.browser_launch import NodriverBrowserHandle
-        from graftpunk.cli.main import _stop_observe_browser
+        from graftpunk.cli.observe_browser import stop_observe_browser
         from graftpunk.signals import live_browsers, register_live_browser
 
         temp_root = tmp_path / "tmp"
@@ -682,7 +708,7 @@ class TestObserveBrowserHygiene:
         register_live_browser(handle)
 
         with pytest.raises(ValueError, match="stop blew up"):
-            _stop_observe_browser(browser, handle)
+            stop_observe_browser(browser, handle)
 
         assert handle not in live_browsers()
         assert not profile.exists()
@@ -716,12 +742,14 @@ class TestObserveArmsTheSignalHandlers:
         """
         from graftpunk import chrome_orphans, signals
         from graftpunk.browser_launch import CleanupReport
-        from graftpunk.cli.main import _setup_observe_session
+        from graftpunk.cli.observe_browser import setup_observe_session
 
         monkeypatch.setattr(chrome_orphans, "_ARMED", True)
         # The sweep itself is replaced at its call site, so an armed pass in
         # this test can never reach the real process table.
-        monkeypatch.setattr("graftpunk.cli.main.prepare_browser_launch", lambda: CleanupReport())
+        monkeypatch.setattr(
+            "graftpunk.cli.observe_browser.prepare_browser_launch", lambda: CleanupReport()
+        )
         monkeypatch.setattr(signals, "auto_install", True)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
@@ -739,7 +767,7 @@ class TestObserveArmsTheSignalHandlers:
             ),
             patch("graftpunk.observe.storage.ObserveStorage", return_value=storage),
         ):
-            await _setup_observe_session(
+            await setup_observe_session(
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
             )
 

@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from graftpunk.cli.main import app
 from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
+from graftpunk.plugins import infer_site_name
 
 runner = CliRunner()
 
@@ -641,7 +642,7 @@ class TestObserveCommands:
         """Test observe list when no runs exist."""
         empty_dir = tmp_path / "empty_observe"
         empty_dir.mkdir()
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", empty_dir):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", empty_dir):
             result = runner.invoke(app, ["observe", "list"])
 
         assert result.exit_code == 0
@@ -654,7 +655,7 @@ class TestObserveCommands:
         run_dir.mkdir(parents=True)
         (run_dir / "metadata.json").write_text("{}")
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "list"])
 
         assert result.exit_code == 0
@@ -662,7 +663,7 @@ class TestObserveCommands:
 
     def test_observe_show_not_found(self, tmp_path):
         """Test observe show with non-existent session."""
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "nonexistent"])
 
         assert result.exit_code == 1
@@ -677,7 +678,7 @@ class TestObserveCommands:
         (run_dir / "metadata.json").write_text(json.dumps({"session": "my-session"}))
         (run_dir / "events.jsonl").write_text("")
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "my-session"])
 
         assert result.exit_code == 0
@@ -685,7 +686,7 @@ class TestObserveCommands:
 
     def test_observe_clean_empty(self, tmp_path):
         """Test observe clean when nothing to clean."""
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "clean", "--force"])
 
         assert result.exit_code == 0
@@ -696,7 +697,7 @@ class TestObserveCommands:
         run_dir.mkdir(parents=True)
         (run_dir / "events.jsonl").write_text("")
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "clean", "--force"])
 
         assert result.exit_code == 0
@@ -716,7 +717,7 @@ class TestObserveCLICommands:
     def test_observe_list_no_directory(self, tmp_path):
         """Test observe list when the observe directory does not exist at all."""
         nonexistent = tmp_path / "does_not_exist"
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", nonexistent):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", nonexistent):
             result = runner.invoke(app, ["observe", "list"])
 
         assert result.exit_code == 0
@@ -733,7 +734,7 @@ class TestObserveCLICommands:
         # Session beta with one run
         (observe_dir / "beta" / "run-001").mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", observe_dir):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_dir):
             result = runner.invoke(app, ["observe", "list"])
 
         assert result.exit_code == 0
@@ -749,7 +750,7 @@ class TestObserveCLICommands:
         (observe_dir / "stray-file.txt").write_text("not a session")
         (observe_dir / "real-session" / "run-001").mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", observe_dir):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_dir):
             result = runner.invoke(app, ["observe", "list"])
 
         assert result.exit_code == 0
@@ -767,7 +768,7 @@ class TestObserveCLICommands:
         (early_run / "early.log").write_text("early data")
         (late_run / "late.log").write_text("late data")
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "my-session"])
 
         assert result.exit_code == 0
@@ -782,7 +783,7 @@ class TestObserveCLICommands:
         run_dir.mkdir(parents=True)
         (run_dir / "data.json").write_text('{"key": "value"}')
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "my-session", "run-specific"])
 
         assert result.exit_code == 0
@@ -796,7 +797,7 @@ class TestObserveCLICommands:
         session_dir.mkdir(parents=True)
         (session_dir / "existing-run").mkdir()
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "my-session", "ghost-run"])
 
         assert result.exit_code == 1
@@ -811,7 +812,7 @@ class TestObserveCLICommands:
         # Only a file, no run directories
         (session_dir / "stray.txt").write_text("not a run")
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "empty-session"])
 
         assert result.exit_code == 1
@@ -828,7 +829,7 @@ class TestObserveCLICommands:
         (screenshots / "page2.png").write_text("fake png")
         (run_dir / "har.json").write_text("{}")
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "my-session", "run-001"])
 
         assert result.exit_code == 0
@@ -842,7 +843,7 @@ class TestObserveCLICommands:
         (tmp_path / "session-a" / "run-001").mkdir(parents=True)
         (tmp_path / "session-b" / "run-001").mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "clean", "session-a", "--force"])
 
         assert result.exit_code == 0
@@ -856,7 +857,7 @@ class TestObserveCLICommands:
         (tmp_path / "session-a" / "run-001").mkdir(parents=True)
         (tmp_path / "session-b" / "run-001").mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "clean", "--force"])
 
         assert result.exit_code == 0
@@ -869,7 +870,7 @@ class TestObserveCLICommands:
         """Test observe clean for a session that does not exist."""
         (tmp_path / "other-session" / "run-001").mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "clean", "no-such-session", "--force"])
 
         assert result.exit_code == 0
@@ -882,7 +883,7 @@ class TestObserveCLICommands:
         """Test observe clean cancelled by user when confirmation is denied."""
         (tmp_path / "my-session" / "run-001").mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "clean", "my-session"], input="n\n")
 
         assert result.exit_code == 0
@@ -894,7 +895,7 @@ class TestObserveCLICommands:
         """Test observe clean all cancelled by user."""
         (tmp_path / "my-session" / "run-001").mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "clean"], input="n\n")
 
         assert result.exit_code == 0
@@ -904,7 +905,7 @@ class TestObserveCLICommands:
     def test_observe_clean_no_base_dir(self, tmp_path):
         """Test observe clean when the base directory does not exist."""
         nonexistent = tmp_path / "nonexistent"
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", nonexistent):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", nonexistent):
             result = runner.invoke(app, ["observe", "clean", "--force"])
 
         assert result.exit_code == 0
@@ -919,7 +920,7 @@ class TestObserveCLICommands:
         run_dir.mkdir(parents=True)
         (run_dir / "events.jsonl").write_text("")
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "myshop@alice"], env={"COLUMNS": "200"})
 
         assert result.exit_code == 0, result.output
@@ -931,7 +932,7 @@ class TestObserveCLICommands:
         run_dir.mkdir(parents=True)
         (run_dir / "events.jsonl").write_text("")
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", tmp_path):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path):
             result = runner.invoke(app, ["observe", "show", "myshop"], env={"COLUMNS": "200"})
 
         assert result.exit_code == 0, result.output
@@ -947,8 +948,10 @@ class TestObserveSessionFlag:
         (base / "site-b" / "run-001").mkdir(parents=True)
 
         with (
-            patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base),
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="site-a"),
+            patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", base),
+            patch(
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="site-a"
+            ),
         ):
             result = runner.invoke(app, ["observe", "--session", "site-a", "list"])
         assert result.exit_code == 0
@@ -962,7 +965,7 @@ class TestObserveSessionFlag:
         (base / "site-a" / "run-001").mkdir(parents=True)
         (base / "site-b" / "run-001").mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", base):
             result = runner.invoke(app, ["observe", "list"])
         assert result.exit_code == 0
         output = strip_ansi(result.output)
@@ -977,8 +980,10 @@ class TestObserveSessionFlag:
         (run_dir / "data.json").write_text("{}")
 
         with (
-            patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base),
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="site-a"),
+            patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", base),
+            patch(
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="site-a"
+            ),
         ):
             result = runner.invoke(app, ["observe", "--session", "site-a", "show"])
         assert result.exit_code == 0
@@ -990,7 +995,7 @@ class TestObserveSessionFlag:
         base = tmp_path / "observe"
         base.mkdir(parents=True)
 
-        with patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base):
+        with patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", base):
             result = runner.invoke(app, ["observe", "show"])
         assert result.exit_code == 1
 
@@ -1001,8 +1006,10 @@ class TestObserveSessionFlag:
         (base / "site-b" / "run-001").mkdir(parents=True)
 
         with (
-            patch("graftpunk.cli.main.OBSERVE_BASE_DIR", base),
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="site-a"),
+            patch("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", base),
+            patch(
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="site-a"
+            ),
         ):
             result = runner.invoke(
                 app,
@@ -1198,12 +1205,16 @@ class TestObserveGoCommand:
     def test_with_no_session_flag_proceeds(self):
         """observe go --no-session should infer namespace from URL and proceed."""
         with (
-            patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock),
-            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as mock_go,
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(app, ["observe", "--no-session", "go", "https://example.com"])
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+        assert mock_go.call_args.args[0] == infer_site_name("https://example.com")
+        assert mock_go.call_args.kwargs["session_name"] is None
 
     def test_session_and_no_session_conflict(self):
         """observe --session X --no-session should fail."""
@@ -1217,9 +1228,11 @@ class TestObserveGoCommand:
     def test_observe_go_with_session_flag(self):
         """observe go --session should run the capture flow."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
-            patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock),
-            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch(
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="mysite"
+            ),
+            patch("graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock),
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
                 app, ["observe", "--session", "mysite", "go", "https://example.com"]
@@ -1230,22 +1243,33 @@ class TestObserveGoCommand:
     def test_observe_go_with_wait_option(self):
         """observe go --wait should pass wait value through."""
         with (
-            patch("graftpunk.cli.main.resolve_session_name_or_exit", return_value="mysite"),
-            patch("graftpunk.cli.main._run_observe_go", new_callable=MagicMock),
-            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch(
+                "graftpunk.cli.observe_commands.resolve_session_name_or_exit", return_value="mysite"
+            ),
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as mock_go,
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
         ):
             result = runner.invoke(
                 app,
                 ["observe", "--session", "mysite", "go", "--wait", "10", "https://example.com"],
             )
         mock_asyncio.run.assert_called_once()
+        # The wait value the user passed is what reaches the coroutine.
+        assert mock_go.call_args.args[2] == 10.0
         assert result.exit_code == 0
 
     def test_observe_go_no_session_interactive_flag(self):
         """observe go --no-session --interactive should proceed without cookies."""
         with (
-            patch("graftpunk.cli.main._run_observe_interactive", new_callable=MagicMock),
-            patch("graftpunk.cli.main.asyncio") as mock_asyncio,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_interactive", new_callable=MagicMock
+            ) as mock_interactive,
+            patch(
+                "graftpunk.cli.observe_commands.run_observe_go", new_callable=MagicMock
+            ) as mock_go,
+            patch("graftpunk.cli.observe_commands.asyncio") as mock_asyncio,
             patch("graftpunk.logging.suppress_asyncio_noise"),
         ):
             result = runner.invoke(
@@ -1254,6 +1278,8 @@ class TestObserveGoCommand:
             )
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
+        mock_interactive.assert_called_once()
+        mock_go.assert_not_called()
 
 
 class TestResolveObserveContext:
@@ -1261,7 +1287,7 @@ class TestResolveObserveContext:
 
     def test_returns_session_name_when_set(self):
         """When observe_session is set, returns it as both namespace and session_name."""
-        from graftpunk.cli.main import _resolve_observe_context
+        from graftpunk.cli.observe_commands import _resolve_observe_context
 
         ctx = MagicMock()
         ctx.ensure_object.return_value = {
@@ -1274,7 +1300,7 @@ class TestResolveObserveContext:
 
     def test_no_session_infers_from_url(self):
         """When --no-session, infers namespace from URL and returns session_name=None."""
-        from graftpunk.cli.main import _resolve_observe_context
+        from graftpunk.cli.observe_commands import _resolve_observe_context
 
         ctx = MagicMock()
         ctx.ensure_object.return_value = {
@@ -1287,7 +1313,7 @@ class TestResolveObserveContext:
 
     def test_no_session_unparseable_url_returns_unknown(self):
         """When --no-session with unparseable URL, falls back to 'unknown'."""
-        from graftpunk.cli.main import _resolve_observe_context
+        from graftpunk.cli.observe_commands import _resolve_observe_context
 
         ctx = MagicMock()
         ctx.ensure_object.return_value = {
@@ -1302,7 +1328,7 @@ class TestResolveObserveContext:
         """When no session and no --no-session, raises typer.Exit(1)."""
         import typer
 
-        from graftpunk.cli.main import _resolve_observe_context
+        from graftpunk.cli.observe_commands import _resolve_observe_context
 
         ctx = MagicMock()
         ctx.ensure_object.return_value = {
@@ -1315,7 +1341,7 @@ class TestResolveObserveContext:
 
     def test_no_session_flag_ignores_active_session(self):
         """When --no-session is set, observe_session should be None (not from env)."""
-        from graftpunk.cli.main import _resolve_observe_context
+        from graftpunk.cli.observe_commands import _resolve_observe_context
 
         ctx = MagicMock()
         # Simulate the bug scenario: observe_session was populated from env
@@ -1422,6 +1448,7 @@ class TestObserveNamesAreNotMarkup:
         from typer.testing import CliRunner
 
         from graftpunk.cli import main as cli_main
+        from graftpunk.cli import observe_commands
 
         base = tmp_path / "observe"
         # A directory literally named with markup, as if it predates (or
@@ -1440,7 +1467,7 @@ class TestObserveNamesAreNotMarkup:
         show_run_dir.mkdir(parents=True)
         (show_run_dir / "network [dim].har").write_text("{}")
 
-        monkeypatch.setattr(cli_main, "OBSERVE_BASE_DIR", base)
+        monkeypatch.setattr(observe_commands, "OBSERVE_BASE_DIR", base)
         runner = CliRunner()
 
         result = runner.invoke(cli_main.app, ["observe", "list"])
