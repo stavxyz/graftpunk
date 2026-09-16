@@ -83,7 +83,7 @@ def _graftpunk_version_floor() -> str:
 def plugin_new(
     name: Annotated[str, typer.Argument(help="Plugin name: site_name, and the package suffix")],
     url: Annotated[
-        str, typer.Option("--url", help="Base URL (ignored when --from-run supplies one)")
+        str, typer.Option("--url", help="Base URL (overrides the host taken from --from-run)")
     ] = "",
     from_run: Annotated[
         str | None,
