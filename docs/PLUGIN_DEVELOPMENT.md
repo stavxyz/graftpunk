@@ -6,7 +6,7 @@ It is a how-to. For the reference description of each subsystem, see
 the end.
 
 Every example uses placeholder names: the site is `myshop` at
-`https://myshop.example.com`, the account is `alice@example.com`.
+`https://myshop.example`, the account is `alice@example.com`.
 
 ## What a plugin is
 
@@ -22,7 +22,7 @@ class MyshopPlugin(SitePlugin):
     site_name = "myshop"
     session_name = "myshop"
     help_text = "Commands for myshop"
-    base_url = "https://myshop.example.com"
+    base_url = "https://myshop.example"
     backend = "nodriver"
     api_version = 1
 
@@ -151,7 +151,7 @@ need `driver.get_log()` style diagnostics. Both are described in
 Record a real browser session against the site:
 
 ```bash
-gp observe --no-session interactive https://myshop.example.com/
+gp observe --no-session interactive https://myshop.example/
 ```
 
 `--session` and `--no-session` belong to the `observe` group, so they go before
@@ -160,11 +160,12 @@ browser with no cached cookies, which is what you want the first time: you are
 recording the login as well as the flows behind it, and there is no cached
 session to name yet. A `--no-session` recording is filed under the name
 graftpunk infers from the host, the second-to-last label: `myshop` for
-`www.myshop.com`, `example` for `myshop.example.com`. `gp observe list` prints
-it. The steps below write `myshop` where that name goes; substitute the one `gp
-observe list` printed. Once the plugin exists and `gp myshop login` has cached a
-session, `gp observe -s myshop interactive ...` records with that session's
-cookies and files the run under `myshop`.
+`myshop.example` or `www.myshop.com`, `example` for `myshop.example.com`. `gp
+observe list` prints it. For the host this guide uses, that name is `myshop`, so
+the commands below work as written; for a host whose inferred name differs,
+substitute the one `gp observe list` printed. Once the plugin exists and `gp
+myshop login` has cached a session, `gp observe -s myshop interactive ...`
+records with that session's cookies and files the run under `myshop`.
 
 A browser opens at the URL. Log in. Then exercise every flow you listed in
 [Frame](#frame): open each page, page through a list, apply a filter, download
@@ -184,7 +185,7 @@ otherwise. A run holds `network.har` plus whatever else that run captured:
 
 ```bash
 gp observe list           # every session and its runs
-gp observe show myshop    # the newest run for this name; see gp observe list
+gp observe show myshop    # the newest run for this name
 ```
 
 A capture holds cookies, tokens, session identifiers, and whatever account data
@@ -202,11 +203,9 @@ Read the run into a digest:
 gp observe digest myshop
 ```
 
-It takes the recording's name (`myshop` here is the name `gp observe list`
-printed for the recording, as explained under [Capture](#capture)) and,
-optionally, a run id; without one it reads the newest run. `--har PATH` digests
-a bare HAR file from any tool instead of a run.
-`--json` prints the complete model rather than the markdown summary,
+It takes the recording's name and, optionally, a run id; without one it reads
+the newest run. `--har PATH` digests a bare HAR file from any tool instead of a
+run. `--json` prints the complete model rather than the markdown summary,
 `--all-hosts` models every host instead of just the primary one, `--limit N`
 raises the cap on how many endpoints the markdown form lists (60 by default),
 and `--output PATH` writes to a file.
@@ -226,15 +225,15 @@ blocks elided:
 
 ## Summary
 - source: `myshop/20260915-100000-1`
-- primary host: `myshop.example.com`
+- primary host: `myshop.example`
 - hosts: 2, endpoints: 5
 - dropped: static=2, third_party=0, other_scheme=0, error=0
 
 ## Login
-1. GET https://myshop.example.com/login [200] form_page
-2. POST https://myshop.example.com/session [302] credential_post (email, password) -> /dashboard
+1. GET https://myshop.example/login [200] form_page
+2. POST https://myshop.example/session [302] credential_post (email, password) -> /dashboard
 
-- form at `/session` (POST), source: https://myshop.example.com/login
+- form at `/session` (POST), source: https://myshop.example/login
     - password: `#password`
     - username: `#email`
 
@@ -247,7 +246,7 @@ myshop_session
 ## Endpoints
 ### GET /api/orders
 
-- host: `myshop.example.com`, count: 2, statuses: [200]
+- host: `myshop.example`, count: 2, statuses: [200]
 - content type: `application/json`
 - query params: archived: bool, page: int, per_page: int
 - custom headers: X-Csrf-Token
@@ -256,7 +255,7 @@ myshop_session
 
 ### GET /api/orders/{order_id}
 
-- host: `myshop.example.com`, count: 2, statuses: [200]
+- host: `myshop.example`, count: 2, statuses: [200]
 - content type: `application/json`
 - custom headers: X-Csrf-Token
 - shape: object{id, items, placed_on, total}
@@ -323,10 +322,9 @@ Generate the project from the run:
 gp plugin new myshop --from-run myshop
 ```
 
-The two `myshop`s are different things. The first is the plugin name you chose
-in [Frame](#frame). The second is the recording's name from `gp observe list`.
-They coincide for a site at `www.myshop.com` and differ for the placeholder host
-used here, whose recording is filed under `example`.
+The two `myshop`s are different arguments that happen to coincide here. The
+first is the plugin name you chose in [Frame](#frame); the second is the
+recording's name from `gp observe list`.
 
 The options:
 
@@ -408,12 +406,12 @@ from graftpunk.plugins import CommandContext, LoginConfig, LoginStep, SitePlugin
 
 
 class MyshopPlugin(SitePlugin):
-    """Commands for https://myshop.example.com."""
+    """Commands for https://myshop.example."""
 
     site_name = "myshop"
     session_name = "myshop"
     help_text = "Commands for myshop"
-    base_url = "https://myshop.example.com"
+    base_url = "https://myshop.example"
     backend = "nodriver"
     api_version = 1
 
@@ -750,7 +748,7 @@ that is also true before the login proves nothing, and the post-submit poll
 will report success on its first pass and cache a pre-login session. Pick a
 selector for something that exists only once you are in: the account menu, a
 sign-out link, a greeting. For `success_url`, pick a glob narrow enough to
-exclude the login URL. `*/dashboard*` is a good signal; `*myshop.example.com*`
+exclude the login URL. `*/dashboard*` is a good signal; `*myshop.example*`
 is not.
 
 A URL signal counts only once the URL differs from the one the last submit was
@@ -931,7 +929,7 @@ def test_orders_lists_every_order() -> None:
     ctx = fixture_context(
         FIXTURES_DIR,
         plugin_name="myshop",
-        base_url="https://myshop.example.com",
+        base_url="https://myshop.example",
     )
     result = MyshopPlugin().api_orders(ctx)
     assert [order["id"] for order in result["orders"]] == ["1001", "1002"]
@@ -949,7 +947,7 @@ content type. `gp observe fixtures` writes one for every capture:
 
 ```json
 {
-  "url": "https://myshop.example.com/api/orders?page=1&per_page=25&archived=false",
+  "url": "https://myshop.example/api/orders?page=1&per_page=25&archived=false",
   "status": 200,
   "content_type": "application/json",
   "body_params": [],
@@ -968,10 +966,9 @@ sidecar's status to 403, and assert that the command raises
 gp observe fixtures myshop --match "GET /api/orders" --match "GET /api/orders/{order_id}"
 ```
 
-The first argument is the recording's name, as under [Capture](#capture).
-`--match` takes a `"METHOD template"` pair, is required, is repeatable, and
-accepts a glob in the template. `--out PATH` chooses where to write
-(`./tests/captures` by
+The first argument is the recording's name. `--match` takes a `"METHOD
+template"` pair, is required, is repeatable, and accepts a glob in the template.
+`--out PATH` chooses where to write (`./tests/captures` by
 default), `--limit N` caps how many files are written per matched template (5 by
 default), and `--allow-tracked` overrides the refusal to write onto a
 git-tracked path. Repeated captures of one template get `_1`, `_2` suffixes;
