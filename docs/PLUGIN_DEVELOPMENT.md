@@ -41,6 +41,8 @@ The attributes that matter:
 - `backend` is `"selenium"` or `"nodriver"`. The `SitePlugin` class default is
   `"selenium"`; `gp plugin new` writes `"nodriver"`.
 - `api_version` is `1`.
+- `requires_session` is `True`. Set it to `False` for a plugin whose commands
+  need no cached session.
 - `login_config` and `token_config` are optional, and are covered in
   [Login](#login) and in [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support).
 
@@ -53,9 +55,9 @@ myshop = "graftpunk_myshop.plugin:MyshopPlugin"
 
 ### Register through an entry point, not through the plugins directory
 
-graftpunk finds plugins two ways. The first is the entry-point group above. The
-second is a file loader that imports every `*.yaml` and `*.yml`, and every
-`*.py` whose name does not start with an underscore, under
+graftpunk finds plugins from three sources. The first is the entry-point group
+above. The other two are a file loader that imports every `*.yaml` and `*.yml`,
+and every `*.py` whose name does not start with an underscore, under
 `~/.config/graftpunk/plugins/` (or under `$GRAFTPUNK_CONFIG_DIR/plugins/` when
 that variable is set).
 
@@ -119,7 +121,8 @@ you would use at the shell: `gp myshop orders`, `gp myshop order --order-id
 
 **The account.** One account per session slot. If the site distinguishes
 accounts you care about, plan on logging in as each of them; graftpunk caches
-them side by side as `myshop@alice` and `myshop@bob`.
+them side by side as `myshop@alice` and `myshop@bob`. `gp myshop login --as
+alice` names the slot explicitly when the derived label is not the one you want.
 
 **The login shape.** Four shapes come up:
 
@@ -132,6 +135,9 @@ them side by side as `myshop@alice` and `myshop@bob`.
   it, but see [Login](#login) for `success_url` and `timeout`.
 - MFA or a CAPTCHA: the flow needs a human. Leave the browser window visible
   (`headless=False`, which is the default) and let the person solve it.
+- No login at all: a site whose data needs no session. Set `requires_session =
+  False` on the plugin, leave `login_config` unset, and skip [Login](#login)
+  entirely.
 
 **The backend.** Use `nodriver` unless you have a reason not to; it drives
 Chrome over the DevTools Protocol with no WebDriver in the picture, which is
@@ -145,13 +151,20 @@ need `driver.get_log()` style diagnostics. Both are described in
 Record a real browser session against the site:
 
 ```bash
-gp observe -s myshop --no-session interactive https://myshop.example.com/
+gp observe --no-session interactive https://myshop.example.com/
 ```
 
 `--session` and `--no-session` belong to the `observe` group, so they go before
-the subcommand. `--no-session` opens the browser with no cached cookies, which
-is what you want the first time: you are recording the login as well as the
-flows behind it.
+the subcommand, and they cannot be used together. `--no-session` opens the
+browser with no cached cookies, which is what you want the first time: you are
+recording the login as well as the flows behind it, and there is no cached
+session to name yet. A `--no-session` recording is filed under the name
+graftpunk infers from the host, the second-to-last label: `myshop` for
+`www.myshop.com`, `example` for `myshop.example.com`. `gp observe list` prints
+it. The steps below write `myshop` where that name goes; substitute the one `gp
+observe list` printed. Once the plugin exists and `gp myshop login` has cached a
+session, `gp observe -s myshop interactive ...` records with that session's
+cookies and files the run under `myshop`.
 
 A browser opens at the URL. Log in. Then exercise every flow you listed in
 [Frame](#frame): open each page, page through a list, apply a filter, download
@@ -162,14 +175,16 @@ One recording is usually enough. Take several when the flows are genuinely
 separate, or when a first digest leaves a question you can answer by recording
 one flow on its own with nothing else in the way.
 
-Runs live under `~/.local/share/graftpunk/observe/<session>/<run id>/`. A run
-holds `network.har` plus whatever else that run captured: `bodies/` for
-response bodies too large to inline in the HAR, `page-source.html`,
-`screenshots/`, `console.jsonl`, `events.jsonl`, and `metadata.json`.
+Runs live under `~/.local/share/graftpunk/observe/<name>/<run id>/`, where
+`<name>` is the session when you named one and the name inferred from the host
+otherwise. A run holds `network.har` plus whatever else that run captured:
+`bodies/` for response bodies too large to inline in the HAR,
+`page-source.html`, `screenshots/`, `console.jsonl`, `events.jsonl`, and
+`metadata.json`.
 
 ```bash
 gp observe list           # every session and its runs
-gp observe show myshop    # the newest run for this session
+gp observe show myshop    # the newest run for this name; see gp observe list
 ```
 
 A capture holds cookies, tokens, session identifiers, and whatever account data
@@ -187,8 +202,10 @@ Read the run into a digest:
 gp observe digest myshop
 ```
 
-It takes the session name and, optionally, a run id; without one it reads the
-newest run. `--har PATH` digests a bare HAR file from any tool instead of a run.
+It takes the recording's name (`myshop` here is the name `gp observe list`
+printed for the recording, as explained under [Capture](#capture)) and,
+optionally, a run id; without one it reads the newest run. `--har PATH` digests
+a bare HAR file from any tool instead of a run.
 `--json` prints the complete model rather than the markdown summary,
 `--all-hosts` models every host instead of just the primary one, `--limit N`
 raises the cap on how many endpoints the markdown form lists (60 by default),
@@ -204,7 +221,7 @@ identifiers is not safe to paste anywhere a capture would not be.
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:
 
-```
+```text
 # Observe digest
 
 ## Summary
@@ -306,9 +323,14 @@ Generate the project from the run:
 gp plugin new myshop --from-run myshop
 ```
 
+The two `myshop`s are different things. The first is the plugin name you chose
+in [Frame](#frame). The second is the recording's name from `gp observe list`.
+They coincide for a site at `www.myshop.com` and differ for the placeholder host
+used here, whose recording is filed under `example`.
+
 The options:
 
-- `--from-run SESSION` fills the scaffold from that session's newest run.
+- `--from-run SESSION` fills the scaffold from that recording's newest run.
 - `--run RUN_ID` picks a specific run instead of the newest. It requires
   `--from-run`.
 - `--url URL` sets `base_url`. Without `--from-run` it is the only source of
@@ -318,14 +340,16 @@ The options:
 - `--dir PATH` is the target directory (the working directory by default).
 - `--backend nodriver|selenium` sets the generated `backend` attribute
   (`nodriver` by default).
-- `--new` forces a new project in `--dir` even when a plugin suite is already
-  there.
+- `--new` skips the suite check on `--dir`, so the command writes a new project
+  instead of adding to the suite it finds there. Nothing is overwritten either
+  way, so a `--dir` that already holds a `pyproject.toml` is refused for the
+  conflict: point `--dir` at a directory that has none.
 
 ### The two modes
 
 With no `pyproject.toml` in `--dir`, it writes a new project:
 
-```
+```text
 .gitignore
 README.md
 pyproject.toml
@@ -340,7 +364,7 @@ With a `pyproject.toml` that already declares the `graftpunk.plugins`
 entry-point group, it adds a plugin to that suite instead, writing only the new
 files and editing the existing `pyproject.toml`:
 
-```
+```text
 src/graftpunk_otherstore/__init__.py
 src/graftpunk_otherstore/plugin.py
 tests/fixtures/otherstore/.gitkeep
@@ -442,24 +466,26 @@ class MyshopPlugin(SitePlugin):
 ```
 
 What came from the digest: `base_url` from the primary host; the `LoginStep`
-selectors and the form's action URL from the captured login page; `success_url`
+selectors and the form's action URL from the captured login page, the submit
+selector too, which the digest's markdown form does not print; `success_url`
 from the redirect the credential post answered with; one command stub per
 endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
-twelve, each with the observed query
-parameters as typed keyword arguments and the observed custom headers; a
-docstring recording the method, the path, how many times it was seen, which run
-it came from, and the response shape.
+twelve, each with the observed query parameters as typed keyword arguments and
+the observed custom headers; a docstring recording the method, the path, how
+many times it was seen, which run it came from, and the response shape.
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
-each command, each command's real name, and the value of any custom header. A
-token candidate that could not be paired with a source is left as a commented
-`GP-FILL` line rather than a guess. Search for `GP-FILL` and you have your
-to-do list.
+each command, and the value of any custom header. The command names themselves
+carry no marker, because the generator derives them from the endpoint path and
+they are usually wrong for a human to type: see [Check the CLI surface you
+shipped](#check-the-cli-surface-you-shipped). A token candidate that could not
+be paired with a source is left as a commented `GP-FILL` line rather than a
+guess. Search for `GP-FILL` and you have your to-do list.
 
 The command also prints the fixtures the generated tests will look for:
 
-```
+```text
 Next: the endpoint tests fail until these fixtures exist:
   tests/fixtures/get_api_orders.json
   tests/fixtures/get_api_orders_{order_id}.json
@@ -507,15 +533,17 @@ Both normalise a `params` or `data` mapping before sending it:
 
 ### What they raise, and what the user sees
 
-- `SessionRejectedError` on a 401 or 403, and on a 2xx whose body is a login
-  page (a stale session's tell). Its message names the status, the method and
-  path, and the command to run: `Run: gp myshop login`.
+- `SessionRejectedError` on a 401 or 403 from either method, and, from
+  `request_json` only, on a 2xx whose body is a login page (a stale session's
+  tell). Its message names the status, the method and path, and the command to
+  run: `Run: gp myshop login`.
 - `UnexpectedResponseError` on a 2xx that is neither JSON nor a login page, or
   that declares JSON and does not parse as JSON (a truncated response).
 - `CommandError` on any other 4xx or 5xx.
 
-All three are `CommandError` subclasses, and the CLI prints a `CommandError`'s
-message as one error line and exits 1, with no traceback. A `PluginError` prints
+`SessionRejectedError` and `UnexpectedResponseError` are `CommandError`
+subclasses, and the CLI prints a `CommandError`'s message as one error line and
+exits 1, with no traceback. A `PluginError` prints
 as `Plugin error: <message>` and exits 1. Anything else is a crash: the CLI logs
 a full traceback and prints `Command failed: <message>`.
 
@@ -624,7 +652,7 @@ you what the real export looked like.
 
 ### Keep a lab notebook
 
-`gp plugin new` puts a dated line at the top of the module:
+`gp plugin new` puts a line at the top of the module for the date:
 
 ```python
 """myshop plugin.
@@ -703,9 +731,10 @@ A step needs at least one of `fields` or `submit`, so a click-only step (a
 - `wait_for`: a CSS selector to wait for before any step runs.
 - `headless`: run the login browser with no window. Defaults to `False`.
 - `timeout`: seconds to wait after the last step for a success or failure
-  signal. Defaults to `30.0`.
+  signal. Defaults to `30.0`. Unused when no success signal is configured.
 - `settle`: seconds to wait after the success signal and after the document
-  finishes loading, before cookies are captured. Defaults to `1.0`.
+  finishes loading, before cookies are captured. Defaults to `1.0`. Unused when
+  no success signal is configured.
 
 ### Getting the signals right
 
@@ -733,7 +762,9 @@ checks the page every half second until the timeout: the failure text ends the
 wait as a failure, the configured success signal ends it as a success. A page
 reading `Too Many Requests` ends the wait as a failure on any pass that read the
 page text, and the last pass before a timeout always reads it, so a login that
-gives up against a rate limiter names the limiter rather than your selector. The
+gives up against a rate limiter names the limiter rather than your selector,
+unless that pass also found the `success` element, which is the one thing that
+outranks the marker. The
 budget also covers the wait for the document to finish loading, so a signal that
 arrives right at the deadline is followed by no readiness wait at all. Raise
 `timeout` for a login that goes through a slow identity-provider redirect chain.
@@ -743,7 +774,9 @@ Lower it to `3.0` if you want a login to give up quickly.
 rather than a poll.** There is no signal to wait for, so the engine watches for
 the `failure` text for three seconds and then takes the login at its word. That
 catches an error the site renders a moment after the submit, and it is much
-weaker than a real success signal. Configure one.
+weaker than a real success signal. Configure one. On that path `timeout` and
+`settle` are not used at all: setting either changes nothing until a success
+signal exists.
 
 ### Headless, MFA, and CAPTCHA
 
@@ -835,7 +868,7 @@ command entry as `[command]` and never runs it. `gp config get NAME --resolve`
 runs it and prints the result, which is the one command here that can print a
 secret.
 
-A command entry runs only when a value is actually needed: a login, the first
+A command entry runs only when a value is needed: a login, the first
 access of an allowlisted setting, or a YAML plugin's `${VAR}` header expansion.
 `gp --help` never triggers it, so having several sites configured this way does
 not mean an approval prompt every time you use the CLI.
@@ -935,8 +968,10 @@ sidecar's status to 403, and assert that the command raises
 gp observe fixtures myshop --match "GET /api/orders" --match "GET /api/orders/{order_id}"
 ```
 
+The first argument is the recording's name, as under [Capture](#capture).
 `--match` takes a `"METHOD template"` pair, is required, is repeatable, and
-accepts a glob in the template. `--out PATH` chooses where to write (`./tests/captures` by
+accepts a glob in the template. `--out PATH` chooses where to write
+(`./tests/captures` by
 default), `--limit N` caps how many files are written per matched template (5 by
 default), and `--allow-tracked` overrides the refusal to write onto a
 git-tracked path. Repeated captures of one template get `_1`, `_2` suffixes;
@@ -1018,7 +1053,7 @@ jobs:
 Nothing in CI logs into the site: the tests run against committed fixtures, and
 the environment scrubber keeps any stray credential out of them.
 
-### Check the CLI surface you actually shipped
+### Check the CLI surface you shipped
 
 Command names are the kebab-cased Python names, and whatever that produces is
 what gets registered. A generated `api_orders_by_order_id` becomes `gp myshop
