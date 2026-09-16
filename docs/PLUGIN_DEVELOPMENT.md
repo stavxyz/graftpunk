@@ -54,7 +54,8 @@ myshop = "graftpunk_myshop.plugin:MyshopPlugin"
 ### Register through an entry point, not through the plugins directory
 
 graftpunk finds plugins two ways. The first is the entry-point group above. The
-second is a file loader that imports every `*.py`, `*.yaml`, and `*.yml` under
+second is a file loader that imports every `*.yaml` and `*.yml`, and every
+`*.py` whose name does not start with an underscore, under
 `~/.config/graftpunk/plugins/` (or under `$GRAFTPUNK_CONFIG_DIR/plugins/` when
 that variable is set).
 
@@ -196,7 +197,9 @@ and `--output PATH` writes to a file.
 The digest is redacted by construction. It records header names, cookie names,
 form field names, query parameter names and observed types, and response
 shapes. It never retains a header value, a cookie value, a query value, or a
-body value.
+body value. Path segments are the exception: the example paths under each
+endpoint are real, so a digest of a site whose URLs carry account or document
+identifiers is not safe to paste anywhere a capture would not be.
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:
@@ -266,6 +269,9 @@ redirecting credential post is where the login landed, and is what
 tokens, and the endpoints each was seen on. A candidate is a name, not a value,
 and not yet a decision: see [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support)
 for turning one into a `Token`.
+
+**Cookies** lists the cookie names the recording saw on the primary host, names
+only.
 
 **Endpoints** is one block per method and templated path. Path segments that
 look like opaque identifiers collapse into named parameters, so five requests
@@ -438,7 +444,8 @@ class MyshopPlugin(SitePlugin):
 What came from the digest: `base_url` from the primary host; the `LoginStep`
 selectors and the form's action URL from the captured login page; `success_url`
 from the redirect the credential post answered with; one command stub per
-endpoint, JSON endpoints first, up to twelve, each with the observed query
+endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
+twelve, each with the observed query
 parameters as typed keyword arguments and the observed custom headers; a
 docstring recording the method, the path, how many times it was seen, which run
 it came from, and the response shape.
@@ -531,12 +538,17 @@ def order(self, ctx: CommandContext, order_id: str) -> dict:
 
 ### CLI parameter types
 
-A handler's parameters become CLI options automatically, but only a bare `int`,
-`float`, `bool`, or `str` annotation is carried through as a type. A generated
-stub's `page: int | None = None` is a union, so `--page` arrives as a string.
-That is harmless when the value goes straight into `params` (the site reads it
-as text anyway), and wrong as soon as you do arithmetic on it. When you want a
-real type, declare it plainly with a default, or say what you want explicitly:
+A handler's parameters become CLI options automatically, but the type is carried
+through only when the introspector is handed a real type object: a bare `int`,
+`float`, `bool`, or `str`. The plugin module `gp plugin new` writes starts with
+`from __future__ import annotations`, which makes every annotation in the module
+a string, so in a generated plugin every option arrives as a string, a bare
+`page: int = 1` included. A union such as `int | None` arrives as a string with
+or without that import. That is harmless when the value goes straight into
+`params` (the site reads it as text anyway), and wrong as soon as you do
+arithmetic on it. To get a real type, declare it explicitly: an explicit
+`params=` list replaces introspection entirely, so it works in a generated
+module as written.
 
 ```python
 from graftpunk.plugins import CommandContext, PluginParamSpec, command
@@ -555,6 +567,8 @@ def orders(self, ctx: CommandContext, page: int = 1, archived: bool = False) -> 
 
 `PluginParamSpec.option` makes a `--flag`; `PluginParamSpec.argument` makes a
 positional argument. A `bool` option with `default=False` becomes a real flag.
+The introspector's handling of string and optional annotations is tracked in
+issue #208.
 
 ### One filter, several spellings
 
@@ -779,9 +793,11 @@ Credentials come from environment variables. Nothing secret goes in the
 repository, ever.
 
 For each field name in a `LoginStep`, the login command looks for
-`<SITE_NAME>_<FIELD_NAME>`, uppercased, with hyphens and spaces turned into
-underscores. A plugin named `myshop` with fields `username` and `password`
-reads `MYSHOP_USERNAME` and `MYSHOP_PASSWORD`. A plugin named `my-shop` reads
+`<SITE_NAME>_<FIELD_NAME>`. The site name is uppercased with hyphens and spaces
+turned into underscores; the field name is only uppercased, so keep field names
+to letters, digits, and underscores or the derived variable name will be one no
+shell and no env file can set. A plugin named `myshop` with fields `username`
+and `password` reads `MYSHOP_USERNAME` and `MYSHOP_PASSWORD`. A plugin named `my-shop` reads
 `MY_SHOP_USERNAME`. Setting `username_envvar` or `password_envvar` on the plugin
 overrides the name for that field. If nothing supplies a value, the command
 prompts for it, masked for anything that looks like a secret.
@@ -824,10 +840,12 @@ access of an allowlisted setting, or a YAML plugin's `${VAR}` header expansion.
 `gp --help` never triggers it, so having several sites configured this way does
 not mean an approval prompt every time you use the CLI.
 
-Precedence, highest first: the real environment, then the workstation env file,
-then a `.env` in the working directory, then the built-in default. An
-environment variable set to the empty string counts as unset, so a stray
-`export MYSHOP_PASSWORD=` does not shadow the file.
+Precedence for a credential, highest first: the real environment, then the
+workstation env file, then an interactive prompt. graftpunk's own `GRAFTPUNK_*`
+settings have one more tier: real environment, workstation env file, a `.env` in
+the working directory, then the field's default. An environment variable set to
+the empty string counts as unset, so a stray `export MYSHOP_PASSWORD=` does not
+shadow the file.
 
 The full design is in
 [docs/rfcs/2026-07-28-workstation-env.md](rfcs/2026-07-28-workstation-env.md).
@@ -917,8 +935,8 @@ sidecar's status to 403, and assert that the command raises
 gp observe fixtures myshop --match "GET /api/orders" --match "GET /api/orders/{order_id}"
 ```
 
-`--match` takes a `"METHOD template"` pair, is repeatable, and accepts a glob in
-the template. `--out PATH` chooses where to write (`./tests/captures` by
+`--match` takes a `"METHOD template"` pair, is required, is repeatable, and
+accepts a glob in the template. `--out PATH` chooses where to write (`./tests/captures` by
 default), `--limit N` caps how many files are written per matched template (5 by
 default), and `--allow-tracked` overrides the refusal to write onto a
 git-tracked path. Repeated captures of one template get `_1`, `_2` suffixes;
@@ -976,7 +994,7 @@ Add a type checker. A generated project passes `ruff check` and `ruff format
 --check` as written, so a red gate on a fresh scaffold is something you
 introduced.
 
-A minimal CI workflow that runs the same gate:
+A minimal CI workflow to start from, running the same gate:
 
 ```yaml
 name: checks
