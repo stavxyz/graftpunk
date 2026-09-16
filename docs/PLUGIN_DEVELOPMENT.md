@@ -540,7 +540,7 @@ def order(self, ctx: CommandContext, order_id: str) -> dict:
 
 A handler's parameters become CLI options automatically, but the type is carried
 through only when the introspector is handed a real type object: a bare `int`,
-`float`, `bool`, or `str`. The plugin module `gp plugin new` writes starts with
+`float`, `bool`, or `str`. The plugin module that `gp plugin new` writes starts with
 `from __future__ import annotations`, which makes every annotation in the module
 a string, so in a generated plugin every option arrives as a string, a bare
 `page: int = 1` included. A union such as `int | None` arrives as a string with
