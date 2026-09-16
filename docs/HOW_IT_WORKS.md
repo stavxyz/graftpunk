@@ -331,6 +331,8 @@ gp session unset             # Clear active session
 
 ## Plugin System
 
+This section is the reference. For the how-to, from recording a site to a tested, installed plugin, see [Writing a graftpunk plugin](PLUGIN_DEVELOPMENT.md).
+
 Plugins define CLI command groups for specific sites. Each plugin has a `site_name` (the CLI subcommand) and a `session_name` — the **base** session name, an input to session resolution rather than the storage key itself. The key a command actually reads and writes is the operating name resolved per invocation (`myshop` or `myshop@alice`); see Multi-Account Sessions.
 
 ### Plugin Types
@@ -1262,6 +1264,12 @@ def items(self, ctx: CommandContext):
         plugin_settings = yaml.safe_load(config_path.read_text())
     # ... use plugin_settings
 ```
+
+---
+
+## Credentials and the Workstation Env File
+
+Credentials reach a login through environment variables named `<SITE_NAME>_<FIELD_NAME>`, and graftpunk's per-machine env file (`~/.config/graftpunk/env`, managed with `gp config`) supplies them as static entries or as `$(command)` entries resolved at lookup time. The user-facing description is [Secrets and configuration](PLUGIN_DEVELOPMENT.md#secrets-and-configuration) in the plugin guide; the design is [docs/rfcs/2026-07-28-workstation-env.md](rfcs/2026-07-28-workstation-env.md).
 
 ---
 

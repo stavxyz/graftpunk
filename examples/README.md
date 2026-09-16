@@ -23,7 +23,7 @@ Example plugins and templates for building your own graftpunk integrations.
 
 | Plugin | Type | Backend | Auth | Description |
 |--------|------|---------|------|-------------|
-| `httpbin.yaml` | YAML | — | None / Header | Simplest example, includes env var auth commands |
+| `httpbin.yaml` | YAML | none | None / Header | Simplest example, includes env var auth commands |
 | `quotes.py` | Python | Selenium | Declarative | Test site, any credentials work |
 | `hackernews.py` | Python | NoDriver | Declarative | Real site, requires HN account |
 
@@ -49,7 +49,7 @@ gp httpbin auth-bearer
 
 ### quotes.py
 
-Python plugin using **declarative login** with Selenium. Uses a test site that accepts any credentials — perfect for testing the login flow without a real account.
+Python plugin using **declarative login** with Selenium. Uses a test site that accepts any credentials, which makes it useful for testing the login flow without a real account.
 
 ```bash
 ln -s $(pwd)/examples/plugins/quotes.py ~/.config/graftpunk/plugins/
@@ -109,27 +109,28 @@ Both YAML and Python plugins support declarative login configuration.
 2. Install the generated package in editable mode, for example `uv pip install -e .` or `pip install -e .`.
 3. Run `gp plugins` to verify discovery.
 
-See the main README's "From recording to plugin" section for the full workflow.
+See [Scaffold](../docs/PLUGIN_DEVELOPMENT.md#scaffold) in the plugin guide for every option, both project modes, and what the generated files contain. The guide's other sections cover the rest of the workflow, from recording a site to testing the plugin.
 
 ## Plugin Discovery
 
 graftpunk discovers plugins from three sources (in order):
 
-1. **Entry points** — Python packages registered via `pyproject.toml`
-2. **YAML files** — `~/.config/graftpunk/plugins/*.yaml` and `*.yml`
-3. **Python files** — `~/.config/graftpunk/plugins/*.py` (files starting with `_` are skipped)
+1. **Entry points**: Python packages registered via `pyproject.toml`
+2. **YAML files**: `~/.config/graftpunk/plugins/*.yaml` and `*.yml`
+3. **Python files**: `~/.config/graftpunk/plugins/*.py` (files starting with `_` are skipped)
 
 If two plugins have the same `site_name`, registration **fails with an error** showing both plugin sources. This prevents silent shadowing.
 
 ## Key Concepts
 
-- **`site_name`** — The CLI subcommand group name (e.g., `gp hn ...`)
-- **`session_name`** — The cached session key (can differ from `site_name`)
-- **`CommandContext`** — Injected into all command handlers with the session, plugin name, and observability context
-- **`api_version`** — Set to `1` for all new plugins
-- **`--observe`** — Pass `--observe full` to any command to capture screenshots, network logs, and events
+- **`site_name`**: the CLI subcommand group name (e.g., `gp hn ...`)
+- **`session_name`**: the base name of the cached session (defaults to `site_name`); the key a command reads is the operating name resolved per invocation, such as `myshop@alice`
+- **`CommandContext`**: injected into all command handlers with the session, plugin name, and observability context
+- **`api_version`**: set to `1` for all new plugins
+- **`--observe`**: pass `--observe full` to any command to capture screenshots, network logs, and events
 
 ## See Also
 
-- [How It Works](../docs/HOW_IT_WORKS.md) — Full architecture documentation
-- [Main README](../README.md) — graftpunk overview
+- [Writing a graftpunk plugin](../docs/PLUGIN_DEVELOPMENT.md): the how-to guide, from recording a site to a tested plugin
+- [How It Works](../docs/HOW_IT_WORKS.md): full architecture documentation
+- [Main README](../README.md): graftpunk overview
