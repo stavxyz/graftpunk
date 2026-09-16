@@ -191,7 +191,9 @@ Sessions expire. graftpunk can keep them alive in the background with the keepal
 
 ## Plugins
 
-graftpunk is extensible via Python classes or YAML configuration. Both support declarative login, resource limits, and output formatting.
+A plugin turns one site into a CLI command group. It declares where the site is, how to log in, and what each command fetches; graftpunk supplies the browser login, the cached session, the browser headers, tokens, retries, and output formatting. Write one in Python for anything with logic in it, or in YAML for plain REST calls. Both support declarative login, resource limits, and output formatting.
+
+Plugins are discovered from three sources: Python packages registered on the `graftpunk.plugins` entry-point group, YAML files in `~/.config/graftpunk/plugins/` (`*.yaml`, `*.yml`), and Python files in the same directory (`*.py`). Two plugins sharing a `site_name` is an error naming both sources, never a silent shadowing. **[Writing a graftpunk plugin](docs/PLUGIN_DEVELOPMENT.md)** is the guide: naming, recording a site, reading the recording, scaffolding, implementing, login, secrets, and tests.
 
 ### YAML Plugin (Simple REST Calls)
 
@@ -280,16 +282,6 @@ gp mybank statements --month january --year 2024 --format table
 # List all discovered plugins
 gp plugins
 ```
-
-### Plugin Discovery
-
-Plugins are discovered from three sources:
-
-1. **Entry points** — Python packages registered via `pyproject.toml`
-2. **YAML files** — `~/.config/graftpunk/plugins/*.yaml` and `*.yml`
-3. **Python files** — `~/.config/graftpunk/plugins/*.py`
-
-If two plugins share the same `site_name`, registration fails with an error showing both sources. No silent shadowing.
 
 See [examples/](https://github.com/stavxyz/graftpunk/blob/main/examples/README.md) for working plugins and templates.
 
@@ -385,39 +377,18 @@ Pass `--observe full` to any command to capture screenshots, HAR files, and cons
 
 ### From recording to plugin
 
-Record a session, read it, then scaffold:
+Record the site, read the recording, scaffold a project from it, then fill in
+the stubs and test them against fixtures. Each step, with the options and the
+rules, is in [Writing a graftpunk plugin](docs/PLUGIN_DEVELOPMENT.md):
+[Capture](docs/PLUGIN_DEVELOPMENT.md#capture),
+[Understand](docs/PLUGIN_DEVELOPMENT.md#understand), and
+[Scaffold](docs/PLUGIN_DEVELOPMENT.md#scaffold).
 
 ```bash
-# 1. Capture: record real traffic (see Observability above)
 gp observe -s mybank interactive https://secure.mybank.example.com/dashboard
-
-# 2. Read: a digest of hosts, endpoints, login, and tokens, redacted by construction
 gp observe digest mybank
-
-# 3. Scaffold: a plugin filled in from that digest
 gp plugin new mybank --from-run mybank
 ```
-
-`gp plugin new <name> --from-run SESSION [--run RUN_ID]` fills the scaffold
-from a run's digest: `base_url`, `login_config`, `token_config`, and up to
-twelve command stubs. `--run` names a specific run instead of the session's
-newest one, and requires `--from-run`. A plugin name starts with a letter,
-uses letters, digits, hyphens, and underscores, and is at most 40 characters;
-the command refuses a name that collides with a reserved top-level `gp`
-command name, such as `plugin`, `plugins`, `session`, `http`, `config`,
-`keepalive`, or `observe`. A hyphenated name maps to an importable package:
-`gp plugin new my-shop` writes `src/graftpunk_my_shop/plugin.py` and
-`tests/test_my_shop.py`, registers the entry point `my-shop =
-"graftpunk_my_shop.plugin:MyShopPlugin"`, and the plugin's own CLI command
-stays `gp my-shop`. The generated project passes its own `ruff check` and
-`ruff format --check` as written.
-
-`gp observe fixtures` derives named, provenance-tagged file fixtures from the
-same run for the generated project's own test suite; captures never enter
-git (`tests/captures/` is gitignored automatically). Each fixture gets a
-`<file>.meta.json` sidecar (url, status, content type, body parameter names,
-capture time), which `graftpunk.testing.FixtureSession` reads so a fixture
-copied from a capture keeps its recorded status.
 
 ## Configuration
 
