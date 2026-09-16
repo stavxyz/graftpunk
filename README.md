@@ -261,12 +261,11 @@ class MyBankPlugin(SitePlugin):
 
     @command(help="List all accounts")
     def accounts(self, ctx: CommandContext):
-        return ctx.session.get(f"{self.base_url}/api/accounts").json()
+        return ctx.request_json("GET", "/api/accounts")
 
     @command(help="Get statements for a month")
     def statements(self, ctx: CommandContext, month: str, year: int = 2024):
-        url = f"{self.base_url}/api/statements/{year}/{month}"
-        return ctx.session.get(url).json()
+        return ctx.request_json("GET", f"/api/statements/{year}/{month}")
 ```
 
 ### Using Plugins
@@ -378,16 +377,19 @@ Pass `--observe full` to any command to capture screenshots, HAR files, and cons
 ### From recording to plugin
 
 Record the site, read the recording, scaffold a project from it, then fill in
-the stubs and test them against fixtures. Each step, with the options and the
-rules, is in [Writing a graftpunk plugin](docs/PLUGIN_DEVELOPMENT.md):
+the stubs and test them against fixtures. A first capture has no cached session
+to name, so it runs `--no-session` and is filed under the name graftpunk infers
+from the host, which `gp observe list` prints (`<name>` below). Each step, with
+the options and the rules, is in
+[Writing a graftpunk plugin](docs/PLUGIN_DEVELOPMENT.md):
 [Capture](docs/PLUGIN_DEVELOPMENT.md#capture),
 [Understand](docs/PLUGIN_DEVELOPMENT.md#understand), and
 [Scaffold](docs/PLUGIN_DEVELOPMENT.md#scaffold).
 
 ```bash
-gp observe -s mybank interactive https://secure.mybank.example.com/dashboard
-gp observe digest mybank
-gp plugin new mybank --from-run mybank
+gp observe --no-session interactive https://secure.mybank.example.com/dashboard
+gp observe digest <name>
+gp plugin new mybank --from-run <name>
 ```
 
 ## Configuration
