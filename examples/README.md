@@ -109,7 +109,7 @@ Both YAML and Python plugins support declarative login configuration.
 2. Install the generated package in editable mode, for example `uv pip install -e .` or `pip install -e .`.
 3. Run `gp plugins` to verify discovery.
 
-See the main README's "From recording to plugin" section for the full workflow.
+See [Scaffold](../docs/PLUGIN_DEVELOPMENT.md#scaffold) in the plugin guide for every option, both project modes, and what the generated files contain. The guide's other sections cover the rest of the workflow, from recording a site to testing the plugin.
 
 ## Plugin Discovery
 
@@ -131,5 +131,6 @@ If two plugins have the same `site_name`, registration **fails with an error** s
 
 ## See Also
 
+- [Writing a graftpunk plugin](../docs/PLUGIN_DEVELOPMENT.md): the how-to guide, from recording a site to a tested plugin
 - [How It Works](../docs/HOW_IT_WORKS.md) — Full architecture documentation
 - [Main README](../README.md) — graftpunk overview
