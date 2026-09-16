@@ -35,8 +35,8 @@ The attributes that matter:
 
 - `site_name` is the CLI command group: this plugin is `gp myshop`.
 - `session_name` is the base name of the cached session. It defaults to
-  `site_name` and is a base, not a storage key: one login per account produces
-  `myshop@alice` beside `myshop@bob`.
+  `site_name` and is a base, not a storage key: one login per account produces a
+  slot per identifier: `myshop@alice-example-com` beside `myshop@bob-example-com`.
 - `base_url` is what a relative URL in `ctx.request_json` resolves against.
 - `backend` is `"selenium"` or `"nodriver"`. The `SitePlugin` class default is
   `"selenium"`; `gp plugin new` writes `"nodriver"`.
@@ -110,8 +110,8 @@ Decide the following before you record anything.
 **The name.** It starts with a letter, uses letters, digits, hyphens, and
 underscores, and is at most 40 characters. It cannot be a reserved top-level
 `gp` command name (`plugin`, `plugins`, `session`, `http`, `config`,
-`keepalive`, `observe`, and anything else registered by the time plugins
-attach). A hyphenated name maps to an importable package: `my-shop` becomes the
+`keepalive`, `observe`, `version`, and anything else registered by the time
+plugins attach). A hyphenated name maps to an importable package: `my-shop` becomes the
 package `graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key
 `my-shop`, and the CLI command `gp my-shop`.
 
@@ -121,10 +121,12 @@ you would use at the shell: `gp myshop orders`, `gp myshop order --order-id
 
 **The account.** One account per session slot. If the site distinguishes
 accounts you care about, plan on logging in as each of them; graftpunk caches
-them side by side as `myshop@alice` and `myshop@bob`. `gp myshop login --as
-alice` names the slot explicitly when the derived label is not the one you want.
+them side by side as `myshop@alice-example-com` and `myshop@bob-example-com`.
+`gp myshop login --as alice` names the slot explicitly when the derived label is
+not the one you want, which is how you get a short label such as
+`myshop@alice`.
 
-**The login shape.** Four shapes come up:
+**The login shape.** Five shapes come up:
 
 - A plain form: one page, a username field, a password field, a submit button.
   Declarative `LoginConfig` handles it.
@@ -160,7 +162,7 @@ browser with no cached cookies, which is what you want the first time: you are
 recording the login as well as the flows behind it, and there is no cached
 session to name yet. A `--no-session` recording is filed under the name
 graftpunk infers from the host, the second-to-last label: `myshop` for
-`myshop.example` or `www.myshop.com`, `example` for `myshop.example.com`. `gp
+`myshop.example` or `www.myshop.example`, `example` for `myshop.example.com`. `gp
 observe list` prints it. For the host this guide uses, that name is `myshop`, so
 the commands below work as written; for a host whose inferred name differs,
 substitute the one `gp observe list` printed. Once the plugin exists and `gp
@@ -382,7 +384,7 @@ packages = ["src/graftpunk_myshop", "src/graftpunk_otherstore"]
 
 Suite mode gives each plugin its own `tests/fixtures/<name>/` directory, because
 fixture filenames are derived from endpoint paths and two plugins in one suite
-can easily share a path. It does not rewrite `tests/conftest.py`, which still
+can share a path. It does not rewrite `tests/conftest.py`, which still
 scrubs only the first plugin's environment prefix; add a line for the new one
 (see [Secrets and configuration](#secrets-and-configuration)).
 
@@ -392,7 +394,8 @@ exists, the command refuses and writes nothing at all.
 
 ### What gets filled in
 
-From the digest above, `src/graftpunk_myshop/plugin.py` comes out as:
+From the digest above, `src/graftpunk_myshop/plugin.py` comes out as this, with
+the `api_orders_by_order_id` and `dashboard` stubs elided:
 
 ```python
 """myshop plugin.
@@ -517,7 +520,8 @@ Both take a URL relative to `base_url` or an absolute one, and pass everything
 else through to `requests`. The `role` decides which set of browser headers the
 request carries: `"xhr"` for a site's own JSON endpoints, `"navigation"` for a
 page a browser would load, `"form"` for a form submission. Those three are the
-built-ins, and a role name can be any string when a plugin registers its own.
+built-ins, and a role name can be any string a plugin has registered with
+`graftpunk.register_role(name, headers)`.
 
 Both normalise a `params` or `data` mapping before sending it:
 
@@ -798,9 +802,9 @@ passes through, and raise `timeout` above the default if the chain is slow.
 
 Sessions are cached per machine (with the default local storage backend, under
 the graftpunk config directory) and shared by every project on that machine. The
-account label on a slot (`myshop@alice`) is slugified from the identifier in the
-credentials you submitted. graftpunk never asks the site which account is
-actually signed in.
+account label on a slot is the identifier in the credentials you submitted,
+slugified: `alice@example.com` gives `myshop@alice-example-com`. graftpunk never
+asks the site which account is actually signed in.
 
 That is fine until it is not. If the site can land you on a different account
 than the credentials suggest (a shared login, an account switcher, an SSO tenant
@@ -862,9 +866,10 @@ gp config set MYSHOP_PASSWORD '$(your-secret-tool read myshop/password)'
 
 Single-quote it, or your shell evaluates the command at `set` time and stores
 the output, which is exactly what you were avoiding. `gp config list` shows a
-command entry as `[command]` and never runs it. `gp config get NAME --resolve`
-runs it and prints the result, which is the one command here that can print a
-secret.
+command entry as `[command]` and never runs it, and `gp config get NAME
+--resolve` runs it and prints the result. A static entry has no such protection:
+`gp config list` and a plain `gp config get NAME` both print its value verbatim,
+which is the other reason to prefer the command form for anything secret.
 
 A command entry runs only when a value is needed: a login, the first
 access of an allowlisted setting, or a YAML plugin's `${VAR}` header expansion.
@@ -893,7 +898,7 @@ verify once by logging in.
 
 ### Keep the developer's own environment out of the tests
 
-A generated `tests/conftest.py` is two lines:
+A generated `tests/conftest.py` is an import and an assignment:
 
 ```python
 from graftpunk.testing.plugin import site_env_scrubber

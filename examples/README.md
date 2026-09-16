@@ -124,7 +124,7 @@ If two plugins have the same `site_name`, registration **fails with an error** s
 ## Key Concepts
 
 - **`site_name`**: the CLI subcommand group name (e.g., `gp hn ...`)
-- **`session_name`**: the cached session key (can differ from `site_name`)
+- **`session_name`**: the base name of the cached session (defaults to `site_name`); the key a command reads is the operating name resolved per invocation, such as `myshop@alice`
 - **`CommandContext`**: injected into all command handlers with the session, plugin name, and observability context
 - **`api_version`**: set to `1` for all new plugins
 - **`--observe`**: pass `--observe full` to any command to capture screenshots, network logs, and events
