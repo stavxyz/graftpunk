@@ -46,7 +46,7 @@ And in the package, delivered in a pull request before the skill (see Package ch
 src/graftpunk/plugins/cli_plugin.py       @command(endpoint=...) stored on the command metadata
 src/graftpunk/cli/scaffold_commands.py    gp plugin info, gp plugin new --command, gp plugin add-command, gp plugin check
 src/graftpunk/devtools/scaffold/render.py a single-command render entry point; the declared endpoint and typed params on every stub; the placement invariant
-src/graftpunk/devtools/captures.py        capture_sha256 and flagged_names in the fixture sidecar
+src/graftpunk/cli/observe_commands.py     capture_sha256 and flagged_names in the fixture sidecar gp observe fixtures writes
 src/graftpunk/testing/                    fixtures_are_sanitised, wired into the generated conftest
 ```
 
