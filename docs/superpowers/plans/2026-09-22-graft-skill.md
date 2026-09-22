@@ -64,7 +64,7 @@
 
 The spec marks this UNVERIFIED: that a Ctrl+C typed while a `!` command runs in a Claude Code session reaches `gp` as SIGINT, so the recorder's handler runs and the HAR is saved. The interactive-mode documentation (https://code.claude.com/docs/en/interactive-mode) describes Ctrl+C only as interrupting the running operation. The outcome decides one wording choice in Task 5 (`capture.md`) and nothing else; every other task is independent of it. A person runs this task on a workstation with a display, because the recorder opens a real browser.
 
-The spec's second UNVERIFIED platform claim, that an unchanged version string can leave stale plugin files in place, needs no probe: the plugins reference (https://code.claude.com/docs/en/plugins-reference, the `version` field) says setting a version "pins the plugin to that version string, so users only receive updates when you bump it". The version rule in Task 6 rests on that sentence.
+The spec's former second UNVERIFIED claim, that an unchanged version string leaves users on the content they have, needs no probe (the spec now cites the source): the plugins reference (https://code.claude.com/docs/en/plugins-reference, the `version` field) says setting a version "pins the plugin to that version string, so users only receive updates when you bump it". The version rule in Task 6 rests on that sentence.
 
 **Files:**
 - None. The result is recorded in the pull request's test plan and in Task 5's commit message.
@@ -199,7 +199,7 @@ Create `.claude-plugin/marketplace.json`:
 }
 ```
 
-The manifest carries no `$schema` key. The plan review of 2026-09-22 reported that the schema URL returns 404 and that the marketplace documentation says Claude Code ignores the field; both are unverified in this plan.
+The manifest carries no `$schema` key. The marketplace documentation says of `$schema` that "Claude Code ignores this field at load time" (https://code.claude.com/docs/en/plugin-marketplaces), and `https://www.anthropic.com/claude-code/marketplace.schema.json` returned HTTP 404 when checked on 2026-09-22.
 
 Create `.claude-plugin/plugin.json`:
 

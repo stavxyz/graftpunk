@@ -107,7 +107,7 @@ And in the skill's own tree, beside the files listed first: `skills/graft/refere
 }
 ```
 
-`.claude-plugin/plugin.json` carries the same name, description, version, and author. The two `version` fields move together; nothing else in either file changes per release. No email in `owner` or `author` (the repository is public; the GitHub handle is enough). No `$schema` key: the plan review of 2026-09-22 reported that the schema URL returns 404 and that Claude Code ignores the field (unverified here).
+`.claude-plugin/plugin.json` carries the same name, description, version, and author. The two `version` fields move together; nothing else in either file changes per release. No email in `owner` or `author` (the repository is public; the GitHub handle is enough). No `$schema` key: the marketplace documentation says "Claude Code ignores this field at load time" (https://code.claude.com/docs/en/plugin-marketplaces), and the schema URL returned HTTP 404 when checked on 2026-09-22.
 
 ## Package changes, delivered first
 
