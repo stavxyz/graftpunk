@@ -19,7 +19,7 @@
 - No Claude attribution in commits: no `Co-Authored-By`, no "Generated with" footer, no `Claude-Session` trailer.
 - Python `>=3.11` typing: `X | None`, `Literal[...]` for closed string sets, `from __future__ import annotations` at the top of every new module.
 - Tests assert behaviour, never that a mock was called. Fault injection is allowed; the assertions stay on what is on disk or printed.
-- Within the package, `graftpunk/contracts.py` is the only module that declares a schema number, and `refuse_unknown_schema` is the only place one is compared.
+- Within the package, `graftpunk/contracts.py` is the only module that declares the current schema number, and the only module that compares one: `refuse_unknown_schema` for a payload a reader loads, and `contract_mismatch` for the `gp version --contract` handshake.
 - The full gate, green at the end of every task and run in full by the last task: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/ -q && uvx ruff check . && uvx ruff format --check . && uvx ty@0.0.75 check src/`
 - A single test runs as `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/<file>.py::<test> -q`. Use `uv sync -p 3.12` if the virtualenv was built on 3.14 (the suite fakes failures there).
 
@@ -35,22 +35,23 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/graftpunk/devtools/scaffold/pysrc.py` (new, Task 1) | The Python-source formatting helpers moved out of `render.py`: width, indentation, quoting, escaping, wrapping, literal, dict, call, URL, and import line builders. |
-| `src/graftpunk/contracts.py` (new, Task 2) | `ENDPOINTS_SCHEMA`, `SIDECAR_SCHEMA`, `CLI_SURFACES`, `current_schema`, `cli_contracts`, `refuse_unknown_schema`, `UnknownSchemaError`. |
+| `src/graftpunk/devtools/scaffold/pysrc.py` (new, Task 1) | The Python-source formatting helpers moved out of `render.py`: width, indentation, quoting, escaping, wrapping, literal, dict, call, URL, and import line builders. The ones another module imports get public names and an `__all__` in a second commit. |
+| `src/graftpunk/contracts.py` (new, Tasks 2, 5) | `ENDPOINTS_SCHEMA`, `SIDECAR_SCHEMA`, `CLI_SURFACES`, `current_schema`, `cli_contracts`, `refuse_unknown_schema`, `UnknownSchemaError`, `contract_mismatch`. |
 | `src/graftpunk/har/digest.py` (modify, Task 3) | `Endpoint.login_flow`; `_login_flow_pairs` and `_with_login_flow` moved in from the generator. |
 | `src/graftpunk/har/report.py` (modify, Task 4) | `endpoints_projection`, `render_endpoints_json`. |
 | `src/graftpunk/cli/observe_commands.py` (modify, Tasks 4, 6, 7) | `--endpoints-json`; the matcher consumes `parse_endpoint`'s pair; fixtures write their sidecar through the devtools writer. |
-| `src/graftpunk/cli/main.py` (modify, Task 5) | `installation_facts`, `gp version --json --at-least`. |
+| `src/graftpunk/cli/main.py` (modify, Task 5) | `installation_facts`, `gp version --json --at-least --contract`. |
 | `pyproject.toml`, `uv.lock` (modify, Task 5) | `packaging` joins the runtime dependencies. |
 | `src/graftpunk/har/naming.py` (modify, Task 6) | `HTTP_METHODS`, `EndpointSpecError`, `parse_endpoint`, `parse_command_spec`. |
 | `src/graftpunk/testing/sidecar.py` (new, Task 7) | `SIDECAR_SUFFIX`, `SIDECAR_FIELDS`, `Sidecar`, `SidecarError`, `sidecar_path`, `is_sidecar`, `sidecar_payload`, `sidecar_text`, `load_sidecar`. |
 | `src/graftpunk/testing/__init__.py` (modify, Task 7) | `FixtureSession` reads sidecars through the owner. |
 | `src/graftpunk/devtools/captures.py` (modify, Task 7) | `flagged_names_of`, `write_sidecar`. |
+| `docs/PLUGIN_DEVELOPMENT.md`, `docs/HOW_IT_WORKS.md` (modify, Task 7) | The sidecar example and the sidecar field list describe the schema 1 format. |
 | `src/graftpunk/cli/scaffold_commands.py` (modify, Task 8) | `gp plugin new --check-name`, `_name_refusal`. |
-| `src/graftpunk/devtools/scaffold/policy.py` (new, Task 9) | `FIXTURES_TREE`, `fixtures_root`. |
+| `src/graftpunk/devtools/scaffold/policy.py` (new, Task 9) | `TESTS_DIR`, `FIXTURES_TREE`, `fixtures_root`. |
 | `src/graftpunk/devtools/scaffold/render.py` (modify, Tasks 1, 3, 9, 11) | Loses the formatting helpers, the login-flow computation, and the fixtures-root rule; gains the declared endpoint and typed parameters on every stub. |
 | `src/graftpunk/devtools/scaffold/write.py` (new, Task 10) | `PlannedChange`, `apply_changes`, `find_conflicts`, `validate_python`, `validate_toml`, `ChangeConflictError`, `InvalidChangeError`. |
-| `src/graftpunk/devtools/scaffold/pyproject_edit.py` (modify, Task 10) | Pure `with_entry_point` and `with_wheel_package`; the two file wrappers write through `write.py`. |
+| `src/graftpunk/devtools/scaffold/pyproject_edit.py` (modify, Task 10) | Pure `with_entry_point` and `with_wheel_package`; the file-writing `add_entry_point` and `add_wheel_package` are removed. |
 | `src/graftpunk/devtools/scaffold/project.py` (modify, Task 10) | `write_scaffold` plans its changes and applies them through `write.py`. |
 | `src/graftpunk/plugins/cli_plugin.py` (modify, Task 11) | `CommandMetadata.endpoint`; `@command(endpoint=...)`. |
 | `docs/PLUGIN_DEVELOPMENT.md` (modify, Task 11) | "What gets filled in" and "CLI parameter types" describe the new stub. |
@@ -60,7 +61,7 @@
 
 ### Task 1: Split the formatting helpers out of `render.py` into `pysrc.py`
 
-A pure move, first, so every later task edits the post-split `render.py` and a bisect can tell a move from a behaviour change. Names keep their leading underscore; nothing is renamed. This closes item 2 of issue #201.
+A pure move, first, so every later task edits the post-split `render.py` and a bisect can tell a move from a behaviour change. The move keeps every name as it is; a second commit (Steps 7 to 9) then gives the helpers another module imports public names and gives `pysrc.py` an `__all__`, so no module imports a private name from it. This closes item 2 of issue #201.
 
 **Files:**
 - Create: `src/graftpunk/devtools/scaffold/pysrc.py`
@@ -70,7 +71,7 @@ A pure move, first, so every later task edits the post-split `render.py` and a b
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `graftpunk.devtools.scaffold.pysrc` defining, unchanged: `_GENERATED_LINE_LENGTH`, `_L1`, `_L2`, `_L3`, `_L4`, `_INDENT_STEP`, `_DOCSTRING_WRAP_WIDTH`, `_escaped_for_docstring`, `_repaired_escape_splits`, `_escaped_docstring_wrap`, `_wrapped_docstring_lines`, `_wrapped_comment_lines`, `_wrapped_docstring_block`, `_quoted`, `_quote_char`, `_escaped_body`, `_split_key_lines`, `_dict_entry_lines`, `_exploded_dict_lines`, `_call_lines`, `_literal_lines`, `_literal_dict_entry_lines`, `_URL_PLACEHOLDER_RE`, `_quoted_fstring`, `_url_atoms`, `_url_chunks`, `_url_expr_lines`, `_import_lines(module: str, name: str) -> list[str]`. Task 11 generalises `_import_lines` to `(module: str, *names: str)`. `render.py` imports from `pysrc` the ones it still uses.
+- Produces: `graftpunk.devtools.scaffold.pysrc` defining the 28 helpers the move carries. After Step 8, the sixteen that `render.py` imports are public and listed in `pysrc.__all__`: `GENERATED_LINE_LENGTH`, `L1`, `L2`, `L3`, `INDENT_STEP`, `URL_PLACEHOLDER_RE`, `wrapped_docstring_lines`, `wrapped_comment_lines`, `wrapped_docstring_block`, `quoted_literal` (was `_quoted`), `exploded_dict_lines`, `call_expression_lines` (was `_call_lines`), `literal_lines`, `literal_dict_entry_lines`, `url_expr_lines`, and `import_lines(module: str, name: str) -> list[str]`. The other twelve stay private to `pysrc.py` (`_L4`, `_DOCSTRING_WRAP_WIDTH`, `_escaped_for_docstring`, `_repaired_escape_splits`, `_escaped_docstring_wrap`, `_quote_char`, `_escaped_body`, `_split_key_lines`, `_dict_entry_lines`, `_quoted_fstring`, `_url_atoms`, `_url_chunks`). Task 11 generalises `import_lines` to `(module: str, *names: str)`. Every later task, in this plan and the next, uses the public names, and any name another module imports from `pysrc` joins `__all__` (a test in `tests/unit/test_scaffold_pysrc.py` holds that).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -272,6 +273,111 @@ git add src/graftpunk/devtools/scaffold/pysrc.py src/graftpunk/devtools/scaffold
 git commit -m "refactor(scaffold): move the formatting helpers out of render.py into pysrc.py"
 ```
 
+- [ ] **Step 7: Write the failing export test**
+
+Append to `tests/unit/test_scaffold_pysrc.py`:
+
+```python
+def test_every_name_another_module_imports_is_public_and_exported() -> None:
+    """No module imports a private name from pysrc: what it shares is its __all__."""
+    package = Path(pysrc.__file__).parents[2]
+    imported: set[str] = set()
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imported |= {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "graftpunk.devtools.scaffold.pysrc"
+            for alias in node.names
+        }
+    assert imported
+    assert imported <= set(pysrc.__all__)
+    assert not [name for name in pysrc.__all__ if name.startswith("_")]
+```
+
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_scaffold_pysrc.py -q`
+Expected: FAIL (`AttributeError: module 'graftpunk.devtools.scaffold.pysrc' has no attribute '__all__'`).
+
+- [ ] **Step 8: Rename the shared helpers and declare `__all__`**
+
+Run from the worktree root. The script refuses to run if a new name is already bound anywhere it edits (`_quoted` and `_call_lines` get longer names because `quoted` and `call_lines` are local variables in those modules):
+
+```bash
+uv run python - <<'PY'
+import re
+from pathlib import Path
+
+RENAMES = {
+    "_GENERATED_LINE_LENGTH": "GENERATED_LINE_LENGTH",
+    "_L1": "L1",
+    "_L2": "L2",
+    "_L3": "L3",
+    "_INDENT_STEP": "INDENT_STEP",
+    "_URL_PLACEHOLDER_RE": "URL_PLACEHOLDER_RE",
+    "_wrapped_docstring_lines": "wrapped_docstring_lines",
+    "_wrapped_comment_lines": "wrapped_comment_lines",
+    "_wrapped_docstring_block": "wrapped_docstring_block",
+    "_quoted": "quoted_literal",
+    "_exploded_dict_lines": "exploded_dict_lines",
+    "_call_lines": "call_expression_lines",
+    "_literal_lines": "literal_lines",
+    "_literal_dict_entry_lines": "literal_dict_entry_lines",
+    "_url_expr_lines": "url_expr_lines",
+    "_import_lines": "import_lines",
+}
+files = [
+    Path("src/graftpunk/devtools/scaffold/pysrc.py"),
+    Path("src/graftpunk/devtools/scaffold/render.py"),
+    Path("tests/unit/test_scaffold_pysrc.py"),
+    Path("tests/unit/test_scaffold_render.py"),
+]
+texts = {path: path.read_text(encoding="utf-8") for path in files}
+for path, text in texts.items():
+    for new in RENAMES.values():
+        assert not re.search(rf"\b{new}\b", text), (path, new)
+for path, text in texts.items():
+    for old, new in RENAMES.items():
+        text = re.sub(rf"\b{re.escape(old)}\b", new, text)
+    path.write_text(text, encoding="utf-8")
+PY
+```
+
+Then, in `src/graftpunk/devtools/scaffold/pysrc.py`, replace the module docstring's last two sentences ("The names keep their leading underscore ... changed no behaviour.") with "A name another module imports is public and listed in ``__all__``; the rest are private to this module.", and add after the imports:
+
+```python
+__all__ = [
+    "GENERATED_LINE_LENGTH",
+    "INDENT_STEP",
+    "L1",
+    "L2",
+    "L3",
+    "URL_PLACEHOLDER_RE",
+    "call_expression_lines",
+    "exploded_dict_lines",
+    "import_lines",
+    "literal_dict_entry_lines",
+    "literal_lines",
+    "quoted_literal",
+    "url_expr_lines",
+    "wrapped_comment_lines",
+    "wrapped_docstring_block",
+    "wrapped_docstring_lines",
+]
+```
+
+Run `uvx ruff check --fix src/graftpunk/devtools/scaffold/ tests/unit/test_scaffold_render.py tests/unit/test_scaffold_pysrc.py` and `uvx ruff format src/graftpunk/devtools/scaffold/ tests/unit/`, which re-sort the renamed import blocks.
+
+- [ ] **Step 9: Run the suite and the gate, then commit**
+
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_scaffold_pysrc.py tests/unit/test_scaffold_render.py tests/unit/test_scaffold_cli.py tests/unit/test_scaffold_project.py -q`
+Expected: PASS. Then run the full gate from Global Constraints. Expected: green.
+
+```bash
+git add src/graftpunk/devtools/scaffold/pysrc.py src/graftpunk/devtools/scaffold/render.py tests/unit/test_scaffold_pysrc.py tests/unit/test_scaffold_render.py
+git commit -m "refactor(scaffold): pysrc.py exports the helpers other modules use under public names"
+```
+
 ---
 
 ### Task 2: `graftpunk/contracts.py`
@@ -282,7 +388,7 @@ git commit -m "refactor(scaffold): move the formatting helpers out of render.py 
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `Surface = Literal["endpoints", "sidecar"]`; `ENDPOINTS_SCHEMA: Final = 1`; `SIDECAR_SCHEMA: Final = 1`; `CLI_SURFACES: Final[tuple[Surface, ...]] = ("endpoints",)`; `current_schema(surface: Surface) -> int`; `cli_contracts() -> dict[str, int]`; `class UnknownSchemaError(ValueError)`; `refuse_unknown_schema(surface: Surface, value: object) -> int`. Task 4 reads `current_schema("endpoints")`, Task 5 reads `cli_contracts()`, Task 7 reads `current_schema("sidecar")` and `refuse_unknown_schema("sidecar", ...)`. The project-tools plan adds `"info"` to `Surface`, `INFO_SCHEMA`, `_CURRENT`, and `CLI_SURFACES`.
+- Produces: `Surface = Literal["endpoints", "sidecar"]`; `ENDPOINTS_SCHEMA: Final = 1`; `SIDECAR_SCHEMA: Final = 1`; `CLI_SURFACES: Final[tuple[Surface, ...]] = ("endpoints",)`; `current_schema(surface: Surface) -> int`; `cli_contracts() -> dict[str, int]`; `class UnknownSchemaError(ValueError)`; `refuse_unknown_schema(surface: Surface, value: object) -> int`. Task 4 reads `current_schema("endpoints")`, Task 5 reads `cli_contracts()` and adds `contract_mismatch`, Task 7 reads `current_schema("sidecar")` and `refuse_unknown_schema("sidecar", ...)`. The project-tools plan adds `"info"` to `Surface`, `INFO_SCHEMA`, `_CURRENT`, and `CLI_SURFACES`, following the edit list in the module docstring; the test that holds `_CURRENT` to `Surface` fails if it misses one.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -296,14 +402,17 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
 import graftpunk
 from graftpunk.contracts import (
+    _CURRENT,
     CLI_SURFACES,
     ENDPOINTS_SCHEMA,
     SIDECAR_SCHEMA,
+    Surface,
     UnknownSchemaError,
     cli_contracts,
     current_schema,
@@ -326,6 +435,12 @@ class TestCurrentNumbers:
     def test_cli_contracts_lists_every_surface_a_caller_reads_through_the_cli(self) -> None:
         assert cli_contracts() == {surface: current_schema(surface) for surface in CLI_SURFACES}
         assert "sidecar" not in cli_contracts()
+
+    def test_every_surface_has_a_number_and_the_cli_ones_are_among_them(self) -> None:
+        """A surface added to Surface without its number, or listed for the CLI
+        without being declared, fails here rather than at a KeyError in a reader."""
+        assert set(_CURRENT) == set(get_args(Surface))
+        assert set(CLI_SURFACES) <= set(_CURRENT)
 
 
 class TestRefuseUnknownSchema:
@@ -378,9 +493,17 @@ version from 1 to the current one.
 number of its own: its two fields, ``graftpunk`` and ``contracts``, are
 permanent, and fields are added to it and never renamed or removed.
 
-This module is the only place in the package a schema number is declared, and
-:func:`refuse_unknown_schema` is the only place one is compared. A new surface is
-one new constant here (graft skill spec, 2026-09-21).
+This module is the only place in the package the current schema number of a
+surface is declared, and the only place one is compared:
+:func:`refuse_unknown_schema` for a payload a reader loads (graft skill spec,
+2026-09-21).
+
+Adding a surface is these edits, all here: its name in ``Surface``; its
+``<NAME>_SCHEMA`` constant; its entry in ``_CURRENT``; and, when a caller reads
+it through a ``gp`` command, its name in ``CLI_SURFACES``. The payload's writer
+then reads its number through :func:`current_schema` and never writes a
+literal. A test holds ``_CURRENT`` to ``Surface`` and ``CLI_SURFACES`` to
+``_CURRENT``, so a missed edit fails the suite.
 """
 
 from __future__ import annotations
@@ -719,6 +842,8 @@ git commit -m "feat(har): the digest flags the login flow's endpoints and the ge
 - Consumes: `current_schema("endpoints")` (Task 2); `Endpoint.login_flow` (Task 3); `summarize_shape` (existing, `report.py:35`).
 - Produces: `graftpunk.har.report.endpoints_projection(d: RunDigest) -> dict[str, Any]` with the field set `{"schema", "source", "primary_host", "endpoints", "login"}`; `source` keys `{"session", "run_id", "har"}`; each endpoint entry `{"method", "template", "login_flow", "content_type", "shape", "query_params", "body_params", "custom_headers"}`; `login` keys `{"auth_urls", "forms"}` with `auth_urls` entries `{"method", "url", "kind"}` and `forms` entries `{"action", "fields"}`. `render_endpoints_json(d: RunDigest) -> str`. `gp observe digest --endpoints-json`. The skill's `digest.md` reads exactly these names.
 
+**Stated deferral:** `digest_cmd` ends this task with two machine-format flags, `--json` and `--endpoints-json`, refused together. One output-format option (`--format markdown|json|endpoints-json`) would be cleaner, and it is deferred with a trigger: the first proposal of a third machine format replaces the flags with that option (keeping the two flags as aliases for one release) instead of adding a third flag.
+
 - [ ] **Step 1: Write the failing tests**
 
 Append to `tests/unit/test_har_report.py` (add `dataclasses` to its imports, `Endpoint` to the `graftpunk.har.digest` import, and `endpoints_projection`, `render_endpoints_json` to the `graftpunk.har.report` import):
@@ -950,7 +1075,7 @@ In `src/graftpunk/cli/observe_commands.py`, import `render_endpoints_json` besid
     ] = False,
 ```
 
-and replace the first two lines of its body with:
+and replace the three lines of its body after the docstring (`source = _digest_source(...)`, `result = digest(...)`, and `text = render_json(result) if as_json else render_markdown(...)`, at `src/graftpunk/cli/observe_commands.py:138-140`) with:
 
 ```python
     if as_json and endpoints_json:
@@ -980,16 +1105,19 @@ git commit -m "feat(observe): gp observe digest --endpoints-json, a versioned pr
 
 ---
 
-### Task 5: `gp version --json` and `--at-least`, with the `packaging` dependency
+### Task 5: `gp version --json`, `--at-least`, and `--contract`, with the `packaging` dependency
 
 **Files:**
-- Modify: `pyproject.toml:35-49` (`dependencies`), `uv.lock`
-- Modify: `src/graftpunk/cli/main.py:1-16` (imports), `:169-182` (`version`)
-- Test: `tests/unit/test_cli_version.py`
+- Modify: `pyproject.toml:33-47` (`dependencies`), `uv.lock`
+- Modify: `src/graftpunk/cli/main.py:6-14` (standard-library and third-party imports), `:31` (`from graftpunk.config import get_settings`, the import the new one follows), `:169-182` (`version`)
+- Modify: `src/graftpunk/contracts.py` (new `contract_mismatch`; `__all__`; docstring)
+- Test: `tests/unit/test_cli_version.py`, `tests/unit/test_contracts.py`
 
 **Interfaces:**
 - Consumes: `cli_contracts()` (Task 2).
-- Produces: `graftpunk.cli.main.installation_facts() -> dict[str, object]` with the permanent field set `{"graftpunk", "contracts"}`; `gp version --json` prints `json.dumps(installation_facts(), sort_keys=True)` on one line (preflight in the skill plan extracts `contracts` numbers from exactly this form); `gp version --at-least VERSION` exits 0 when the installed version is at least VERSION and 1 otherwise, and 2 for a VERSION `packaging` cannot read.
+- Produces: `graftpunk.contracts.contract_mismatch(surface: str, reads: int) -> str | None`; `graftpunk.cli.main.installation_facts() -> dict[str, object]` with the permanent field set `{"graftpunk", "contracts"}`; `gp version --json` prints `json.dumps(installation_facts(), sort_keys=True)` on one line; `gp version --at-least VERSION --contract SURFACE=N ...` prints that line first when `--json` is given, then exits 0 when the installed version is at least VERSION and every named surface is written at exactly N; 1 when the installed version is below VERSION; 3 when a named surface differs, with one line per mismatch on stderr naming the older side; 1 with a message on stderr for an unreadable VERSION or a malformed `--contract` value; and 2 only for Typer's own usage errors (an unknown option). The skill plan's preflight passes its floor and its two contract numbers in this one call and reads only the exit status, never the JSON.
+
+**Implementation note:** the spec's first wording had preflight read the `contracts` numbers out of the JSON and compare them itself. The comparison moves into the package (`--contract`), so preflight parses no JSON and compares nothing, and the spec's Preflight section says so. An unreadable `--at-least` value exits 1 with a message rather than 2, so exit 2 means exactly "an option gp does not know", which is what preflight's exit 5 reports.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1006,6 +1134,7 @@ import pytest
 from typer.testing import CliRunner
 
 import graftpunk
+from graftpunk import contracts
 from graftpunk.cli.main import app, installation_facts
 from graftpunk.contracts import cli_contracts
 
@@ -1057,9 +1186,61 @@ def test_at_least_without_json_prints_nothing(monkeypatch: pytest.MonkeyPatch) -
     assert result.stdout == ""
 
 
-def test_an_unreadable_floor_is_a_usage_error() -> None:
+def test_an_unreadable_floor_exits_1_with_a_message() -> None:
+    """Exit 2 is kept for an option gp does not know, so a caller can tell the two apart."""
     result = runner.invoke(app, ["version", "--at-least", "not-a-version"])
-    assert result.exit_code == 2
+    assert result.exit_code == 1
+    assert "'not-a-version' is not a version" in result.output
+
+
+def _contract_args(contracts: dict[str, int]) -> list[str]:
+    return [arg for surface, number in contracts.items() for arg in ("--contract", f"{surface}={number}")]
+
+
+def test_matching_contracts_exit_0_and_still_print_the_facts() -> None:
+    result = runner.invoke(app, ["version", "--json", *_contract_args(cli_contracts())])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == installation_facts()
+
+
+def test_a_caller_reading_an_older_schema_is_named_the_older_side(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(contracts._CURRENT, "endpoints", 2)
+    result = runner.invoke(app, ["version", "--json", "--contract", "endpoints=1"])
+    assert result.exit_code == 3
+    assert "endpoints" in result.output
+    assert "the caller is older than graftpunk" in result.output
+    assert json.loads(result.stdout)["contracts"]["endpoints"] == 2
+
+
+def test_a_caller_reading_a_newer_schema_names_graftpunk_the_older_side() -> None:
+    result = runner.invoke(app, ["version", "--contract", "endpoints=2"])
+    assert result.exit_code == 3
+    assert "graftpunk is older than the caller" in result.output
+
+
+def test_a_surface_graftpunk_does_not_serve_is_a_mismatch() -> None:
+    result = runner.invoke(app, ["version", "--contract", "nosuch=1"])
+    assert result.exit_code == 3
+    assert "nosuch" in result.output
+
+
+@pytest.mark.parametrize("value", ["endpoints", "endpoints=", "endpoints=one", "=1"])
+def test_a_malformed_contract_exits_1_with_a_message(value: str) -> None:
+    result = runner.invoke(app, ["version", "--contract", value])
+    assert result.exit_code == 1
+    assert "SURFACE=N" in result.output
+
+
+def test_a_floor_not_met_exits_1_before_the_contracts_are_compared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graftpunk, "__version__", "1.16.0")
+    result = runner.invoke(
+        app, ["version", "--json", "--at-least", "1.17.0", "--contract", "endpoints=2"]
+    )
+    assert result.exit_code == 1
 
 
 @pytest.mark.parametrize(
@@ -1074,10 +1255,32 @@ def test_a_dev_or_local_version_is_ordered_not_rejected(
     assert result.exit_code == exit_code, result.output
 ```
 
+In `tests/unit/test_contracts.py`, add `contract_mismatch` to the `graftpunk.contracts` import and append:
+
+```python
+class TestContractMismatch:
+    """The gp version --contract handshake: equality, with the older side named."""
+
+    def test_the_current_number_matches(self) -> None:
+        assert contract_mismatch("endpoints", current_schema("endpoints")) is None
+
+    def test_an_older_caller_is_named(self) -> None:
+        message = contract_mismatch("endpoints", current_schema("endpoints") - 1)
+        assert message is not None and "the caller is older than graftpunk" in message
+
+    def test_a_newer_caller_is_named(self) -> None:
+        message = contract_mismatch("endpoints", current_schema("endpoints") + 1)
+        assert message is not None and "graftpunk is older than the caller" in message
+
+    def test_a_surface_no_caller_reads_through_the_cli_is_a_mismatch(self) -> None:
+        message = contract_mismatch("sidecar", 1)
+        assert message is not None and "sidecar" in message
+```
+
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_cli_version.py -q`
-Expected: FAIL (`ImportError: cannot import name 'installation_facts'`).
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_cli_version.py tests/unit/test_contracts.py -q`
+Expected: FAIL (`ImportError: cannot import name 'installation_facts'`, and `cannot import name 'contract_mismatch'`).
 
 - [ ] **Step 3: Add the dependency**
 
@@ -1089,9 +1292,40 @@ uv lock
 
 Expected: `uv.lock` records `packaging` as a direct dependency of `graftpunk`.
 
-- [ ] **Step 4: Write the command**
+- [ ] **Step 4: Write the comparison in `contracts.py`**
 
-In `src/graftpunk/cli/main.py`, add `import json` to the standard-library imports, `from packaging.version import InvalidVersion, Version` after `from rich.panel import Panel`, and `from graftpunk.contracts import cli_contracts` after `from graftpunk.config import get_settings`. Replace the `version` command with:
+In `src/graftpunk/contracts.py`, add `"contract_mismatch"` to `__all__`, change the docstring's comparison sentence to "the only place one is compared: :func:`refuse_unknown_schema` for a payload a reader loads, and :func:`contract_mismatch` for the ``gp version --contract`` handshake (graft skill spec, 2026-09-21).", and append:
+
+```python
+def contract_mismatch(surface: str, reads: int) -> str | None:
+    """Why a caller that reads *surface* at schema *reads* cannot use this graftpunk, or None.
+
+    The ``gp version --contract`` handshake. Equality, not a range: a caller is
+    written for one schema of a surface and reads that one. The message names the
+    older side, so the caller can say which of the two to update.
+    """
+    current = cli_contracts().get(surface)
+    if current is None:
+        return (
+            f"{surface}: this graftpunk serves no surface by that name to a caller; "
+            f"graftpunk is older than the caller, or the caller misspelled the surface."
+        )
+    if reads == current:
+        return None
+    if reads < current:
+        return (
+            f"{surface}: this graftpunk writes schema {current} and the caller reads "
+            f"{reads}; the caller is older than graftpunk."
+        )
+    return (
+        f"{surface}: the caller reads schema {reads} and this graftpunk writes "
+        f"{current}; graftpunk is older than the caller."
+    )
+```
+
+- [ ] **Step 5: Write the command**
+
+In `src/graftpunk/cli/main.py`, add `import json` to the standard-library imports, `from packaging.version import InvalidVersion, Version` after `from rich.panel import Panel`, and `from graftpunk.contracts import cli_contracts, contract_mismatch` after `from graftpunk.config import get_settings`. Replace the `version` command with:
 
 ```python
 def installation_facts() -> dict[str, object]:
@@ -1117,6 +1351,14 @@ def version(
             help="Exit 0 when the installed graftpunk is at least VERSION, 1 otherwise",
         ),
     ] = None,
+    contract: Annotated[
+        list[str],
+        typer.Option(
+            "--contract",
+            metavar="SURFACE=N",
+            help="Exit 3 unless this graftpunk writes SURFACE at schema N (repeatable)",
+        ),
+    ] = [],  # noqa: B006 - Typer reads this default at decoration time, never mutated per-call
 ) -> None:
     """Show graftpunk version and installation info."""
     floor: Version | None = None
@@ -1124,12 +1366,20 @@ def version(
         try:
             floor = Version(at_least)
         except InvalidVersion:
-            raise typer.BadParameter(
-                f"{at_least!r} is not a version", param_hint="--at-least"
-            ) from None
+            typer.echo(f"--at-least: {at_least!r} is not a version graftpunk can order.", err=True)
+            raise typer.Exit(1) from None
+    expected: list[tuple[str, int]] = []
+    for value in contract:
+        surface, separator, number = value.partition("=")
+        if not surface or not separator or not (number.isascii() and number.isdigit()):
+            typer.echo(f"--contract: {value!r} is not SURFACE=N, as in endpoints=1.", err=True)
+            raise typer.Exit(1)
+        expected.append((surface, int(number)))
     if as_json:
         typer.echo(json.dumps(installation_facts(), sort_keys=True))
-    elif floor is None:
+    elif floor is None and not expected:
+        # A caller passing --at-least or --contract without --json wants the
+        # exit status, not the panel.
         settings = get_settings()
         console.print(
             Panel(
@@ -1143,18 +1393,27 @@ def version(
         )
     if floor is not None and Version(graftpunk.__version__) < floor:
         raise typer.Exit(1)
+    mismatches = [
+        message
+        for surface, reads in expected
+        if (message := contract_mismatch(surface, reads)) is not None
+    ]
+    for message in mismatches:
+        typer.echo(message, err=True)
+    if mismatches:
+        raise typer.Exit(3)
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_cli_version.py tests/unit/test_cli.py -q`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_cli_version.py tests/unit/test_contracts.py tests/unit/test_cli.py -q`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add pyproject.toml uv.lock src/graftpunk/cli/main.py tests/unit/test_cli_version.py
-git commit -m "feat(cli): gp version --json and --at-least, ordered by packaging"
+git add pyproject.toml uv.lock src/graftpunk/cli/main.py src/graftpunk/contracts.py tests/unit/test_cli_version.py tests/unit/test_contracts.py
+git commit -m "feat(cli): gp version --json, --at-least ordered by packaging, and the --contract handshake"
 ```
 
 ---
@@ -1163,7 +1422,7 @@ git commit -m "feat(cli): gp version --json and --at-least, ordered by packaging
 
 **Files:**
 - Modify: `src/graftpunk/har/naming.py` (new constants, error, two parsers; `__all__`)
-- Modify: `src/graftpunk/cli/observe_commands.py:42-45` (`_HTTP_METHODS` removed), `:156-179` (`_matches_template`, `_validate_match_patterns` replaced), `:201-251` (`fixtures_cmd`)
+- Modify: `src/graftpunk/cli/observe_commands.py:43-45` (`_HTTP_METHODS` removed), `:156-179` (`_matches_template`, `_validate_match_patterns` replaced), `:201-251` (`fixtures_cmd`)
 - Modify: `tests/unit/test_observe_commands.py:563-611` (`TestMatchPatternValidation`)
 - Test: `tests/unit/test_har_naming.py`
 
@@ -1406,11 +1665,14 @@ git commit -m "feat(har): parse_endpoint and parse_command_spec own the endpoint
 - Modify: `src/graftpunk/devtools/captures.py` (new `flagged_names_of`, `write_sidecar`; `__all__`)
 - Modify: `src/graftpunk/cli/observe_commands.py:201-296` (`fixtures_cmd` writes the sidecar through the writer)
 - Modify: `tests/unit/test_graftpunk_testing.py:66-74` (the sidecar test writes a schema 1 sidecar)
+- Modify: `docs/PLUGIN_DEVELOPMENT.md` ("Test against fixtures, not against the site": the sentence that introduces the sidecar, the JSON block after it, and the error-path sentence of the paragraph after that), `docs/HOW_IT_WORKS.md:483-487` (the sidecar's field list)
 - Test: `tests/unit/test_testing_sidecar.py`, `tests/unit/test_devtools_captures.py`, `tests/unit/test_observe_commands.py`, `tests/unit/test_graftpunk_testing.py`
 
 **Interfaces:**
 - Consumes: `current_schema("sidecar")`, `refuse_unknown_schema`, `UnknownSchemaError` (Task 2); `digest`, `DigestSource`, `RunDigest` (existing).
 - Produces, in `graftpunk.testing.sidecar`: `SIDECAR_SUFFIX = ".meta.json"`; `SIDECAR_FIELDS: dict[int, frozenset[str]]` (version 1: `{"status", "content_type", "body_params", "capture_sha256", "flagged_names"}`); `@dataclass(frozen=True) class Sidecar(status: int, content_type: str, body_params: tuple[str, ...] = (), capture_sha256: str | None = None, flagged_names: tuple[str, ...] = ())` with property `declared -> bool`; `class SidecarError(ValueError)`; `sidecar_path(fixture: Path) -> Path`; `is_sidecar(path: Path) -> bool`; `sidecar_payload(sidecar: Sidecar) -> dict[str, object]`; `sidecar_text(sidecar: Sidecar) -> str`; `load_sidecar(path: Path) -> Sidecar`. In `graftpunk.devtools.captures`: `flagged_names_of(d: RunDigest) -> tuple[str, ...]`; `write_sidecar(fixture: Path, *, status: int, content_type: str, body_params: Iterable[str], flagged_names: Iterable[str]) -> Path`. The project-tools plan's `fixtures_are_sanitised` uses `is_sidecar`, `sidecar_path`, `load_sidecar`, `SidecarError`, and `Sidecar`.
+
+**Accepted cost, with a trigger:** `gp observe fixtures` runs the full digest over the run to learn two name sets (cookie names and token candidate names) for `flagged_names`, as the spec has it. The trigger for a narrower entry point (a `har.digest` function that computes only those two sets) is a second caller that needs only the names, or a recording on which the digest dominates the command's run time.
 
 - [ ] **Step 1: Write the failing owner tests**
 
@@ -1914,15 +2176,41 @@ and replace the `meta_path = ...` line and the `try:` block that writes both fil
             _refuse_write(file_path, exc)
 ```
 
-- [ ] **Step 8: Run the tests to verify they pass**
+- [ ] **Step 8: Describe the schema 1 sidecar in the docs**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_testing_sidecar.py tests/unit/test_devtools_captures.py tests/unit/test_graftpunk_testing.py tests/unit/test_observe_commands.py tests/unit/test_scaffold_cli.py -q`
+In `docs/PLUGIN_DEVELOPMENT.md`, "Test against fixtures, not against the site", replace the sentence "A `<filename>.meta.json` sidecar beside a fixture supplies its status and content type. `gp observe fixtures` writes one for every capture:" and the JSON block after it with:
+
+````markdown
+A `<filename>.meta.json` sidecar beside a fixture supplies its status and
+content type. `gp observe fixtures` writes one for every capture, and it is safe
+to commit: it holds no URL, no time, and no value, only the hash of the captured
+body and the cookie and token names the recording's digest listed.
+
+```json
+{
+  "body_params": [],
+  "capture_sha256": "4f6c1e0a9d2b7c3e8f5a1d6b0c9e2f7a3b8d4c1e6f0a5b9c2d7e3f8a1b6c0d4e",
+  "content_type": "application/json",
+  "flagged_names": ["X-Csrf-Token", "myshop_session"],
+  "schema": 1,
+  "status": 200
+}
+```
+````
+
+In the paragraph after it, replace "A sidecar is how you test an error path: copy a fixture, set the sidecar's status to 403, and assert that the command raises `SessionRejectedError`." with "A sidecar is how you test an error path: copy a fixture together with its sidecar, set the copied sidecar's `status` to 403, and assert that the command raises `SessionRejectedError`." Leave that paragraph's first sentence ("Without a sidecar ...") as it is; the project-tools plan's last task rewrites it once the generated suite requires a sidecar.
+
+In `docs/HOW_IT_WORKS.md`, replace "writes a `<file>.meta.json` sidecar beside every capture (url, status, content type, body parameter names, capture time); `FixtureSession` reads the same sidecar for status and content type" (lines 483-486) with "writes a `<file>.meta.json` sidecar beside every capture (a `schema` number, the status, the content type, the body parameter names, the hash of the captured body, and the cookie and token names the run's digest recorded, but never the URL or the capture time), safe to commit beside the fixture derived from it; `FixtureSession` reads the sidecar through `graftpunk.testing.sidecar` for status and content type". The phrase wraps across lines 483 to 486, so match it with the line breaks as they are in the file.
+
+- [ ] **Step 9: Run the tests to verify they pass**
+
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_testing_sidecar.py tests/unit/test_devtools_captures.py tests/unit/test_graftpunk_testing.py tests/unit/test_observe_commands.py tests/unit/test_scaffold_cli.py tests/unit/test_plugin_development_guide.py -q`
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add src/graftpunk/testing/sidecar.py src/graftpunk/testing/__init__.py src/graftpunk/devtools/captures.py src/graftpunk/cli/observe_commands.py tests/unit/test_testing_sidecar.py tests/unit/test_devtools_captures.py tests/unit/test_graftpunk_testing.py tests/unit/test_observe_commands.py
+git add src/graftpunk/testing/sidecar.py src/graftpunk/testing/__init__.py src/graftpunk/devtools/captures.py src/graftpunk/cli/observe_commands.py tests/unit/test_testing_sidecar.py tests/unit/test_devtools_captures.py tests/unit/test_graftpunk_testing.py tests/unit/test_observe_commands.py docs/PLUGIN_DEVELOPMENT.md docs/HOW_IT_WORKS.md
 git commit -m "feat(testing): the fixture sidecar gets one owner and a committable, versioned format"
 ```
 
@@ -2056,7 +2344,7 @@ git commit -m "feat(scaffold): gp plugin new --check-name refuses a name with th
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `graftpunk.devtools.scaffold.policy.FIXTURES_TREE: Final = "tests/fixtures/"`; `fixtures_root(*, suite_member: bool, module_name: str) -> str`; `render._fixtures_root(spec: ScaffoldSpec) -> str`. The project-tools plan adds `PROJECT_GATE`, `ProjectRequirement`, `PROJECT_REQUIREMENTS`, and `PLUGINS_ENTRY_POINT_GROUP` to this module, and its reader calls `fixtures_root` from the project on disk.
+- Produces: `graftpunk.devtools.scaffold.policy.TESTS_DIR: Final = "tests/"`; `FIXTURES_TREE: Final = f"{TESTS_DIR}fixtures/"` (`"tests/fixtures/"`); `fixtures_root(*, suite_member: bool, module_name: str) -> str`; `render._fixtures_root(spec: ScaffoldSpec) -> str`. The tests directory is spelled once, here; `render.py` derives the generated `FIXTURES_DIR` expression from `TESTS_DIR`. The project-tools plan adds `CONFTEST_PATH`, `GP_FILL_MARKER`, `module_name_for`, `PROJECT_GATE`, `ProjectRequirement`, `PROJECT_REQUIREMENTS`, and `PLUGINS_ENTRY_POINT_GROUP` to this module, and its reader calls `fixtures_root` from the project on disk.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2072,7 +2360,12 @@ import ast
 from pathlib import Path
 
 import graftpunk.devtools.scaffold.policy as policy
-from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, fixtures_root
+from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, TESTS_DIR, fixtures_root
+
+
+def test_the_tree_lies_under_the_tests_directory() -> None:
+    assert (TESTS_DIR, FIXTURES_TREE) == ("tests/", "tests/fixtures/")
+    assert FIXTURES_TREE.startswith(TESTS_DIR)
 
 
 def test_a_standalone_project_uses_the_tree_itself() -> None:
@@ -2161,9 +2454,13 @@ from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["FIXTURES_TREE", "fixtures_root"]
+__all__ = ["FIXTURES_TREE", "TESTS_DIR", "fixtures_root"]
 
-FIXTURES_TREE: Final = "tests/fixtures/"
+TESTS_DIR: Final = "tests/"
+"""The directory a generated project's tests live in, project-relative: the one
+spelling every other tests-relative path here is built from."""
+
+FIXTURES_TREE: Final = f"{TESTS_DIR}fixtures/"
 """The one directory every plugin's fixtures live under, project-relative.
 
 The same in a standalone project and in a suite, and true for every member a
@@ -2190,10 +2487,6 @@ def fixtures_root(*, suite_member: bool, module_name: str) -> str:
 In `src/graftpunk/devtools/scaffold/render.py`, add `from graftpunk.devtools.scaffold import policy`, remove `"fixtures_root"` from `__all__`, and replace `fixtures_root` and `_fixtures_dir_expression` with:
 
 ```python
-# The directory every generated test module is written into, project-relative.
-_TESTS_DIR = "tests/"
-
-
 def _fixtures_root(spec: ScaffoldSpec) -> str:
     """Where *spec*'s generated tests look for fixtures: the policy's rule, from the
     spec's two facts. Also the directory ``gp plugin new``'s ``Next:`` line names."""
@@ -2204,10 +2497,9 @@ def _fixtures_root(spec: ScaffoldSpec) -> str:
 
 def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
     """The generated ``FIXTURES_DIR`` assignment's right-hand side: the fixtures root,
-    relative to the test module, which lives in ``tests/``."""
-    root = _fixtures_root(spec)
-    assert root.startswith(_TESTS_DIR), root
-    parts = root.removeprefix(_TESTS_DIR).strip("/").split("/")
+    relative to the test module, which lives in ``policy.TESTS_DIR``. Every root
+    lies under that directory by the policy's own rule, which its tests pin."""
+    parts = _fixtures_root(spec).removeprefix(policy.TESTS_DIR).strip("/").split("/")
     return "Path(__file__).parent" + "".join(f' / "{part}"' for part in parts)
 ```
 
@@ -2231,14 +2523,15 @@ git commit -m "feat(scaffold): the fixtures-root rule moves to a declarative pol
 
 **Files:**
 - Create: `src/graftpunk/devtools/scaffold/write.py`
-- Modify: `src/graftpunk/devtools/scaffold/pyproject_edit.py:28-133` (pure `with_entry_point`, `with_wheel_package`; the two wrappers apply through `write.py`)
+- Modify: `src/graftpunk/devtools/scaffold/pyproject_edit.py:28-133` (pure `with_entry_point` and `with_wheel_package` replace `add_entry_point`, `add_wheel_package`, and `_read_normalised`)
 - Modify: `src/graftpunk/devtools/scaffold/project.py:10-219` (`_missing_parents`, `_undo_writes`, `ScaffoldConflictError` class removed; `write_scaffold` plans and applies)
 - Modify: `tests/unit/test_scaffold_project.py:184-300` (fault injection moves to `write._write_atomically`)
+- Modify: `tests/unit/test_scaffold_pyproject_edit.py` (the tests call the pure functions)
 - Test: `tests/unit/test_scaffold_write.py`
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `graftpunk.devtools.scaffold.write`: `Validator = Callable[[str], None]`; `validate_python(text: str) -> None`; `validate_toml(text: str) -> None` (both raise `ValueError`); `@dataclass(frozen=True) class PlannedChange(path: Path, content: str, original: str | None = None, validate: Validator | None = None)`; `class ChangeConflictError(Exception)` with `.conflicts: list[Path]`; `class InvalidChangeError(ValueError)` with `.path`, `.reason`; `find_conflicts(changes: Sequence[PlannedChange]) -> list[Path]`; `apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]`. `project.ScaffoldConflictError` is `write.ChangeConflictError`. `pyproject_edit.with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str`; `pyproject_edit.with_wheel_package(text: str, pyproject_path: Path, package: str) -> str`. The project-tools plan's `insert.py` and `upgrade.py` write only through `apply_changes`.
+- Produces: `graftpunk.devtools.scaffold.write`: `Validator = Callable[[str], None]`; `validate_python(text: str) -> None`; `validate_toml(text: str) -> None` (both raise `ValueError`); `@dataclass(frozen=True) class PlannedChange(path: Path, content: str, original: str | None = None, validate: Validator | None = None)`; `class ChangeConflictError(Exception)` with `.conflicts: list[Path]`; `class InvalidChangeError(ValueError)` with `.path`, `.reason`; `find_conflicts(changes: Sequence[PlannedChange]) -> list[Path]`; `apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]`. `project.ScaffoldConflictError` is `write.ChangeConflictError`. `pyproject_edit.with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str`; `pyproject_edit.with_wheel_package(text: str, pyproject_path: Path, package: str) -> str`, which returns *text* itself, byte for byte, in its two no-op branches. `pyproject_edit` no longer writes files and has no file-level wrappers: `write_scaffold` is the one production caller and applies the result through `write.py`. The project-tools plan's `insert.py` and `upgrade.py` write only through `apply_changes`, and `tests/unit/test_scaffold_write.py` finds them without a list (it scans every module in the package).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2384,29 +2677,57 @@ class TestRestoresOnFailure:
         assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("module", ["project.py", "pyproject_edit.py"])
-def test_the_mutators_write_only_through_write_py(module: str) -> None:
-    source = (_SCAFFOLD_DIR / module).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    imports_write = any(
-        isinstance(node, ast.ImportFrom) and node.module == "graftpunk.devtools.scaffold.write"
-        for node in ast.walk(tree)
-    )
+# Every module in the package but the writer itself, found rather than listed, so
+# a mutator added later is covered without editing this test.
+_NOT_THE_WRITER = sorted(p.name for p in _SCAFFOLD_DIR.glob("*.py") if p.name != "write.py")
+_DISK_CALLS = {"write_text", "write_bytes", "touch", "unlink", "rmdir", "mkdir"}
+
+
+def _tree(module: str) -> ast.Module:
+    return ast.parse((_SCAFFOLD_DIR / module).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("module", _NOT_THE_WRITER)
+def test_no_module_but_write_py_touches_the_disk(module: str) -> None:
     writes_directly = [
         node.func.attr
-        for node in ast.walk(tree)
+        for node in ast.walk(_tree(module))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"write_text", "write_bytes", "unlink", "rmdir", "mkdir"}
+        and node.func.attr in _DISK_CALLS
     ]
-    assert imports_write
     assert writes_directly == []
+
+
+def test_every_module_that_applies_changes_takes_them_from_write_py() -> None:
+    """The routing, on the import graph: a module that applies changes imports
+    apply_changes from write.py, and write_scaffold's module is one of them."""
+    appliers = []
+    for module in _NOT_THE_WRITER:
+        tree = _tree(module)
+        calls = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "apply_changes"
+            for node in ast.walk(tree)
+        )
+        if calls:
+            appliers.append(module)
+            assert any(
+                isinstance(node, ast.ImportFrom)
+                and node.module == "graftpunk.devtools.scaffold.write"
+                and any(alias.name == "apply_changes" for alias in node.names)
+                for node in ast.walk(tree)
+            ), module
+    assert "project.py" in appliers
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_scaffold_write.py -q`
 Expected: FAIL (`ImportError: cannot import name 'write'`).
+
+The pyproject edit tests are rewritten in Step 4, beside the code they test.
 
 - [ ] **Step 3: Write `write.py`**
 
@@ -2590,9 +2911,9 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
     return tuple(change.path for change in changes)
 ```
 
-- [ ] **Step 4: Make the pyproject edits pure, with file wrappers that apply through `write.py`**
+- [ ] **Step 4: Make the pyproject edits pure text functions**
 
-In `src/graftpunk/devtools/scaffold/pyproject_edit.py`: add `from graftpunk.devtools.scaffold.write import PlannedChange, apply_changes, validate_toml`; replace `_read_normalised` with:
+In `src/graftpunk/devtools/scaffold/pyproject_edit.py`, set `__all__ = ["PyprojectEditError", "with_entry_point", "with_wheel_package"]`, change the module docstring's first line to "The one seam that edits an existing pyproject.toml's text: two known shapes only, and no file access.", add to its body "The caller writes the result; ``write_scaffold`` does, through ``write.py``.", and replace `_read_normalised`, `add_entry_point`, and `add_wheel_package` with:
 
 ```python
 def _normalised(text: str) -> str:
@@ -2600,39 +2921,211 @@ def _normalised(text: str) -> str:
     line terminated, so a file whose table is last and that ends without a newline
     was refused as an unknown shape (polish round 1, 2026-09-12)."""
     return text if text.endswith("\n") or not text else text + "\n"
+
+
+def with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str:
+    """*text* with ``name = "target"`` appended to its
+    ``[project.entry-points."graftpunk.plugins"]`` table. *pyproject_path* names the
+    file in a refusal and is never opened.
+
+    Raises:
+        PyprojectEditError: The name is already registered, or the table's
+            shape cannot be located textually.
+    """
+    text = _normalised(text)
+    data = tomllib.loads(text)
+    existing = data.get("project", {}).get("entry-points", {}).get("graftpunk.plugins", {})
+    if name in existing:
+        raise PyprojectEditError(f"Entry point '{name}' is already registered in {pyproject_path}.")
+    match = _ENTRY_POINT_TABLE_RE.search(text)
+    if match is None:
+        raise PyprojectEditError(
+            f'{pyproject_path} has no [project.entry-points."graftpunk.plugins"] table I can '
+            f"locate textually. Add this line by hand:\n"
+            f'{name} = "{target}"'
+        )
+    header, body = match.group(1), match.group(2)
+    new_text = text[: match.start()] + header + _body_with_entry(body, name, target)
+    return new_text + text[match.end() :]
+
+
+def with_wheel_package(text: str, pyproject_path: Path, package: str) -> str:
+    """*text* with *package* appended to ``[tool.hatch.build.targets.wheel]``'s
+    ``packages`` array. *pyproject_path* names the file in a refusal and is never
+    opened.
+
+    Returns *text* itself, byte for byte, when there is nothing to add: the table
+    has no explicit ``packages`` key (hatchling then infers packages on its own),
+    or *package* is already listed. Only an edit normalises the trailing newline.
+
+    Raises:
+        PyprojectEditError: The wheel table uses ``include`` instead of
+            ``packages``, or ``packages`` exists but its array cannot be
+            located textually.
+    """
+    data = tomllib.loads(text)
+    wheel = (
+        data.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("wheel", {})
+    )
+    if "packages" not in wheel:
+        if "include" in wheel:
+            raise PyprojectEditError(
+                f"{pyproject_path} uses [tool.hatch.build.targets.wheel].include instead of "
+                f'packages. Add "{package}" to it by hand.'
+            )
+        return text
+    if package in wheel["packages"]:
+        return text
+    text = _normalised(text)
+    match = _WHEEL_PACKAGES_RE.search(text)
+    if match is None:
+        raise PyprojectEditError(
+            f"{pyproject_path} has [tool.hatch.build.targets.wheel].packages but I cannot "
+            f'locate its array textually. Add "{package}" to it by hand.'
+        )
+    prefix, array = match.group(1), match.group(2)
+    return text[: match.start()] + prefix + _append_to_array(array, package) + text[match.end() :]
 ```
 
-rename `add_entry_point` to `with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str`, whose body starts `text = _normalised(text)` and ends `return new_text` in place of the `write_text` call; rename `add_wheel_package` to `with_wheel_package(text: str, pyproject_path: Path, package: str) -> str`, same pattern, returning `text` unchanged in its two no-op branches. `pyproject_path` is kept for the refusal messages only. Then append the two file wrappers the existing tests call:
+`_body_with_entry` and `_append_to_array` stay as they are. No wrapper that reads or writes the file is kept: after Step 5, `write_scaffold` is the only production caller, and it applies the result through `write.py`.
+
+In `tests/unit/test_scaffold_pyproject_edit.py`, keep the module-level text constants (`_SINGLE_LINE_ARRAY` through `_ENTRY_POINT_TABLE_LAST_NO_TRAILING_NEWLINE`) as they are, and replace the module docstring, the imports, and the two test classes with:
 
 ```python
-def _apply_edit(pyproject_path: Path, edit: Callable[[str], str]) -> None:
-    original = pyproject_path.read_text(encoding="utf-8")
-    edited = edit(original)
-    if edited != original:
-        apply_changes(
-            [PlannedChange(pyproject_path, edited, original=original, validate=validate_toml)]
+"""The one seam that edits an existing pyproject.toml's text (plugin tooling spec,
+2026-09-11). The functions are pure; the file on disk is write_scaffold's, and
+tests/unit/test_scaffold_project.py covers it (TestAddToSuiteMode,
+TestPyprojectEditFailureLeavesSuiteUntouched)."""
+
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+
+import pytest
+
+from graftpunk.devtools.scaffold.pyproject_edit import (
+    PyprojectEditError,
+    with_entry_point,
+    with_wheel_package,
+)
+
+_PATH = Path("pyproject.toml")
+_WIDGETS = "graftpunk_widgets.plugin:WidgetsPlugin"
+_GADGETS = "graftpunk_gadgets.plugin:GadgetsPlugin"
+
+
+def _entry_points(text: str) -> dict[str, str]:
+    return tomllib.loads(text)["project"]["entry-points"]["graftpunk.plugins"]
+
+
+def _wheel(text: str) -> dict[str, object]:
+    return tomllib.loads(text)["tool"]["hatch"]["build"]["targets"]["wheel"]
+
+
+class TestWithEntryPoint:
+    def test_appends_a_new_line_to_the_table(self) -> None:
+        text = with_entry_point(_SINGLE_LINE_ARRAY, _PATH, "widgets", _WIDGETS)
+        assert f'widgets = "{_WIDGETS}"' in text
+        assert 'existing = "mysuite.existing:ExistingPlugin"' in text
+
+    def test_result_is_valid_toml(self) -> None:
+        eps = _entry_points(with_entry_point(_SINGLE_LINE_ARRAY, _PATH, "widgets", _WIDGETS))
+        assert eps["widgets"] == _WIDGETS
+        assert eps["existing"] == "mysuite.existing:ExistingPlugin"
+
+    def test_duplicate_name_refuses(self) -> None:
+        with pytest.raises(PyprojectEditError, match="already registered"):
+            with_entry_point(_SINGLE_LINE_ARRAY, _PATH, "existing", _WIDGETS)
+
+    def test_missing_table_refuses_with_instructions(self) -> None:
+        with pytest.raises(PyprojectEditError, match="entry-points"):
+            with_entry_point(_NO_ENTRY_POINT_TABLE, _PATH, "widgets", _WIDGETS)
+
+    def test_appends_to_an_empty_table(self) -> None:
+        text = with_entry_point(_EMPTY_ENTRY_POINT_TABLE, _PATH, "widgets", _WIDGETS)
+        assert f'widgets = "{_WIDGETS}"' in text
+        assert _entry_points(text)["widgets"] == _WIDGETS
+
+    def test_the_blank_line_before_the_next_table_survives(self) -> None:
+        lines = with_entry_point(_SINGLE_LINE_ARRAY, _PATH, "widgets", _WIDGETS).splitlines()
+        header_index = lines.index("[tool.hatch.build.targets.wheel]")
+        assert lines[header_index - 1] == ""
+        assert lines[header_index - 2] == f'widgets = "{_WIDGETS}"'
+
+    def test_two_adds_leave_both_entries_in_the_same_table(self) -> None:
+        once = with_entry_point(_SINGLE_LINE_ARRAY, _PATH, "widgets", _WIDGETS)
+        text = with_entry_point(once, _PATH, "gadgets", _GADGETS)
+        assert _entry_points(text) == {
+            "existing": "mysuite.existing:ExistingPlugin",
+            "widgets": _WIDGETS,
+            "gadgets": _GADGETS,
+        }
+        lines = text.splitlines()
+        assert lines[lines.index("[tool.hatch.build.targets.wheel]") - 1] == ""
+        assert _wheel(text)["packages"] == ["src/mysuite"]
+
+    def test_an_empty_table_keeps_its_separator_too(self) -> None:
+        lines = with_entry_point(_EMPTY_ENTRY_POINT_TABLE, _PATH, "widgets", _WIDGETS).splitlines()
+        header_index = lines.index("[tool.hatch.build.targets.wheel]")
+        assert lines[header_index - 1] == ""
+        assert lines[header_index - 2] == f'widgets = "{_WIDGETS}"'
+
+    def test_a_table_that_is_last_and_has_no_trailing_newline(self) -> None:
+        """The table's pattern needs its last line terminated, so this shape was
+        refused as unlocatable."""
+        text = with_entry_point(
+            _ENTRY_POINT_TABLE_LAST_NO_TRAILING_NEWLINE, _PATH, "widgets", _WIDGETS
         )
+        assert text.endswith("\n")
+        assert _entry_points(text) == {
+            "existing": "mysuite.existing:ExistingPlugin",
+            "widgets": _WIDGETS,
+        }
+
+    def test_the_refusal_names_the_path_it_was_given(self) -> None:
+        with pytest.raises(PyprojectEditError, match="custom/pyproject.toml"):
+            with_entry_point(_NO_ENTRY_POINT_TABLE, Path("custom/pyproject.toml"), "w", _WIDGETS)
 
 
-def add_entry_point(pyproject_path: Path, name: str, target: str) -> None:
-    """Append ``name = "target"`` to the ``graftpunk.plugins`` entry-point table on disk.
+class TestWithWheelPackage:
+    def test_an_array_before_packages_is_still_located(self) -> None:
+        """The span between the header and the packages key stopped at any "[",
+        so an earlier array's own bracket made a known shape unlocatable."""
+        wheel = _wheel(with_wheel_package(_ARRAY_BEFORE_PACKAGES, _PATH, "src/graftpunk_widgets"))
+        assert set(wheel["packages"]) == {"src/mysuite", "src/graftpunk_widgets"}
+        assert wheel["exclude"] == ["docs"]
 
-    Raises:
-        PyprojectEditError: See :func:`with_entry_point`.
-    """
-    _apply_edit(pyproject_path, lambda text: with_entry_point(text, pyproject_path, name, target))
+    def test_appends_to_a_single_line_array(self) -> None:
+        text = with_wheel_package(_SINGLE_LINE_ARRAY, _PATH, "src/graftpunk_widgets")
+        assert '"src/graftpunk_widgets"' in text
 
+    def test_appends_to_a_multi_line_array(self) -> None:
+        text = with_wheel_package(_MULTI_LINE_ARRAY, _PATH, "src/graftpunk_widgets")
+        assert '"src/graftpunk_widgets"' in text
+        assert '"src/mysuite"' in text
 
-def add_wheel_package(pyproject_path: Path, package: str) -> None:
-    """Append *package* to the wheel table's ``packages`` array on disk.
+    def test_result_is_valid_toml_with_both_packages(self) -> None:
+        text = with_wheel_package(_MULTI_LINE_ARRAY, _PATH, "src/graftpunk_widgets")
+        assert set(_wheel(text)["packages"]) == {"src/mysuite", "src/graftpunk_widgets"}
 
-    Raises:
-        PyprojectEditError: See :func:`with_wheel_package`.
-    """
-    _apply_edit(pyproject_path, lambda text: with_wheel_package(text, pyproject_path, package))
+    @pytest.mark.parametrize(
+        ("text", "package"),
+        [
+            (_SINGLE_LINE_ARRAY, "src/mysuite"),
+            (_SINGLE_LINE_ARRAY.rstrip("\n"), "src/mysuite"),
+            (_NO_PACKAGES_KEY_AT_ALL, "src/graftpunk_widgets"),
+            (_NO_PACKAGES_KEY_AT_ALL.rstrip("\n"), "src/graftpunk_widgets"),
+        ],
+    )
+    def test_a_no_op_returns_the_input_byte_for_byte(self, text: str, package: str) -> None:
+        """Nothing is rewritten when nothing changes, not even a missing final newline."""
+        assert with_wheel_package(text, _PATH, package) == text
+
+    def test_include_instead_of_packages_refuses(self) -> None:
+        with pytest.raises(PyprojectEditError, match="include"):
+            with_wheel_package(_INCLUDE_INSTEAD_OF_PACKAGES, _PATH, "src/graftpunk_widgets")
 ```
-
-Add `from collections.abc import Callable` and extend `__all__` with `"with_entry_point"` and `"with_wheel_package"`.
 
 - [ ] **Step 5: Route `write_scaffold` through `write.py`**
 
@@ -2697,11 +3190,11 @@ and replace everything in `write_scaffold` from `# Conflict detection runs befor
     gitignore_updated = False
 ```
 
-Keep the `.gitignore` block and the `return ScaffoldResult(...)` unchanged, with `written=tuple(sorted(c.path for c in rendered))`. Update the docstring's `PyprojectEditError` paragraph to say `pyproject.toml` is never written when the edit cannot be computed, and add an `OSError` paragraph: "a write failed; every change already applied, the `pyproject.toml` edit included, is undone first (see `write.py`)."
+Keep the `.gitignore` block as it is. `targets` no longer exists, so change the two lines after it that read it: in `LOG.info("scaffold_written", ...)`, `files=len(targets)` becomes `files=len(rendered)`, and in `return ScaffoldResult(...)`, `written=tuple(sorted(targets))` becomes `written=tuple(sorted(c.path for c in rendered))`. Update the docstring's `PyprojectEditError` paragraph to say `pyproject.toml` is never written when the edit cannot be computed, and add an `OSError` paragraph: "a write failed; every change already applied, the `pyproject.toml` edit included, is undone first (see `write.py`)."
 
 - [ ] **Step 6: Move the project tests' fault injection to the writer**
 
-In `tests/unit/test_scaffold_project.py`, add `from graftpunk.devtools.scaffold import write`, and in each of the four tests of `TestAWriteFailureLeavesNoPartialTree` and `TestPyprojectRestoredAfterRenderedFileFailure`, replace the `real_write_text = Path.write_text` fault function and its `monkeypatch.setattr(Path, "write_text", ...)` with:
+In `tests/unit/test_scaffold_project.py`, add `from graftpunk.devtools.scaffold import write`, and in each of the four tests of `TestAWriteFailureLeavesNoPartialTree` and `TestPyprojectRestoredAfterRenderedFileFailure`, replace the `real_write_text = Path.write_text` line, the `failing_name = "plugin.py"` line where the test has one (three of the four do; ruff reports it as F841 once the fault function below stops reading it), the old fault function, and its `monkeypatch.setattr(Path, "write_text", ...)` with:
 
 ```python
         real_write = write._write_atomically
@@ -2728,7 +3221,7 @@ For `test_a_short_write_that_touches_the_file_is_still_cleaned_up`, use this fau
         monkeypatch.setattr(write, "_write_atomically", write_touching_then_failing)
 ```
 
-Every assertion in those tests stays as it is.
+Every assertion in those tests stays as it is. The docstring of `test_files_written_before_the_failure_are_removed` (`tests/unit/test_scaffold_project.py:190-194`) still says the fault is injected at `Path.write_text`; replace its last two sentences with: "Fault injection at ``write._write_atomically``, the one place a planned change reaches the disk, is how one file fails and the rest do not; the assertions are all on the tree the call leaves on disk."
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -2738,7 +3231,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/graftpunk/devtools/scaffold/write.py src/graftpunk/devtools/scaffold/pyproject_edit.py src/graftpunk/devtools/scaffold/project.py tests/unit/test_scaffold_write.py tests/unit/test_scaffold_project.py
+git add src/graftpunk/devtools/scaffold/write.py src/graftpunk/devtools/scaffold/pyproject_edit.py src/graftpunk/devtools/scaffold/project.py tests/unit/test_scaffold_write.py tests/unit/test_scaffold_project.py tests/unit/test_scaffold_pyproject_edit.py
 git commit -m "feat(scaffold): write.py is the one write discipline, and write_scaffold goes through it"
 ```
 
@@ -2748,14 +3241,14 @@ git commit -m "feat(scaffold): write.py is the one write discipline, and write_s
 
 **Files:**
 - Modify: `src/graftpunk/plugins/cli_plugin.py:215-234` (`CommandMetadata`), `:788-877` (`command`)
-- Modify: `src/graftpunk/devtools/scaffold/pysrc.py` (`_import_lines` takes several names)
+- Modify: `src/graftpunk/devtools/scaffold/pysrc.py` (`import_lines` takes several names)
 - Modify: `src/graftpunk/devtools/scaffold/render.py` (`_render_command_stub`, `_plugins_import_names`, `_render_plugin_module`; new `_SPEC_TYPE_BY_OBSERVED`, `_emits_body`, `_declared_extras`, `_needs_param_specs`, `_decorator_lines`, `_ENDPOINT_COMMENT`)
 - Modify: `docs/PLUGIN_DEVELOPMENT.md:395-476` ("What gets filled in"), `:569-601` ("CLI parameter types")
 - Test: `tests/unit/test_cli_plugin.py`, `tests/unit/test_scaffold_render.py`
 
 **Interfaces:**
-- Consumes: `_literal_lines`, `_quoted`, `_L1`, `_L2`, `_L3`, `_import_lines` from `pysrc` (Task 1).
-- Produces: `CommandMetadata.endpoint: str | None = None`; `command(..., endpoint: str | None = None)`; `pysrc._import_lines(module: str, *names: str) -> list[str]`; every generated stub's decorator carries `endpoint="<METHOD> <template>"` on its own line, and a stub with an `int` or `bool` parameter carries `params=[PluginParamSpec.option(...), ...]` for every parameter. The project-tools plan's reader reads the `endpoint` keyword from source, and its `render_command` reuses `_decorator_lines`, `_declared_extras`, and `_needs_param_specs`.
+- Consumes: `literal_lines`, `quoted_literal`, `L1`, `L2`, `L3`, `import_lines` from `pysrc` (Task 1).
+- Produces: `CommandMetadata.endpoint: str | None = None`; `command(..., endpoint: str | None = None)`; `pysrc.import_lines(module: str, *names: str) -> list[str]`; every generated stub's decorator carries `endpoint="<METHOD> <template>"` on its own line, and a stub with an `int` or `bool` parameter carries `params=[PluginParamSpec.option(...), ...]` for every parameter. The project-tools plan's reader reads the `endpoint` keyword from source, and its `render_command` reuses `_decorator_lines`, `_declared_extras`, and `_needs_param_specs`.
 
 - [ ] **Step 1: Write the failing decorator tests**
 
@@ -2892,7 +3385,7 @@ Append to `class TestPluginModuleCommandStubs` in `tests/unit/test_scaffold_rend
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "from graftpunk.plugins import (" in plugin_code
-        assert all(len(line) <= _GENERATED_LINE_LENGTH for line in plugin_code.splitlines())
+        assert all(len(line) <= GENERATED_LINE_LENGTH for line in plugin_code.splitlines())
 ```
 
 - [ ] **Step 3: Run them to verify they fail**
@@ -2923,19 +3416,19 @@ In `command(...)`, add the parameter `endpoint: str | None = None,` after `name`
 
 and pass `endpoint=endpoint,` in the function branch's `CommandMetadata(...)` call.
 
-- [ ] **Step 5: Let `_import_lines` take several names**
+- [ ] **Step 5: Let `import_lines` take several names**
 
-In `src/graftpunk/devtools/scaffold/pysrc.py`, replace `_import_lines` with:
+In `src/graftpunk/devtools/scaffold/pysrc.py`, replace `import_lines` with:
 
 ```python
-def _import_lines(module: str, *names: str) -> list[str]:
+def import_lines(module: str, *names: str) -> list[str]:
     """``from {module} import {names}`` on one line when it fits the generated width,
     otherwise the parenthesised form, one name per line with a magic trailing comma,
     which is the shape ``ruff format`` would give it."""
     single_line = f"from {module} import {', '.join(names)}"
-    if len(single_line) <= _GENERATED_LINE_LENGTH:
+    if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
-    return [f"from {module} import (", *(f"{_L1}{name}," for name in names), ")"]
+    return [f"from {module} import (", *(f"{L1}{name}," for name in names), ")"]
 ```
 
 - [ ] **Step 6: Render the declaration and the typed parameters**
@@ -2951,7 +3444,7 @@ In `src/graftpunk/devtools/scaffold/render.py`, add below `_MUTATING_METHODS`:
 _SPEC_TYPE_BY_OBSERVED: dict[str, str] = {"int": "int", "bool": "bool"}
 
 _ENDPOINT_COMMENT = (
-    f"{_L2}# This request is the endpoint= declared on @command above: change both together."
+    f"{L2}# This request is the endpoint= declared on @command above: change both together."
 )
 ```
 
@@ -2981,14 +3474,14 @@ def _needs_param_specs(endpoint: Endpoint) -> bool:
 def _decorator_lines(name: str, endpoint_literal: str, param_specs: list[str]) -> list[str]:
     """A stub's ``@command(...)``, always exploded one keyword per line so the
     ``endpoint=`` declaration sits on a line of its own."""
-    lines = [f"{_L1}@command("]
-    lines.extend(_literal_lines(f"GP-FILL: describe {name}", indent=len(_L2), prefix="help="))
+    lines = [f"{L1}@command("]
+    lines.extend(literal_lines(f"GP-FILL: describe {name}", indent=len(L2), prefix="help="))
     if param_specs:
-        lines.append(f"{_L2}params=[")
-        lines.extend(f"{_L3}{spec}," for spec in param_specs)
-        lines.append(f"{_L2}],")
-    lines.extend(_literal_lines(endpoint_literal, indent=len(_L2), prefix="endpoint="))
-    lines.append(f"{_L1})")
+        lines.append(f"{L2}params=[")
+        lines.extend(f"{L3}{spec}," for spec in param_specs)
+        lines.append(f"{L2}],")
+    lines.extend(literal_lines(endpoint_literal, indent=len(L2), prefix="endpoint="))
+    lines.append(f"{L1})")
     return lines
 ```
 
@@ -3010,7 +3503,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     extras = _declared_extras(endpoint)
 
     params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
-    param_specs = [f"PluginParamSpec.option({_quoted(p)}, required=True)" for p in path_params]
+    param_specs = [f"PluginParamSpec.option({quoted_literal(p)}, required=True)" for p in path_params]
     identifier_for: dict[str, str] = {}
     for extra in sorted(extras):
         observed = extras[extra]
@@ -3019,22 +3512,22 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         params.append(f"{identifier_for[extra]}: {annotation} | None = None")
         spec_type = _SPEC_TYPE_BY_OBSERVED.get(observed)
         type_keyword = f", type={spec_type}" if spec_type else ""
-        param_specs.append(f"PluginParamSpec.option({_quoted(identifier_for[extra])}{type_keyword})")
+        param_specs.append(f"PluginParamSpec.option({quoted_literal(identifier_for[extra])}{type_keyword})")
 
-    # Through _quoted like every other captured value: the method comes from
+    # Through quoted_literal like every other captured value: the method comes from
     # the capture, so it is not this module's to assume is quote-free.
-    call_lines = [f"{_L3}{_quoted(method)},"]
-    call_lines.extend(_url_expr_lines(url_text, is_fstring=bool(path_params), indent=len(_L3)))
-    call_lines.append(f"{_L3}role={_quoted(role)},")
+    call_lines = [f"{L3}{quoted_literal(method)},"]
+    call_lines.extend(url_expr_lines(url_text, is_fstring=bool(path_params), indent=len(L3)))
+    call_lines.append(f"{L3}role={quoted_literal(role)},")
     if endpoint.query_params:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.query_params)]
-        call_lines.extend(_exploded_dict_lines("params", entries))
+        call_lines.extend(exploded_dict_lines("params", entries))
     if emits_body:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.body_params)]
-        call_lines.extend(_exploded_dict_lines("json", entries))
+        call_lines.extend(exploded_dict_lines("json", entries))
     if endpoint.custom_headers:
         entries = [(h, '"GP-FILL"') for h in endpoint.custom_headers]
-        call_lines.extend(_exploded_dict_lines("headers", entries))
+        call_lines.extend(exploded_dict_lines("headers", entries))
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
     # An unavailable shape is not a fact about the site, so the docstring says
@@ -3046,20 +3539,20 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         f"{method} {endpoint.template}",
         param_specs if _needs_param_specs(endpoint) else [],
     )
-    lines.append(f"{_L1}def {name}(")
-    lines.extend(f"{_L2}{p}," for p in params)
-    lines.append(f"{_L1}) -> {return_type}:")
-    lines.append(f'{_L2}"""')
-    lines.extend(_wrapped_docstring_lines(summary))
+    lines.append(f"{L1}def {name}(")
+    lines.extend(f"{L2}{p}," for p in params)
+    lines.append(f"{L1}) -> {return_type}:")
+    lines.append(f'{L2}"""')
+    lines.extend(wrapped_docstring_lines(summary))
     if shape_known:
         shape_line = f"Shape: {summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."
         lines.append("")
-        lines.extend(_wrapped_docstring_lines(shape_line))
-    lines.append(f'{_L2}"""')
+        lines.extend(wrapped_docstring_lines(shape_line))
+    lines.append(f'{L2}"""')
     lines.append(_ENDPOINT_COMMENT)
-    lines.append(f"{_L2}return ctx.{call}(")
+    lines.append(f"{L2}return ctx.{call}(")
     lines.extend(call_lines)
-    lines.append(f"{_L2})")
+    lines.append(f"{L2})")
     lines.append("")
     return lines
 ```
@@ -3088,7 +3581,7 @@ In `_render_plugin_module`, replace the `plugins_import = ...` assignment and th
     )
 ```
 
-and `*_import_lines("graftpunk.plugins", *plugins_names),` in the `lines = [...]` list.
+and `*import_lines("graftpunk.plugins", *plugins_names),` in the `lines = [...]` list.
 
 - [ ] **Step 7: Bring the guide's generated example up to date**
 
@@ -3119,7 +3612,7 @@ replace the line `    @command(help="GP-FILL: describe api_orders")` with:
     )
 ```
 
-and insert `        # This request is the endpoint= declared on @command above: change both together.` directly above `        return ctx.request_json(` in that block. In the paragraph that begins "What came from the digest", replace "each with the observed query parameters as typed keyword arguments and the observed custom headers;" with "each with the observed query parameters as typed keyword arguments, an explicit `params=` list whenever one of them is an `int` or a `bool` (see [CLI parameter types](#cli-parameter-types)), the observed custom headers, and the endpoint it calls declared as `endpoint=` on its decorator;". Append this paragraph after the one that begins "Everything the digest could not decide":
+and insert `        # This request is the endpoint= declared on @command above: change both together.` directly above `        return ctx.request_json(` in that block. In the paragraph that begins "What came from the digest", replace "each with the observed query parameters as typed keyword arguments and the observed custom headers;" (the phrase wraps across `docs/PLUGIN_DEVELOPMENT.md:473-474`, breaking after "arguments and", so an exact-match edit has to carry that line break) with "each with the observed query parameters as typed keyword arguments, an explicit `params=` list whenever one of them is an `int` or a `bool` (see [CLI parameter types](#cli-parameter-types)), the observed custom headers, and the endpoint it calls declared as `endpoint=` on its decorator;". Append this paragraph after the one that begins "Everything the digest could not decide":
 
 ```markdown
 The `endpoint=` keyword is a declaration, not a check: nothing compares it with
@@ -3158,7 +3651,7 @@ git commit -m "feat(scaffold): every stub declares its endpoint, and typed param
 In `CHANGELOG.md` under `[Unreleased]` / `### Added`, in the `**gp observe fixtures**` entry, replace "Each fixture gets a `<file>.meta.json` sidecar (url, status, content type, body parameter names, capture time); `graftpunk.testing.FixtureSession` reads the same sidecar so a fixture copied from a capture keeps its recorded status." with "Each capture gets a `<file>.meta.json` sidecar that is safe to commit beside the fixture derived from it: a `schema` number, the status, the content type, the body parameter names, the hash of the captured body, and the cookie and token names the run's digest recorded (never the URL or the capture time). `graftpunk.testing.FixtureSession` reads it through `graftpunk.testing.sidecar`, which refuses a sidecar with a missing or unknown `schema` or a key outside its version." Then append this line as the last bullet of `### Added`:
 
 ```markdown
-- **Machine surfaces for tools that drive `gp`** (the groundwork for the `/graftpunk:graft` Claude Code skill). `gp observe digest --endpoints-json` prints a versioned projection of the digest (method, template, `login_flow`, content type, shape summary, parameter names and types, custom header names, and the login's auth URLs and form selectors; no cookie name, token candidate, example path, or body). `gp version --json` prints the installed version and the schema number of each payload a caller reads, and `--at-least VERSION` exits 0 or 1 by version order (`packaging` is now a dependency). `gp plugin new NAME --check-name` checks a name and writes nothing. Every stub `gp plugin new` writes declares the endpoint it calls as `@command(endpoint="GET /api/orders")`, a new keyword that is stored on the command and never used at runtime, and a stub with an `int` or `bool` parameter carries explicit `PluginParamSpec` entries so the type survives ([#208](https://github.com/stavxyz/graftpunk/issues/208)). `--match` values now need the method in capitals, as the digest prints it.
+- **Machine surfaces for tools that drive `gp`** (the groundwork for the `/graftpunk:graft` Claude Code skill). `gp observe digest --endpoints-json` prints a versioned projection of the digest (method, template, `login_flow`, content type, shape summary, parameter names and types, custom header names, and the login's auth URLs and form selectors; no cookie name, token candidate, example path, or body). `gp version --json` prints the installed version and the schema number of each payload a caller reads; `--at-least VERSION` exits 0 or 1 by version order (`packaging` is now a dependency), and `--contract SURFACE=N` (repeatable) exits 3, naming the older side, unless graftpunk writes that payload at that schema. `gp plugin new NAME --check-name` checks a name and writes nothing. Every stub `gp plugin new` writes declares the endpoint it calls as `@command(endpoint="GET /api/orders")`, a new keyword that is stored on the command and never used at runtime, and a stub with an `int` or `bool` parameter carries explicit `PluginParamSpec` entries so the type survives ([#208](https://github.com/stavxyz/graftpunk/issues/208)). `--match` values now need the method in capitals, as the digest prints it.
 ```
 
 - [ ] **Step 2: Run the full gate**
