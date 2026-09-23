@@ -26,7 +26,7 @@ _UPPER36 = string.ascii_uppercase + string.digits
 _URLSAFE = string.ascii_letters + string.digits + "-_"
 
 # shape: (alphabet, length, miss-rate ceiling). Measured at these seeds when the
-# rule last changed (2026-09-23): 0.0765, 0.0165, 0.036, 0.026, 0.02875.
+# rule last changed (2026-09-23): 0.07875, 0.01875, 0.036, 0.026, 0.02875.
 _SHAPES = {
     "lower36_8": (_LOWER36, 8, 0.080),
     "lower36_12": (_LOWER36, 12, 0.020),
