@@ -120,7 +120,7 @@ def load_sidecar(path: Path) -> Sidecar:
     """Read the sidecar at *path*, holding it to its version's key set.
 
     Raises:
-        SidecarError: The file is unreadable or not a JSON object; its ``schema``
+        SidecarError: The file is unreadable, not UTF-8, or not a JSON object; its ``schema``
             is missing or unknown; it has a key outside its version's set or
             lacks one; a value has the wrong type; or ``capture_sha256`` is set
             and is not a 64-character lowercase hex digest. The message names
@@ -128,7 +128,7 @@ def load_sidecar(path: Path) -> Sidecar:
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise SidecarError(f"{path}: not a readable JSON sidecar ({exc})") from exc
     if not isinstance(data, dict):
         raise SidecarError(f"{path}: a sidecar is a JSON object")

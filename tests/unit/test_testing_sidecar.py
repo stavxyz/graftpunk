@@ -90,6 +90,13 @@ class TestLoad:
         with pytest.raises(SidecarError, match="url"):
             load_sidecar(_write(tmp_path / "a.meta.json", _v1(url="https://myshop.example/")))
 
+    def test_a_sidecar_that_is_not_utf8_is_refused_naming_the_path(self, tmp_path: Path) -> None:
+        path = tmp_path / "a.meta.json"
+        text = json.dumps(_v1(content_type="caf\u00e9"), ensure_ascii=False)
+        path.write_bytes(text.encode("latin-1"))
+        with pytest.raises(SidecarError, match="a.meta.json"):
+            load_sidecar(path)
+
     def test_a_missing_key_is_refused(self, tmp_path: Path) -> None:
         payload = _v1()
         del payload["flagged_names"]
