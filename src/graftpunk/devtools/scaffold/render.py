@@ -760,7 +760,7 @@ def _render_readme(spec: ScaffoldSpec) -> str:
         f"```bash\ngp {spec.name} --help\n```\n\n"
         "## Tests\n\n"
         "```bash\npytest\n```\n\n"
-        "Fixtures under `tests/fixtures/` are hand-derived from captures in "
+        f"Fixtures under `{policy.FIXTURES_TREE}` are hand-derived from captures in "
         f"`{CAPTURES_DIR}/` (captures are never committed; a fixture copies the "
         "structure and invents the content). See `gp observe fixtures --help`.\n"
     )

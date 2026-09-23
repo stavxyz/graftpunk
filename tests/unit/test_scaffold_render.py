@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.pysrc import (
     _DOCSTRING_WRAP_WIDTH,
     GENERATED_LINE_LENGTH,
@@ -587,6 +588,18 @@ class TestRenderNewProject:
             ".gitignore",
             "README.md",
         }
+
+    def test_readme_names_the_policys_fixtures_tree(self) -> None:
+        """The tests directory is spelled once, in policy: the README quotes it
+        rather than a hand-spelled `tests/fixtures/`."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        readme = render(spec)["README.md"]
+        assert f"Fixtures under `{policy.FIXTURES_TREE}`" in readme
 
     def test_pyproject_declares_entry_point_and_dependency_floor(self) -> None:
         spec = ScaffoldSpec(
