@@ -1,10 +1,10 @@
-"""The single owner of the 'captures never enter git' rule.
+"""The writing side of the "captures never enter git" rule.
 
-The fixtures command, the scaffold's generated ``.gitignore``, and the
-scaffold's suite mode all use this module, so the default directory and the
-ignore line cannot disagree (plugin tooling spec, 2026-09-11). It also writes
-the committable sidecar beside each capture, through the format
-:mod:`graftpunk.testing.sidecar` owns.
+The ``.gitignore`` edit applied to disk, the git queries, and the committable
+sidecar written beside each capture through the format
+:mod:`graftpunk.testing.sidecar` owns. The rule itself, the directory and the
+text edit, lives in :mod:`graftpunk.devtools.captures_rule`, which touches no
+file.
 """
 
 from __future__ import annotations
@@ -14,14 +14,13 @@ import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 
+from graftpunk.devtools.captures_rule import with_ignored
 from graftpunk.logging import get_logger
 from graftpunk.testing.sidecar import Sidecar, sidecar_path, sidecar_text
 
 LOG = get_logger(__name__)
 
-CAPTURES_DIR = "tests/captures"
-
-__all__ = ["CAPTURES_DIR", "ensure_ignored", "find_repo_root", "is_tracked", "write_sidecar"]
+__all__ = ["ensure_ignored", "find_repo_root", "is_tracked", "write_sidecar"]
 
 _GIT_TIMEOUT_SECONDS = 10
 
@@ -77,16 +76,13 @@ def ensure_ignored(repo_root: Path, relative: str) -> bool:
         True when the line was added, False when it was already present.
     """
     gitignore = repo_root / ".gitignore"
-    line = relative.rstrip("/") + "/"
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    existing_lines = {entry.strip().rstrip("/") for entry in existing.splitlines()}
-    if relative.rstrip("/") in existing_lines:
+    updated = with_ignored(existing, relative)
+    if updated == existing:
         return False
     with gitignore.open("a", encoding="utf-8") as handle:
-        if existing and not existing.endswith("\n"):
-            handle.write("\n")
-        handle.write(line + "\n")
-    LOG.info("captures_gitignore_updated", path=str(gitignore), line=line)
+        handle.write(updated[len(existing) :])
+    LOG.info("captures_gitignore_updated", path=str(gitignore), line=relative.rstrip("/") + "/")
     return True
 
 

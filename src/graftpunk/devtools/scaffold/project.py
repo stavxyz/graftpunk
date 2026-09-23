@@ -1,25 +1,35 @@
-"""Decides new-project vs add-to-suite, checks for conflicts, and writes.
+"""Decides new-project vs add-to-suite, checks for conflicts, and plans the writes.
 
 Generation lives in ``render.py``; this module owns the filesystem
 decisions ``render.py`` has no business making (plugin tooling spec,
-2026-09-11).
+2026-09-11). The writes themselves go through ``write.py``.
 """
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored
+from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
+from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold.pyproject_edit import (
     PyprojectEditError,
-    add_entry_point,
-    add_wheel_package,
+    with_entry_point,
+    with_wheel_package,
 )
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, module_name_for, render
+from graftpunk.devtools.scaffold.write import (
+    ChangeConflictError,
+    InvalidChangeError,
+    PlannedChange,
+    Validator,
+    apply_changes,
+    find_conflicts,
+    validate_python,
+    validate_toml,
+)
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -34,35 +44,18 @@ __all__ = [
 PLUGINS_ENTRY_POINT_GROUP = "graftpunk.plugins"
 
 
-def _missing_parents(directory: Path) -> list[Path]:
-    """The ancestors of *directory*, *directory* included, that do not exist yet.
-
-    Deepest last, which is the order ``mkdir(parents=True)`` creates them and the
-    reverse of the order they have to be removed in.
-    """
-    missing: list[Path] = []
-    current = directory
-    while not current.exists() and current != current.parent:
-        missing.append(current)
-        current = current.parent
-    return list(reversed(missing))
+ScaffoldConflictError = ChangeConflictError
+"""A target path already exists; nothing was written. The writer's own error, under
+the name the CLI and callers of ``write_scaffold`` already catch."""
 
 
-def _undo_writes(written: list[Path], created_dirs: list[Path]) -> None:
-    """Remove what this call put on disk, best effort.
-
-    Files first, then the directories this call created, deepest first and only
-    while they are empty: a directory that already held something, or that the
-    user has since filled, is not this function's to delete. Every removal is
-    guarded because unwinding after an I/O failure runs in the same conditions
-    that caused it, and the original error is the one the caller must see.
-    """
-    for path in written:
-        with contextlib.suppress(OSError):
-            path.unlink()
-    for directory in reversed(created_dirs):
-        with contextlib.suppress(OSError):
-            directory.rmdir()
+def _validator_for(relative: str) -> Validator | None:
+    """The grammar a rendered file must satisfy before it is written."""
+    if relative.endswith(".py"):
+        return validate_python
+    if relative.endswith(".toml"):
+        return validate_toml
+    return None
 
 
 class NotAPluginSuiteError(ValueError):
@@ -73,15 +66,6 @@ class NotAPluginSuiteError(ValueError):
     (polish round 1, 2026-09-12). A ``ValueError`` subclass, so a caller that
     only cares that the call refused still catches it.
     """
-
-
-class ScaffoldConflictError(Exception):
-    """One or more target paths already exist; nothing was written."""
-
-    def __init__(self, conflicts: list[Path]) -> None:
-        self.conflicts = conflicts
-        listing = ", ".join(str(p) for p in conflicts)
-        super().__init__(f"Refusing to overwrite existing file(s): {listing}")
 
 
 @dataclass(frozen=True)
@@ -115,16 +99,23 @@ def write_scaffold(
             a suite ``pyproject.toml`` is present.
 
     Raises:
-        ScaffoldConflictError: A target path already exists. Nothing is
-            written; the check runs before any file is touched.
+        ScaffoldConflictError: A target path already exists, or the suite's
+            ``pyproject.toml`` or ``.gitignore`` changed after it was read.
+            Nothing is written; the check runs before any file is touched.
         NotAPluginSuiteError: *target_dir* has a ``pyproject.toml`` that does
             not declare the ``graftpunk.plugins`` entry-point group: a
             different kind of project.
-        PyprojectEditError: In suite mode, ``pyproject.toml`` could not be
-            edited (see ``pyproject_edit.py``). ``pyproject.toml`` is
-            restored to its original bytes before this re-raises, and no
-            rendered file has been written yet, so the suite is left
-            byte-identical to how ``write_scaffold`` found it.
+        PyprojectEditError: In suite mode, the ``pyproject.toml`` edit could
+            not be computed (see ``pyproject_edit.py``). ``pyproject.toml`` is
+            never written and no rendered file is either, so the suite is
+            left byte-identical to how ``write_scaffold`` found it.
+        InvalidChangeError: A rendered file fails its own grammar check.
+            Nothing is written.
+        ScaffoldWriteError: A write failed; every change already applied,
+            the ``pyproject.toml`` edit included, is undone first where it can
+            be, and the error names the file, the OS error, and any path left
+            changed (see ``write.py``). A bare ``OSError`` now means a read
+            before anything was written failed.
     """
     existing = None if force_new else _existing_pyproject(target_dir)
     if existing is not None and not _declares_plugin_group(existing):
@@ -151,69 +142,66 @@ def write_scaffold(
             if not (relative.endswith("/.gitkeep") and (target_dir / relative).parent.is_dir())
         }
 
-    # Conflict detection runs before anything else is touched, in either
-    # mode: a refusal here must never have edited pyproject.toml either.
-    targets = {target_dir / rel: content for rel, content in files.items()}
-    conflicts = sorted(p for p in targets if p.exists())
+    rendered = [
+        PlannedChange(target_dir / rel, content, validate=_validator_for(rel))
+        for rel, content in files.items()
+    ]
+    # Deliberately before apply_changes runs its own check: a refusal here never
+    # computes the pyproject.toml edit.
+    conflicts = find_conflicts(rendered)
     if conflicts:
         LOG.debug("scaffold_write_refused", conflicts=len(conflicts))
         raise ScaffoldConflictError(conflicts)
 
-    gitignore_updated = False
+    changes: list[PlannedChange] = []
     pyproject_updated = False
-    original_pyproject_text: str | None = None
     if mode == "add_to_suite":
         assert existing is not None  # narrows for the type checker; mode implies it
         module = module_name_for(resolved_spec.name)
         package = f"src/graftpunk_{module}"
         target = f"graftpunk_{module}.plugin:{class_name_for(resolved_spec.name)}"
-        # Both pyproject.toml edits happen (and, on failure, are undone)
-        # before any rendered file is written: a PyprojectEditError from
-        # add_wheel_package must not leave add_entry_point's edit behind,
-        # and neither edit failing may leave a new package directory or
-        # test module on disk.
-        original_pyproject_text = existing.read_text(encoding="utf-8")
+        original = existing.read_text(encoding="utf-8")
         try:
-            add_entry_point(existing, resolved_spec.name, target)
-            add_wheel_package(existing, package)
+            edited = with_wheel_package(
+                with_entry_point(original, existing, resolved_spec.name, target), existing, package
+            )
         except PyprojectEditError:
-            existing.write_text(original_pyproject_text, encoding="utf-8")
             LOG.debug("scaffold_write_refused", reason="pyproject_edit_error")
             raise
+        # The pyproject.toml edit is applied first and restored with everything
+        # else if any rendered file then fails to write.
+        changes.append(PlannedChange(existing, edited, original=original, validate=validate_toml))
         pyproject_updated = True
+    changes.extend(rendered)
 
-    written: list[Path] = []
-    created_dirs: list[Path] = []
+    gitignore_updated = False
+    if mode == "add_to_suite":
+        # Last in the batch: the ignore line protects files this call writes, so
+        # a failed write restores it with everything else (polish round 1,
+        # 2026-09-12).
+        gitignore = target_dir / ".gitignore"
+        before = gitignore.read_text(encoding="utf-8") if gitignore.is_file() else None
+        after = with_ignored(before or "", CAPTURES_DIR)
+        if after != (before or ""):
+            changes.append(PlannedChange(gitignore, after, original=before))
+            gitignore_updated = True
+
     try:
-        for path, content in targets.items():
-            created_dirs.extend(_missing_parents(path.parent))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            written.append(path)
-            path.write_text(content, encoding="utf-8")
-    except OSError:
-        _undo_writes(written, created_dirs)
-        if existing is not None and original_pyproject_text is not None:
-            try:
-                existing.write_text(original_pyproject_text, encoding="utf-8")
-            except OSError as restore_exc:
-                LOG.warning(
-                    "scaffold_pyproject_restore_failed",
-                    path=str(existing),
-                    error=str(restore_exc),
-                )
-        LOG.debug("scaffold_write_refused", reason="os_error", written=len(written))
+        apply_changes(changes)
+    except ChangeConflictError as exc:
+        LOG.debug("scaffold_write_refused", conflicts=len(exc.conflicts))
+        raise
+    except InvalidChangeError:
+        LOG.debug("scaffold_write_refused", reason="invalid_change")
+        raise
+    except ScaffoldWriteError:
+        LOG.debug("scaffold_write_refused", reason="os_error")
         raise
 
-    # Last, after every other step has succeeded: the ignore line exists to
-    # protect files this call wrote, so a refusal further up must not leave an
-    # edited .gitignore behind (polish round 1, 2026-09-12).
-    if mode == "add_to_suite":
-        gitignore_updated = ensure_ignored(target_dir, CAPTURES_DIR)
-
-    LOG.info("scaffold_written", mode=mode, target_dir=str(target_dir), files=len(targets))
+    LOG.info("scaffold_written", mode=mode, target_dir=str(target_dir), files=len(rendered))
     return ScaffoldResult(
         mode=mode,
-        written=tuple(sorted(targets)),
+        written=tuple(sorted(c.path for c in rendered)),
         gitignore_updated=gitignore_updated,
         pyproject_updated=pyproject_updated,
     )

@@ -24,12 +24,12 @@ from rich.table import Table
 from graftpunk.cli.observe_browser import run_observe_go, run_observe_interactive
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.devtools.captures import (
-    CAPTURES_DIR,
     ensure_ignored,
     find_repo_root,
     is_tracked,
     write_sidecar,
 )
+from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.har.digest import DigestSource, body_params, digest, flagged_names_of
 from graftpunk.har.naming import EndpointSpecError, capture_filename, parse_endpoint
 from graftpunk.har.parser import parse_har_file

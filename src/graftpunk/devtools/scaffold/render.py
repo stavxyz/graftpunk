@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from graftpunk.devtools.captures import CAPTURES_DIR
+from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.pysrc import (
     GENERATED_LINE_LENGTH,

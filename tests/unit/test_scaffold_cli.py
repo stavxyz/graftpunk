@@ -833,3 +833,46 @@ class TestCheckName:
         assert _plain(result.output) == "'myshop' is an acceptable plugin name.\n"
         assert set(tmp_path.iterdir()) == before_entries
         assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before_bytes
+
+
+class TestAWriteFailureIsOneRefusal:
+    @pytest.fixture(autouse=True)
+    def _configured_logging(self) -> None:
+        """The one-line assertion needs structlog configured as real `gp` usage
+        has it; see TestCheckName's fixture of the same name for why."""
+        configure_logging(level="WARNING")
+
+    def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A suite member: the pyproject.toml edit is applied first, so the
+        restore is what puts its original bytes back."""
+        from graftpunk.devtools.scaffold import write
+
+        # A directory of the test's own: tmp_path also holds the config directory
+        # the autouse isolated_config fixture creates.
+        suite = tmp_path / "suite"
+        suite.mkdir()
+        (suite / "pyproject.toml").write_text(
+            '[project]\nname = "mysuite"\n\n'
+            '[project.entry-points."graftpunk.plugins"]\n'
+            'existing = "mysuite.existing:ExistingPlugin"\n'
+        )
+        before = {p.name: p.read_bytes() for p in suite.iterdir()}
+        real_write = write._write_atomically
+
+        def write_failing_on_the_plugin_module(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
+
+        monkeypatch.setattr(write, "_write_atomically", write_failing_on_the_plugin_module)
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "widgets", "--url", "https://myshop.example", "--dir", str(suite)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line.startswith("Could not write ")
+        assert "No space left on device" in line
+        assert {p.name: p.read_bytes() for p in suite.iterdir()} == before

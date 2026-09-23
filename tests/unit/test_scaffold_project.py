@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from graftpunk.devtools.scaffold import write
 from graftpunk.devtools.scaffold.project import ScaffoldConflictError, write_scaffold
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec
@@ -148,7 +149,7 @@ class TestConflicts:
 class TestPyprojectEditFailureLeavesSuiteUntouched:
     """A refused suite addition must leave the suite byte-identical: nothing
     written, pyproject.toml exactly as it was found, even when one of its two
-    edits (add_entry_point) already succeeded before the other failed."""
+    edits (with_entry_point) already succeeded before the other failed."""
 
     def test_include_only_wheel_table_leaves_pyproject_byte_identical(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
@@ -163,13 +164,12 @@ class TestPyprojectEditFailureLeavesSuiteUntouched:
         assert not (tmp_path / "tests" / "test_widgets.py").exists()
         assert not (tmp_path / ".gitignore").exists()
 
-    def test_add_wheel_package_failure_does_not_leave_the_entry_point_behind(
+    def test_a_wheel_package_failure_does_not_leave_the_entry_point_behind(
         self, tmp_path: Path
     ) -> None:
-        """add_entry_point succeeds (the table is present and 'widgets' is
-        not registered yet) before add_wheel_package fails on the include
-        shape; the restore must undo add_entry_point's edit too, not just
-        refuse to apply add_wheel_package's."""
+        """with_entry_point succeeds (the table is present and 'widgets' is
+        not registered yet) before with_wheel_package fails on the include
+        shape; its edit must not reach the file either."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(_INCLUDE_WHEEL_PYPROJECT)
 
@@ -189,21 +189,18 @@ class TestAWriteFailureLeavesNoPartialTree:
 
         ``plugin.py`` is the third file the renderer emits, so pyproject.toml
         and the package ``__init__.py`` are already on disk when it fails.
-        Fault injection at ``Path.write_text`` is the only way to fail one file
-        and not the rest; the assertions are all on the tree the call leaves on
-        disk.
+        Fault injection at ``write._write_atomically``, the one place a planned
+        change reaches the disk, is how one file fails and the rest do not; the
+        assertions are all on the tree the call leaves on disk.
         """
-        real_write_text = Path.write_text
-        failing_name = "plugin.py"
+        real_write = write._write_atomically
 
-        def write_text_failing_on_the_plugin_module(
-            self: Path, *args: object, **kwargs: object
-        ) -> int:
-            if self.name == failing_name:
-                raise OSError(28, "No space left on device", str(self))
-            return real_write_text(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+        def write_failing_on_the_plugin_module(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
 
-        monkeypatch.setattr(Path, "write_text", write_text_failing_on_the_plugin_module)
+        monkeypatch.setattr(write, "_write_atomically", write_failing_on_the_plugin_module)
 
         with pytest.raises(OSError, match="No space left on device"):
             write_scaffold(tmp_path, _spec())
@@ -220,16 +217,15 @@ class TestAWriteFailureLeavesNoPartialTree:
         disk before the ``OSError`` surfaces. It must be recorded as written
         so cleanup removes it too, not only files that never touched disk.
         """
-        real_write_text = Path.write_text
-        failing_name = "plugin.py"
+        real_write = write._write_atomically
 
-        def write_text_touching_then_failing(self: Path, *args: object, **kwargs: object) -> int:
-            if self.name == failing_name:
-                self.touch()
-                raise OSError(28, "No space left on device", str(self))
-            return real_write_text(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+        def write_touching_then_failing(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                path.touch()
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
 
-        monkeypatch.setattr(Path, "write_text", write_text_touching_then_failing)
+        monkeypatch.setattr(write, "_write_atomically", write_touching_then_failing)
 
         with pytest.raises(OSError, match="No space left on device"):
             write_scaffold(tmp_path, _spec())
@@ -244,29 +240,25 @@ class TestPyprojectRestoredAfterRenderedFileFailure:
     def test_pyproject_restored_when_a_rendered_file_write_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """In add-to-suite mode the pyproject.toml edits happen before any
+        """In add-to-suite mode the pyproject.toml edit is applied before any
         rendered file is written. When a rendered file then fails to write,
         pyproject.toml must come back byte-identical, the same guarantee
         TestPyprojectEditFailureLeavesSuiteUntouched checks for a
         PyprojectEditError, exercised here for an OSError from the render
-        pass instead (the restore now goes through its own guarded try, see
-        the docstring for write_scaffold's OSError handling).
+        pass instead (the restore is write.py's, see apply_changes).
         """
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(_SUITE_PYPROJECT)
         original = pyproject.read_text()
 
-        real_write_text = Path.write_text
-        failing_name = "plugin.py"
+        real_write = write._write_atomically
 
-        def write_text_failing_on_the_plugin_module(
-            self: Path, *args: object, **kwargs: object
-        ) -> int:
-            if self.name == failing_name:
-                raise OSError(28, "No space left on device", str(self))
-            return real_write_text(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+        def write_failing_on_the_plugin_module(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
 
-        monkeypatch.setattr(Path, "write_text", write_text_failing_on_the_plugin_module)
+        monkeypatch.setattr(write, "_write_atomically", write_failing_on_the_plugin_module)
 
         with pytest.raises(OSError, match="No space left on device"):
             write_scaffold(tmp_path, _spec("widgets"))
@@ -283,19 +275,44 @@ class TestPyprojectRestoredAfterRenderedFileFailure:
         gitignore = tmp_path / ".gitignore"
         gitignore.write_text("*.pyc\n")
 
-        real_write_text = Path.write_text
+        real_write = write._write_atomically
 
-        def write_text_failing_on_the_plugin_module(
-            self: Path, *args: object, **kwargs: object
-        ) -> int:
-            if self.name == "plugin.py":
-                raise OSError(28, "No space left on device", str(self))
-            return real_write_text(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+        def write_failing_on_the_plugin_module(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
 
-        monkeypatch.setattr(Path, "write_text", write_text_failing_on_the_plugin_module)
+        monkeypatch.setattr(write, "_write_atomically", write_failing_on_the_plugin_module)
 
         with pytest.raises(OSError, match="No space left on device"):
             write_scaffold(tmp_path, _spec("widgets"))
 
         monkeypatch.undo()
         assert gitignore.read_text() == "*.pyc\n"
+
+    def test_a_failed_gitignore_edit_restores_the_whole_batch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The .gitignore edit is the last change of write_scaffold's batch, so its
+        failure undoes the pyproject.toml edit and every rendered file with it."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_SUITE_PYPROJECT)
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("*.pyc\n")
+        real_write = write._write_atomically
+
+        def write_failing_on_the_gitignore(path: Path, text: str) -> None:
+            if path.name == ".gitignore":
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
+
+        monkeypatch.setattr(write, "_write_atomically", write_failing_on_the_gitignore)
+
+        with pytest.raises(OSError, match="No space left on device"):
+            write_scaffold(tmp_path, _spec("widgets"))
+
+        monkeypatch.undo()
+        assert pyproject.read_text() == _SUITE_PYPROJECT
+        assert gitignore.read_text() == "*.pyc\n"
+        assert not (tmp_path / "src").exists()
+        assert not (tmp_path / "tests").exists()

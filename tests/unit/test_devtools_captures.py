@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import subprocess
 from pathlib import Path
 
+import graftpunk.devtools.captures_rule as captures_rule
 from graftpunk.devtools.captures import (
-    CAPTURES_DIR,
     ensure_ignored,
     find_repo_root,
     is_tracked,
     write_sidecar,
 )
+from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
 from graftpunk.testing.sidecar import load_sidecar, sidecar_path
 
 
@@ -115,3 +117,20 @@ class TestWriteSidecar:
         assert sidecar.flagged_names == ("csrf-token", "shop_session")
         assert "url" not in json.loads(path.read_text())
         assert "captured_at" not in json.loads(path.read_text())
+
+
+class TestWithIgnored:
+    def test_the_line_is_added_once(self) -> None:
+        assert with_ignored("", "tests/captures") == "tests/captures/\n"
+        assert with_ignored("dist/", "tests/captures") == "dist/\ntests/captures/\n"
+        assert with_ignored("tests/captures\n", "tests/captures/") == "tests/captures\n"
+
+
+def test_the_rule_module_imports_nothing_that_touches_the_filesystem() -> None:
+    """Scaffold modules import the rule from here, so it stays pure text."""
+    assert captures_rule.__file__ is not None
+    tree = ast.parse(Path(captures_rule.__file__).read_text(encoding="utf-8"))
+    imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+    }
+    assert imported <= {"__future__"}

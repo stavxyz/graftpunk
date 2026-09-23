@@ -14,7 +14,8 @@ from rich.markup import escape
 import graftpunk
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.plugin_commands import derive_reserved_cli_names
-from graftpunk.devtools.captures import CAPTURES_DIR
+from graftpunk.devtools.captures_rule import CAPTURES_DIR
+from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold.project import (
     NotAPluginSuiteError,
     ScaffoldConflictError,
@@ -22,6 +23,7 @@ from graftpunk.devtools.scaffold.project import (
 )
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths, validate_plugin_name
+from graftpunk.devtools.scaffold.write import InvalidChangeError
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.logging import get_logger
 
@@ -176,10 +178,17 @@ def plugin_new(
         LOG.debug("scaffold_refused", reason="pyproject_edit_error")
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
+    except ScaffoldWriteError as exc:
+        # The writer restored what it could before raising, and its message is
+        # the whole refusal on one line: the path, the OS error, and any path
+        # it could not put back.
+        LOG.debug("scaffold_refused", reason="os_error", error=str(exc.error))
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
     except OSError as exc:
-        # A CLI refusal is a red line and exit 1, never a Rich traceback: an
-        # unwritable --dir is the user's mistake to correct, not a crash.
-        # write_scaffold has already removed whatever it wrote before failing.
+        # A read before anything was written failed (the suite's pyproject.toml
+        # or .gitignore): a red line and exit 1, never a Rich traceback. A failed
+        # write is the ScaffoldWriteError arm above.
         LOG.debug("scaffold_refused", reason="os_error", error=str(exc))
         target = exc.filename or str(dir_)
         reason = exc.strerror or str(exc)
@@ -191,6 +200,12 @@ def plugin_new(
         # project, versus a name the generator cannot use).
         LOG.debug("scaffold_refused", reason="not_a_plugin_suite")
         console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from None
+    except InvalidChangeError as exc:
+        # Also before the ValueError arm: a rendered file that fails its own
+        # grammar check is the generator's fault, not an invalid name.
+        LOG.debug("scaffold_refused", reason="invalid_change")
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
     except ValueError as exc:
         LOG.debug("scaffold_refused", reason="invalid_name")

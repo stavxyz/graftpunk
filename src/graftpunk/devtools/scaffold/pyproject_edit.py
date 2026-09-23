@@ -1,8 +1,9 @@
-"""The one seam that edits an existing pyproject.toml: textual, two known shapes only.
+"""The one seam that edits an existing pyproject.toml's text: two known shapes, no file access.
 
 Refuses rather than guesses on anything else: a wrong edit to someone's
 build configuration is worse than a refusal with instructions (plugin
-tooling spec, 2026-09-11).
+tooling spec, 2026-09-11). The caller writes the result; ``write_scaffold``
+does, through ``write.py``.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import re
 import tomllib
 from pathlib import Path
 
-__all__ = ["PyprojectEditError", "add_entry_point", "add_wheel_package"]
+__all__ = ["PyprojectEditError", "with_entry_point", "with_wheel_package"]
 
 _ENTRY_POINT_TABLE_RE = re.compile(
     r'(\[project\.entry-points\."graftpunk\.plugins"\]\n)((?:.*\n)*?)(?=\[|\Z)'
@@ -25,30 +26,27 @@ _WHEEL_PACKAGES_RE = re.compile(
 )
 
 
-def _read_normalised(pyproject_path: Path) -> str:
-    """*pyproject_path*'s text, ending in a newline.
-
-    The entry-point table's own pattern needs its last line terminated, so a
-    file whose table is last and that ends without a newline was refused as an
-    unknown shape (polish round 1, 2026-09-12). The normalised text is what gets
-    written back.
-    """
-    text = pyproject_path.read_text(encoding="utf-8")
-    return text if text.endswith("\n") or not text else text + "\n"
-
-
 class PyprojectEditError(Exception):
     """The shape pyproject_edit.py expected was not found; nothing was written."""
 
 
-def add_entry_point(pyproject_path: Path, name: str, target: str) -> None:
-    """Append ``name = "target"`` to the ``[project.entry-points."graftpunk.plugins"]`` table.
+def _normalised(text: str) -> str:
+    """*text* ending in a newline. The entry-point table's own pattern needs its last
+    line terminated, so a file whose table is last and that ends without a newline
+    was refused as an unknown shape (polish round 1, 2026-09-12)."""
+    return text if text.endswith("\n") or not text else text + "\n"
+
+
+def with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str:
+    """*text* with ``name = "target"`` appended to its
+    ``[project.entry-points."graftpunk.plugins"]`` table. *pyproject_path* names the
+    file in a refusal and is never opened.
 
     Raises:
         PyprojectEditError: The name is already registered, or the table's
             shape cannot be located textually.
     """
-    text = _read_normalised(pyproject_path)
+    text = _normalised(text)
     data = tomllib.loads(text)
     existing = data.get("project", {}).get("entry-points", {}).get("graftpunk.plugins", {})
     if name in existing:
@@ -62,8 +60,7 @@ def add_entry_point(pyproject_path: Path, name: str, target: str) -> None:
         )
     header, body = match.group(1), match.group(2)
     new_text = text[: match.start()] + header + _body_with_entry(body, name, target)
-    new_text += text[match.end() :]
-    pyproject_path.write_text(new_text, encoding="utf-8")
+    return new_text + text[match.end() :]
 
 
 def _body_with_entry(body: str, name: str, target: str) -> str:
@@ -95,18 +92,20 @@ def _append_to_array(array_text: str, item: str) -> str:
     return f'[{stripped}{separator} "{item}"]'
 
 
-def add_wheel_package(pyproject_path: Path, package: str) -> None:
-    """Append *package* to ``[tool.hatch.build.targets.wheel]``'s ``packages`` array.
+def with_wheel_package(text: str, pyproject_path: Path, package: str) -> str:
+    """*text* with *package* appended to ``[tool.hatch.build.targets.wheel]``'s
+    ``packages`` array. *pyproject_path* names the file in a refusal and is never
+    opened.
 
-    A no-op when the table has no explicit ``packages`` key at all (hatchling
-    then infers packages on its own).
+    Returns *text* itself, byte for byte, when there is nothing to add: the table
+    has no explicit ``packages`` key (hatchling then infers packages on its own),
+    or *package* is already listed. Only an edit normalises the trailing newline.
 
     Raises:
         PyprojectEditError: The wheel table uses ``include`` instead of
             ``packages``, or ``packages`` exists but its array cannot be
             located textually.
     """
-    text = _read_normalised(pyproject_path)
     data = tomllib.loads(text)
     wheel = (
         data.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("wheel", {})
@@ -117,9 +116,10 @@ def add_wheel_package(pyproject_path: Path, package: str) -> None:
                 f"{pyproject_path} uses [tool.hatch.build.targets.wheel].include instead of "
                 f'packages. Add "{package}" to it by hand.'
             )
-        return
+        return text
     if package in wheel["packages"]:
-        return
+        return text
+    text = _normalised(text)
     match = _WHEEL_PACKAGES_RE.search(text)
     if match is None:
         raise PyprojectEditError(
@@ -127,7 +127,4 @@ def add_wheel_package(pyproject_path: Path, package: str) -> None:
             f'locate its array textually. Add "{package}" to it by hand.'
         )
     prefix, array = match.group(1), match.group(2)
-    new_text = (
-        text[: match.start()] + prefix + _append_to_array(array, package) + text[match.end() :]
-    )
-    pyproject_path.write_text(new_text, encoding="utf-8")
+    return text[: match.start()] + prefix + _append_to_array(array, package) + text[match.end() :]
