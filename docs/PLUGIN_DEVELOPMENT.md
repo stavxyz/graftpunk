@@ -245,19 +245,24 @@ merge their element types the same way (`list[int]` and `list[float]` give
 disagreement is `mixed`.
 
 Path segments and names are judged apart, because they cost different things: a
-path segment read as an id costs a placeholder, and a name read as an id costs a
-field the site expects. A path segment fails closed. One that holds a digit
+name read as an id costs a field the site expects, and a path segment read as an
+id costs only an extra placeholder, while a path segment missed keeps its value
+in every generated file. A path segment fails closed. One that holds a digit
 stays literal only when every part of it (split on `_`, `.`, `-`, `~`, and `$`)
 holds no digit, is a word spelled with the consonant pairs English uses and no
 run of four or more capitals followed by a digit run of at most two (`address2`,
-`windows10`, `ec2`), is a version (`v2`, `v1beta1`), or is a digit run of at
-most two standing alone (`/page/2`). Every other segment holding a digit becomes
-a placeholder: a date, a card, phone, or national id number written in digit
-groups, a long number, a short random token (`kqzpwmab47`, `x7Kq29Lp`), or three
-or more short letter-and-digit parts (`ab12-cd34-ef56`). A segment the name rule
-below reads as an id (an email, for one) becomes one too. A letters-only segment
-that holds no id stays literal, and a family of many sibling segments that each
-carry a digit (`red-widget-1`, `red-widget-2`, ...) collapses by count.
+`windows10`, `ec2`), is a version of at most two digits (`v2`, `v1beta1`;
+`v40912` is not), or is a digit run of at most two standing alone, and a lone
+digit run is the only part holding a digit (`/page/2` and `step-2` stay literal;
+`03-14-87`, `10.0.0.1`, and `acct-12-34` do not). Every other segment holding a
+digit becomes a placeholder: a date, a card, phone, or national id number
+written in digit groups, a long number, a short random token (`kqzpwmab47`,
+`x7Kq29Lp`), or three or more short letter-and-digit parts (`ab12-cd34-ef56`). A
+segment the name rule below reads as an id (an email, for one) becomes one too.
+The path rule's known limits: a letters-only segment that holds no id stays
+literal, and so does a word with one or two digits after it (`smith42`,
+`mary12`). A family of many sibling segments that each carry a digit
+(`red-widget-1`, `red-widget-2`, ...) collapses by count.
 
 A name is dropped only on strong evidence. Every name position goes through one
 rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
@@ -266,12 +271,16 @@ login form's element ids, input names, and hidden input names. A name holds an
 id when, percent-decoded, it or one of its parts (split on `_`, `.`, `-`, `~`,
 and `$`, so a file extension splits off) is an email; a run of six or more
 digits (`user_40912873`); hex of twelve or more characters mixing digits and
-letters (`a3f9c2d1e0b4`, which also catches a UUID by its last group); three or
-more all-digit parts totalling seven or more digits (`4111-1111-1111-1111`,
-`123-45-6789`; a date such as `2024-01-15` as a whole is a name); a prefixed id
-whose tail is twelve or more characters mixing upper case, lower case, and
-digits (`cus_NffrFeUfNV2Hib`); or a base64-like token of twenty-four or more
-characters switching between letters and digits at least five times.
+letters (`a3f9c2d1e0b4`, which also catches a UUID by its last group), or `0x`
+and twelve or more hex digits; three or more all-digit parts totalling seven or
+more digits (`4111-1111-1111-1111`, `123-45-6789`; a date such as `2024-01-15`
+as a whole is a name), or a phone number with its area code in parentheses
+(`(555)123-4567`); a prefixed id whose tail is twelve or more characters mixing
+upper case, lower case, and digits (`cus_NffrFeUfNV2Hib`); or a base64-like
+token of twenty-four or more characters switching between letters and digits at
+least five times. A response object whose keys are ids as a group (three or more
+keys of one length of twelve or more, each an alphanumeric run mixing letters
+and digits, such as push ids or record ids) has every key replaced by `{key}`.
 
 A path segment that holds an id becomes a placeholder; a query, body, or form
 key or a header name that holds one is dropped and counted, and so is a key that
@@ -284,42 +293,56 @@ token name that holds one is left out and counted, written in no form (not even
 hashed: a hash of a short id is reversed by brute force); and a hidden login
 input whose name holds one is dropped and counted.
 
-A login form's roles follow HTML semantics, anchored on its first password
-input. The username is the input whose `autocomplete` is `username` or `email`,
-else the text-like input nearest before the password with a username hint (an
-`email` type, or a name holding user, email, login, or account), else the
-text-like input nearest before it; the submit is the first submit control after
-the password; and each other text-like input between the username and that
-submit is a role keyed by its name. A checkbox, radio, file, image, reset,
-range, or hidden input is never a role, each role is assigned once, an empty
-`type=""` counts as no type, and a form with a second password input or one
-marked `new-password` is a registration form, not a login form. Each input is
-selected by its id, else its name, else its type (`input:not([type])` for a
-typeless input), and an id or a name that holds an account value is never used;
-a name that holds one, or no name, gets a neutral role key (`field_1`, never a
-name another input of the form has) and a `GP-FILL` saying to rename it. A
-selector by type is used only when it picks one input of the form, and is never
-printed without the form scope: when the form's action holds an id the printed
-selectors drop the scope, so only an id selector, or a name no other input on
-the page shares, is printed. A role left without a selector (a username the form
-lacks included) is listed in `LoginForm.unresolved_roles` and the projection's
-`unresolved_roles`, and the generated `LoginStep` carries a `GP-FILL` naming it
-and why. A POST to a recorded login form's action is the credential post
-whatever its password field is named.
+A login form's roles follow HTML semantics, anchored on its password input: the
+one marked `autocomplete="current-password"`, else the first password input. The
+username is the input `autocomplete="username"` names anywhere in the form; else
+the one `autocomplete="email"` names nearest before the password; else the
+text-like input nearest before the password with a username hint (an `email`
+type, or a name holding user, email, login, or account); else the text-like
+input nearest before it; else, when nothing text-like precedes the password, the
+first input after it named exactly `username`, `email`, `login`, or `user`. The
+submit is the first submit control after the password (an image input counts),
+and a control whose `form` attribute names the form belongs to it wherever it
+sits. Each other text-like input between the username and that submit is a role
+keyed by its name. A checkbox, radio, file, image, reset, range, or hidden input
+is never a field role, each role is assigned once, and an empty `type=""` counts
+as no type. A registration form (no input marked `current-password`, and either
+one marked `new-password` or a second password input named as a confirmation) is
+left out only when the page also has a login form, so a lone login form marked
+`new-password` is kept and a password-plus-PIN form is a login form; a
+stale-session check still counts any form with a password input as a login page.
+Each input is selected by its id, else its name, else its type
+(`input:not([type])` for a typeless input), and an id or a name that holds an
+account value is never used; a name that holds one, or no name, gets a neutral
+role key (`field_1`, never a name another input of the form has) and a `GP-FILL`
+naming which of the two it was. A selector by type is used only when it picks
+one input of the form, and is never printed without the form scope: when the
+form's action holds an id the printed selectors drop the scope, so only an id
+selector, or a name no other input on the page shares, is printed. A form whose
+action is empty or only a fragment (`#`, `#login`) is scoped to match that. A
+role left without a selector is listed in `LoginForm.unresolved_roles` and the
+projection's `unresolved_roles`, and the generated `LoginStep` carries a
+`GP-FILL` naming it and why; a username the form has no input for (the password
+page of a multi-step login) gets its own `GP-FILL` saying so. A POST to where a
+recorded login form posts (the same host and path, compared before any email in
+it is masked) is the credential post whatever its password field is named, and
+the same form recorded on several pages is listed once.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
 those shapes must be caught as a name, and each sub-rule of the name rule must
 be the only catch of one entry. The share of ordinary names read as ids is held
-under a ceiling on a regression corpus (the names reviewers raised) and on a
-held-out corpus of public SDK and API names the rule was not tuned against: 0 of
-482 and 0 of 259 when the rule last changed, under ceilings of 0.4% and 1%.
-Random tokens are covered where they occur, in paths: the path rule's miss rate
-on seeded random tokens of each shape is held under a ceiling (8.2% of
-eight-character lower-case base36 tokens, most of them letters only). The
-name rule's known limit: a short random token used as a field name
-(`kqzpwmab47`, `x7Kq29Lp`, `usr_8fk2x9qa`) is kept, and so is any account value
-in a shape it does not list.
+under a ceiling on three corpora: the regression corpus (the names reviewers
+raised), the round-7 corpus of public SDK and API names (written before round 7
+as a held-out corpus; the round-7b thresholds were set against it), and a fresh
+corpus of 229 field, header, and cookie names written in round 8 and not tuned
+against. When the rule last changed they read 0 of 482, 0 of 259, and 0 of 229
+as ids. Random tokens are covered where they occur, in paths: the path rule's
+miss rate on seeded random tokens of each shape is held under a ceiling (8.2% of
+eight-character lower-case base36 tokens, most of them letters only). The name
+rule's known limit: a short random token used as a field name (`kqzpwmab47`,
+`x7Kq29Lp`, `usr_8fk2x9qa`) is kept, and so is any account value in a shape it
+does not list.
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:
@@ -612,7 +635,11 @@ a list (see
 [CLI parameter types](#cli-parameter-types)), the observed custom headers, and
 the endpoint it calls declared as `endpoint=` on its decorator; a docstring
 recording the method, the path, how many times it was seen, which run it came
-from, and the response shape.
+from, and the response shape. Each path value is percent-encoded before it goes
+into the URL (`quote(order_id, safe="")`), so a `/`, `?`, or `#` in it stays in
+its segment. A command's name is a Python identifier (`import` becomes
+`import_`, a leading digit gains `n_`) and never one of `SitePlugin`'s own
+attributes (`setup` becomes `setup_2`).
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
@@ -1169,13 +1196,15 @@ matched by that template and written as `get_products_{product_id}.json`.
 `FixtureSession` names a request by the path alone and does not know about the
 collapse, so a test reaches that fixture with an id-shaped value (the generated
 tests pass `"1"`); a real slug would be looked up as
-`get_products_alpha-widget-2024.json` and answer 404.
-`--out PATH` chooses where to write (`./tests/captures` by
-default), `--limit N` caps how many files are written per matched template (5 by
-default), and `--allow-tracked` overrides the refusal to write onto a
-git-tracked path. Repeated captures of one template get `_1`, `_2` suffixes;
-`FixtureSession` looks only at the base name, so those extras are there for you
-to read, not for a test to load.
+`get_products_alpha-widget-2024.json` and answer 404. `--out PATH` chooses where
+to write (`./tests/captures` by default), `--limit N` caps how many files are
+written per matched template (5 by default), and `--allow-tracked` overrides the
+refusal to write onto a git-tracked path. Repeated captures of one template get
+`#1`, `#2` suffixes (a `#` cannot occur in a path, so a repeat never takes the
+name of a numeric segment), and two templates that would name one file (`/a_b`
+and `/a/b`) are refused before anything is written; `FixtureSession` looks only
+at the base name, so those extras are there for you to read, not for a test to
+load.
 
 Then do the work by hand. **A fixture copies the real structure and invents the
 content. No captured page is committed.** Open the capture, keep the shape of

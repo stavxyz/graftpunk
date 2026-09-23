@@ -9,8 +9,8 @@ on three corpora measured apart: the regression corpus of names reviewers raised
 the round-7b thresholds were set against (``field_names_round7.py``), and a fresh
 corpus of field, header, and cookie names written in round 8 and not tuned
 against (``field_names_fresh.py``). A response map is also keyed by ids when 3 or
-more keys share one length of 12 or more and each mix letters and digits
-(``paths.keys_are_ids``); no group of same-length corpus names triggers it.
+more alphanumeric keys share one length of 12 or more and each mix letters and
+digits (``paths.keys_are_ids``); no group of same-length corpus names triggers it.
 
 Path segments fail closed (``looks_dynamic``), so random tokens are covered there:
 a ceiling per random-token shape, set just above the rate measured when the rule
