@@ -498,7 +498,31 @@ class TestTheWriterKeepsWhatItDoesNotChange:
 # Every module in the package but the writer itself, found rather than listed, so
 # a mutator added later is covered without editing this test.
 _NOT_THE_WRITER = sorted(p.name for p in _SCAFFOLD_DIR.glob("*.py") if p.name != "write.py")
-_DISK_CALLS = {"write_text", "write_bytes", "touch", "unlink", "rmdir", "mkdir"}
+_DISK_CALLS = {
+    "write_text",
+    "write_bytes",
+    "touch",
+    "unlink",
+    "rmdir",
+    "mkdir",
+    "chmod",
+    "symlink_to",
+    "hardlink_to",
+}
+# Path.replace and Path.rename take exactly one positional argument and no
+# keyword; str.replace takes two or more, and dataclasses.replace takes keywords,
+# so neither is counted.
+_ONE_ARGUMENT_DISK_CALLS = {"replace", "rename"}
+
+
+def _is_disk_call(node: ast.Call) -> bool:
+    if not isinstance(node.func, ast.Attribute):
+        return False
+    if node.func.attr in _DISK_CALLS:
+        return True
+    return node.func.attr in _ONE_ARGUMENT_DISK_CALLS and len(node.args) == 1 and not node.keywords
+
+
 _WRITE_MODE = re.compile(r"[wax+]")
 # Modules whose import is itself a way to write: the filesystem calls of os and
 # shutil, and the writing side of the captures rule, devtools/captures.py. The
@@ -538,14 +562,15 @@ def test_no_module_but_write_py_touches_the_disk(module: str) -> None:
 
     What these checks cannot see: a writer reached through getattr or a string
     name, a Path method passed as a value and called elsewhere, ``open`` bound to
-    another name, a subprocess that writes, and a call into any other package's
+    another name, ``Path.replace`` or ``Path.rename`` called with a keyword
+    argument, a subprocess that writes, and a call into any other package's
     function that writes. Review covers those."""
     writes_directly = [
         node.func.attr
         for node in ast.walk(_tree(module))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _DISK_CALLS
+        and _is_disk_call(node)
     ]
     assert writes_directly == []
     opened = [
@@ -599,3 +624,25 @@ def test_every_module_that_applies_changes_takes_them_from_write_py() -> None:
                 for node in ast.walk(tree)
             ), module
     assert "project.py" in appliers
+
+
+@pytest.mark.parametrize(
+    ("source", "flagged"),
+    [
+        ("p.replace(q)", ["replace"]),
+        ("p.rename(q)", ["rename"]),
+        ("p.chmod(0o644)", ["chmod"]),
+        ("p.symlink_to(q)", ["symlink_to"]),
+        ("p.hardlink_to(q)", ["hardlink_to"]),
+        ('name.replace("-", "_")', []),
+        ("dataclasses.replace(spec, mode=mode)", []),
+    ],
+)
+def test_the_disk_call_scan_tells_a_path_rename_from_a_string_replace(
+    source: str, flagged: list[str]
+) -> None:
+    statement = ast.parse(source).body[0]
+    assert isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+    call = statement.value
+    assert isinstance(call.func, ast.Attribute)
+    assert ([call.func.attr] if _is_disk_call(call) else []) == flagged

@@ -214,9 +214,10 @@ class TestAWriteFailureLeavesNoPartialTree:
     def test_a_short_write_that_touches_the_file_is_still_cleaned_up(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A short write (disk fills mid-write) leaves the file sitting on
-        disk before the ``OSError`` surfaces. It must be recorded as written
-        so cleanup removes it too, not only files that never touched disk.
+        """The defensive case: the atomic writer never leaves the target path on
+        disk when it fails, but the restore does not rely on that. A write that
+        fails after something appeared at the target is still recorded as
+        started, so cleanup removes what is there too.
         """
         real_write = write._write_atomically
 
@@ -353,3 +354,20 @@ class TestSuiteFilesKeepTheirBytes:
         assert caught.value.path == tmp_path / name
         assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
         assert not (tmp_path / "src").exists()
+
+
+class TestTheWritersOwnConflictCheck:
+    def test_a_gitignore_that_is_a_directory_is_refused_by_apply_changes(
+        self, tmp_path: Path
+    ) -> None:
+        """The rendered files pass write_scaffold's early check; the .gitignore
+        create is refused by apply_changes, before anything is written."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(_SUITE_PYPROJECT)
+        (tmp_path / ".gitignore").mkdir()
+        with pytest.raises(ScaffoldConflictError) as caught:
+            write_scaffold(tmp_path, _spec("widgets"))
+        assert caught.value.conflicts == [tmp_path / ".gitignore"]
+        assert pyproject.read_text() == _SUITE_PYPROJECT
+        assert not (tmp_path / "src").exists()
+        assert not (tmp_path / "tests").exists()

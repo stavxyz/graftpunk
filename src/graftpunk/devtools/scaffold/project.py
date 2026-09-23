@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
-from graftpunk.devtools.errors import ScaffoldWriteError
+from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.scaffold.pyproject_edit import (
     PyprojectEditError,
     with_entry_point,
@@ -22,7 +22,6 @@ from graftpunk.devtools.scaffold.pyproject_edit import (
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, module_name_for, render
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
-    InvalidChangeError,
     PlannedChange,
     Validator,
     apply_changes,
@@ -192,14 +191,8 @@ def write_scaffold(
 
     try:
         apply_changes(changes)
-    except ChangeConflictError as exc:
-        LOG.debug("scaffold_write_refused", conflicts=len(exc.conflicts))
-        raise
-    except InvalidChangeError:
-        LOG.debug("scaffold_write_refused", reason="invalid_change")
-        raise
-    except ScaffoldWriteError:
-        LOG.debug("scaffold_write_refused", reason="os_error")
+    except DevtoolsRefusal as exc:
+        LOG.debug("scaffold_write_refused", reason=type(exc).__name__)
         raise
 
     LOG.info("scaffold_written", mode=mode, target_dir=str(target_dir), files=len(rendered))

@@ -1,4 +1,8 @@
-"""The single owner of 'captures never enter git' (plugin tooling spec, 2026-09-11)."""
+"""The writing side of 'captures never enter git' (plugin tooling spec, 2026-09-11).
+
+captures.py applies the rule to disk; the pure rule, the directory and the
+.gitignore text edit, is owned by captures_rule.py and tested at the end of
+this module."""
 
 from __future__ import annotations
 

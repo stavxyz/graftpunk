@@ -931,3 +931,42 @@ class TestAConflictSaysWhichKind:
             "Refusing to edit file(s) changed since they were read:",
             f"  {changed}",
         ]
+
+    def test_a_rendered_file_that_fails_its_grammar_is_one_line_and_its_own_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A generator bug, reached by corrupting one rendered module: the
+        InvalidChangeError arm, not the ValueError arm that means a bad name."""
+        from graftpunk.devtools.scaffold import project
+
+        real_render = project.render
+
+        def render_with_a_broken_plugin_module(spec: object) -> dict[str, str]:
+            files = real_render(spec)  # ty: ignore[invalid-argument-type]
+            return {
+                rel: ("def (:\n" if rel.endswith("/plugin.py") else content)
+                for rel, content in files.items()
+            }
+
+        monkeypatch.setattr(project, "render", render_with_a_broken_plugin_module)
+        target = tmp_path / "out"
+        with _captured_debug_logs() as events:
+            result = runner.invoke(
+                _build_app(),
+                [
+                    "plugin",
+                    "new",
+                    "widgets",
+                    "--url",
+                    "https://myshop.example",
+                    "--dir",
+                    str(target),
+                ],
+            )
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line.startswith("Refusing to write ")
+        assert "does not parse as Python" in line
+        reasons = [e.get("reason") for e in events if e.get("event") == "scaffold_refused"]
+        assert reasons == ["invalid_change"]
+        assert not target.exists()
