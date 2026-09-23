@@ -18,9 +18,11 @@ import ast
 import contextlib
 import errno
 import os
+import secrets
 import stat
 import tomllib
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +43,11 @@ __all__ = [
 Validator = Callable[[str], None]
 
 _PARTIAL_SUFFIX = ".gp-partial"
+
+# The temp files the running apply_changes has created and not yet moved into
+# place or removed. Only these are its to remove or to report as left changed; a
+# temp file left by an earlier run is neither.
+_OPEN_PARTIALS: ContextVar[list[Path] | None] = ContextVar("_OPEN_PARTIALS", default=None)
 
 
 def validate_python(text: str) -> None:
@@ -191,15 +198,30 @@ def _missing_parents(directory: Path) -> list[Path]:
     return list(reversed(missing))
 
 
-def _partial_for(path: Path) -> Path:
-    """The temp file :func:`_write_atomically` writes before moving it over *path*."""
-    target = Path(os.path.realpath(path))
-    return target.with_name(f".{target.name}{_PARTIAL_SUFFIX}")
+def _new_partial(target: Path) -> Path:
+    """A temp file beside *target*, created empty by this call. The name is random
+    and the create is exclusive, so a temp file an earlier run left behind is never
+    written over."""
+    while True:
+        partial = target.with_name(f".{target.name}.{secrets.token_hex(4)}{_PARTIAL_SUFFIX}")
+        try:
+            with partial.open("x", encoding="utf-8"):
+                pass
+        except FileExistsError:
+            continue
+        return partial
+
+
+def _forget(open_partials: list[Path] | None, partial: Path) -> None:
+    if open_partials is not None and partial in open_partials:
+        open_partials.remove(partial)
 
 
 def _write_atomically(path: Path, text: str) -> None:
     """Write *text* to a sibling temp file and move it over *path*, so a reader never
-    sees a half-written module. The temp file is removed if either step fails.
+    sees a half-written module. The temp file is removed if either step fails. It
+    has a random name and is created exclusively (see :func:`_new_partial`), so a
+    temp file an earlier run left behind is never written over or removed.
 
     A symlinked *path* is written through, so the link survives, and an existing
     file keeps its permission bits; ``os.replace`` alone would swap in a new
@@ -208,23 +230,31 @@ def _write_atomically(path: Path, text: str) -> None:
     owner and group become the writer's.
     """
     target = Path(os.path.realpath(path))
-    partial = _partial_for(path)
+    open_partials = _OPEN_PARTIALS.get()
+    partial: Path | None = None
     try:
         try:
             mode: int | None = stat.S_IMODE(target.stat().st_mode)
         except FileNotFoundError:
             mode = None
+        partial = _new_partial(target)
+        if open_partials is not None:
+            open_partials.append(partial)
         # newline="": the text is written as given, so an original read by
         # read_original comes back byte for byte.
         partial.write_text(text, encoding="utf-8", newline="")
         if mode is not None:
             partial.chmod(mode)
         os.replace(partial, target)
+        _forget(open_partials, partial)
     except BaseException:
         # Any exception, KeyboardInterrupt included: the partial is this
-        # function's own, and nothing else knows to remove it.
-        with contextlib.suppress(OSError):
-            partial.unlink()
+        # function's own, and nothing else knows to remove it. One it could not
+        # remove stays in open_partials for _restore to report.
+        if partial is not None:
+            with contextlib.suppress(OSError):
+                partial.unlink()
+                _forget(open_partials, partial)
         raise
 
 
@@ -252,10 +282,9 @@ def _restore(started: list[PlannedChange], created_dirs: list[Path]) -> list[Pat
         except OSError:
             if change.original is not None or os.path.lexists(change.path):
                 unrestored.append(change.path)
-        # A temp file whose own cleanup failed is left changed too.
-        partial = _partial_for(change.path)
-        if os.path.lexists(partial):
-            unrestored.append(partial)
+    # A temp file this operation created and could not remove is left changed
+    # too; one an earlier run left is not this operation's to report.
+    unrestored.extend(p for p in _OPEN_PARTIALS.get() or () if os.path.lexists(p))
     for directory in reversed(created_dirs):
         try:
             directory.rmdir()
@@ -318,21 +347,27 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
             raise ScaffoldWriteError(change.path, denied, ())
     started: list[PlannedChange] = []
     created_dirs: list[Path] = []
-    for change in changes:
-        try:
-            created_dirs.extend(_missing_parents(change.path.parent))
-            change.path.parent.mkdir(parents=True, exist_ok=True)
-            started.append(change)
-            _write_atomically(change.path, change.content)
-        except OSError as exc:
-            unrestored = _restore(started, created_dirs)
-            raise ScaffoldWriteError(change.path, exc, unrestored) from exc
-        except BaseException as exc:
-            # Not a write failure (a bug, or KeyboardInterrupt): restore all the
-            # same, then let the exception itself reach the caller.
-            unrestored = _restore(started, created_dirs)
-            if unrestored:
-                listing = ", ".join(str(p) for p in unrestored)
-                exc.add_note(f"These paths could not be restored and are left changed: {listing}.")
-            raise
+    open_partials = _OPEN_PARTIALS.set([])
+    try:
+        for change in changes:
+            try:
+                created_dirs.extend(_missing_parents(change.path.parent))
+                change.path.parent.mkdir(parents=True, exist_ok=True)
+                started.append(change)
+                _write_atomically(change.path, change.content)
+            except OSError as exc:
+                unrestored = _restore(started, created_dirs)
+                raise ScaffoldWriteError(change.path, exc, unrestored) from exc
+            except BaseException as exc:
+                # Not a write failure (a bug, or KeyboardInterrupt): restore all
+                # the same, then let the exception itself reach the caller.
+                unrestored = _restore(started, created_dirs)
+                if unrestored:
+                    listing = ", ".join(str(p) for p in unrestored)
+                    exc.add_note(
+                        f"These paths could not be restored and are left changed: {listing}."
+                    )
+                raise
+    finally:
+        _OPEN_PARTIALS.reset(open_partials)
     return tuple(change.path for change in changes)

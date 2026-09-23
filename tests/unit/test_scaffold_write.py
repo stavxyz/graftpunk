@@ -297,18 +297,20 @@ class TestEveryLeftoverIsNamed:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = _project_root(tmp_path)
-        partial_name = ".a.py.gp-partial"
         real_write_text = Path.write_text
         real_unlink = Path.unlink
 
+        def _is_the_partial(path: Path) -> bool:
+            return path.name.startswith(".a.py.") and path.name.endswith(".gp-partial")
+
         def short_write_text(self: Path, data: str, *args: object, **kwargs: object) -> int:
-            if self.name == partial_name:
+            if _is_the_partial(self):
                 real_write_text(self, data[:1], *args, **kwargs)  # ty: ignore[invalid-argument-type]
                 raise OSError(28, "No space left on device", str(self))
             return real_write_text(self, data, *args, **kwargs)  # ty: ignore[invalid-argument-type]
 
         def failing_unlink(self: Path, missing_ok: bool = False) -> None:
-            if self.name == partial_name:
+            if _is_the_partial(self):
                 raise OSError(13, "Permission denied", str(self))
             real_unlink(self, missing_ok=missing_ok)
 
@@ -317,9 +319,44 @@ class TestEveryLeftoverIsNamed:
         with pytest.raises(ScaffoldWriteError) as caught:
             apply_changes([PlannedChange(root / "a.py", "a = 1\n")])
         monkeypatch.undo()
-        assert [p.name for p in caught.value.unrestored] == [partial_name]
-        assert partial_name in str(caught.value)
+        (left,) = caught.value.unrestored
+        assert _is_the_partial(left)
+        assert left.exists()
+        assert left.name in str(caught.value)
         assert "Every file this operation had changed was restored" not in str(caught.value)
+
+    @pytest.mark.parametrize("unlink_fails", [False, True])
+    def test_a_stale_partial_from_an_earlier_run_is_left_alone_and_not_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unlink_fails: bool
+    ) -> None:
+        """A temp file this operation did not create is neither removed nor
+        reported as its leftover, whether or not removing it would have worked."""
+        root = _project_root(tmp_path)
+        stale = root / ".b.py.gp-partial"
+        stale.write_text("from an earlier run\n")
+        real_write_text = Path.write_text
+        real_unlink = Path.unlink
+
+        def write_text_failing_for_b(self: Path, data: str, *args: object, **kwargs: object) -> int:
+            if self.name.startswith(".b.py"):
+                raise OSError(28, "No space left on device", str(self))
+            return real_write_text(self, data, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+        def unlink_failing_for_the_stale_partial(self: Path, missing_ok: bool = False) -> None:
+            if unlink_fails and self.name == stale.name:
+                raise OSError(13, "Permission denied", str(self))
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "write_text", write_text_failing_for_b)
+        monkeypatch.setattr(Path, "unlink", unlink_failing_for_the_stale_partial)
+        with pytest.raises(ScaffoldWriteError) as caught:
+            apply_changes(
+                [PlannedChange(root / "a.py", "a = 1\n"), PlannedChange(root / "b.py", "b = 1\n")]
+            )
+        monkeypatch.undo()
+        assert stale.read_text() == "from an earlier run\n"
+        assert caught.value.unrestored == ()
+        assert _files(root) == {".b.py.gp-partial": b"from an earlier run\n"}
 
     def test_the_os_error_fields_name_the_real_path_not_the_partial(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
