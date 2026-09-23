@@ -47,6 +47,7 @@ __all__ = [
     "TokenKind",
     "body_params",
     "digest",
+    "flagged_names_of",
 ]
 
 # Thresholds, every one a named constant (plugin tooling spec, "Rules the digest applies").
@@ -962,3 +963,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         cookies=tuple(cookies_seen),
         dropped=dropped,
     )
+
+
+def flagged_names_of(d: RunDigest) -> tuple[str, ...]:
+    """The names a committed fixture must never contain: every cookie name the digest
+    recorded on the primary host and every token candidate's name, exactly as the
+    digest holds them, sorted and deduplicated. It lives beside the digest that
+    records the names, so the sidecar writer takes plain strings and imports
+    nothing from the digest."""
+    return tuple(sorted(set(d.cookies) | {token.name for token in d.tokens}))

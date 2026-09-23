@@ -25,6 +25,7 @@ from graftpunk.har.digest import (
     _with_login_flow,
     body_params,
     digest,
+    flagged_names_of,
 )
 from graftpunk.har.parser import parse_har_file
 
@@ -1113,3 +1114,38 @@ class TestLoginFlowFlag:
 
     def test_the_flag_defaults_to_false(self) -> None:
         assert _flow_endpoint("/anything").login_flow is False
+
+
+class TestFlaggedNamesOf:
+    def test_flagged_names_are_exactly_the_digest_cookie_and_token_names(
+        self, tmp_path: Path
+    ) -> None:
+        entry = {
+            "startedDateTime": "2026-09-10T10:00:00.000Z",
+            "time": 1,
+            "request": {
+                "method": "GET",
+                "url": "https://myshop.example.com/account",
+                "headers": [],
+                "cookies": [],
+                "queryString": [],
+            },
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [{"name": "Content-Type", "value": "text/html"}],
+                "cookies": [{"name": "sid", "value": "planted"}],
+                "content": {
+                    "mimeType": "text/html",
+                    "text": '<meta name="csrf-token" content="planted">',
+                    "size": 42,
+                },
+            },
+        }
+        har = tmp_path / "network.har"
+        har.write_text(json.dumps({"log": {"version": "1.2", "entries": [entry]}}))
+        result = digest(DigestSource.from_har(har))
+        assert flagged_names_of(result) == tuple(
+            sorted(set(result.cookies) | {t.name for t in result.tokens})
+        )
+        assert flagged_names_of(result) == ("csrf-token", "sid")

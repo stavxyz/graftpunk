@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -465,6 +466,34 @@ class TestFixturesCommand:
         assert result.exit_code == 0, result.output
         assert "no entries matched --match." in result.output.lower()
         assert not out_dir.exists() or not list(out_dir.iterdir())
+
+    def test_the_sidecar_is_committable_and_records_the_capture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1?page=2", body='{"id": 1}')
+        order["response"]["cookies"] = [{"name": "shop_session", "value": "planted"}]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (fixture,) = [
+            p for p in out_dir.glob("get_orders_*.json") if not p.name.endswith(".meta.json")
+        ]
+        sidecar = json.loads((out_dir / f"{fixture.name}.meta.json").read_text())
+        assert set(sidecar) == {
+            "schema",
+            "status",
+            "content_type",
+            "body_params",
+            "capture_sha256",
+            "flagged_names",
+        }
+        assert sidecar["schema"] == 1
+        assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
+        assert sidecar["flagged_names"] == ["shop_session"]
+        assert "page=2" not in json.dumps(sidecar)
 
 
 class TestFixturesGitignore:

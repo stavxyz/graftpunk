@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 
-from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored, find_repo_root, is_tracked
+from graftpunk.devtools.captures import (
+    CAPTURES_DIR,
+    ensure_ignored,
+    find_repo_root,
+    is_tracked,
+    write_sidecar,
+)
+from graftpunk.testing.sidecar import load_sidecar, sidecar_path
 
 
 def _git(argv: list[str], cwd: Path) -> None:
@@ -86,3 +95,23 @@ class TestIsTracked:
         untracked = tmp_path / "scratch.txt"
         untracked.write_text("hi")
         assert is_tracked(untracked) is False
+
+
+class TestWriteSidecar:
+    def test_writes_the_schema_keys_and_the_hash_of_the_file_on_disk(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "get_orders.json"
+        fixture.write_text('{"orders": []}', encoding="utf-8")
+        path = write_sidecar(
+            fixture,
+            status=200,
+            content_type="application/json",
+            body_params=["page", "archived"],
+            flagged_names=["shop_session", "csrf-token", "shop_session"],
+        )
+        assert path == sidecar_path(fixture)
+        sidecar = load_sidecar(path)
+        assert sidecar.capture_sha256 == hashlib.sha256(fixture.read_bytes()).hexdigest()
+        assert sidecar.body_params == ("archived", "page")
+        assert sidecar.flagged_names == ("csrf-token", "shop_session")
+        assert "url" not in json.loads(path.read_text())
+        assert "captured_at" not in json.loads(path.read_text())

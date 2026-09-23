@@ -10,7 +10,6 @@ design note).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -20,6 +19,7 @@ import requests
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.har.naming import capture_slug
 from graftpunk.plugins.cli_plugin import CommandContext, PluginConfig
+from graftpunk.testing.sidecar import is_sidecar, load_sidecar, sidecar_path
 
 __all__ = ["FixtureSession", "fixture_context", "make_context"]
 
@@ -74,10 +74,10 @@ class FixtureSession(GraftpunkSession):
     :func:`graftpunk.har.naming.capture_slug` names a capture for that
     method and path, the same rule ``gp observe fixtures`` uses to write
     files, so a fixture copied from a capture keeps its name. A sidecar
-    ``<filename>.meta.json`` beside a fixture supplies its status and
-    content type when present (the same sidecar ``gp observe fixtures``
-    writes); without one, the status is 200 and the type is guessed from
-    the file's extension. No matching file answers 404.
+    ``<filename>.meta.json`` beside a fixture supplies its status and content type
+    when present, read through :mod:`graftpunk.testing.sidecar`; without one, the
+    status is 200 and the type is guessed from the file's extension. No matching
+    file answers 404.
 
     The lookup matches the base stem only, so the ``_1``, ``_2`` files
     ``gp observe fixtures`` writes for repeated captures of one template are
@@ -99,11 +99,7 @@ class FixtureSession(GraftpunkSession):
         path = urlparse(url).path or "/"
         stem = capture_slug(method, path)
         matches = sorted(
-            (
-                p
-                for p in self._fixtures_dir.glob(f"{stem}.*")
-                if p.is_file() and not p.name.endswith(".meta.json")
-            ),
+            (p for p in self._fixtures_dir.glob(f"{stem}.*") if p.is_file() and not is_sidecar(p)),
             key=_fixture_preference,
         )
         response = requests.Response()
@@ -118,13 +114,15 @@ class FixtureSession(GraftpunkSession):
         return self._respond_from_file(matches[0], response)
 
     def _respond_from_file(self, path: Path, response: requests.Response) -> requests.Response:
-        meta_path = path.with_name(path.name + ".meta.json")
+        """Answer from *path*; its sidecar, when present, is read through the owner,
+        which refuses a sidecar outside its declared format rather than half-reading it."""
+        meta_path = sidecar_path(path)
         status = 200
         content_type = _CONTENT_TYPE_BY_SUFFIX.get(path.suffix, _DEFAULT_FIXTURE_CONTENT_TYPE)
         if meta_path.exists():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            status = int(meta.get("status", status))
-            content_type = meta.get("content_type", content_type)
+            sidecar = load_sidecar(meta_path)
+            status = sidecar.status
+            content_type = sidecar.content_type
         response.status_code = status
         response.headers["Content-Type"] = content_type
         response._content = path.read_bytes()

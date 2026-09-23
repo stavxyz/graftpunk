@@ -480,9 +480,12 @@ for answering `ctx.request_json`/`request_text` from a file under
 fixtures` names captures. A plugin added to an existing suite gets
 `tests/fixtures/<module>/` of its own, since fixture names are per endpoint
 and two plugins in one suite can share an endpoint path. `gp observe
-fixtures` writes a `<file>.meta.json` sidecar beside every capture (url,
-status, content type, body parameter names, capture time); `FixtureSession`
-reads the same sidecar for status and content type, so a fixture copied from
+fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
+number, the status, the content type, the body parameter names, the hash of the
+captured body, and the cookie and token names the run's digest recorded, but
+never the URL or the capture time), safe to commit beside the fixture derived
+from it; `FixtureSession` reads the sidecar through `graftpunk.testing.sidecar`
+for status and content type, so a fixture copied from
 a capture keeps its recorded status.
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each

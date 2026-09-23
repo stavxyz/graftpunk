@@ -16,6 +16,7 @@ import requests
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
 from graftpunk.testing import FixtureSession, fixture_context, make_context
+from graftpunk.testing.sidecar import Sidecar, SidecarError, sidecar_text
 
 
 class TestMakeContext:
@@ -66,7 +67,7 @@ class TestFixtureSession:
     def test_sidecar_supplies_status_and_content_type(self, tmp_path: Path) -> None:
         (tmp_path / "get_orders.json").write_text("Forbidden")
         (tmp_path / "get_orders.json.meta.json").write_text(
-            json.dumps({"status": 403, "content_type": "text/plain"})
+            sidecar_text(Sidecar(status=403, content_type="text/plain"))
         )
         session = FixtureSession(tmp_path)
         response = session.get("https://myshop.example.com/orders")
@@ -107,6 +108,13 @@ class TestFixtureSession:
         session = FixtureSession(tmp_path)
         response = session.get("http://192.0.2.1/nonexistent")
         assert response.status_code == 404
+
+    def test_a_sidecar_with_no_schema_is_refused_not_half_read(self, tmp_path: Path) -> None:
+        (tmp_path / "get_orders.json").write_text("{}")
+        (tmp_path / "get_orders.json.meta.json").write_text(json.dumps({"status": 403}))
+        session = FixtureSession(tmp_path)
+        with pytest.raises(SidecarError, match="get_orders.json.meta.json"):
+            session.get("https://myshop.example.com/orders")
 
 
 class TestFixtureContext:

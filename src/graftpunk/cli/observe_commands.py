@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
-import json as jsonlib
 import shutil
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -24,8 +23,14 @@ from rich.table import Table
 
 from graftpunk.cli.observe_browser import run_observe_go, run_observe_interactive
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
-from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored, find_repo_root, is_tracked
-from graftpunk.har.digest import DigestSource, body_params, digest
+from graftpunk.devtools.captures import (
+    CAPTURES_DIR,
+    ensure_ignored,
+    find_repo_root,
+    is_tracked,
+    write_sidecar,
+)
+from graftpunk.har.digest import DigestSource, body_params, digest, flagged_names_of
 from graftpunk.har.naming import EndpointSpecError, capture_filename, parse_endpoint
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.paths import template_path
@@ -255,6 +260,8 @@ def fixtures_cmd(
     except OSError as exc:
         _refuse_write(target_dir, exc)
     entries = parse_har_file(har_path).entries
+    run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
+    flagged = flagged_names_of(run_digest)
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
     for entry in entries:
@@ -285,21 +292,14 @@ def fixtures_cmd(
             stem, _, ext = filename.rpartition(".")
             filename = f"{stem}_{seen}.{ext}"
         file_path = target_dir / filename
-        meta_path = target_dir / f"{filename}.meta.json"
         try:
             file_path.write_text(entry.response.body, encoding="utf-8")
-            meta_path.write_text(
-                jsonlib.dumps(
-                    {
-                        "url": entry.request.url,
-                        "status": entry.response.status,
-                        "content_type": content_type,
-                        "body_params": sorted(body_params(entry)),
-                        "captured_at": entry.timestamp.isoformat(),
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
+            write_sidecar(
+                file_path,
+                status=entry.response.status,
+                content_type=content_type,
+                body_params=body_params(entry),
+                flagged_names=flagged,
             )
         except OSError as exc:
             _refuse_write(file_path, exc)

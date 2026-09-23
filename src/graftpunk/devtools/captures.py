@@ -2,21 +2,26 @@
 
 The fixtures command, the scaffold's generated ``.gitignore``, and the
 scaffold's suite mode all use this module, so the default directory and the
-ignore line cannot disagree (plugin tooling spec, 2026-09-11).
+ignore line cannot disagree (plugin tooling spec, 2026-09-11). It also writes
+the committable sidecar beside each capture, through the format
+:mod:`graftpunk.testing.sidecar` owns.
 """
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 
 from graftpunk.logging import get_logger
+from graftpunk.testing.sidecar import Sidecar, sidecar_path, sidecar_text
 
 LOG = get_logger(__name__)
 
 CAPTURES_DIR = "tests/captures"
 
-__all__ = ["CAPTURES_DIR", "ensure_ignored", "find_repo_root", "is_tracked"]
+__all__ = ["CAPTURES_DIR", "ensure_ignored", "find_repo_root", "is_tracked", "write_sidecar"]
 
 _GIT_TIMEOUT_SECONDS = 10
 
@@ -100,3 +105,28 @@ def is_tracked(path: Path) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
+
+
+def write_sidecar(
+    fixture: Path,
+    *,
+    status: int,
+    content_type: str,
+    body_params: Iterable[str],
+    flagged_names: Iterable[str],
+) -> Path:
+    """Write *fixture*'s committable sidecar beside it and return its path.
+
+    *fixture* must already be on disk: ``capture_sha256`` is the hash of its bytes
+    as written, which is what the in-suite check compares a derived fixture to.
+    """
+    sidecar = Sidecar(
+        status=status,
+        content_type=content_type,
+        body_params=tuple(sorted(set(body_params))),
+        capture_sha256=hashlib.sha256(fixture.read_bytes()).hexdigest(),
+        flagged_names=tuple(sorted(set(flagged_names))),
+    )
+    path = sidecar_path(fixture)
+    path.write_text(sidecar_text(sidecar), encoding="utf-8")
+    return path

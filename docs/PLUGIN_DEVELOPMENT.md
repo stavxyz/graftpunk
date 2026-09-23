@@ -948,22 +948,25 @@ reads `get_api_orders.json`; `GET /api/orders/1001` reads
 `get_api_orders_{order_id}.json`. No matching file answers 404.
 
 A `<filename>.meta.json` sidecar beside a fixture supplies its status and
-content type. `gp observe fixtures` writes one for every capture:
+content type. `gp observe fixtures` writes one for every capture, and it is safe
+to commit: it holds no URL, no time, and no value, only the hash of the captured
+body and the cookie and token names the recording's digest listed.
 
 ```json
 {
-  "url": "https://myshop.example/api/orders?page=1&per_page=25&archived=false",
-  "status": 200,
-  "content_type": "application/json",
   "body_params": [],
-  "captured_at": "2026-09-15T10:00:00+00:00"
+  "capture_sha256": "4f6c1e0a9d2b7c3e8f5a1d6b0c9e2f7a3b8d4c1e6f0a5b9c2d7e3f8a1b6c0d4e",
+  "content_type": "application/json",
+  "flagged_names": ["X-Csrf-Token", "myshop_session"],
+  "schema": 1,
+  "status": 200
 }
 ```
 
 Without a sidecar the status is 200 and the content type is guessed from the
-extension. A sidecar is how you test an error path: copy a fixture, set the
-sidecar's status to 403, and assert that the command raises
-`SessionRejectedError`.
+extension. A sidecar is how you test an error path: copy a fixture together with
+its sidecar, set the copied sidecar's `status` to 403, and assert that the
+command raises `SessionRejectedError`.
 
 ### Deriving a fixture from a capture
 
