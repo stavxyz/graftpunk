@@ -557,27 +557,33 @@ left out, and so is a lone one with a confirmation password; a lone form with
 one password marked `new-password` is kept (the attribute misused on a login
 form), and a password-plus-PIN form is a login form; a stale-session check still
 counts any form with a password input as a login page. Each input is selected by
-its id, else its name (when no other input of the form shares it), else its type
-(`input:not([type])` for a typeless input), and an id or a name that holds an
-account value is never used; a name that holds one, or no name, gets a neutral
-role key (`field_1`, never a name another input of the form has) and a `GP-FILL`
-naming which of the two it was. A selector by type is used only when it picks
-one input of the form, and is never printed without the form scope: when the
-form's action holds an id the printed selectors drop the scope, so only an id
-selector, or a name no other input on the page shares, is printed. A form whose
-action is empty or only a fragment (`#`, `#login`) is scoped to match that. A
-role left without a selector is listed in `LoginForm.unresolved_roles` and the
-projection's `unresolved_roles`, and the generated `LoginStep` carries a
-`GP-FILL` naming it and why; a username the form has no input for (the password
-page of a multi-step login) gets its own `GP-FILL` saying so. A POST to where a
-login form a GET served posts (the same host and path, the action resolved
-against the page as requested and compared before any email in it is masked) is
-the credential post whatever its password field is named; a form in a POST's own
-response never marks that POST. A page carrying a login form is the login form's
-page only when a credential post follows it within the login window, so an
-ordinary page with a site-wide header form keeps its stub. The same form
-recorded on several pages is listed once, and the form a credential post went to
-is listed first, so the generator's `login_config` is built from it.
+its id, else its name (when no other control inside the form shares it), else
+its type (when no other control inside the form has it) (`input:not([type])` for
+a typeless input), and an id or a name that holds an account value is never
+used; a name that holds one, or no name, gets a neutral role key (`field_1`,
+never a name another input of the form has) and a `GP-FILL` naming which of the
+two it was. A selector by type is used only when it picks one input of the form,
+and is never printed without the form scope: when the form's action holds an id
+the printed selectors drop the scope, so only an id selector, or a name no other
+input on the page shares, is printed. A form whose action is empty or only a
+fragment (`#`, `#login`) is scoped to match that. A role left without a selector
+is listed in `LoginForm.unresolved_roles` and the projection's
+`unresolved_roles`, and the generated `LoginStep` carries a `GP-FILL` naming it
+and why; a username the form has no input for (the password page of a multi-step
+login) gets its own `GP-FILL` saying so. A POST to where a login form a GET
+served posts (the same host and path, the action resolved against the page as
+requested and compared before any email in it is masked) is the credential post
+whatever its password field is named; a form in a POST's own response never
+marks that POST, and a slash-less action from a saved page source (`session`,
+`./session`) matches a POST path ending in `/session`. Each credential post
+makes one earlier page the login form's page: the nearest one whose form posts
+where the post went, else (a post found by its field names) the nearest one
+carrying a login form, however many assets lie between. Every other page
+carrying a login form is an ordinary page and keeps its stub. The same form
+recorded on several pages is listed once. Among the forms, one a credential post
+went to is listed first, and among those the one on the page the post came from,
+then the one whose control names cover the most of the post's body, so the
+generator's `login_config` is built from the form the recording used.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of

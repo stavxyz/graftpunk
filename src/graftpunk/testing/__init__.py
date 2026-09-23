@@ -85,8 +85,9 @@ class FixtureSession(GraftpunkSession):
     status is 200 and the type is guessed from the file's extension. No matching
     file answers 404.
 
-    The lookup matches the base stem only, escaped so a ``[`` in a path is a
-    character and not a pattern, so the ``#1``, ``#2`` files ``gp observe
+    The lookup matches a file that is the base stem plus exactly one extension
+    (``get_api_users.csv.txt`` is not ``get_api_users``'s), the stem escaped so a
+    ``[`` in a path is a character and not a pattern, so the ``#1``, ``#2`` files ``gp observe
     fixtures`` writes for repeated captures of one template are never consulted:
     a second recorded response becomes a fixture by being copied onto the base
     name. When a stem has several extensions, ``.json``
