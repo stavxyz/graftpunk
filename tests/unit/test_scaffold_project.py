@@ -349,6 +349,21 @@ class TestSuiteFilesKeepTheirBytes:
         assert b'widgets = "graftpunk_widgets.plugin:WidgetsPlugin"\r\n' in edited
         assert b'"src/graftpunk_widgets"' in edited
 
+    def test_a_mixed_ending_pyproject_is_refused_and_left_byte_identical(
+        self, tmp_path: Path
+    ) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        mixed = _SUITE_PYPROJECT.replace("\n", "\r\n").replace(
+            '[project.entry-points."graftpunk.plugins"]\r\n',
+            '[project.entry-points."graftpunk.plugins"]\n',
+        )
+        pyproject.write_bytes(mixed.encode())
+        with pytest.raises(PyprojectEditError, match="line endings"):
+            write_scaffold(tmp_path, _spec("widgets"))
+        assert pyproject.read_bytes() == mixed.encode()
+        assert not (tmp_path / "src").exists()
+        assert not (tmp_path / "tests").exists()
+
     @pytest.mark.parametrize("name", ["pyproject.toml", ".gitignore"])
     def test_a_suite_file_that_is_not_utf8_is_a_named_refusal(
         self, tmp_path: Path, name: str

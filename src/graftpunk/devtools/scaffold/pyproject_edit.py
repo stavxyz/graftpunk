@@ -37,16 +37,28 @@ def _normalised(text: str) -> str:
     return text if text.endswith("\n") or not text else text + "\n"
 
 
-def _as_lf(text: str) -> tuple[str, bool]:
+def _as_lf(text: str, pyproject_path: Path) -> tuple[str, bool]:
     """*text* with its line endings as LF, and whether they were all CRLF.
 
-    The two patterns match LF lines. A file that is CRLF throughout is edited as
-    LF and converted back, so every line keeps its ending; a file with mixed
-    endings is edited as it is.
+    The two patterns match LF lines. A file that is LF throughout is edited as it
+    is; a file that is CRLF throughout is edited as LF and converted back, so
+    every line keeps its ending.
+
+    Raises:
+        PyprojectEditError: *text* mixes CRLF and LF line endings. An edit could
+            not keep every line's ending, and the writer's contract is byte-exact
+            or refuse.
     """
-    if "\r\n" in text and text.count("\r\n") == text.count("\n"):
+    crlf = text.count("\r\n")
+    if crlf == 0:
+        return text, False
+    if crlf == text.count("\n"):
         return text.replace("\r\n", "\n"), True
-    return text, False
+    raise PyprojectEditError(
+        f"{pyproject_path} mixes CRLF and LF line endings, so I cannot edit it and keep "
+        "every line as it was. Normalise its line endings (all LF or all CRLF) and run "
+        "this again."
+    )
 
 
 def _as_crlf_if(text: str, crlf: bool) -> str:
@@ -56,13 +68,15 @@ def _as_crlf_if(text: str, crlf: bool) -> str:
 def with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str:
     """*text* with ``name = "target"`` appended to its
     ``[project.entry-points."graftpunk.plugins"]`` table. *pyproject_path* names the
-    file in a refusal and is never opened.
+    file in a refusal and is never opened. An all-LF or all-CRLF *text* keeps its
+    line endings.
 
     Raises:
-        PyprojectEditError: The name is already registered, or the table's
-            shape cannot be located textually.
+        PyprojectEditError: *text* mixes CRLF and LF line endings, the name is
+            already registered, or the table's shape cannot be located
+            textually.
     """
-    text, crlf = _as_lf(text)
+    text, crlf = _as_lf(text, pyproject_path)
     text = _normalised(text)
     data = tomllib.loads(text)
     existing = data.get("project", {}).get("entry-points", {}).get("graftpunk.plugins", {})
@@ -116,13 +130,15 @@ def with_wheel_package(text: str, pyproject_path: Path, package: str) -> str:
 
     Returns *text* itself, byte for byte, when there is nothing to add: the table
     has no explicit ``packages`` key (hatchling then infers packages on its own),
-    or *package* is already listed. Only an edit normalises the trailing newline.
-    Either function keeps a file's CRLF line endings.
+    or *package* is already listed; that holds for any line endings, since
+    nothing is rewritten. Only an edit normalises the trailing newline, and an
+    edit keeps an all-LF or all-CRLF *text*'s line endings.
 
     Raises:
         PyprojectEditError: The wheel table uses ``include`` instead of
-            ``packages``, or ``packages`` exists but its array cannot be
-            located textually.
+            ``packages``, ``packages`` exists but its array cannot be located
+            textually, or an edit is needed and *text* mixes CRLF and LF line
+            endings.
     """
     data = tomllib.loads(text)
     wheel = (
@@ -137,7 +153,7 @@ def with_wheel_package(text: str, pyproject_path: Path, package: str) -> str:
         return text
     if package in wheel["packages"]:
         return text
-    text, crlf = _as_lf(text)
+    text, crlf = _as_lf(text, pyproject_path)
     text = _normalised(text)
     match = _WHEEL_PACKAGES_RE.search(text)
     if match is None:

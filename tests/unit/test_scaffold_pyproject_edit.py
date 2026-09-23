@@ -230,3 +230,16 @@ class TestCrlfText:
         )
         assert text.count("\n") == text.count("\r\n")
         assert text == lf.replace("\n", "\r\n")
+
+    def test_mixed_line_endings_are_refused_by_both_edits(self) -> None:
+        """Byte-exact or refuse: an LF table header among CRLF lines lost a \\r and
+        misplaced the new entry, so a file that is neither all-LF nor all-CRLF is
+        refused with a way out."""
+        mixed = _SINGLE_LINE_ARRAY.replace("\n", "\r\n").replace(
+            '[project.entry-points."graftpunk.plugins"]\r\n',
+            '[project.entry-points."graftpunk.plugins"]\n',
+        )
+        with pytest.raises(PyprojectEditError, match="line endings"):
+            with_entry_point(mixed, _PATH, "widgets", _WIDGETS)
+        with pytest.raises(PyprojectEditError, match="line endings"):
+            with_wheel_package(mixed, _PATH, "src/graftpunk_widgets")
