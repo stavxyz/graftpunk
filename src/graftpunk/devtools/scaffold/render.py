@@ -559,10 +559,19 @@ def _needs_param_specs(endpoint: Endpoint) -> bool:
     return any(d.needs_spec for d in _declared_extras(endpoint).values())
 
 
-def _negatable_flag(identifier: str) -> str:
-    """The option declaration of a bool parameter: ``--name/--no-name``."""
-    flag = identifier.replace("_", "-")
-    return f"--{flag}/--no-{flag}"
+def _option_name(identifier: str) -> str:
+    """The option a parameter declares, without its ``--``: the name hyphenated."""
+    return identifier.replace("_", "-")
+
+
+def _negatable_flag(identifier: str, option_names: set[str]) -> str:
+    """The option declaration of a bool parameter: ``--name/--no-name``, or
+    ``--name/--name-false`` when ``no-name`` is already one of the stub's
+    *option_names* (a ``no_cache`` beside a ``cache``), so each option keeps its own
+    value."""
+    flag = _option_name(identifier)
+    negative = f"no-{flag}" if f"no-{flag}" not in option_names else f"{flag}-false"
+    return f"--{flag}/--{negative}"
 
 
 ClickKwargs = tuple[tuple[str, "bool | str"], ...]
@@ -645,16 +654,17 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
 
     params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
     param_specs = [_param_spec(p, ("required=True",)) for p in path_params]
-    identifier_for: dict[str, str] = {}
+    identifier_for = {extra: _param_identifier(extra, seen_params) for extra in sorted(extras)}
+    option_names = {_option_name(i) for i in [*path_params, *identifier_for.values()]}
     for extra in sorted(extras):
         declaration = extras[extra]
-        identifier_for[extra] = _param_identifier(extra, seen_params)
         params.append(f"{identifier_for[extra]}: {declaration.annotation} | None = None")
         click_kwargs: ClickKwargs = ()
         if declaration.multiple:
             click_kwargs = (("multiple", True),)
         elif declaration.label == "bool":
-            click_kwargs = (("is_flag", True), ("flag", _negatable_flag(identifier_for[extra])))
+            flag = _negatable_flag(identifier_for[extra], option_names)
+            click_kwargs = (("is_flag", True), ("flag", flag))
         param_specs.append(
             _param_spec(identifier_for[extra], declaration.keywords, click_kwargs=click_kwargs)
         )

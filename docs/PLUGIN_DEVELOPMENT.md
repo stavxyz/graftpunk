@@ -642,7 +642,9 @@ with neither the handler receives `None`. `ctx.request_json` sends those as
 `archived=true`, `archived=false`, and no `archived` at all; the digest types a
 parameter as `bool` only when the site sent that lowercase spelling, so the
 request matches the recording. In a JSON body the stub sends a JSON boolean, and
-leaves the field out when neither flag is given.
+leaves the field out when neither flag is given. When `--no-archived` is already
+another option of the same command (the site also takes a `no_archived`), the
+negative is `--archived-false` instead, so each option keeps its own value.
 
 A `list[...]` parameter is a repeatable option, `click_kwargs={"multiple": True}`
 (`--id 1 --id 2`), typed by its element when that is `int` or `float`; the

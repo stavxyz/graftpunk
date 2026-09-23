@@ -1559,6 +1559,40 @@ class TestPluginModuleCommandStubs:
         (prepared,) = sent
         assert prepared.body == b'{"amount": 3.5}'
 
+    @pytest.mark.parametrize(
+        ("argv", "expected_query"),
+        [
+            (["--no-cache"], "?no_cache=true"),
+            (["--no-no-cache"], "?no_cache=false"),
+            (["--cache"], "?cache=true"),
+            (["--cache-false"], "?cache=false"),
+        ],
+    )
+    def test_a_bool_whose_negative_is_another_bools_name_gets_a_false_flag(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_query: str
+    ) -> None:
+        endpoint = self._endpoint("/orders", query={"cache": "bool", "no_cache": "bool"})
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_query"),
+        [
+            (["--no-archived", "x"], "?no_archived=x"),
+            (["--archived-false"], "?archived=false"),
+        ],
+    )
+    def test_a_bool_whose_negative_is_another_options_name_gets_a_false_flag(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_query: str
+    ) -> None:
+        endpoint = self._endpoint("/orders", query={"archived": "bool", "no_archived": "str"})
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
+
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",
