@@ -296,6 +296,7 @@ def fixtures_cmd(
         _refuse_write(target_dir, exc)
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
+    matched: set[tuple[str, str]] = set()
     for entry in entries:
         try:
             path = urlparse(entry.request.url).path or "/"
@@ -307,8 +308,10 @@ def fixtures_cmd(
         # named after it.
         template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
-        if not any(_matches_template(method, template, e) for e in endpoints):
+        hits = [e for e in endpoints if _matches_template(method, template, e)]
+        if not hits:
             continue
+        matched.update(hits)
         content_type = entry.response.content_type or "application/octet-stream"
         if entry.response.body is None:
             # A capture holds no text for a binary response, and writing
@@ -348,8 +351,13 @@ def fixtures_cmd(
         # columns cannot be copied (polish round 1, 2026-09-12).
         console.print(f"[green]Wrote:[/green] {escape(str(file_path))}", soft_wrap=True)
 
-    if not written:
-        console.print("[yellow]No entries matched --match.[/yellow]")
+    for pattern in endpoints:
+        if pattern not in matched:
+            method, template = pattern
+            console.print(
+                f"[yellow]No entries matched --match {escape(method)} {escape(template)}.[/yellow]",
+                soft_wrap=True,
+            )
 
 
 # Attached here, above the decorated commands below, because Typer lists

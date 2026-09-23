@@ -432,8 +432,26 @@ class TestFixturesCommand:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "no entries matched --match." in result.output.lower()
+        assert "no entries matched --match post /nothing-here." in result.output.lower()
         assert not out_dir.exists() or not list(out_dir.iterdir())
+
+    def test_each_pattern_that_matched_nothing_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
+        )
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir, "--match", "GET /carts/{cart_id}")
+        assert result.exit_code == 0, result.output
+        assert "No entries matched --match GET /carts/{cart_id}." in result.output
+        assert "--match GET /orders/{order_id}." not in result.output
+        assert list(out_dir.glob("get_orders_*.json"))
 
     def test_the_sidecar_is_committable_and_records_the_capture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
