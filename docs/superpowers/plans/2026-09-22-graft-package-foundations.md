@@ -64,10 +64,11 @@ validated:
 | `src/graftpunk/testing/__init__.py` (modify, Task 7) | `FixtureSession` reads sidecars through the owner. |
 | `src/graftpunk/devtools/captures.py` (modify, Tasks 7, 10) | `write_sidecar`, which takes the flagged names as plain strings (Task 7); `with_ignored`, the pure text edit `ensure_ignored` now applies (Task 10). |
 | `docs/PLUGIN_DEVELOPMENT.md`, `docs/HOW_IT_WORKS.md` (modify, Task 7) | The sidecar example and the sidecar field list describe the schema 1 format. |
-| `src/graftpunk/cli/scaffold_commands.py` (modify, Task 8) | `gp plugin new --check-name`, `_name_refusal`. |
+| `src/graftpunk/cli/scaffold_commands.py` (modify, Tasks 8, 10) | `gp plugin new --check-name`, `_name_refusal` (Task 8); `plugin_new`'s `ScaffoldWriteError` arm (Task 10). |
 | `src/graftpunk/devtools/scaffold/policy.py` (new, Task 9) | `TESTS_DIR`, `FIXTURES_TREE`, `fixtures_root`. |
 | `src/graftpunk/devtools/scaffold/render.py` (modify, Tasks 1, 3, 9, 11) | Loses the formatting helpers, the login-flow computation, and the fixtures-root rule; gains the declared endpoint and typed parameters on every stub. |
-| `src/graftpunk/devtools/scaffold/write.py` (new, Task 10) | `PlannedChange`, `apply_changes`, `find_conflicts`, `validate_python`, `validate_toml`, `ChangeConflictError`, `InvalidChangeError`. |
+| `src/graftpunk/devtools/errors.py` (new, Task 10) | `ScaffoldRefusal`, the one base class of every devtools refusal a CLI entry point catches; `ScaffoldWriteError`, a write that failed after the writer restored what it had changed. |
+| `src/graftpunk/devtools/scaffold/write.py` (new, Task 10) | `PlannedChange`, `apply_changes`, `find_conflicts`, `validate_python`, `validate_toml`, `ChangeConflictError`, `InvalidChangeError`; an `OSError` during a write reaches the caller as `ScaffoldWriteError`. |
 | `src/graftpunk/devtools/scaffold/pyproject_edit.py` (modify, Task 10) | Pure `with_entry_point` and `with_wheel_package`; the file-writing `add_entry_point` and `add_wheel_package` are removed. |
 | `src/graftpunk/devtools/scaffold/project.py` (modify, Task 10) | `write_scaffold` plans its changes and applies them through `write.py`. |
 | `src/graftpunk/plugins/cli_plugin.py` (modify, Task 11) | `CommandMetadata.endpoint`; `@command(endpoint=...)`. |
@@ -2586,17 +2587,19 @@ git commit -m "feat(scaffold): the fixtures-root rule moves to a declarative pol
 ### Task 10: `write.py`, the one write discipline, with `write_scaffold` routed through it
 
 **Files:**
+- Create: `src/graftpunk/devtools/errors.py` (`ScaffoldRefusal`, `ScaffoldWriteError`)
 - Create: `src/graftpunk/devtools/scaffold/write.py`
+- Modify: `src/graftpunk/cli/scaffold_commands.py` (`plugin_new` reports a `ScaffoldWriteError` as one line, in a new arm above its `except OSError as exc:` arm)
 - Modify: `src/graftpunk/devtools/scaffold/pyproject_edit.py:28-133` (pure `with_entry_point` and `with_wheel_package` replace `add_entry_point`, `add_wheel_package`, and `_read_normalised`)
 - Modify: `src/graftpunk/devtools/scaffold/project.py:10-219` (`_missing_parents`, `_undo_writes`, `ScaffoldConflictError` class removed; `write_scaffold` plans and applies, the `.gitignore` edit included)
 - Modify: `src/graftpunk/devtools/captures.py:63-85` (new pure `with_ignored`; `ensure_ignored` applies it)
 - Modify: `tests/unit/test_scaffold_project.py:184-300` (fault injection moves to `write._write_atomically`)
 - Modify: `tests/unit/test_scaffold_pyproject_edit.py` (the tests call the pure functions)
-- Test: `tests/unit/test_scaffold_write.py`, `tests/unit/test_devtools_captures.py`
+- Test: `tests/unit/test_scaffold_write.py`, `tests/unit/test_devtools_captures.py`, `tests/unit/test_devtools_errors.py`, `tests/unit/test_scaffold_cli.py`
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `graftpunk.devtools.scaffold.write`: `Validator = Callable[[str], None]`; `validate_python(text: str) -> None`; `validate_toml(text: str) -> None` (both raise `ValueError`); `@dataclass(frozen=True) class PlannedChange(path: Path, content: str, original: str | None = None, validate: Validator | None = None)`; `class ChangeConflictError(Exception)` with `.conflicts: list[Path]`; `class InvalidChangeError(ValueError)` with `.path`, `.reason`; `find_conflicts(changes: Sequence[PlannedChange]) -> list[Path]`; `apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]`. `project.ScaffoldConflictError` is `write.ChangeConflictError`. `pyproject_edit.with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str`; `pyproject_edit.with_wheel_package(text: str, pyproject_path: Path, package: str) -> str`, which returns *text* itself, byte for byte, in its two no-op branches. `pyproject_edit` no longer writes files and has no file-level wrappers: `write_scaffold` is the one production caller and applies the result through `write.py`. `graftpunk.devtools.captures.with_ignored(text: str, relative: str) -> str`, the text edit `ensure_ignored` makes, so `write_scaffold` plans the `.gitignore` edit as the last `PlannedChange` of its batch; `ensure_ignored` keeps its signature for `gp observe fixtures`, which is not a scaffold writer. Every scaffold write, the `.gitignore` edit included, goes through `apply_changes`, so "the one way scaffold writes" has no exception. The project-tools plan's `insert.py` and `upgrade.py` write only through `apply_changes`, and `tests/unit/test_scaffold_write.py` finds them without a list (it scans every module in the package).
+- Produces: `graftpunk.devtools.errors`: `class ScaffoldRefusal(Exception)`, the base of every devtools refusal a CLI entry point reports (a refusal means the operation left the disk as it found it, and the message says why); `class ScaffoldWriteError(ScaffoldRefusal, OSError)` with `.path: Path` and `.error: OSError`, raised by `apply_changes` after it restored every change it had applied, with a one-line message naming the path and the OS error (its `OSError` base keeps a caller that caught the writer's `OSError` working). `graftpunk.devtools.scaffold.write`: `Validator = Callable[[str], None]`; `validate_python(text: str) -> None`; `validate_toml(text: str) -> None` (both raise `ValueError`); `@dataclass(frozen=True) class PlannedChange(path: Path, content: str, original: str | None = None, validate: Validator | None = None)`; `class ChangeConflictError(ScaffoldRefusal)` with `.conflicts: list[Path]`; `class InvalidChangeError(ScaffoldRefusal, ValueError)` with `.path`, `.reason`; `find_conflicts(changes: Sequence[PlannedChange]) -> list[Path]`; `apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]`, which raises `ChangeConflictError`, `InvalidChangeError`, or `ScaffoldWriteError` and no bare `OSError`. `gp plugin new` reports a `ScaffoldWriteError` as one red line and exit 1. The project-tools plan consumes `ScaffoldRefusal` and `ScaffoldWriteError` from `graftpunk.devtools.errors`, and its writing entry points (`add-command`, `upgrade`) catch `ScaffoldRefusal` alone. `project.ScaffoldConflictError` is `write.ChangeConflictError`. `pyproject_edit.with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str`; `pyproject_edit.with_wheel_package(text: str, pyproject_path: Path, package: str) -> str`, which returns *text* itself, byte for byte, in its two no-op branches. `pyproject_edit` no longer writes files and has no file-level wrappers: `write_scaffold` is the one production caller and applies the result through `write.py`. `graftpunk.devtools.captures.with_ignored(text: str, relative: str) -> str`, the text edit `ensure_ignored` makes, so `write_scaffold` plans the `.gitignore` edit as the last `PlannedChange` of its batch; `ensure_ignored` keeps its signature for `gp observe fixtures`, which is not a scaffold writer. Every scaffold write, the `.gitignore` edit included, goes through `apply_changes`, so "the one way scaffold writes" has no exception. The project-tools plan's `insert.py` and `upgrade.py` write only through `apply_changes`, and `tests/unit/test_scaffold_write.py` finds them without a list (it scans every module in the package).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2615,6 +2618,7 @@ from pathlib import Path
 import pytest
 
 import graftpunk.devtools.scaffold as scaffold_package
+from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold import write
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
@@ -2704,7 +2708,7 @@ class TestRestoresOnFailure:
             real(path, text)
 
         monkeypatch.setattr(write, "_write_atomically", failing)
-        with pytest.raises(OSError, match="No space left"):
+        with pytest.raises(ScaffoldWriteError) as caught:
             apply_changes(
                 [
                     PlannedChange(
@@ -2719,10 +2723,16 @@ class TestRestoresOnFailure:
             )
         assert _files(tmp_path) == {"pyproject.toml": b'[project]\nname = "x"\n'}
         assert not (tmp_path / "src").exists()
+        message = str(caught.value)
+        assert message.startswith(f"Could not write {tmp_path / 'src' / 'plugin.py'}: ")
+        assert "No space left on device" in message
+        assert "\n" not in message
+        assert caught.value.path == tmp_path / "src" / "plugin.py"
+        assert caught.value.error.errno == 28
 
     def test_a_parent_that_is_a_file_restores_and_leaves_no_temp(self, tmp_path: Path) -> None:
         (tmp_path / "blocker").write_text("a file where a directory should be")
-        with pytest.raises(OSError):
+        with pytest.raises(ScaffoldWriteError):
             apply_changes(
                 [
                     PlannedChange(tmp_path / "first.py", "a = 1\n"),
@@ -2738,7 +2748,7 @@ class TestRestoresOnFailure:
             raise OSError(5, "Input/output error")
 
         monkeypatch.setattr(write.os, "replace", failing_replace)
-        with pytest.raises(OSError):
+        with pytest.raises(ScaffoldWriteError):
             apply_changes([PlannedChange(tmp_path / "a.py", "a = 1\n")])
         assert list(tmp_path.iterdir()) == []
 
@@ -2839,14 +2849,107 @@ def test_every_module_that_applies_changes_takes_them_from_write_py() -> None:
     assert "project.py" in appliers
 ```
 
+Create `tests/unit/test_devtools_errors.py`:
+
+```python
+"""One base class for every devtools refusal a CLI entry point reports."""
+
+from __future__ import annotations
+
+from graftpunk.devtools.errors import ScaffoldRefusal, ScaffoldWriteError
+from graftpunk.devtools.scaffold.write import ChangeConflictError, InvalidChangeError
+
+
+def test_the_refusals_share_one_base_and_keep_their_own() -> None:
+    for error in (ChangeConflictError, InvalidChangeError, ScaffoldWriteError):
+        assert issubclass(error, ScaffoldRefusal), error
+    assert issubclass(InvalidChangeError, ValueError)
+    assert issubclass(ScaffoldWriteError, OSError)
+```
+
+The project-tools plan adds its own refusals to the tuple in the loop.
+
+Append to `tests/unit/test_scaffold_cli.py`:
+
+```python
+class TestAWriteFailureIsOneRefusal:
+    def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A suite member: the pyproject.toml edit is applied first, so the
+        restore is what puts its original bytes back."""
+        from graftpunk.devtools.scaffold import write
+
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "mysuite"\n\n'
+            '[project.entry-points."graftpunk.plugins"]\n'
+            'existing = "mysuite.existing:ExistingPlugin"\n'
+        )
+        before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+        real_write = write._write_atomically
+
+        def write_failing_on_the_plugin_module(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
+
+        monkeypatch.setattr(write, "_write_atomically", write_failing_on_the_plugin_module)
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "widgets", "--url", "https://myshop.example", "--dir", str(tmp_path)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line.startswith("Could not write ")
+        assert "No space left on device" in line
+        assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+```
+
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_scaffold_write.py -q`
-Expected: FAIL (`ImportError: cannot import name 'write'`).
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_scaffold_write.py tests/unit/test_devtools_errors.py tests/unit/test_scaffold_cli.py::TestAWriteFailureIsOneRefusal -q`
+Expected: FAIL (`ImportError: cannot import name 'write'`, and `ModuleNotFoundError: No module named 'graftpunk.devtools.errors'`).
 
 The pyproject edit tests are rewritten in Step 4, beside the code they test.
 
-- [ ] **Step 3: Write `write.py`**
+- [ ] **Step 3: Write `errors.py` and `write.py`**
+
+Create `src/graftpunk/devtools/errors.py`:
+
+```python
+"""The one base class of every refusal ``graftpunk.devtools`` reports to a person.
+
+A refusal means the operation left the disk as it found it, and the message says
+why. Each refusal keeps its own class, and its own second base where it has one,
+for callers that want it; a ``gp plugin`` entry point catches
+:class:`ScaffoldRefusal` alone.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+__all__ = ["ScaffoldRefusal", "ScaffoldWriteError"]
+
+
+class ScaffoldRefusal(Exception):
+    """A devtools operation refused; the disk is as it was, and the message says why."""
+
+
+class ScaffoldWriteError(ScaffoldRefusal, OSError):
+    """A write failed partway through an operation, after the writer restored every
+    change it had already applied. Also an ``OSError``, so a caller that caught
+    the writer's ``OSError`` before this class existed still catches it."""
+
+    def __init__(self, path: Path, error: OSError) -> None:
+        self.path = path
+        self.error = error
+        reason = error.strerror or str(error)
+        super().__init__(
+            f"Could not write {path}: {reason}. Every file this operation had changed "
+            "was restored."
+        )
+```
 
 Create `src/graftpunk/devtools/scaffold/write.py`:
 
@@ -2874,6 +2977,8 @@ import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from graftpunk.devtools.errors import ScaffoldRefusal, ScaffoldWriteError
 
 __all__ = [
     "ChangeConflictError",
@@ -2922,7 +3027,7 @@ class PlannedChange:
     validate: Validator | None = None
 
 
-class ChangeConflictError(Exception):
+class ChangeConflictError(ScaffoldRefusal):
     """One or more planned changes conflict with the disk; nothing was written."""
 
     def __init__(self, conflicts: list[Path]) -> None:
@@ -2931,7 +3036,7 @@ class ChangeConflictError(Exception):
         super().__init__(f"Refusing to overwrite existing file(s): {listing}")
 
 
-class InvalidChangeError(ValueError):
+class InvalidChangeError(ScaffoldRefusal, ValueError):
     """A planned change's content fails its own validator; nothing was written."""
 
     def __init__(self, path: Path, reason: str) -> None:
@@ -3003,7 +3108,8 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
             since it was planned. Raised before anything is touched.
         InvalidChangeError: A change's content fails its validator. Raised
             before anything is touched.
-        OSError: A write failed. Every change already applied is undone first.
+        ScaffoldWriteError: A write failed. Every change already applied is
+            undone first; the error names the path and carries the ``OSError``.
     """
     conflicts = find_conflicts(changes)
     if conflicts:
@@ -3016,15 +3122,15 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
                 raise InvalidChangeError(change.path, str(exc)) from exc
     started: list[PlannedChange] = []
     created_dirs: list[Path] = []
-    try:
-        for change in changes:
+    for change in changes:
+        try:
             created_dirs.extend(_missing_parents(change.path.parent))
             change.path.parent.mkdir(parents=True, exist_ok=True)
             started.append(change)
             _write_atomically(change.path, change.content)
-    except OSError:
-        _restore(started, created_dirs)
-        raise
+        except OSError as exc:
+            _restore(started, created_dirs)
+            raise ScaffoldWriteError(change.path, exc) from exc
     return tuple(change.path for change in changes)
 ```
 
@@ -3285,7 +3391,7 @@ The existing `ensure_ignored` tests in that file are the check that its behaviou
 
 - [ ] **Step 5: Route `write_scaffold` through `write.py`**
 
-In `src/graftpunk/devtools/scaffold/project.py`: remove `import contextlib`, `_missing_parents`, `_undo_writes`, and the `ScaffoldConflictError` class; change the captures import to `from graftpunk.devtools.captures import CAPTURES_DIR, with_ignored` (drop `ensure_ignored`); import `PyprojectEditError, with_entry_point, with_wheel_package` from `pyproject_edit` (drop `add_entry_point`, `add_wheel_package`) and `ChangeConflictError, PlannedChange, Validator, apply_changes, find_conflicts, validate_python, validate_toml` from `write`; add after `PLUGINS_ENTRY_POINT_GROUP`:
+In `src/graftpunk/devtools/scaffold/project.py`: remove `import contextlib`, `_missing_parents`, `_undo_writes`, and the `ScaffoldConflictError` class; change the captures import to `from graftpunk.devtools.captures import CAPTURES_DIR, with_ignored` (drop `ensure_ignored`); import `PyprojectEditError, with_entry_point, with_wheel_package` from `pyproject_edit` (drop `add_entry_point`, `add_wheel_package`), `ChangeConflictError, PlannedChange, Validator, apply_changes, find_conflicts, validate_python, validate_toml` from `write`, and `ScaffoldWriteError` from `graftpunk.devtools.errors`; add after `PLUGINS_ENTRY_POINT_GROUP`:
 
 ```python
 ScaffoldConflictError = ChangeConflictError
@@ -3351,12 +3457,33 @@ and replace everything in `write_scaffold` from `# Conflict detection runs befor
 
     try:
         apply_changes(changes)
-    except OSError:
+    except ScaffoldWriteError:
         LOG.debug("scaffold_write_refused", reason="os_error")
         raise
 ```
 
-Delete the old `.gitignore` block after the write (its comment and the `ensure_ignored` call): the edit is now the batch's last planned change. `targets` no longer exists, so change the two lines after it that read it: in `LOG.info("scaffold_written", ...)`, `files=len(targets)` becomes `files=len(rendered)`, and in `return ScaffoldResult(...)`, `written=tuple(sorted(targets))` becomes `written=tuple(sorted(c.path for c in rendered))`. Update the docstring's `PyprojectEditError` paragraph to say `pyproject.toml` is never written when the edit cannot be computed, and add an `OSError` paragraph: "a write failed; every change already applied, the `pyproject.toml` edit included, is undone first (see `write.py`)."
+Delete the old `.gitignore` block after the write (its comment and the `ensure_ignored` call): the edit is now the batch's last planned change. `targets` no longer exists, so change the two lines after it that read it: in `LOG.info("scaffold_written", ...)`, `files=len(targets)` becomes `files=len(rendered)`, and in `return ScaffoldResult(...)`, `written=tuple(sorted(targets))` becomes `written=tuple(sorted(c.path for c in rendered))`. Update the docstring's `PyprojectEditError` paragraph to say `pyproject.toml` is never written when the edit cannot be computed, and add a `ScaffoldWriteError` paragraph: "a write failed; every change already applied, the `pyproject.toml` edit included, is undone first, and the error names the file and the OS error (see `write.py`). A bare `OSError` now means a read before anything was written failed."
+
+In `src/graftpunk/cli/scaffold_commands.py`, add `from graftpunk.devtools.errors import ScaffoldWriteError`, add this arm directly above `except OSError as exc:` in `plugin_new` (a `ScaffoldWriteError` is also an `OSError`, so the order matters):
+
+```python
+    except ScaffoldWriteError as exc:
+        # The writer restored every file it had changed before raising, and its
+        # message is the whole refusal: the path and the OS error, on one line.
+        LOG.debug("scaffold_refused", reason="os_error", error=str(exc.error))
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
+```
+
+and replace the `except OSError as exc:` arm's three comment lines (from `# A CLI refusal is a red line and exit 1` through `# write_scaffold has already removed whatever it wrote before failing.`) with:
+
+```python
+        # A read before anything was written failed (the suite's pyproject.toml
+        # or .gitignore): a red line and exit 1, never a Rich traceback. A failed
+        # write is the ScaffoldWriteError arm above.
+```
+
+`TestUnwritableTargetDirIsARefusal` in `tests/unit/test_scaffold_cli.py` now reaches the new arm (the unwritable `--dir` fails in `apply_changes`); its assertions (`could not write`, no traceback, nothing left in the directory) hold unchanged.
 
 - [ ] **Step 6: Move the project tests' fault injection to the writer**
 
@@ -3387,17 +3514,17 @@ For `test_a_short_write_that_touches_the_file_is_still_cleaned_up`, use this fau
         monkeypatch.setattr(write, "_write_atomically", write_touching_then_failing)
 ```
 
-Every assertion in those tests stays as it is. The docstring of `test_files_written_before_the_failure_are_removed` (`tests/unit/test_scaffold_project.py:188-195`) still says the fault is injected at `Path.write_text`. Keep its first two sentences (the second says ``plugin.py`` is the third file the renderer emits, which is still true and is why two files are on disk when it fails), and replace only its last sentence, the one that begins "Fault injection at ``Path.write_text``", with: "Fault injection at ``write._write_atomically``, the one place a planned change reaches the disk, is how one file fails and the rest do not; the assertions are all on the tree the call leaves on disk."
+Every assertion in those tests stays as it is: `pytest.raises(OSError, match="No space left on device")` still matches, because `ScaffoldWriteError` is an `OSError` whose message carries the OS error. The docstring of `test_files_written_before_the_failure_are_removed` (`tests/unit/test_scaffold_project.py:188-195`) still says the fault is injected at `Path.write_text`. Keep its first two sentences (the second says ``plugin.py`` is the third file the renderer emits, which is still true and is why two files are on disk when it fails), and replace only its last sentence, the one that begins "Fault injection at ``Path.write_text``", with: "Fault injection at ``write._write_atomically``, the one place a planned change reaches the disk, is how one file fails and the rest do not; the assertions are all on the tree the call leaves on disk."
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_scaffold_write.py tests/unit/test_scaffold_project.py tests/unit/test_scaffold_pyproject_edit.py tests/unit/test_devtools_captures.py tests/unit/test_scaffold_cli.py tests/unit/test_observe_commands.py -q`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_scaffold_write.py tests/unit/test_devtools_errors.py tests/unit/test_scaffold_project.py tests/unit/test_scaffold_pyproject_edit.py tests/unit/test_devtools_captures.py tests/unit/test_scaffold_cli.py tests/unit/test_observe_commands.py -q`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/graftpunk/devtools/scaffold/write.py src/graftpunk/devtools/scaffold/pyproject_edit.py src/graftpunk/devtools/scaffold/project.py src/graftpunk/devtools/captures.py tests/unit/test_scaffold_write.py tests/unit/test_scaffold_project.py tests/unit/test_scaffold_pyproject_edit.py tests/unit/test_devtools_captures.py
+git add src/graftpunk/devtools/errors.py src/graftpunk/devtools/scaffold/write.py src/graftpunk/devtools/scaffold/pyproject_edit.py src/graftpunk/devtools/scaffold/project.py src/graftpunk/devtools/captures.py src/graftpunk/cli/scaffold_commands.py tests/unit/test_scaffold_write.py tests/unit/test_devtools_errors.py tests/unit/test_scaffold_project.py tests/unit/test_scaffold_pyproject_edit.py tests/unit/test_devtools_captures.py tests/unit/test_scaffold_cli.py
 git commit -m "feat(scaffold): write.py is the one write discipline, and write_scaffold goes through it"
 ```
 

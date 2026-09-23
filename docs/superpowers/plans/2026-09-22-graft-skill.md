@@ -934,7 +934,7 @@ Say that the skill works either way: without the rules, each command asks first.
 In create mode, `$0` is the plugin name and `$1` the site URL. Ask for whichever
 is missing, one question at a time. In enhance mode, ignore both and say so in
 one line; the plugin comes from `project.plugins`. With one entry, take it. With
-several (a suite), take the entry whose `site_name` is `$0` when there is one,
+several (a suite), take the entry whose `entry_point` is `$0` when there is one,
 and otherwise ask which.
 
 ## How to run the steps
@@ -1001,8 +1001,9 @@ it.
 The steps above are written for create mode. Enhance mode runs the same steps
 with these differences, and this list is the only place they are stated:
 
-- Frame collects only the new thing the user wants to do. The plugin name,
-  `site_name`, and `base_url` come from `project.plugins`.
+- Frame collects only the new thing the user wants to do. The plugin's
+  `entry_point` (the name `gp plugin add-command` takes), its `site_name` (the
+  name `gp` runs it by), and its `base_url` come from `project.plugins`.
 - Capture first runs `gp session list`. When it lists a session for the
   plugin, the recording uses `-s <session>`; otherwise `--no-session`.
 - Understand leaves out every endpoint an existing command declares, and prints
@@ -1038,7 +1039,8 @@ Create `skills/graft/references/commands.md`:
 The declared list of every command a step runs, one fenced block per step.
 `SKILL.md` and the other references point to a block here by its step's name
 and never spell a templated command themselves; this file is the one place the
-commands are written. The placeholders are `<name>` (the plugin), `<command>`
+commands are written. The placeholders are `<name>` (the plugin), `<entry-point>`
+(the plugin's `entry_point` in `project.plugins`), `<command>`
 (a command's name, as agreed in the proposal), `<session>` (the recording's
 name), `<run-id>`, `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
 
@@ -1102,7 +1104,7 @@ The last line reads back the commands the step added.
 ```bash
 gp plugin new <name> --from-run <session> --command "<command>=<METHOD> <template>"
 gp plugin new <name> --from-run <session> --run <run-id> --command "<command>=<METHOD> <template>"
-gp plugin add-command <name> --from-run <session> --command "<command>=<METHOD> <template>"
+gp plugin add-command <entry-point> --from-run <session> --command "<command>=<METHOD> <template>"
 gp plugin info --json
 ```
 

@@ -33,7 +33,8 @@ validated:
 - The reader records a plugin module that parses but does not hold exactly one `SitePlugin` subclass as a `PluginDefect` in the view rather than raising, so one bad module does not blind every consumer. `gp plugin check` lists it as a finding, `gp plugin add-command` refuses only when it targets that plugin, and `gp plugin upgrade` proceeds. `gp plugin info --json` refuses (exit 1, the defect's message) rather than print a payload that silently leaves the plugin out, so preflight still stops with exit 4 and the reader's reason; the `info` payload's field set does not change.
 - `selection.planned_commands` takes the default choice (every eligible endpoint under generated names, up to the cap) as a callable the renderer supplies, so `selection.py` never imports `render.py` and the generated-name rules stay beside the code that spells a stub.
 - `pysrc.with_import` places an import only into the shapes generated files have and refuses anything else with a message naming `ruff check --fix`; `add-command` and `upgrade` report that as their own refusal.
-- `gp plugin new` keeps its existing per-error `except` arms, each of which logs its own refusal reason; the entry points this plan adds (`info`, `add-command`, `upgrade`) catch `ScaffoldRefusal` alone.
+- `gp plugin new` keeps its existing per-error `except` arms, each of which logs its own refusal reason (foundations Task 10 gave it the `ScaffoldWriteError` arm); the entry points this plan adds (`info`, `add-command`, `upgrade`) catch `ScaffoldRefusal` alone, which covers a failed write too, because `apply_changes` raises `ScaffoldWriteError` and never a bare `OSError`.
+- A plugin's one identity is its entry-point name, the key of its line in the `graftpunk.plugins` table. The reader keys each `PluginView` and `PluginDefect` by it, `gp plugin info --json` reports it as `entry_point`, `gp plugin add-command <plugin>` takes it, and the skill matches `$0` against it. `site_name` is a fact about the plugin, not its address: a hand-written project may name the two differently.
 - `gp plugin new --command` refuses an endpoint the digest marks `login_flow`, with the same text `gp plugin add-command` uses. The spec lists that refusal for `add-command` only; one rule for both explicit-selection paths is the reading that keeps them from disagreeing.
 
 ## Global Constraints
@@ -49,7 +50,7 @@ validated:
 - Tests assert behaviour, never that a mock was called.
 - Within the package, `graftpunk/contracts.py` is the only module that declares the current schema number, and the only one that compares one.
 - `GP-FILL`, the tests directory, the fixtures tree, the conftest path, and the module-name rule are each spelled once, in `policy.py`; the renderer, the reader, the migrator, and the lint take them from there. The fixtures placeholder name (`.gitkeep`) is spelled once, in `graftpunk.testing.sidecar`, which policy re-exports. The entry-point group is the runtime's: `graftpunk.plugins.PLUGINS_GROUP` is its one spelling, policy does not import it, and a test holds the literal `"graftpunk.plugins"` to that one module.
-- Every devtools refusal a CLI entry point reports subclasses `graftpunk.devtools.errors.ScaffoldRefusal`, and the entry points this plan adds catch that one type.
+- Every devtools refusal a CLI entry point reports subclasses `graftpunk.devtools.errors.ScaffoldRefusal` (foundations Task 10), and the entry points this plan adds catch that one type.
 - No test module imports from another `test_*.py` module. Helpers two test modules share live in a non-test module (`tests/unit/guide_harness.py`, Task 9).
 - The full gate, green at the end of every task and run in full by the last task: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/ -q && uvx ruff check . && uvx ruff format --check . && uvx ty@0.0.75 check src/`
 - A single test runs as `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/<file>.py::<test> -q`.
@@ -70,10 +71,9 @@ validated:
 | `src/graftpunk/testing/plugin.py` (modify, Task 1) | `FixturesTreeReport`, `check_fixtures_tree`, `fixtures_are_sanitised`; the module docstring rewritten. |
 | `src/graftpunk/devtools/scaffold/policy.py` (modify, Tasks 2, 3, 9) | `CONFTEST_PATH`, `FIXTURES_PLACEHOLDER` (imported from `graftpunk.testing.sidecar`), `ProjectRequirement`, `PROJECT_REQUIREMENTS` (Task 2); `GP_FILL_MARKER`, `module_name_for` (Task 3); `PROJECT_GATE` (Task 9). |
 | `src/graftpunk/devtools/scaffold/pysrc.py` (modify, Task 2) | `binds_name`, `with_import`, `Binding`, `with_bindings`, and their private helpers: the one binding predicate and the one assembler for statements added to a module. |
-| `src/graftpunk/devtools/scaffold/render.py` (modify, Tasks 2, 3, 5, 9) | Conftest through `with_bindings`; `PLUGINS_GROUP` in the rendered `pyproject.toml`; `GP-FILL` and `module_name_for` from policy; `RenderedCommand`, `render_command`, commands planned once per render through `selection.py`; README checks block from `PROJECT_GATE`. |
+| `src/graftpunk/devtools/scaffold/render.py` (modify, Tasks 2, 3, 5, 9) | Conftest through `with_bindings`; `PLUGINS_GROUP` in the rendered `pyproject.toml`; `GP-FILL` from policy, and `module_name_for` called as `policy.module_name_for` and no longer exported; `RenderedCommand`, `render_command`, commands planned once per render through `selection.py`; README checks block from `PROJECT_GATE`. |
 | `src/graftpunk/devtools/scaffold/project.py` (modify, Tasks 2, 3) | Imports `PLUGINS_GROUP` from `graftpunk.plugins`, the group's one spelling, and `FIXTURES_PLACEHOLDER` from policy (Task 2); imports `module_name_for` from policy directly (Task 3). |
 | `src/graftpunk/devtools/scaffold/pyproject_edit.py` (modify, Task 2) | Reads `PLUGINS_GROUP` instead of spelling the group. |
-| `src/graftpunk/devtools/errors.py` (new, Task 3) | `ScaffoldRefusal`, the one base class of every devtools refusal a CLI entry point catches. |
 | `src/graftpunk/devtools/scaffold/selection.py` (new, Task 5) | `CommandSelection`, `CommandSelectionError`, `command_identifier`, `PlannedCommand`, `plan_command`, `planned_commands`: which commands a render or an insert produces, under which names. |
 | `src/graftpunk/plugins/cli_plugin.py`, `src/graftpunk/client.py` (modify, Task 3) | `to_cli_name`, public; every caller renamed, no alias kept. |
 | `src/graftpunk/devtools/plugin_project.py` (new, Task 3) | The reader and its structural view: `Span`, `CommandView` (with `cli_name`), `PluginView`, `PluginDefect`, `ProjectView` (with `missing_requirements()`), `PluginProjectError`, `classify`, `read_project`. |
@@ -1076,16 +1076,14 @@ git commit -m "feat(scaffold): PROJECT_REQUIREMENTS declares the conftest wiring
 **Files:**
 - Create: `src/graftpunk/devtools/plugin_project.py`
 - Modify: `src/graftpunk/plugins/cli_plugin.py` (`def _to_cli_name(`, line 775 at `7bd9604`, about 780 after foundations Task 11: renamed to the public `to_cli_name`, and its three calls in `command` with it), `src/graftpunk/client.py` (its import and five calls), `tests/unit/test_cli_plugin.py` (its import and `TestToCliName`); no alias is kept
-- Create: `src/graftpunk/devtools/errors.py` (`ScaffoldRefusal`)
-- Modify: `src/graftpunk/devtools/scaffold/write.py` (`ChangeConflictError` and `InvalidChangeError` subclass `ScaffoldRefusal`)
 - Modify: `src/graftpunk/devtools/scaffold/project.py` (`module_name_for` imported from policy)
 - Modify: `src/graftpunk/devtools/scaffold/policy.py` (new `GP_FILL_MARKER`; `module_name_for` moved in from `render.py`; `__all__`)
-- Modify: `src/graftpunk/devtools/scaffold/render.py` (`module_name_for` imported from policy; every string literal holding `GP-FILL` built from `GP_FILL_MARKER`)
-- Test: `tests/unit/test_plugin_project.py`, `tests/unit/test_scaffold_policy.py`, `tests/unit/test_scaffold_render.py`, `tests/unit/test_cli_plugin.py`
+- Modify: `src/graftpunk/devtools/scaffold/render.py` (`module_name_for` deleted and dropped from `__all__`, every call spelled `policy.module_name_for`; every string literal holding `GP-FILL` built from `GP_FILL_MARKER`)
+- Test: `tests/unit/test_plugin_project.py`, `tests/unit/test_devtools_errors.py`, `tests/unit/test_scaffold_policy.py`, `tests/unit/test_scaffold_render.py`, `tests/unit/test_cli_plugin.py`
 
 **Interfaces:**
-- Consumes: `graftpunk.plugins.PLUGINS_GROUP` (existing, `src/graftpunk/plugins/__init__.py:176`); `policy.PROJECT_REQUIREMENTS`, `ProjectRequirement`, `pysrc.binds_name` (Task 2); `policy.fixtures_root` (foundations Task 9).
-- Produces: `policy.GP_FILL_MARKER: Final = "GP-FILL"`; `policy.module_name_for(name: str) -> str` (moved; `render.module_name_for` is the same function, imported); `graftpunk.plugins.cli_plugin.to_cli_name(name: str) -> str`, with no `_to_cli_name` left anywhere; `graftpunk.devtools.errors.ScaffoldRefusal(Exception)`, the base of every devtools refusal a CLI entry point reports (`PluginProjectError`, `write.ChangeConflictError`, and `write.InvalidChangeError` here; `CommandSelectionError`, `CommandInsertError`, and `UpgradeRefusedError` in Tasks 5 to 7), each keeping its existing second base. In `plugin_project`: `DirectoryKind = Literal["empty", "plugin", "foreign"]`; `@dataclass(frozen=True) class Span(start: int, end: int)` (1-based, inclusive); `@dataclass(frozen=True) class CommandView(method: str, span: Span, keywords: Mapping[str, str | None])` (a read-only `MappingProxyType`) with properties `endpoint -> str | None` and `cli_name -> str` (the `name=` literal, else `to_cli_name(method)`: the name the CLI registers); `@dataclass(frozen=True) class PluginView(module_path: str, class_name: str, class_span: Span, site_name: str | None, base_url: str | None, commands: tuple[CommandView, ...], markers: tuple[int, ...], fixtures_root: str)`; `@dataclass(frozen=True) class PluginDefect(entry_point: str, module_path: str, message: str)`, a plugin whose module the reader parsed but that does not hold exactly one `SitePlugin` subclass; `@dataclass(frozen=True) class ProjectView(directory: DirectoryKind, plugins: tuple[PluginView, ...], defects: tuple[PluginDefect, ...], requirements: Mapping[str, bool])` (read-only) with method `missing_requirements() -> tuple[ProjectRequirement, ...]`, the one owner of "which requirements does this project lack"; `class PluginProjectError(ScaffoldRefusal, ValueError)`, raised only when the project cannot be read at all (invalid TOML, a module missing or not parsing, a requirement's file not parsing), while a per-plugin structural defect is recorded in `defects` instead; `classify(root: Path) -> DirectoryKind`; `read_project(root: Path) -> ProjectView`. The reader imports neither `render.py` nor `write.py`. Task 4's `plugin_info.info_payload` reads the view; Tasks 6, 7, and 8 consume `read_project`; Tasks 7 and 8 call `missing_requirements()`; Tasks 4 and 6 read `CommandView.cli_name`; Task 4 refuses on any defect, Task 6 refuses only when the plugin it targets is defective, Task 7 applies requirements whatever the plugins hold, and Task 8 lists each defect as a finding.
+- Consumes: `graftpunk.plugins.PLUGINS_GROUP` (existing, `src/graftpunk/plugins/__init__.py:176`); `policy.PROJECT_REQUIREMENTS`, `ProjectRequirement`, `pysrc.binds_name` (Task 2); `policy.fixtures_root` (foundations Task 9); `graftpunk.devtools.errors.ScaffoldRefusal` and `ScaffoldWriteError`, with `write.ChangeConflictError` and `write.InvalidChangeError` already subclassing `ScaffoldRefusal` (foundations Task 10).
+- Produces: `policy.GP_FILL_MARKER: Final = "GP-FILL"`; `policy.module_name_for(name: str) -> str` (moved; `render` no longer has the name, and every importer, `project.py` and `tests/unit/test_scaffold_render.py` included, takes it from policy); `graftpunk.plugins.cli_plugin.to_cli_name(name: str) -> str`, with no `_to_cli_name` left anywhere; `PluginProjectError` joins the refusals under `ScaffoldRefusal` (`CommandSelectionError`, `CommandInsertError`, and `UpgradeRefusedError` join in Tasks 5 to 7), each keeping its existing second base. In `plugin_project`: `DirectoryKind = Literal["empty", "plugin", "foreign"]`; `@dataclass(frozen=True) class Span(start: int, end: int)` (1-based, inclusive); `@dataclass(frozen=True) class CommandView(method: str, span: Span, keywords: Mapping[str, str | None])` (a read-only `MappingProxyType`) with properties `endpoint -> str | None` and `cli_name -> str` (the `name=` literal, else `to_cli_name(method)`: the name the CLI registers); `@dataclass(frozen=True) class PluginView(entry_point: str, module_path: str, class_name: str, class_span: Span, site_name: str | None, base_url: str | None, commands: tuple[CommandView, ...], markers: tuple[int, ...], fixtures_root: str)`, where `entry_point` is the entry-point name the reader keys the plugin by (and derives `fixtures_root` from, through `module_name_for`): the one identity every consumer addresses a plugin by; `@dataclass(frozen=True) class PluginDefect(entry_point: str, module_path: str, message: str)`, a plugin whose module the reader parsed but that does not hold exactly one `SitePlugin` subclass; `@dataclass(frozen=True) class ProjectView(directory: DirectoryKind, plugins: tuple[PluginView, ...], defects: tuple[PluginDefect, ...], requirements: Mapping[str, bool])` (read-only) with method `missing_requirements() -> tuple[ProjectRequirement, ...]`, the one owner of "which requirements does this project lack"; `class PluginProjectError(ScaffoldRefusal, ValueError)`, raised only when the project cannot be read at all (invalid TOML, a module missing or not parsing, a requirement's file not parsing), while a per-plugin structural defect is recorded in `defects` instead; `classify(root: Path) -> DirectoryKind`; `read_project(root: Path) -> ProjectView`. The reader imports neither `render.py` nor `write.py`. Task 4's `plugin_info.info_payload` reads the view and reports `entry_point`; Task 6 addresses the target plugin and its defect by `entry_point`; Tasks 6, 7, and 8 consume `read_project`; Tasks 7 and 8 call `missing_requirements()`; Tasks 4 and 6 read `CommandView.cli_name`; Task 4 refuses on any defect, Task 6 refuses only when the plugin it targets is defective, Task 7 applies requirements whatever the plugins hold, and Task 8 lists each defect as a finding.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1226,6 +1224,7 @@ class TestTheView:
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]
         assert [f.name for f in fields(PluginView)] == [
+            "entry_point",
             "module_path",
             "class_name",
             "class_span",
@@ -1240,6 +1239,7 @@ class TestTheView:
     def test_a_generated_plugin_declares_every_endpoint(self, tmp_path: Path) -> None:
         _generate(tmp_path)
         (plugin,) = read_project(tmp_path).plugins
+        assert plugin.entry_point == "myshop"
         assert plugin.module_path == "src/graftpunk_myshop/plugin.py"
         assert plugin.class_name == "MyshopPlugin"
         assert (plugin.site_name, plugin.base_url) == ("myshop", "https://myshop.example")
@@ -1471,14 +1471,17 @@ In `tests/unit/test_scaffold_policy.py`, add `GP_FILL_MARKER` and `module_name_f
 
 ```python
 def test_the_marker_and_the_module_name_rule_live_here() -> None:
+    """Policy is the rule's one home: the renderer calls it through policy and
+    re-exports nothing, so no importer can reach it by a second route."""
     import graftpunk.devtools.scaffold.render as render_module
 
     assert GP_FILL_MARKER == "GP-FILL"
     assert module_name_for("My-Shop.v2") == "my_shop_v2"
-    assert render_module.module_name_for is module_name_for
+    assert "module_name_for" not in render_module.__all__
+    assert not hasattr(render_module, "module_name_for")
 ```
 
-Append to `tests/unit/test_scaffold_render.py`:
+In `tests/unit/test_scaffold_render.py`, remove `module_name_for` from the `graftpunk.devtools.scaffold.render` import block and add `from graftpunk.devtools.scaffold.policy import module_name_for`, so `TestModuleNameFor` tests the rule where it lives. Then append:
 
 ```python
 def test_the_renderer_spells_the_marker_only_through_the_policy() -> None:
@@ -1501,26 +1504,7 @@ def test_the_renderer_spells_the_marker_only_through_the_policy() -> None:
     assert literals == []
 ```
 
-Create `tests/unit/test_devtools_errors.py`:
-
-```python
-"""One base class for every devtools refusal a CLI entry point reports."""
-
-from __future__ import annotations
-
-from graftpunk.devtools.errors import ScaffoldRefusal
-from graftpunk.devtools.plugin_project import PluginProjectError
-from graftpunk.devtools.scaffold.write import ChangeConflictError, InvalidChangeError
-
-
-def test_the_refusals_share_one_base_and_keep_their_own() -> None:
-    for error in (PluginProjectError, ChangeConflictError, InvalidChangeError):
-        assert issubclass(error, ScaffoldRefusal), error
-    assert issubclass(PluginProjectError, ValueError)
-    assert issubclass(InvalidChangeError, ValueError)
-```
-
-Tasks 5 to 7 add their own refusals to the tuple in the loop.
+In `tests/unit/test_devtools_errors.py` (foundations Task 10), add `from graftpunk.devtools.plugin_project import PluginProjectError` to its imports, add `PluginProjectError` to the loop's tuple, and append `assert issubclass(PluginProjectError, ValueError)` to the test. Tasks 5 to 7 add their own refusals to the tuple in the loop.
 
 Append to `tests/unit/test_cli_plugin.py`:
 
@@ -1562,28 +1546,7 @@ uvx ruff check --fix src/graftpunk/client.py tests/unit/test_cli_plugin.py
 
 `ruff check --fix` re-sorts the two import blocks the rename touched. `TestToCliName`'s docstring now names `to_cli_name`, which is right.
 
-Create `src/graftpunk/devtools/errors.py`:
-
-```python
-"""The one base class of every refusal ``graftpunk.devtools`` reports to a person.
-
-A refusal means nothing was written and the message says why. Each refusal
-keeps its own class, and its own second base where it had one, for callers that
-want it; a ``gp plugin`` entry point catches :class:`ScaffoldRefusal` alone.
-"""
-
-from __future__ import annotations
-
-__all__ = ["ScaffoldRefusal"]
-
-
-class ScaffoldRefusal(Exception):
-    """A devtools operation refused; nothing was written, and the message says why."""
-```
-
-In `src/graftpunk/devtools/scaffold/write.py`, add `from graftpunk.devtools.errors import ScaffoldRefusal`, and change `class ChangeConflictError(Exception):` to `class ChangeConflictError(ScaffoldRefusal):` and `class InvalidChangeError(ValueError):` to `class InvalidChangeError(ScaffoldRefusal, ValueError):`.
-
-In `src/graftpunk/devtools/scaffold/project.py`, import `module_name_for` from `graftpunk.devtools.scaffold.policy` directly, and import only `ScaffoldSpec`, `class_name_for`, and `render` from `render`: `render`'s re-export is for existing importers, not a route for a module that knows the owner.
+In `src/graftpunk/devtools/scaffold/project.py`, import `module_name_for` from `graftpunk.devtools.scaffold.policy`, and import only `ScaffoldSpec`, `class_name_for`, and `render` from `render`, which no longer has the name.
 
 In `src/graftpunk/devtools/scaffold/policy.py`, add `import re`, add `"GP_FILL_MARKER"` and `"module_name_for"` to `__all__`, move `module_name_for` here from `render.py` unchanged (its body and docstring), and append:
 
@@ -1594,7 +1557,7 @@ The renderer writes it, the project reader finds it, and ``gp plugin check``
 reports every one left; all three take it from here."""
 ```
 
-In `src/graftpunk/devtools/scaffold/render.py`, delete `module_name_for`, add `from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER, module_name_for` (it stays in `render.__all__`, so existing importers keep working), and rewrite every string literal that holds `GP-FILL` to build it from the constant, keeping the generated text byte for byte. For example, `'        failure="GP-FILL: text on the page indicating login failure",'` becomes `f'        failure="{GP_FILL_MARKER}: text on the page indicating login failure",'`, and `'"GP-FILL"'` becomes `f'"{GP_FILL_MARKER}"'`. Find them with `grep -n "GP-FILL" src/graftpunk/devtools/scaffold/render.py`; comments may keep the word. The render tests that compare generated text are the check that nothing changed.
+In `src/graftpunk/devtools/scaffold/render.py`, delete `module_name_for` and its `__all__` entry, and rewrite every call to it as `policy.module_name_for(...)`, through the `from graftpunk.devtools.scaffold import policy` import foundations Task 9 added (find the calls with `grep -n "module_name_for" src/graftpunk/devtools/scaffold/render.py`, then run `uvx ruff format src/graftpunk/devtools/scaffold/render.py`). The module then has no `module_name_for` attribute, so nothing can import the rule from `render`. Add `from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER`, and rewrite every string literal that holds `GP-FILL` to build it from the constant, keeping the generated text byte for byte. For example, `'        failure="GP-FILL: text on the page indicating login failure",'` becomes `f'        failure="{GP_FILL_MARKER}: text on the page indicating login failure",'`, and `'"GP-FILL"'` becomes `f'"{GP_FILL_MARKER}"'`. Find them with `grep -n "GP-FILL" src/graftpunk/devtools/scaffold/render.py`; comments may keep the word. The render tests that compare generated text are the check that nothing changed.
 
 - [ ] **Step 4: Write the reader**
 
@@ -1688,8 +1651,11 @@ class CommandView:
 
 @dataclass(frozen=True)
 class PluginView:
-    """One entry point's plugin, as its module reads."""
+    """One entry point's plugin, as its module reads. ``entry_point`` is the name of
+    its line in the ``graftpunk.plugins`` table: the one identity every consumer
+    addresses a plugin by, which ``site_name`` need not match."""
 
+    entry_point: str
     module_path: str  # project-relative, forward slashes
     class_name: str
     class_span: Span
@@ -1857,6 +1823,7 @@ def _read_plugin(root: Path, key: str, value: str, project_name: str) -> PluginV
     package = module.split(".")[0]
     start = min([klass.lineno, *(d.lineno for d in klass.decorator_list)])
     return PluginView(
+        entry_point=key,
         module_path=relative,
         class_name=klass.name,
         class_span=Span(start, klass.end_lineno or klass.lineno),
@@ -1937,7 +1904,7 @@ Expected: PASS, including foundations Task 1's export test, which now finds `bin
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/graftpunk/devtools/plugin_project.py src/graftpunk/devtools/errors.py src/graftpunk/plugins/cli_plugin.py src/graftpunk/client.py src/graftpunk/devtools/scaffold/write.py src/graftpunk/devtools/scaffold/project.py src/graftpunk/devtools/scaffold/policy.py src/graftpunk/devtools/scaffold/render.py tests/unit/test_plugin_project.py tests/unit/test_devtools_errors.py tests/unit/test_scaffold_policy.py tests/unit/test_scaffold_render.py tests/unit/test_cli_plugin.py
+git add src/graftpunk/devtools/plugin_project.py src/graftpunk/plugins/cli_plugin.py src/graftpunk/client.py src/graftpunk/devtools/scaffold/project.py src/graftpunk/devtools/scaffold/policy.py src/graftpunk/devtools/scaffold/render.py tests/unit/test_plugin_project.py tests/unit/test_devtools_errors.py tests/unit/test_scaffold_policy.py tests/unit/test_scaffold_render.py tests/unit/test_cli_plugin.py
 git commit -m "feat(devtools): plugin_project reads a plugin project once into one structural view"
 ```
 
@@ -1953,8 +1920,8 @@ git commit -m "feat(devtools): plugin_project reads a plugin project once into o
 - Test: `tests/unit/test_plugin_project_cli.py`
 
 **Interfaces:**
-- Consumes: `read_project`, `ProjectView`, `ProjectView.defects`, `ScaffoldRefusal`, and `CommandView.cli_name` (Task 3; `cli_name` wraps `to_cli_name`, which Task 3 made public in `src/graftpunk/plugins/cli_plugin.py`).
-- Produces: `contracts.INFO_SCHEMA: Final = 1`; `Surface = Literal["endpoints", "info", "sidecar"]`; `CLI_SURFACES == ("endpoints", "info")`, so `gp version --json` prints `"contracts": {"endpoints": 1, "info": 1}` and `gp version --contract info=1` exits 0; `graftpunk.devtools.plugin_info.info_payload(view: ProjectView) -> dict[str, object]` with the pinned field sets `{"schema", "directory", "plugins"}`, each plugin `{"module", "site_name", "base_url", "commands"}`, each command `{"name", "endpoint"}`; `gp plugin info --json [--dir PATH]`, which exits 1 with each defect's message when any plugin module is structurally defective, rather than print a payload that silently leaves that plugin out. The skill's preflight relays this payload unchanged.
+- Consumes: `ScaffoldRefusal` (foundations Task 10); `read_project`, `ProjectView`, `ProjectView.defects`, `PluginView.entry_point`, and `CommandView.cli_name` (Task 3; `cli_name` wraps `to_cli_name`, which Task 3 made public in `src/graftpunk/plugins/cli_plugin.py`).
+- Produces: `contracts.INFO_SCHEMA: Final = 1`; `Surface = Literal["endpoints", "info", "sidecar"]`; `CLI_SURFACES == ("endpoints", "info")`, so `gp version --json` prints `"contracts": {"endpoints": 1, "info": 1}` and `gp version --contract info=1` exits 0; `graftpunk.devtools.plugin_info.info_payload(view: ProjectView) -> dict[str, object]` with the pinned field sets `{"schema", "directory", "plugins"}`, each plugin `{"entry_point", "module", "site_name", "base_url", "commands"}`, each command `{"name", "endpoint"}`; `entry_point` is the name `gp plugin add-command` takes and the skill matches `$0` against; `gp plugin info --json [--dir PATH]`, which exits 1 with one line per defect, naming its entry point and carrying its message, when any plugin module is structurally defective, rather than print a payload that silently leaves that plugin out. The skill's preflight relays this payload unchanged.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1987,7 +1954,7 @@ runner = CliRunner()
 
 # The info payload's field sets at schema 1, frozen here so a rename fails the suite.
 _INFO_V1 = {"schema", "directory", "plugins"}
-_INFO_PLUGIN_V1 = {"module", "site_name", "base_url", "commands"}
+_INFO_PLUGIN_V1 = {"entry_point", "module", "site_name", "base_url", "commands"}
 _INFO_COMMAND_V1 = {"name", "endpoint"}
 
 
@@ -2083,6 +2050,7 @@ class TestPluginInfo:
         assert payload["directory"] == "plugin"
         (plugin,) = payload["plugins"]
         assert set(plugin) == _INFO_PLUGIN_V1
+        assert plugin["entry_point"] == "myshop"
         assert plugin["module"] == "src/graftpunk_myshop/plugin.py"
         assert (plugin["site_name"], plugin["base_url"]) == ("myshop", "https://myshop.example")
         for command in plugin["commands"]:
@@ -2092,7 +2060,9 @@ class TestPluginInfo:
     def test_a_suite_lists_every_entry_point(self, recorded: Path) -> None:
         _new(recorded, "myshop")
         _new(recorded, "widgets")
-        assert [p["site_name"] for p in _info(recorded)["plugins"]] == ["myshop", "widgets"]
+        plugins = _info(recorded)["plugins"]
+        assert [p["entry_point"] for p in plugins] == ["myshop", "widgets"]
+        assert [p["site_name"] for p in plugins] == ["myshop", "widgets"]
 
     def test_an_undeclared_command_reports_null(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(
@@ -2130,7 +2100,9 @@ class TestPluginInfo:
         module.write_text(module.read_text() + "\n\nclass Other(SitePlugin):\n    pass\n")
         result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(recorded)])
         assert result.exit_code == 1
-        assert "exactly one SitePlugin subclass, found 2" in " ".join(_plain(result.output).split())
+        output = " ".join(_plain(result.output).split())
+        assert "entry point 'myshop':" in output
+        assert "exactly one SitePlugin subclass, found 2" in output
 
     def test_an_unreadable_pyproject_is_a_one_line_refusal(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text("[project\n")
@@ -2172,14 +2144,16 @@ def info_payload(view: ProjectView) -> dict[str, object]:
     """``gp plugin info --json``: facts about the directory, and none about the install.
 
     Within a schema version fields are added and never renamed or removed; the
-    number comes from :mod:`graftpunk.contracts`. A command's ``name`` is the one
-    the CLI registers (:attr:`CommandView.cli_name`).
+    number comes from :mod:`graftpunk.contracts`. A plugin's ``entry_point`` is its
+    one identity, the name ``gp plugin add-command`` takes; a command's ``name`` is
+    the one the CLI registers (:attr:`CommandView.cli_name`).
     """
     return {
         "schema": current_schema("info"),
         "directory": view.directory,
         "plugins": [
             {
+                "entry_point": plugin.entry_point,
                 "module": plugin.module_path,
                 "site_name": plugin.site_name,
                 "base_url": plugin.base_url,
@@ -2196,7 +2170,7 @@ def info_payload(view: ProjectView) -> dict[str, object]:
     }
 ```
 
-In `src/graftpunk/cli/scaffold_commands.py`, add `import json`, `from graftpunk.devtools.errors import ScaffoldRefusal`, `from graftpunk.devtools.plugin_info import info_payload`, and `from graftpunk.devtools.plugin_project import read_project`, and append:
+In `src/graftpunk/cli/scaffold_commands.py`, add `import json`, add `ScaffoldRefusal` to the `graftpunk.devtools.errors` import foundations Task 10 added, add `from graftpunk.devtools.plugin_info import info_payload`, and `from graftpunk.devtools.plugin_project import read_project`, and append:
 
 ```python
 @plugin_app.command("info")
@@ -2215,7 +2189,8 @@ def plugin_info(
         raise typer.Exit(1) from None
     if view.defects:
         for defect in view.defects:
-            console.print(f"[red]{escape(defect.message)}[/red]", soft_wrap=True)
+            line = f"entry point {defect.entry_point!r}: {defect.message}"
+            console.print(f"[red]{escape(line)}[/red]", soft_wrap=True)
         raise typer.Exit(1)
     typer.echo(json.dumps(info_payload(view), indent=2, sort_keys=True))
 ```
@@ -2244,7 +2219,7 @@ git commit -m "feat(scaffold): gp plugin info --json describes the directory's p
 - Test: `tests/unit/test_scaffold_selection.py`, `tests/unit/test_scaffold_render.py`, `tests/unit/test_scaffold_cli.py`, `tests/unit/test_devtools_errors.py`
 
 **Interfaces:**
-- Consumes: `parse_command_spec`, `EndpointSpecError` (foundations Task 6); `Endpoint.login_flow` (foundations Task 3); `_decorator_lines`, `_declared_extras`, `_needs_param_specs` (foundations Task 11); `policy.GP_FILL_MARKER`, `graftpunk.plugins.cli_plugin.to_cli_name`, and `ScaffoldRefusal` (Task 3); `_PLUGINS_MODULE` (Task 2).
+- Consumes: `parse_command_spec`, `EndpointSpecError` (foundations Task 6); `Endpoint.login_flow` (foundations Task 3); `_decorator_lines`, `_declared_extras`, `_needs_param_specs` (foundations Task 11); `policy.GP_FILL_MARKER` and `graftpunk.plugins.cli_plugin.to_cli_name` (Task 3); `ScaffoldRefusal` (foundations Task 10); `_PLUGINS_MODULE` (Task 2).
 - Produces, in `graftpunk.devtools.scaffold.selection` (which commands a render or an insert produces, under which names; it imports nothing from `render.py`, which imports it): `@dataclass(frozen=True) class CommandSelection(name: str, method: str, template: str)`; `class CommandSelectionError(ScaffoldRefusal, ValueError)`; `command_identifier(name: str) -> str`; `@dataclass(frozen=True) class PlannedCommand(identifier: str, name_pin: str | None, method: str, endpoint: Endpoint)` with property `registered_name -> str` (the `name=` pin, else `to_cli_name(identifier)`: the name the CLI registers); `plan_command(d: RunDigest, selection: CommandSelection) -> PlannedCommand`; `planned_commands(d: RunDigest | None, selections: Sequence[CommandSelection], default: Callable[[RunDigest], list[PlannedCommand]]) -> list[PlannedCommand]`. In `render`: `@dataclass(frozen=True) class RenderedCommand(lines: tuple[str, ...], imports: tuple[tuple[str, str], ...], fixture: str)`, where `imports` is every `(module, name)` pair the stub references (always `(_PLUGINS_MODULE, "CommandContext")` and `(_PLUGINS_MODULE, "command")`, plus `(_PLUGINS_MODULE, "PluginParamSpec")` for a stub with explicit parameter specs, `_PLUGINS_MODULE` being `graftpunk.plugins`); `render_command(command: PlannedCommand, d: RunDigest) -> RenderedCommand`; `ScaffoldSpec.commands: tuple[CommandSelection, ...] = ()`, checked for shape only when the spec is built (a selection needs a digest) and planned, with every refusal, when it is rendered; `_decorator_lines(command: PlannedCommand, param_specs: list[str])`, whose help placeholder names `command.registered_name`, the kebab form the CLI registers; in the CLI, `_command_selections(values: list[str]) -> tuple[CommandSelection, ...]`. `render.py` re-imports `CommandSelection` for `ScaffoldSpec` and nothing re-exports the selection names. Task 6 consumes `plan_command`, `PlannedCommand.registered_name`, `render_command`, `RenderedCommand.imports`, and `_command_selections`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2926,8 +2901,8 @@ git commit -m "feat(scaffold): gp plugin new --command selects and names the stu
 - Test: `tests/unit/test_plugin_project_cli.py`
 
 **Interfaces:**
-- Consumes: `read_project`, `PluginView`, `ProjectView.defects`, `CommandView.cli_name`, `ScaffoldRefusal` (Task 3); `pysrc.with_import` and `ImportPlacementError` (Task 2); `plan_command`, `PlannedCommand.registered_name`, `CommandSelection` (Task 5, `selection.py`); `render_command`, `RenderedCommand.imports` (Task 5, `render.py`); `_command_selections` (Task 5); `apply_changes`, `PlannedChange`, `validate_python` (foundations Task 10); `resolve_run` (existing, `src/graftpunk/cli/observe_commands.py`).
-- Produces: `insert.CommandInsertError(ScaffoldRefusal, ValueError)`, raised also when the target plugin is defective (and only then: another plugin's defect does not stop it) and when the module's imports are in a shape `with_import` will not place into; `@dataclass(frozen=True) class AddedCommand(module: Path, cli_name: str, fixture: str)`; `insertion_line(plugin: PluginView) -> int`; `add_command(root: Path, plugin_name: str, d: RunDigest, selection: CommandSelection) -> AddedCommand`; `gp plugin add-command PLUGIN --from-run SESSION --command "NAME=METHOD template" [--run RUN_ID] [--dir PATH]`. `tests/unit/test_scaffold_write.py` finds `insert.py` among the modules that apply changes without being told (foundations Task 10).
+- Consumes: `read_project`, `PluginView` (with `entry_point`), `ProjectView.defects`, `CommandView.cli_name` (Task 3); `ScaffoldRefusal` and `ScaffoldWriteError` (foundations Task 10); `pysrc.with_import` and `ImportPlacementError` (Task 2); `plan_command`, `PlannedCommand.registered_name`, `CommandSelection` (Task 5, `selection.py`); `render_command`, `RenderedCommand.imports` (Task 5, `render.py`); `_command_selections` (Task 5); `apply_changes`, `PlannedChange`, `validate_python` (foundations Task 10); `resolve_run` (existing, `src/graftpunk/cli/observe_commands.py`).
+- Produces: `insert.CommandInsertError(ScaffoldRefusal, ValueError)`, raised also when the target plugin is defective (and only then: another plugin's defect does not stop it), when no entry point has the given name (the message lists the entry-point names that exist), and when the module's imports are in a shape `with_import` will not place into; `@dataclass(frozen=True) class AddedCommand(module: Path, cli_name: str, fixture: str)`; `insertion_line(plugin: PluginView) -> int`; `add_command(root: Path, entry_point: str, d: RunDigest, selection: CommandSelection) -> AddedCommand`, which looks up both the defect and the plugin by `entry_point`; `gp plugin add-command PLUGIN --from-run SESSION --command "NAME=METHOD template" [--run RUN_ID] [--dir PATH]`, where `PLUGIN` is the entry-point name `gp plugin info --json` reports. A write that fails reaches the entry point as `ScaffoldWriteError`, a `ScaffoldRefusal`, so `except ScaffoldRefusal` is its only arm. `tests/unit/test_scaffold_write.py` finds `insert.py` among the modules that apply changes without being told (foundations Task 10).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2994,11 +2969,11 @@ if __name__ == "__main__":
 """
 
 
-def _hand_written_project(root: Path) -> Path:
+def _hand_written_project(root: Path, entry_point: str = "myshop") -> Path:
     (root / "pyproject.toml").write_text(
         '[project]\nname = "graftpunk-myshop"\n\n'
         '[project.entry-points."graftpunk.plugins"]\n'
-        'myshop = "graftpunk_myshop.plugin:MyshopPlugin"\n\n'
+        f'{entry_point} = "graftpunk_myshop.plugin:MyshopPlugin"\n\n'
         "[tool.ruff]\nline-length = 100\n\n"
         '[tool.ruff.lint]\nselect = ["E", "F", "I", "UP", "B"]\n'
     )
@@ -3113,6 +3088,50 @@ class TestAddCommand:
         assert result.exit_code == 1
         assert "myshop" in _plain(result.output)
 
+    def test_the_plugin_is_addressed_by_its_entry_point_name(self, recorded: Path) -> None:
+        """A hand-written project whose entry-point name is not its site_name: the
+        entry point is the identity gp plugin info reports and add-command takes."""
+        module = _hand_written_project(recorded, entry_point="shop")
+        by_site_name = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert by_site_name.exit_code == 1
+        assert "its entry points are: shop." in " ".join(_plain(by_site_name.output).split())
+        assert module.read_text() == _HAND_WRITTEN
+        added = _add(recorded, "shop", "orders=GET /api/orders")
+        assert added.exit_code == 0, added.output
+        (plugin,) = read_project(recorded).plugins
+        assert (plugin.entry_point, plugin.site_name) == ("shop", "myshop")
+        assert [c.method for c in plugin.commands] == ["orders"]
+
+    def test_a_defect_on_a_plugin_addressed_by_its_entry_point_is_refused(
+        self, recorded: Path
+    ) -> None:
+        module = _hand_written_project(recorded, entry_point="shop")
+        module.write_text(_HAND_WRITTEN + "\n\nclass Other(SitePlugin):\n    pass\n")
+        before = module.read_bytes()
+        refused = _add(recorded, "shop", "orders=GET /api/orders")
+        assert refused.exit_code == 1
+        assert "exactly one SitePlugin subclass" in " ".join(_plain(refused.output).split())
+        assert module.read_bytes() == before
+
+    def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
+        self, recorded: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.devtools.scaffold import write
+
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        before = _snapshot(recorded, skip=recorded / "nothing")
+
+        def failing(path: Path, text: str) -> None:
+            raise OSError(28, "No space left on device", str(path))
+
+        monkeypatch.setattr(write, "_write_atomically", failing)
+        result = _add(recorded, "myshop", "invoices=GET /api/invoices")
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line.startswith("Could not write ")
+        assert "No space left on device" in line
+        assert _snapshot(recorded, skip=recorded / "nothing") == before
+
     @pytest.mark.parametrize("value", ["orders GET /api/orders", "=GET /api/orders", "orders="])
     def test_both_entry_points_refuse_a_malformed_value_with_the_same_text(
         self, recorded: Path, value: str
@@ -3202,28 +3221,35 @@ def _taken_names(plugin: PluginView) -> set[str]:
 
 
 def add_command(
-    root: Path, plugin_name: str, d: RunDigest, selection: CommandSelection
+    root: Path, entry_point: str, d: RunDigest, selection: CommandSelection
 ) -> AddedCommand:
-    """Add *selection*'s stub to the plugin whose ``site_name`` is *plugin_name*.
+    """Add *selection*'s stub to the plugin whose entry-point name is *entry_point*,
+    the one identity ``gp plugin info --json`` reports for it.
 
     Raises:
         CommandInsertError: *root* is not a plugin project, the target plugin's
-            module is defective, no plugin has that name, the name is taken (as a
-            method name or a CLI name), or the module's imports are in a shape
-            ``with_import`` does not place into.
+            module is defective, no entry point has that name, the command name
+            is taken (as a method name or a CLI name), or the module's imports
+            are in a shape ``with_import`` does not place into.
         CommandSelectionError: See :func:`plan_command`.
         PluginProjectError: See :func:`read_project`.
+        ScaffoldWriteError: The write failed; the module was restored first.
     """
     view = read_project(root)
     if view.directory != "plugin":
         raise CommandInsertError(f"{root} is not a graftpunk plugin project ({view.directory}).")
-    defect = next((d for d in view.defects if d.entry_point == plugin_name), None)
+    defect = next((d for d in view.defects if d.entry_point == entry_point), None)
     if defect is not None:
         raise CommandInsertError(defect.message)
-    plugin = next((p for p in view.plugins if p.site_name == plugin_name), None)
+    plugin = next((p for p in view.plugins if p.entry_point == entry_point), None)
     if plugin is None:
-        names = ", ".join(sorted(p.site_name or p.class_name for p in view.plugins))
-        raise CommandInsertError(f"No plugin named {plugin_name!r} in {root}; it holds: {names}.")
+        names = ", ".join(
+            sorted({p.entry_point for p in view.plugins} | {d.entry_point for d in view.defects})
+        )
+        raise CommandInsertError(
+            f"No plugin has the entry-point name {entry_point!r} in {root}; "
+            f"its entry points are: {names}."
+        )
     command = plan_command(d, selection)
     if {command.identifier, command.registered_name} & _taken_names(plugin):
         raise CommandInsertError(
@@ -3255,7 +3281,10 @@ In `src/graftpunk/cli/scaffold_commands.py`, add `from graftpunk.devtools.scaffo
 ```python
 @plugin_app.command("add-command")
 def plugin_add_command(
-    plugin: Annotated[str, typer.Argument(help="The plugin's site_name")],
+    plugin: Annotated[
+        str,
+        typer.Argument(help="The plugin's entry-point name, as gp plugin info --json reports it"),
+    ],
     from_run: Annotated[
         str, typer.Option("--from-run", help="SESSION: take the endpoint from its newest run")
     ],
@@ -3276,9 +3305,6 @@ def plugin_add_command(
     except ScaffoldRefusal as exc:
         LOG.debug("add_command_refused", reason=type(exc).__name__)
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
-        raise typer.Exit(1) from None
-    except OSError as exc:
-        console.print(f"[red]Could not write: {escape(exc.strerror or str(exc))}[/red]")
         raise typer.Exit(1) from None
     console.print(
         f"[green]Added[/green] {escape(added.cli_name)} to {escape(str(added.module))}",
@@ -3311,8 +3337,8 @@ git commit -m "feat(scaffold): gp plugin add-command inserts one generated stub 
 - Test: `tests/unit/test_scaffold_upgrade.py`, `tests/unit/test_plugin_project_cli.py`
 
 **Interfaces:**
-- Consumes: `read_project`, `ProjectView.missing_requirements()` (Task 3); `ProjectRequirement` (Task 2); `pysrc.with_bindings` (Task 2), the same assembler the renderer uses for a new conftest; `apply_changes`, `PlannedChange`, `validate_python` (foundations Task 10).
-- Produces: `upgrade.UpgradeRefusedError(ScaffoldRefusal, ValueError)`, raised for a directory that is not a plugin project and for a file whose imports `pysrc.with_import` will not place (its message then tells the user to run `ruff check --fix` after adding the import by hand); a plugin defect does not stop it, since it edits no plugin module; `upgrade_project(root: Path) -> tuple[ProjectRequirement, ...]` (the requirements it applied); `gp plugin upgrade [--dir PATH]`. `tests/unit/test_scaffold_write.py` finds `upgrade.py` among the modules that apply changes without being told (foundations Task 10).
+- Consumes: `read_project`, `ProjectView.missing_requirements()` (Task 3); `ProjectRequirement` (Task 2); `pysrc.with_bindings` (Task 2), the same assembler the renderer uses for a new conftest; `apply_changes`, `PlannedChange`, `validate_python`, `ScaffoldRefusal`, and `ScaffoldWriteError` (foundations Task 10).
+- Produces: `upgrade.UpgradeRefusedError(ScaffoldRefusal, ValueError)`, raised for a directory that is not a plugin project and for a file whose imports `pysrc.with_import` will not place (its message then tells the user to run `ruff check --fix` after adding the import by hand); a plugin defect does not stop it, since it edits no plugin module; `upgrade_project(root: Path) -> tuple[ProjectRequirement, ...]` (the requirements it applied); `gp plugin upgrade [--dir PATH]`, whose only arm is `except ScaffoldRefusal`, which covers a failed write (`ScaffoldWriteError`). `tests/unit/test_scaffold_write.py` finds `upgrade.py` among the modules that apply changes without being told (foundations Task 10).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3443,24 +3469,50 @@ In `tests/unit/test_devtools_errors.py`, add `UpgradeRefusedError` (from `graftp
 Append to `tests/unit/test_plugin_project_cli.py`:
 
 ```python
-class TestPluginUpgrade:
-    def test_prints_what_it_added_and_then_nothing(self, tmp_path: Path) -> None:
-        from graftpunk.devtools.scaffold.project import write_scaffold
-        from graftpunk.devtools.scaffold.render import ScaffoldSpec
+def _project_lacking_the_wiring(root: Path) -> Path:
+    """A generated project whose conftest predates the sanitisation wiring."""
+    from graftpunk.devtools.scaffold.project import write_scaffold
+    from graftpunk.devtools.scaffold.render import ScaffoldSpec
 
-        write_scaffold(
-            tmp_path,
-            ScaffoldSpec(
-                name="myshop",
-                mode="new_project",
-                backend="nodriver",
-                base_url="https://myshop.example",
-            ),
-        )
-        (tmp_path / "tests" / "conftest.py").write_text(
-            "from graftpunk.testing.plugin import site_env_scrubber\n\n"
-            'scrub_site_env = site_env_scrubber("MYSHOP_")\n'
-        )
+    write_scaffold(
+        root,
+        ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example",
+        ),
+    )
+    conftest = root / "tests" / "conftest.py"
+    conftest.write_text(
+        "from graftpunk.testing.plugin import site_env_scrubber\n\n"
+        'scrub_site_env = site_env_scrubber("MYSHOP_")\n'
+    )
+    return conftest
+
+
+class TestPluginUpgrade:
+    def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.devtools.scaffold import write
+
+        conftest = _project_lacking_the_wiring(tmp_path)
+        before = conftest.read_bytes()
+
+        def failing(path: Path, text: str) -> None:
+            raise OSError(28, "No space left on device", str(path))
+
+        monkeypatch.setattr(write, "_write_atomically", failing)
+        result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line.startswith("Could not write ")
+        assert "No space left on device" in line
+        assert conftest.read_bytes() == before
+
+    def test_prints_what_it_added_and_then_nothing(self, tmp_path: Path) -> None:
+        _project_lacking_the_wiring(tmp_path)
         first = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
         assert first.exit_code == 0, first.output
         assert "tests/conftest.py: added FIXTURES_TREE" in _plain(first.output)
@@ -3515,6 +3567,7 @@ def upgrade_project(root: Path) -> tuple[ProjectRequirement, ...]:
         UpgradeRefusedError: *root* is not a plugin project, or a file's imports
             are not in a shape ``pysrc.with_import`` places into.
         PluginProjectError: See :func:`read_project`.
+        ScaffoldWriteError: A write failed; every file was restored first.
     """
     view = read_project(root)
     if view.directory != "plugin":
@@ -4167,7 +4220,7 @@ Expected: under 400. The spec defers splitting this module until "the next comma
 Append to `CHANGELOG.md` under `[Unreleased]` / `### Added`:
 
 ```markdown
-- **`gp plugin info`, `add-command`, `upgrade`, and `check`, and the in-suite fixtures check.** `gp plugin info --json` describes the working directory as `empty`, `plugin`, or `foreign`, and for a plugin project lists each entry point's module, `site_name`, `base_url`, and commands with their declared endpoints. `gp plugin new --command "NAME=METHOD template"` (repeatable) makes only the stubs you name, under your names, with no twelve-stub cap; `gp plugin add-command PLUGIN --from-run SESSION --command ...` adds one stub in the same shape to an existing plugin and prints the fixture its test reads. A generated `tests/conftest.py` now also carries `FIXTURES_TREE` and `fixtures_are_sanitised`, a check that fails the suite when a committed fixture has no sidecar, is an unchanged copy of its capture, or contains a flagged cookie or token name; on an existing project, `gp plugin upgrade` adds the two lines. `gp plugin check` reports `GP-FILL` markers left, a module without exactly one plugin class, and missing wiring, and joins `pytest` and ruff in the project gate the generated README and the guide list.
+- **`gp plugin info`, `add-command`, `upgrade`, and `check`, and the in-suite fixtures check.** `gp plugin info --json` describes the working directory as `empty`, `plugin`, or `foreign`, and for a plugin project lists each entry point's name (`entry_point`, the name `add-command` takes), module, `site_name`, `base_url`, and commands with their declared endpoints. `gp plugin new --command "NAME=METHOD template"` (repeatable) makes only the stubs you name, under your names, with no twelve-stub cap; `gp plugin add-command PLUGIN --from-run SESSION --command ...` adds one stub in the same shape to an existing plugin and prints the fixture its test reads. A generated `tests/conftest.py` now also carries `FIXTURES_TREE` and `fixtures_are_sanitised`, a check that fails the suite when a committed fixture has no sidecar, is an unchanged copy of its capture, or contains a flagged cookie or token name; on an existing project, `gp plugin upgrade` adds the two lines. `gp plugin check` reports `GP-FILL` markers left, a module without exactly one plugin class, and missing wiring, and joins `pytest` and ruff in the project gate the generated README and the guide list.
 ```
 
 - [ ] **Step 5: Run the full gate**
