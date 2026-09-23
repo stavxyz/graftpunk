@@ -82,8 +82,9 @@ def ensure_ignored(repo_root: Path, relative: str) -> bool:
     updated = with_ignored(existing, relative)
     if updated == existing:
         return False
-    with gitignore.open("a", encoding="utf-8") as handle:
-        handle.write(updated[len(existing) :])
+    # Binary append: the line ending with_ignored chose reaches the disk as written.
+    with gitignore.open("ab") as handle:
+        handle.write(updated[len(existing) :].encode("utf-8"))
     LOG.info("captures_gitignore_updated", path=str(gitignore), line=relative.rstrip("/") + "/")
     return True
 

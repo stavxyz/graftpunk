@@ -129,6 +129,18 @@ class TestWithIgnored:
         assert with_ignored("dist/", "tests/captures") == "dist/\ntests/captures/\n"
         assert with_ignored("tests/captures\n", "tests/captures/") == "tests/captures\n"
 
+    def test_a_crlf_file_gets_a_crlf_line(self) -> None:
+        assert with_ignored("dist/\r\n", "tests/captures") == "dist/\r\ntests/captures/\r\n"
+        assert with_ignored("dist/", "tests/captures") == "dist/\ntests/captures/\n"
+        assert with_ignored("a\r\ndist/", "tests/captures") == "a\r\ndist/\r\ntests/captures/\r\n"
+
+
+def test_ensure_ignored_appends_a_crlf_line_to_a_crlf_gitignore(tmp_path: Path) -> None:
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_bytes(b"*.pyc\r\ndist/\r\n")
+    assert ensure_ignored(tmp_path, CAPTURES_DIR)
+    assert gitignore.read_bytes() == b"*.pyc\r\ndist/\r\ntests/captures/\r\n"
+
 
 def test_the_rule_module_imports_nothing_that_touches_the_filesystem() -> None:
     """Scaffold modules import the rule from here, so it stays pure text."""

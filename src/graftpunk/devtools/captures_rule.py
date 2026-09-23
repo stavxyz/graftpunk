@@ -19,8 +19,13 @@ CAPTURES_DIR = "tests/captures"
 def with_ignored(text: str, relative: str) -> str:
     """*text*, a ``.gitignore``'s content, with ``<relative>/`` appended unless that
     exact line is there, in which case *text* itself. The rule ``ensure_ignored``
-    applies, as a text function a scaffold writer can plan as a change."""
+    applies, as a text function a scaffold writer can plan as a change.
+
+    The appended line ends the way the file's lines do: CRLF when *text* holds a
+    CRLF, LF otherwise, so a CRLF file does not gain one LF line.
+    """
     if relative.rstrip("/") in {entry.strip().rstrip("/") for entry in text.splitlines()}:
         return text
-    separator = "\n" if text and not text.endswith("\n") else ""
-    return f"{text}{separator}{relative.rstrip('/')}/\n"
+    newline = "\r\n" if "\r\n" in text else "\n"
+    separator = newline if text and not text.endswith("\n") else ""
+    return f"{text}{separator}{relative.rstrip('/')}/{newline}"

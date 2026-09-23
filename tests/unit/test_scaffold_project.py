@@ -332,13 +332,15 @@ class TestSuiteFilesKeepTheirBytes:
     """A suite add edits the suite's pyproject.toml and .gitignore; every byte it
     does not add is the one it read, line endings included."""
 
-    def test_a_crlf_gitignore_keeps_its_existing_bytes(self, tmp_path: Path) -> None:
+    def test_a_crlf_gitignore_keeps_its_existing_bytes_and_its_line_ending(
+        self, tmp_path: Path
+    ) -> None:
         (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
         gitignore = tmp_path / ".gitignore"
         gitignore.write_bytes(b"*.pyc\r\ndist/\r\n")
         result = write_scaffold(tmp_path, _spec("widgets"))
         assert result.gitignore_updated
-        assert gitignore.read_bytes() == b"*.pyc\r\ndist/\r\ntests/captures/\n"
+        assert gitignore.read_bytes() == b"*.pyc\r\ndist/\r\ntests/captures/\r\n"
 
     def test_a_crlf_pyproject_stays_crlf(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
