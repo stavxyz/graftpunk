@@ -239,7 +239,9 @@ which re-sends each value as recorded. A JSON body field keeps its JSON type: a
 `null` is not an observation, `int` and `float` together are `float`, and any
 other disagreement is `mixed`. A query or body key that does not read as a field
 name, such as an email address or a key starting with a digit, is data rather
-than a parameter, and the digest drops it.
+than a parameter, and the digest drops it; so is a key that holds an id by the
+path rule's shapes (a run of five or more digits, as in `u_40912873`, or eight or
+more hex characters mixing digits and letters).
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:

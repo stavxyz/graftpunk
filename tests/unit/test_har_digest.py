@@ -506,6 +506,29 @@ class TestTypeObservation:
         (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
         return endpoint
 
+    def test_a_query_key_holding_an_id_is_dropped(self, tmp_path: Path) -> None:
+        """A key is a field name, not a place for an account's id to ride along."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/orders"
+                "?u_40912873=1&k_ab12cd34ef=2&page=1&sha256=x&v2=y",
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].query_params == {"page": "int", "sha256": "str", "v2": "str"}
+
+    def test_a_body_key_holding_an_id_is_dropped(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(tmp_path, {"acct_40912873": 1, "ab12cd34": 2, "note": "x"})
+        assert endpoint.body_params == {"note": "str"}
+
+    def test_a_form_key_holding_an_id_is_dropped_and_the_body_is_still_a_form(
+        self, tmp_path: Path
+    ) -> None:
+        endpoint = self._form_posts(tmp_path, "u_40912873=1&name=alice")
+        assert endpoint.body_kind == "form"
+        assert endpoint.body_params == {"name": "str"}
+
     def test_json_int_then_float_merges_to_float(self, tmp_path: Path) -> None:
         endpoint = self._json_posts(tmp_path, {"amount": 3}, {"amount": 3.5})
         assert endpoint.body_params == {"amount": "float"}
