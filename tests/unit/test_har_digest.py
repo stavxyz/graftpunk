@@ -513,14 +513,14 @@ class TestTypeObservation:
             _entry(
                 "GET",
                 "https://api.myshop.example.com/orders"
-                "?u_40912873=1&k_ab12cd34ef=2&page=1&sha256=x&v2=y",
+                "?u_40912873=1&k_ab12cd34ef56=2&page=1&sha256=x&v2=y",
             )
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert result.endpoints[0].query_params == {"page": "int", "sha256": "str", "v2": "str"}
 
     def test_a_body_key_holding_an_id_is_dropped(self, tmp_path: Path) -> None:
-        endpoint = self._json_posts(tmp_path, {"acct_40912873": 1, "ab12cd34": 2, "note": "x"})
+        endpoint = self._json_posts(tmp_path, {"acct_40912873": 1, "ab12cd34ef56": 2, "note": "x"})
         assert endpoint.body_params == {"note": "str"}
 
     def test_a_form_key_holding_an_id_is_dropped_and_the_body_is_still_a_form(
@@ -1541,7 +1541,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
     counted, never lost silently."""
 
     def test_an_id_response_key_becomes_one_placeholder_key(self, tmp_path: Path) -> None:
-        body = json.dumps({"40912873": {"total": 1}, "ab12cd34ef": {"total": 2}, "name": "x"})
+        body = json.dumps({"40912873": {"total": 1}, "ab12cd34ef56": {"total": 2}, "name": "x"})
         entries = [_entry("GET", "https://api.myshop.example.com/balances", body=body)]
         (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
         assert endpoint.shape is not None
@@ -1563,13 +1563,13 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         entries = [
             _entry(
                 "POST",
-                "https://api.myshop.example.com/orders?u_40912873=1&cus_4fK2x9QaZ1=2&page=1",
+                "https://api.myshop.example.com/orders?u_40912873=1&cus_NffrFeUfNV2Hib=2&page=1",
                 post_data=json.dumps({"acct_40912873": 1, "note": "x"}),
             ),
             _entry(
                 "POST",
                 "https://api.myshop.example.com/orders?u_40912873=3",
-                post_data=json.dumps({"usr-Zq9XkLmPwR": 1}),
+                post_data=json.dumps({"usr-Zq9XkLmPwR4t7B": 1}),
             ),
         ]
         (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints

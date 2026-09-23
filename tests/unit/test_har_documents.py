@@ -340,7 +340,7 @@ class TestLoginFormNamesGoThroughTheIdRule:
         html = (
             '<form action="/login"><input type="email" name="email">'
             '<input type="text" name="otp_40912873">'
-            '<input type="tel" name="fld_a8f3c9e2b1">'
+            '<input type="tel" name="fld_a8f3c9e2b1d4">'
             '<input type="password" name="password"></form>'
         )
         (form,) = extract_login_forms(html, source="s")
@@ -354,7 +354,7 @@ class TestLoginFormNamesGoThroughTheIdRule:
     def test_a_credential_input_name_holding_an_id_keeps_its_role(self) -> None:
         html = (
             '<form action="/login"><input type="email" name="email_40912873">'
-            '<input type="password" name="pw_ab12cd34ef"></form>'
+            '<input type="password" name="pw_ab12cd34ef56"></form>'
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {
@@ -383,7 +383,7 @@ class TestLoginFallbackSelectors:
     ) -> None:
         html = (
             '<form action="/login"><input type="text" name="otp_40912873">'
-            '<input type="text" name="fld_a8f3c9e2b1">'
+            '<input type="text" name="fld_a8f3c9e2b1d4">'
             '<input type="password" name="password"></form>'
         )
         (form,) = extract_login_forms(html, source="s")

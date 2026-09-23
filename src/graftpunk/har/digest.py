@@ -551,7 +551,7 @@ def _plausible_field_name(name: str) -> bool:
     key that does not match the field-name alphabet (an email address, a key
     starting with a digit) is not one, and neither is a key that
     :func:`graftpunk.har.paths.holds_an_id` says carries an account value
-    (``u_40912873``, ``cus_4fK2x9QaZ1``)."""
+    (``u_40912873``, ``cus_NffrFeUfNV2Hib``)."""
     return _field_name_shaped(name) and not holds_an_id(name)
 
 

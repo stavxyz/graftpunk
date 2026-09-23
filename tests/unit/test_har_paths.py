@@ -34,20 +34,17 @@ class TestTemplatePath:
         template, params = template_path("/sessions/8f14e45f-ceea-467e-bd3d-46f0e7d1f5a3")
         assert template == "/sessions/{session_id}"
 
-    def test_hex_segment_at_min_length_collapses(self) -> None:
-        segment = "a" * _MIN_HEX_LEN
-        template, _ = template_path(f"/tokens/{segment}")
-        assert template == "/tokens/{token_id}"
+    def test_mixed_hex_at_min_length_is_an_id_and_one_shorter_is_not(self) -> None:
+        segment = ("a1" * _MIN_HEX_LEN)[:_MIN_HEX_LEN]
+        assert holds_an_id(segment)
+        assert not holds_an_id(segment[:-1] + "x")
+        assert template_path(f"/tokens/{segment}")[0] == "/tokens/{token_id}"
 
-    def test_hex_segment_under_min_length_stays_literal(self) -> None:
-        segment = "a" * (_MIN_HEX_LEN - 1)
-        template, _ = template_path(f"/tokens/{segment}")
-        assert template == f"/tokens/{segment}"
-
-    def test_base64_like_segment_at_min_length_collapses(self) -> None:
-        segment = ("z1" * ((_MIN_BASE64_LEN // 2) + 1))[:_MIN_BASE64_LEN]
-        template, _ = template_path(f"/files/{segment}")
-        assert template == "/files/{file_id}"
+    def test_base64_like_token_at_min_length_is_an_id(self) -> None:
+        segment = ("z1a" * _MIN_BASE64_LEN)[:_MIN_BASE64_LEN]
+        assert holds_an_id(segment)
+        assert not holds_an_id(segment[:-1])
+        assert template_path(f"/files/{segment}")[0] == "/files/{file_id}"
 
     def test_a_long_word_with_no_digit_stays_literal(self) -> None:
         segment = "z" * (_MIN_BASE64_LEN - 1)
@@ -182,10 +179,41 @@ class TestAnEmailSegmentIsAnAccountValue:
         assert templates_a_segment("https://myshop.example.com/users/{user_id}/signin")
 
 
-# The one id rule's two tables (graftpunk.har.paths.holds_an_id). Every position
-# the digest reads a name from goes through it; tests/unit/test_id_property.py
-# plants the first table in every position end to end.
-MUST_BE_ID = (
+# The name rule's key-position id table (graftpunk.har.paths.holds_an_id): the
+# strong-evidence shapes an account value takes as a key, header, input, cookie, or
+# token name. Every entry must be caught; tests/unit/test_id_property.py plants
+# each in every name and path position end to end, and test_id_miss_rates.py
+# requires every sub-rule of the name rule to be the only catch of one entry.
+KEY_POSITION_IDS = (
+    "alice@example.com",
+    "alice%40example.com",
+    "8f14e45f-ceea-467e-bd3d-46f0e7d1f5a3",
+    "40912873",
+    "409128",
+    "user_40912873",
+    "acct-409128",
+    "order~40912873",
+    "otp_40912873",
+    "a3f9c2d1e0b4",
+    "a3f9c2d1e0b4.pdf",
+    "5f1a9c2e8b1d4f60a9e2c3b4",
+    "btn-5f1a9c2e8b1d",
+    "ctl00$5f1a9c2e8b1d",
+    "4111-1111-1111-1111",
+    "123-45-6789",
+    "1-800-555-0199",
+    "order-2024-1187-7731",
+    "2024-01-15-0412",
+    "cus_NffrFeUfNV2Hib",
+    "pi_3NkQ7xLkdIwHu7ix",
+    "usr-8fK2x9QaZ1mN",
+    "Zm9vYmFyYmF6cXV4MTIzNDU2",
+    "sess-Zm9vYmFyYmF6cXV4MTIzNDU2",
+)
+# Shapes an account value takes in a path, beyond the table above. A path segment
+# fails closed, so each is dynamic there; as a name most are kept (short random
+# tokens are a known limit of the name rule).
+PATH_ID_SHAPES = (
     "40912873",
     "40912",
     "acct-40912873",
@@ -248,6 +276,15 @@ MUST_BE_KEPT = (
     "per_page",
     "sort_by",
     "userId",
+    "k8sNamespace",
+    "sha256Key",
+    "ed25519",
+    "argon2id",
+    "retina2x",
+    "pbkdf2Iterations",
+    "Md5OfMessageAttributes",
+    "x-amz-content-sha256",
+    "X-Hub-Signature-256",
     "orderId2",
     "html5",
     "mp3",
@@ -302,9 +339,17 @@ MUST_BE_KEPT = (
 
 
 class TestHoldsAnId:
-    @pytest.mark.parametrize("text", MUST_BE_ID)
-    def test_an_id_shape_holds_an_id(self, text: str) -> None:
+    @pytest.mark.parametrize("text", KEY_POSITION_IDS)
+    def test_a_key_position_id_holds_an_id(self, text: str) -> None:
         assert holds_an_id(text)
+
+    @pytest.mark.parametrize("text", ["kqzpwmab47", "x7Kq29Lp", "usr_8fk2x9qa", "ab12-cd34-ef56"])
+    def test_a_short_random_token_as_a_name_is_kept(self, text: str) -> None:
+        """The name rule's known limit: names are dropped on strong evidence only,
+        so a short random token used as a field name is kept. As a path segment it
+        is dynamic, since paths fail closed."""
+        assert not holds_an_id(text)
+        assert looks_dynamic(text)
 
     @pytest.mark.parametrize("text", MUST_BE_KEPT)
     def test_an_ordinary_name_holds_none(self, text: str) -> None:
@@ -342,7 +387,8 @@ MUST_BE_DYNAMIC_SEGMENT = (
     "base64Data",
     "sha256Hash",
     "cus_NffrFeUfNV2Hib",
-    *MUST_BE_ID,
+    *KEY_POSITION_IDS,
+    *PATH_ID_SHAPES,
 )
 MUST_STAY_LITERAL_SEGMENT = (
     "v2",

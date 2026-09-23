@@ -443,7 +443,7 @@ class TestEndpointsProjection:
             content_type="text/html",
             body=(
                 '<form action="/session" method="post"><input type="text" name="username">'
-                '<input type="text" name="otp_40912873"><input type="text" name="fld_a8f3c9e2b1">'
+                '<input type="text" name="otp_40912873"><input type="text" name="fld_a8f3c9e2b1d4">'
                 '<input type="password" name="password"><button id="signin">Sign in</button>'
                 "</form>"
             ),

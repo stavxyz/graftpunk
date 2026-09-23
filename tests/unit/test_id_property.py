@@ -27,7 +27,7 @@ from graftpunk.har.digest import (
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from graftpunk.testing.sidecar import Sidecar, sidecar_text
-from tests.unit.test_har_paths import MUST_BE_ID, MUST_BE_KEPT, MUST_STAY_LITERAL_SEGMENT
+from tests.unit.test_har_paths import KEY_POSITION_IDS, MUST_BE_KEPT, MUST_STAY_LITERAL_SEGMENT
 
 _HOST = "https://myshop.example.com"
 
@@ -167,7 +167,7 @@ def _sidecars(har: Path) -> list[str]:
 
 
 @pytest.mark.parametrize("position", _URL_POSITIONS + _NAME_POSITIONS)
-@pytest.mark.parametrize("value", MUST_BE_ID)
+@pytest.mark.parametrize("value", KEY_POSITION_IDS)
 def test_no_id_reaches_a_generated_file_the_projection_or_a_sidecar(
     tmp_path: Path, value: str, position: str
 ) -> None:

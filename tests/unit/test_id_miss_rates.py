@@ -1,18 +1,23 @@
-"""The id rule measured in both directions: how often it misses a random token,
-by shape, on a fixed seed; and how often it reads an ordinary name as an id, over
-two fixed corpora measured apart: the regression corpus the rule was tuned
-against (``field_names_regression.py``) and a held-out corpus of public SDK and
-API names it was not (``field_names_held_out.py``).
+"""The id rules measured, each in the position it guards.
 
-A ceiling per shape and per corpus, set just above the rate measured when the rule
-last changed: a change that lets more random tokens through, or reads more
-ordinary names as ids, fails here. A token of letters alone (no digit) reads as a
-word by any lexical rule, so no shape's floor is zero; for 8-character lower-case
-base36 that floor is (26/36)**8, about 7.4%.
+Names (keys, headers, input, cookie, and token names) are dropped only on strong
+evidence (``holds_an_id``): the key-position id table in ``test_har_paths.py`` must
+be caught in full, every sub-rule of the name rule must be the only catch of one of
+its entries, and the share of ordinary names read as ids is held under a ceiling
+on two corpora measured apart: the regression corpus of names reviewers raised
+(``field_names_regression.py``) and a held-out corpus of public SDK and API names
+the rule was not tuned against (``field_names_held_out.py``).
 
-Every sub-rule in the word tables (``_SPELLING_REJECTS``, ``_WORD_REJECTS``) and
-the joined-name short-run limit must pay for itself: removing it breaches at least
-one miss-rate ceiling. A rule that does not is deleted.
+Path segments fail closed (``looks_dynamic``), so random tokens are covered there:
+a ceiling per random-token shape, set just above the rate measured when the rule
+last changed. A token of letters alone (no digit) is literal by any lexical rule,
+so no shape's floor is zero; for 8-character lower-case base36 that floor is
+(26/36)**8, about 7.4%.
+
+The name rule's own random-token miss rates are measured and reported, with no
+ceiling (2026-09-23, round 7b): lower36_8 0.99975, lower36_12 0.998, upper36_10
+0.998, token_urlsafe_16 0.95175, nanoid_21 0.95025. A short random token used as
+a name is kept; that is the name rule's known limit.
 """
 
 from __future__ import annotations
@@ -23,9 +28,10 @@ import string
 import pytest
 
 from graftpunk.har import paths
-from graftpunk.har.paths import holds_an_id
+from graftpunk.har.paths import holds_an_id, looks_dynamic
 from tests.unit.field_names_held_out import HELD_OUT_NAMES
 from tests.unit.field_names_regression import REGRESSION_NAMES
+from tests.unit.test_har_paths import KEY_POSITION_IDS
 
 _SEED = 20260923
 _COUNT = 4000
@@ -33,28 +39,23 @@ _LOWER36 = string.ascii_lowercase + string.digits
 _UPPER36 = string.ascii_uppercase + string.digits
 _URLSAFE = string.ascii_letters + string.digits + "-_"
 
-# shape: (alphabet, length, miss-rate ceiling). Measured at these seeds when the
-# rule last changed (2026-09-23, round 7): lower36_8 0.083, lower36_12 0.023,
-# upper36_10 0.036, token_urlsafe_16 0.02675, nanoid_21 0.0295. Each ceiling is
-# the measured rate plus 0.001 (four tokens).
+# shape: (alphabet, length, path miss-rate ceiling). Measured at these seeds when
+# the path rule last changed (2026-09-23, round 7b): lower36_8 0.08175, lower36_12
+# 0.01625, upper36_10 0.036, token_urlsafe_16 0.026, nanoid_21 0.03025. Each
+# ceiling is the measured rate plus 0.001 (four tokens).
 _SHAPES = {
-    "lower36_8": (_LOWER36, 8, 0.084),
-    "lower36_12": (_LOWER36, 12, 0.024),
+    "lower36_8": (_LOWER36, 8, 0.08275),
+    "lower36_12": (_LOWER36, 12, 0.01725),
     "upper36_10": (_UPPER36, 10, 0.037),
-    "token_urlsafe_16": (_URLSAFE, 22, 0.02775),
-    "nanoid_21": (_URLSAFE, 21, 0.0305),
+    "token_urlsafe_16": (_URLSAFE, 22, 0.027),
+    "nanoid_21": (_URLSAFE, 21, 0.03125),
 }
 
-# The share of each corpus read as ids, set just above the rate measured when the
-# rule last changed (2026-09-23, round 7). Regression: 1 of 482 (add2cart). Held
-# out: 19 of 259, in five classes: lower-case letters right after a digit
-# (retina2x, argon2id, k8sNamespace, p2pTransfer, l10nBundle, c6gXlarge, secp256k1);
-# a run of 5 or more digits (ed25519, x25519); no run of 4 or more letters
-# (sha256Key, aes128Gcm); a letter run the consonant-pair check refuses
-# (pbkdf2Iterations); and a 20-or-more-character camel name with a digit read as a
-# base64 token (Md5OfMessageAttributes).
+# The share of each corpus read as ids, measured 2026-09-23 (round 7b): 0 of 482
+# regression names and 0 of 259 held-out names. The held-out ceiling is the
+# ruling's 1%; the regression ceiling is unchanged from round 6.
 _REGRESSION_CEILING = 0.004
-_HELD_OUT_CEILING = 0.075
+_HELD_OUT_CEILING = 0.01
 
 
 def _tokens(shape: str) -> list[str]:
@@ -63,43 +64,23 @@ def _tokens(shape: str) -> list[str]:
     return ["".join(rng.choice(alphabet) for _ in range(length)) for _ in range(_COUNT)]
 
 
-_TOKENS = {shape: _tokens(shape) for shape in _SHAPES}
-
-
-def _miss_rate(shape: str) -> float:
-    return sum(1 for token in _TOKENS[shape] if not holds_an_id(token)) / _COUNT
-
-
-def _breached_shapes() -> list[str]:
-    return [shape for shape in _SHAPES if _miss_rate(shape) > _SHAPES[shape][2]]
-
-
 @pytest.mark.parametrize("shape", sorted(_SHAPES))
-def test_random_tokens_are_ids_at_or_under_the_ceiling(shape: str) -> None:
-    assert _miss_rate(shape) <= _SHAPES[shape][2], (shape, _miss_rate(shape))
+def test_random_tokens_in_a_path_are_dynamic_at_or_under_the_ceiling(shape: str) -> None:
+    missed = sum(1 for token in _tokens(shape) if not looks_dynamic(token)) / _COUNT
+    assert missed <= _SHAPES[shape][2], (shape, missed)
 
 
-_SUB_RULES = [
-    (table, name)
-    for table in ("_SPELLING_REJECTS", "_WORD_REJECTS")
-    for name, _ in getattr(paths, table)
-]
+_RULES = [name for name, _rule in paths._NAME_ID_RULES]
 
 
-@pytest.mark.parametrize(("table", "rule"), _SUB_RULES)
-def test_every_sub_rule_breaches_a_ceiling_when_removed(
-    monkeypatch: pytest.MonkeyPatch, table: str, rule: str
+@pytest.mark.parametrize("rule", _RULES)
+def test_every_name_sub_rule_is_the_only_catch_of_a_key_position_id(
+    monkeypatch: pytest.MonkeyPatch, rule: str
 ) -> None:
-    rules = getattr(paths, table)
-    monkeypatch.setattr(paths, table, tuple(entry for entry in rules if entry[0] != rule))
-    assert _breached_shapes(), f"{rule} buys nothing on the miss-rate ceilings: delete it"
-
-
-def test_the_joined_short_run_limit_breaches_a_ceiling_when_removed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(paths, "_MAX_JOINED_SHORT_RUNS", 99)
-    assert _breached_shapes()
+    rules = paths._NAME_ID_RULES
+    monkeypatch.setattr(paths, "_NAME_ID_RULES", tuple(r for r in rules if r[0] != rule))
+    missed = [value for value in KEY_POSITION_IDS if not holds_an_id(value)]
+    assert missed, f"{rule} is the only catch of no key-position id: delete it"
 
 
 @pytest.mark.parametrize(
