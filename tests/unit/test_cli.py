@@ -617,13 +617,11 @@ class TestConfigCommand:
 class TestVerbosity:
     """Tests for CLI verbosity flags."""
 
+    @pytest.mark.usefixtures("gp_logging")
     def test_default_log_level_is_warning(self) -> None:
         """Test that default log level is WARNING (minimal output)."""
         import structlog
 
-        from graftpunk.logging import configure_logging
-
-        configure_logging(level="WARNING")
         logger = structlog.get_logger("test")
         assert logger is not None
 

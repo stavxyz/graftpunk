@@ -789,22 +789,10 @@ class TestReservedNamesSnapshot:
         assert "myshop" not in reserved_cli_names()
 
 
+@pytest.mark.usefixtures("gp_logging")
 class TestCheckName:
     """--check-name answers "is this name acceptable" with gp plugin new's own
     validation, writing nothing (graft skill spec, 2026-09-21)."""
-
-    @pytest.fixture(autouse=True)
-    def _configured_logging(self) -> None:
-        """Real `gp` usage always has main.py's bootstrap call
-        configure_logging() before a command runs. These tests invoke the
-        real app directly under CliRunner, and structlog is process-global
-        state: whichever test ran earlier in this worker may have left it on
-        its unconfigured default (an unfiltered PrintLogger bound to
-        stdout), which would print scaffold_commands' debug-level
-        "scaffold_refused" event straight into the captured output and
-        break exact-text comparisons below. Same need, same fix, as
-        test_observe_commands.py's TestDigestCommand tests."""
-        configure_logging(level="WARNING")
 
     def test_a_valid_name_is_accepted_and_nothing_is_written(self, tmp_path: Path) -> None:
         from graftpunk.cli.main import app as real_app
@@ -857,13 +845,8 @@ class TestCheckName:
         assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before_bytes
 
 
+@pytest.mark.usefixtures("gp_logging")
 class TestAWriteFailureIsOneRefusal:
-    @pytest.fixture(autouse=True)
-    def _configured_logging(self) -> None:
-        """The one-line assertion needs structlog configured as real `gp` usage
-        has it; see TestCheckName's fixture of the same name for why."""
-        configure_logging(level="WARNING")
-
     def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -900,13 +883,8 @@ class TestAWriteFailureIsOneRefusal:
         assert {p.name: p.read_bytes() for p in suite.iterdir()} == before
 
 
+@pytest.mark.usefixtures("gp_logging")
 class TestAConflictSaysWhichKind:
-    @pytest.fixture(autouse=True)
-    def _configured_logging(self) -> None:
-        """Exact-output assertions need structlog configured as real `gp` usage
-        has it; see TestCheckName's fixture of the same name for why."""
-        configure_logging(level="WARNING")
-
     def test_an_existing_file_and_a_changed_file_are_listed_under_their_own_headers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

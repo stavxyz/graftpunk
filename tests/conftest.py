@@ -87,3 +87,21 @@ def _reset_structlog():
         for attr in getattr(module, "__dict__", {}).values():
             if isinstance(attr, BoundLoggerLazyProxy):
                 attr.__dict__.pop("bind", None)
+
+
+@pytest.fixture
+def gp_logging() -> None:
+    """Configure logging the way the gp CLI does before any command runs.
+
+    Opt-in, for a test that invokes a command without main.py's bootstrap (a
+    sub-app built directly, or the real app under CliRunner) and asserts on its
+    exact output. Without it, structlog is whatever the previous test in this
+    worker left: _reset_structlog above restores structlog's own defaults, an
+    unfiltered logger on stdout, and a command's INFO or DEBUG event then lands
+    in the output ahead of the text the test reads. _reset_structlog stays as it
+    is because other tests rely on that unconfigured library-consumer state, or
+    configure DEBUG themselves; it resets this configuration after the test too.
+    """
+    from graftpunk.logging import configure_logging
+
+    configure_logging(level="WARNING")

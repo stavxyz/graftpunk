@@ -134,33 +134,13 @@ class TestDigestCommand:
         assert result.exit_code == 0, result.output
         assert "## Summary" in result.output
 
+    @pytest.mark.usefixtures("gp_logging")
     def test_digest_json_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path)
         _write_run(
             tmp_path, "myshop", "run-1", [_entry("GET", "https://api.myshop.example.com/orders")]
         )
         app = _build_app()
-        # graftpunk.logging's own docstring: "a later structlog.reset_defaults()
-        # restores structlog's stdout builtins and graftpunk does not
-        # re-arm the default." Several other test modules call
-        # reset_defaults() (test_chrome_orphans.py, test_site_requests.py,
-        # and others), which is process-global structlog state; whichever
-        # of those tests happens to run earlier in this worker leaves
-        # structlog back on its unconfigured default (an unfiltered
-        # PrintLogger dynamically bound to sys.stdout), so
-        # parse_har_file's INFO "har_file_parsed" event prints straight
-        # onto stdout ahead of the JSON and breaks json.loads (found
-        # running this test after TestResolveRun's tests: reproduces
-        # deterministically in that order, passes in isolation). Real `gp`
-        # usage never hits this: main.py's bootstrap always calls
-        # configure_logging() before a command runs. This test bypasses
-        # that bootstrap (it builds the Typer app directly from
-        # observe_commands.observe_app), so it restores the same guarantee
-        # explicitly. Deviation from the brief, which asserted on
-        # result.output without this.
-        from graftpunk.logging import configure_logging
-
-        configure_logging(level="WARNING")
         result = runner.invoke(app, ["observe", "digest", "myshop", "--json"])
         assert result.exit_code == 0
         assert json.loads(result.stdout)["primary_host"] == "api.myshop.example.com"
@@ -201,6 +181,7 @@ class TestDigestCommand:
         result = runner.invoke(app, ["observe", "digest"])
         assert result.exit_code == 1
 
+    @pytest.mark.usefixtures("gp_logging")
     def test_endpoints_json_prints_the_projection(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -212,13 +193,6 @@ class TestDigestCommand:
             "run-1",
             [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
         )
-        # Same structlog reset as test_digest_json_flag above: whichever test
-        # ran earlier in this worker may have left structlog on its
-        # unconfigured default, which prints parse_har_file's INFO event
-        # straight onto stdout ahead of the JSON and breaks json.loads.
-        from graftpunk.logging import configure_logging
-
-        configure_logging(level="WARNING")
         result = runner.invoke(_build_app(), ["observe", "digest", "myshop", "--endpoints-json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
