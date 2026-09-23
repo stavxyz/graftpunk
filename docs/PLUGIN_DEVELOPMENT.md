@@ -247,34 +247,49 @@ response keys; request header names; cookie and token candidate names; and a
 login form's element ids, input names, and hidden input names. A name holds an
 id when, percent-decoded, it is an email or a UUID; a URL-safe base64-like token
 of twenty or more characters holding a digit and switching between letters and
-digits at least twice; three or more parts joined by `-` or `_` that are each
-two to six characters mixing letters and digits (`ab12-cd34-ef56`), or that
-include an all-digit part with a leading zero (`ORD-2024-0001`); a prefixed id
-(`cus_NffrFeUfNV2Hib`); or when one of its parts (split on `_`, `.`, `-`, `~`)
-holds a run of five or more digits, is a hex token (sixteen or more characters,
-or eight or more mixing digits and letters), is a base64-like token of twenty or
-more characters with a digit, switches between a letter and a digit three or
-more times (`x7kq29lp`), or is eight or more characters mixing letters and
-digits that do not read as a word. A word is a version (`v1beta1`) or letters
-spelled like English (camel and Pascal casing allowed, each run of four or more
-letters holding a vowel and only consonant pairs words use) with at most two
-short digit runs placed as in `address2`, `AddressLine1`, `ipv4Address`,
-`oauth2Token`, or `md5Checksum`. A path segment that holds an id becomes a
-placeholder; a query, body, or form key or a header name that holds one is
-dropped and counted, and so is a key that is not a field name at all (one
-starting with a digit, or holding a character outside the field-name alphabet;
-`$` is inside it, so OData's `$filter` and WebForms' `ctl00$Main$txtSearch` are
-field names), each cause counted apart and stated in its own `GP-FILL` comment
-in the generated stub; a response key that holds one becomes `{key}` in the
-shape; a cookie or token name that holds one is left out and counted, written in
-no form (not even hashed: a hash of a short id is reversed by brute force); a
-login input whose id holds one is selected by its name or type, one whose name
-holds one gets a neutral role key (`field_1`) and a type selector, and a hidden
-input whose name holds one is dropped and counted. The rule is lexical, and has
-two known limits: a random token with no digit, or a short word-like value,
-reads as a word and is not caught; and a camel name with a digit inside a word
-part (`apiV2Client`, `getUser2FA`) may read as an id, since a looser word rule
-would admit random mixed-case tokens.
+digits at least twice, unless it is a name joined by `_` or `-` whose parts all
+read as words (`line_item_2_unit_price`,
+`ctl00_MainContent_LoginUser_Password`); three or more parts joined by `-` or
+`_` that are each two to six characters mixing letters and digits
+(`ab12-cd34-ef56`), or that include a part of three or more digits with a
+leading zero beside a part holding a letter (`ORD-2024-0001`; a date such as
+`2024-01-15` is not an id); a prefixed id (`cus_NffrFeUfNV2Hib`); or when one of
+its parts (split on `_`, `.`, `-`, `~`, and `$`) holds a run of five or more
+digits, is a hex token (sixteen or more characters, or eight or more mixing
+digits and letters), is a base64-like token of twenty or more characters with a
+digit that does not read as a word, or is eight or more characters mixing
+letters and digits that do not read as a word. A word is a version (`v1beta1`),
+or letters and digits that start with a letter and are spelled like English. Its
+letter runs split at camel and Pascal boundaries; at least one run has four or
+more letters, and every such run is not all capitals, has no four consonants in
+a row, and holds only consonant pairs English words use (where two words meet
+included, as in `backpack`); at most one run has one or two letters (an acronym,
+as in `md5Checksum`); and letters after digits start a new word, capitalised
+(`oauth2Token`) or four or more lower-case letters after a word (`added2cart`).
+A digit run in a word is at most four digits, since five or more is an id.
+`address2`, `AddressLine1`, `ipv4Address`, and `shippingAddressLine2` are words.
+A path segment that holds an id becomes a placeholder; a query, body, or form
+key or a header name that holds one is dropped and counted, and so is a key that
+is not a field name at all (one starting with a digit, holding a character
+outside the field-name alphabet, or longer than 64 characters; `$` is inside it,
+so OData's `$filter` and WebForms' `ctl00$Main$txtSearch` are field names), each
+cause counted apart and stated in its own `GP-FILL` comment in the generated
+stub; a response key that holds one becomes `{key}` in the shape; a cookie or
+token name that holds one is left out and counted, written in no form (not even
+hashed: a hash of a short id is reversed by brute force); a login input whose id
+holds one is selected by its name or type, one whose name holds one gets a
+neutral role key (`field_1`, never a name another input of the form has) and a
+`GP-FILL` saying to rename it, a selector by type (`input:not([type])` for a
+typeless input) is used only when it picks one input of the form and is
+otherwise left for a `GP-FILL`, and a hidden input whose name holds one is
+dropped and counted. The rule is lexical, and it is measured in both directions
+on fixed inputs (`tests/unit/test_id_miss_rates.py`: how often it misses a
+seeded random token of each shape, and how often it reads a name from a corpus
+of ordinary field names as an id), each rate held under a ceiling. Its known
+limits: a random token with no digit, or a short word-like value, reads as a
+word and is not caught; and a name of eight or more characters with a word of
+three letters or fewer, a digit, and a lower-case word (`add2cart`) reads as an
+id.
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:
@@ -1085,7 +1100,8 @@ request's body parameter names, every cookie name the recording set, and the
 token names the digest found. A body key that does not read as a field name,
 or that holds an id by the digest's rule, is dropped from `body_params`, and a
 cookie or token name that holds an id is left out of `flagged_names`, in any
-form; `redacted_names` counts how many were. The rule is lexical, so an
+form; `redacted_names` counts those cookie and token names (a dropped body
+key is not in the count). The rule is lexical, so an
 account value in a shape it does not read as an id is kept: read both lists
 before you commit a sidecar.
 

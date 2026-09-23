@@ -46,7 +46,7 @@ def test_random_tokens_are_ids_at_or_under_the_ceiling(shape: str) -> None:
 
 
 # The share of the corpus read as ids, set just above the rate measured when the
-# rule last changed (2026-09-23: 1 of 483, add2cart, an acronym-like 3-letter run
+# rule last changed (2026-09-23: 1 of 482, add2cart, an acronym-like 3-letter run
 # before a digit and a lower-case word, which the rule reads as random).
 _FALSE_POSITIVE_CEILING = 0.004
 
