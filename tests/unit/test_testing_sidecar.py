@@ -22,7 +22,14 @@ from graftpunk.testing.sidecar import (
     sidecar_text,
 )
 
-_V1_FIELDS = {"status", "content_type", "body_params", "capture_sha256", "flagged_names"}
+_V1_FIELDS = {
+    "status",
+    "content_type",
+    "body_params",
+    "capture_sha256",
+    "flagged_names",
+    "redacted_names",
+}
 
 
 def _write(path: Path, payload: object) -> Path:
@@ -38,6 +45,7 @@ def _v1(**overrides: object) -> dict[str, object]:
         "body_params": [],
         "capture_sha256": None,
         "flagged_names": [],
+        "redacted_names": 0,
     }
     payload.update(overrides)
     return payload
@@ -218,3 +226,19 @@ def test_graftpunk_testing_imports_nothing_from_devtools() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=60, check=True
     )
     assert result.stdout.strip() == "[]"
+
+
+class TestRedactedNames:
+    def test_the_count_round_trips(self, tmp_path: Path) -> None:
+        sidecar = Sidecar(status=200, content_type="application/json", redacted_names=3)
+        path = tmp_path / "get_orders.json.meta.json"
+        path.write_text(sidecar_text(sidecar), encoding="utf-8")
+        assert load_sidecar(path).redacted_names == 3
+
+    @pytest.mark.parametrize("value", ["3", -1, True, 1.5, None])
+    def test_a_count_that_is_not_a_non_negative_integer_is_refused(
+        self, tmp_path: Path, value: object
+    ) -> None:
+        path = _write(tmp_path / "get_orders.json.meta.json", _v1(redacted_names=value))
+        with pytest.raises(SidecarError, match="redacted_names"):
+            load_sidecar(path)

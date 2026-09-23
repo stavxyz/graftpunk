@@ -135,6 +135,7 @@ def write_sidecar(
     content_type: str,
     body_params: Iterable[str],
     flagged_names: Iterable[str],
+    redacted_names: int = 0,
 ) -> Path:
     """Write *fixture*'s committable sidecar beside it and return its path.
 
@@ -149,6 +150,7 @@ def write_sidecar(
         body_params=tuple(body_params),
         capture_sha256=hashlib.sha256(fixture.read_bytes()).hexdigest(),
         flagged_names=tuple(flagged_names),
+        redacted_names=redacted_names,
     )
     path = sidecar_path(fixture)
     path.write_text(sidecar_text(sidecar), encoding="utf-8")

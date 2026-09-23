@@ -5,10 +5,10 @@ writes and travels with the fixture into a plugin's committed fixtures tree.
 Every field in it is meant to be committed: the capture's URL and time are not
 in it (the HAR and the digest hold them), ``capture_sha256`` is the hash of the
 captured body, and ``flagged_names`` is every cookie name the recording set and
-the token names the digest recorded, never a value; a name that holds an account
-value (:func:`graftpunk.har.paths.holds_an_id`) is written as
-``sha256:<hex digest of the name>`` instead, and a reader compares a candidate by
-hashing it the same way. ``body_params`` is the request's body keys that read as
+the token names the digest recorded, never a value. A name that holds an account
+value (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
+hashed (a hash of a short id is reversed by brute force): ``redacted_names``
+counts how many were left out. ``body_params`` is the request's body keys that read as
 field names and hold no id by that rule; the rule is lexical, so an account value
 in a shape it does not read as an id is kept, which is why the list is read before
 it is committed.
@@ -47,7 +47,16 @@ __all__ = [
 SIDECAR_SUFFIX = ".meta.json"
 
 SIDECAR_FIELDS: dict[int, frozenset[str]] = {
-    1: frozenset({"status", "content_type", "body_params", "capture_sha256", "flagged_names"}),
+    1: frozenset(
+        {
+            "status",
+            "content_type",
+            "body_params",
+            "capture_sha256",
+            "flagged_names",
+            "redacted_names",
+        }
+    ),
 }
 """The keys each schema version holds besides ``schema`` itself."""
 
@@ -73,6 +82,9 @@ class Sidecar:
     # writing null; the in-suite sanitisation check counts it as declared.
     capture_sha256: str | None = None
     flagged_names: tuple[str, ...] = ()
+    # How many names were left out of flagged_names because they hold an account
+    # value; the names themselves are written nowhere.
+    redacted_names: int = 0
 
     def __post_init__(self) -> None:
         """Sort and dedupe the name tuples, and refuse a ``capture_sha256`` that is
@@ -113,6 +125,7 @@ def sidecar_payload(sidecar: Sidecar) -> dict[str, object]:
         "body_params": list(sidecar.body_params),
         "capture_sha256": sidecar.capture_sha256,
         "flagged_names": list(sidecar.flagged_names),
+        "redacted_names": sidecar.redacted_names,
     }
 
 
@@ -158,6 +171,9 @@ def load_sidecar(path: Path) -> Sidecar:
     body_params = _names(data, "body_params", path)
     capture_sha256 = _optional_text(data, "capture_sha256", path)
     flagged_names = _names(data, "flagged_names", path)
+    redacted_names = _integer(data, "redacted_names", path)
+    if redacted_names < 0:
+        raise SidecarError(f"{path}: redacted_names must not be negative, got {redacted_names}")
     try:
         # Every type check above already names *path*; only Sidecar's own
         # construction-time check (the capture_sha256 format) can still raise
@@ -168,6 +184,7 @@ def load_sidecar(path: Path) -> Sidecar:
             body_params=body_params,
             capture_sha256=capture_sha256,
             flagged_names=flagged_names,
+            redacted_names=redacted_names,
         )
     except SidecarError as exc:
         raise SidecarError(f"{path}: {exc}") from exc

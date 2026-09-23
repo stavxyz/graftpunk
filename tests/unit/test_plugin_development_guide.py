@@ -251,6 +251,7 @@ def test_the_sidecar_json_example_matches_sidecar_text_byte_for_byte() -> None:
         body_params=tuple(doc_json["body_params"]),
         capture_sha256=doc_json["capture_sha256"],
         flagged_names=tuple(doc_json["flagged_names"]),
+        redacted_names=doc_json["redacted_names"],
     )
     assert block.strip() == sidecar_text(sidecar).strip()
 

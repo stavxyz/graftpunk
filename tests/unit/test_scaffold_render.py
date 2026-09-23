@@ -2783,20 +2783,21 @@ def test_the_reserved_identifiers_are_the_cli_builtin_options_and_help() -> None
     assert set(_RESERVED_OPTION_IDENTIFIERS) == set(BUILTIN_OPTIONS) | {"help"}
 
 
-def test_a_token_whose_name_held_an_id_is_not_paired_and_is_named_by_its_hash() -> None:
-    hashed = "sha256:" + "0" * 64
+def test_token_candidates_dropped_as_ids_are_counted_in_one_gp_fill() -> None:
     spec = ScaffoldSpec(
         name="myshop",
         mode="new_project",
         backend="nodriver",
         base_url="https://myshop.example.com",
-        digest=_digest(
-            tokens=(
-                TokenCandidate(kind="header", name=hashed, seen_on=("GET /orders",)),
-                TokenCandidate(kind="cookie", name=hashed, seen_on=("GET /orders",)),
-            )
-        ),
+        digest=dataclasses.replace(_digest(), dropped_id_token_names=2),
     )
     code = render(spec)["src/graftpunk_myshop/plugin.py"]
-    assert "token_config = TokenConfig(" not in code.replace("# token_config", "")
-    assert "GP-FILL: token candidate whose name held an account value" in code
+    comments = " ".join(
+        line.strip().lstrip("#").strip()
+        for line in code.splitlines()
+        if line.strip().startswith("#")
+    )
+    assert (
+        "GP-FILL: 2 token candidate(s) were left out because their names held an account "
+        "value; configure any this plugin needs by hand."
+    ) in comments

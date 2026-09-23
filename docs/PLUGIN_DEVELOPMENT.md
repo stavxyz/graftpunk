@@ -256,8 +256,8 @@ lower-case word with trailing digits (`address2`), a camelCase word
 id becomes a placeholder; a query, body, or form key or a header name that holds
 one is dropped, and the digest counts how many (the generated stub says so in a
 `GP-FILL` comment); a response key that holds one becomes `{key}` in the shape;
-and a cookie or token name that holds one is kept only as `sha256:<hex digest of
-the name>`. A key that does not read as a field name at all (an email address, a
+and a cookie or token name that holds one is left out and counted, written in
+no form (not even hashed: a hash of a short id is reversed by brute force). A key that does not read as a field name at all (an email address, a
 key starting with a digit) is dropped as well. The rule is lexical: an account
 value in a shape it does not read as an id (a short word-like value) is not
 caught.
@@ -1070,8 +1070,8 @@ value: only the status, the content type, the hash of the captured body, the
 request's body parameter names, every cookie name the recording set, and the
 token names the digest found. A body key that does not read as a field name,
 or that holds an id by the digest's rule, is dropped from `body_params`, and a
-cookie or token name that holds an id is written to `flagged_names` as
-`sha256:<hex digest of the name>`, never as itself. The rule is lexical, so an
+cookie or token name that holds an id is left out of `flagged_names`, in any
+form; `redacted_names` counts how many were. The rule is lexical, so an
 account value in a shape it does not read as an id is kept: read both lists
 before you commit a sidecar.
 
@@ -1084,6 +1084,7 @@ before you commit a sidecar.
     "X-Csrf-Token",
     "myshop_session"
   ],
+  "redacted_names": 0,
   "schema": 1,
   "status": 200
 }

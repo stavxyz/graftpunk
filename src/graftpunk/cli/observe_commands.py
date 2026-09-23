@@ -38,6 +38,7 @@ from graftpunk.har.digest import (
     digest,
     endpoint_template,
     flagged_names_of,
+    redacted_names_of,
 )
 from graftpunk.har.naming import EndpointSpecError, capture_filename, parse_endpoint
 from graftpunk.har.parser import parse_har_file
@@ -242,6 +243,7 @@ def fixtures_cmd(
     entries = parse_har_file(har_path).entries
     run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
     flagged = flagged_names_of(run_digest, entries)
+    redacted = redacted_names_of(run_digest, entries)
 
     if not allow_tracked and target_dir.exists():
         tracked = [p for p in sorted(target_dir.rglob("*")) if p.is_file() and is_tracked(p)]
@@ -337,6 +339,7 @@ def fixtures_cmd(
                 content_type=content_type,
                 body_params=body_params(entry),
                 flagged_names=flagged,
+                redacted_names=redacted,
             )
         except OSError as exc:
             _refuse_write(file_path, exc)

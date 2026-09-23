@@ -17,7 +17,13 @@ from typing import Any
 import pytest
 
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
-from graftpunk.har.digest import DigestSource, body_params, digest, flagged_names_of
+from graftpunk.har.digest import (
+    DigestSource,
+    body_params,
+    digest,
+    flagged_names_of,
+    redacted_names_of,
+)
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from graftpunk.testing.sidecar import Sidecar, sidecar_text
@@ -138,6 +144,7 @@ def _sidecars(har: Path) -> list[str]:
     result = digest(DigestSource.from_har(har))
     entries = parse_har_file(har).entries
     flagged = flagged_names_of(result, entries)
+    redacted = redacted_names_of(result, entries)
     return [
         sidecar_text(
             Sidecar(
@@ -145,6 +152,7 @@ def _sidecars(har: Path) -> list[str]:
                 content_type=entry.response.content_type or "",
                 body_params=tuple(body_params(entry)),
                 flagged_names=flagged,
+                redacted_names=redacted,
             )
         )
         for entry in entries
@@ -170,6 +178,14 @@ def test_no_id_reaches_a_generated_file_the_projection_or_a_sidecar(
     assert value not in render_endpoints_json(result)
     for text in _sidecars(har):
         assert value not in text
+    # Not even hashed: a hash of a short id is reversed by brute force.
+    for text in (
+        *files.values(),
+        render_endpoints_json(result),
+        render_json(result),
+        *_sidecars(har),
+    ):
+        assert "sha256:" not in text
     if position in _NAME_POSITIONS or "@" in value or "%40" in value:
         assert value not in render_json(result)
         assert value not in render_markdown(result)

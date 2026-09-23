@@ -457,6 +457,7 @@ class TestFixturesCommand:
             "body_params",
             "capture_sha256",
             "flagged_names",
+            "redacted_names",
         }
         assert sidecar["schema"] == 1
         assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()

@@ -40,7 +40,6 @@ from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDige
 from graftpunk.har.documents import printable_selectors
 from graftpunk.har.naming import capture_filename
 from graftpunk.har.paths import (
-    REDACTED_NAME_PREFIX,
     template_path,
     templated_url,
     templates_a_segment,
@@ -409,10 +408,6 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
 def _paired_token_candidates(d: RunDigest) -> list[tuple[TokenCandidate, TokenCandidate]]:
     by_name: dict[str, list[TokenCandidate]] = {}
     for candidate in d.tokens:
-        # A name the digest kept only as its hash held an account value: there is
-        # no name to configure, so it is never paired.
-        if candidate.name.startswith(REDACTED_NAME_PREFIX):
-            continue
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
     pairs: list[tuple[TokenCandidate, TokenCandidate]] = []
     for candidates in by_name.values():
@@ -445,13 +440,15 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
             "    # token_config = TokenConfig(tokens=["
             'Token.from_meta_tag(name="...", header="...")])'
         )
+    if spec.digest.dropped_id_token_names:
+        text = (
+            f"GP-FILL: {spec.digest.dropped_id_token_names} token candidate(s) were left out "
+            "because their names held an account value; configure any this plugin needs "
+            "by hand."
+        )
+        lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     for candidate in unpaired:
         text = f"GP-FILL: unpaired token candidate: {candidate.kind} '{candidate.name}'"
-        if candidate.name.startswith(REDACTED_NAME_PREFIX):
-            text = (
-                f"GP-FILL: token candidate whose name held an account value: "
-                f"{candidate.kind} {candidate.name}"
-            )
         lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     return lines
 

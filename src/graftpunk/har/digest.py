@@ -31,7 +31,6 @@ from graftpunk.har.paths import (
     holds_an_id,
     looks_dynamic,
     param_name_for_segment,
-    redacted_name,
     template_path,
 )
 from graftpunk.logging import get_logger
@@ -60,6 +59,7 @@ __all__ = [
     "digest",
     "endpoint_template",
     "flagged_names_of",
+    "redacted_names_of",
 ]
 
 INTERNAL = "internal"
@@ -309,6 +309,11 @@ class RunDigest:
     collapsed_templates: dict[str, str] = field(
         default_factory=dict, repr=False, metadata={INTERNAL: True}
     )
+    # How many distinct cookie names (``cookies``) and token candidate names
+    # (``tokens``, any kind) were left out because the name held an account value
+    # (graftpunk.har.paths.holds_an_id). The names are written in no form.
+    dropped_id_cookie_names: int = 0
+    dropped_id_token_names: int = 0
 
 
 def _scope_root(primary_host: str) -> str:
@@ -1053,6 +1058,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     login_forms: list[LoginForm] = []
     token_seen: dict[tuple[TokenKind, str], list[str]] = {}
     cookies_seen: dict[str, None] = {}
+    id_cookie_names: set[str] = set()
     login: list[LoginObservation] = []
     credential_post_indexes: list[int] = []
     order = 0
@@ -1094,7 +1100,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         # cookie-setting auth subdomain, say) must still show up in
         # flagged_names, which reads this field.
         for cookie_name in _response_cookie_names(entry):
-            cookies_seen.setdefault(redacted_name(cookie_name), None)
+            if holds_an_id(cookie_name):
+                id_cookie_names.add(cookie_name)
+                continue
+            cookies_seen.setdefault(cookie_name, None)
 
         content_type = (entry.response.content_type or "").lower()
         forms_in_entry: tuple[LoginForm, ...] = ()
@@ -1123,7 +1132,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 kind = "redirect"
             elif _response_cookie_names(entry):
                 kind = "set_cookie"
-                fields = tuple(redacted_name(n) for n in _response_cookie_names(entry))
+                fields = tuple(n for n in _response_cookie_names(entry) if not holds_an_id(n))
         if kind is None and _AUTH_URL_REGEX.search(path):
             kind = "auth_api"
 
@@ -1191,12 +1200,13 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         )
     )
 
-    # A token name holding an id is kept as its hash (redacted_name), so the
-    # sidecar can still flag it and the generator can say it was left out.
+    # A token name holding an id is left out and counted, never written.
     tokens = tuple(
-        TokenCandidate(kind=kind, name=redacted_name(name), seen_on=tuple(dict.fromkeys(seen_on)))
+        TokenCandidate(kind=kind, name=name, seen_on=tuple(dict.fromkeys(seen_on)))
         for (kind, name), seen_on in token_seen.items()
+        if not holds_an_id(name)
     )
+    id_token_names = {key for key in token_seen if holds_an_id(key[1])}
 
     return RunDigest(
         source=source,
@@ -1209,6 +1219,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         cookies=tuple(cookies_seen),
         dropped=dropped,
         collapsed_templates=collapse_map,
+        dropped_id_cookie_names=len(id_cookie_names),
+        dropped_id_token_names=len(id_token_names),
     )
 
 
@@ -1235,8 +1247,23 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     ``--match`` glob can write a capture from a static response or an
     out-of-scope host, and a cookie that entry set must still be looked for. It
     lives beside the digest that records the names, so the sidecar writer takes
-    plain strings and imports nothing from the digest."""
+    plain strings and imports nothing from the digest.
+
+    A name that holds an account value (graftpunk.har.paths.holds_an_id) is not
+    among them, in any form: :func:`redacted_names_of` counts those."""
     entry_cookies = {
-        redacted_name(name) for entry in entries for name in _response_cookie_names(entry)
+        name for entry in entries for name in _response_cookie_names(entry) if not holds_an_id(name)
     }
     return tuple(sorted(set(d.cookies) | {token.name for token in d.tokens} | entry_cookies))
+
+
+def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:
+    """How many names :func:`flagged_names_of` leaves out because they hold an
+    account value: the distinct cookie names any of *entries* sets that do, plus
+    the token candidate names the digest dropped (a cookie that is also a token
+    candidate counts once as each). The fixture sidecar records this count, never
+    the names."""
+    entry_id_cookies = {
+        name for entry in entries for name in _response_cookie_names(entry) if holds_an_id(name)
+    }
+    return len(entry_id_cookies) + d.dropped_id_token_names

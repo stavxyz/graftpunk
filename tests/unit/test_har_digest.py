@@ -31,9 +31,10 @@ from graftpunk.har.digest import (
     digest,
     endpoint_template,
     flagged_names_of,
+    redacted_names_of,
 )
 from graftpunk.har.parser import parse_har_file
-from graftpunk.har.report import render_endpoints_json
+from graftpunk.har.report import render_endpoints_json, render_json
 
 
 def _entry(
@@ -1549,9 +1550,8 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         assert endpoint.body_params == {"note": "str"}
         assert (endpoint.dropped_id_query_keys, endpoint.dropped_id_body_keys) == (2, 2)
 
-    def test_an_id_cookie_name_is_kept_as_its_hash(self, tmp_path: Path) -> None:
-        import hashlib
-
+    def test_an_id_cookie_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
+        """H1: an id-bearing name is written in no form, not even hashed."""
         entries = [
             _entry(
                 "GET",
@@ -1561,20 +1561,22 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         ]
         har = _write_har(tmp_path, entries)
         result = digest(DigestSource.from_har(har))
-        hashed = "sha256:" + hashlib.sha256(b"sess_40912873").hexdigest()
-        assert set(result.cookies) == {hashed, "shop_session"}
-        flagged = flagged_names_of(result, parse_har_file(har).entries)
-        assert hashed in flagged
-        assert "sess_40912873" not in flagged
+        assert result.cookies == ("shop_session",)
+        assert result.dropped_id_cookie_names == 1
+        parsed = parse_har_file(har).entries
+        assert flagged_names_of(result, parsed) == ("shop_session",)
+        assert redacted_names_of(result, parsed) == 1
+        text = render_json(result)
+        assert "sess_40912873" not in text and "sha256:" not in text
 
-    def test_an_id_token_candidate_name_is_kept_as_its_hash(self, tmp_path: Path) -> None:
+    def test_an_id_token_candidate_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
         entries = [
             _entry(
                 "GET",
                 "https://api.myshop.example.com/orders",
-                request_headers={"X-Csrf-Token-40912873": "t"},
+                request_headers={"X-Csrf-Token-40912873": "t", "X-Csrf-Token": "u"},
             )
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
-        names = {token.name for token in result.tokens}
-        assert names and all(name.startswith("sha256:") for name in names)
+        assert {token.name for token in result.tokens} == {"X-Csrf-Token"}
+        assert result.dropped_id_token_names == 1

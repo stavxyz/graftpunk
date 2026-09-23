@@ -498,8 +498,8 @@ lower-case word with trailing digits (`address2`), a camelCase word
 id (or is all digits) is templated, and an email segment is also masked in every
 URL the digest keeps. A query, body, or form key and a header name that holds
 one is dropped, counted, and named by count in a `GP-FILL` comment in the stub;
-a response key becomes `{key}`; a cookie or token name is kept only as its
-`sha256:` hash. From the path rule: `login_config.url` is the page the login
+a response key becomes `{key}`; a cookie or token name is left out and counted,
+written in no form. From the path rule: `login_config.url` is the page the login
 form was on, or a `GP-FILL` comment when that page's path holds an id; selectors
 scoped to a form action that holds one are unscoped; and one in `success_url`'s
 landing path is a `*`. The rule is lexical. An account value in a shape it does
@@ -517,8 +517,8 @@ and two plugins in one suite can share an endpoint path. `gp observe
 fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
 number, the status, the content type, the body parameter names, the hash of the
 captured body, every cookie name the recording set, and the token names the
-run's digest recorded, a name that holds an id written as its `sha256:` hash,
-but never the URL or the capture time), written to be
+run's digest recorded, a name that holds an id left out and counted in
+`redacted_names`, but never the URL or the capture time), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names (a body key that does not read as a field name is dropped, but a
 data-shaped one that does is kept) and its `flagged_names` (some sites put

@@ -7,7 +7,6 @@ by the digest's endpoint modelling and the fixtures/naming rule below it
 
 from __future__ import annotations
 
-import hashlib
 import re
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -36,11 +35,9 @@ __all__ = [
     "bare_path",
     "bare_url",
     "holds_an_id",
-    "REDACTED_NAME_PREFIX",
     "is_placeholder",
     "looks_dynamic",
     "param_name_for_segment",
-    "redacted_name",
     "template_path",
     "templated_url",
     "templates_a_segment",
@@ -452,18 +449,6 @@ def holds_an_id(text: str) -> bool:
         if _has_digit(tail) and _has_letter(tail) and not _reads_as_a_word(tail):
             return True
     return any(_part_holds_an_id(part) for part in _PART_SPLIT_RE.split(text) if part)
-
-
-REDACTED_NAME_PREFIX = "sha256:"
-
-
-def redacted_name(name: str) -> str:
-    """*name*, or ``sha256:<hex digest of its UTF-8 bytes>`` when it
-    :func:`holds_an_id`: for a name that must still be matched later (a cookie or
-    token name a fixture must not contain) but must not be written down."""
-    if not holds_an_id(name):
-        return name
-    return REDACTED_NAME_PREFIX + hashlib.sha256(name.encode("utf-8")).hexdigest()
 
 
 def is_placeholder(segment: str) -> bool:
