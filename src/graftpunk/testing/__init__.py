@@ -73,7 +73,12 @@ class FixtureSession(GraftpunkSession):
     Every request is answered from the file in *fixtures_dir* named the way
     :func:`graftpunk.har.naming.capture_slug` names a capture for that
     method and path, the same rule ``gp observe fixtures`` uses to write
-    files, so a fixture copied from a capture keeps its name. A sidecar
+    files, so a fixture copied from a capture keeps its name. The fixtures
+    command also applies the digest's high-cardinality collapse, which this
+    lookup does not know: a fixture named for a collapsed family
+    (``get_products_{product_id}.json``) answers a request whose segment
+    templates the same way (an id such as ``1``), not a request for one of
+    the recorded slugs. A sidecar
     ``<filename>.meta.json`` beside a fixture supplies its status and content type
     when present, read through :mod:`graftpunk.testing.sidecar`; without one, the
     status is 200 and the type is guessed from the file's extension. No matching

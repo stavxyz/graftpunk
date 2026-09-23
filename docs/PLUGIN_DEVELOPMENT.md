@@ -288,8 +288,8 @@ tokens, and the endpoints each was seen on. A candidate is a name, not a value,
 and not yet a decision: see [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support)
 for turning one into a `Token`.
 
-**Cookies** lists the cookie names the recording saw on the primary host, names
-only.
+**Cookies** lists the cookie names set by every host the digest kept (the
+primary host's domain, or every host with `--all-hosts`), names only.
 
 **Endpoints** is one block per method and templated path. Path segments that
 look like opaque identifiers collapse into named parameters, so five requests
@@ -1015,6 +1015,10 @@ template"` pair, is required, is repeatable, and accepts a glob in the template.
 The template is the one `gp observe digest` prints, a collapsed family included:
 a dozen product pages the digest shows as `GET /products/{product_id}` are
 matched by that template and written as `get_products_{product_id}.json`.
+`FixtureSession` names a request by the path alone and does not know about the
+collapse, so a test reaches that fixture with an id-shaped value (the generated
+tests pass `"1"`); a real slug would be looked up as
+`get_products_alpha-widget-2024.json` and answer 404.
 `--out PATH` chooses where to write (`./tests/captures` by
 default), `--limit N` caps how many files are written per matched template (5 by
 default), and `--allow-tracked` overrides the refusal to write onto a

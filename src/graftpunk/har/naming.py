@@ -36,7 +36,12 @@ _TEXT_MIME_KEYWORDS = ("text", "xml")
 
 
 def capture_slug(method: str, path: str) -> str:
-    """The method+templated-path stem shared by a capture, a fixture, and its sidecar."""
+    """The method+templated-path stem shared by a capture, a fixture, and its sidecar.
+
+    *path* may already be a template, such as the digest's collapsed
+    ``/products/{product_id}``; its ``{placeholder}`` segments pass through as
+    written.
+    """
     template, _ = template_path(path)
     body = template.strip("/").replace("/", "_")
     return f"{method.lower()}_{body or 'root'}"
