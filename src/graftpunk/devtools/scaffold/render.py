@@ -627,14 +627,23 @@ def _body_field_keys(endpoint: Endpoint) -> dict[str, str]:
     """For each body field the stub sends, the key of its declaration in
     ``_declared_extras``: the field's own name, or ``body_<name>`` when a query
     parameter of the same name is declared differently, so each is sent with its
-    own recorded type (an option ``--body-<name>``). A field one option serves for
-    both keeps the shared name."""
+    own recorded type (an option ``--body-<name>``), deduped against every query
+    and body name of the endpoint (``body_limit_2`` beside a site ``body_limit``).
+    A field one option serves for both keeps the shared name."""
     query = _query_declarations(endpoint)
+    bodies = _body_declarations(endpoint)
+    # A generated key is deduped against every site name on the endpoint, so a
+    # site parameter literally named body_<name> keeps its own key.
+    taken = set(endpoint.query_params) | set(endpoint.body_params)
     keys: dict[str, str] = {}
-    for name, found in _body_declarations(endpoint).items():
+    for name in sorted(bodies):
+        found = bodies[name]
         if not isinstance(found, _Declaration):
             continue
-        keys[name] = name if query.get(name, found) == found else f"{_BODY_KEY_PREFIX}{name}"
+        if query.get(name, found) == found:
+            keys[name] = name
+        else:
+            keys[name] = _deduped(f"{_BODY_KEY_PREFIX}{name}", taken)
     return keys
 
 

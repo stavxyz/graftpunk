@@ -1901,6 +1901,42 @@ class TestPluginModuleCommandStubs:
             "value; add any this command needs by hand."
         ) in comments
 
+    @pytest.mark.parametrize(
+        ("query", "body", "argv", "expected_query", "expected_body"),
+        [
+            (
+                {"limit": "int", "body_limit": "str"},
+                {"limit": "str"},
+                ["--limit", "1", "--body-limit", "x", "--body-limit-2", "y"],
+                "?body_limit=x&limit=1",
+                {"limit": "y"},
+            ),
+            (
+                {"limit": "int"},
+                {"limit": "str", "body_limit": "str"},
+                ["--limit", "1", "--body-limit", "z", "--body-limit-2", "y"],
+                "?limit=1",
+                {"body_limit": "z", "limit": "y"},
+            ),
+        ],
+    )
+    def test_a_body_key_is_deduped_against_every_site_name(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        query: dict[str, str],
+        body: dict[str, str],
+        argv: list[str],
+        expected_query: str,
+        expected_body: dict[str, str],
+    ) -> None:
+        """body_<name> must not take the place of a site parameter of that name."""
+        endpoint = self._endpoint("/items", "POST", query=query, body=body, body_kind="json")
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "items", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/items{expected_query}"
+        assert json.loads(prepared.body) == expected_body
+
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",
