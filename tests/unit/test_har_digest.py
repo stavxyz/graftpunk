@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from structlog.testing import capture_logs
+
 from graftpunk.har.digest import (
     _BODY_SAMPLE_THRESHOLD,
     _DYNAMIC_MAJORITY,
@@ -1062,6 +1064,19 @@ class TestParseErrorsAndMissingBodies:
         har_path = _write_har(tmp_path, [entry])
         result = digest(DigestSource.from_har(har_path))  # must not raise
         assert result.dropped["error"] == 1
+
+    def test_the_missing_body_warning_logs_a_bare_url(self, tmp_path: Path) -> None:
+        entry = _entry("GET", "https://api.myshop.example.com/big;s=PARAMVALUE?q=QUERYVALUE#FRAG")
+        entry["response"]["content"] = {
+            "mimeType": "application/json",
+            "size": 0,
+            "_bodyFile": "bodies/missing.json",
+        }
+        har_path = _write_har(tmp_path, [entry])
+        with capture_logs() as events:
+            digest(DigestSource.from_har(har_path))
+        (event,) = [e for e in events if e["event"] == "digest_body_file_missing"]
+        assert event["url"] == "https://api.myshop.example.com/big"
 
 
 def _flow_endpoint(template: str, method: str = "GET", examples: tuple[str, ...] = ()) -> Endpoint:

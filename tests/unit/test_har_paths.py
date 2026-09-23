@@ -7,6 +7,7 @@ import pytest
 from graftpunk.har.paths import (
     _MIN_BASE64_LEN,
     _MIN_HEX_LEN,
+    bare_host,
     param_name_for_segment,
     template_path,
 )
@@ -108,3 +109,8 @@ def test_path_params_are_dropped_from_every_segment() -> None:
         "/orders/{order_id}",
         {"order_id": "123"},
     )
+
+
+def test_bare_host_drops_userinfo_and_keeps_the_port() -> None:
+    assert bare_host("alice:secret@myshop.example.com:8443") == "myshop.example.com:8443"
+    assert bare_host("myshop.example.com") == "myshop.example.com"

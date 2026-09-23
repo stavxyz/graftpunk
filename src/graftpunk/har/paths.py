@@ -30,7 +30,14 @@ _UUID_RE = re.compile(
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _BASE64_RE = re.compile(r"^[A-Za-z0-9_-]+=*$")
 
-__all__ = ["bare_path", "bare_url", "looks_dynamic", "param_name_for_segment", "template_path"]
+__all__ = [
+    "bare_host",
+    "bare_path",
+    "bare_url",
+    "looks_dynamic",
+    "param_name_for_segment",
+    "template_path",
+]
 
 
 _PATH_PARAMS_RE = re.compile(r";[^/]*")
@@ -45,6 +52,12 @@ def bare_path(path: str) -> str:
     return _PATH_PARAMS_RE.sub("", path)
 
 
+def bare_host(netloc: str) -> str:
+    """*netloc* without its ``user:password@``: a credential, not part of the host.
+    The port stays."""
+    return netloc.rpartition("@")[2]
+
+
 def bare_url(url: str) -> str:
     """*url* reduced to its scheme, host, and :func:`bare_path` path.
 
@@ -54,8 +67,7 @@ def bare_url(url: str) -> str:
     a query or ``;params`` comes back empty.
     """
     parts = urlsplit(url)
-    host = parts.netloc.rpartition("@")[2]
-    return urlunsplit((parts.scheme, host, bare_path(parts.path), "", ""))
+    return urlunsplit((parts.scheme, bare_host(parts.netloc), bare_path(parts.path), "", ""))
 
 
 def looks_dynamic(segment: str) -> bool:

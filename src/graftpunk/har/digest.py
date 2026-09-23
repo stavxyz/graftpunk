@@ -25,6 +25,7 @@ from graftpunk.har.documents import (
 )
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import (
+    bare_host,
     bare_path,
     bare_url,
     looks_dynamic,
@@ -837,8 +838,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if parsed_url.scheme.lower() not in _HTTP_SCHEMES:
             dropped["other_scheme"] += 1
             continue
-        # Userinfo is a credential, not part of the host (paths.bare_url).
-        host = parsed_url.netloc.rpartition("@")[2].lower()
+        host = bare_host(parsed_url.netloc).lower()
         hosts[host] = hosts.get(host, 0) + 1
         static = _is_static(entry)
         if not static:
@@ -872,7 +872,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             continue
         if _body_missing(entry):
             dropped["error"] += 1
-            LOG.warning("digest_body_file_missing", url=entry.request.url)
+            LOG.warning("digest_body_file_missing", url=bare_url(entry.request.url))
             continue
 
         # Path only: every URL the digest keeps goes through paths.bare_url, so
