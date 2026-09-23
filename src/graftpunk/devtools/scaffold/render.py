@@ -36,6 +36,7 @@ from graftpunk.devtools.scaffold.pysrc import (
 )
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
 from graftpunk.har.naming import capture_filename
+from graftpunk.har.paths import templated_url
 from graftpunk.har.report import summarize_shape
 
 __all__ = [
@@ -300,9 +301,10 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     if form is None:
         lines = ["    # No login form detected. Observations:"]
         for observation in spec.digest.login:
-            text = (
-                f"{observation.order}. {observation.method} {observation.url} ({observation.kind})"
-            )
+            # Templated as the projection prints it: the observed path can hold an
+            # account id or a one-time token, and this file is committed.
+            url = templated_url(observation.url)
+            text = f"{observation.order}. {observation.method} {url} ({observation.kind})"
             lines.extend(wrapped_comment_lines(text, indent=len(L1)))
         lines.append(
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])'

@@ -14,11 +14,10 @@ import dataclasses
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 from graftpunk.contracts import current_schema
 from graftpunk.har.digest import INTERNAL, Endpoint, RunDigest, ShapeNode
-from graftpunk.har.paths import template_path
+from graftpunk.har.paths import templated_url
 
 __all__ = [
     "DEFAULT_ENDPOINT_LIMIT",
@@ -186,14 +185,6 @@ def render_json(d: RunDigest) -> str:
     return json.dumps(_jsonable(d), indent=2, sort_keys=True)
 
 
-def _templated_url(url: str) -> str:
-    """*url* with its path templated the way endpoints are: an observation carries
-    the raw path, which can hold an account id or a one-time token."""
-    parts = urlsplit(url)
-    template, _ = template_path(parts.path or "/")
-    return urlunsplit((parts.scheme, parts.netloc, template, "", ""))
-
-
 def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     """The declared projection ``gp observe digest --endpoints-json`` prints.
 
@@ -233,7 +224,7 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
         ],
         "login": {
             "auth_urls": [
-                {"method": o.method, "url": _templated_url(o.url), "kind": o.kind} for o in d.login
+                {"method": o.method, "url": templated_url(o.url), "kind": o.kind} for o in d.login
             ],
             "forms": [
                 {"action": form.action, "fields": dict(sorted(form.fields.items()))}

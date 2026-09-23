@@ -788,6 +788,29 @@ class TestPluginModuleWithLoginForm:
         assert "# login_config = LoginConfig" in plugin_code
         assert "auth_api" in plugin_code
 
+    def test_an_observation_comment_carries_the_templated_url(self) -> None:
+        """A login URL's path can hold an account id or a one-time token, and the
+        comment lands in a file the author commits."""
+        segment = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+        observation = LoginObservation(
+            order=1,
+            method="GET",
+            url=f"https://myshop.example.com/signin/{segment}",
+            status=200,
+            kind="form_page",
+            fields=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login=(observation,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert segment not in plugin_code
+        assert "https://myshop.example.com/signin/{signin_id} (form_page)" in plugin_code
+
     def test_no_login_form_omits_the_login_import(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",

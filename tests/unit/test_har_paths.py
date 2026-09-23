@@ -10,6 +10,7 @@ from graftpunk.har.paths import (
     bare_host,
     param_name_for_segment,
     template_path,
+    templated_url,
 )
 
 
@@ -114,3 +115,22 @@ def test_path_params_are_dropped_from_every_segment() -> None:
 def test_bare_host_drops_userinfo_and_keeps_the_port() -> None:
     assert bare_host("alice:secret@myshop.example.com:8443") == "myshop.example.com:8443"
     assert bare_host("myshop.example.com") == "myshop.example.com"
+
+
+class TestTemplatedUrl:
+    def test_the_path_is_templated_and_the_rest_kept(self) -> None:
+        segment = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+        assert (
+            templated_url(f"https://myshop.example.com/signin/{segment}")
+            == "https://myshop.example.com/signin/{signin_id}"
+        )
+
+    def test_a_url_with_no_path_gets_the_root(self) -> None:
+        assert templated_url("https://myshop.example.com") == "https://myshop.example.com/"
+
+    def test_a_relative_url_stays_relative(self) -> None:
+        assert templated_url("/orders/12345") == "/orders/{order_id}"
+
+    def test_an_empty_url_stays_empty(self) -> None:
+        """An empty form action submits to the page itself; "/" would be a claim."""
+        assert templated_url("") == ""

@@ -37,6 +37,7 @@ __all__ = [
     "looks_dynamic",
     "param_name_for_segment",
     "template_path",
+    "templated_url",
 ]
 
 
@@ -140,3 +141,19 @@ def template_path(path: str) -> tuple[str, dict[str, str]]:
 
     body = "/".join(result_segments)
     return f"{leading}{body}{trailing}" if body else (leading or "/"), params
+
+
+def templated_url(url: str) -> str:
+    """*url* reduced to its scheme, host, and path, the path templated the way an
+    endpoint's is (:func:`template_path`).
+
+    For a URL a digest records as observed (a login observation, a form action)
+    and a projection or generated file then prints: its path can hold an account
+    id or a one-time token. An absolute URL with no path gets ``/``; a relative
+    one stays relative, and an empty one stays empty (an empty form action posts
+    to the page itself).
+    """
+    parts = urlsplit(url)
+    path = parts.path or ("/" if parts.netloc else "")
+    template = template_path(path)[0] if path else ""
+    return urlunsplit((parts.scheme, bare_host(parts.netloc), template, "", ""))
