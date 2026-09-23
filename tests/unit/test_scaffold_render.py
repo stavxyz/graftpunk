@@ -46,6 +46,7 @@ from graftpunk.har.digest import (
     TokenCandidate,
     digest,
 )
+from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from tests.unit.cli_harness import strip_ansi
 
 
@@ -696,6 +697,89 @@ def _planted_har_entry(
             "text": post_data,
         }
     return entry
+
+
+# Every id shape the templating rule removes, by name. A shape reaching a generated
+# file or the projection is an account value committed or handed to a program.
+_ID_SHAPES = {
+    "digits": "40912873",
+    "uuid": "8f14e45f-ceea-467e-bd3d-46f0e7d1f5a3",
+    "hex8": "ab12cd34",
+    "hex12": "a3f9c2d1e0b4",
+    "hex24": "5f1a9c2e8b1d4f60a9e2c3b4",
+    "hex32": "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8",
+    "prefixed": "cus_NffrFeUfNV2Hib",
+    "prefixed_short": "usr_8fK2x9Qa",
+    "base64_like": "Zm9vYmFyYmF6cXV4MTIzNDU2",
+    "embedded_digits": "acct-40912873",
+    "email": "alice@example.com",
+    "email_encoded": "alice%40example.com",
+}
+# Where a recorded URL carries it: an API path, the login page's path, the login
+# form's action, and the credential post's redirect target.
+_ID_POSITIONS = ("api_path", "login_page", "form_action", "redirect")
+
+
+def _id_run(tmp_path: Path, position: str, value: str) -> Path:
+    host = "https://myshop.example.com"
+    page_path = f"/signin/{value}" if position == "login_page" else "/signin"
+    action = f"/accounts/{value}/session" if position == "form_action" else "/session"
+    landing = f"/accounts/{value}/dashboard" if position == "redirect" else "/dashboard"
+    api_path = f"/api/accounts/{value}/orders" if position == "api_path" else "/api/orders"
+    entries = [
+        _planted_har_entry(
+            "GET",
+            f"{host}{page_path}",
+            content_type="text/html",
+            body=(
+                f'<form action="{action}" method="post"><input name="username">'
+                '<input type="password" name="password"></form>'
+            ),
+        ),
+        _planted_har_entry(
+            "POST",
+            f"{host}{action}",
+            status=302,
+            content_type="text/html",
+            body="",
+            post_data="username=alice&password=x",
+            location=landing,
+        ),
+        _planted_har_entry("GET", f"{host}{api_path}", body='{"id": 1}'),
+    ]
+    har = tmp_path / "network.har"
+    har.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
+    return har
+
+
+@pytest.mark.parametrize("position", _ID_POSITIONS)
+@pytest.mark.parametrize("shape", sorted(_ID_SHAPES))
+def test_no_id_shape_reaches_a_generated_file_or_the_projection(
+    tmp_path: Path, shape: str, position: str
+) -> None:
+    """G2 by shape and position. Every generated file and --endpoints-json are held
+    to it for every shape. --json and the markdown digest keep real example paths,
+    login URLs, and form actions by design, with only an email masked, so they are
+    held to it for the email shapes alone."""
+    value = _ID_SHAPES[shape]
+    result = digest(DigestSource.from_har(_id_run(tmp_path, position, value)))
+    files = render(
+        ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=result,
+        )
+    )
+    assert "login_config = LoginConfig(" in files["src/graftpunk_myshop/plugin.py"]
+    for path, content in files.items():
+        assert value not in content, path
+        assert value not in path, path
+    assert value not in render_endpoints_json(result)
+    if shape.startswith("email"):
+        assert value not in render_json(result)
+        assert value not in render_markdown(result)
 
 
 def test_no_planted_account_value_reaches_any_generated_file(tmp_path: Path) -> None:

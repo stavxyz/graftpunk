@@ -47,8 +47,8 @@ class TestTemplatePath:
         template, _ = template_path(f"/files/{segment}")
         assert template == "/files/{file_id}"
 
-    def test_base64_like_segment_under_min_length_stays_literal(self) -> None:
-        segment = ("z1" * ((_MIN_BASE64_LEN // 2) + 1))[: _MIN_BASE64_LEN - 1]
+    def test_a_long_word_with_no_digit_stays_literal(self) -> None:
+        segment = "z" * (_MIN_BASE64_LEN - 1)
         template, _ = template_path(f"/files/{segment}")
         assert template == f"/files/{segment}"
 
@@ -178,3 +178,45 @@ class TestAnEmailSegmentIsAnAccountValue:
 
     def test_a_masked_segment_counts_as_templated(self) -> None:
         assert templates_a_segment("https://myshop.example.com/users/{user_id}/signin")
+
+
+class TestShortAndEmbeddedIds:
+    """The lexical shapes an account carries through a whole recording, which a
+    high-cardinality collapse never sees: one account, one value."""
+
+    @pytest.mark.parametrize(
+        "segment",
+        [
+            "acct-40912873",
+            "40912",
+            "order12345x",
+            "ab12cd34",
+            "a3f9c2d1",
+            "a3f9c2d1e0b4",
+            "cus_NffrFeUfNV2Hib",
+            "usr_8fK2x9Qa",
+            "x7Kq29Lp",
+            "html5player1",
+        ],
+    )
+    def test_is_dynamic(self, segment: str) -> None:
+        assert looks_dynamic(segment)
+
+    @pytest.mark.parametrize(
+        "segment",
+        [
+            "orders",
+            "v2",
+            "api",
+            "red-widget-2024",
+            "deadbeef",
+            "abcdefgh",
+            "facade",
+            "user_profile",
+            "password-reset",
+            "abc_defghij",
+            "oauth2",
+        ],
+    )
+    def test_is_a_word(self, segment: str) -> None:
+        assert not looks_dynamic(segment)

@@ -314,10 +314,16 @@ for turning one into a `Token`.
 primary host's domain, or every host with `--all-hosts`), names only.
 
 **Endpoints** is one block per method and templated path. Path segments that
-look like opaque identifiers (all digits, a UUID, a long hex or base64-like
-token) or hold an email address (percent-encoded or not) collapse into named
-parameters, so five requests for five order ids become one
-`GET /api/orders/{order_id}` with a count of five.
+look like identifiers collapse into named parameters, so five requests for
+five order ids become one `GET /api/orders/{order_id}` with a count of five. The
+rule is lexical: a segment collapses when it is all digits, holds a run of five
+or more digits (`acct-40912873`), is a UUID, is eight or more hex characters
+mixing digits and the letters a to f (`ab12cd34`), is a prefixed id such as
+`cus_NffrFeUfNV2Hib`, is a token of eight or more letters and digits mixed with
+no separator, is a long base64-like token, or holds an email address
+(percent-encoded or not). It errs toward collapsing: a route segment that
+happens to mix letters and digits (`html5player1`) becomes a parameter too, which
+costs a readable name and never commits an id.
 Each block carries the observed statuses, the content type, the query and body
 parameter names with the types the recording showed, the names of any
 non-standard request headers, a summary of the JSON response shape, and up to

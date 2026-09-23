@@ -12,7 +12,8 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 # A segment collapses to a parameter when it looks like an opaque
 # identifier rather than a word: all digits, a UUID, 16+ hex characters, or
-# 20+ URL-safe-base64-like characters; or when it holds an email address. The
+# 20+ URL-safe-base64-like characters; one of the short and embedded shapes
+# _looks_like_short_id names; or when it holds an email address. The
 # base64-like check additionally requires at least one digit, so an ordinary
 # long slug ("administrator-dashboard") is not mistaken for an encoded token.
 _MIN_HEX_LEN = 16
@@ -64,6 +65,40 @@ def bare_host(netloc: str) -> str:
     return netloc.rpartition("@")[2]
 
 
+# The short and embedded id shapes an account carries through a whole recording
+# (one account, one value, so no high-cardinality collapse ever sees them). The
+# rule is lexical and errs toward templating: a version or asset segment that
+# mixes letters and digits (html5player1) templates too, which costs a readable
+# route name and never commits an id.
+_DIGIT_RUN_RE = re.compile(r"\d{5,}")
+_SHORT_HEX_RE = re.compile(r"[0-9a-fA-F]{8,}")
+_PREFIXED_ID_RE = re.compile(r"[A-Za-z]{2,8}_[A-Za-z0-9]{8,}")
+_ALNUM_TOKEN_RE = re.compile(r"[A-Za-z0-9]{8,}")
+_HEX_LETTER_RE = re.compile(r"[a-fA-F]")
+
+
+def _mixes_letters_and_digits(text: str) -> bool:
+    return any(ch.isdigit() for ch in text) and any(ch.isalpha() for ch in text)
+
+
+def _looks_like_short_id(segment: str) -> bool:
+    """True when *segment* holds a run of 5 or more digits, is 8 or more hex
+    characters holding a digit and a letter a-f, is a prefixed id (2 to 8 letters,
+    an underscore, and 8 or more letters and digits mixed, as ``cus_NffrFeUfNV2Hib``),
+    or is a token of 8 or more letters and digits mixed with no separator."""
+    if _DIGIT_RUN_RE.search(segment):
+        return True
+    if (
+        _SHORT_HEX_RE.fullmatch(segment)
+        and any(ch.isdigit() for ch in segment)
+        and _HEX_LETTER_RE.search(segment)
+    ):
+        return True
+    if _PREFIXED_ID_RE.fullmatch(segment) and _mixes_letters_and_digits(segment.partition("_")[2]):
+        return True
+    return bool(_ALNUM_TOKEN_RE.fullmatch(segment)) and _mixes_letters_and_digits(segment)
+
+
 def _is_email(segment: str) -> bool:
     return bool(_EMAIL_RE.match(unquote(segment)))
 
@@ -107,6 +142,8 @@ def looks_dynamic(segment: str) -> bool:
     if not segment:
         return False
     if segment.isdigit() or _is_email(segment):
+        return True
+    if _looks_like_short_id(segment):
         return True
     if _UUID_RE.match(segment):
         return True
