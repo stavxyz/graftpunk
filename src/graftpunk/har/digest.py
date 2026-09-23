@@ -183,7 +183,9 @@ _FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
 _MAX_FIELD_NAME_LEN = 64  # a form field name past this is not a field name
 # The character class carries no whitespace, "<", or "{" by construction, so a
 # body that is really XML, JSON, or prose cannot present itself as one enormous
-# field name (polish round 1, 2026-09-12).
+# field name (polish round 1, 2026-09-12). A key in the alphabet can still be
+# data: _plausible_field_name also refuses one graftpunk.har.paths.holds_an_id
+# says carries an account value, the one rule every path segment and name meets.
 _FORM_FIELD_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-\[\]]*")
 
 

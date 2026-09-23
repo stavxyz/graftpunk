@@ -5,9 +5,13 @@ writes and travels with the fixture into a plugin's committed fixtures tree.
 Every field in it is meant to be committed: the capture's URL and time are not
 in it (the HAR and the digest hold them), ``capture_sha256`` is the hash of the
 captured body, and ``flagged_names`` is every cookie name the recording set and
-the token names the digest recorded, never a value. ``body_params`` is the
-request's body keys that read as field names; that rule is lexical, so a
-data-shaped key that reads as one (a session id like ``sess_a8f3c9e2``) is kept.
+the token names the digest recorded, never a value; a name that holds an account
+value (:func:`graftpunk.har.paths.holds_an_id`) is written as
+``sha256:<hex digest of the name>`` instead, and a reader compares a candidate by
+hashing it the same way. ``body_params`` is the request's body keys that read as
+field names and hold no id by that rule; the rule is lexical, so an account value
+in a shape it does not read as an id is kept, which is why the list is read before
+it is committed.
 
 This module is the only place a key set is spelled. It takes the current
 version number from :mod:`graftpunk.contracts`, and a later version adds its

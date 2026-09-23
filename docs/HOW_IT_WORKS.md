@@ -479,18 +479,25 @@ recorded is left undeclared, with a `GP-FILL` comment naming it. A recorded form
 body goes out as `data=`, a JSON body as `json=` holding only the fields the
 caller gave, a bool is a `--x/--no-x` flag, and a list (a repeated query or form
 key, or a JSON array) is a repeatable option sent as repeated keys or a JSON
-array. The JSON body fields left undeclared are an object, a `mixed` value, or an array of objects, booleans, arrays, mixed elements, or only empty arrays. A body field typed
-apart from a query parameter of the same name gets its own `--body-<name>`
-option. A path segment the digest's lexical rule reads as an id (all digits, a
-run of five or more digits, a UUID, eight or more hex characters mixing digits
-and letters, a prefixed id such as `cus_...`, a token of eight or more letters
-and digits mixed, a long base64-like token, or an email) is templated, and an
-email segment is also masked in every URL the digest keeps. From that rule:
-`login_config.url` is the page the login form was on, or a `GP-FILL` comment
-when that page's path holds such an id; selectors scoped to a form action that
-holds one are unscoped; and one in `success_url`'s landing path is a `*`. An id
-in a shape the rule does not read as one (a short word-like value, say) is not
-caught.
+array. The JSON body fields left undeclared are an object, a `mixed` value, or
+an array of objects, booleans, arrays, mixed elements, or only empty arrays. A
+body field typed apart from a query parameter of the same name gets its own
+`--body-<name>` option.
+
+One rule, `graftpunk.har.paths.holds_an_id`, decides whether a name or a path
+segment carries an account value, and every position goes through it. A name
+holds an id when it is an email or a UUID, a prefixed id (`cus_NffrFeUfNV2Hib`), or a part (split on `_`, `.`, `-`, `~`) holding a run of five or more digits, a hex token of eight or more characters with a digit and a letter, sixteen or more hex characters, a base64-like token of twenty or more characters with a digit, or a token of eight or more characters mixing upper case, lower case, and digits; a lower-case word with trailing digits (`address2`), a camelCase word (`orderId2`), and a version (`v1beta1`) are words. A path segment that holds an id (or is all
+digits) is templated, and an email segment is also masked in every URL the
+digest keeps. A query, body, or form key and a header name that holds one is
+dropped, counted, and named by count in a `GP-FILL` comment in the stub; a
+response key becomes `{key}`; a cookie or token name is kept only as its
+`sha256:` hash. From the path rule: `login_config.url` is the page the login form
+was on, or a `GP-FILL` comment when that page's path holds an id; selectors
+scoped to a form action that holds one are unscoped; and one in `success_url`'s
+landing path is a `*`. The rule is lexical. An account value in a shape it does
+not read as an id (a short word-like value) is not caught, and a word it does
+read as one (a route such as `x7Kq29Lp`) is templated or dropped; the second
+fails safe and the `GP-FILL` counts make it visible.
 
 `graftpunk.testing` (pytest-free) supplies `make_context()` for building a
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
@@ -502,7 +509,8 @@ and two plugins in one suite can share an endpoint path. `gp observe
 fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
 number, the status, the content type, the body parameter names, the hash of the
 captured body, every cookie name the recording set, and the token names the
-run's digest recorded, but never the URL or the capture time), written to be
+run's digest recorded, a name that holds an id written as its `sha256:` hash,
+but never the URL or the capture time), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names (a body key that does not read as a field name is dropped, but a
 data-shaped one that does is kept) and its `flagged_names` (some sites put

@@ -239,11 +239,19 @@ which re-sends each value as recorded. A JSON body field keeps its JSON type: a
 `null` is not an observation, `int` and `float` together are `float`, two arrays
 merge their element types the same way (`list[int]` and `list[float]` give
 `list[float]`, and elements of two other types give `list[mixed]`), and any other
-disagreement is `mixed`. A query or body key that does not read as a field
-name, such as an email address or a key starting with a digit, is data rather
-than a parameter, and the digest drops it; so is a key that holds an id by the
-path rule's shapes (a run of five or more digits, as in `u_40912873`, or eight or
-more hex characters mixing digits and letters).
+disagreement is `mixed`.
+
+One rule decides whether a name or a path segment carries an account value, and
+every position goes through it: path segments, query, body, and form keys,
+response keys, request header names, and cookie and token names. A name holds an
+id when it is an email or a UUID, a prefixed id (`cus_NffrFeUfNV2Hib`), or a part (split on `_`, `.`, `-`, `~`) holding a run of five or more digits, a hex token of eight or more characters with a digit and a letter, sixteen or more hex characters, a base64-like token of twenty or more characters with a digit, or a token of eight or more characters mixing upper case, lower case, and digits; a lower-case word with trailing digits (`address2`), a camelCase word (`orderId2`), and a version (`v1beta1`) are words. A path segment that holds an id becomes a placeholder; a
+query, body, or form key or a header name that holds one is dropped, and the
+digest counts how many (the generated stub says so in a `GP-FILL` comment); a
+response key that holds one becomes `{key}` in the shape; and a cookie or token
+name that holds one is kept only as `sha256:<hex digest of the name>`. A key that
+does not read as a field name at all (an email address, a key starting with a
+digit) is dropped as well. The rule is lexical: an account value in a shape it
+does not read as an id (a short word-like value) is not caught.
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:
@@ -667,11 +675,12 @@ A `list[...]` parameter is a repeatable option, `click_kwargs={"multiple": True}
 handler receives a list, or `None` when the option is not given. `requests`
 sends a list in `params` or `data` as repeated keys (`id=1&id=2`), the way the
 site sent it, and a JSON body gets a JSON array. A JSON body field no option can
-send as recorded (an `object`, a `mixed` value, or an array of objects, booleans, arrays, mixed elements, or only empty arrays) is not
-declared: the stub says so in a `GP-FILL` comment, so you add it to the body by
-hand if the command needs it, rather than getting an option that sends the wrong
-type. A body field recorded with a different type from a query parameter of the
-same name gets its own option, `--body-<name>`, so each is sent as recorded.
+send as recorded (an `object`, a `mixed` value, or an array of objects,
+booleans, arrays, mixed elements, or only empty arrays) is not declared: the stub
+says so in a `GP-FILL` comment, so you add it to the body by hand if the command
+needs it, rather than getting an option that sends the wrong type. A body field recorded with a different type from a query parameter of the
+same name gets its own option, `--body-<name>` (with a numeric suffix when the
+site also has a parameter of that name), so each is sent as recorded.
 
 A site parameter named `format`, `output`, `session`, `view`, or `help` would
 collide with an option every command already has, so its option gets a suffix
@@ -1050,11 +1059,11 @@ beside the fixture. It holds no URL, no time, and no header, cookie, or query
 value: only the status, the content type, the hash of the captured body, the
 request's body parameter names, every cookie name the recording set, and the
 token names the digest found. A body key that does not read as a field name,
-such as an email address or a key starting with a digit, is dropped from
-`body_params`; a data-shaped key that does read as one (`sess_a8f3c9e2`) is
-kept, so read the list before you commit it. Read `flagged_names` the same way:
-it lists every cookie name the recording set, and some sites put account data
-in a cookie's name.
+or that holds an id by the digest's rule, is dropped from `body_params`, and a
+cookie or token name that holds an id is written to `flagged_names` as
+`sha256:<hex digest of the name>`, never as itself. The rule is lexical, so an
+account value in a shape it does not read as an id is kept: read both lists
+before you commit a sidecar.
 
 ```json
 {
