@@ -230,7 +230,9 @@ def _colliding_file_names(
             _matches_template(method, template, e) for e in endpoints
         ):
             continue
-        name = capture_slug(method, template)
+        # Case-folded: on a case-insensitive filesystem get_Users and get_users
+        # are one file.
+        name = capture_slug(method, template).casefold()
         keys_by_name.setdefault(name, set()).add(f"{method} {template}")
     return {name: keys for name, keys in keys_by_name.items() if len(keys) > 1}
 

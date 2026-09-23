@@ -1115,7 +1115,8 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
     paths: list[str] = []
     stems: set[str] = set()
     for endpoint in _stub_endpoints(spec):
-        stem = capture_slug(endpoint.methods[0], endpoint.template)
+        # Case-folded, as a case-insensitive filesystem compares them.
+        stem = capture_slug(endpoint.methods[0], endpoint.template).casefold()
         if stem in stems:
             continue  # no generated test reads it (see _render_test_module)
         stems.add(stem)
@@ -1179,19 +1180,19 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         name = _command_name(endpoint.template, seen)
         method = endpoint.methods[0]
         stem = capture_slug(method, endpoint.template)
-        if stem in stems:
+        if stem.casefold() in stems:
             # FixtureSession looks a fixture up by stem, so this endpoint's test
             # would read the other endpoint's fixture.
             note = (
                 f"GP-FILL: no test for {name} ({method} {endpoint.template}): its fixture "
-                f"would share the stem {stem} with {stems[stem]}; write its test against "
-                "a fixture of its own."
+                f"would share the stem {stem} with {stems[stem.casefold()]}; write its test "
+                "against a fixture of its own."
             )
             lines.extend(wrapped_comment_lines(note, indent=0))
             lines.append("")
             lines.append("")
             continue
-        stems[stem] = f"{method} {endpoint.template}"
+        stems[stem.casefold()] = f"{method} {endpoint.template}"
         test_name = _deduped(name, seen_tests)
         # The same seeding as _render_command_stub, so the identifiers here are
         # the ones the stub actually declares.

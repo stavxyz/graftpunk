@@ -31,6 +31,7 @@ from graftpunk.devtools.scaffold.render import (
     _command_name,
     _param_identifier,
     class_name_for,
+    fixture_paths,
     module_name_for,
     render,
     validate_plugin_name,
@@ -3052,3 +3053,19 @@ class TestRound9Generator:
             "get_api_c_d with GET /api/c/d; write its test against a fixture of its own."
         ) in comments
         compile(test_code, "test_plugin.py", "exec")
+
+
+def test_stems_that_differ_only_in_case_get_one_test() -> None:
+    """A3: fixture_paths and the test module compare case-folded stems."""
+    files = _render_endpoints(_single_endpoint("/Users"), _single_endpoint("/users"))
+    test_code = files["tests/test_plugin.py"]
+    assert test_code.count("def test_users") == 1
+    assert "GP-FILL: no test for users_2" in " ".join(test_code.split())
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(_single_endpoint("/Users"), _single_endpoint("/users"))),
+    )
+    assert len(fixture_paths(spec)) == 1

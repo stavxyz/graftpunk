@@ -500,6 +500,26 @@ class TestFixturesCommand:
         assert "get_a_b" in output and "GET /a/b" in output and "GET /a_b" in output
         assert not out_dir.exists() or not any(out_dir.iterdir())
 
+    def test_stems_that_differ_only_in_case_are_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A3: one would overwrite the other on a case-insensitive filesystem."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/Users", body='{"x": 1}'),
+            _entry("GET", "https://api.myshop.example.com/users", body='{"x": 2}'),
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /*", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert "GET /Users" in output and "GET /users" in output
+
     def test_the_sidecar_is_committable_and_records_the_capture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
