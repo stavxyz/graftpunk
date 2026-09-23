@@ -1,3 +1,20 @@
+---
+type: plan
+validated:
+  sha: 7bd960466f6e1484ad4e5b85e5d943b83e3948e2
+  date: 2026-09-23T06:14:41Z
+  reviewers: [fact-check, solid-hygiene]
+  findings:
+    critical: 0
+    important: 1
+    medium: 6
+    low: 8
+    nitpick: 0
+  net_negative_raised: 1
+  net_negative_addressed: 1
+  net_negative_remaining: 0
+---
+
 # Graft Package Project Tools Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
