@@ -90,6 +90,9 @@ The path it prints must be the project you are editing. If it points into a
 `site-packages` copy, the editable install did not take and your edits are not
 the code being run.
 
+For a tool that drives `gp`, `gp version --json` prints the installed graftpunk
+version and the schema number of each payload it reads through `gp`.
+
 ## The six steps at a glance
 
 1. [Frame](#frame): pick the name, the commands, the account, and the login shape.
@@ -113,7 +116,8 @@ underscores, and is at most 40 characters. It cannot be a reserved top-level
 `keepalive`, `observe`, `version`, and anything else registered by the time
 plugins attach). A hyphenated name maps to an importable package: `my-shop` becomes the
 package `graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key
-`my-shop`, and the CLI command `gp my-shop`.
+`my-shop`, and the CLI command `gp my-shop`. `gp plugin new NAME --check-name`
+checks a name against these rules and writes nothing.
 
 **The commands.** Write down what you want to get out of the site, in the words
 you would use at the shell: `gp myshop orders`, `gp myshop order --order-id
@@ -208,7 +212,8 @@ gp observe digest myshop
 It takes the recording's name and, optionally, a run id; without one it reads
 the newest run. `--har PATH` digests a bare HAR file from any tool instead of a
 run. `--json` prints the complete model rather than the markdown summary,
-`--all-hosts` models every host instead of just the primary one, `--limit N`
+`--endpoints-json` prints the versioned projection a program reads (uncapped,
+and not combinable with `--json`), `--all-hosts` models every host instead of just the primary one, `--limit N`
 raises the cap on how many endpoints the markdown form lists (60 by default),
 and `--output PATH` writes to a file.
 
@@ -1003,7 +1008,9 @@ request's body parameter names, every cookie name the recording set, and the
 token names the digest found. A body key that does not read as a field name,
 such as an email address or a key starting with a digit, is dropped from
 `body_params`; a data-shaped key that does read as one (`sess_a8f3c9e2`) is
-kept, so read the list before you commit it.
+kept, so read the list before you commit it. Read `flagged_names` the same way:
+it lists every cookie name the recording set, and some sites put account data
+in a cookie's name.
 
 ```json
 {
