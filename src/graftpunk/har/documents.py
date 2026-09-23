@@ -140,6 +140,19 @@ _EMPTY_ACTION_SCOPES = (
 )
 
 
+def _css_string(value: str) -> str:
+    """*value* escaped for the inside of a double-quoted CSS attribute value: a
+    backslash and a quote are backslash-escaped, and a newline or carriage return
+    becomes its hex escape, so a captured name or action cannot end the value early
+    or change the selector."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return escaped.replace("\n", "\\a ").replace("\r", "\\d ")
+
+
+# A CSS identifier an #id selector can spell as it is.
+_CSS_IDENTIFIER_RE = re.compile(r"-?[A-Za-z_][\w-]*")
+
+
 def _form_scopes(raw_action: str, action: str) -> tuple[str, ...]:
     """The CSS form selectors for the form whose attribute reads *raw_action*, spelled
     with the bare *action* (:func:`graftpunk.har.paths.bare_url`) and never with a
@@ -155,12 +168,14 @@ def _form_scopes(raw_action: str, action: str) -> tuple[str, ...]:
     if not action:
         return _EMPTY_ACTION_SCOPES
     if action == raw_action:
-        return (f'form[action="{action}"]',)
+        return (f'form[action="{_css_string(action)}"]',)
     raw_path = raw_action.split("?", 1)[0].split("#", 1)[0]
     head, separator, rest = raw_path.partition(";")
     if separator and "/" in rest:
         return _middle_param_scopes(head, rest.partition("/")[2], raw_path.endswith("/"))
-    return tuple(f'form[action{op}"{action}{tail}"]' for op, tail in _STRIPPED_ENDINGS)
+    return tuple(
+        f'form[action{op}"{_css_string(action + tail)}"]' for op, tail in _STRIPPED_ENDINGS
+    )
 
 
 # How the raw action can continue after the bare one: nothing, or a ;param,
@@ -181,41 +196,59 @@ def _middle_param_scopes(head: str, after: str, trailing_slash: bool) -> tuple[s
     (``/b`` against ``/bx``) is not told apart; the last segment and the head are.
     """
     segments = [segment.partition(";")[0] for segment in after.strip("/").split("/") if segment]
-    base = f'form[action^="{head};"]' + "".join(f'[action*="/{s}"]' for s in segments[:-1])
+    base = f'form[action^="{_css_string(head + ";")}"]' + "".join(
+        f'[action*="{_css_string("/" + s)}"]' for s in segments[:-1]
+    )
     last = f"/{segments[-1]}" if segments else ""
     if trailing_slash or not segments:
         last += "/"
     return (
-        f'{base}[action$="{last}"]',
-        f'{base}[action*="{last};"]',
-        f'{base}[action*="{last}?"]',
-        f'{base}[action*="{last}#"]',
+        f'{base}[action$="{_css_string(last)}"]',
+        f'{base}[action*="{_css_string(last + ";")}"]',
+        f'{base}[action*="{_css_string(last + "?")}"]',
+        f'{base}[action*="{_css_string(last + "#")}"]',
     )
 
 
 def _selector_for(raw: _RawInput, form_scopes: tuple[str, ...]) -> str:
+    """One input's selector: by its id when it has one, else its tag and ``name``
+    (or ``type``) scoped to each of *form_scopes*, or unscoped when there are none.
+    Every attribute value is escaped (:func:`_css_string`)."""
     if raw.element_id:
-        return f"#{raw.element_id}"
-    attribute = f'name="{raw.name}"' if raw.name else f'type="{raw.input_type}"'
+        if _CSS_IDENTIFIER_RE.fullmatch(raw.element_id):
+            return f"#{raw.element_id}"
+        return f'[id="{_css_string(raw.element_id)}"]'
+    attribute = (
+        f'name="{_css_string(raw.name)}"' if raw.name else f'type="{_css_string(raw.input_type)}"'
+    )
     suffix = f"{raw.tag}[{attribute}]"
+    if not form_scopes:
+        return suffix
     return ", ".join(f"{scope} {suffix}" for scope in form_scopes)
 
 
 # The input part every alternative of a form-scoped selector ends with (see
-# _selector_for): a tag and its one name= or type= attribute.
-_INPUT_PART_RE = re.compile(r'[A-Za-z][\w-]*\[(?:name|type)="[^"]*"\]$')
+# _selector_for): a tag and its one name= or type= attribute, whose value may hold
+# backslash escapes.
+_INPUT_PART_RE = re.compile(r'[A-Za-z][\w-]*\[(?:name|type)="(?:[^"\\]|\\.)*"\]$')
+# A selector with no form scope: by id, as _selector_for writes one.
+_ID_SELECTOR_RE = re.compile(r'#-?[A-Za-z_][\w-]*|\[id="(?:[^"\\]|\\.)*"\]')
 
 
-def unscoped_selector(selector: str) -> str:
-    """*selector*, a :class:`LoginForm` field selector, without its form scope.
+def unscoped_selector(selector: str) -> str | None:
+    """*selector*, a :class:`LoginForm` field selector, without its form scope, or
+    None when it cannot be reduced to a part that holds no form action.
 
-    An ``#id`` selector has none and comes back as it is. A form-scoped one comes
+    An id selector has no scope and comes back as it is. A form-scoped one comes
     back as its input part (``input[name="username"]``), which matches the same
     input in any form: for printing a selector whose scope would carry the form
-    action's literal path.
+    action's literal path. Anything else fails closed: returning it would print the
+    scope, action included.
     """
+    if _ID_SELECTOR_RE.fullmatch(selector):
+        return selector
     match = _INPUT_PART_RE.search(selector)
-    return match.group(0) if match and not selector.startswith("#") else selector
+    return match.group(0) if match else None
 
 
 def _guess_role(input_type: str, name: str) -> str:

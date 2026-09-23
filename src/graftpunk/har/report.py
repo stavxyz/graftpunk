@@ -194,7 +194,9 @@ def _projected_form(form: LoginForm) -> dict[str, Any]:
     action = templated_url(form.action)
     fields = dict(sorted(form.fields.items()))
     if action != form.action:
-        fields = {role: unscoped_selector(selector) for role, selector in fields.items()}
+        unscoped = {role: unscoped_selector(selector) for role, selector in fields.items()}
+        # A selector that cannot be unscoped is left out, never printed scoped.
+        fields = {role: selector for role, selector in unscoped.items() if selector is not None}
     return {"action": action, "fields": fields}
 
 

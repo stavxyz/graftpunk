@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, DigestSource, Endpoint, digest
+from graftpunk.har.documents import LoginForm
 from graftpunk.har.report import (
     SHAPE_UNAVAILABLE_SUMMARY,
     endpoints_projection,
@@ -383,6 +384,24 @@ class TestEndpointsProjection:
         ]
         payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
         assert len(payload["endpoints"]) == 70
+
+    def test_a_selector_that_cannot_be_unscoped_is_left_out(self, tmp_path: Path) -> None:
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [])))
+        form = LoginForm(
+            action="/accounts/12345/session",
+            method="POST",
+            fields={
+                "username": 'form[action="/accounts/12345/session"] input.odd',
+                "password": "#pw",
+            },
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        payload = endpoints_projection(dataclasses.replace(result, login_forms=(form,)))
+        assert payload["login"]["forms"] == [
+            {"action": "/accounts/{account_id}/session", "fields": {"password": "#pw"}}
+        ]
 
     def test_a_form_action_holding_an_id_is_templated_and_its_selectors_unscoped(
         self, tmp_path: Path

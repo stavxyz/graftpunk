@@ -257,3 +257,37 @@ class TestUnscopedSelector:
 
     def test_an_id_selector_is_unchanged(self) -> None:
         assert unscoped_selector("#email") == "#email"
+
+    def test_a_selector_that_does_not_end_in_an_input_part_is_refused(self) -> None:
+        """Fails closed: returning the selector would print its scope, action included."""
+        assert unscoped_selector('form[action="/a/1"] input.login') is None
+
+    def test_an_id_attribute_selector_is_unchanged(self) -> None:
+        assert unscoped_selector('[id="user email"]') == '[id="user email"]'
+
+
+class TestSelectorsEscapeAttributeValues:
+    def test_a_name_holding_a_quote_and_a_backslash_is_escaped(self) -> None:
+        html = (
+            '<form action="/login"><input name="ref&quot;x\\y">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields['ref"x\\y'] == 'form[action="/login"] input[name="ref\\"x\\\\y"]'
+        assert unscoped_selector(form.fields['ref"x\\y']) == 'input[name="ref\\"x\\\\y"]'
+
+    def test_an_action_holding_a_quote_is_escaped(self) -> None:
+        html = (
+            '<form action="/log&quot;in"><input name="username">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == 'form[action="/log\\"in"] input[name="username"]'
+
+    def test_an_id_that_is_not_a_css_identifier_is_an_attribute_selector(self) -> None:
+        html = (
+            '<form action="/login"><input id="user email" name="username">'
+            '<input type="password" id="pw" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"username": '[id="user email"]', "password": "#pw"}
