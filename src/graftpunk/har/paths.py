@@ -10,12 +10,9 @@ from __future__ import annotations
 import re
 from urllib.parse import unquote, urlsplit, urlunsplit
 
-# A segment collapses to a parameter when it looks like an opaque
-# identifier rather than a word: all digits, a UUID, 16+ hex characters, or
-# 20+ URL-safe-base64-like characters; one of the short and embedded shapes
-# _looks_like_short_id names; or when it holds an email address. The
-# base64-like check additionally requires at least one digit, so an ordinary
-# long slug ("administrator-dashboard") is not mistaken for an encoded token.
+# A segment collapses to a parameter when it is all digits or holds_an_id says
+# it carries an account value (see there for every shape). The base64-like and
+# long-hex lengths below are two of those shapes.
 _MIN_HEX_LEN = 16
 _MIN_BASE64_LEN = 20
 
@@ -29,7 +26,6 @@ _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
-_BASE64_RE = re.compile(r"^[A-Za-z0-9_-]+=*$")
 # An email address, matched against the percent-decoded segment: account data,
 # so it collapses like an id and is masked in every URL the digest keeps.
 _EMAIL_RE = re.compile(r"^[^@\s/]+@[^@\s/]+\.[^@\s/.]+$")
@@ -38,6 +34,8 @@ __all__ = [
     "bare_host",
     "bare_path",
     "bare_url",
+    "holds_an_id",
+    "is_placeholder",
     "looks_dynamic",
     "param_name_for_segment",
     "template_path",
@@ -47,7 +45,6 @@ __all__ = [
 
 
 _PATH_PARAMS_RE = re.compile(r";[^/]*")
-_PLACEHOLDER_SEGMENT_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
 
 
 def bare_path(path: str) -> str:
@@ -65,38 +62,91 @@ def bare_host(netloc: str) -> str:
     return netloc.rpartition("@")[2]
 
 
-# The short and embedded id shapes an account carries through a whole recording
-# (one account, one value, so no high-cardinality collapse ever sees them). The
-# rule is lexical and errs toward templating: a version or asset segment that
-# mixes letters and digits (html5player1) templates too, which costs a readable
-# route name and never commits an id.
+# holds_an_id's shapes. The rule is lexical, splits a name on [_.-~] (a file
+# extension included), and errs toward an id: a false positive costs a readable
+# name, which a GP-FILL comment then counts; a false negative commits an account
+# value.
+_PART_SPLIT_RE = re.compile(r"[_.\-~]")
 _DIGIT_RUN_RE = re.compile(r"\d{5,}")
-_SHORT_HEX_RE = re.compile(r"[0-9a-fA-F]{8,}")
-_PREFIXED_ID_RE = re.compile(r"[A-Za-z]{2,8}_[A-Za-z0-9]{8,}")
-_ALNUM_TOKEN_RE = re.compile(r"[A-Za-z0-9]{8,}")
-_HEX_LETTER_RE = re.compile(r"[a-fA-F]")
+_HEX_PART_RE = re.compile(r"[0-9a-fA-F]{8,}")
+_BASE64_PART_RE = re.compile(rf"[A-Za-z0-9+/]{{{_MIN_BASE64_LEN},}}=*")
+_PREFIXED_ID_RE = re.compile(r"[A-Za-z]{2,8}[_.\-]([A-Za-z0-9]{8,})")
+_MIXED_TOKEN_RE = re.compile(r"[A-Za-z0-9]{8,}")
+# Not ids: a lower-case word with trailing digits (address2, windows10), a
+# camelCase word (orderId2), and a Kubernetes-style version (v1beta1).
+_WORD_WITH_DIGITS_RE = re.compile(r"[a-z]+\d+")
+_CAMEL_WORD_RE = re.compile(r"[a-z]+(?:[A-Z][a-z]+)+\d*")
+_VERSION_RE = re.compile(r"v\d+(?:alpha|beta|rc)?\d*")
+_PLACEHOLDER_SEGMENT_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
 
 
-def _mixes_letters_and_digits(text: str) -> bool:
-    return any(ch.isdigit() for ch in text) and any(ch.isalpha() for ch in text)
+def _has_digit(text: str) -> bool:
+    return any(ch.isdigit() for ch in text)
 
 
-def _looks_like_short_id(segment: str) -> bool:
-    """True when *segment* holds a run of 5 or more digits, is 8 or more hex
-    characters holding a digit and a letter a-f, is a prefixed id (2 to 8 letters,
-    an underscore, and 8 or more letters and digits mixed, as ``cus_NffrFeUfNV2Hib``),
-    or is a token of 8 or more letters and digits mixed with no separator."""
-    if _DIGIT_RUN_RE.search(segment):
+def _is_word(part: str) -> bool:
+    return bool(
+        _WORD_WITH_DIGITS_RE.fullmatch(part)
+        or _CAMEL_WORD_RE.fullmatch(part)
+        or _VERSION_RE.fullmatch(part)
+    )
+
+
+def _part_holds_an_id(part: str) -> bool:
+    if _DIGIT_RUN_RE.search(part):
         return True
-    if (
-        _SHORT_HEX_RE.fullmatch(segment)
-        and any(ch.isdigit() for ch in segment)
-        and _HEX_LETTER_RE.search(segment)
-    ):
+    if _is_word(part):
+        return False
+    if _HEX_PART_RE.fullmatch(part) and _has_digit(part) and any(ch.isalpha() for ch in part):
         return True
-    if _PREFIXED_ID_RE.fullmatch(segment) and _mixes_letters_and_digits(segment.partition("_")[2]):
+    if len(part) >= _MIN_HEX_LEN and _HEX_RE.match(part):
         return True
-    return bool(_ALNUM_TOKEN_RE.fullmatch(segment)) and _mixes_letters_and_digits(segment)
+    if _BASE64_PART_RE.fullmatch(part) and _has_digit(part):
+        return True
+    return bool(
+        _MIXED_TOKEN_RE.fullmatch(part)
+        and _has_digit(part)
+        and any(ch.isupper() for ch in part)
+        and any(ch.islower() for ch in part)
+    )
+
+
+def holds_an_id(text: str) -> bool:
+    """True when *text*, a name or a path segment, carries an account value.
+
+    The one owner of that decision: a path segment (``looks_dynamic``), a query,
+    body, form, or response key, a header name, and a cookie name all go through
+    it. *text* is percent-decoded, then it holds an id when it is an email or a
+    UUID, is a prefixed id (a short alphabetic prefix, a separator from ``_.-``,
+    and a tail of 8 or more characters mixing letters and digits, as
+    ``cus_NffrFeUfNV2Hib``), or when any of its parts, split on ``_ . - ~``, holds a
+    run of 5 or more digits, is a hex token of 8 or more characters holding a digit
+    and a letter, is 16 or more hex characters, is a base64-like token of 20 or more
+    characters holding a digit, or is a token of 8 or more characters mixing upper
+    case, lower case, and digits. A lower-case word with trailing digits
+    (``address2``), a camelCase word (``orderId2``), and a version (``v1beta1``) are
+    words, not ids, unless they hold a run of 5 or more digits.
+
+    The rule is lexical: an id in a shape it does not read (a short word-like
+    value) is not caught.
+    """
+    text = unquote(text)
+    if not text:
+        return False
+    if _EMAIL_RE.match(text) or _UUID_RE.match(text):
+        return True
+    prefixed = _PREFIXED_ID_RE.fullmatch(text)
+    if prefixed:
+        tail = prefixed.group(1)
+        if _has_digit(tail) and any(ch.isalpha() for ch in tail) and not _is_word(tail):
+            return True
+    return any(_part_holds_an_id(part) for part in _PART_SPLIT_RE.split(text) if part)
+
+
+def is_placeholder(segment: str) -> bool:
+    """True when *segment* is a ``{name}`` placeholder, as ``template_path`` and
+    ``bare_url``'s email masking write one."""
+    return bool(_PLACEHOLDER_SEGMENT_RE.fullmatch(segment))
 
 
 def _is_email(segment: str) -> bool:
@@ -131,8 +181,8 @@ def bare_url(url: str) -> str:
 
 
 def looks_dynamic(segment: str) -> bool:
-    """True when *segment* reads as an opaque identifier rather than a word, or holds
-    an email address (percent-decoded first), which is account data.
+    """True when *segment* is all digits or :func:`holds_an_id`: a path segment
+    that collapses into a named parameter.
 
     The one owner of that judgement: ``template_path`` collapses on it, and the
     digest's high-cardinality collapse gates on it (in a relaxed form) so a run
@@ -141,19 +191,7 @@ def looks_dynamic(segment: str) -> bool:
     """
     if not segment:
         return False
-    if segment.isdigit() or _is_email(segment):
-        return True
-    if _looks_like_short_id(segment):
-        return True
-    if _UUID_RE.match(segment):
-        return True
-    if len(segment) >= _MIN_HEX_LEN and _HEX_RE.match(segment):
-        return True
-    return (
-        len(segment) >= _MIN_BASE64_LEN
-        and bool(_BASE64_RE.match(segment))
-        and any(ch.isdigit() for ch in segment)
-    )
+    return segment.isdigit() or holds_an_id(segment)
 
 
 def param_name_for_segment(prev_segment: str) -> str:
@@ -215,7 +253,7 @@ def templates_a_segment(url: str) -> bool:
     ``{user_id}``) counts too.
     """
     path = bare_path(urlsplit(url).path)
-    if any(_PLACEHOLDER_SEGMENT_RE.fullmatch(segment) for segment in path.split("/")):
+    if any(is_placeholder(segment) for segment in path.split("/")):
         return True
     return bool(path) and template_path(path)[0] != path
 

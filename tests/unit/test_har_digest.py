@@ -700,7 +700,8 @@ class TestNonFormBodiesHaveNoFieldNames:
         assert (types, kind) == ({}, "none")
 
     def test_a_field_name_at_the_cap_is_accepted(self, tmp_path: Path) -> None:
-        name = "f" * _MAX_FIELD_NAME_LEN
+        # Not hex: 64 f's is a hex token, which the id rule drops.
+        name = "z" * _MAX_FIELD_NAME_LEN
         types, kind = self._parsed(tmp_path, mime_type=_FORM_CONTENT_TYPE, text=f"{name}=value")
         assert (types, kind) == ({name: "str"}, "form")
 

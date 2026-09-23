@@ -28,6 +28,7 @@ from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
     bare_url,
+    holds_an_id,
     looks_dynamic,
     param_name_for_segment,
     template_path,
@@ -517,23 +518,6 @@ def _query_param_types(url: str) -> dict[str, str]:
     return types
 
 
-# A key holding an id: a run of five or more digits, or eight or more hex
-# characters mixing digits and the letters a to f. The same lexical shapes a path
-# segment templates on (graftpunk.har.paths), applied to a key, which has no
-# placeholder to become, so the key is dropped.
-_ID_IN_KEY_RE = re.compile(r"\d{5,}")
-_HEX_RUN_RE = re.compile(r"[0-9a-fA-F]{8,}")
-
-
-def _holds_an_id(name: str) -> bool:
-    if _ID_IN_KEY_RE.search(name):
-        return True
-    return any(
-        any(ch.isdigit() for ch in run) and any(ch.isalpha() for ch in run)
-        for run in _HEX_RUN_RE.findall(name)
-    )
-
-
 def _field_name_shaped(name: str) -> bool:
     """True when *name* is spelled like a field name (the field-name alphabet, no
     longer than ``_MAX_FIELD_NAME_LEN``): what tells a form body from body text."""
@@ -543,9 +527,10 @@ def _field_name_shaped(name: str) -> bool:
 def _plausible_field_name(name: str) -> bool:
     """True when *name* reads as a field name rather than as body text or an id: a
     key that does not match the field-name alphabet (an email address, a key
-    starting with a digit) or that holds an id (``u_40912873``, ``k_ab12cd34ef``)
-    is not one."""
-    return _field_name_shaped(name) and not _holds_an_id(name)
+    starting with a digit) is not one, and neither is a key that
+    :func:`graftpunk.har.paths.holds_an_id` says carries an account value
+    (``u_40912873``, ``cus_NffrFeUfNV2Hib``)."""
+    return _field_name_shaped(name) and not holds_an_id(name)
 
 
 def _declared_request_content_type(entry: HAREntry) -> str:
@@ -612,7 +597,7 @@ def _parse_body(entry: HAREntry) -> tuple[dict[str, str], BodyKind]:
     if not form or not all(_field_name_shaped(name) for name in form):
         return {}, "none"
     # Still a form when a key holds an id; that key alone is dropped.
-    types = {k: _text_values_type(v) for k, v in form.items() if not _holds_an_id(k)}
+    types = {k: _text_values_type(v) for k, v in form.items() if not holds_an_id(k)}
     return types, "form"
 
 

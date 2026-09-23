@@ -14,7 +14,7 @@ from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import urlsplit
 
-from graftpunk.har.paths import bare_path, bare_url, templates_a_segment
+from graftpunk.har.paths import bare_path, bare_url, is_placeholder, templates_a_segment
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -253,12 +253,9 @@ def unscoped_selector(selector: str) -> str | None:
     return match.group(0) if match else None
 
 
-_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
-
-
 def _placeholder_segments(path: str) -> int:
     """How many of *path*'s segments are a ``{name}`` placeholder."""
-    return sum(1 for segment in path.split("/") if _PLACEHOLDER_RE.fullmatch(segment))
+    return sum(1 for segment in path.split("/") if is_placeholder(segment))
 
 
 def printable_selectors(form: LoginForm) -> tuple[dict[str, str | None], str | None]:

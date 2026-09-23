@@ -9,6 +9,8 @@ from graftpunk.har.paths import (
     _MIN_HEX_LEN,
     bare_host,
     bare_url,
+    holds_an_id,
+    is_placeholder,
     looks_dynamic,
     param_name_for_segment,
     template_path,
@@ -180,43 +182,85 @@ class TestAnEmailSegmentIsAnAccountValue:
         assert templates_a_segment("https://myshop.example.com/users/{user_id}/signin")
 
 
-class TestShortAndEmbeddedIds:
-    """The lexical shapes an account carries through a whole recording, which a
-    high-cardinality collapse never sees: one account, one value."""
+# The one id rule's two tables (graftpunk.har.paths.holds_an_id). Every position
+# the digest reads a name from goes through it; tests/unit/test_id_property.py
+# plants the first table in every position end to end.
+MUST_BE_ID = (
+    "40912873",
+    "40912",
+    "acct-40912873",
+    "order12345x",
+    "8f14e45f-ceea-467e-bd3d-46f0e7d1f5a3",
+    "ab12cd34",
+    "a3f9c2d1e0b4",
+    "5f1a9c2e8b1d4f60a9e2c3b4",
+    "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8",
+    "acct-ab12cd34ef",
+    "a3f9c2d1e0b4.pdf",
+    "cus_NffrFeUfNV2Hib",
+    "usr_8fK2x9Qa",
+    "usr_8fk2x9qa",
+    "usr-Zq9XkLmPwR",
+    "acct.Zq9XkLmPwR",
+    "Zq9XkLmPwR",
+    "x7Kq29Lp",
+    "x7Kq29Lp.json",
+    "order~40912873",
+    "Zm9vYmFyYmF6cXV4MTIzNDU2",
+    "alice@example.com",
+    "alice%40example.com",
+)
+MUST_BE_KEPT = (
+    "address2",
+    "line1",
+    "phone2",
+    "billing_address2",
+    "added2cart",
+    "utm_source",
+    "per_page",
+    "sort_by",
+    "userId",
+    "orderId2",
+    "html5",
+    "mp3",
+    "v2",
+    "v1beta1",
+    "v2alpha1",
+    "en-US",
+    "my-post-2024",
+    "windows10",
+    "orders",
+    "api",
+    "red-widget-2024",
+    "deadbeef",
+    "abcdefgh",
+    "facade",
+    "user_profile",
+    "password-reset",
+    "oauth2",
+    "2024",
+)
 
-    @pytest.mark.parametrize(
-        "segment",
-        [
-            "acct-40912873",
-            "40912",
-            "order12345x",
-            "ab12cd34",
-            "a3f9c2d1",
-            "a3f9c2d1e0b4",
-            "cus_NffrFeUfNV2Hib",
-            "usr_8fK2x9Qa",
-            "x7Kq29Lp",
-            "html5player1",
-        ],
-    )
-    def test_is_dynamic(self, segment: str) -> None:
-        assert looks_dynamic(segment)
 
-    @pytest.mark.parametrize(
-        "segment",
-        [
-            "orders",
-            "v2",
-            "api",
-            "red-widget-2024",
-            "deadbeef",
-            "abcdefgh",
-            "facade",
-            "user_profile",
-            "password-reset",
-            "abc_defghij",
-            "oauth2",
-        ],
-    )
-    def test_is_a_word(self, segment: str) -> None:
-        assert not looks_dynamic(segment)
+class TestHoldsAnId:
+    @pytest.mark.parametrize("text", MUST_BE_ID)
+    def test_an_id_shape_holds_an_id(self, text: str) -> None:
+        assert holds_an_id(text)
+
+    @pytest.mark.parametrize("text", MUST_BE_KEPT)
+    def test_an_ordinary_name_holds_none(self, text: str) -> None:
+        assert not holds_an_id(text)
+
+    @pytest.mark.parametrize("text", MUST_BE_ID)
+    def test_a_path_segment_holding_an_id_templates(self, text: str) -> None:
+        assert looks_dynamic(text)
+        assert template_path(f"/accounts/{text}/orders")[0] == "/accounts/{account_id}/orders"
+
+    def test_a_path_segment_of_digits_alone_templates_at_any_length(self) -> None:
+        assert looks_dynamic("1")
+        assert looks_dynamic("2024")
+
+    def test_is_placeholder(self) -> None:
+        assert is_placeholder("{user_id}")
+        assert not is_placeholder("user_id")
+        assert not is_placeholder("{x}y")
