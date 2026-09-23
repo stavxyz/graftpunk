@@ -25,6 +25,7 @@ from graftpunk.cli.observe_browser import run_observe_go, run_observe_interactiv
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.console import err_console
 from graftpunk.devtools.captures import (
+    IgnoreFileReadError,
     ensure_ignored,
     find_repo_root,
     is_tracked,
@@ -271,9 +272,11 @@ def fixtures_cmd(
             )
             raise typer.Exit(1) from None
         except OSError as exc:
+            # Which step failed: a read never changed the file; an append may have.
+            step = "read" if isinstance(exc, IgnoreFileReadError) else "write"
             reason = exc.strerror or str(exc)
             console.print(
-                f"[red]Could not write {escape(str(gitignore))}: {escape(reason)}[/red]",
+                f"[red]Could not {step} {escape(str(gitignore))}: {escape(reason)}[/red]",
                 soft_wrap=True,
             )
             raise typer.Exit(1) from None

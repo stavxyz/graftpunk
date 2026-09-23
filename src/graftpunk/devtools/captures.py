@@ -20,9 +20,21 @@ from graftpunk.testing.sidecar import Sidecar, sidecar_path, sidecar_text
 
 LOG = get_logger(__name__)
 
-__all__ = ["ensure_ignored", "find_repo_root", "is_tracked", "write_sidecar"]
+__all__ = [
+    "IgnoreFileReadError",
+    "ensure_ignored",
+    "find_repo_root",
+    "is_tracked",
+    "write_sidecar",
+]
 
 _GIT_TIMEOUT_SECONDS = 10
+
+
+class IgnoreFileReadError(OSError):
+    """The ``.gitignore`` could not be read, as opposed to appended to (a bare
+    ``OSError`` from :func:`ensure_ignored`). Carries the read's ``errno``,
+    ``strerror``, and ``filename``."""
 
 
 def _nearest_existing(start: Path) -> Path:
@@ -78,12 +90,17 @@ def ensure_ignored(repo_root: Path, relative: str) -> bool:
 
     Raises:
         UnicodeDecodeError: The ``.gitignore`` is not UTF-8 text.
-        OSError: The ``.gitignore`` cannot be read or appended to.
+        IgnoreFileReadError: The ``.gitignore`` cannot be read.
+        OSError: The ``.gitignore`` cannot be appended to.
     """
     gitignore = repo_root / ".gitignore"
     # Read as bytes so a CRLF file's text is what is on disk; the append below
     # then leaves every existing byte as it was.
-    existing = gitignore.read_bytes().decode("utf-8") if gitignore.exists() else ""
+    try:
+        raw = gitignore.read_bytes() if gitignore.exists() else b""
+    except OSError as exc:
+        raise IgnoreFileReadError(exc.errno, exc.strerror, exc.filename) from exc
+    existing = raw.decode("utf-8")
     updated = with_ignored(existing, relative)
     if updated == existing:
         return False

@@ -686,9 +686,27 @@ class TestFixturesGitignore:
         assert result.exit_code == 1, result.output
         assert isinstance(result.exception, SystemExit)
         output = strip_ansi(result.output).replace("\n", "")
-        assert str(gitignore) in output
-        assert "Permission denied" in output
+        assert f"Could not read {gitignore}: Permission denied" in output
         assert not out_dir.exists()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
+    def test_a_read_only_gitignore_is_refused_as_a_failed_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        gitignore = repo / ".gitignore"
+        gitignore.write_text("node_modules/\n")
+        gitignore.chmod(0o444)
+        out_dir = repo / "tests" / "captures"
+        try:
+            result = _invoke_fixtures(out_dir)
+        finally:
+            gitignore.chmod(0o644)
+
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert f"Could not write {gitignore}: Permission denied" in output
+        assert gitignore.read_text() == "node_modules/\n"
 
     def test_a_digest_failure_leaves_gitignore_and_the_target_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
