@@ -1260,7 +1260,8 @@ class TestParseErrorsAndMissingBodies:
             result = digest(DigestSource.from_har(_write_har(tmp_path, [page])))
         (form,) = result.login_forms
         assert form.action == ""
-        assert form.fields["username"].startswith('form:not([action]) input[name="username"]')
+        # Unscoped: an empty-action scope would never match the live form.
+        assert form.fields["username"] == 'input[name="username"]'
         (event,) = [e for e in events if e["event"] == "login_form_action_unparseable"]
         assert event["source"] == "https://myshop.example.com/signin"
         assert "[bad" not in str(event)

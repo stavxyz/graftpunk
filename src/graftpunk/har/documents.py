@@ -267,10 +267,11 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
 
     Each yields a :class:`LoginForm` with the form's action stripped of its
     query string, fragment, and ``;params``
-    (:func:`graftpunk.har.paths.bare_url`), one CSS
-    selector per input (an ``#id`` selector when the input has one, else a
-    selector scoped to the form's action), the credential role guessed from type and name, the
-    submit control's selector, and hidden input names.
+    (:func:`graftpunk.har.paths.bare_url`), one CSS selector per input (an id
+    selector when the input has one, else a selector scoped to the form's action,
+    or unscoped when the action cannot be parsed, with its attribute values
+    escaped), the credential role guessed from type and name, the submit control's
+    selector, and hidden input names.
     """
     forms: list[LoginForm] = []
     for raw in _parse(html).forms:
@@ -279,13 +280,16 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
             continue
         try:
             action = bare_url(raw.action)
+            scopes = _form_scopes(raw.action, action)
         except ValueError:
             # urlsplit refuses an action it cannot split (an unclosed IPv6
-            # bracket); the form still counts, scoped as one with no action.
-            # The page is named, never the action text.
+            # bracket); the form still counts. Its selectors are unscoped: a
+            # scope for an empty action would never match the live form, and one
+            # spelled from the raw text would print it. The page is named in the
+            # warning, never the action text.
             LOG.warning("login_form_action_unparseable", source=source)
             action = ""
-        scopes = _form_scopes(raw.action, action)
+            scopes = ()
         fields: dict[str, str] = {}
         hidden: list[str] = []
         submit: str | None = None
