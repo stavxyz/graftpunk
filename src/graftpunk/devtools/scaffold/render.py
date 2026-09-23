@@ -271,7 +271,8 @@ def _success_url_pattern(redirect_path: str) -> str | None:
     path gets a leading wildcard for the host (the login often lands on a different
     one than it started from) and a trailing wildcard for the query the site adds.
     A redirect to the site root is every URL's prefix and would match the login page
-    itself, so it yields no pattern and the caller emits a comment instead.
+    itself, so it yields no pattern and the caller emits a comment instead; so does
+    a landing path whose every segment templates, which would match any URL.
 
     The path is templated first (``template_path``), and each ``{placeholder}``
     becomes ``*``: a landing path such as ``/accounts/12345/dashboard`` holds an
@@ -286,6 +287,14 @@ def _success_url_pattern(redirect_path: str) -> str | None:
     if not path.startswith("/"):
         return None
     template, _ = template_path(path)
+    literal_segments = [
+        segment for segment in template.split("/") if segment and not segment.startswith("{")
+    ]
+    if not literal_segments:
+        # Every segment is an id (/40912873, /1/2): the glob would be */**, which
+        # matches every URL, so a failed login that navigates would count as
+        # success. No pattern, as for the root.
+        return None
     parts = URL_PLACEHOLDER_RE.split(template)
     # split() with one group alternates literal text and placeholder names.
     return "*" + "".join("*" if i % 2 else glob.escape(part) for i, part in enumerate(parts)) + "*"
@@ -370,8 +379,13 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         lines.extend(
             wrapped_comment_lines(
                 "GP-FILL: success_url, a glob matched against the whole URL this login "
-                "lands on, e.g. */dashboard*. This run observed no redirect after the "
-                "credential post.",
+                "lands on, e.g. */dashboard*. "
+                + (
+                    "The redirect this run observed after the credential post has no "
+                    "literal path segment to match on."
+                    if landing_path
+                    else "This run observed no redirect after the credential post."
+                ),
                 indent=len(L2),
             )
         )

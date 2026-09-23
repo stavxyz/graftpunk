@@ -932,6 +932,24 @@ class TestGeneratedLoginHoldsNoAccountValue:
         assert '"username": "GP-FILL: username selector",' in code
         assert '"password": "#pw",' in code
 
+    @pytest.mark.parametrize("landing", ["/40912873", "/1/2"])
+    def test_a_landing_path_of_placeholders_only_sets_no_success_url(self, landing: str) -> None:
+        """*/** matches every URL, so a failed login that navigates would pass."""
+        post = LoginObservation(
+            order=1,
+            method="POST",
+            url="https://myshop.example.com/session",
+            status=302,
+            kind="credential_post",
+            fields=("username", "password"),
+            redirect_to=landing,
+        )
+        code = self._plugin_code(
+            self._form("/session", "https://myshop.example.com/signin"), login=(post,)
+        )
+        assert "success_url=" not in code
+        assert "GP-FILL: success_url" in code
+
     def test_success_url_templates_an_id_in_the_landing_path(self) -> None:
         post = LoginObservation(
             order=1,
