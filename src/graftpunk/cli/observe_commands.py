@@ -23,6 +23,7 @@ from rich.table import Table
 
 from graftpunk.cli.observe_browser import run_observe_go, run_observe_interactive
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
+from graftpunk.console import err_console
 from graftpunk.devtools.captures import (
     ensure_ignored,
     find_repo_root,
@@ -150,7 +151,8 @@ def digest_cmd(
     """Read a HAR (a run or a bare file) into a readable digest of hosts, endpoints, login, and
     tokens."""
     if as_json and endpoints_json:
-        console.print("[red]Pass --json or --endpoints-json, not both.[/red]")
+        # On stderr: a caller asking for JSON reads stdout as JSON.
+        err_console.print("[red]Pass --json or --endpoints-json, not both.[/red]")
         raise typer.Exit(1)
     source = _digest_source(session, run, har)
     result = digest(source, all_hosts=all_hosts)

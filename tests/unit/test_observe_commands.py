@@ -233,7 +233,8 @@ class TestDigestCommand:
             ["observe", "digest", "--har", str(har), "--json", "--endpoints-json"],
         )
         assert result.exit_code == 1
-        assert "not both" in _plain(result.output)
+        assert result.stdout == ""
+        assert "not both" in _plain(result.stderr)
 
 
 class TestFixturesCommand:
