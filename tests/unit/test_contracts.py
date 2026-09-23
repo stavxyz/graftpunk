@@ -18,6 +18,7 @@ from graftpunk.contracts import (
     Surface,
     UnknownSchemaError,
     cli_contracts,
+    contract_mismatch,
     current_schema,
     refuse_unknown_schema,
 )
@@ -61,6 +62,25 @@ class TestRefuseUnknownSchema:
 
     def test_the_error_is_a_value_error(self) -> None:
         assert issubclass(UnknownSchemaError, ValueError)
+
+
+class TestContractMismatch:
+    """The gp version --contract handshake: equality, with the older side named."""
+
+    def test_the_current_number_matches(self) -> None:
+        assert contract_mismatch("endpoints", current_schema("endpoints")) is None
+
+    def test_an_older_caller_is_named(self) -> None:
+        message = contract_mismatch("endpoints", current_schema("endpoints") - 1)
+        assert message is not None and "the caller is older than graftpunk" in message
+
+    def test_a_newer_caller_is_named(self) -> None:
+        message = contract_mismatch("endpoints", current_schema("endpoints") + 1)
+        assert message is not None and "graftpunk is older than the caller" in message
+
+    def test_a_surface_no_caller_reads_through_the_cli_is_a_mismatch(self) -> None:
+        message = contract_mismatch("sidecar", 1)
+        assert message is not None and "sidecar" in message
 
 
 def test_contracts_is_the_only_module_that_declares_a_schema_number() -> None:
