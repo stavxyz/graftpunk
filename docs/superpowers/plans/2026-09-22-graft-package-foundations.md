@@ -53,21 +53,22 @@ validated:
 | File | Responsibility |
 | --- | --- |
 | `src/graftpunk/devtools/scaffold/pysrc.py` (new, Task 1) | The Python-source formatting helpers moved out of `render.py`: width, indentation, quoting, escaping, wrapping, literal, dict, call, URL, and import line builders. The ones another module imports get public names and an `__all__` in a second commit. |
-| `src/graftpunk/contracts.py` (new, Tasks 2, 5) | `ENDPOINTS_SCHEMA`, `SIDECAR_SCHEMA`, `CLI_SURFACES`, `current_schema`, `cli_contracts`, `refuse_unknown_schema`, `UnknownSchemaError`, `contract_mismatch`. |
+| `src/graftpunk/contracts.py` (new, Tasks 2, 5) | `ENDPOINTS_SCHEMA`, `SIDECAR_SCHEMA`, `CLI_SURFACES`, `current_schema`, `cli_contracts`, `refuse_unknown_schema`, `UnknownSchemaError`, `contract_mismatch`, and `installation_facts`, the payload `gp version --json` prints, beside `cli_contracts`. |
 | `src/graftpunk/har/digest.py` (modify, Tasks 3, 7) | `Endpoint.login_flow`; `_login_flow_pairs` and `_with_login_flow` moved in from the generator (Task 3); `flagged_names_of`, the names a fixture must not contain, beside the digest that records them (Task 7). |
 | `src/graftpunk/har/report.py` (modify, Task 4) | `endpoints_projection`, `render_endpoints_json`. |
 | `src/graftpunk/cli/observe_commands.py` (modify, Tasks 4, 6, 7) | `--endpoints-json`; the matcher consumes `parse_endpoint`'s pair; fixtures write their sidecar through the devtools writer. |
-| `src/graftpunk/cli/main.py` (modify, Task 5) | `installation_facts`, `gp version --json --at-least --contract`. |
+| `src/graftpunk/cli/main.py` (modify, Task 5) | `gp version --json --at-least --contract`, which prints `contracts.installation_facts()` and builds nothing itself. |
 | `pyproject.toml`, `uv.lock` (modify, Task 5) | `packaging` joins the runtime dependencies. |
 | `src/graftpunk/har/naming.py` (modify, Task 6) | `HTTP_METHODS`, `EndpointSpecError`, `parse_endpoint`, `parse_command_spec`. |
 | `src/graftpunk/testing/sidecar.py` (new, Task 7) | `SIDECAR_SUFFIX`, `SIDECAR_FIELDS`, `Sidecar`, `SidecarError`, `sidecar_path`, `is_sidecar`, `sidecar_payload`, `sidecar_text`, `load_sidecar`. |
 | `src/graftpunk/testing/__init__.py` (modify, Task 7) | `FixtureSession` reads sidecars through the owner. |
-| `src/graftpunk/devtools/captures.py` (modify, Tasks 7, 10) | `write_sidecar`, which takes the flagged names as plain strings (Task 7); `with_ignored`, the pure text edit `ensure_ignored` now applies (Task 10). |
+| `src/graftpunk/devtools/captures.py` (modify, Tasks 7, 10) | The writing side of the captures rule: `write_sidecar`, which takes the flagged names as plain strings (Task 7); `ensure_ignored` applies `captures_rule.with_ignored` to disk, and `CAPTURES_DIR` moves out (Task 10). |
+| `src/graftpunk/devtools/captures_rule.py` (new, Task 10) | The pure side of the captures rule: `CAPTURES_DIR` and `with_ignored`, the text edit. Imports nothing that touches the filesystem, so scaffold modules import the rule from here. |
 | `docs/PLUGIN_DEVELOPMENT.md`, `docs/HOW_IT_WORKS.md` (modify, Task 7) | The sidecar example and the sidecar field list describe the schema 1 format. |
 | `src/graftpunk/cli/scaffold_commands.py` (modify, Tasks 8, 10) | `gp plugin new --check-name`, `_name_refusal` (Task 8); `plugin_new`'s `ScaffoldWriteError` arm (Task 10). |
 | `src/graftpunk/devtools/scaffold/policy.py` (new, Task 9) | `TESTS_DIR`, `FIXTURES_TREE`, `fixtures_root`. |
 | `src/graftpunk/devtools/scaffold/render.py` (modify, Tasks 1, 3, 9, 11) | Loses the formatting helpers, the login-flow computation, and the fixtures-root rule; gains the declared endpoint and typed parameters on every stub. |
-| `src/graftpunk/devtools/errors.py` (new, Task 10) | `ScaffoldRefusal`, the one base class of every devtools refusal a CLI entry point catches; `ScaffoldWriteError`, a write that failed after the writer restored what it had changed. |
+| `src/graftpunk/devtools/errors.py` (new, Task 10) | `DevtoolsRefusal`, the one base class of every devtools refusal a CLI entry point catches; `ScaffoldWriteError`, a write that failed, naming any path the writer's restore could not put back, and carrying the wrapped error's `errno`, `strerror`, and `filename`. |
 | `src/graftpunk/devtools/scaffold/write.py` (new, Task 10) | `PlannedChange`, `apply_changes`, `find_conflicts`, `validate_python`, `validate_toml`, `ChangeConflictError`, `InvalidChangeError`; an `OSError` during a write reaches the caller as `ScaffoldWriteError`. |
 | `src/graftpunk/devtools/scaffold/pyproject_edit.py` (modify, Task 10) | Pure `with_entry_point` and `with_wheel_package`; the file-writing `add_entry_point` and `add_wheel_package` are removed. |
 | `src/graftpunk/devtools/scaffold/project.py` (modify, Task 10) | `write_scaffold` plans its changes and applies them through `write.py`. |
@@ -1134,12 +1135,12 @@ git commit -m "feat(observe): gp observe digest --endpoints-json, a versioned pr
 **Files:**
 - Modify: `pyproject.toml:33-47` (`dependencies`), `uv.lock`
 - Modify: `src/graftpunk/cli/main.py:6-14` (standard-library and third-party imports), `:32` (`from graftpunk.console import err_console`, the import the new one follows), `:169-182` (`version`)
-- Modify: `src/graftpunk/contracts.py` (new `contract_mismatch`; `__all__`; docstring)
+- Modify: `src/graftpunk/contracts.py` (new `contract_mismatch` and `installation_facts`; `__all__`; docstring)
 - Test: `tests/unit/test_cli_version.py`, `tests/unit/test_contracts.py`
 
 **Interfaces:**
 - Consumes: `cli_contracts()` (Task 2).
-- Produces: `graftpunk.contracts.contract_mismatch(surface: str, reads: int) -> str | None`; `graftpunk.cli.main.installation_facts() -> dict[str, object]` with the permanent field set `{"graftpunk", "contracts"}`; `gp version --json` prints `json.dumps(installation_facts(), sort_keys=True)` on one line; `gp version --at-least VERSION --contract SURFACE=N ...` prints that line first when `--json` is given, then exits 0 when the installed version is at least VERSION and every named surface is written at exactly N; 1 when the installed version is below VERSION; 3 when a named surface differs, with one line per mismatch on stderr naming the older side; 1 with a message on stderr for an unreadable VERSION or a malformed `--contract` value; and 2 only for Typer's own usage errors (an unknown option). The skill plan's preflight passes its floor and its two contract numbers in this one call and reads only the exit status, never the JSON.
+- Produces: `graftpunk.contracts.contract_mismatch(surface: str, reads: int) -> str | None`; `graftpunk.contracts.installation_facts() -> dict[str, object]` with the permanent field set `{"graftpunk", "contracts"}`, beside `cli_contracts`, reading `graftpunk.__version__` at call time; `gp version --json` prints `json.dumps(installation_facts(), sort_keys=True)` on one line; `gp version --at-least VERSION --contract SURFACE=N ...` prints that line first when `--json` is given, then exits 0 when the installed version is at least VERSION and every named surface is written at exactly N; 1 when the installed version is below VERSION; 3 when a named surface differs, with one line per mismatch on stderr naming the older side; 1 with a message on stderr for an unreadable VERSION or a malformed `--contract` value; and 2 only for Typer's own usage errors (an unknown option). The skill plan's preflight passes its floor and its two contract numbers in this one call and reads only the exit status, never the JSON.
 
 **Implementation note:** the spec's first wording had preflight read the `contracts` numbers out of the JSON and compare them itself. The comparison moves into the package (`--contract`), so preflight parses no JSON and compares nothing, and the spec's Preflight section says so. An unreadable `--at-least` value exits 1 with a message rather than 2, so exit 2 means exactly "an option gp does not know", which is what preflight's exit 5 reports.
 
@@ -1159,8 +1160,8 @@ from typer.testing import CliRunner
 
 import graftpunk
 from graftpunk import contracts
-from graftpunk.cli.main import app, installation_facts
-from graftpunk.contracts import cli_contracts
+from graftpunk.cli.main import app
+from graftpunk.contracts import cli_contracts, installation_facts
 
 runner = CliRunner()
 
@@ -1322,7 +1323,21 @@ Expected: `uv.lock` records `packaging` as a direct dependency of `graftpunk`.
 
 - [ ] **Step 4: Write the comparison in `contracts.py`**
 
-In `src/graftpunk/contracts.py`, add `"contract_mismatch"` to `__all__`, change the docstring's comparison sentence to "the only place one is compared: :func:`refuse_unknown_schema` for a payload a reader loads, and :func:`contract_mismatch` for the ``gp version --contract`` handshake (graft skill spec, 2026-09-21).", and append:
+In `src/graftpunk/contracts.py`, add `import graftpunk` after the `typing` import (its own isort section), add `"contract_mismatch"` and `"installation_facts"` to `__all__`, change the docstring's comparison sentence to "the only place one is compared: :func:`refuse_unknown_schema` for a payload a reader loads, and :func:`contract_mismatch` for the ``gp version --contract`` handshake (graft skill spec, 2026-09-21).", append to the docstring's paragraph on ``gp version --json`` the sentence ":func:`installation_facts` builds it, and the command only prints it.", and append:
+
+```python
+def installation_facts() -> dict[str, object]:
+    """What ``gp version --json`` prints: facts about this installation as data.
+
+    The installed version, and the schema number of every payload a caller reads
+    through the CLI. The bootstrap of every other contract, so it carries no
+    number of its own; its two fields are permanent (see the module docstring).
+    The version is read at call time, so nothing here freezes it at import.
+    """
+    return {"graftpunk": graftpunk.__version__, "contracts": cli_contracts()}
+```
+
+and:
 
 ```python
 def contract_mismatch(surface: str, reads: int) -> str | None:
@@ -1353,19 +1368,9 @@ def contract_mismatch(surface: str, reads: int) -> str | None:
 
 - [ ] **Step 5: Write the command**
 
-In `src/graftpunk/cli/main.py`, add `import json` to the standard-library imports, `from packaging.version import InvalidVersion, Version` after `import typer` and before `from rich.console import Console` (isort's order; anywhere else ruff reports I001), and `from graftpunk.contracts import cli_contracts, contract_mismatch` after `from graftpunk.console import err_console` (`main.py:32`). Replace the `version` command with:
+In `src/graftpunk/cli/main.py`, add `import json` to the standard-library imports, `from packaging.version import InvalidVersion, Version` after `import typer` and before `from rich.console import Console` (isort's order; anywhere else ruff reports I001), and `from graftpunk.contracts import contract_mismatch, installation_facts` after `from graftpunk.console import err_console` (`main.py:32`). Replace the `version` command with:
 
 ```python
-def installation_facts() -> dict[str, object]:
-    """What ``gp version --json`` prints: facts about this installation as data.
-
-    The installed version, and the schema number of every payload a caller reads
-    through the CLI. The bootstrap of every other contract, so it carries no
-    number of its own; its fields are permanent (:mod:`graftpunk.contracts`).
-    """
-    return {"graftpunk": graftpunk.__version__, "contracts": cli_contracts()}
-
-
 @app.command("version")
 def version(
     as_json: Annotated[
@@ -1450,7 +1455,7 @@ git commit -m "feat(cli): gp version --json, --at-least ordered by packaging, an
 
 **Files:**
 - Modify: `src/graftpunk/har/naming.py` (new constants, error, two parsers; `__all__`)
-- Modify: `src/graftpunk/cli/observe_commands.py:43-45` (`_HTTP_METHODS` removed), `:156-179` (`_matches_template`, `_validate_match_patterns` replaced), `:201-251` (`fixtures_cmd`)
+- Modify: `src/graftpunk/cli/observe_commands.py:43-45` (`_HTTP_METHODS` removed), `:156-179` (`_matches_template`, `_validate_match_patterns` replaced), `:201-251` (`fixtures_cmd` body, from `if not match:` through the `_matches_template` call)
 - Modify: `tests/unit/test_observe_commands.py:563-611` (`TestMatchPatternValidation`)
 - Test: `tests/unit/test_har_naming.py`
 
@@ -1691,10 +1696,10 @@ git commit -m "feat(har): parse_endpoint and parse_command_spec own the endpoint
 
 **Files:**
 - Create: `src/graftpunk/testing/sidecar.py`
-- Modify: `src/graftpunk/testing/__init__.py:92-131` (`FixtureSession.request`, `_respond_from_file`)
+- Modify: `src/graftpunk/testing/__init__.py:13` (`import json`, deleted), `:76-80` (the class docstring's sidecar sentence), `:96-131` (`FixtureSession.request`, `_respond_from_file`)
 - Modify: `src/graftpunk/har/digest.py` (new `flagged_names_of`; `__all__`)
 - Modify: `src/graftpunk/devtools/captures.py` (new `write_sidecar`; `__all__`)
-- Modify: `src/graftpunk/cli/observe_commands.py:201-296` (`fixtures_cmd` writes the sidecar through the writer)
+- Modify: `src/graftpunk/cli/observe_commands.py:13` (`import json as jsonlib`, deleted), `:27-28` (the captures and digest imports), `:201-296` (`fixtures_cmd` body: it writes the sidecar through the writer)
 - Modify: `tests/unit/test_graftpunk_testing.py:66-74` (the sidecar test writes a schema 1 sidecar)
 - Modify: `docs/PLUGIN_DEVELOPMENT.md` ("Test against fixtures, not against the site": the sentence that introduces the sidecar, the JSON block after it, and the error-path sentence of the paragraph after that), `docs/HOW_IT_WORKS.md:483-486` (the sidecar's field list)
 - Test: `tests/unit/test_testing_sidecar.py`, `tests/unit/test_har_digest.py`, `tests/unit/test_devtools_captures.py`, `tests/unit/test_observe_commands.py`, `tests/unit/test_graftpunk_testing.py`
@@ -2272,7 +2277,7 @@ git commit -m "feat(testing): the fixture sidecar gets one owner and a committab
 ### Task 8: `gp plugin new <name> --check-name`
 
 **Files:**
-- Modify: `src/graftpunk/cli/scaffold_commands.py:24` (import), `:82-124` (`plugin_new`), new `_name_refusal`
+- Modify: `src/graftpunk/cli/scaffold_commands.py:24` (import), `:82-124` (`plugin_new`'s signature and its early refusals; the function runs to line 184), new `_name_refusal`
 - Test: `tests/unit/test_scaffold_cli.py`
 
 **Interfaces:**
@@ -2392,12 +2397,12 @@ git commit -m "feat(scaffold): gp plugin new --check-name refuses a name with th
 
 **Files:**
 - Create: `src/graftpunk/devtools/scaffold/policy.py`
-- Modify: `src/graftpunk/devtools/scaffold/render.py` (the public `fixtures_root(spec)` keeps its name and its place in `__all__` and reads policy; `_fixtures_dir_expression` derived from it; `render()` builds the test-module, conftest, and `.gitkeep` paths from `policy.TESTS_DIR` and the fixtures root)
+- Modify: `src/graftpunk/devtools/scaffold/render.py` (the public `fixtures_root(spec)` is renamed `fixtures_root_for(spec)`, in `__all__` and at its three callers, and reads policy; `_fixtures_dir_expression` derived from it; `render()` builds the test-module, conftest, and `.gitkeep` paths from `policy.TESTS_DIR` and the fixtures root)
 - Test: `tests/unit/test_scaffold_policy.py`, `tests/unit/test_scaffold_render.py`
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `graftpunk.devtools.scaffold.policy.TESTS_DIR: Final = "tests/"`; `FIXTURES_TREE: Final = f"{TESTS_DIR}fixtures/"` (`"tests/fixtures/"`); `fixtures_root(*, suite_member: bool, module_name: str) -> str`; `render.fixtures_root(spec: ScaffoldSpec) -> str`, public as it is today, so the project-tools plan's tests import it by that name rather than reaching for a private one. The tests directory is spelled once, here; `render.py` derives the generated `FIXTURES_DIR` expression and every `tests/` path in `render()` from `TESTS_DIR`. The project-tools plan adds `CONFTEST_PATH`, `FIXTURES_PLACEHOLDER` (imported from `graftpunk.testing.sidecar`), `GP_FILL_MARKER`, `module_name_for`, `PROJECT_GATE`, `ProjectRequirement`, and `PROJECT_REQUIREMENTS` to this module, and its reader calls `policy.fixtures_root` from the project on disk. The entry-point group is not policy's: it stays `graftpunk.plugins.PLUGINS_GROUP`, and policy does not import it.
+- Produces: `graftpunk.devtools.scaffold.policy.TESTS_DIR: Final = "tests/"`; `FIXTURES_TREE: Final = f"{TESTS_DIR}fixtures/"` (`"tests/fixtures/"`); `fixtures_root(*, suite_member: bool, module_name: str) -> str`; `render.fixtures_root_for(spec: ScaffoldSpec) -> str`, the spec-taking wrapper, public (it replaces the public `render.fixtures_root`, whose name now belongs to the policy's rule alone), so the project-tools plan's tests import it by that name rather than reaching for a private one. The tests directory is spelled once, here; `render.py` derives the generated `FIXTURES_DIR` expression and every `tests/` path in `render()` from `TESTS_DIR`. The project-tools plan adds `CONFTEST_PATH`, `FIXTURES_PLACEHOLDER` (imported from `graftpunk.testing.sidecar`), `GP_FILL_MARKER`, `module_name_for`, `PROJECT_GATE`, `ProjectRequirement`, and `PROJECT_REQUIREMENTS` to this module, and its reader calls `policy.fixtures_root` from the project on disk. The entry-point group is not policy's: it stays `graftpunk.plugins.PLUGINS_GROUP`, and policy does not import it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2434,18 +2439,40 @@ def test_every_root_lies_under_the_tree() -> None:
         assert fixtures_root(suite_member=suite_member, module_name="x").startswith(FIXTURES_TREE)
 
 
+# Modules that can touch the filesystem. Policy is data, so it imports none of
+# them. A denylist rather than an allowlist: a later addition to policy (a
+# dataclass, a regex, a constant owned elsewhere) needs no edit here, and the
+# check does not loosen as policy grows.
+_FILESYSTEM_MODULES = (
+    "os",
+    "shutil",
+    "pathlib",
+    "io",
+    "tempfile",
+    "subprocess",
+    "graftpunk.devtools.captures",
+)
+
+
 def test_policy_imports_nothing_that_touches_the_filesystem() -> None:
+    """Checks policy's own imports. graftpunk.devtools.captures is the writing side
+    of the captures rule; its pure side, captures_rule, is not on the list."""
     assert policy.__file__ is not None
     tree = ast.parse(Path(policy.__file__).read_text(encoding="utf-8"))
-    imported = {
-        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
-    } | {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    assert imported <= {"__future__", "dataclasses", "typing"}
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+            imported |= {f"{node.module}.{alias.name}" for alias in node.names}
+    touching = sorted(
+        name
+        for name in imported
+        for module in _FILESYSTEM_MODULES
+        if name == module or name.startswith(f"{module}.")
+    )
+    assert touching == []
 ```
 
 Append to `tests/unit/test_scaffold_render.py`:
@@ -2547,10 +2574,10 @@ def fixtures_root(*, suite_member: bool, module_name: str) -> str:
 
 - [ ] **Step 4: Make the renderer read the policy**
 
-In `src/graftpunk/devtools/scaffold/render.py`, add `from graftpunk.devtools.scaffold import policy`, and replace `fixtures_root` and `_fixtures_dir_expression` with the two functions below. `fixtures_root` keeps its public name and its `__all__` entry; inside `render.py` the bare name is this function and the policy's rule is always spelled `policy.fixtures_root`.
+In `src/graftpunk/devtools/scaffold/render.py`, add `from graftpunk.devtools.scaffold import policy`, and replace `fixtures_root` and `_fixtures_dir_expression` with the two functions below. The wrapper is renamed `fixtures_root_for`, and its `__all__` entry with it, so one name means one rule: `fixtures_root` is the policy's, always spelled `policy.fixtures_root` inside `render.py`, and `fixtures_root_for` applies it to a spec.
 
 ```python
-def fixtures_root(spec: ScaffoldSpec) -> str:
+def fixtures_root_for(spec: ScaffoldSpec) -> str:
     """Where *spec*'s generated tests look for fixtures: the policy's rule, from the
     spec's two facts. Also the directory ``gp plugin new``'s ``Next:`` line names."""
     return policy.fixtures_root(
@@ -2562,13 +2589,13 @@ def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
     """The generated ``FIXTURES_DIR`` assignment's right-hand side: the fixtures root,
     relative to the test module, which lives in ``policy.TESTS_DIR``. Every root
     lies under that directory by the policy's own rule, which its tests pin."""
-    parts = fixtures_root(spec).removeprefix(policy.TESTS_DIR).strip("/").split("/")
+    parts = fixtures_root_for(spec).removeprefix(policy.TESTS_DIR).strip("/").split("/")
     return "Path(__file__).parent" + "".join(f' / "{part}"' for part in parts)
 ```
 
-The calls `fixtures_root(spec)` in `fixture_paths`, `_render_test_module`, and `render` stay as they are.
+Rename the calls `fixtures_root(spec)` in `fixture_paths`, `_render_test_module`, and `render` to `fixtures_root_for(spec)` (`grep -n "fixtures_root(spec)" src/graftpunk/devtools/scaffold/render.py` finds them); nothing outside `render.py` calls it at `7bd9604`.
 
-Then build every `tests/` path in `render()` from the policy, so the tests directory and the fixtures tree are spelled once. Replace its two return dicts' test-side keys: in the new-project dict, `"tests/conftest.py"` becomes `f"{policy.TESTS_DIR}conftest.py"`, `"tests/test_plugin.py"` becomes `f"{policy.TESTS_DIR}test_plugin.py"`, and `"tests/fixtures/.gitkeep"` becomes `f"{fixtures_root(spec)}.gitkeep"` (a new project's root is the tree itself); in the suite dict, `f"tests/test_{module_name_for(spec.name)}.py"` becomes `f"{policy.TESTS_DIR}test_{module_name_for(spec.name)}.py"`, and the `.gitkeep` key already reads `fixtures_root(spec)`. The project-tools plan's Task 2 replaces the conftest key with `policy.CONFTEST_PATH` and the `.gitkeep` name with `policy.FIXTURES_PLACEHOLDER`. The render tests that index `render(spec)` by literal path are the check that nothing moved.
+Then build every `tests/` path in `render()` from the policy, so the tests directory and the fixtures tree are spelled once. Replace its two return dicts' test-side keys: in the new-project dict, `"tests/conftest.py"` becomes `f"{policy.TESTS_DIR}conftest.py"`, `"tests/test_plugin.py"` becomes `f"{policy.TESTS_DIR}test_plugin.py"`, and `"tests/fixtures/.gitkeep"` becomes `f"{fixtures_root_for(spec)}.gitkeep"` (a new project's root is the tree itself); in the suite dict, `f"tests/test_{module_name_for(spec.name)}.py"` becomes `f"{policy.TESTS_DIR}test_{module_name_for(spec.name)}.py"`, and the `.gitkeep` key already reads `fixtures_root_for(spec)` after the rename. The project-tools plan's Task 2 replaces the conftest key with `policy.CONFTEST_PATH` and the `.gitkeep` name with `policy.FIXTURES_PLACEHOLDER`. The render tests that index `render(spec)` by literal path are the check that nothing moved.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -2587,19 +2614,21 @@ git commit -m "feat(scaffold): the fixtures-root rule moves to a declarative pol
 ### Task 10: `write.py`, the one write discipline, with `write_scaffold` routed through it
 
 **Files:**
-- Create: `src/graftpunk/devtools/errors.py` (`ScaffoldRefusal`, `ScaffoldWriteError`)
+- Create: `src/graftpunk/devtools/errors.py` (`DevtoolsRefusal`, `ScaffoldWriteError`)
 - Create: `src/graftpunk/devtools/scaffold/write.py`
 - Modify: `src/graftpunk/cli/scaffold_commands.py` (`plugin_new` reports a `ScaffoldWriteError` as one line, in a new arm above its `except OSError as exc:` arm)
 - Modify: `src/graftpunk/devtools/scaffold/pyproject_edit.py:28-133` (pure `with_entry_point` and `with_wheel_package` replace `add_entry_point`, `add_wheel_package`, and `_read_normalised`)
 - Modify: `src/graftpunk/devtools/scaffold/project.py:10-219` (`_missing_parents`, `_undo_writes`, `ScaffoldConflictError` class removed; `write_scaffold` plans and applies, the `.gitignore` edit included)
-- Modify: `src/graftpunk/devtools/captures.py:63-85` (new pure `with_ignored`; `ensure_ignored` applies it)
+- Create: `src/graftpunk/devtools/captures_rule.py` (`CAPTURES_DIR`, moved from `captures.py:17`, and the new pure `with_ignored`)
+- Modify: `src/graftpunk/devtools/captures.py:1-19` (docstring, `CAPTURES_DIR` removed, `__all__`), `:63-85` (`ensure_ignored` applies `with_ignored`)
+- Modify: the importers of `CAPTURES_DIR`, which take it from `captures_rule`: `src/graftpunk/cli/scaffold_commands.py:17`, `src/graftpunk/cli/observe_commands.py` (the captures import Task 7 wrote), `src/graftpunk/devtools/scaffold/render.py:20`, and `tests/unit/test_devtools_captures.py:8`
 - Modify: `tests/unit/test_scaffold_project.py:184-300` (fault injection moves to `write._write_atomically`)
 - Modify: `tests/unit/test_scaffold_pyproject_edit.py` (the tests call the pure functions)
 - Test: `tests/unit/test_scaffold_write.py`, `tests/unit/test_devtools_captures.py`, `tests/unit/test_devtools_errors.py`, `tests/unit/test_scaffold_cli.py`
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `graftpunk.devtools.errors`: `class ScaffoldRefusal(Exception)`, the base of every devtools refusal a CLI entry point reports (a refusal means the operation left the disk as it found it, and the message says why); `class ScaffoldWriteError(ScaffoldRefusal, OSError)` with `.path: Path` and `.error: OSError`, raised by `apply_changes` after it restored every change it had applied, with a one-line message naming the path and the OS error (its `OSError` base keeps a caller that caught the writer's `OSError` working). `graftpunk.devtools.scaffold.write`: `Validator = Callable[[str], None]`; `validate_python(text: str) -> None`; `validate_toml(text: str) -> None` (both raise `ValueError`); `@dataclass(frozen=True) class PlannedChange(path: Path, content: str, original: str | None = None, validate: Validator | None = None)`; `class ChangeConflictError(ScaffoldRefusal)` with `.conflicts: list[Path]`; `class InvalidChangeError(ScaffoldRefusal, ValueError)` with `.path`, `.reason`; `find_conflicts(changes: Sequence[PlannedChange]) -> list[Path]`; `apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]`, which raises `ChangeConflictError`, `InvalidChangeError`, or `ScaffoldWriteError` and no bare `OSError`. `gp plugin new` reports a `ScaffoldWriteError` as one red line and exit 1. The project-tools plan consumes `ScaffoldRefusal` and `ScaffoldWriteError` from `graftpunk.devtools.errors`, and its writing entry points (`add-command`, `upgrade`) catch `ScaffoldRefusal` alone. `project.ScaffoldConflictError` is `write.ChangeConflictError`. `pyproject_edit.with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str`; `pyproject_edit.with_wheel_package(text: str, pyproject_path: Path, package: str) -> str`, which returns *text* itself, byte for byte, in its two no-op branches. `pyproject_edit` no longer writes files and has no file-level wrappers: `write_scaffold` is the one production caller and applies the result through `write.py`. `graftpunk.devtools.captures.with_ignored(text: str, relative: str) -> str`, the text edit `ensure_ignored` makes, so `write_scaffold` plans the `.gitignore` edit as the last `PlannedChange` of its batch; `ensure_ignored` keeps its signature for `gp observe fixtures`, which is not a scaffold writer. Every scaffold write, the `.gitignore` edit included, goes through `apply_changes`, so "the one way scaffold writes" has no exception. The project-tools plan's `insert.py` and `upgrade.py` write only through `apply_changes`, and `tests/unit/test_scaffold_write.py` finds them without a list (it scans every module in the package).
+- Produces: `graftpunk.devtools.errors`: `class DevtoolsRefusal(Exception)`, the base of every devtools refusal a CLI entry point reports (a refusal means the operation left the disk as it found it, except for any path a `ScaffoldWriteError` names as left changed, and the message says why); `class ScaffoldWriteError(DevtoolsRefusal, OSError)` with `.path: Path`, `.error: OSError`, and `.unrestored: tuple[Path, ...]`, raised by `apply_changes` after it tried to restore every change it had applied, with a one-line message naming the path and the OS error, and then either "Every file this operation had changed was restored." when `unrestored` is empty or the paths left changed. Its `OSError` base carries the wrapped error's `errno`, `strerror`, and `filename`, so a caller that caught the writer's `OSError` keeps working and reads the same fields. `write._restore` returns the paths it could not put back. `graftpunk.devtools.scaffold.write`: `Validator = Callable[[str], None]`; `validate_python(text: str) -> None`; `validate_toml(text: str) -> None` (both raise `ValueError`); `@dataclass(frozen=True) class PlannedChange(path: Path, content: str, original: str | None = None, validate: Validator | None = None)`; `class ChangeConflictError(DevtoolsRefusal)` with `.conflicts: list[Path]`; `class InvalidChangeError(DevtoolsRefusal, ValueError)` with `.path`, `.reason`; `find_conflicts(changes: Sequence[PlannedChange]) -> list[Path]`; `apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]`, which raises `ChangeConflictError`, `InvalidChangeError`, or `ScaffoldWriteError` and no bare `OSError`. `gp plugin new` reports a `ScaffoldWriteError` as one red line and exit 1. The project-tools plan consumes `DevtoolsRefusal` and `ScaffoldWriteError` from `graftpunk.devtools.errors`, and its writing entry points (`add-command`, `upgrade`) catch `DevtoolsRefusal` alone. `project.ScaffoldConflictError` is `write.ChangeConflictError`. `pyproject_edit.with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str`; `pyproject_edit.with_wheel_package(text: str, pyproject_path: Path, package: str) -> str`, which returns *text* itself, byte for byte, in its two no-op branches. `pyproject_edit` no longer writes files and has no file-level wrappers: `write_scaffold` is the one production caller and applies the result through `write.py`. `graftpunk.devtools.captures_rule`, the pure side of the captures rule, importing nothing but `__future__`: `CAPTURES_DIR` (moved from `captures.py`, not re-exported there) and `with_ignored(text: str, relative: str) -> str`, the text edit `ensure_ignored` makes, so `write_scaffold` plans the `.gitignore` edit as the last `PlannedChange` of its batch. `graftpunk.devtools.captures` keeps the writing side (`ensure_ignored`, with its signature, for `gp observe fixtures`, which is not a scaffold writer; `write_sidecar`; and the git queries), and no scaffold module imports it. Every scaffold write, the `.gitignore` edit included, goes through `apply_changes`, so "the one way scaffold writes" has no exception. The project-tools plan's `insert.py` and `upgrade.py` write only through `apply_changes`, and `tests/unit/test_scaffold_write.py` finds them without a list (it scans every module in the package).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2727,8 +2756,44 @@ class TestRestoresOnFailure:
         assert message.startswith(f"Could not write {tmp_path / 'src' / 'plugin.py'}: ")
         assert "No space left on device" in message
         assert "\n" not in message
+        assert message.endswith("Every file this operation had changed was restored.")
         assert caught.value.path == tmp_path / "src" / "plugin.py"
+        assert caught.value.unrestored == ()
         assert caught.value.error.errno == 28
+        assert caught.value.errno == 28
+
+    def test_a_path_the_restore_cannot_put_back_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The message promises a full restore only when there was one."""
+        created = tmp_path / "src" / "a.py"
+        real_write = write._write_atomically
+        real_unlink = Path.unlink
+
+        def failing_write(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
+
+        def failing_unlink(self: Path, missing_ok: bool = False) -> None:
+            if self == created:
+                raise OSError(13, "Permission denied", str(self))
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(write, "_write_atomically", failing_write)
+        monkeypatch.setattr(Path, "unlink", failing_unlink)
+        with pytest.raises(ScaffoldWriteError) as caught:
+            apply_changes(
+                [
+                    PlannedChange(created, "a = 1\n"),
+                    PlannedChange(tmp_path / "src" / "plugin.py", "p = 1\n"),
+                ]
+            )
+        assert created in caught.value.unrestored
+        message = str(caught.value)
+        assert str(created) in message
+        assert "Every file this operation had changed was restored" not in message
+        assert "\n" not in message
 
     def test_a_parent_that_is_a_file_restores_and_leaves_no_temp(self, tmp_path: Path) -> None:
         (tmp_path / "blocker").write_text("a file where a directory should be")
@@ -2759,9 +2824,11 @@ _NOT_THE_WRITER = sorted(p.name for p in _SCAFFOLD_DIR.glob("*.py") if p.name !=
 _DISK_CALLS = {"write_text", "write_bytes", "touch", "unlink", "rmdir", "mkdir"}
 _WRITE_MODE = re.compile(r"[wax+]")
 # Modules whose import is itself a way to write: the filesystem calls of os and
-# shutil, and the two writers devtools/captures.py keeps for gp observe fixtures.
+# shutil, and the writing side of the captures rule, devtools/captures.py. The
+# rule's pure side, devtools/captures_rule.py, is the one a scaffold module
+# imports, so no list of writer names has to be kept in step with captures.py.
 _WRITING_MODULES = {"os", "shutil"}
-_CAPTURES_WRITERS = {"ensure_ignored", "write_sidecar"}
+_CAPTURES_WRITING_SIDE = "graftpunk.devtools.captures"
 
 
 def _tree(module: str) -> ast.Module:
@@ -2790,7 +2857,7 @@ def _opens_for_writing(node: ast.Call) -> bool:
 @pytest.mark.parametrize("module", _NOT_THE_WRITER)
 def test_no_module_but_write_py_touches_the_disk(module: str) -> None:
     """No scaffold module but write.py calls a Path writer, opens a file to write,
-    or imports os, shutil, or a devtools.captures writer.
+    or imports os, shutil, or the writing side of the captures rule.
 
     What these checks cannot see: a writer reached through getattr or a string
     name, a Path method passed as a value and called elsewhere, ``open`` bound to
@@ -2812,17 +2879,25 @@ def test_no_module_but_write_py_touches_the_disk(module: str) -> None:
     assert opened == []
 
 
+def _writes(module: str) -> bool:
+    return module.split(".")[0] in _WRITING_MODULES or module == _CAPTURES_WRITING_SIDE
+
+
 @pytest.mark.parametrize("module", _NOT_THE_WRITER)
 def test_no_module_but_write_py_imports_a_way_to_write(module: str) -> None:
+    """A scaffold module takes the captures rule from captures_rule.py, whose names
+    are pure, and nothing at all from captures.py."""
     found: list[str] = []
     for node in ast.walk(_tree(module)):
         if isinstance(node, ast.Import):
-            found += [a.name for a in node.names if a.name.split(".")[0] in _WRITING_MODULES]
+            found += [a.name for a in node.names if _writes(a.name)]
         elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module.split(".")[0] in _WRITING_MODULES:
+            if _writes(node.module):
                 found.append(node.module)
-            elif node.module == "graftpunk.devtools.captures":
-                found += [a.name for a in node.names if a.name in _CAPTURES_WRITERS]
+            elif node.module == "graftpunk.devtools":
+                found += [
+                    f"graftpunk.devtools.{a.name}" for a in node.names if a.name == "captures"
+                ]
     assert found == []
 
 
@@ -2856,15 +2931,33 @@ Create `tests/unit/test_devtools_errors.py`:
 
 from __future__ import annotations
 
-from graftpunk.devtools.errors import ScaffoldRefusal, ScaffoldWriteError
+from pathlib import Path
+
+from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
 from graftpunk.devtools.scaffold.write import ChangeConflictError, InvalidChangeError
 
 
 def test_the_refusals_share_one_base_and_keep_their_own() -> None:
     for error in (ChangeConflictError, InvalidChangeError, ScaffoldWriteError):
-        assert issubclass(error, ScaffoldRefusal), error
+        assert issubclass(error, DevtoolsRefusal), error
     assert issubclass(InvalidChangeError, ValueError)
     assert issubclass(ScaffoldWriteError, OSError)
+
+
+def test_a_write_error_keeps_the_os_errors_fields_and_its_own_message() -> None:
+    """A caller that caught the writer's OSError before this class existed reads the
+    same errno, strerror, and filename it did then."""
+    error = OSError(28, "No space left on device", "src/plugin.py")
+    raised = ScaffoldWriteError(Path("src/plugin.py"), error)
+    assert (raised.errno, raised.strerror, raised.filename) == (
+        28,
+        "No space left on device",
+        "src/plugin.py",
+    )
+    assert str(raised) == (
+        "Could not write src/plugin.py: No space left on device. "
+        "Every file this operation had changed was restored."
+    )
 ```
 
 The project-tools plan adds its own refusals to the tuple in the loop.
@@ -2919,36 +3012,51 @@ Create `src/graftpunk/devtools/errors.py`:
 ```python
 """The one base class of every refusal ``graftpunk.devtools`` reports to a person.
 
-A refusal means the operation left the disk as it found it, and the message says
-why. Each refusal keeps its own class, and its own second base where it has one,
-for callers that want it; a ``gp plugin`` entry point catches
-:class:`ScaffoldRefusal` alone.
+A refusal means the operation left the disk as it found it, except for any path
+a :class:`ScaffoldWriteError` names as left changed, and the message says why.
+Each refusal keeps its own class, and its own second base where it has one, for
+callers that want it; a ``gp plugin`` entry point catches :class:`DevtoolsRefusal`
+alone.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
-__all__ = ["ScaffoldRefusal", "ScaffoldWriteError"]
+__all__ = ["DevtoolsRefusal", "ScaffoldWriteError"]
 
 
-class ScaffoldRefusal(Exception):
-    """A devtools operation refused; the disk is as it was, and the message says why."""
+class DevtoolsRefusal(Exception):
+    """A devtools operation refused, and the message says why. The disk is as it was,
+    except for any path a :class:`ScaffoldWriteError` names as left changed."""
 
 
-class ScaffoldWriteError(ScaffoldRefusal, OSError):
-    """A write failed partway through an operation, after the writer restored every
-    change it had already applied. Also an ``OSError``, so a caller that caught
-    the writer's ``OSError`` before this class existed still catches it."""
+class ScaffoldWriteError(DevtoolsRefusal, OSError):
+    """A write failed partway through an operation. The writer then put back every
+    change it had already applied that it could; ``unrestored`` lists the paths it
+    could not, and the message names them. Also an ``OSError`` carrying the wrapped
+    error's ``errno``, ``strerror``, and ``filename``, so a caller that caught the
+    writer's ``OSError`` before this class existed still catches it and reads the
+    same fields."""
 
-    def __init__(self, path: Path, error: OSError) -> None:
+    def __init__(self, path: Path, error: OSError, unrestored: Sequence[Path] = ()) -> None:
+        # OSError's own constructor sets errno, strerror, and filename from these
+        # three arguments; __str__ keeps the one-line refusal as the message.
+        super().__init__(error.errno, error.strerror, error.filename)
         self.path = path
         self.error = error
+        self.unrestored = tuple(unrestored)
         reason = error.strerror or str(error)
-        super().__init__(
-            f"Could not write {path}: {reason}. Every file this operation had changed "
-            "was restored."
-        )
+        if self.unrestored:
+            listing = ", ".join(str(p) for p in self.unrestored)
+            aftermath = f"These paths could not be restored and are left changed: {listing}."
+        else:
+            aftermath = "Every file this operation had changed was restored."
+        self._message = f"Could not write {path}: {reason}. {aftermath}"
+
+    def __str__(self) -> str:
+        return self._message
 ```
 
 Create `src/graftpunk/devtools/scaffold/write.py`:
@@ -2978,7 +3086,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from graftpunk.devtools.errors import ScaffoldRefusal, ScaffoldWriteError
+from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
 
 __all__ = [
     "ChangeConflictError",
@@ -3027,7 +3135,7 @@ class PlannedChange:
     validate: Validator | None = None
 
 
-class ChangeConflictError(ScaffoldRefusal):
+class ChangeConflictError(DevtoolsRefusal):
     """One or more planned changes conflict with the disk; nothing was written."""
 
     def __init__(self, conflicts: list[Path]) -> None:
@@ -3036,7 +3144,7 @@ class ChangeConflictError(ScaffoldRefusal):
         super().__init__(f"Refusing to overwrite existing file(s): {listing}")
 
 
-class InvalidChangeError(ScaffoldRefusal, ValueError):
+class InvalidChangeError(DevtoolsRefusal, ValueError):
     """A planned change's content fails its own validator; nothing was written."""
 
     def __init__(self, path: Path, reason: str) -> None:
@@ -3083,21 +3191,29 @@ def _write_atomically(path: Path, text: str) -> None:
         raise
 
 
-def _restore(started: list[PlannedChange], created_dirs: list[Path]) -> None:
-    """Put back what this operation changed, best effort: each edited file's original
-    text, each created file removed, then each directory this operation created,
-    deepest first and only while empty. Every step is guarded, because unwinding
-    runs in the conditions that caused the failure and the original error is the
-    one the caller must see."""
+def _restore(started: list[PlannedChange], created_dirs: list[Path]) -> list[Path]:
+    """Put back what this operation changed, best effort, and return every path it
+    could not put back: each edited file's original text, each created file
+    removed, then each directory this operation created, deepest first and only
+    while empty. Every step is guarded, because unwinding runs in the conditions
+    that caused the failure and the original error is the one the caller must
+    see; a step that fails is reported in the return value instead."""
+    unrestored: list[Path] = []
     for change in reversed(started):
-        with contextlib.suppress(OSError):
+        try:
             if change.original is None:
                 change.path.unlink(missing_ok=True)
             else:
                 change.path.write_text(change.original, encoding="utf-8")
+        except OSError:
+            unrestored.append(change.path)
     for directory in reversed(created_dirs):
-        with contextlib.suppress(OSError):
+        try:
             directory.rmdir()
+        except OSError:
+            if directory.exists():
+                unrestored.append(directory)
+    return unrestored
 
 
 def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
@@ -3109,7 +3225,8 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
         InvalidChangeError: A change's content fails its validator. Raised
             before anything is touched.
         ScaffoldWriteError: A write failed. Every change already applied is
-            undone first; the error names the path and carries the ``OSError``.
+            undone first where it can be; the error names the path, carries the
+            ``OSError``, and lists in ``unrestored`` anything left changed.
     """
     conflicts = find_conflicts(changes)
     if conflicts:
@@ -3129,8 +3246,8 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
             started.append(change)
             _write_atomically(change.path, change.content)
         except OSError as exc:
-            _restore(started, created_dirs)
-            raise ScaffoldWriteError(change.path, exc) from exc
+            unrestored = _restore(started, created_dirs)
+            raise ScaffoldWriteError(change.path, exc, unrestored) from exc
     return tuple(change.path for change in changes)
 ```
 
@@ -3350,9 +3467,27 @@ class TestWithWheelPackage:
             with_wheel_package(_INCLUDE_INSTEAD_OF_PACKAGES, _PATH, "src/graftpunk_widgets")
 ```
 
-In `src/graftpunk/devtools/captures.py`, add `"with_ignored"` to `__all__`, add above `ensure_ignored`:
+Split the captures rule into its pure side and its writing side, so a scaffold module can import the rule without importing a writer. Create `src/graftpunk/devtools/captures_rule.py`:
 
 ```python
+"""The single owner of the "captures never enter git" rule, as text.
+
+The directory captures go to, and the ``.gitignore`` edit that keeps them out
+of git. Nothing here touches a file, so the scaffold modules, which write only
+through ``write.py``, import the rule from here. The fixtures command, the
+scaffold's generated ``.gitignore``, and the scaffold's suite mode all use it,
+so the default directory and the ignore line cannot disagree (plugin tooling
+spec, 2026-09-11). ``graftpunk.devtools.captures`` applies the edit to disk for
+``gp observe fixtures`` (graft skill spec, 2026-09-21).
+"""
+
+from __future__ import annotations
+
+__all__ = ["CAPTURES_DIR", "with_ignored"]
+
+CAPTURES_DIR = "tests/captures"
+
+
 def with_ignored(text: str, relative: str) -> str:
     """*text*, a ``.gitignore``'s content, with ``<relative>/`` appended unless that
     exact line is there, in which case *text* itself. The rule ``ensure_ignored``
@@ -3363,7 +3498,7 @@ def with_ignored(text: str, relative: str) -> str:
     return f"{text}{separator}{relative.rstrip('/')}/\n"
 ```
 
-and replace the body of `ensure_ignored` after its docstring with:
+In `src/graftpunk/devtools/captures.py`: delete `CAPTURES_DIR = "tests/captures"` and its `__all__` entry (it is not re-exported), add `from graftpunk.devtools.captures_rule import with_ignored`, and replace the module docstring's first paragraph (Task 7's sentence about the sidecar included) with: "The writing side of the \"captures never enter git\" rule: the ``.gitignore`` edit applied to disk, the git queries, and the committable sidecar written beside each capture through the format :mod:`graftpunk.testing.sidecar` owns. The rule itself, the directory and the text edit, lives in :mod:`graftpunk.devtools.captures_rule`, which touches no file." Then replace the body of `ensure_ignored` after its docstring with:
 
 ```python
     gitignore = repo_root / ".gitignore"
@@ -3377,7 +3512,9 @@ and replace the body of `ensure_ignored` after its docstring with:
     return True
 ```
 
-In `tests/unit/test_devtools_captures.py`, add `with_ignored` to the captures import and append:
+Every other importer takes `CAPTURES_DIR` from the pure side: in `src/graftpunk/cli/scaffold_commands.py` and `src/graftpunk/devtools/scaffold/render.py`, `from graftpunk.devtools.captures import CAPTURES_DIR` becomes `from graftpunk.devtools.captures_rule import CAPTURES_DIR`; in `src/graftpunk/cli/observe_commands.py`, drop `CAPTURES_DIR` from the captures import Task 7 wrote and add `from graftpunk.devtools.captures_rule import CAPTURES_DIR`. Run `uvx ruff check --fix` and `uvx ruff format` over the edited files to sort the imports.
+
+In `tests/unit/test_devtools_captures.py`, add `import ast` and `import graftpunk.devtools.captures_rule as captures_rule`, move `CAPTURES_DIR` out of the captures import into `from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored`, and append:
 
 ```python
 class TestWithIgnored:
@@ -3385,13 +3522,23 @@ class TestWithIgnored:
         assert with_ignored("", "tests/captures") == "tests/captures/\n"
         assert with_ignored("dist/", "tests/captures") == "dist/\ntests/captures/\n"
         assert with_ignored("tests/captures\n", "tests/captures/") == "tests/captures\n"
+
+
+def test_the_rule_module_imports_nothing_that_touches_the_filesystem() -> None:
+    """Scaffold modules import the rule from here, so it stays pure text."""
+    assert captures_rule.__file__ is not None
+    tree = ast.parse(Path(captures_rule.__file__).read_text(encoding="utf-8"))
+    imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+    }
+    assert imported <= {"__future__"}
 ```
 
 The existing `ensure_ignored` tests in that file are the check that its behaviour did not change.
 
 - [ ] **Step 5: Route `write_scaffold` through `write.py`**
 
-In `src/graftpunk/devtools/scaffold/project.py`: remove `import contextlib`, `_missing_parents`, `_undo_writes`, and the `ScaffoldConflictError` class; change the captures import to `from graftpunk.devtools.captures import CAPTURES_DIR, with_ignored` (drop `ensure_ignored`); import `PyprojectEditError, with_entry_point, with_wheel_package` from `pyproject_edit` (drop `add_entry_point`, `add_wheel_package`), `ChangeConflictError, PlannedChange, Validator, apply_changes, find_conflicts, validate_python, validate_toml` from `write`, and `ScaffoldWriteError` from `graftpunk.devtools.errors`; add after `PLUGINS_ENTRY_POINT_GROUP`:
+In `src/graftpunk/devtools/scaffold/project.py`: remove `import contextlib`, `_missing_parents`, `_undo_writes`, and the `ScaffoldConflictError` class; change the captures import to `from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored` (drop `ensure_ignored`: `project.py` imports nothing from `captures.py`); import `PyprojectEditError, with_entry_point, with_wheel_package` from `pyproject_edit` (drop `add_entry_point`, `add_wheel_package`), `ChangeConflictError, PlannedChange, Validator, apply_changes, find_conflicts, validate_python, validate_toml` from `write`, and `ScaffoldWriteError` from `graftpunk.devtools.errors`; add after `PLUGINS_ENTRY_POINT_GROUP`:
 
 ```python
 ScaffoldConflictError = ChangeConflictError
@@ -3462,14 +3609,15 @@ and replace everything in `write_scaffold` from `# Conflict detection runs befor
         raise
 ```
 
-Delete the old `.gitignore` block after the write (its comment and the `ensure_ignored` call): the edit is now the batch's last planned change. `targets` no longer exists, so change the two lines after it that read it: in `LOG.info("scaffold_written", ...)`, `files=len(targets)` becomes `files=len(rendered)`, and in `return ScaffoldResult(...)`, `written=tuple(sorted(targets))` becomes `written=tuple(sorted(c.path for c in rendered))`. Update the docstring's `PyprojectEditError` paragraph to say `pyproject.toml` is never written when the edit cannot be computed, and add a `ScaffoldWriteError` paragraph: "a write failed; every change already applied, the `pyproject.toml` edit included, is undone first, and the error names the file and the OS error (see `write.py`). A bare `OSError` now means a read before anything was written failed."
+Delete the old `.gitignore` block after the write (its comment and the `ensure_ignored` call): the edit is now the batch's last planned change. `targets` no longer exists, so change the two lines after it that read it: in `LOG.info("scaffold_written", ...)`, `files=len(targets)` becomes `files=len(rendered)`, and in `return ScaffoldResult(...)`, `written=tuple(sorted(targets))` becomes `written=tuple(sorted(c.path for c in rendered))`. Update the docstring's `PyprojectEditError` paragraph to say `pyproject.toml` is never written when the edit cannot be computed, and add a `ScaffoldWriteError` paragraph: "a write failed; every change already applied, the `pyproject.toml` edit included, is undone first where it can be, and the error names the file, the OS error, and any path left changed (see `write.py`). A bare `OSError` now means a read before anything was written failed."
 
 In `src/graftpunk/cli/scaffold_commands.py`, add `from graftpunk.devtools.errors import ScaffoldWriteError`, add this arm directly above `except OSError as exc:` in `plugin_new` (a `ScaffoldWriteError` is also an `OSError`, so the order matters):
 
 ```python
     except ScaffoldWriteError as exc:
-        # The writer restored every file it had changed before raising, and its
-        # message is the whole refusal: the path and the OS error, on one line.
+        # The writer restored what it could before raising, and its message is
+        # the whole refusal on one line: the path, the OS error, and any path
+        # it could not put back.
         LOG.debug("scaffold_refused", reason="os_error", error=str(exc.error))
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
@@ -3524,7 +3672,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/graftpunk/devtools/errors.py src/graftpunk/devtools/scaffold/write.py src/graftpunk/devtools/scaffold/pyproject_edit.py src/graftpunk/devtools/scaffold/project.py src/graftpunk/devtools/captures.py src/graftpunk/cli/scaffold_commands.py tests/unit/test_scaffold_write.py tests/unit/test_devtools_errors.py tests/unit/test_scaffold_project.py tests/unit/test_scaffold_pyproject_edit.py tests/unit/test_devtools_captures.py tests/unit/test_scaffold_cli.py
+git add src/graftpunk/devtools/errors.py src/graftpunk/devtools/scaffold/write.py src/graftpunk/devtools/scaffold/pyproject_edit.py src/graftpunk/devtools/scaffold/project.py src/graftpunk/devtools/scaffold/render.py src/graftpunk/devtools/captures.py src/graftpunk/devtools/captures_rule.py src/graftpunk/cli/scaffold_commands.py src/graftpunk/cli/observe_commands.py tests/unit/test_scaffold_write.py tests/unit/test_devtools_errors.py tests/unit/test_scaffold_project.py tests/unit/test_scaffold_pyproject_edit.py tests/unit/test_devtools_captures.py tests/unit/test_scaffold_cli.py
 git commit -m "feat(scaffold): write.py is the one write discipline, and write_scaffold goes through it"
 ```
 
@@ -3536,12 +3684,12 @@ git commit -m "feat(scaffold): write.py is the one write discipline, and write_s
 - Modify: `src/graftpunk/plugins/cli_plugin.py:215-234` (`CommandMetadata`), `:788-877` (`command`)
 - Modify: `src/graftpunk/devtools/scaffold/pysrc.py` (`import_lines` takes several names)
 - Modify: `src/graftpunk/devtools/scaffold/render.py` (`_render_command_stub`, `_plugins_import_names`, `_render_plugin_module`; new `_SPEC_TYPE_BY_OBSERVED`, `_emits_body`, `_declared_extras`, `_needs_param_specs`, `_decorator_lines`, `_ENDPOINT_COMMENT`)
-- Modify: `docs/PLUGIN_DEVELOPMENT.md:395-476` ("What gets filled in"), `:569-601` ("CLI parameter types")
+- Modify: `docs/PLUGIN_DEVELOPMENT.md:395-485` ("What gets filled in": from its heading through the generated `plugin.py` example, the paragraph that begins "What came from the digest", and the paragraph that begins "Everything the digest could not decide", after which the new paragraph goes), `:569-601` ("CLI parameter types")
 - Test: `tests/unit/test_cli_plugin.py`, `tests/unit/test_scaffold_render.py`
 
 **Interfaces:**
 - Consumes: `literal_lines`, `quoted_literal`, `L1`, `L2`, `L3`, `import_lines` from `pysrc` (Task 1).
-- Produces: `CommandMetadata.endpoint: str | None = None`; `command(..., endpoint: str | None = None)`; `pysrc.import_lines(module: str, *names: str) -> list[str]`; every generated stub's decorator carries `endpoint="<METHOD> <template>"` on its own line, and a stub with an `int` or `bool` parameter carries `params=[PluginParamSpec.option(...), ...]` for every parameter. The project-tools plan's reader reads the `endpoint` keyword from source, and its `render_command` reuses `_decorator_lines`, `_declared_extras`, and `_needs_param_specs`.
+- Produces: `CommandMetadata.endpoint: str | None = None`; `command(..., endpoint: str | None = None)`; `pysrc.import_lines(module: str, *names: str) -> list[str]`; every generated stub's decorator carries `endpoint="<METHOD> <template>"` on its own line, and a stub with an `int` or `bool` parameter carries `params=[PluginParamSpec.option(...), ...]` for every parameter. The project-tools plan's reader reads the `endpoint` keyword from source, and its `render_command` reuses `_declared_extras` and `_needs_param_specs` as they are and `_decorator_lines` with a changed signature: that plan's Task 5 makes it `_decorator_lines(command: PlannedCommand, param_specs: list[str]) -> list[str]`, so the help placeholder, the name pin, and the endpoint all come from the planned command.
 
 - [ ] **Step 1: Write the failing decorator tests**
 
