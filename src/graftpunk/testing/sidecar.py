@@ -106,8 +106,10 @@ class Sidecar:
             raise SidecarError(f"content_type must be a string, got {self.content_type!r}")
         for key in ("body_params", "flagged_names"):
             value = getattr(self, key)
-            if not all(isinstance(item, str) for item in value):
-                raise SidecarError(f"{key} must hold only strings, got {value!r}")
+            if not isinstance(value, (tuple, list)) or not all(
+                isinstance(item, str) for item in value
+            ):
+                raise SidecarError(f"{key} must be a tuple or list of strings, got {value!r}")
         if self.capture_sha256 is not None and not _CAPTURE_SHA256_RE.fullmatch(
             self.capture_sha256
         ):

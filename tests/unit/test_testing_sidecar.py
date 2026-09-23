@@ -289,3 +289,18 @@ class TestASidecarBuiltAnywhereIsFitToSerialize:
     def test_a_wrong_type_or_sign_is_refused(self, kwargs: dict) -> None:
         with pytest.raises(SidecarError):
             Sidecar(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"body_params": "abc"},
+        {"flagged_names": {"shop_session"}},
+        {"body_params": None},
+    ],
+    ids=["string", "set", "none"],
+)
+def test_the_name_fields_must_be_a_tuple_or_list(kwargs: dict) -> None:
+    """J5: a string is iterable but is not a list of names."""
+    with pytest.raises(SidecarError):
+        Sidecar(status=200, content_type="application/json", **kwargs)
