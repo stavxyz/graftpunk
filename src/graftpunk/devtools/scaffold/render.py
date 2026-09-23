@@ -916,8 +916,8 @@ def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
         notes.append(
             f"GP-FILL: {non_names[0]} recorded query field(s) and {non_names[1]} body field(s) "
             "were left out because their names are not field names (a name starting with "
-            "a digit, or holding a character a field name does not); add any this command "
-            "needs by hand."
+            "a digit, holding a character a field name does not, or longer than 64 "
+            "characters); add any this command needs by hand."
         )
     if endpoint.header_names_dropped_as_ids:
         notes.append(

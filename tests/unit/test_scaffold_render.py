@@ -1940,8 +1940,9 @@ class TestPluginModuleCommandStubs:
         ) in comments
         assert (
             "GP-FILL: 1 recorded query field(s) and 0 body field(s) were left out because "
-            "their names are not field names (a name starting with a digit, or holding a "
-            "character a field name does not); add any this command needs by hand."
+            "their names are not field names (a name starting with a digit, holding a "
+            "character a field name does not, or longer than 64 characters); add any "
+            "this command needs by hand."
         ) in comments
 
     @pytest.mark.parametrize(

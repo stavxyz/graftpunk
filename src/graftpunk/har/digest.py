@@ -266,9 +266,10 @@ class Endpoint:
     login_flow: bool = False
     # How many distinct recorded names each position dropped, by cause: the name
     # holds an account value (graftpunk.har.paths.holds_an_id), or it is not a
-    # field name at all (it starts with a digit or holds a character outside the
-    # field-name alphabet). A stub says so in a GP-FILL comment per cause, so
-    # nothing is lost silently. The names themselves are never kept.
+    # field name at all (it starts with a digit, holds a character outside the
+    # field-name alphabet, or is longer than 64 characters). A stub says so in a
+    # GP-FILL comment per cause, so nothing is lost silently. The names themselves
+    # are never kept.
     query_keys_dropped_as_ids: int = 0
     query_keys_dropped_as_non_names: int = 0
     body_keys_dropped_as_ids: int = 0
@@ -597,11 +598,14 @@ def _parse_body_keys(entry: HAREntry) -> tuple[dict[str, str], BodyKind, set[str
 
     A body is read as a form only when it really looks like one: the request
     declared no content type other than ``application/x-www-form-urlencoded``,
-    the text carries an ``=``, and every key ``parse_qs`` returns is a plausible
-    field name. ``parse_qs`` returns the whole text as a single key for anything
-    else, so falling through to it put an XML credential post's entire body
-    (values included) into ``Endpoint.body_params``, the rendered digest, the
-    fixtures sidecar, and generated plugin source (polish round 1, 2026-09-12).
+    the text carries an ``=``, and at least one key ``parse_qs`` returns is
+    spelled like a field name (:func:`_field_name_shaped`). The keys that are
+    not field names, or that hold an id, are then dropped and returned as the
+    third element; the rest are the form's fields. ``parse_qs`` returns the
+    whole text as a single key for anything else, so falling through to it put
+    an XML credential post's entire body (values included) into
+    ``Endpoint.body_params``, the rendered digest, the fixtures sidecar, and
+    generated plugin source (polish round 1, 2026-09-12).
 
     A JSON array or scalar is still a JSON body; it just has no field names.
     """
