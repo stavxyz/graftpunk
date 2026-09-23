@@ -690,6 +690,22 @@ class TestRefusalReasons:
         assert "entry-point" in result.output.lower()
         assert self._reasons(events) == ["not_a_plugin_suite"]
 
+    def test_a_suite_pyproject_that_is_not_toml_is_refused_by_path(self, tmp_path: Path) -> None:
+        """A TOMLDecodeError is a ValueError, and it reached the invalid-name arm
+        with no path in the message."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project\nname = "mysuite"\n')
+        with _captured_debug_logs() as events:
+            result = runner.invoke(
+                _build_app(),
+                ["plugin", "new", "myshop", "--dir", str(tmp_path)],
+            )
+        assert result.exit_code == 1, result.output
+        assert str(pyproject) in strip_ansi(result.output).replace("\n", "")
+        assert "not valid TOML" in strip_ansi(result.output)
+        assert self._reasons(events) == ["pyproject_edit_error"]
+        assert pyproject.read_text() == '[project\nname = "mysuite"\n'
+
     def test_an_invalid_name_still_logs_invalid_name(self, tmp_path: Path) -> None:
         with _captured_debug_logs() as events:
             result = runner.invoke(

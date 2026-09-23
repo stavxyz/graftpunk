@@ -81,8 +81,20 @@ def _existing_pyproject(target_dir: Path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _declares_plugin_group(pyproject_text: str) -> bool:
-    data = tomllib.loads(pyproject_text)
+def _declares_plugin_group(pyproject_text: str, pyproject_path: Path) -> bool:
+    """Whether the suite file declares the plugin entry-point group.
+
+    Raises:
+        PyprojectEditError: The text is not valid TOML. ``TOMLDecodeError`` is a
+            ``ValueError``, which the CLI reads as an invalid plugin name.
+    """
+    try:
+        data = tomllib.loads(pyproject_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise PyprojectEditError(
+            f"{pyproject_path} is not valid TOML ({exc}), so I cannot read or edit it. "
+            "Fix it and run this again."
+        ) from exc
     return PLUGINS_ENTRY_POINT_GROUP in data.get("project", {}).get("entry-points", {})
 
 
@@ -105,8 +117,9 @@ def write_scaffold(
         NotAPluginSuiteError: *target_dir* has a ``pyproject.toml`` that does
             not declare the ``graftpunk.plugins`` entry-point group: a
             different kind of project.
-        PyprojectEditError: In suite mode, the ``pyproject.toml`` edit could
-            not be computed (see ``pyproject_edit.py``). ``pyproject.toml`` is
+        PyprojectEditError: The suite's ``pyproject.toml`` is not valid TOML,
+            or, in suite mode, its edit could not be computed (see
+            ``pyproject_edit.py``). ``pyproject.toml`` is
             never written and no rendered file is either, so the suite is
             left byte-identical to how ``write_scaffold`` found it.
         InvalidChangeError: A rendered file fails its own grammar check, or
@@ -122,7 +135,7 @@ def write_scaffold(
     # Read once, as bytes: the same text decides the mode and is the original the
     # pyproject.toml edit is planned against and restored to.
     original = read_original(existing) if existing is not None else ""
-    if existing is not None and not _declares_plugin_group(original):
+    if existing is not None and not _declares_plugin_group(original, existing):
         raise NotAPluginSuiteError(
             f"{existing} exists but does not declare "
             f'[project.entry-points."{PLUGINS_ENTRY_POINT_GROUP}"]. '

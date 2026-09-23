@@ -27,7 +27,9 @@ _WHEEL_PACKAGES_RE = re.compile(
 
 
 class PyprojectEditError(Exception):
-    """The shape pyproject_edit.py expected was not found; nothing was written."""
+    """The suite's pyproject.toml cannot be edited as found: it is not valid TOML
+    (raised by ``write_scaffold``), or the shape pyproject_edit.py expected was
+    not found. Nothing was written."""
 
 
 def _normalised(text: str) -> str:
