@@ -230,6 +230,8 @@ class Endpoint:
 
     host: str
     template: str
+    # A tuple for hand-built endpoints; digest() keys each endpoint by one
+    # (method, template) pair, so every endpoint it produces has exactly one.
     methods: tuple[str, ...]
     count: int
     statuses: tuple[int, ...]
@@ -775,11 +777,15 @@ def _login_flow_pairs(
 def _with_login_flow(
     endpoints: tuple[Endpoint, ...], login: tuple[LoginObservation, ...]
 ) -> tuple[Endpoint, ...]:
-    """*endpoints* with ``login_flow`` set on each one every method of which the
-    login flow owns."""
+    """*endpoints* with ``login_flow`` set on each one that has a method and every
+    method of which the login flow owns; an endpoint with no method owns nothing."""
     owned = _login_flow_pairs(login, endpoints)
     return tuple(
-        replace(endpoint, login_flow=all((m, endpoint.template) in owned for m in endpoint.methods))
+        replace(
+            endpoint,
+            login_flow=bool(endpoint.methods)
+            and all((m, endpoint.template) in owned for m in endpoint.methods),
+        )
         for endpoint in endpoints
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -1138,6 +1139,24 @@ class TestLoginFlowFlag:
             (family,), (_flow_observation("form_page", "GET", "/account/login"),)
         )
         assert endpoint.login_flow is True
+
+    def test_an_endpoint_the_login_flow_owns_under_only_one_of_its_methods_is_not_flagged(
+        self,
+    ) -> None:
+        """digest() gives each endpoint one method; a hand-built endpoint with two is
+        flagged only when the flow owns both."""
+        two_methods = dataclasses.replace(_flow_endpoint("/login"), methods=("GET", "DELETE"))
+        (endpoint,) = _with_login_flow(
+            (two_methods,), (_flow_observation("form_page", "GET", "/login"),)
+        )
+        assert endpoint.login_flow is False
+
+    def test_an_endpoint_with_no_methods_is_not_flagged(self) -> None:
+        no_methods = dataclasses.replace(_flow_endpoint("/login"), methods=())
+        (endpoint,) = _with_login_flow(
+            (no_methods,), (_flow_observation("form_page", "GET", "/login"),)
+        )
+        assert endpoint.login_flow is False
 
     def test_a_redirect_or_auth_api_observation_flags_nothing(self) -> None:
         endpoints = (_flow_endpoint("/auth/callback"), _flow_endpoint("/api/session"))
