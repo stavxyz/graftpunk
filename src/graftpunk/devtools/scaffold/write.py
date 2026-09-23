@@ -145,7 +145,9 @@ def _write_atomically(path: Path, text: str) -> None:
         if mode is not None:
             partial.chmod(mode)
         os.replace(partial, target)
-    except OSError:
+    except BaseException:
+        # Any exception, KeyboardInterrupt included: the partial is this
+        # function's own, and nothing else knows to remove it.
         with contextlib.suppress(OSError):
             partial.unlink()
         raise
@@ -190,16 +192,26 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
     Raises:
         ChangeConflictError: A create's path exists or an edit's file changed
             since it was planned. Raised before anything is touched.
-        InvalidChangeError: A change's content fails its validator. Raised
-            before anything is touched.
+        InvalidChangeError: A change's content cannot be encoded as UTF-8 or
+            fails its validator. Raised before anything is touched.
         ScaffoldWriteError: A write failed. Every change already applied is
             undone first where it can be; the error names the path, carries the
             ``OSError``, and lists in ``unrestored`` anything left changed.
+
+    Any other exception raised mid-write (``KeyboardInterrupt`` included) is
+    re-raised as itself after the same restore, with a note naming any path
+    left changed.
     """
     conflicts = find_conflicts(changes)
     if conflicts:
         raise ChangeConflictError(conflicts)
     for change in changes:
+        try:
+            change.content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise InvalidChangeError(
+                change.path, f"cannot be encoded as UTF-8: {exc.reason} at position {exc.start}"
+            ) from exc
         if change.validate is not None:
             try:
                 change.validate(change.content)
@@ -216,4 +228,12 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
         except OSError as exc:
             unrestored = _restore(started, created_dirs)
             raise ScaffoldWriteError(change.path, exc, unrestored) from exc
+        except BaseException as exc:
+            # Not a write failure (a bug, or KeyboardInterrupt): restore all the
+            # same, then let the exception itself reach the caller.
+            unrestored = _restore(started, created_dirs)
+            if unrestored:
+                listing = ", ".join(str(p) for p in unrestored)
+                exc.add_note(f"These paths could not be restored and are left changed: {listing}.")
+            raise
     return tuple(change.path for change in changes)

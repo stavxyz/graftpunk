@@ -193,6 +193,59 @@ class TestRestoresOnFailure:
         assert list(root.iterdir()) == []
 
 
+class TestNothingButAnOSErrorSkipsTheRestore:
+    def test_content_that_cannot_be_encoded_is_refused_before_anything_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        root = _project_root(tmp_path)
+        edited = root / "pyproject.toml"
+        edited.write_text('[project]\nname = "x"\n')
+        with pytest.raises(InvalidChangeError) as caught:
+            apply_changes(
+                [
+                    PlannedChange(
+                        edited, '[project]\nname = "y"\n', original='[project]\nname = "x"\n'
+                    ),
+                    PlannedChange(root / "README.md", "lone surrogate \ud800\n"),
+                ]
+            )
+        assert caught.value.path == root / "README.md"
+        assert "UTF-8" in str(caught.value)
+        assert _files(root) == {"pyproject.toml": b'[project]\nname = "x"\n'}
+
+    @pytest.mark.parametrize("raised", [KeyboardInterrupt, RuntimeError])
+    def test_a_non_os_error_mid_write_restores_and_is_re_raised_unwrapped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raised: type[BaseException]
+    ) -> None:
+        """The partial is on disk when the exception lands: it is removed, the earlier
+        edit is put back, and the caller sees the exception itself."""
+        root = _project_root(tmp_path)
+        edited = root / "pyproject.toml"
+        edited.write_text('[project]\nname = "x"\n')
+        real_write_text = Path.write_text
+
+        def interrupted_write_text(self: Path, data: str, *args: object, **kwargs: object) -> int:
+            if self.name.startswith(".plugin.py"):
+                real_write_text(self, data[:3], *args, **kwargs)  # ty: ignore[invalid-argument-type]
+                raise raised()
+            return real_write_text(self, data, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+        monkeypatch.setattr(Path, "write_text", interrupted_write_text)
+        with pytest.raises(raised) as caught:
+            apply_changes(
+                [
+                    PlannedChange(
+                        edited, '[project]\nname = "y"\n', original='[project]\nname = "x"\n'
+                    ),
+                    PlannedChange(root / "src" / "plugin.py", "p = 1\n"),
+                ]
+            )
+        monkeypatch.undo()
+        assert type(caught.value) is raised
+        assert _files(root) == {"pyproject.toml": b'[project]\nname = "x"\n'}
+        assert not (root / "src").exists()
+
+
 class TestTheWriterKeepsWhatItDoesNotChange:
     def test_an_edit_whose_own_write_fails_is_left_intact_not_rewritten(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
