@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import os
 import re
 from pathlib import Path
@@ -289,6 +290,131 @@ class TestRestoresAreByteExact:
         with pytest.raises(InvalidChangeError, match="not UTF-8 text") as caught:
             write.read_original(target)
         assert caught.value.path == target
+
+
+class TestEveryLeftoverIsNamed:
+    def test_a_partial_that_cannot_be_removed_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _project_root(tmp_path)
+        partial_name = ".a.py.gp-partial"
+        real_write_text = Path.write_text
+        real_unlink = Path.unlink
+
+        def short_write_text(self: Path, data: str, *args: object, **kwargs: object) -> int:
+            if self.name == partial_name:
+                real_write_text(self, data[:1], *args, **kwargs)  # ty: ignore[invalid-argument-type]
+                raise OSError(28, "No space left on device", str(self))
+            return real_write_text(self, data, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+        def failing_unlink(self: Path, missing_ok: bool = False) -> None:
+            if self.name == partial_name:
+                raise OSError(13, "Permission denied", str(self))
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "write_text", short_write_text)
+        monkeypatch.setattr(Path, "unlink", failing_unlink)
+        with pytest.raises(ScaffoldWriteError) as caught:
+            apply_changes([PlannedChange(root / "a.py", "a = 1\n")])
+        monkeypatch.undo()
+        assert [p.name for p in caught.value.unrestored] == [partial_name]
+        assert partial_name in str(caught.value)
+        assert "Every file this operation had changed was restored" not in str(caught.value)
+
+    def test_the_os_error_fields_name_the_real_path_not_the_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _project_root(tmp_path)
+
+        def failing_replace(src: object, dst: object) -> None:
+            raise OSError(5, "Input/output error", str(src), None, str(dst))
+
+        monkeypatch.setattr(write.os, "replace", failing_replace)
+        with pytest.raises(ScaffoldWriteError) as caught:
+            apply_changes([PlannedChange(root / "a.py", "a = 1\n")])
+        assert caught.value.filename == str(root / "a.py")
+        assert caught.value.errno == 5
+
+
+class TestConflictsSayWhich:
+    def test_an_edit_conflict_says_the_file_changed(self, tmp_path: Path) -> None:
+        target = tmp_path / "plugin.py"
+        target.write_text("x = 2\n")
+        with pytest.raises(ChangeConflictError) as caught:
+            apply_changes([PlannedChange(target, "x = 3\n", original="x = 1\n")])
+        assert str(caught.value) == (
+            f"Refusing to edit file(s) changed since they were read: {target}"
+        )
+        assert caught.value.changed == (target,)
+        assert caught.value.conflicts == [target]
+
+    def test_a_create_conflict_keeps_its_wording(self, tmp_path: Path) -> None:
+        taken = tmp_path / "taken.py"
+        taken.write_text("t = 1\n")
+        with pytest.raises(ChangeConflictError) as caught:
+            apply_changes([PlannedChange(taken, "t = 2\n")])
+        assert str(caught.value) == f"Refusing to overwrite existing file(s): {taken}"
+
+    def test_a_batch_with_both_names_both(self, tmp_path: Path) -> None:
+        edited = tmp_path / "plugin.py"
+        edited.write_text("x = 2\n")
+        taken = tmp_path / "taken.py"
+        taken.write_text("t = 1\n")
+        with pytest.raises(ChangeConflictError) as caught:
+            apply_changes(
+                [
+                    PlannedChange(edited, "x = 3\n", original="x = 1\n"),
+                    PlannedChange(taken, "t = 2\n"),
+                ]
+            )
+        message = str(caught.value)
+        assert f"Refusing to overwrite existing file(s): {taken}" in message
+        assert f"Refusing to edit file(s) changed since they were read: {edited}" in message
+        assert caught.value.conflicts == sorted([edited, taken])
+
+    def test_two_changes_to_one_file_are_refused_before_any_write(self, tmp_path: Path) -> None:
+        root = _project_root(tmp_path)
+        (root / "real").mkdir()
+        (root / "link").symlink_to(root / "real")
+        with pytest.raises(ChangeConflictError) as caught:
+            apply_changes(
+                [
+                    PlannedChange(root / "first.py", "f = 1\n"),
+                    PlannedChange(root / "real" / "a.py", "a = 1\n"),
+                    PlannedChange(root / "link" / "a.py", "a = 2\n"),
+                ]
+            )
+        assert "more than once" in str(caught.value)
+        assert str(root / "link" / "a.py") in str(caught.value)
+        assert caught.value.duplicates == (root / "link" / "a.py",)
+        assert _files(root) == {}
+
+
+class TestAReadOnlyTargetIsRefused:
+    def test_a_read_only_edit_target_refuses_before_anything_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        if os.geteuid() == 0:
+            pytest.skip("root ignores mode bits")
+        root = _project_root(tmp_path)
+        locked = root / "pyproject.toml"
+        locked.write_text("[project]\n")
+        locked.chmod(0o444)
+        try:
+            with pytest.raises(ScaffoldWriteError) as caught:
+                apply_changes(
+                    [
+                        PlannedChange(root / "first.py", "f = 1\n"),
+                        PlannedChange(locked, "[tool]\n", original="[project]\n"),
+                    ]
+                )
+            assert caught.value.errno == errno.EACCES
+            assert caught.value.path == locked
+            assert caught.value.unrestored == ()
+            assert _files(root) == {"pyproject.toml": b"[project]\n"}
+            assert locked.stat().st_mode & 0o777 == 0o444
+        finally:
+            locked.chmod(0o644)
 
 
 class TestTheWriterKeepsWhatItDoesNotChange:

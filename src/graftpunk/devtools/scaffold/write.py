@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import errno
 import os
 import stat
 import tomllib
@@ -74,13 +75,55 @@ class PlannedChange:
     validate: Validator | None = None
 
 
-class ChangeConflictError(DevtoolsRefusal):
-    """One or more planned changes conflict with the disk; nothing was written."""
+_EXISTING = "Refusing to overwrite existing file(s)"
+_CHANGED = "Refusing to edit file(s) changed since they were read"
+_DUPLICATED = "Refusing to change a file more than once in one operation"
 
-    def __init__(self, conflicts: list[Path]) -> None:
-        self.conflicts = conflicts
-        listing = ", ".join(str(p) for p in conflicts)
-        super().__init__(f"Refusing to overwrite existing file(s): {listing}")
+
+class ChangeConflictError(DevtoolsRefusal):
+    """One or more planned changes conflict with the disk, or with each other;
+    nothing was written.
+
+    ``conflicts`` is every refused path. ``changed`` is the subset that are edits
+    whose file no longer holds the text they were planned from, and
+    ``duplicates`` the subset that a batch changes more than once; the rest are
+    creates over a file that exists. The message gives each kind its own clause.
+    """
+
+    def __init__(
+        self,
+        conflicts: Sequence[Path],
+        changed: Sequence[Path] = (),
+        duplicates: Sequence[Path] = (),
+    ) -> None:
+        self.conflicts = list(conflicts)
+        self.changed = tuple(changed)
+        self.duplicates = tuple(duplicates)
+        super().__init__(
+            "; ".join(
+                f"{header}: {', '.join(str(p) for p in paths)}" for header, paths in self.kinds
+            )
+        )
+
+    @property
+    def kinds(self) -> tuple[tuple[str, tuple[Path, ...]], ...]:
+        """Each kind of conflict present, as (header, paths), creates first."""
+        named = set(self.changed) | set(self.duplicates)
+        existing = tuple(p for p in self.conflicts if p not in named)
+        return tuple(
+            (header, paths)
+            for header, paths in (
+                (_EXISTING, existing),
+                (_CHANGED, self.changed),
+                (_DUPLICATED, self.duplicates),
+            )
+            if paths
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[type[ChangeConflictError], tuple[list[Path], tuple[Path, ...], tuple[Path, ...]]]:
+        return type(self), (self.conflicts, self.changed, self.duplicates)
 
 
 class InvalidChangeError(DevtoolsRefusal, ValueError):
@@ -92,6 +135,9 @@ class InvalidChangeError(DevtoolsRefusal, ValueError):
         self.path = path
         self.reason = reason
         super().__init__(f"Refusing to write {path}: {reason}")
+
+    def __reduce__(self) -> tuple[type[InvalidChangeError], tuple[Path, str]]:
+        return type(self), (self.path, self.reason)
 
 
 def read_original(path: Path) -> str:
@@ -145,16 +191,24 @@ def _missing_parents(directory: Path) -> list[Path]:
     return list(reversed(missing))
 
 
+def _partial_for(path: Path) -> Path:
+    """The temp file :func:`_write_atomically` writes before moving it over *path*."""
+    target = Path(os.path.realpath(path))
+    return target.with_name(f".{target.name}{_PARTIAL_SUFFIX}")
+
+
 def _write_atomically(path: Path, text: str) -> None:
     """Write *text* to a sibling temp file and move it over *path*, so a reader never
     sees a half-written module. The temp file is removed if either step fails.
 
     A symlinked *path* is written through, so the link survives, and an existing
     file keeps its permission bits; ``os.replace`` alone would swap in a new
-    regular file with the umask's mode.
+    regular file with the umask's mode. What the rename cannot keep: a hard link
+    to the old file is broken (the other name keeps the old text), and the file's
+    owner and group become the writer's.
     """
     target = Path(os.path.realpath(path))
-    partial = target.with_name(f".{target.name}{_PARTIAL_SUFFIX}")
+    partial = _partial_for(path)
     try:
         try:
             mode: int | None = stat.S_IMODE(target.stat().st_mode)
@@ -198,6 +252,10 @@ def _restore(started: list[PlannedChange], created_dirs: list[Path]) -> list[Pat
         except OSError:
             if change.original is not None or os.path.lexists(change.path):
                 unrestored.append(change.path)
+        # A temp file whose own cleanup failed is left changed too.
+        partial = _partial_for(change.path)
+        if os.path.lexists(partial):
+            unrestored.append(partial)
     for directory in reversed(created_dirs):
         try:
             directory.rmdir()
@@ -211,21 +269,34 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
     """Apply *changes* in order, all or nothing.
 
     Raises:
-        ChangeConflictError: A create's path exists or an edit's file changed
-            since it was planned. Raised before anything is touched.
+        ChangeConflictError: Two changes name the same file (compared after
+            resolving symlinks), a create's path exists, or an edit's file
+            changed since it was planned. Raised before anything is touched.
         InvalidChangeError: A change's content cannot be encoded as UTF-8 or
             fails its validator. Raised before anything is touched.
-        ScaffoldWriteError: A write failed. Every change already applied is
-            undone first where it can be; the error names the path, carries the
-            ``OSError``, and lists in ``unrestored`` anything left changed.
+        ScaffoldWriteError: An edit's file is not writable (raised before
+            anything is touched, with ``EACCES``), or a write failed. Every
+            change already applied is undone first where it can be; the error
+            names the path, carries the ``OSError``, and lists in
+            ``unrestored`` anything left changed.
 
     Any other exception raised mid-write (``KeyboardInterrupt`` included) is
     re-raised as itself after the same restore, with a note naming any path
     left changed.
     """
+    seen: set[str] = set()
+    duplicates: list[Path] = []
+    for change in changes:
+        resolved = os.path.realpath(change.path)
+        if resolved in seen:
+            duplicates.append(change.path)
+        seen.add(resolved)
+    if duplicates:
+        raise ChangeConflictError(duplicates, duplicates=duplicates)
     conflicts = find_conflicts(changes)
     if conflicts:
-        raise ChangeConflictError(conflicts)
+        changed = sorted(c.path for c in changes if c.original is not None and c.path in conflicts)
+        raise ChangeConflictError(conflicts, changed=changed)
     for change in changes:
         try:
             change.content.encode("utf-8")
@@ -239,6 +310,12 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
                 change.validate(change.content)
             except ValueError as exc:
                 raise InvalidChangeError(change.path, f"the result {exc}") from exc
+    for change in changes:
+        # The rename in _write_atomically needs only the directory to be
+        # writable, so without this a read-only file would be replaced silently.
+        if change.original is not None and not os.access(os.path.realpath(change.path), os.W_OK):
+            denied = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(change.path))
+            raise ScaffoldWriteError(change.path, denied, ())
     started: list[PlannedChange] = []
     created_dirs: list[Path] = []
     for change in changes:

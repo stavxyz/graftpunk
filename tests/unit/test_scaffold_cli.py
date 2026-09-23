@@ -898,3 +898,36 @@ class TestAWriteFailureIsOneRefusal:
         assert line.startswith("Could not write ")
         assert "No space left on device" in line
         assert {p.name: p.read_bytes() for p in suite.iterdir()} == before
+
+
+class TestAConflictSaysWhichKind:
+    @pytest.fixture(autouse=True)
+    def _configured_logging(self) -> None:
+        """Exact-output assertions need structlog configured as real `gp` usage
+        has it; see TestCheckName's fixture of the same name for why."""
+        configure_logging(level="WARNING")
+
+    def test_an_existing_file_and_a_changed_file_are_listed_under_their_own_headers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """write_scaffold reaches an edit conflict only when a suite file changes
+        between its read and the write, so the refusal is injected here."""
+        from graftpunk.devtools.scaffold.write import ChangeConflictError
+
+        taken, changed = tmp_path / "README.md", tmp_path / "pyproject.toml"
+
+        def refusing(*args: object, **kwargs: object) -> None:
+            raise ChangeConflictError([changed, taken], changed=(changed,))
+
+        monkeypatch.setattr("graftpunk.cli.scaffold_commands.write_scaffold", refusing)
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "widgets", "--url", "https://myshop.example", "--dir", str(tmp_path)],
+        )
+        assert result.exit_code == 1, result.output
+        assert _plain(result.output).splitlines() == [
+            "Refusing to overwrite existing file(s):",
+            f"  {taken}",
+            "Refusing to edit file(s) changed since they were read:",
+            f"  {changed}",
+        ]

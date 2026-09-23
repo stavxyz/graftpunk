@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
+from typing import TypeVar
 
 from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
 from graftpunk.devtools.scaffold.write import ChangeConflictError, InvalidChangeError
@@ -29,3 +31,40 @@ def test_a_write_error_keeps_the_os_errors_fields_and_its_own_message() -> None:
         "Could not write src/plugin.py: No space left on device. "
         "Every file this operation had changed was restored."
     )
+
+
+_E = TypeVar("_E", bound=BaseException)
+
+
+def _round_trip(error: _E) -> _E:
+    return pickle.loads(pickle.dumps(error))  # noqa: S301 - bytes this test just produced
+
+
+def test_each_refusal_survives_pickling() -> None:
+    """A refusal raised in a worker process reaches its parent whole."""
+    write_error = ScaffoldWriteError(
+        Path("src/plugin.py"),
+        OSError(28, "No space left on device", "src/plugin.py"),
+        (Path("src/a.py"),),
+    )
+    conflict = ChangeConflictError(
+        [Path("a.py"), Path("b.py")], changed=(Path("b.py"),), duplicates=()
+    )
+    invalid = InvalidChangeError(Path("bad.py"), "the result does not parse as Python")
+    for error in (write_error, conflict, invalid):
+        copy = _round_trip(error)
+        assert type(copy) is type(error)
+        assert str(copy) == str(error)
+    copied_write = _round_trip(write_error)
+    assert (copied_write.path, copied_write.unrestored) == (
+        write_error.path,
+        write_error.unrestored,
+    )
+    assert (copied_write.errno, copied_write.filename) == (28, "src/plugin.py")
+    copied_conflict = _round_trip(conflict)
+    assert (copied_conflict.conflicts, copied_conflict.changed) == (
+        conflict.conflicts,
+        conflict.changed,
+    )
+    copied_invalid = _round_trip(invalid)
+    assert (copied_invalid.path, copied_invalid.reason) == (invalid.path, invalid.reason)

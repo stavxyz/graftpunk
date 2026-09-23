@@ -170,9 +170,10 @@ def plugin_new(
         result = write_scaffold(dir_, spec, force_new=new)
     except ScaffoldConflictError as exc:
         LOG.debug("scaffold_refused", reason="conflict", conflicts=len(exc.conflicts))
-        console.print("[red]Refusing to overwrite existing file(s):[/red]")
-        for path in exc.conflicts:
-            console.print(f"  {escape(str(path))}", soft_wrap=True)
+        for header, paths in exc.kinds:
+            console.print(f"[red]{escape(header)}:[/red]")
+            for path in paths:
+                console.print(f"  {escape(str(path))}", soft_wrap=True)
         raise typer.Exit(1) from None
     except PyprojectEditError as exc:
         LOG.debug("scaffold_refused", reason="pyproject_edit_error")
