@@ -76,7 +76,9 @@ def ensure_ignored(repo_root: Path, relative: str) -> bool:
         True when the line was added, False when it was already present.
     """
     gitignore = repo_root / ".gitignore"
-    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    # Read as bytes so a CRLF file's text is what is on disk; the append below
+    # then leaves every existing byte as it was.
+    existing = gitignore.read_bytes().decode("utf-8") if gitignore.exists() else ""
     updated = with_ignored(existing, relative)
     if updated == existing:
         return False

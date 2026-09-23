@@ -213,3 +213,20 @@ class TestWithWheelPackage:
     def test_include_instead_of_packages_refuses(self) -> None:
         with pytest.raises(PyprojectEditError, match="include"):
             with_wheel_package(_INCLUDE_INSTEAD_OF_PACKAGES, _PATH, "src/graftpunk_widgets")
+
+
+class TestCrlfText:
+    def test_both_edits_keep_crlf_and_make_the_same_change(self) -> None:
+        """A CRLF file used to be read with its line endings translated, and so was
+        rewritten LF throughout. The edit now keeps the file's own line endings."""
+        crlf = _SINGLE_LINE_ARRAY.replace("\n", "\r\n")
+        text = with_wheel_package(
+            with_entry_point(crlf, _PATH, "widgets", _WIDGETS), _PATH, "src/graftpunk_widgets"
+        )
+        lf = with_wheel_package(
+            with_entry_point(_SINGLE_LINE_ARRAY, _PATH, "widgets", _WIDGETS),
+            _PATH,
+            "src/graftpunk_widgets",
+        )
+        assert text.count("\n") == text.count("\r\n")
+        assert text == lf.replace("\n", "\r\n")

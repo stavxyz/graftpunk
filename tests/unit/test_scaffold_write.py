@@ -246,6 +246,51 @@ class TestNothingButAnOSErrorSkipsTheRestore:
         assert not (root / "src").exists()
 
 
+class TestRestoresAreByteExact:
+    _CRLF = '[project]\r\nname = "x"\r\n'
+
+    def test_a_crlf_edit_is_restored_byte_for_byte(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _project_root(tmp_path)
+        edited = root / "pyproject.toml"
+        edited.write_bytes(self._CRLF.encode())
+        real = write._write_atomically
+
+        def failing(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(path))
+            real(path, text)
+
+        monkeypatch.setattr(write, "_write_atomically", failing)
+        with pytest.raises(ScaffoldWriteError) as caught:
+            apply_changes(
+                [
+                    PlannedChange(edited, '[project]\r\nname = "y"\r\n', original=self._CRLF),
+                    PlannedChange(root / "plugin.py", "p = 1\n"),
+                ]
+            )
+        assert edited.read_bytes() == self._CRLF.encode()
+        assert caught.value.unrestored == ()
+
+    def test_a_crlf_original_read_as_bytes_is_not_a_conflict_and_is_written_as_given(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "pyproject.toml"
+        target.write_bytes(self._CRLF.encode())
+        original = write.read_original(target)
+        assert original == self._CRLF
+        apply_changes([PlannedChange(target, original + "[tool]\r\n", original=original)])
+        assert target.read_bytes() == (self._CRLF + "[tool]\r\n").encode()
+
+    def test_an_original_that_is_not_utf8_is_a_named_refusal(self, tmp_path: Path) -> None:
+        target = tmp_path / ".gitignore"
+        target.write_bytes(b"caf\xe9\n")
+        with pytest.raises(InvalidChangeError, match="not UTF-8 text") as caught:
+            write.read_original(target)
+        assert caught.value.path == target
+
+
 class TestTheWriterKeepsWhatItDoesNotChange:
     def test_an_edit_whose_own_write_fails_is_left_intact_not_rewritten(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

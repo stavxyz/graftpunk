@@ -37,6 +37,22 @@ def _normalised(text: str) -> str:
     return text if text.endswith("\n") or not text else text + "\n"
 
 
+def _as_lf(text: str) -> tuple[str, bool]:
+    """*text* with its line endings as LF, and whether they were all CRLF.
+
+    The two patterns match LF lines. A file that is CRLF throughout is edited as
+    LF and converted back, so every line keeps its ending; a file with mixed
+    endings is edited as it is.
+    """
+    if "\r\n" in text and text.count("\r\n") == text.count("\n"):
+        return text.replace("\r\n", "\n"), True
+    return text, False
+
+
+def _as_crlf_if(text: str, crlf: bool) -> str:
+    return text.replace("\n", "\r\n") if crlf else text
+
+
 def with_entry_point(text: str, pyproject_path: Path, name: str, target: str) -> str:
     """*text* with ``name = "target"`` appended to its
     ``[project.entry-points."graftpunk.plugins"]`` table. *pyproject_path* names the
@@ -46,6 +62,7 @@ def with_entry_point(text: str, pyproject_path: Path, name: str, target: str) ->
         PyprojectEditError: The name is already registered, or the table's
             shape cannot be located textually.
     """
+    text, crlf = _as_lf(text)
     text = _normalised(text)
     data = tomllib.loads(text)
     existing = data.get("project", {}).get("entry-points", {}).get("graftpunk.plugins", {})
@@ -60,7 +77,7 @@ def with_entry_point(text: str, pyproject_path: Path, name: str, target: str) ->
         )
     header, body = match.group(1), match.group(2)
     new_text = text[: match.start()] + header + _body_with_entry(body, name, target)
-    return new_text + text[match.end() :]
+    return _as_crlf_if(new_text + text[match.end() :], crlf)
 
 
 def _body_with_entry(body: str, name: str, target: str) -> str:
@@ -100,6 +117,7 @@ def with_wheel_package(text: str, pyproject_path: Path, package: str) -> str:
     Returns *text* itself, byte for byte, when there is nothing to add: the table
     has no explicit ``packages`` key (hatchling then infers packages on its own),
     or *package* is already listed. Only an edit normalises the trailing newline.
+    Either function keeps a file's CRLF line endings.
 
     Raises:
         PyprojectEditError: The wheel table uses ``include`` instead of
@@ -119,6 +137,7 @@ def with_wheel_package(text: str, pyproject_path: Path, package: str) -> str:
         return text
     if package in wheel["packages"]:
         return text
+    text, crlf = _as_lf(text)
     text = _normalised(text)
     match = _WHEEL_PACKAGES_RE.search(text)
     if match is None:
@@ -127,4 +146,5 @@ def with_wheel_package(text: str, pyproject_path: Path, package: str) -> str:
             f'locate its array textually. Add "{package}" to it by hand.'
         )
     prefix, array = match.group(1), match.group(2)
-    return text[: match.start()] + prefix + _append_to_array(array, package) + text[match.end() :]
+    edited = text[: match.start()] + prefix + _append_to_array(array, package) + text[match.end() :]
+    return _as_crlf_if(edited, crlf)

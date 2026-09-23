@@ -10,6 +10,7 @@ from graftpunk.devtools.scaffold import write
 from graftpunk.devtools.scaffold.project import ScaffoldConflictError, write_scaffold
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec
+from graftpunk.devtools.scaffold.write import InvalidChangeError
 
 _SUITE_PYPROJECT = """\
 [project]
@@ -316,3 +317,39 @@ class TestPyprojectRestoredAfterRenderedFileFailure:
         assert gitignore.read_text() == "*.pyc\n"
         assert not (tmp_path / "src").exists()
         assert not (tmp_path / "tests").exists()
+
+
+class TestSuiteFilesKeepTheirBytes:
+    """A suite add edits the suite's pyproject.toml and .gitignore; every byte it
+    does not add is the one it read, line endings included."""
+
+    def test_a_crlf_gitignore_keeps_its_existing_bytes(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_bytes(b"*.pyc\r\ndist/\r\n")
+        result = write_scaffold(tmp_path, _spec("widgets"))
+        assert result.gitignore_updated
+        assert gitignore.read_bytes() == b"*.pyc\r\ndist/\r\ntests/captures/\n"
+
+    def test_a_crlf_pyproject_stays_crlf(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_bytes(_SUITE_PYPROJECT.replace("\n", "\r\n").encode())
+        write_scaffold(tmp_path, _spec("widgets"))
+        edited = pyproject.read_bytes()
+        assert edited.count(b"\n") == edited.count(b"\r\n")
+        assert b'widgets = "graftpunk_widgets.plugin:WidgetsPlugin"\r\n' in edited
+        assert b'"src/graftpunk_widgets"' in edited
+
+    @pytest.mark.parametrize("name", ["pyproject.toml", ".gitignore"])
+    def test_a_suite_file_that_is_not_utf8_is_a_named_refusal(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
+        (tmp_path / ".gitignore").write_text("*.pyc\n")
+        (tmp_path / name).write_bytes((tmp_path / name).read_bytes() + b"# caf\xe9\n")
+        before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+        with pytest.raises(InvalidChangeError, match="not UTF-8 text") as caught:
+            write_scaffold(tmp_path, _spec("widgets"))
+        assert caught.value.path == tmp_path / name
+        assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before
+        assert not (tmp_path / "src").exists()

@@ -27,6 +27,7 @@ from graftpunk.devtools.scaffold.write import (
     Validator,
     apply_changes,
     find_conflicts,
+    read_original,
     validate_python,
     validate_toml,
 )
@@ -81,8 +82,8 @@ def _existing_pyproject(target_dir: Path) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _declares_plugin_group(pyproject_path: Path) -> bool:
-    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+def _declares_plugin_group(pyproject_text: str) -> bool:
+    data = tomllib.loads(pyproject_text)
     return PLUGINS_ENTRY_POINT_GROUP in data.get("project", {}).get("entry-points", {})
 
 
@@ -109,7 +110,8 @@ def write_scaffold(
             not be computed (see ``pyproject_edit.py``). ``pyproject.toml`` is
             never written and no rendered file is either, so the suite is
             left byte-identical to how ``write_scaffold`` found it.
-        InvalidChangeError: A rendered file fails its own grammar check.
+        InvalidChangeError: A rendered file fails its own grammar check, or
+            the suite's ``pyproject.toml`` or ``.gitignore`` is not UTF-8 text.
             Nothing is written.
         ScaffoldWriteError: A write failed; every change already applied,
             the ``pyproject.toml`` edit included, is undone first where it can
@@ -118,7 +120,10 @@ def write_scaffold(
             before anything was written failed.
     """
     existing = None if force_new else _existing_pyproject(target_dir)
-    if existing is not None and not _declares_plugin_group(existing):
+    # Read once, as bytes: the same text decides the mode and is the original the
+    # pyproject.toml edit is planned against and restored to.
+    original = read_original(existing) if existing is not None else ""
+    if existing is not None and not _declares_plugin_group(original):
         raise NotAPluginSuiteError(
             f"{existing} exists but does not declare "
             f'[project.entry-points."{PLUGINS_ENTRY_POINT_GROUP}"]. '
@@ -160,7 +165,6 @@ def write_scaffold(
         module = module_name_for(resolved_spec.name)
         package = f"src/graftpunk_{module}"
         target = f"graftpunk_{module}.plugin:{class_name_for(resolved_spec.name)}"
-        original = existing.read_text(encoding="utf-8")
         try:
             edited = with_wheel_package(
                 with_entry_point(original, existing, resolved_spec.name, target), existing, package
@@ -180,7 +184,7 @@ def write_scaffold(
         # a failed write restores it with everything else (polish round 1,
         # 2026-09-12).
         gitignore = target_dir / ".gitignore"
-        before = gitignore.read_text(encoding="utf-8") if gitignore.is_file() else None
+        before = read_original(gitignore) if gitignore.is_file() else None
         after = with_ignored(before or "", CAPTURES_DIR)
         if after != (before or ""):
             changes.append(PlannedChange(gitignore, after, original=before))

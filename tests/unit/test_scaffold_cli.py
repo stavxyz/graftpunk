@@ -706,6 +706,28 @@ class TestRefusalReasons:
         assert result.exit_code == 1, result.output
         assert self._reasons(events) == ["invalid_name"]
 
+    def test_a_suite_pyproject_that_is_not_utf8_logs_its_own_reason(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_bytes(
+            b'[project]\nname = "mysuite"\n\n[project.entry-points."graftpunk.plugins"]\n'
+            b"# caf\xe9\n"
+        )
+        with _captured_debug_logs() as events:
+            result = runner.invoke(
+                _build_app(),
+                [
+                    "plugin",
+                    "new",
+                    "widgets",
+                    "--url",
+                    "https://myshop.example",
+                    "--dir",
+                    str(tmp_path),
+                ],
+            )
+        assert result.exit_code == 1, result.output
+        assert "not UTF-8 text" in _plain(result.output)
+        assert self._reasons(events) == ["invalid_change"]
+
     def test_a_refusal_logs_at_debug_so_the_console_line_stands_alone(self, tmp_path: Path) -> None:
         """LOG.warning is reserved for an anomaly the console does not report.
         Every refusal already prints its own red line, and a warning beside it

@@ -32,6 +32,7 @@ __all__ = [
     "Validator",
     "apply_changes",
     "find_conflicts",
+    "read_original",
     "validate_python",
     "validate_toml",
 ]
@@ -62,8 +63,9 @@ class PlannedChange:
     """One file's full new content, planned against what the file held.
 
     ``original`` is ``None`` for a create, which conflicts with any file already
-    at ``path``; for an edit it is the text the plan was made from, and the
-    change conflicts if the file no longer holds exactly that.
+    at ``path``; for an edit it is the text the plan was made from, read with
+    :func:`read_original`, and the change conflicts if the file no longer holds
+    exactly that.
     """
 
     path: Path
@@ -82,19 +84,36 @@ class ChangeConflictError(DevtoolsRefusal):
 
 
 class InvalidChangeError(DevtoolsRefusal, ValueError):
-    """A planned change's content fails its own validator; nothing was written."""
+    """A planned change's content, or the file it was planned from, is not text the
+    writer can use; nothing was written. *reason* is a clause with its own subject
+    ("the result does not parse ...", "it is not UTF-8 text")."""
 
     def __init__(self, path: Path, reason: str) -> None:
         self.path = path
         self.reason = reason
-        super().__init__(f"Refusing to write {path}: the result {reason}")
+        super().__init__(f"Refusing to write {path}: {reason}")
+
+
+def read_original(path: Path) -> str:
+    """*path*'s text exactly as it is on disk, for a :class:`PlannedChange`'s
+    ``original``. Decoded from bytes, so no line ending is translated: a CRLF file
+    is compared and restored as CRLF.
+
+    Raises:
+        InvalidChangeError: The file is not UTF-8 text.
+        OSError: The file cannot be read.
+    """
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InvalidChangeError(path, "it is not UTF-8 text") from exc
 
 
 def _holds(path: Path, text: str) -> bool:
     """True when *path* is a file whose text is exactly *text*; False when it is
     not, or cannot be read."""
     try:
-        return path.read_text(encoding="utf-8") == text
+        return path.read_bytes().decode("utf-8") == text
     except (OSError, UnicodeDecodeError):
         return False
 
@@ -141,7 +160,9 @@ def _write_atomically(path: Path, text: str) -> None:
             mode: int | None = stat.S_IMODE(target.stat().st_mode)
         except FileNotFoundError:
             mode = None
-        partial.write_text(text, encoding="utf-8")
+        # newline="": the text is written as given, so an original read by
+        # read_original comes back byte for byte.
+        partial.write_text(text, encoding="utf-8", newline="")
         if mode is not None:
             partial.chmod(mode)
         os.replace(partial, target)
@@ -210,13 +231,14 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
             change.content.encode("utf-8")
         except UnicodeEncodeError as exc:
             raise InvalidChangeError(
-                change.path, f"cannot be encoded as UTF-8: {exc.reason} at position {exc.start}"
+                change.path,
+                f"the result cannot be encoded as UTF-8: {exc.reason} at position {exc.start}",
             ) from exc
         if change.validate is not None:
             try:
                 change.validate(change.content)
             except ValueError as exc:
-                raise InvalidChangeError(change.path, str(exc)) from exc
+                raise InvalidChangeError(change.path, f"the result {exc}") from exc
     started: list[PlannedChange] = []
     created_dirs: list[Path] = []
     for change in changes:
