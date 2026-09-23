@@ -495,6 +495,42 @@ class TestFixturesCommand:
         assert sidecar["flagged_names"] == ["shop_session"]
         assert "page=2" not in json.dumps(sidecar)
 
+    def test_a_json_body_key_that_is_not_a_field_name_is_not_written_to_the_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A JSON object keyed by data (an email address) is not a field name;
+        the digest's own filter (_plausible_field_name) applies here too, so
+        the data never reaches the committed sidecar (review round 1,
+        2026-09-23)."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("POST", "https://api.myshop.example.com/orders/1", body='{"id": 1}')
+        order["request"]["postData"] = {
+            "mimeType": "application/json",
+            "text": json.dumps({"quantity": 2, "alice@example.com": {"role": "owner"}}),
+        }
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "POST /orders/{order_id}",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        (fixture,) = [
+            p for p in out_dir.glob("post_orders_*.json") if not p.name.endswith(".meta.json")
+        ]
+        sidecar = json.loads((out_dir / f"{fixture.name}.meta.json").read_text())
+        assert sidecar["body_params"] == ["quantity"]
+        assert "alice@example.com" not in json.dumps(sidecar)
+
 
 class TestFixturesGitignore:
     """The first run inside a repo is the one that matters: the default target

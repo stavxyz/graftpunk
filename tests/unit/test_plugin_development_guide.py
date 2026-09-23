@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import json
 import re
 import shlex
 import sys
@@ -23,6 +24,7 @@ import pytest
 import typer.main
 
 from graftpunk.cli.main import app
+from graftpunk.testing.sidecar import Sidecar, sidecar_text
 
 
 def _repo_root() -> Path:
@@ -230,6 +232,27 @@ def _check_invocation(invocation: str, where: str) -> None:
             f"{where}: {name} is not an option of `{command.name}`, "
             f"nor of a group it sits under at that position"
         )
+
+
+def test_the_sidecar_json_example_matches_sidecar_text_byte_for_byte() -> None:
+    """The guide's sidecar example is hand-written prose, and ``sidecar_text``'s
+    exact layout (``indent=2`` puts every list item on its own line) is not: a
+    doc edit that reflows the example without running it would drift from what
+    `gp observe fixtures` actually writes. Round-trips the example's own values
+    through ``Sidecar``/``sidecar_text`` rather than comparing against a second
+    hand-written copy, so there is exactly one place the layout is spelled."""
+    (_line_no, block) = next(
+        pair for pair in _blocks(GUIDE_TEXT, "json") if "capture_sha256" in pair[1]
+    )
+    doc_json = json.loads(block)
+    sidecar = Sidecar(
+        status=doc_json["status"],
+        content_type=doc_json["content_type"],
+        body_params=tuple(doc_json["body_params"]),
+        capture_sha256=doc_json["capture_sha256"],
+        flagged_names=tuple(doc_json["flagged_names"]),
+    )
+    assert block.strip() == sidecar_text(sidecar).strip()
 
 
 def test_the_guide_has_commands_links_and_python_to_check() -> None:

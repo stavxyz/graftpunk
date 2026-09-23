@@ -445,6 +445,29 @@ class TestBodyParams:
         (entry,) = parse_har_file(_write_har(tmp_path, entries)).entries
         assert body_params(entry) == {}
 
+    def test_a_json_key_that_does_not_read_as_a_field_name_is_dropped(self, tmp_path: Path) -> None:
+        """A JSON object keyed by data (an email address used as a map key, a
+        session id) is not a field name, held to the same rule
+        (_plausible_field_name) a form body's keys already were: reporting the
+        key itself put the data into the digest report and the fixtures sidecar
+        (review round 1, 2026-09-23)."""
+        long_hex_key = "a" * 128
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/orders",
+                post_data=json.dumps(
+                    {
+                        "quantity": 3,
+                        "alice@example.com": {"role": "owner"},
+                        long_hex_key: "planted",
+                    }
+                ),
+            )
+        ]
+        (entry,) = parse_har_file(_write_har(tmp_path, entries)).entries
+        assert body_params(entry) == {"quantity": "int"}
+
 
 class TestNonFormBodiesHaveNoFieldNames:
     """parse_qs returns the whole text as one key for anything that is not a
@@ -1149,3 +1172,25 @@ class TestFlaggedNamesOf:
             sorted(set(result.cookies) | {t.name for t in result.tokens})
         )
         assert flagged_names_of(result) == ("csrf-token", "sid")
+
+    def test_a_cookie_set_by_a_second_in_scope_host_is_flagged_too(self, tmp_path: Path) -> None:
+        """flagged_names must not miss a cookie a first-party subdomain sets: an
+        auth or widget host distinct from the primary one (review round 1,
+        2026-09-23)."""
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "https://api.myshop.example.com/orders/1"),
+            _entry(
+                "GET",
+                "https://www.myshop.example.com/widget",
+                content_type="text/plain",
+                body="ok",
+                set_cookies=["shop_session=xyz; Path=/; HttpOnly"],
+            ),
+        ]
+        har = _write_har(tmp_path, entries)
+        result = digest(DigestSource.from_har(har))
+        assert result.primary_host == "api.myshop.example.com"
+        assert "www.myshop.example.com" in result.hosts
+        assert "shop_session" in result.cookies
+        assert "shop_session" in flagged_names_of(result)

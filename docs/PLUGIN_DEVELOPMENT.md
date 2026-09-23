@@ -957,7 +957,10 @@ body and the cookie and token names the recording's digest listed.
   "body_params": [],
   "capture_sha256": "4f6c1e0a9d2b7c3e8f5a1d6b0c9e2f7a3b8d4c1e6f0a5b9c2d7e3f8a1b6c0d4e",
   "content_type": "application/json",
-  "flagged_names": ["X-Csrf-Token", "myshop_session"],
+  "flagged_names": [
+    "X-Csrf-Token",
+    "myshop_session"
+  ],
   "schema": 1,
   "status": 200
 }

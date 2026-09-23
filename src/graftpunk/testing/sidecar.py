@@ -19,10 +19,12 @@ writer, which only ``gp observe fixtures`` runs, lives in
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.contracts import UnknownSchemaError, current_schema, refuse_unknown_schema
+from graftpunk.exceptions import GraftpunkError
 
 __all__ = [
     "SIDECAR_FIELDS",
@@ -43,6 +45,17 @@ SIDECAR_FIELDS: dict[int, frozenset[str]] = {
 }
 """The keys each schema version holds besides ``schema`` itself."""
 
+_CAPTURE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+class SidecarError(GraftpunkError):
+    """A sidecar that cannot be read, or that is outside its declared format.
+
+    A ``GraftpunkError``, not a ``ValueError``: plugin command code routinely
+    catches ``ValueError`` around a fixture-backed ``.json()`` call in a test,
+    and a malformed sidecar must not be swallowed by that catch (review round
+    1, 2026-09-23)."""
+
 
 @dataclass(frozen=True)
 class Sidecar:
@@ -56,14 +69,24 @@ class Sidecar:
     capture_sha256: str | None = None
     flagged_names: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        """Sort and dedupe the name tuples, and refuse a ``capture_sha256`` that is
+        not a lowercase sha256 hex digest or ``None``, here rather than in the
+        writer: a ``Sidecar`` built anywhere is fit to serialize."""
+        if self.capture_sha256 is not None and not _CAPTURE_SHA256_RE.fullmatch(
+            self.capture_sha256
+        ):
+            raise SidecarError(
+                "capture_sha256 must be a 64-character lowercase hex sha256 digest, "
+                f"or null, got {self.capture_sha256!r}"
+            )
+        object.__setattr__(self, "body_params", tuple(sorted(set(self.body_params))))
+        object.__setattr__(self, "flagged_names", tuple(sorted(set(self.flagged_names))))
+
     @property
     def declared(self) -> bool:
         """True for a hand-made fixture's sidecar: trusted, not checked against a capture."""
         return self.capture_sha256 is None
-
-
-class SidecarError(ValueError):
-    """A sidecar that cannot be read, or that is outside its declared format."""
 
 
 def sidecar_path(fixture: Path) -> Path:
@@ -99,7 +122,9 @@ def load_sidecar(path: Path) -> Sidecar:
     Raises:
         SidecarError: The file is unreadable or not a JSON object; its ``schema``
             is missing or unknown; it has a key outside its version's set or
-            lacks one; or a value has the wrong type. The message names *path*.
+            lacks one; a value has the wrong type; or ``capture_sha256`` is set
+            and is not a 64-character lowercase hex digest. The message names
+            *path*.
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -118,13 +143,24 @@ def load_sidecar(path: Path) -> Sidecar:
         raise SidecarError(f"{path}: keys outside sidecar schema {version}: {', '.join(extra)}")
     if missing:
         raise SidecarError(f"{path}: missing keys: {', '.join(missing)}")
-    return Sidecar(
-        status=_integer(data, "status", path),
-        content_type=_text(data, "content_type", path),
-        body_params=_names(data, "body_params", path),
-        capture_sha256=_optional_text(data, "capture_sha256", path),
-        flagged_names=_names(data, "flagged_names", path),
-    )
+    status = _integer(data, "status", path)
+    content_type = _text(data, "content_type", path)
+    body_params = _names(data, "body_params", path)
+    capture_sha256 = _optional_text(data, "capture_sha256", path)
+    flagged_names = _names(data, "flagged_names", path)
+    try:
+        # Every type check above already names *path*; only Sidecar's own
+        # construction-time check (the capture_sha256 format) can still raise
+        # here, and it does not know *path* on its own.
+        return Sidecar(
+            status=status,
+            content_type=content_type,
+            body_params=body_params,
+            capture_sha256=capture_sha256,
+            flagged_names=flagged_names,
+        )
+    except SidecarError as exc:
+        raise SidecarError(f"{path}: {exc}") from exc
 
 
 def _integer(data: dict[str, object], key: str, path: Path) -> int:

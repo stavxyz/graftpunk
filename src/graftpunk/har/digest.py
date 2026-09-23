@@ -388,8 +388,15 @@ def _declared_request_content_type(entry: HAREntry) -> str:
 
 
 def _json_body_types(parsed: dict[str, Any]) -> dict[str, str]:
+    """*parsed*'s field names and observed types, keys that do not read as a field
+    name dropped by the same rule a form body's keys are held to
+    (:func:`_plausible_field_name`): a JSON object keyed by data (an email
+    address, a session id) is not a field name either, and reporting it as one
+    put the data itself into the digest report and the fixtures sidecar."""
     types: dict[str, str] = {}
     for key, value in parsed.items():
+        if not _plausible_field_name(key):
+            continue
         if isinstance(value, bool):
             types[key] = "bool"
         elif isinstance(value, (int, float)):
@@ -853,9 +860,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             if cname and looks_like_token_name(cname):
                 token_seen.setdefault(("cookie", cname), []).append(f"{method} {raw_template}")
 
-        if host == primary_host:
-            for cookie_name in _response_cookie_names(entry):
-                cookies_seen.setdefault(cookie_name, None)
+        # Every host reaching this point already passed the in-scope check
+        # above, not just the primary one: a second first-party host (a
+        # cookie-setting auth subdomain, say) must still show up in
+        # flagged_names, which reads this field (review round 1, 2026-09-23).
+        for cookie_name in _response_cookie_names(entry):
+            cookies_seen.setdefault(cookie_name, None)
 
         content_type = (entry.response.content_type or "").lower()
         forms_in_entry: tuple[LoginForm, ...] = ()
@@ -967,8 +977,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
 
 def flagged_names_of(d: RunDigest) -> tuple[str, ...]:
     """The names a committed fixture must never contain: every cookie name the digest
-    recorded on the primary host and every token candidate's name, exactly as the
-    digest holds them, sorted and deduplicated. It lives beside the digest that
-    records the names, so the sidecar writer takes plain strings and imports
+    recorded on any in-scope host (not the primary host alone: a second first-party
+    host can set its own session cookie) and every token candidate's name, exactly
+    as the digest holds them, sorted and deduplicated. It lives beside the digest
+    that records the names, so the sidecar writer takes plain strings and imports
     nothing from the digest."""
     return tuple(sorted(set(d.cookies) | {token.name for token in d.tokens}))

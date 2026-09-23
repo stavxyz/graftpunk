@@ -116,6 +116,19 @@ class TestFixtureSession:
         with pytest.raises(SidecarError, match="get_orders.json.meta.json"):
             session.get("https://myshop.example.com/orders")
 
+    def test_a_malformed_sidecar_is_not_caught_by_except_value_error(self, tmp_path: Path) -> None:
+        """Plugin command code routinely wraps a fixture-backed request in
+        ``except ValueError`` (around ``.json()``, say); SidecarError must not be
+        a ValueError or a malformed sidecar would be silently swallowed there."""
+        (tmp_path / "get_orders.json").write_text("{}")
+        (tmp_path / "get_orders.json.meta.json").write_text(json.dumps({"status": 403}))
+        session = FixtureSession(tmp_path)
+        with pytest.raises(SidecarError):
+            try:
+                session.get("https://myshop.example.com/orders")
+            except ValueError:
+                pytest.fail("SidecarError was caught by except ValueError")
+
 
 class TestFixtureContext:
     def test_is_make_context_with_a_fixture_session(self, tmp_path: Path) -> None:

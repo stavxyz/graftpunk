@@ -119,13 +119,15 @@ def write_sidecar(
 
     *fixture* must already be on disk: ``capture_sha256`` is the hash of its bytes
     as written, which is what the in-suite check compares a derived fixture to.
+    The sort and dedupe of ``body_params`` and ``flagged_names`` is
+    ``Sidecar``'s own job, not this writer's.
     """
     sidecar = Sidecar(
         status=status,
         content_type=content_type,
-        body_params=tuple(sorted(set(body_params))),
+        body_params=tuple(body_params),
         capture_sha256=hashlib.sha256(fixture.read_bytes()).hexdigest(),
-        flagged_names=tuple(sorted(set(flagged_names))),
+        flagged_names=tuple(flagged_names),
     )
     path = sidecar_path(fixture)
     path.write_text(sidecar_text(sidecar), encoding="utf-8")
