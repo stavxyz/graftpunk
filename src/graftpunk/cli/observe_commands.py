@@ -41,7 +41,12 @@ from graftpunk.har.digest import (
     flagged_names_of,
     redacted_names_of,
 )
-from graftpunk.har.naming import EndpointSpecError, capture_filename, parse_endpoint
+from graftpunk.har.naming import (
+    EndpointSpecError,
+    capture_filename,
+    capture_slug,
+    parse_endpoint,
+)
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.report import (
     DEFAULT_ENDPOINT_LIMIT,
@@ -210,8 +215,9 @@ def _parsed_matches(patterns: list[str]) -> list[tuple[str, str]]:
 def _colliding_file_names(
     entries: list[HAREntry], run_digest: RunDigest, endpoints: list[tuple[str, str]]
 ) -> dict[str, set[str]]:
-    """The capture file names two or more matched endpoints would share (``/a_b``
-    and ``/a/b`` both name ``get_a_b.json``), each with those endpoints."""
+    """The capture stems two or more matched endpoints would share (``/a_b`` and
+    ``/a/b`` both name ``get_a_b``, whatever each one's extension), each with those
+    endpoints: ``FixtureSession`` looks a fixture up by stem."""
     keys_by_name: dict[str, set[str]] = {}
     for entry in entries:
         try:
@@ -224,8 +230,7 @@ def _colliding_file_names(
             _matches_template(method, template, e) for e in endpoints
         ):
             continue
-        content_type = entry.response.content_type or "application/octet-stream"
-        name = capture_filename(method, template, content_type)
+        name = capture_slug(method, template)
         keys_by_name.setdefault(name, set()).add(f"{method} {template}")
     return {name: keys for name, keys in keys_by_name.items() if len(keys) > 1}
 
@@ -325,8 +330,9 @@ def fixtures_cmd(
     if collisions:
         for filename, keys in sorted(collisions.items()):
             console.print(
-                f"[red]Refusing to write {escape(filename)}: {escape(' and '.join(sorted(keys)))} "
-                "would both be written to it. Narrow --match to one of them.[/red]",
+                f"[red]Refusing to write {escape(filename)}: "
+                f"{escape(' and '.join(sorted(keys)))} would share that fixture name. "
+                "Narrow --match to one of them.[/red]",
                 soft_wrap=True,
                 highlight=False,
             )

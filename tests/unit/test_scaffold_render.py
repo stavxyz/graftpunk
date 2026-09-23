@@ -3011,3 +3011,44 @@ class TestGeneratedNamesAreSafe:
         plugin = namespace["MyshopPlugin"]()
         plugin.orders_by_order_id(_Ctx(), order_id="../../admin?x=1#")
         assert urls == ["/orders/..%2F..%2Fadmin%3Fx%3D1%23"]
+
+
+class TestRound9Generator:
+    def test_a_parameter_named_quote_does_not_shadow_the_encoder(self) -> None:
+        """I2: the encoder is imported under a private alias."""
+        endpoint = dataclasses.replace(
+            _single_endpoint("/orders/{order_id}"), query_params={"quote": "str"}
+        )
+        plugin_code = _render_endpoints(endpoint)["src/graftpunk_myshop/plugin.py"]
+        assert "from urllib.parse import quote as _quote_path" in plugin_code
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(plugin_code, namespace)  # noqa: S102
+        urls: list[str] = []
+
+        class _Ctx:
+            def request_json(self, method: str, url: str, **kwargs: Any) -> dict:
+                urls.append(url)
+                return {}
+
+        namespace["MyshopPlugin"]().orders_by_order_id(_Ctx(), order_id="a/b", quote="x")
+        assert urls == ["/orders/a%2Fb"]
+
+    def test_two_endpoints_sharing_a_fixture_stem_get_one_test_and_a_gp_fill(self) -> None:
+        """M3: /api/c_d and /api/c/d both name the stem get_api_c_d."""
+        first = _single_endpoint("/api/c_d")
+        second = dataclasses.replace(_single_endpoint("/api/c/d"), content_type="text/html")
+        files = _render_endpoints(first, second)
+        test_code = files["tests/test_plugin.py"]
+        # The generator's endpoint order names /api/c/d first.
+        assert "def test_api_c_d(" in test_code
+        assert "def test_api_c_d_2(" not in test_code
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in test_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: no test for api_c_d_2 (GET /api/c_d): its fixture would share the stem "
+            "get_api_c_d with GET /api/c/d; write its test against a fixture of its own."
+        ) in comments
+        compile(test_code, "test_plugin.py", "exec")

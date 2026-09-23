@@ -471,8 +471,34 @@ class TestFixturesCommand:
         )
         assert result.exit_code == 1, result.output
         output = strip_ansi(result.output).replace("\n", "")
-        assert "get_a_b.json" in output and "GET /a/b" in output and "GET /a_b" in output
+        assert "get_a_b" in output and "GET /a/b" in output and "GET /a_b" in output
         assert not out_dir.exists() or not list(out_dir.glob("*.json"))
+
+    def test_two_templates_that_share_a_stem_across_extensions_are_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M3: get_a_b.json and get_a_b.html share the stem FixtureSession looks up."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/a_b", body='{"x": 1}'),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/a/b",
+                content_type="text/html",
+                body="<p>b</p>",
+            ),
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /*", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert "get_a_b" in output and "GET /a/b" in output and "GET /a_b" in output
+        assert not out_dir.exists() or not any(out_dir.iterdir())
 
     def test_the_sidecar_is_committable_and_records_the_capture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

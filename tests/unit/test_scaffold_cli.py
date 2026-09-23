@@ -442,6 +442,52 @@ class TestGeneratedProjectPassesItsOwnGate:
         # PytestAssertRewriteWarning (final fix wave, 2026-09-12).
         assert "warnings summary" not in pytest_result.stdout.lower(), pytest_result.stdout
 
+    def test_a_generated_test_passes_with_a_query_parameter_named_quote(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """I2: the stub and its generated test run with a parameter named quote."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders/1001?quote=x", body='{"id": 1}')
+        ]
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "quote: str | None = None" in (target / "src/graftpunk_myshop/plugin.py").read_text()
+        (target / "tests" / "fixtures" / "get_orders_{order_id}.json").write_text('{"id": 1}')
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", str(target)], capture_output=True, text=True
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+
     def test_a_project_with_login_and_token_blocks_imports_and_instantiates(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

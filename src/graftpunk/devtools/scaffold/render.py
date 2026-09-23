@@ -38,7 +38,7 @@ from graftpunk.devtools.scaffold.pysrc import (
 )
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
-from graftpunk.har.naming import capture_filename
+from graftpunk.har.naming import capture_filename, capture_slug
 from graftpunk.har.paths import (
     template_path,
     templated_url,
@@ -909,7 +909,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         lines.append(
             f"{L2}# Each path value is percent-encoded, so a / ? or # in it stays in its segment."
         )
-        lines.extend(f'{L2}{p} = quote({p}, safe="")' for p in path_params)
+        lines.extend(f'{L2}{p} = _quote_path({p}, safe="")' for p in path_params)
     lines.append(_ENDPOINT_COMMENT)
     lines.append(f"{L2}return ctx.{call}(")
     lines.extend(call_lines)
@@ -1012,7 +1012,8 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         "",
         "from __future__ import annotations",
         "",
-        *(["from urllib.parse import quote", ""] if needs_quote else []),
+        # Under a private alias: a site parameter may be named quote.
+        *(["from urllib.parse import quote as _quote_path", ""] if needs_quote else []),
         *import_lines("graftpunk.plugins", *plugins_names),
     ]
     if needs_token_import:
@@ -1109,11 +1110,18 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
     template, and content type the stub's own request carries, so the list the
     CLI prints is the list ``FixtureSession`` will go looking for.
     """
-    return [
-        f"{fixtures_root_for(spec)}"
-        f"{capture_filename(endpoint.methods[0], endpoint.template, endpoint.content_type)}"
-        for endpoint in _stub_endpoints(spec)
-    ]
+    paths: list[str] = []
+    stems: set[str] = set()
+    for endpoint in _stub_endpoints(spec):
+        stem = capture_slug(endpoint.methods[0], endpoint.template)
+        if stem in stems:
+            continue  # no generated test reads it (see _render_test_module)
+        stems.add(stem)
+        paths.append(
+            f"{fixtures_root_for(spec)}"
+            f"{capture_filename(endpoint.methods[0], endpoint.template, endpoint.content_type)}"
+        )
+    return paths
 
 
 def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
@@ -1164,8 +1172,24 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         return "\n".join(lines).rstrip() + "\n"
     seen: set[str] = set(_TAKEN_COMMAND_NAMES)
     seen_tests: set[str] = set(_FIXED_TEST_NAMES)
+    stems: dict[str, str] = {}
     for endpoint in endpoints:
         name = _command_name(endpoint.template, seen)
+        method = endpoint.methods[0]
+        stem = capture_slug(method, endpoint.template)
+        if stem in stems:
+            # FixtureSession looks a fixture up by stem, so this endpoint's test
+            # would read the other endpoint's fixture.
+            note = (
+                f"GP-FILL: no test for {name} ({method} {endpoint.template}): its fixture "
+                f"would share the stem {stem} with {stems[stem]}; write its test against "
+                "a fixture of its own."
+            )
+            lines.extend(wrapped_comment_lines(note, indent=0))
+            lines.append("")
+            lines.append("")
+            continue
+        stems[stem] = f"{method} {endpoint.template}"
         test_name = _deduped(name, seen_tests)
         # The same seeding as _render_command_stub, so the identifiers here are
         # the ones the stub actually declares.
