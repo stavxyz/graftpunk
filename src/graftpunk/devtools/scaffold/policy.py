@@ -29,7 +29,7 @@ def fixtures_root(*, suite_member: bool, module_name: str) -> str:
 
     A standalone project uses the tree itself. A suite member owns a directory
     under it named for its module, because fixture names come from endpoint paths
-    and two plugins in one suite can share a path (polish round 1, 2026-09-12).
+    and two plugins in one suite can share a path.
     The generator supplies the two facts from its spec; a reader supplies them
     from the project on disk.
     """

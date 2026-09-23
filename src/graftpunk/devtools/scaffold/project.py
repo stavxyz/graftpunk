@@ -193,8 +193,7 @@ def write_scaffold(
     gitignore_updated = False
     if mode == "add_to_suite":
         # Last in the batch: the ignore line protects files this call writes, so
-        # a failed write restores it with everything else (polish round 1,
-        # 2026-09-12).
+        # a failed write restores it with everything else.
         gitignore = target_dir / ".gitignore"
         before = read_original(gitignore) if gitignore.is_file() else None
         after = with_ignored(before or "", CAPTURES_DIR)

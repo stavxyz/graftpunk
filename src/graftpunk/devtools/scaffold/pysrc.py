@@ -62,7 +62,7 @@ def _escaped_for_docstring(text: str) -> str:
     quotes) and a ``\"\"\"`` ends the docstring early, so a URL or a key holding
     either renders a module that does not parse. A trailing quote is escaped too:
     it would otherwise sit against the closing quotes of the one-line form and
-    close the string one character early (final fix wave, 2026-09-12).
+    close the string one character early.
     """
     escaped = text.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
     if escaped.endswith('"'):
@@ -100,7 +100,7 @@ def _escaped_docstring_wrap(text: str, *, width: int) -> list[str]:
     break. ``break_on_hyphens=False`` for the same reason the comment wrapper
     sets it: every hyphen in this text belongs to a captured fact (a session
     name, a path segment, a JSON key), and breaking at one rendered a run label
-    as ``run myshop-\\nrun-1`` (polish round 2, 2026-09-12).
+    as ``run myshop-\\nrun-1``.
     """
     escaped = _escaped_for_docstring(text)
     wrapped = textwrap.wrap(escaped, width=max(1, width - 1), break_on_hyphens=False) or [escaped]
@@ -119,11 +119,10 @@ def wrapped_comment_lines(text: str, *, indent: int) -> list[str]:
     """*text* as one or more ``#``-prefixed comment lines at *indent* spaces: a
     captured URL or candidate name is unbounded, and ``E501`` applies to a comment
     line exactly as it does to code, so every comment this module emits routes
-    through here rather than risking one long line (validation fix round 3, Finding
-    open in round 2, 2026-09-12). ``break_long_words`` means a URL with no spaces at
-    all still cannot overflow; ``initial_indent``/``subsequent_indent`` give the
-    first line ``# `` and every continuation line the hanging ``#   `` the ruling
-    asked for, with ``textwrap`` doing the width accounting for both.
+    through here rather than risking one long line. ``break_long_words`` means a
+    URL with no spaces at all still cannot overflow; ``initial_indent`` and
+    ``subsequent_indent`` give the first line ``# `` and every continuation line a
+    hanging ``#   ``, with ``textwrap`` doing the width accounting for both.
     """
     pad = " " * indent
     return textwrap.wrap(
@@ -139,8 +138,8 @@ def wrapped_comment_lines(text: str, *, indent: int) -> list[str]:
 def wrapped_docstring_block(text: str, *, indent: int) -> list[str]:
     """A one-line docstring ``\"\"\"{text}\"\"\"`` at *indent* spaces when that fits the
     generated width; otherwise the same text as a multi-line docstring with the
-    closing quotes on their own line (validation fix round 3, 2026-09-12). *text* is
-    escaped for a docstring in both shapes (final fix wave, 2026-09-12)."""
+    closing quotes on their own line. *text* is escaped for a docstring in both
+    shapes."""
     pad = " " * indent
     single_line = f'{pad}"""{_escaped_for_docstring(text)}"""'
     if len(single_line) <= GENERATED_LINE_LENGTH:
@@ -160,7 +159,7 @@ def quoted_literal(value: str) -> str:
     characters) in a form Python reads the same way, and ``ensure_ascii=False`` leaves
     everything else as written. The quote character is the one ``ruff format`` would
     settle on (double, unless single quoting costs fewer escapes), so a generated file
-    needs no second formatting pass (validation fix round 4, 2026-09-12).
+    needs no second formatting pass.
     """
     quote = _quote_char(value)
     return f"{quote}{_escaped_body(value, quote)}{quote}"
@@ -215,8 +214,7 @@ def _dict_entry_lines(key: str, value: str, *, indent: int) -> list[str]:
     (``(\\n "par"\\n "t"\\n): value,``), which is a valid dict key and which
     ``ruff format`` leaves alone once the joined form no longer fits: a site's own
     parameter or header name is one fact, and it is the dict key, so neither the
-    exploded dict nor any identifier cap can shorten it (validation fix round 4,
-    Finding 4, 2026-09-12).
+    exploded dict nor any identifier cap can shorten it.
     """
     pad = " " * indent
     single_line = f"{pad}{quoted_literal(key)}: {value},"
@@ -285,7 +283,7 @@ def literal_lines(
     selector or header name is one fact ruff format itself never splits), so this
     falls back to an implicit string concatenation instead, each chunk from
     ``textwrap.wrap`` with whitespace preserved so the chunks rejoin to exactly
-    *value* (validation fix round 2, Finding 4, 2026-09-12). ``trailing_comma=False``
+    *value*. ``trailing_comma=False``
     renders a plain assignment statement (``name = "value"``) rather than a call
     keyword argument (``name="value",``); both shapes reuse the same wrapping.
     """
@@ -390,8 +388,7 @@ def url_expr_lines(url_text: str, *, is_fstring: bool, indent: int) -> list[str]
     line at *indent* spaces when that fits the generated width, otherwise the same
     string as a parenthesised implicit concatenation split at ``/`` boundaries. A
     captured path template is one fact ``ruff format`` cannot split for itself, and a
-    deeply nested one is past the width on its own (validation fix round 4, Finding 4,
-    2026-09-12)."""
+    deeply nested one is past the width on its own."""
     pad = " " * indent
     render = _quoted_fstring if is_fstring else quoted_literal
     single_line = f"{pad}{render(url_text)},"

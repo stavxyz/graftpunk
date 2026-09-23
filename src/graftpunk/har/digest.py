@@ -807,7 +807,7 @@ def _login_flow_pairs(
     been re-templated by the high-cardinality collapse, so each observation
     claims every endpoint of its method whose final template covers its path,
     plus its own templated path for a run whose login flow produced no endpoint
-    (moved from ``devtools/scaffold/render.py``; polish round 2, 2026-09-12).
+    (moved from ``devtools/scaffold/render.py``).
     """
     owned: set[tuple[str, str]] = set()
     for observation in login:

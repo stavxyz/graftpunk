@@ -1674,7 +1674,7 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
 
     def test_a_login_path_inside_a_collapsed_family_is_still_owned(self) -> None:
         """The digest's high-cardinality collapse can re-template the endpoint
-        the login observation belongs to (polish round 2, 2026-09-12); the digest
+        the login observation belongs to; the digest
         flags it (test_har_digest.py holds that rule), and neither the stub nor
         its generated test is rendered."""
         spec = ScaffoldSpec(
@@ -1985,8 +1985,7 @@ class TestRenderedTreeIsRuffClean:
         # A username selector well past the generated width, a submit selector
         # long enough to be typical but still short enough to fit on one line,
         # and a header name with no whitespace at all: the three shapes
-        # literal_lines must handle (validation fix round 2, Finding 4,
-        # 2026-09-12).
+        # literal_lines must handle.
         long_selector = (
             "#login-form div.field-wrapper.username-wrapper > label + "
             "input[name='username'][type='text'].form-control.input-lg"

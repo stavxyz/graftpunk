@@ -35,7 +35,7 @@ class PyprojectEditError(Exception):
 def _normalised(text: str) -> str:
     """*text* ending in a newline. The entry-point table's own pattern needs its last
     line terminated, so a file whose table is last and that ends without a newline
-    was refused as an unknown shape (polish round 1, 2026-09-12)."""
+    was refused as an unknown shape."""
     return text if text.endswith("\n") or not text else text + "\n"
 
 

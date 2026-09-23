@@ -82,8 +82,7 @@ def parse_endpoint(value: str) -> tuple[str, str]:
     from here. The method is one of :data:`HTTP_METHODS`, in capitals; the
     template is everything after the first space, stripped, and may be a glob
     where the consumer accepts one. A value that splits wrong would match nothing
-    and look like an empty result, so it is refused instead (final fix wave,
-    2026-09-12).
+    and look like an empty result, so it is refused instead.
 
     Raises:
         EndpointSpecError: No space, a method that is not a capitalised HTTP

@@ -462,9 +462,9 @@ def _templated_url(template: str, seen: set[str]) -> tuple[str, list[str]]:
 
 
 def _emits_body(endpoint: Endpoint) -> bool:
-    """Whether the stub carries a JSON body dict: only for a mutating method, so a GET
-    that happened to record a body declares no body arguments (polish round 1,
-    2026-09-12)."""
+    """Whether the stub sends a request body (``json=``, or ``data=`` for a recorded
+    form): only for a mutating method, so a GET that happened to record a body
+    declares no body arguments."""
     return bool(endpoint.body_params) and any(m in _MUTATING_METHODS for m in endpoint.methods)
 
 
@@ -842,8 +842,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         lines.append(f"def test_{name}() -> None:")
         # base_url is a captured site fact and plugin_name is the user's own
         # name, so this call is exploded one keyword argument per line with
-        # both values through literal_lines (validation fix round 4,
-        # 2026-09-12).
+        # both values through literal_lines.
         lines.append(f"{L1}ctx = fixture_context(")
         lines.append(f"{L2}FIXTURES_DIR,")
         lines.extend(literal_lines(spec.name, indent=len(L2), prefix="plugin_name="))
