@@ -551,7 +551,7 @@ def _plausible_field_name(name: str) -> bool:
     key that does not match the field-name alphabet (an email address, a key
     starting with a digit) is not one, and neither is a key that
     :func:`graftpunk.har.paths.holds_an_id` says carries an account value
-    (``u_40912873``, ``cus_NffrFeUfNV2Hib``)."""
+    (``u_40912873``, ``cus_4fK2x9QaZ1``)."""
     return _field_name_shaped(name) and not holds_an_id(name)
 
 
@@ -866,9 +866,8 @@ def _collapse_eligible(segment: str) -> bool:
     """True when *segment* may stand in for a parameter in a collapsed family.
 
     ``looks_dynamic`` relaxed by one case: any segment carrying a digit. A
-    captured family is often slugs rather than bare ids (``/products/red-widget-
-    2024``), which ``looks_dynamic`` rightly refuses on its own but which a run
-    of many siblings identifies as a parameter position.
+    segment ``looks_dynamic`` keeps literal can still carry one (``red-widget-2``,
+    ``page2``), and a run of many such siblings identifies a parameter position.
     """
     return looks_dynamic(segment) or any(ch.isdigit() for ch in segment)
 

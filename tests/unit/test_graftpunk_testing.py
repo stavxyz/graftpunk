@@ -56,7 +56,7 @@ class TestFixtureSession:
     def test_templated_path_matches_any_id(self, tmp_path: Path) -> None:
         (tmp_path / "get_orders_{order_id}.json").write_text('{"id": 1}')
         session = FixtureSession(tmp_path)
-        assert session.get("https://myshop.example.com/orders/1").json() == {"id": 1}
+        assert session.get("https://myshop.example.com/orders/1001").json() == {"id": 1}
         assert session.get("https://myshop.example.com/orders/999").json() == {"id": 1}
 
     def test_unmatched_request_returns_404(self, tmp_path: Path) -> None:

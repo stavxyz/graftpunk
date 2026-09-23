@@ -1132,8 +1132,9 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         _, path_params = _templated_url(
             endpoint.template, {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
         )
-        # "1" round-trips through the naming rule (paths.template_path treats
-        # an all-digit segment as dynamic): the request this test issues
+        # "1001" round-trips through the naming rule (paths.looks_dynamic
+        # treats a digit run of 3 or more as dynamic; "1" stays literal, like
+        # /page/1): the request this test issues
         # renames back to the endpoint's own template, so it finds the
         # fixture named for it. A literal "GP-FILL" would not: it stays a
         # literal segment and the fixture lookup would 404.
@@ -1150,7 +1151,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         lines.extend(
             call_expression_lines(
                 f"result = plugin.{name}",
-                ["ctx", *(f'{p}="1"' for p in path_params)],
+                ["ctx", *(f'{p}="1001"' for p in path_params)],
                 indent=len(L1),
             )
         )

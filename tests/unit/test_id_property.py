@@ -27,7 +27,7 @@ from graftpunk.har.digest import (
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from graftpunk.testing.sidecar import Sidecar, sidecar_text
-from tests.unit.test_har_paths import MUST_BE_ID, MUST_BE_KEPT
+from tests.unit.test_har_paths import MUST_BE_ID, MUST_BE_KEPT, MUST_STAY_LITERAL_SEGMENT
 
 _HOST = "https://myshop.example.com"
 
@@ -219,7 +219,39 @@ def test_an_ordinary_name_survives_in_every_name_position(tmp_path: Path, name: 
         assert found, position
 
 
-@pytest.mark.parametrize("name", [n for n in MUST_BE_KEPT if not n.isdigit()])
+# Digit groups (card, national id, phone numbers) and dates, which a path fails
+# closed on and a name judges by holds_an_id.
+_DIGIT_GROUPS_AND_DATES = (
+    "4111-1111-1111-1111",
+    "123-45-6789",
+    "512-555-0100",
+    "1-800-555-0199",
+    "1987-03-14",
+    "2026-09-23",
+)
+
+
+@pytest.mark.parametrize("position", _URL_POSITIONS)
+@pytest.mark.parametrize("value", _DIGIT_GROUPS_AND_DATES)
+def test_no_digit_group_or_date_in_a_path_reaches_any_output(
+    tmp_path: Path, value: str, position: str
+) -> None:
+    har = _run(tmp_path, position, value)
+    result = digest(DigestSource.from_har(har))
+    files = render(
+        ScaffoldSpec(
+            name="myshop", mode="new_project", backend="nodriver", base_url=_HOST, digest=result
+        )
+    )
+    for path, content in files.items():
+        assert value not in content, path
+        assert value not in path, path
+    # --json and markdown keep recorded paths by design (module docstring).
+    for text in (render_endpoints_json(result), *_sidecars(har)):
+        assert value not in text
+
+
+@pytest.mark.parametrize("name", [n for n in MUST_STAY_LITERAL_SEGMENT if "{" not in n])
 def test_an_ordinary_path_segment_stays_literal(tmp_path: Path, name: str) -> None:
     result = digest(DigestSource.from_har(_run(tmp_path, "api_path_middle", name)))
     assert f"/api/accounts/{name}/orders" in {e.template for e in result.endpoints}

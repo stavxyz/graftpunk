@@ -1032,7 +1032,7 @@ class TestDigestSourceFromHar:
 class TestEndpointExamples:
     def test_examples_stop_at_the_cap(self, tmp_path: Path) -> None:
         entries = [
-            _entry("GET", f"https://api.myshop.example.com/orders/{i}")
+            _entry("GET", f"https://api.myshop.example.com/orders/{1000 + i}")
             for i in range(_MAX_ENDPOINT_EXAMPLES + 4)
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
@@ -1065,10 +1065,10 @@ class TestHighCardinalityCollapse:
             _entry("GET", f"https://api.myshop.example.com/products/item-{i}")
             for i in range(_HIGH_CARDINALITY_THRESHOLD + 2)
         ]
-        entries.append(_entry("GET", "https://api.myshop.example.com/orders/7"))
+        entries.append(_entry("GET", "https://api.myshop.example.com/orders/7001"))
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert endpoint_template(result, "/products/item-3") == "/products/{product_id}"
-        assert endpoint_template(result, "/orders/7") == "/orders/{order_id}"
+        assert endpoint_template(result, "/orders/7001") == "/orders/{order_id}"
         assert endpoint_template(result, "/never/seen") == "/never/seen"
 
     def test_segment_at_or_below_threshold_stays_literal(self, tmp_path: Path) -> None:
@@ -1127,7 +1127,8 @@ class TestHighCardinalityEligibility:
     def test_minority_of_eligible_values_does_not_collapse(self, tmp_path: Path) -> None:
         total = _HIGH_CARDINALITY_THRESHOLD + 3
         eligible = int(total * _DYNAMIC_MAJORITY)  # a minority of *total*, by definition
-        slugs = [f"red-widget-{2000 + i}" for i in range(eligible)]
+        # Each carries a digit but is literal on its own (a digit run of at most 2).
+        slugs = [f"red-widget-{i}" for i in range(eligible)]
         slugs += [f"red-widget-{chr(ord('a') + i)}" for i in range(total - eligible)]
         entries = [
             _entry("GET", f"https://api.myshop.example.com/products/{slug}") for slug in slugs
@@ -1536,7 +1537,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         entries = [
             _entry(
                 "POST",
-                "https://api.myshop.example.com/orders?u_40912873=1&cus_NffrFeUfNV2Hib=2&page=1",
+                "https://api.myshop.example.com/orders?u_40912873=1&cus_4fK2x9QaZ1=2&page=1",
                 post_data=json.dumps({"acct_40912873": 1, "note": "x"}),
             ),
             _entry(

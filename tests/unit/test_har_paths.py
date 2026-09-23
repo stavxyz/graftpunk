@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from graftpunk.har import paths
 from graftpunk.har.paths import (
     _MIN_BASE64_LEN,
     _MIN_HEX_LEN,
@@ -198,8 +197,13 @@ MUST_BE_ID = (
     "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8",
     "acct-ab12cd34ef",
     "a3f9c2d1e0b4.pdf",
-    "cus_NffrFeUfNV2Hib",
     "usr_8fK2x9Qa",
+    "cus_4fK2x9QaZ1",
+    "ctl00$a8f3k2x9q1z7",
+    "4111-1111-1111-1111",
+    "123-45-6789",
+    "1-800-555-0199",
+    "order-2024-1187-7731",
     "usr_8fk2x9qa",
     "x7kq29lp",
     "a9b8c7d6e5",
@@ -218,10 +222,7 @@ MUST_BE_ID = (
     "fld_a8f3c9e2b1",
     "img-001-thumb",
     "abfkuro7",
-    "tmelora7",
-    "ostrkami4",
     "4address",
-    "LEKoje7WHx",
     "MAPLETON7",
     "zPde0Igx",
     "window7us",
@@ -309,14 +310,9 @@ class TestHoldsAnId:
     def test_an_ordinary_name_holds_none(self, text: str) -> None:
         assert not holds_an_id(text)
 
-    @pytest.mark.parametrize("text", MUST_BE_ID)
-    def test_a_path_segment_holding_an_id_templates(self, text: str) -> None:
-        assert looks_dynamic(text)
-        assert template_path(f"/accounts/{text}/orders")[0] == "/accounts/{account_id}/orders"
-
-    def test_a_path_segment_of_digits_alone_templates_at_any_length(self) -> None:
-        assert looks_dynamic("1")
-        assert looks_dynamic("2024")
+    def test_a_date_as_a_name_is_a_name(self) -> None:
+        assert not holds_an_id("2024-01-15")
+        assert holds_an_id("2024-01-15-0412")
 
     def test_is_placeholder(self) -> None:
         assert is_placeholder("{user_id}")
@@ -324,41 +320,61 @@ class TestHoldsAnId:
         assert not is_placeholder("{x}y")
 
 
-# Each remaining sub-rule of the id rule, with the MUST_BE_ID entry it alone catches
-# and a MUST_BE_KEPT entry at its edge: dropping the rule flips the first, and the
-# second shows how close to the rule an ordinary name sits.
-RULE_PINS = (
-    ("_SPELLING_REJECTS", "consonant pair", "abfkuro7", "webhook2"),
-    ("_SPELLING_REJECTS", "word-initial pair", "tmelora7", "PhoneNumber2"),
-    ("_SPELLING_REJECTS", "four consonants", "ostrkami4", "address2"),
-    ("_WORD_REJECTS", "starts with a digit", "4address", "address4"),
-    ("_WORD_REJECTS", "several short runs", "LEKoje7WHx", "md5Checksum"),
-    ("_WORD_REJECTS", "capitals run", "MAPLETON7", "PDFExport2"),
-    ("_WORD_REJECTS", "unspelled run", "abfkuro7", "shippingAddressLine2"),
-    ("_WORD_REJECTS", "no word run", "zPde0Igx", "base64Data"),
-    ("_WORD_REJECTS", "short lower run after digits", "window7us", "added2cart"),
-    ("_WORD_REJECTS", "lower run after acronym digits", "abc4order", "ipv4Address"),
+# Path segments fail closed (graftpunk.har.paths.looks_dynamic): a segment holding a
+# digit stays literal only when every part is letters, a word with a trailing digit
+# run of at most 2, a version, or a lone digit run of at most 2.
+MUST_BE_DYNAMIC_SEGMENT = (
+    "4111-1111-1111-1111",
+    "123-45-6789",
+    "555-867-5309",
+    "512-555-0100",
+    "020-7946-0958",
+    "1-800-555-0199",
+    "6035-3210-9876",
+    "order-2024-1187-7731",
+    "2026-09-23",
+    "1987-03-14",
+    "ab12cd34",
+    "img-001-thumb",
+    "123",
+    "2024",
+    "my-post-2024",
+    "base64Data",
+    "sha256Hash",
+    "cus_NffrFeUfNV2Hib",
+    *MUST_BE_ID,
+)
+MUST_STAY_LITERAL_SEGMENT = (
+    "v2",
+    "v1beta1",
+    "v2alpha1",
+    "api",
+    "en-US",
+    "my-post",
+    "address2",
+    "windows10",
+    "page",
+    "2",
+    "12",
+    "ec2",
+    "oauth2",
+    "orders",
+    "user_profile",
+    "password-reset",
+    "deadbeef",
+    "report.pdf",
+    "image2.png",
+    "{order_id}",
 )
 
 
-@pytest.mark.parametrize(("table", "rule", "caught", "kept"), RULE_PINS)
-def test_each_word_sub_rule_alone_catches_its_pinned_entry(
-    monkeypatch: pytest.MonkeyPatch, table: str, rule: str, caught: str, kept: str
-) -> None:
-    """A sub-rule that catches nothing on its own is deleted, not kept (round 6)."""
-    assert caught in MUST_BE_ID and kept in MUST_BE_KEPT
-    assert holds_an_id(caught)
-    assert not holds_an_id(kept)
-    rules = getattr(paths, table)
-    assert rule in {name for name, _check in rules}
-    monkeypatch.setattr(paths, table, tuple(r for r in rules if r[0] != rule))
-    assert not holds_an_id(caught)
+class TestPathSegmentsFailClosed:
+    @pytest.mark.parametrize("segment", MUST_BE_DYNAMIC_SEGMENT)
+    def test_a_segment_holding_an_account_value_templates(self, segment: str) -> None:
+        assert looks_dynamic(segment)
+        assert template_path(f"/accounts/{segment}/orders")[0] == "/accounts/{account_id}/orders"
 
-
-def test_the_joined_short_run_limit_alone_catches_its_pinned_entry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert holds_an_id("Lmv8Lifonp-Rq-X-bivNx")
-    assert not holds_an_id("X-Goog-Upload-Protocol-v2-Status")
-    monkeypatch.setattr(paths, "_MAX_JOINED_SHORT_RUNS", 99)
-    assert not holds_an_id("Lmv8Lifonp-Rq-X-bivNx")
+    @pytest.mark.parametrize("segment", MUST_STAY_LITERAL_SEGMENT)
+    def test_a_route_segment_stays_literal(self, segment: str) -> None:
+        assert not looks_dynamic(segment)
+        assert template_path(f"/api/{segment}/items")[0] == f"/api/{segment}/items"

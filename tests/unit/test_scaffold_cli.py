@@ -172,7 +172,7 @@ class TestPluginNewFromRun:
                 content_type="application/json",
                 body="{}",
             ),
-            _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}'),
+            _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}'),
         ]
         har = {"log": {"version": "1.2", "entries": entries}}
         (run_dir / "network.har").write_text(json.dumps(har))
@@ -333,7 +333,7 @@ class TestNextStepsNamesTheFixtures:
             observe_base,
             "myshop",
             "run-1",
-            url="https://api.myshop.example.com/orders/1",
+            url="https://api.myshop.example.com/orders/1001",
             body='{"id": 1}',
         )
         target = tmp_path / "out"
@@ -399,7 +399,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         run_dir = observe_base / "myshop" / "run-1"
         run_dir.mkdir(parents=True)
-        entries = [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')]
+        entries = [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')]
         har = {"log": {"version": "1.2", "entries": entries}}
         (run_dir / "network.har").write_text(json.dumps(har))
 
@@ -467,7 +467,7 @@ class TestGeneratedProjectPassesItsOwnGate:
                 content_type="text/html",
                 body=login_page,
             ),
-            _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}'),
+            _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}'),
         ]
         # The header half of the token pair: the meta tag above supplies the
         # value, this request carries it back.

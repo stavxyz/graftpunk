@@ -77,6 +77,11 @@ _PREFIXED_ID_RE = re.compile(r"[A-Za-z]{2,8}[_.\-]([A-Za-z0-9]{8,})")
 _ALNUM_RE = re.compile(r"[A-Za-z0-9]+")
 _LEADING_ZERO_RE = re.compile(r"0\d{2,}")
 _VERSION_RE = re.compile(r"v\d+(?:alpha|beta|rc)?\d*")
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# A card, national id, phone, or loyalty number written in digit groups: at least
+# this many all-digit parts, holding at least this many digits together.
+_MIN_DIGIT_GROUPS = 3
+_MIN_GROUPED_DIGITS = 7
 # A word's letter runs split at camel and Pascal boundaries (AddressLine, HTTPClient).
 _WORD_RUN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
 _VOWELS = frozenset("aeiouyAEIOUY")
@@ -84,7 +89,6 @@ _PLACEHOLDER_SEGMENT_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
 # A part at least this long that mixes letters and digits is an id unless it
 # reads as a word or a version.
 _MIN_MIXED_LEN = 8
-_MAX_WORD_DIGIT_RUN = 4
 # A long joined name reads as words with at most this many 1- or 2-letter runs.
 _MAX_JOINED_SHORT_RUNS = 1
 
@@ -118,31 +122,7 @@ _WORD_CONSONANT_PAIRS = frozenset(
         "wf wh wk wl wm wn wp wr ws wt xc xp xs xt zz"
     ).split()
 )
-# The consonant pairs a word starts with.
-_WORD_INITIAL_PAIRS = frozenset(
-    (  # noqa: SIM905 - one compact string on purpose: the set is data
-        "bl br ch cl cr dr fl fr gl gn gr kl kn kr ph pl pr sc sh sk sl sm sn sp sq st "
-        "sw th tr tw wh wr"
-    ).split()
-)
 _MIN_SPOKEN_RUN = 4
-
-
-def _odd_initial_pair(lowered: str) -> bool:
-    return (
-        lowered[0] not in _VOWELS
-        and lowered[1] not in _VOWELS
-        and lowered[:2] not in _WORD_INITIAL_PAIRS
-    )
-
-
-def _four_consonants(lowered: str) -> bool:
-    run = 0
-    for ch in lowered:
-        run = 0 if ch in _VOWELS else run + 1
-        if run >= 4:
-            return True
-    return False
 
 
 def _odd_consonant_pair(lowered: str) -> bool:
@@ -153,14 +133,12 @@ def _odd_consonant_pair(lowered: str) -> bool:
 
 
 # Each check rejects a letter run of 4 or more as not spelled like a word. Every
-# one is pinned by a MUST_BE_ID entry it alone catches (tests/unit/test_har_paths.py
-# drops each in turn and asserts its entry flips); a check that bought nothing on
-# the miss-rate ceilings was deleted (round 6: odd vowel pairs, q without u, a
-# tripled letter, a run with no vowel).
+# check here and in _WORD_REJECTS meets one criterion, automated in
+# tests/unit/test_id_miss_rates.py: removing it breaches a miss-rate ceiling. The
+# ones that did not were deleted (round 6: odd vowel pairs, q without u, a tripled
+# letter, a run with no vowel; round 7: a word-initial pair, four consonants).
 _SPELLING_REJECTS: tuple[tuple[str, Callable[[str], bool]], ...] = (
     ("consonant pair", _odd_consonant_pair),
-    ("word-initial pair", _odd_initial_pair),
-    ("four consonants", _four_consonants),
 )
 
 
@@ -173,10 +151,6 @@ def _spoken_run(run: str) -> bool:
 
 def _starts_with_a_digit(part: str, runs: list[str]) -> bool:
     return part[0].isdigit()
-
-
-def _several_short_runs(part: str, runs: list[str]) -> bool:
-    return sum(1 for run in runs if run.isalpha() and len(run) <= 2) > 1
 
 
 def _capitals_run(part: str, runs: list[str]) -> bool:
@@ -211,13 +185,13 @@ def _lower_run_after_acronym_digits(part: str, runs: list[str]) -> bool:
     )
 
 
-# Each check rejects a part of letters and digits mixed as not a word. Every one
-# is pinned the same way as _SPELLING_REJECTS; the ones that bought nothing were
-# deleted (round 6: at most two letter/digit switches, a digit run of at most 4,
-# a vowel in every 3-letter run, and the separate 3-or-more-switches rule).
+# Each check rejects a part of letters and digits mixed as not a word, held to the
+# same criterion as _SPELLING_REJECTS; the ones that bought nothing were deleted
+# (round 6: at most two letter/digit switches, a digit run of at most 4, a vowel in
+# every 3-letter run, and the separate 3-or-more-switches rule; round 7: more than
+# one run of 1 or 2 letters).
 _WORD_REJECTS: tuple[tuple[str, Callable[[str, list[str]], bool]], ...] = (
     ("starts with a digit", _starts_with_a_digit),
-    ("several short runs", _several_short_runs),
     ("capitals run", _capitals_run),
     ("unspelled run", _unspelled_run),
     ("no word run", _no_word_run),
@@ -229,16 +203,28 @@ _WORD_REJECTS: tuple[tuple[str, Callable[[str, list[str]], bool]], ...] = (
 def _reads_as_a_word(part: str) -> bool:
     """True when *part*, letters and digits mixed, reads as a field name: a version
     (``v1beta1``), or a word no check in ``_WORD_REJECTS`` rejects. Its letter runs
-    split at camel and Pascal boundaries. A word starts with a letter, holds at most
-    one run of 1 or 2 letters (an acronym: ``md5Checksum``, ``orderId2``), holds a
-    run of 4 or more letters, spells every such run like a word and never in
-    capitals alone, and starts a letter run after digits as a new word: capitalised
-    (``oauth2Token``), or lower-case of 4 or more letters (``added2cart``) when the
-    letters before the digits are a word, not an acronym (``ipv4Address``)."""
+    split at camel and Pascal boundaries. A word starts with a letter, holds a run
+    of 4 or more letters, spells every such run with only the consonant pairs
+    English words use and never in capitals alone, and starts a letter run after
+    digits as a new word: capitalised (``oauth2Token``), or lower-case of 4 or more
+    letters (``added2cart``) when the letters before the digits are a word, not an
+    acronym (``ipv4Address``)."""
     if _VERSION_RE.fullmatch(part):
         return True
     runs = _WORD_RUN_RE.findall(part)
     return not any(reject(part, runs) for _name, reject in _WORD_REJECTS)
+
+
+def _digit_groups(text: str) -> bool:
+    """True when *text* holds 3 or more all-digit parts totalling 7 or more digits
+    (``4111-1111-1111-1111``, ``123-45-6789``, ``1-800-555-0199``); a date
+    (``2024-01-15``) as a whole is not."""
+    groups = [part for part in _PART_SPLIT_RE.split(text) if part.isascii() and part.isdigit()]
+    return (
+        len(groups) >= _MIN_DIGIT_GROUPS
+        and sum(len(group) for group in groups) >= _MIN_GROUPED_DIGITS
+        and not _DATE_RE.fullmatch(text)
+    )
 
 
 def _joined_token(text: str) -> bool:
@@ -264,13 +250,12 @@ _SHORT_WORD_WITH_DIGITS_RE = re.compile(r"[a-z]{2,}\d{1,2}")
 
 
 def _joined_part_reads_as_a_word(part: str) -> bool:
-    """True when one ``_``/``-`` part of a long name reads as a word: a digit run of at
-    most 4, a lower-case word with 1 or 2 digits (``ctl00``, ``line2``), a version, a
-    letter run spelled like a word, or letters and digits that read as a word."""
-    if not part:
+    """True when one ``_``/``-`` part of a long name reads as a word: a digit run (one
+    of 5 or more digits is an id by the part rule after this one), a lower-case word
+    with 1 or 2 digits (``ctl00``, ``line2``), a version, a letter run spelled like a
+    word, or letters and digits that read as a word."""
+    if not part or part.isdigit():
         return True
-    if part.isdigit():
-        return len(part) <= _MAX_WORD_DIGIT_RUN
     if _SHORT_WORD_WITH_DIGITS_RE.fullmatch(part) or _VERSION_RE.fullmatch(part):
         return True
     if part.isalpha():
@@ -325,23 +310,28 @@ def _part_holds_an_id(part: str) -> bool:
 
 
 def holds_an_id(text: str) -> bool:
-    """True when *text*, a name or a path segment, carries an account value.
+    """True when *text*, a name, carries an account value.
 
-    The one owner of that decision: every position the digest reads a name or a
-    segment from goes through it. *text* is percent-decoded, then read in order:
+    The one owner of that decision for every name position: query, JSON, and form
+    keys, response keys, header names, cookie and token names, and a login form's
+    element ids and input names. A path segment is judged by :func:`looks_dynamic`,
+    which fails closed and consults this rule too. *text* is percent-decoded, then
+    read in order:
 
-    1. The whole text is an email or a UUID; or a URL-safe base64-like token of 20
-       or more characters holding a digit and switching between letters and digits
-       at least twice, unless it is a long ``_``/``-`` joined name whose parts all
-       read as words (``line_item_2_unit_price``,
+    1. The whole text is an email or a UUID; or holds 3 or more all-digit parts
+       totalling 7 or more digits (``4111-1111-1111-1111``, ``123-45-6789``; a date
+       such as ``2024-01-15`` as a whole is not); or is a URL-safe base64-like token
+       of 20 or more characters holding a digit and switching between letters and
+       digits at least twice, unless it is a long ``_``/``-`` joined name whose parts
+       all read as words (``line_item_2_unit_price``,
        ``ctl00_MainContent_LoginUser_Password``).
     2. The whole text is 3 or more parts joined by ``-`` or ``_``, every part 2 to 6
        characters mixing letters and digits, or one part of 3 or more digits with a
-       leading zero beside a part holding a letter (``ORD-2024-0001``; a date such
-       as ``2024-01-15`` and a step such as ``step_01_done`` are not).
+       leading zero beside a part holding a letter (``ORD-2024-0001``; a step such
+       as ``step_01_done`` is not).
     3. The whole text is a prefixed id: 2 to 8 letters, a separator, and a tail of 8
        or more characters mixing letters and digits that does not read as a word
-       (``cus_NffrFeUfNV2Hib``).
+       (``cus_4fK2x9QaZ1``).
     4. A part (split on ``_ . - ~ $``) holds a run of 5 or more digits, is 16 or more
        hex characters or 8 or more mixing hex digits and letters, or is a
        base64-like token of 20 or more characters holding a digit that does not read
@@ -350,16 +340,20 @@ def holds_an_id(text: str) -> bool:
        (:func:`_reads_as_a_word`): ``kqzpwmab47``, ``XKQ29LPZ``, ``Zq9XkLmPwR``.
 
     The rule is lexical and measured both ways (``tests/unit/test_id_miss_rates.py``:
-    random-token miss rates and a false-positive rate over a corpus of ordinary
-    field names). A random token with no digit reads as a word and is not caught,
-    nor is a short word-like value; a compound whose word before a digit is 3
-    letters or fewer and whose word after it is lower-case (``add2cart``) reads as
-    an id.
+    random-token miss rates per shape, and false-positive rates over a regression
+    corpus and a held-out corpus of public SDK names). It misses a random token
+    with no digit, a short word-like value, and a random token whose letter runs are
+    each spelled like words (``cus_NffrFeUfNV2Hib``). It reads as an id a name with
+    lower-case letters right after a digit (``add2cart``, ``retina2x``,
+    ``k8sNamespace``), a run of 5 or more digits (``ed25519``), no run of 4 or more
+    letters (``sha256Key``), a letter run with a consonant pair words do not use
+    (``pbkdf2Iterations``), or 20 or more characters read as a base64 token
+    (``Md5OfMessageAttributes``).
     """
     text = unquote(text)
     if not text:
         return False
-    if _EMAIL_RE.match(text) or _UUID_RE.match(text):
+    if _EMAIL_RE.match(text) or _UUID_RE.match(text) or _digit_groups(text):
         return True
     if (
         _WHOLE_BASE64_RE.fullmatch(text)
@@ -415,18 +409,37 @@ def bare_url(url: str) -> str:
     return urlunsplit((parts.scheme, bare_host(parts.netloc), path, "", ""))
 
 
+# The only parts a path segment holding a digit may have and stay literal: letters
+# alone, a word with a digit run of at most 2 after it (address2, windows10, ec2), a
+# version, or a lone digit run of at most 2 (/page/2).
+_LITERAL_PART_RE = re.compile(r"[A-Za-z]*\d{0,2}|v\d+(?:alpha|beta|rc)?\d*")
+
+
 def looks_dynamic(segment: str) -> bool:
-    """True when *segment* is all digits or :func:`holds_an_id`: a path segment
-    that collapses into a named parameter.
+    """True when *segment* is a path segment that collapses into a named parameter.
+
+    Fails closed: a segment is dynamic when :func:`holds_an_id` says so (an email, a
+    UUID, a hex or random token, ...), and a segment holding a digit is literal only
+    when every part of it (split on ``_ . - ~ $``) is letters alone, a word of
+    letters with a digit run of at most 2 after it (``address2``, ``windows10``,
+    ``ec2``), a version (``v2``, ``v1beta1``), or a digit run of at most 2 standing
+    alone (``/page/2``). Every other segment holding a digit is dynamic: a date, a
+    card, phone, or national id number in digit groups, a long number, a mixed
+    token. A letters-only segment that holds no id stays literal here; the digest's
+    high-cardinality collapse still templates a family of them.
 
     The one owner of that judgement: ``template_path`` collapses on it, and the
-    digest's high-cardinality collapse gates on it (in a relaxed form) so a run
-    of distinct word-like sibling routes is not mistaken for one parameterised
-    family.
+    digest's high-cardinality collapse gates on it. Names (keys, headers, input
+    names) are judged by :func:`holds_an_id` instead.
     """
     if not segment:
         return False
-    return segment.isdigit() or holds_an_id(segment)
+    if holds_an_id(segment):
+        return True
+    text = unquote(segment)
+    if not _has_digit(text):
+        return False
+    return not all(_LITERAL_PART_RE.fullmatch(part) for part in _PART_SPLIT_RE.split(text))
 
 
 def param_name_for_segment(prev_segment: str) -> str:

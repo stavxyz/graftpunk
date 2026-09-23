@@ -740,7 +740,7 @@ class TestGeneratedLoginHoldsNoAccountValue:
         assert '"username": "GP-FILL: username selector",' in code
         assert '"password": "#pw",' in code
 
-    @pytest.mark.parametrize("landing", ["/40912873", "/1/2"])
+    @pytest.mark.parametrize("landing", ["/40912873", "/1001/2002"])
     def test_a_landing_path_of_placeholders_only_sets_no_success_url(self, landing: str) -> None:
         """*/** matches every URL, so a failed login that navigates would pass."""
         post = LoginObservation(
@@ -1219,7 +1219,7 @@ class TestPluginModuleCommandStubs:
         test_code = rendered["tests/test_plugin.py"]
         assert "search_result_id: str," in plugin_code
         assert 'f"/searchResults/{search_result_id}",' in plugin_code
-        assert 'search_result_id="1"' in test_code
+        assert 'search_result_id="1001"' in test_code
 
     def test_html_endpoint_calls_request_text_with_navigation_role(self) -> None:
         html_endpoint = Endpoint(
@@ -2793,7 +2793,7 @@ class TestRenderedTreeIsRuffClean:
         test_code = files["tests/test_plugin.py"]
         assert "ctx = fixture_context(" in test_code
         assert f'base_url="{base_url}"' not in test_code  # the long base_url was split
-        assert '        account_id="1",' in test_code  # the wide stub's call exploded
+        assert '        account_id="1001",' in test_code  # the wide stub's call exploded
         tree = self._write_tree(tmp_path / "maximal", files)
         self._assert_tree_is_clean(tree)
 

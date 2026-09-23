@@ -23,7 +23,7 @@ class TestCaptureSlug:
         assert capture_slug("GET", "/") == "get_root"
 
     def test_two_calls_with_different_ids_produce_the_same_slug(self) -> None:
-        assert capture_slug("GET", "/orders/1") == capture_slug("GET", "/orders/2")
+        assert capture_slug("GET", "/orders/1001") == capture_slug("GET", "/orders/1002")
 
 
 class TestCaptureFilename:

@@ -184,7 +184,7 @@ class TestDigestCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         result = runner.invoke(_build_app(), ["observe", "digest", "myshop", "--endpoints-json"])
         assert result.exit_code == 0, result.output
@@ -214,7 +214,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         out_dir = tmp_path / "out"
         app = _build_app()
@@ -286,7 +286,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001")],
         )
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -333,7 +333,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -373,7 +373,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         # No git init here: out_dir is a plain tmp_path directory, not part
         # of this worktree's tree (find_repo_root walks from out_dir, not
@@ -414,7 +414,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001")],
         )
         out_dir = tmp_path / "out"
 
@@ -440,7 +440,7 @@ class TestFixturesCommand:
     ) -> None:
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
-        order = _entry("GET", "https://api.myshop.example.com/orders/1?page=2", body='{"id": 1}')
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001?page=2", body='{"id": 1}')
         order["response"]["cookies"] = [{"name": "shop_session", "value": "planted"}]
         _write_run(observe_base, "myshop", "run-1", [order])
         out_dir = tmp_path / "out"
@@ -471,7 +471,7 @@ class TestFixturesCommand:
         written in no form (plain, hashed, or as its digits)."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
-        order = _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
         order["response"]["cookies"] = [
             {"name": "shop_session", "value": "planted"},
             {"name": "sess_40912873", "value": "planted"},
@@ -538,7 +538,7 @@ class TestFixturesCommand:
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         orders = [
             _entry("GET", f"https://api.myshop.example.com/orders/{i}", body='{"id": 1}')
-            for i in (1, 2)
+            for i in (1001, 1002)
         ]
         asset = _entry(
             "GET",
@@ -547,7 +547,7 @@ class TestFixturesCommand:
             body="var a = 1;",
         )
         asset["response"]["cookies"] = [{"name": "asset_cookie", "value": "planted"}]
-        other_host = _entry("GET", "https://tracker.example.net/orders/3", body='{"id": 3}')
+        other_host = _entry("GET", "https://tracker.example.net/orders/1003", body='{"id": 3}')
         other_host["response"]["cookies"] = [{"name": "other_host_cookie", "value": "planted"}]
         _write_run(observe_base, "myshop", "run-1", [*orders, asset, other_host])
         out_dir = tmp_path / "out"
@@ -564,7 +564,7 @@ class TestFixturesCommand:
         the data never reaches the committed sidecar."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
-        order = _entry("POST", "https://api.myshop.example.com/orders/1", body='{"id": 1}')
+        order = _entry("POST", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
         order["request"]["postData"] = {
             "mimeType": "application/json",
             "text": json.dumps({"quantity": 2, "alice@example.com": {"role": "owner"}}),
@@ -603,7 +603,7 @@ class TestFixturesCommand:
             "run-1",
             [
                 _entry("GET", "http://[bad/orders/2", body='{"id": 2}'),
-                _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}'),
+                _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}'),
             ],
         )
         out_dir = tmp_path / "out"
@@ -628,7 +628,7 @@ class TestFixturesGitignore:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -765,7 +765,7 @@ class TestWroteListingDoesNotWrapMidWord:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         out_dir = tmp_path / "a-fairly-long-directory-name" / "and-another-one-here" / "captures"
 
@@ -808,7 +808,7 @@ class TestLimitMustBePositive:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001")],
         )
         out_dir = tmp_path / "out"
         result = _invoke_fixtures(out_dir, "--limit", "-1")
@@ -831,7 +831,7 @@ class TestMatchPatternValidation:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001")],
         )
         out_dir = tmp_path / "out"
         result = runner.invoke(
@@ -851,7 +851,7 @@ class TestMatchPatternValidation:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         out_dir = tmp_path / "out"
         result = runner.invoke(
@@ -919,7 +919,7 @@ class TestBinaryBodiesAreSkipped:
         real but empty fixture."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
-        binary = _entry("GET", "https://api.myshop.example.com/orders/1/photo")
+        binary = _entry("GET", "https://api.myshop.example.com/orders/1001/photo")
         binary["response"]["headers"] = [{"name": "Content-Type", "value": "image/png"}]
         binary["response"]["content"] = {"mimeType": "image/png", "size": 2048}
         _write_run(observe_base, "myshop", "run-1", [binary])
@@ -961,7 +961,7 @@ class TestUnwritableTargetIsARefusal:
 
     def test_digest_output_into_an_unwritable_directory(self, tmp_path: Path) -> None:
         har_path = tmp_path / "network.har"
-        entries = [_entry("GET", "https://api.myshop.example.com/orders/1")]
+        entries = [_entry("GET", "https://api.myshop.example.com/orders/1001")]
         har_path.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
         with _unwritable_dir(tmp_path) as readonly:
             result = runner.invoke(
@@ -989,7 +989,7 @@ class TestUnwritableTargetIsARefusal:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         with _unwritable_dir(tmp_path) as readonly:
             result = runner.invoke(

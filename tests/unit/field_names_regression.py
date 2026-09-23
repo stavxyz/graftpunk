@@ -1,5 +1,8 @@
-"""A fixed corpus of ordinary API field, header, and path names: none holds an
-account value, so ``holds_an_id`` should read each as a name.
+"""The regression corpus: the names reviewers raised as read wrongly by the id
+rule, and the ordinary API field, header, and path names written alongside them.
+None holds an account value, so ``holds_an_id`` should read each as a name. The
+rule was tuned against these; the held-out corpus (``field_names_held_out.py``)
+was not.
 
 The kinds a site spells names in: camelCase, PascalCase, snake_case,
 kebab-case, header names, with and without digits, compound words, acronyms
@@ -10,7 +13,7 @@ under a ceiling, the other direction from its miss-rate ceilings.
 
 from __future__ import annotations
 
-FIELD_NAMES = (
+REGRESSION_NAMES = (
     "id",
     "name",
     "email",
