@@ -362,7 +362,8 @@ class TestEndpointsProjection:
         assert login_form["fields"]["username"] == (
             'form[action="/login"] input[name="username"], '
             'form[action^="/login;"] input[name="username"], '
-            'form[action^="/login?"] input[name="username"]'
+            'form[action^="/login?"] input[name="username"], '
+            'form[action^="/login#"] input[name="username"]'
         )
 
     def test_the_sample_har_leaks_no_cookie_name_or_example_path(self) -> None:

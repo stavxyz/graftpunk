@@ -79,18 +79,52 @@ class TestExtractLoginForms:
         assert form.submit == 'form[action="/login"] input[type="submit"]'
 
     @pytest.mark.parametrize(
-        ("raw_action", "action"),
+        ("raw_action", "action", "scopes"),
         [
-            ("/login;jsessionid=S3CR3T?t=tok", "/login"),
+            (
+                "/login;jsessionid=S3CR3T?t=tok",
+                "/login",
+                (
+                    'form[action="/login"]',
+                    'form[action^="/login;"]',
+                    'form[action^="/login?"]',
+                    'form[action^="/login#"]',
+                ),
+            ),
+            (
+                "/login#top",
+                "/login",
+                (
+                    'form[action="/login"]',
+                    'form[action^="/login;"]',
+                    'form[action^="/login?"]',
+                    'form[action^="/login#"]',
+                ),
+            ),
             (
                 "https://myshop.example.com/a;v=1/login#top",
                 "https://myshop.example.com/a/login",
+                (
+                    'form[action^="https://myshop.example.com/a;"][action$="/login"]',
+                    'form[action^="https://myshop.example.com/a;"][action*="/login;"]',
+                    'form[action^="https://myshop.example.com/a;"][action*="/login?"]',
+                    'form[action^="https://myshop.example.com/a;"][action*="/login#"]',
+                ),
             ),
-            ("?next=/orders", ""),
+            (
+                "?next=/orders",
+                "",
+                (
+                    "form:not([action])",
+                    'form[action=""]',
+                    'form[action^="?"]',
+                    'form[action^=";"]',
+                ),
+            ),
         ],
     )
     def test_an_action_loses_its_query_fragment_and_path_params(
-        self, raw_action: str, action: str
+        self, raw_action: str, action: str, scopes: tuple[str, ...]
     ) -> None:
         html = (
             f'<form action="{raw_action}"><input name="username">'
@@ -98,6 +132,9 @@ class TestExtractLoginForms:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.action == action
+        assert form.fields["username"] == ", ".join(
+            f'{scope} input[name="username"]' for scope in scopes
+        )
 
     @pytest.mark.parametrize(
         ("decoy", "live"),
@@ -108,8 +145,32 @@ class TestExtractLoginForms:
             ('action="/other"', 'action=";jsessionid=S3CR3T"'),
             ('action="/other"', ""),
             ('action="/other"', 'action=""'),
+            ('action="/login-help"', 'action="/login#top"'),
+            (
+                'action="/account;m=DECOYVALUE/login-help"',
+                'action="/account;m=MIDVALUE/login;s=LASTVALUE?t=QUERYVALUE"',
+            ),
+            (
+                'action="/account;m=DECOYVALUE/login-help"',
+                'action="/account;m=MIDVALUE/login"',
+            ),
+            (
+                'action="/a;m=DECOYVALUE/b/c-help"',
+                'action="/a;m=MIDVALUE/b;n=SECONDVALUE/c"',
+            ),
         ],
-        ids=["prefix-decoy", "digit-decoy", "query-only", "params-only", "no-action", "empty"],
+        ids=[
+            "prefix-decoy",
+            "digit-decoy",
+            "query-only",
+            "params-only",
+            "no-action",
+            "empty",
+            "fragment-only",
+            "middle-param",
+            "middle-param-bare-last",
+            "two-middle-params",
+        ],
     )
     def test_a_stripped_action_selects_the_live_form_and_not_a_decoy_before_it(
         self, decoy: str, live: str
@@ -128,6 +189,8 @@ class TestExtractLoginForms:
         for selector in live_form.fields.values():
             selected = document.cssselect(selector)
             assert [element.get("class") for element in selected] == ["live"], selector
+            for value in ("MIDVALUE", "LASTVALUE", "QUERYVALUE", "SECONDVALUE", "DECOYVALUE"):
+                assert value not in selector, selector
 
 
 class TestExtractTokenCandidates:

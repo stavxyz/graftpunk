@@ -137,21 +137,54 @@ _EMPTY_ACTION_SCOPES = (
 
 def _form_scopes(raw_action: str, action: str) -> tuple[str, ...]:
     """The CSS form selectors for the form whose attribute reads *raw_action*, spelled
-    with the bare *action* only (:func:`graftpunk.har.paths.bare_url`).
+    with the bare *action* (:func:`graftpunk.har.paths.bare_url`) and never with a
+    query, fragment, or parameter value.
 
-    An unchanged action is one exact match. A stripped one is the action exactly or
-    followed by ``;`` or ``?``, so the live form still matches and a sibling such as
-    ``/login-help`` does not. An action that strips to nothing matches only a form
-    whose action is absent, empty, or only a query or ``;params``.
+    An unchanged action is one exact match. An action stripped only at its end is
+    that action exactly or followed by ``;``, ``?``, or ``#``, so the live form
+    matches and a sibling such as ``/login-help`` does not. An action with
+    ``;params`` in a middle segment goes to :func:`_middle_param_scopes`. An action
+    that strips to nothing matches only a form whose action is absent, empty, or
+    only a query or ``;params``.
     """
     if not action:
         return _EMPTY_ACTION_SCOPES
     if action == raw_action:
         return (f'form[action="{action}"]',)
+    raw_path = raw_action.split("?", 1)[0].split("#", 1)[0]
+    head, separator, rest = raw_path.partition(";")
+    if separator and "/" in rest:
+        return _middle_param_scopes(head, rest.partition("/")[2], raw_path.endswith("/"))
+    return tuple(f'form[action{op}"{action}{tail}"]' for op, tail in _STRIPPED_ENDINGS)
+
+
+# How the raw action can continue after the bare one: nothing, or a ;param,
+# query, or fragment.
+_STRIPPED_ENDINGS = (("=", ""), ("^=", ";"), ("^=", "?"), ("^=", "#"))
+
+
+def _middle_param_scopes(head: str, after: str, trailing_slash: bool) -> tuple[str, ...]:
+    """Form selectors for an action whose first ``;params`` sit in a middle segment.
+
+    *head* is the raw action before its first ``;``; *after* is the raw text past the
+    segment that carries it. No prefix of the bare path is a prefix of the raw
+    value, so the selector matches the parts the raw value keeps whatever the
+    parameter values are: it starts with ``head;``, contains each later segment
+    before the last as ``/segment``, and has the last segment followed by nothing,
+    ``;``, ``?``, or ``#``. The limit: CSS cannot order the middle ``*=`` tests or
+    anchor their ends, so a decoy that differs only in a middle segment's suffix
+    (``/b`` against ``/bx``) is not told apart; the last segment and the head are.
+    """
+    segments = [segment.partition(";")[0] for segment in after.strip("/").split("/") if segment]
+    base = f'form[action^="{head};"]' + "".join(f'[action*="/{s}"]' for s in segments[:-1])
+    last = f"/{segments[-1]}" if segments else ""
+    if trailing_slash or not segments:
+        last += "/"
     return (
-        f'form[action="{action}"]',
-        f'form[action^="{action};"]',
-        f'form[action^="{action}?"]',
+        f'{base}[action$="{last}"]',
+        f'{base}[action*="{last};"]',
+        f'{base}[action*="{last}?"]',
+        f'{base}[action*="{last}#"]',
     )
 
 
