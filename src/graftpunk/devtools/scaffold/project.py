@@ -95,7 +95,11 @@ def _declares_plugin_group(pyproject_text: str, pyproject_path: Path) -> bool:
             f"{pyproject_path} is not valid TOML ({exc}), so I cannot read or edit it. "
             "Fix it and run this again."
         ) from exc
-    return PLUGINS_ENTRY_POINT_GROUP in data.get("project", {}).get("entry-points", {})
+    # A key that is not a table (project = "x") is not a suite's declaration; a
+    # string entry-points would otherwise pass a substring test.
+    project = data.get("project")
+    entry_points = project.get("entry-points") if isinstance(project, dict) else None
+    return isinstance(entry_points, dict) and PLUGINS_ENTRY_POINT_GROUP in entry_points
 
 
 def write_scaffold(

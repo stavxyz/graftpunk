@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from graftpunk.devtools.scaffold import write
-from graftpunk.devtools.scaffold.project import ScaffoldConflictError, write_scaffold
+from graftpunk.devtools.scaffold.project import (
+    NotAPluginSuiteError,
+    ScaffoldConflictError,
+    write_scaffold,
+)
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec
 from graftpunk.devtools.scaffold.write import InvalidChangeError
@@ -396,3 +400,19 @@ class TestTheWritersOwnConflictCheck:
         assert pyproject.read_text() == _SUITE_PYPROJECT
         assert not (tmp_path / "src").exists()
         assert not (tmp_path / "tests").exists()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'project = "x"\n',
+        '[project]\nname = "mysuite"\nentry-points = "x"\n',
+    ],
+)
+def test_a_pyproject_whose_project_or_entry_points_is_not_a_table_is_not_a_suite(
+    tmp_path: Path, text: str
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(text)
+    with pytest.raises(NotAPluginSuiteError):
+        write_scaffold(tmp_path, _spec())
+    assert (tmp_path / "pyproject.toml").read_text() == text
