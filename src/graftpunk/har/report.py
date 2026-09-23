@@ -17,6 +17,7 @@ from typing import Any
 
 from graftpunk.contracts import current_schema
 from graftpunk.har.digest import INTERNAL, Endpoint, RunDigest, ShapeNode
+from graftpunk.har.documents import LoginForm, unscoped_selector
 from graftpunk.har.paths import templated_url
 
 __all__ = [
@@ -185,14 +186,26 @@ def render_json(d: RunDigest) -> str:
     return json.dumps(_jsonable(d), indent=2, sort_keys=True)
 
 
+def _projected_form(form: LoginForm) -> dict[str, Any]:
+    """*form* as the projection prints it: its action through :func:`templated_url`,
+    as the auth URLs are. When that changes the action (its path holds an id or a
+    token), each field selector is printed without its form scope, since the scope
+    spells the literal action; an ``#id`` selector has no scope and is unchanged."""
+    action = templated_url(form.action)
+    fields = dict(sorted(form.fields.items()))
+    if action != form.action:
+        fields = {role: unscoped_selector(selector) for role, selector in fields.items()}
+    return {"action": action, "fields": fields}
+
+
 def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     """The declared projection ``gp observe digest --endpoints-json`` prints.
 
     An explicit field list, never a reflection over the digest's dataclasses, so
     renaming an internal field touches this function and no contract. It carries
     only what a command proposal consumes, and by construction no cookie name, no
-    token candidate, no example path, no body, no untemplated login URL path, and
-    no form action query string or ``;params``. Its field set is pinned per
+    token candidate, no example path, no body, no untemplated login URL or form
+    action path, and no form action query string or ``;params``. Its field set is pinned per
     schema version; fields are added and never renamed or removed within one
     (:mod:`graftpunk.contracts`). ``render_json`` stays an unversioned dump.
 
@@ -226,10 +239,7 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
             "auth_urls": [
                 {"method": o.method, "url": templated_url(o.url), "kind": o.kind} for o in d.login
             ],
-            "forms": [
-                {"action": form.action, "fields": dict(sorted(form.fields.items()))}
-                for form in d.login_forms
-            ],
+            "forms": [_projected_form(form) for form in d.login_forms],
         },
     }
 

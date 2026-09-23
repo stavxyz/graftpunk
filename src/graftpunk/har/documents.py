@@ -8,6 +8,7 @@ HAR entry, so this module knows nothing about HAR (plugin tooling spec,
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
@@ -24,6 +25,7 @@ __all__ = [
     "extract_token_candidates",
     "is_login_document",
     "looks_like_token_name",
+    "unscoped_selector",
 ]
 
 _USERNAME_HINTS = ("user", "email", "login", "account")
@@ -194,6 +196,23 @@ def _selector_for(raw: _RawInput, form_scopes: tuple[str, ...]) -> str:
     attribute = f'name="{raw.name}"' if raw.name else f'type="{raw.input_type}"'
     suffix = f"{raw.tag}[{attribute}]"
     return ", ".join(f"{scope} {suffix}" for scope in form_scopes)
+
+
+# The input part every alternative of a form-scoped selector ends with (see
+# _selector_for): a tag and its one name= or type= attribute.
+_INPUT_PART_RE = re.compile(r'[A-Za-z][\w-]*\[(?:name|type)="[^"]*"\]$')
+
+
+def unscoped_selector(selector: str) -> str:
+    """*selector*, a :class:`LoginForm` field selector, without its form scope.
+
+    An ``#id`` selector has none and comes back as it is. A form-scoped one comes
+    back as its input part (``input[name="username"]``), which matches the same
+    input in any form: for printing a selector whose scope would carry the form
+    action's literal path.
+    """
+    match = _INPUT_PART_RE.search(selector)
+    return match.group(0) if match and not selector.startswith("#") else selector
 
 
 def _guess_role(input_type: str, name: str) -> str:

@@ -384,6 +384,30 @@ class TestEndpointsProjection:
         payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
         assert len(payload["endpoints"]) == 70
 
+    def test_a_form_action_holding_an_id_is_templated_and_its_selectors_unscoped(
+        self, tmp_path: Path
+    ) -> None:
+        """The action is printed through the auth URLs' templating. A selector
+        scoped to the templated action would match no live form, and one scoped to
+        the literal action would print the id, so each prints its input part."""
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/signin",
+            content_type="text/html",
+            body=(
+                f'<form action="/accounts/{_PLANTED_RESET_SEGMENT}/session" method="post">'
+                '<input type="text" name="username"><input type="password" id="pw" '
+                'name="password"></form>'
+            ),
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [page])))
+        (form,) = endpoints_projection(result)["login"]["forms"]
+        assert form == {
+            "action": "/accounts/{account_id}/session",
+            "fields": {"password": "#pw", "username": 'input[name="username"]'},
+        }
+        assert _PLANTED_RESET_SEGMENT not in render_endpoints_json(result)
+
     def test_login_flow_and_shape_come_through(self, tmp_path: Path) -> None:
         payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))
         order = next(e for e in payload["endpoints"] if e["template"] == "/api/orders/{order_id}")

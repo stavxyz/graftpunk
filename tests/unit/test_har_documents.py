@@ -9,6 +9,7 @@ from graftpunk.har.documents import (
     extract_token_candidates,
     is_login_document,
     looks_like_token_name,
+    unscoped_selector,
 )
 
 _LOGIN_PAGE = """
@@ -239,3 +240,20 @@ class TestLooksLikeTokenName:
     @pytest.mark.parametrize("name", ["Content-Type", "Accept", "session_id"])
     def test_false_for_an_ordinary_name(self, name: str) -> None:
         assert looks_like_token_name(name) is False
+
+
+class TestUnscopedSelector:
+    def test_a_form_scoped_selector_keeps_its_input_part(self) -> None:
+        scoped = (
+            'form[action="/a/1"] input[name="username"], '
+            'form[action^="/a/1;"] input[name="username"]'
+        )
+        assert unscoped_selector(scoped) == 'input[name="username"]'
+
+    def test_a_type_selector_keeps_its_input_part(self) -> None:
+        assert (
+            unscoped_selector('form[action=""] input[type="password"]') == 'input[type="password"]'
+        )
+
+    def test_an_id_selector_is_unchanged(self) -> None:
+        assert unscoped_selector("#email") == "#email"
