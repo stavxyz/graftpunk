@@ -198,16 +198,25 @@ def _missing_parents(directory: Path) -> list[Path]:
     return list(reversed(missing))
 
 
-def _new_partial(target: Path) -> Path:
+def _new_partial(target: Path, open_partials: list[Path] | None) -> Path:
     """A temp file beside *target*, created empty by this call. The name is random
     and the create is exclusive, so a temp file an earlier run left behind is never
-    written over."""
+    written over.
+
+    Each candidate name goes into *open_partials* before its create and comes out
+    only when the create finds the name taken, so an exception at any point after
+    the file exists leaves it tracked for :func:`_restore`. A name registered but
+    never created is harmless there: only paths on disk are removed or reported.
+    """
     while True:
         partial = target.with_name(f".{target.name}.{secrets.token_hex(4)}{_PARTIAL_SUFFIX}")
+        if open_partials is not None:
+            open_partials.append(partial)
         try:
             with partial.open("x", encoding="utf-8"):
                 pass
         except FileExistsError:
+            _forget(open_partials, partial)
             continue
         return partial
 
@@ -237,9 +246,7 @@ def _write_atomically(path: Path, text: str) -> None:
             mode: int | None = stat.S_IMODE(target.stat().st_mode)
         except FileNotFoundError:
             mode = None
-        partial = _new_partial(target)
-        if open_partials is not None:
-            open_partials.append(partial)
+        partial = _new_partial(target, open_partials)
         # newline="": the text is written as given, so an original read by
         # read_original comes back byte for byte.
         partial.write_text(text, encoding="utf-8", newline="")
@@ -282,9 +289,14 @@ def _restore(started: list[PlannedChange], created_dirs: list[Path]) -> list[Pat
         except OSError:
             if change.original is not None or os.path.lexists(change.path):
                 unrestored.append(change.path)
-    # A temp file this operation created and could not remove is left changed
-    # too; one an earlier run left is not this operation's to report.
-    unrestored.extend(p for p in _OPEN_PARTIALS.get() or () if os.path.lexists(p))
+    # A temp file this operation created and has not removed is removed here, or
+    # is left changed too; one an earlier run left is not this operation's.
+    for partial in _OPEN_PARTIALS.get() or ():
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            if os.path.lexists(partial):
+                unrestored.append(partial)
     for directory in reversed(created_dirs):
         try:
             directory.rmdir()

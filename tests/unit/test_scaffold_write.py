@@ -358,6 +358,55 @@ class TestEveryLeftoverIsNamed:
         assert caught.value.unrestored == ()
         assert _files(root) == {".b.py.gp-partial": b"from an earlier run\n"}
 
+    @pytest.mark.parametrize("unlink_fails", [False, True])
+    def test_an_interrupt_right_after_the_partial_is_created_still_cleans_it_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unlink_fails: bool
+    ) -> None:
+        """The temp file exists before _write_atomically holds its name, so it is
+        tracked from before its create: removed on the way out, or named in the
+        interrupt's note when it cannot be."""
+        root = _project_root(tmp_path)
+        edited = root / "pyproject.toml"
+        edited.write_text('[project]\nname = "x"\n')
+        real_open = Path.open
+        real_unlink = Path.unlink
+
+        def _is_the_partial(path: Path) -> bool:
+            return path.name.startswith(".plugin.py.") and path.name.endswith(".gp-partial")
+
+        def open_interrupted_after_the_create(self: Path, *args: object, **kwargs: object):  # noqa: ANN202
+            handle = real_open(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+            if _is_the_partial(self):
+                handle.close()
+                raise KeyboardInterrupt
+            return handle
+
+        def unlink_failing_for_the_partial(self: Path, missing_ok: bool = False) -> None:
+            if unlink_fails and _is_the_partial(self):
+                raise OSError(13, "Permission denied", str(self))
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "open", open_interrupted_after_the_create)
+        monkeypatch.setattr(Path, "unlink", unlink_failing_for_the_partial)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            apply_changes(
+                [
+                    PlannedChange(
+                        edited, '[project]\nname = "y"\n', original='[project]\nname = "x"\n'
+                    ),
+                    PlannedChange(root / "plugin.py", "p = 1\n"),
+                ]
+            )
+        monkeypatch.undo()
+        assert edited.read_bytes() == b'[project]\nname = "x"\n'
+        leftovers = [p for p in root.iterdir() if _is_the_partial(p)]
+        if unlink_fails:
+            (left,) = leftovers
+            assert any(left.name in note for note in getattr(caught.value, "__notes__", []))
+        else:
+            assert leftovers == []
+        assert not (root / "plugin.py").exists()
+
     def test_the_os_error_fields_name_the_real_path_not_the_partial(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
