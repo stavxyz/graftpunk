@@ -385,6 +385,25 @@ class TestEndpointsProjection:
         payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
         assert len(payload["endpoints"]) == 70
 
+    def test_a_pathless_form_action_is_printed_as_it_is_and_stays_scoped(
+        self, tmp_path: Path
+    ) -> None:
+        """templated_url gives a pathless URL a "/", which is not an account value."""
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [])))
+        scoped = 'form[action="https://myshop.example.com"] input[name="username"]'
+        form = LoginForm(
+            action="https://myshop.example.com",
+            method="POST",
+            fields={"username": scoped},
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        payload = endpoints_projection(dataclasses.replace(result, login_forms=(form,)))
+        assert payload["login"]["forms"] == [
+            {"action": "https://myshop.example.com", "fields": {"username": scoped}}
+        ]
+
     def test_a_selector_that_cannot_be_unscoped_is_left_out(self, tmp_path: Path) -> None:
         result = digest(DigestSource.from_har(_write_har(tmp_path, [])))
         form = LoginForm(

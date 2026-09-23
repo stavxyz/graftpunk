@@ -17,8 +17,8 @@ from typing import Any
 
 from graftpunk.contracts import current_schema
 from graftpunk.har.digest import INTERNAL, Endpoint, RunDigest, ShapeNode
-from graftpunk.har.documents import LoginForm, unscoped_selector
-from graftpunk.har.paths import templated_url
+from graftpunk.har.documents import LoginForm, printable_selectors
+from graftpunk.har.paths import templated_url, templates_a_segment
 
 __all__ = [
     "DEFAULT_ENDPOINT_LIMIT",
@@ -187,16 +187,16 @@ def render_json(d: RunDigest) -> str:
 
 
 def _projected_form(form: LoginForm) -> dict[str, Any]:
-    """*form* as the projection prints it: its action through :func:`templated_url`,
-    as the auth URLs are. When that changes the action (its path holds an id or a
-    token), each field selector is printed without its form scope, since the scope
-    spells the literal action; an ``#id`` selector has no scope and is unchanged."""
-    action = templated_url(form.action)
-    fields = dict(sorted(form.fields.items()))
-    if action != form.action:
-        unscoped = {role: unscoped_selector(selector) for role, selector in fields.items()}
-        # A selector that cannot be unscoped is left out, never printed scoped.
-        fields = {role: selector for role, selector in unscoped.items() if selector is not None}
+    """*form* as the projection prints it. When the action's path holds an id or a
+    token (:func:`graftpunk.har.paths.templates_a_segment`), the action is printed
+    through :func:`templated_url`, as the auth URLs are, and each field selector
+    without its form scope (:func:`graftpunk.har.documents.printable_selectors`,
+    the rule the generator applies too); one that cannot be unscoped is left out.
+    Otherwise both are printed as recorded."""
+    action = templated_url(form.action) if templates_a_segment(form.action) else form.action
+    selectors, _submit = printable_selectors(form)
+    # A selector that cannot be unscoped is left out, never printed scoped.
+    fields = {role: selector for role, selector in selectors.items() if selector is not None}
     return {"action": action, "fields": fields}
 
 

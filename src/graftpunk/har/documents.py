@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
 
-from graftpunk.har.paths import bare_url
+from graftpunk.har.paths import bare_url, templates_a_segment
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -28,6 +28,7 @@ __all__ = [
     "extract_token_candidates",
     "is_login_document",
     "looks_like_token_name",
+    "printable_selectors",
     "unscoped_selector",
 ]
 
@@ -249,6 +250,24 @@ def unscoped_selector(selector: str) -> str | None:
         return selector
     match = _INPUT_PART_RE.search(selector)
     return match.group(0) if match else None
+
+
+def printable_selectors(form: LoginForm) -> tuple[dict[str, str | None], str | None]:
+    """*form*'s field selectors (by role) and submit selector as a projection or a
+    generated file may print them.
+
+    The one rule for both: when the action's path holds an id or a token
+    (:func:`graftpunk.har.paths.templates_a_segment`), a scoped selector would spell
+    it, so each selector is unscoped (:func:`unscoped_selector`), and one that cannot
+    be is ``None``: the caller leaves it out, or writes a ``GP-FILL`` in its place.
+    Otherwise every selector is printed as the digest recorded it. A form with no
+    submit control has a ``None`` submit either way.
+    """
+    fields = dict(sorted(form.fields.items()))
+    if not templates_a_segment(form.action):
+        return dict[str, str | None](fields), form.submit
+    unscoped = {role: unscoped_selector(selector) for role, selector in fields.items()}
+    return unscoped, unscoped_selector(form.submit) if form.submit else None
 
 
 def _guess_role(input_type: str, name: str) -> str:

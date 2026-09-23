@@ -38,6 +38,7 @@ __all__ = [
     "param_name_for_segment",
     "template_path",
     "templated_url",
+    "templates_a_segment",
 ]
 
 
@@ -141,6 +142,18 @@ def template_path(path: str) -> tuple[str, dict[str, str]]:
 
     body = "/".join(result_segments)
     return f"{leading}{body}{trailing}" if body else (leading or "/"), params
+
+
+def templates_a_segment(url: str) -> bool:
+    """True when :func:`template_path` turns a segment of *url*'s path into a
+    parameter, so the path holds an id or a token.
+
+    Compared path to path (templated against :func:`bare_path`), never whole
+    strings: :func:`templated_url` gives a URL with no path a ``/``, which is not an
+    account value.
+    """
+    path = bare_path(urlsplit(url).path)
+    return bool(path) and template_path(path)[0] != path
 
 
 def templated_url(url: str) -> str:

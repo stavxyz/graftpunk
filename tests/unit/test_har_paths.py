@@ -11,6 +11,7 @@ from graftpunk.har.paths import (
     param_name_for_segment,
     template_path,
     templated_url,
+    templates_a_segment,
 )
 
 
@@ -134,3 +135,20 @@ class TestTemplatedUrl:
     def test_an_empty_url_stays_empty(self) -> None:
         """An empty form action submits to the page itself; "/" would be a claim."""
         assert templated_url("") == ""
+
+
+class TestTemplatesASegment:
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("https://myshop.example.com/accounts/12345/session", True),
+            ("/signin/7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8", True),
+            ("https://myshop.example.com", False),
+            ("https://myshop.example.com/", False),
+            ("/session", False),
+            ("/orders/", False),
+            ("", False),
+        ],
+    )
+    def test_only_a_segment_template_path_collapses_counts(self, url: str, expected: bool) -> None:
+        assert templates_a_segment(url) is expected
