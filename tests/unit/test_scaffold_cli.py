@@ -29,24 +29,6 @@ def _plain(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
-_LOG_LINE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[")
-
-
-def _without_log_lines(text: str) -> str:
-    """*text* without structlog's console-rendered lines.
-
-    Whether a LOG.debug call actually renders into captured output depends
-    on ambient structlog configuration left behind by whichever test in this
-    worker process ran last (the autouse `_reset_structlog` fixture resets
-    structlog to its unfiltered default after every test, and nothing
-    re-applies the CLI's own WARNING-level config until the next `gp`
-    process starts for real), not on anything the command being tested
-    chooses to print. Comparing two invocations' own console text should not
-    depend on that.
-    """
-    return "\n".join(line for line in text.splitlines() if not _LOG_LINE_RE.match(line))
-
-
 def _build_app() -> typer.Typer:
     app = typer.Typer()
     app.add_typer(plugin_app)
@@ -789,6 +771,19 @@ class TestCheckName:
     """--check-name answers "is this name acceptable" with gp plugin new's own
     validation, writing nothing (graft skill spec, 2026-09-21)."""
 
+    @pytest.fixture(autouse=True)
+    def _configured_logging(self) -> None:
+        """Real `gp` usage always has main.py's bootstrap call
+        configure_logging() before a command runs. These tests invoke the
+        real app directly under CliRunner, and structlog is process-global
+        state: whichever test ran earlier in this worker may have left it on
+        its unconfigured default (an unfiltered PrintLogger bound to
+        stdout), which would print scaffold_commands' debug-level
+        "scaffold_refused" event straight into the captured output and
+        break exact-text comparisons below. Same need, same fix, as
+        test_observe_commands.py's TestDigestCommand tests."""
+        configure_logging(level="WARNING")
+
     def test_a_valid_name_is_accepted_and_nothing_is_written(self, tmp_path: Path) -> None:
         from graftpunk.cli.main import app as real_app
 
@@ -797,7 +792,7 @@ class TestCheckName:
             real_app, ["plugin", "new", "myshop", "--check-name", "--dir", str(tmp_path)]
         )
         assert result.exit_code == 0, result.output
-        assert "acceptable" in _plain(result.output)
+        assert _plain(result.output) == "'myshop' is an acceptable plugin name.\n"
         assert set(tmp_path.iterdir()) == before
 
     @pytest.mark.parametrize("name", ["observe", "2fa-site", "a" * 41])
@@ -810,10 +805,31 @@ class TestCheckName:
         # fixture (tests/conftest.py) already created tmp_path/graftpunk for
         # this test's own settings before the test body ever runs.
         before = set(tmp_path.iterdir())
-        checked = runner.invoke(real_app, ["plugin", "new", name, "--check-name"])
+        checked = runner.invoke(
+            real_app, ["plugin", "new", name, "--check-name", "--dir", str(tmp_path)]
+        )
         created = runner.invoke(real_app, ["plugin", "new", name, "--dir", str(tmp_path)])
         assert checked.exit_code == created.exit_code == 1
-        assert _without_log_lines(_plain(checked.output)) == _without_log_lines(
-            _plain(created.output)
-        )
+        assert _plain(checked.output) == _plain(created.output)
         assert set(tmp_path.iterdir()) == before
+
+    def test_check_name_ignores_an_existing_target_directory(self, tmp_path: Path) -> None:
+        """--check-name answers the name question before write_scaffold's
+        directory inspection ever runs: files the real command would refuse
+        over (an unrelated pyproject.toml, a conflicting README.md) don't
+        change its answer, and it leaves them untouched."""
+        from graftpunk.cli.main import app as real_app
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "unrelated-package"\n')
+        (tmp_path / "README.md").write_text("already here")
+        before_entries = set(tmp_path.iterdir())
+        before_bytes = {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+
+        result = runner.invoke(
+            real_app, ["plugin", "new", "myshop", "--check-name", "--dir", str(tmp_path)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert _plain(result.output) == "'myshop' is an acceptable plugin name.\n"
+        assert set(tmp_path.iterdir()) == before_entries
+        assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before_bytes
