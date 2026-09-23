@@ -29,6 +29,24 @@ def _plain(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
+_LOG_LINE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[")
+
+
+def _without_log_lines(text: str) -> str:
+    """*text* without structlog's console-rendered lines.
+
+    Whether a LOG.debug call actually renders into captured output depends
+    on ambient structlog configuration left behind by whichever test in this
+    worker process ran last (the autouse `_reset_structlog` fixture resets
+    structlog to its unfiltered default after every test, and nothing
+    re-applies the CLI's own WARNING-level config until the next `gp`
+    process starts for real), not on anything the command being tested
+    chooses to print. Comparing two invocations' own console text should not
+    depend on that.
+    """
+    return "\n".join(line for line in text.splitlines() if not _LOG_LINE_RE.match(line))
+
+
 def _build_app() -> typer.Typer:
     app = typer.Typer()
     app.add_typer(plugin_app)
@@ -739,12 +757,23 @@ class TestRefusalReasons:
 
 
 class TestReservedNamesSnapshot:
-    def test_a_later_site_plugin_name_is_not_in_the_snapshot(self) -> None:
+    def test_a_later_site_plugin_name_is_not_in_the_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """register() snapshots reserved names once, at attach time. A site
         plugin's own sub-app, mounted onto the same app afterward (exactly
         what register_plugin_commands does next), must not retroactively
         become reserved: the snapshot is not a live query."""
+        from graftpunk.cli import scaffold_commands
         from graftpunk.cli.scaffold_commands import register, reserved_cli_names
+
+        # register() overwrites the module-global _reserved_names snapshot,
+        # which real_app already populated at import time from its own full
+        # command tree (other tests in this file invoke gp plugin new
+        # through real_app and rely on that real snapshot). Restore it so
+        # this test's throwaway app doesn't leave that global pointing at a
+        # near-empty snapshot for whichever test in this worker runs next.
+        monkeypatch.setattr(scaffold_commands, "_reserved_names", scaffold_commands._reserved_names)
 
         app = typer.Typer()
         register(app)
@@ -754,3 +783,37 @@ class TestReservedNamesSnapshot:
         app.add_typer(site_app)
 
         assert "myshop" not in reserved_cli_names()
+
+
+class TestCheckName:
+    """--check-name answers "is this name acceptable" with gp plugin new's own
+    validation, writing nothing (graft skill spec, 2026-09-21)."""
+
+    def test_a_valid_name_is_accepted_and_nothing_is_written(self, tmp_path: Path) -> None:
+        from graftpunk.cli.main import app as real_app
+
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(
+            real_app, ["plugin", "new", "myshop", "--check-name", "--dir", str(tmp_path)]
+        )
+        assert result.exit_code == 0, result.output
+        assert "acceptable" in _plain(result.output)
+        assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.parametrize("name", ["observe", "2fa-site", "a" * 41])
+    def test_a_refusal_is_the_same_text_gp_plugin_new_prints(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        from graftpunk.cli.main import app as real_app
+
+        # before, not an empty-dir assertion: the isolated_config autouse
+        # fixture (tests/conftest.py) already created tmp_path/graftpunk for
+        # this test's own settings before the test body ever runs.
+        before = set(tmp_path.iterdir())
+        checked = runner.invoke(real_app, ["plugin", "new", name, "--check-name"])
+        created = runner.invoke(real_app, ["plugin", "new", name, "--dir", str(tmp_path)])
+        assert checked.exit_code == created.exit_code == 1
+        assert _without_log_lines(_plain(checked.output)) == _without_log_lines(
+            _plain(created.output)
+        )
+        assert set(tmp_path.iterdir()) == before

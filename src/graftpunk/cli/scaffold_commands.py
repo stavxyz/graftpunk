@@ -21,7 +21,7 @@ from graftpunk.devtools.scaffold.project import (
     write_scaffold,
 )
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
-from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths
+from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths, validate_plugin_name
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.logging import get_logger
 
@@ -79,6 +79,22 @@ def _graftpunk_version_floor() -> str:
     return f"{parts[0]}.{parts[1]}.0"
 
 
+def _name_refusal(name: str) -> tuple[str, str] | None:
+    """The refusal ``gp plugin new`` gives for *name*, as (log reason, message), or None.
+
+    One owner for the two name checks: the reserved top-level names snapshotted
+    at attach time, then the name rule ``ScaffoldSpec`` enforces. ``--check-name``
+    and the real run both call this, so their refusals cannot differ.
+    """
+    if name in reserved_cli_names():
+        return "reserved_name", f"'{name}' is a reserved command name and cannot be a plugin name."
+    try:
+        validate_plugin_name(name)
+    except ValueError as exc:
+        return "invalid_name", str(exc)
+    return None
+
+
 @plugin_app.command("new")
 def plugin_new(
     name: Annotated[str, typer.Argument(help="Plugin name: site_name, and the package suffix")],
@@ -100,8 +116,19 @@ def plugin_new(
     dir_: Annotated[Path, typer.Option("--dir", help="Target directory")] = Path("."),
     backend: Annotated[str, typer.Option("--backend", help="nodriver or selenium")] = "nodriver",
     new: Annotated[bool, typer.Option("--new", help="Force a new project in --dir")] = False,
+    check_name: Annotated[
+        bool,
+        typer.Option("--check-name", help="Check NAME the way this command would, write nothing"),
+    ] = False,
 ) -> None:
     """Scaffold a new plugin: a fresh project, or a member of the suite in --dir."""
+    refusal = _name_refusal(name)
+    if check_name:
+        if refusal is not None:
+            console.print(f"[red]{escape(refusal[1])}[/red]")
+            raise typer.Exit(1)
+        console.print(f"'{escape(name)}' is an acceptable plugin name.")
+        return
     if backend not in _SUPPORTED_BACKENDS:
         LOG.debug("scaffold_refused", reason="bad_backend", backend=backend)
         console.print(
@@ -111,11 +138,9 @@ def plugin_new(
     # ty narrows `backend: str` to `_BackendName` from the membership check
     # above (against a tuple typed `tuple[_BackendName, ...]`): no cast needed.
 
-    if name in reserved_cli_names():
-        LOG.debug("scaffold_refused", reason="reserved_name", name=name)
-        console.print(
-            f"[red]'{escape(name)}' is a reserved command name and cannot be a plugin name.[/red]"
-        )
+    if refusal is not None:
+        LOG.debug("scaffold_refused", reason=refusal[0], name=name)
+        console.print(f"[red]{escape(refusal[1])}[/red]")
         raise typer.Exit(1)
 
     if run is not None and from_run is None:
