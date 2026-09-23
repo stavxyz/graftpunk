@@ -38,7 +38,6 @@ __all__ = [
     "looks_like_token_name",
     "printable_selectors",
     "printable_unresolved_roles",
-    "unscoped_selector",
 ]
 
 _USERNAME_HINTS = ("user", "email", "login", "account")
@@ -388,57 +387,8 @@ def _outside_selector(
     return None, None
 
 
-# The input part every alternative of a form-scoped selector ends with (see
-# _selectors_for): a tag and its one name= or type= attribute, whose value may
-# hold backslash escapes, or a typeless element's :not([type]).
-_INPUT_PART_RE = re.compile(
-    r'[A-Za-z][\w-]*(?:\[(?:name|type)="(?:[^"\\]|\\.)*"\]|:not\(\[type\]\))$'
-)
 # A selector with no form scope: by id, as _selectors_for writes one.
 _ID_SELECTOR_RE = re.compile(r'#-?[A-Za-z_][\w-]*|\[id="(?:[^"\\]|\\.)*"\]')
-
-
-def unscoped_selector(selector: str) -> str | None:
-    """*selector*, a :class:`LoginForm` field selector, without its form scope, or
-    None when it cannot be reduced to a part that holds no form action.
-
-    An id selector has no scope and comes back as it is. A form-scoped one comes
-    back as its input part (``input[name="username"]``), or the list of them for a
-    selector list. Anything else fails closed: returning it would print the scope,
-    action included. The input part can match another input on the page; the
-    printing rule (:func:`printable_selectors`) does not rely on this function.
-    """
-    if _ID_SELECTOR_RE.fullmatch(selector):
-        return selector
-    parts: list[str] = []
-    for alternative in _selector_alternatives(selector):
-        match = _INPUT_PART_RE.search(alternative)
-        if match is None:
-            return None
-        if match.group(0) not in parts:
-            parts.append(match.group(0))
-    return ", ".join(parts) if parts else None
-
-
-def _selector_alternatives(selector: str) -> list[str]:
-    """*selector*'s comma-separated alternatives, split outside quoted values."""
-    alternatives: list[str] = []
-    current: list[str] = []
-    quoted = escaped = False
-    for ch in selector:
-        if escaped:
-            escaped = False
-        elif ch == "\\":
-            escaped = True
-        elif ch == '"':
-            quoted = not quoted
-        elif ch == "," and not quoted:
-            alternatives.append("".join(current).strip())
-            current = []
-            continue
-        current.append(ch)
-    alternatives.append("".join(current).strip())
-    return alternatives
 
 
 def _placeholder_segments(path: str) -> int:
@@ -531,9 +481,10 @@ def _is_registration(inputs: list[_RawInput]) -> bool:
     or id asks for a confirmation (``password_confirm``). A form with a
     ``current-password`` input is a login form whatever else it holds (a page-wide
     form with both login and register fields), and a second password input with no
-    confirmation hint (a PIN) does not make a form a registration form. The
-    exclusion applies only when the page also has a login form
-    (:func:`extract_login_forms`); ``is_login_document`` ignores it."""
+    confirmation hint (a PIN) does not make a form a registration form.
+    :func:`extract_login_forms` leaves a registration form out, except a lone form
+    with one password (``new-password`` misused on a login form);
+    ``is_login_document`` ignores the test."""
     if any(i.autocomplete == "current-password" for i in inputs):
         return False
     passwords = _password_inputs(inputs)
@@ -607,8 +558,9 @@ def extract_login_forms(
     html: str, source: str, *, base: str | None = None
 ) -> tuple[LoginForm, ...]:
     """Every login ``<form>`` in *html*: one with a password input that is not a
-    registration form (:func:`_is_registration`), unless every such form on the page
-    is one, when all are kept.
+    registration form (:func:`_is_registration`). When the page has no such form, a
+    form with exactly one password input is kept (``new-password`` misused on a
+    login form); a registration form with a confirmation password never is.
 
     Each yields a :class:`LoginForm` with the form's action stripped of its query
     string, fragment, and ``;params`` (:func:`graftpunk.har.paths.bare_url`), and
