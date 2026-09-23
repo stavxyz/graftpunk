@@ -1276,11 +1276,15 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
 
 def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:
     """How many names :func:`flagged_names_of` leaves out because they hold an
-    account value: the distinct cookie names any of *entries* sets that do, plus
-    the token candidate names the digest dropped (a cookie that is also a token
-    candidate counts once as each). The fixture sidecar records this count, never
-    the names."""
+    account value: the cookie names, plus the token candidate names the digest
+    dropped (a cookie that is also a token candidate counts once as each). The
+    cookie count is the larger of the distinct id cookie names any of *entries*
+    sets and the digest's own ``d.cookie_names_dropped_as_ids``, so it is never
+    low: called without the run's entries, or with only some of them, it still
+    holds every one the digest dropped. The fixture sidecar records this count,
+    never the names."""
     entry_id_cookies = {
         name for entry in entries for name in _response_cookie_names(entry) if holds_an_id(name)
     }
-    return len(entry_id_cookies) + d.token_names_dropped_as_ids
+    cookies = max(len(entry_id_cookies), d.cookie_names_dropped_as_ids)
+    return cookies + d.token_names_dropped_as_ids

@@ -1569,6 +1569,19 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         text = render_json(result)
         assert "sess_40912873" not in text and "sha256:" not in text
 
+    def test_the_redacted_count_is_never_below_the_digests_own_count(self, tmp_path: Path) -> None:
+        """M3: called without the run's entries, the count still holds the id cookie
+        names the digest dropped."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/orders",
+                set_cookies=["sess_40912873=v; Path=/", "shop_session=v; Path=/"],
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert redacted_names_of(result) == 1
+
     def test_an_id_token_candidate_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
         entries = [
             _entry(
