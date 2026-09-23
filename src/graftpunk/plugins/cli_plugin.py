@@ -221,6 +221,11 @@ class CommandMetadata:
     requires_session: bool | None = None
     saves_session: bool = False
     click_kwargs: dict[str, Any] = field(default_factory=dict)
+    # Tooling provenance, not behaviour: the "<METHOD> <template>" this command
+    # implements, as gp plugin new declares it. Never consulted at runtime and
+    # never shown in help; gp plugin info reads it from source. A recorded
+    # exception to the devtools placement rule (graft skill spec, 2026-09-21).
+    endpoint: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -792,6 +797,7 @@ def command(
     requires_session: bool | None = None,
     saves_session: bool = False,
     name: str | None = None,
+    endpoint: str | None = None,
 ) -> Callable[..., Any]:
     """Decorator to mark a function as a CLI command or a class as a command group.
 
@@ -812,6 +818,13 @@ def command(
             ``account-statements``); pass ``name="by_parcel"`` to pin a
             different spelling. ``GraftpunkClient`` accepts either spelling
             (``client.by_parcel()`` and ``execute("by-parcel")`` both work).
+        endpoint: Tooling provenance (functions only): the ``"<METHOD> <template>"``
+            this command implements, as ``gp plugin new`` writes it. Stored on the
+            metadata, never consulted at runtime, and never shown in help. It is a
+            claim the author keeps true by hand: change it with the request. This
+            is the one recorded exception to the rule that tooling state stays in
+            ``graftpunk.devtools``: tooling provenance carried on a runtime object
+            (graft skill spec, 2026-09-21).
 
     Returns:
         Decorated function or class with _command_meta or _command_group_meta attached.
@@ -872,6 +885,7 @@ def command(
                 requires_session=requires_session,
                 saves_session=saves_session,
                 click_kwargs=click_kw,
+                endpoint=endpoint,
             )
             return target
 

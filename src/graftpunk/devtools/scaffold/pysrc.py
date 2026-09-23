@@ -34,9 +34,10 @@ __all__ = [
     "wrapped_docstring_lines",
 ]
 
-# The line length a generated project's own [tool.ruff] declares (_render_pyproject
-# below): every wrapping decision this module makes for generated content is
-# against this one number, so the two cannot silently drift apart.
+# The line length a generated project's own [tool.ruff] declares (render.py's
+# _render_pyproject writes it from this constant): every wrapping decision this
+# module makes for generated content is against this one number, so the two
+# cannot silently drift apart.
 GENERATED_LINE_LENGTH = 100
 
 # Indentation levels used when a generated command stub is exploded onto
@@ -388,13 +389,11 @@ def url_expr_lines(url_text: str, *, is_fstring: bool, indent: int) -> list[str]
     return lines
 
 
-def import_lines(module: str, name: str) -> list[str]:
-    """``from {module} import {name}`` on one line when it fits the generated width,
-    otherwise the parenthesised form with a magic trailing comma. The generated
-    package name and class name are both plugin-name derivatives, so together they
-    can still pass the width even with the name capped at ``_MAX_PLUGIN_NAME``, and
-    ``ruff format`` would split the single line for itself."""
-    single_line = f"from {module} import {name}"
+def import_lines(module: str, *names: str) -> list[str]:
+    """``from {module} import {names}`` on one line when it fits the generated width,
+    otherwise the parenthesised form, one name per line with a magic trailing comma,
+    which is the shape ``ruff format`` would give it."""
+    single_line = f"from {module} import {', '.join(names)}"
     if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
-    return [f"from {module} import (", f"{L1}{name},", ")"]
+    return [f"from {module} import (", *(f"{L1}{name}," for name in names), ")"]

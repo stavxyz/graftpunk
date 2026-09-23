@@ -8,6 +8,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1166,6 +1167,114 @@ class TestPluginModuleCommandStubs:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         for line in plugin_code.splitlines():
             assert line == line.rstrip()
+
+    def test_every_stub_declares_its_endpoint_on_a_line_of_its_own(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert '        endpoint="GET /orders/{order_id}",' in plugin_code.splitlines()
+        tree = ast.parse(plugin_code)
+        (stub,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+        (decorator,) = stub.decorator_list
+        assert isinstance(decorator, ast.Call)
+        keywords = {k.arg: k.value for k in decorator.keywords}
+        endpoint = keywords["endpoint"]
+        assert isinstance(endpoint, ast.Constant) and endpoint.value == "GET /orders/{order_id}"
+
+    def test_every_declared_endpoint_reads_back_through_parse_endpoint(self) -> None:
+        """The declaration is written for tooling that reads it with parse_endpoint,
+        so each one has to come back as the method and template the stub calls."""
+        from graftpunk.har.naming import parse_endpoint
+
+        endpoints = (_ORDERS_ENDPOINT, _SEARCH_ENDPOINT, _NOTES_ENDPOINT, _LONG_TEMPLATE_ENDPOINT)
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=endpoints),
+        )
+        tree = ast.parse(render(spec)["src/graftpunk_myshop/plugin.py"])
+        declared = set()
+        for stub in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
+            (decorator,) = stub.decorator_list
+            assert isinstance(decorator, ast.Call)
+            (endpoint,) = [k.value for k in decorator.keywords if k.arg == "endpoint"]
+            assert isinstance(endpoint, ast.Constant) and isinstance(endpoint.value, str)
+            declared.add(parse_endpoint(endpoint.value))
+        assert declared == {(e.methods[0], e.template) for e in endpoints}
+
+    def test_a_comment_above_the_request_ties_it_to_the_declaration(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
+        )
+        lines = render(spec)["src/graftpunk_myshop/plugin.py"].splitlines()
+        request = lines.index("        return ctx.request_json(")
+        assert "endpoint=" in lines[request - 1] and "change both together" in lines[request - 1]
+
+    def test_typed_parameters_get_explicit_param_specs(self) -> None:
+        """#208: introspected options arrive as strings under the future import, so a
+        stub with an int or bool parameter declares every parameter explicitly."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert 'PluginParamSpec.option("order_id", required=True),' in plugin_code
+        assert 'PluginParamSpec.option("page", type=int),' in plugin_code
+        assert "PluginParamSpec" in plugin_code.split("class ")[0]
+
+    def test_the_param_specs_register_the_types_at_runtime(self, tmp_path: Path) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_SEARCH_ENDPOINT,)),
+        )
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(render(spec)["src/graftpunk_myshop/plugin.py"], namespace)  # noqa: S102
+        meta = namespace["MyshopPlugin"].search._command_meta
+        types = {p.name: p.click_kwargs["type"] for p in meta.params}
+        assert types["page"] is int
+        assert types["include_meta"] is bool
+        assert types["q"] is str
+
+    def test_an_untyped_stub_carries_no_params_list(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_CAMEL_PATH_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "params=[" not in plugin_code
+        assert "PluginParamSpec" not in plugin_code
+
+    def test_a_long_plugins_import_is_exploded(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,), login_forms=(_PASSWORD_LOGIN_FORM,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "from graftpunk.plugins import (" in plugin_code
+        assert all(len(line) <= GENERATED_LINE_LENGTH for line in plugin_code.splitlines())
 
 
 _LOGIN_PAGE_ENDPOINT = Endpoint(

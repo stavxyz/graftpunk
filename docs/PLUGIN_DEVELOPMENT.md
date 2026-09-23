@@ -405,7 +405,14 @@ Verified against a real account on: (none yet)
 
 from __future__ import annotations
 
-from graftpunk.plugins import CommandContext, LoginConfig, LoginStep, SitePlugin, command
+from graftpunk.plugins import (
+    CommandContext,
+    LoginConfig,
+    LoginStep,
+    PluginParamSpec,
+    SitePlugin,
+    command,
+)
 
 
 class MyshopPlugin(SitePlugin):
@@ -438,7 +445,15 @@ class MyshopPlugin(SitePlugin):
     # token_config = TokenConfig(tokens=[Token.from_meta_tag(name="...", header="...")])
     # GP-FILL: unpaired token candidate: header 'X-Csrf-Token'
 
-    @command(help="GP-FILL: describe api_orders")
+    @command(
+        help="GP-FILL: describe api_orders",
+        params=[
+            PluginParamSpec.option("archived", type=bool),
+            PluginParamSpec.option("page", type=int),
+            PluginParamSpec.option("per_page", type=int),
+        ],
+        endpoint="GET /api/orders",
+    )
     def api_orders(
         self,
         ctx: CommandContext,
@@ -451,6 +466,7 @@ class MyshopPlugin(SitePlugin):
 
         Shape: object{orders, page, total}.
         """
+        # This request is the endpoint= declared on @command above: change both together.
         return ctx.request_json(
             "GET",
             "/api/orders",
@@ -471,9 +487,12 @@ selectors and the form's action URL from the captured login page, the submit
 selector too, which the digest's markdown form does not print; `success_url`
 from the redirect the credential post answered with; one command stub per
 endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
-twelve, each with the observed query parameters as typed keyword arguments and
-the observed custom headers; a docstring recording the method, the path, how
-many times it was seen, which run it came from, and the response shape.
+twelve, each with the observed query parameters as typed keyword arguments, an
+explicit `params=` list whenever one of them is an `int` or a `bool` (see
+[CLI parameter types](#cli-parameter-types)), the observed custom headers, and
+the endpoint it calls declared as `endpoint=` on its decorator; a docstring
+recording the method, the path, how many times it was seen, which run it came
+from, and the response shape.
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
@@ -483,6 +502,11 @@ they are usually wrong for a human to type: see [Check the CLI surface you
 shipped](#check-the-cli-surface-you-shipped). A token candidate that could not
 be paired with a source is left as a commented `GP-FILL` line rather than a
 guess. Search for `GP-FILL` and you have your to-do list.
+
+The `endpoint=` keyword is a declaration, not a check: nothing compares it with
+the request below it, and it is never used when the command runs. Tooling that
+reads the plugin's source takes the endpoint from it, so when you change the
+request, change the declaration with it.
 
 The command also prints the fixtures the generated tests will look for:
 
@@ -578,7 +602,8 @@ or without that import. That is harmless when the value goes straight into
 `params` (the site reads it as text anyway), and wrong as soon as you do
 arithmetic on it. To get a real type, declare it explicitly: an explicit
 `params=` list replaces introspection entirely, so it works in a generated
-module as written.
+module as written. `gp plugin new` writes that explicit list itself for every
+stub with an `int` or `bool` parameter.
 
 ```python
 from graftpunk.plugins import CommandContext, PluginParamSpec, command

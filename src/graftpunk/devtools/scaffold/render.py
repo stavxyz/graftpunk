@@ -80,6 +80,17 @@ _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]
 # The methods whose stub carries a JSON body dict.
 _MUTATING_METHODS = ("POST", "PUT", "PATCH")
 
+# The observed types an explicit PluginParamSpec entry carries. A stub with a
+# parameter of one of these gets an explicit params= list, the one route that
+# keeps the type under the generated module's future-annotations import. This
+# is the compensation for #208: remove it, and the params= emission, when #208
+# lands.
+_SPEC_TYPE_BY_OBSERVED: dict[str, str] = {"int": "int", "bool": "bool"}
+
+_ENDPOINT_COMMENT = (
+    f"{L2}# This request is the endpoint= declared on @command above: change both together."
+)
+
 # A plugin's name becomes a Python identifier fragment (the CLI command, the
 # entry-point key) in more than one generated file; validated once here so
 # render() can never emit a project nothing can import (validation
@@ -433,6 +444,40 @@ def _templated_url(template: str, seen: set[str]) -> tuple[str, list[str]]:
     return URL_PLACEHOLDER_RE.sub(rename, template), identifiers
 
 
+def _emits_body(endpoint: Endpoint) -> bool:
+    """Whether the stub carries a JSON body dict: only for a mutating method, so a GET
+    that happened to record a body declares no body arguments (polish round 1,
+    2026-09-12)."""
+    return bool(endpoint.body_params) and any(m in _MUTATING_METHODS for m in endpoint.methods)
+
+
+def _declared_extras(endpoint: Endpoint) -> dict[str, str]:
+    """The query and body parameters a stub declares as keyword arguments, each with
+    its observed type; a query parameter's type wins over a body parameter's."""
+    declared = dict(endpoint.body_params) if _emits_body(endpoint) else {}
+    declared.update(endpoint.query_params)
+    return declared
+
+
+def _needs_param_specs(endpoint: Endpoint) -> bool:
+    """Whether the stub declares its parameters explicitly (see _SPEC_TYPE_BY_OBSERVED)."""
+    return any(t in _SPEC_TYPE_BY_OBSERVED for t in _declared_extras(endpoint).values())
+
+
+def _decorator_lines(name: str, endpoint_literal: str, param_specs: list[str]) -> list[str]:
+    """A stub's ``@command(...)``, always exploded one keyword per line so the
+    ``endpoint=`` declaration sits on a line of its own."""
+    lines = [f"{L1}@command("]
+    lines.extend(literal_lines(f"GP-FILL: describe {name}", indent=len(L2), prefix="help="))
+    if param_specs:
+        lines.append(f"{L2}params=[")
+        lines.extend(f"{L3}{spec}," for spec in param_specs)
+        lines.append(f"{L2}],")
+    lines.extend(literal_lines(endpoint_literal, indent=len(L2), prefix="endpoint="))
+    lines.append(f"{L1})")
+    return lines
+
+
 def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: str) -> list[str]:
     method = endpoint.methods[0]
     name = _command_name(endpoint.template, seen_names)
@@ -444,22 +489,24 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     call, role, return_type = (
         ("request_json", "xhr", "dict") if is_json else ("request_text", "navigation", "str")
     )
-
-    # A body dict is only emitted for a mutating method, so the body parameters
-    # only become arguments when it is: a GET that happened to record a body got
-    # arguments the stub never used (polish round 1, 2026-09-12).
-    emits_body = bool(endpoint.body_params) and any(
-        m in _MUTATING_METHODS for m in endpoint.methods
-    )
-    body_params_declared = set(endpoint.body_params) if emits_body else set()
+    emits_body = _emits_body(endpoint)
+    extras = _declared_extras(endpoint)
 
     params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
+    param_specs = [
+        f"PluginParamSpec.option({quoted_literal(p)}, required=True)" for p in path_params
+    ]
     identifier_for: dict[str, str] = {}
-    for extra in sorted(set(endpoint.query_params) | body_params_declared):
-        observed = endpoint.query_params.get(extra) or endpoint.body_params.get(extra, "str")
+    for extra in sorted(extras):
+        observed = extras[extra]
         identifier_for[extra] = _param_identifier(extra, seen_params)
         annotation = _PY_TYPE_BY_OBSERVED.get(observed, "str")
         params.append(f"{identifier_for[extra]}: {annotation} | None = None")
+        spec_type = _SPEC_TYPE_BY_OBSERVED.get(observed)
+        type_keyword = f", type={spec_type}" if spec_type else ""
+        param_specs.append(
+            f"PluginParamSpec.option({quoted_literal(identifier_for[extra])}{type_keyword})"
+        )
 
     # Through quoted_literal like every other captured value: the method comes from
     # the capture, so it is not this module's to assume is quote-free.
@@ -481,7 +528,11 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     # nothing rather than guessing (polish round 1, 2026-09-12).
     shape_known = endpoint.shape is None or endpoint.shape != SHAPE_UNAVAILABLE
 
-    lines = call_expression_lines("@command", [f'help="GP-FILL: describe {name}"'], indent=len(L1))
+    lines = _decorator_lines(
+        name,
+        f"{method} {endpoint.template}",
+        param_specs if _needs_param_specs(endpoint) else [],
+    )
     lines.append(f"{L1}def {name}(")
     lines.extend(f"{L2}{p}," for p in params)
     lines.append(f"{L1}) -> {return_type}:")
@@ -492,6 +543,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
+    lines.append(_ENDPOINT_COMMENT)
     lines.append(f"{L2}return ctx.{call}(")
     lines.extend(call_lines)
     lines.append(f"{L2})")
@@ -537,13 +589,15 @@ def _needs_login_import(spec: ScaffoldSpec) -> bool:
     return spec.digest is not None and _password_login_form(spec.digest) is not None
 
 
-def _plugins_import_names(*, needs_login_import: bool) -> list[str]:
+def _plugins_import_names(*, needs_login_import: bool, needs_param_spec: bool) -> list[str]:
     """The names to import from ``graftpunk.plugins``, ordered the way this project's
     own isort setting (classes, then functions, each alphabetical) expects, so the
     generated line never needs a second reformatting pass."""
     classes = ["CommandContext", "SitePlugin"]
     if needs_login_import:
         classes += ["LoginConfig", "LoginStep"]
+    if needs_param_spec:
+        classes.append("PluginParamSpec")
     return sorted(classes) + ["command"]
 
 
@@ -551,7 +605,10 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
     klass = class_name_for(spec.name)
     needs_login_import = _needs_login_import(spec)
     needs_token_import = spec.digest is not None and bool(_paired_token_candidates(spec.digest))
-    plugins_import = ", ".join(_plugins_import_names(needs_login_import=needs_login_import))
+    needs_param_spec = any(_needs_param_specs(e) for e in _stub_endpoints(spec))
+    plugins_names = _plugins_import_names(
+        needs_login_import=needs_login_import, needs_param_spec=needs_param_spec
+    )
     lines = [
         f'"""{spec.name} plugin.',
         "",
@@ -560,7 +617,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         "",
         "from __future__ import annotations",
         "",
-        f"from graftpunk.plugins import {plugins_import}",
+        *import_lines("graftpunk.plugins", *plugins_names),
     ]
     if needs_token_import:
         lines.append("from graftpunk.tokens import Token, TokenConfig")
