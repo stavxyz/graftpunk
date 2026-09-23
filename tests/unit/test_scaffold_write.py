@@ -476,6 +476,32 @@ class TestConflictsSayWhich:
         assert _files(root) == {}
 
 
+class TestAnUnreadableTargetIsRefused:
+    def test_an_unreadable_edit_target_says_it_could_not_be_read(self, tmp_path: Path) -> None:
+        """Not "changed since they were read": nothing says it changed."""
+        if os.geteuid() == 0:
+            pytest.skip("root reads a 000-mode file")
+        root = _project_root(tmp_path)
+        locked = root / "pyproject.toml"
+        locked.write_text("[project]\n")
+        locked.chmod(0o000)
+        try:
+            with pytest.raises(ChangeConflictError) as caught:
+                apply_changes(
+                    [
+                        PlannedChange(root / "first.py", "f = 1\n"),
+                        PlannedChange(locked, "[tool]\n", original="[project]\n"),
+                    ]
+                )
+            assert str(caught.value) == f"Refusing to edit file(s) that could not be read: {locked}"
+            assert caught.value.unreadable == (locked,)
+            assert caught.value.changed == ()
+            assert caught.value.conflicts == [locked]
+        finally:
+            locked.chmod(0o644)
+        assert _files(root) == {"pyproject.toml": b"[project]\n"}
+
+
 class TestAReadOnlyTargetIsRefused:
     def test_a_read_only_edit_target_refuses_before_anything_is_written(
         self, tmp_path: Path

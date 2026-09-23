@@ -54,7 +54,10 @@ def test_each_refusal_survives_pickling() -> None:
         (Path("src/a.py"),),
     )
     conflict = ChangeConflictError(
-        [Path("a.py"), Path("b.py")], changed=(Path("b.py"),), duplicates=()
+        [Path("a.py"), Path("b.py"), Path("c.py")],
+        changed=(Path("b.py"),),
+        duplicates=(),
+        unreadable=(Path("c.py"),),
     )
     invalid = InvalidChangeError(Path("bad.py"), "the result does not parse as Python")
     refused_early = ScaffoldWriteError(
@@ -77,5 +80,6 @@ def test_each_refusal_survives_pickling() -> None:
         conflict.conflicts,
         conflict.changed,
     )
+    assert copied_conflict.unreadable == conflict.unreadable
     copied_invalid = _round_trip(invalid)
     assert (copied_invalid.path, copied_invalid.reason) == (invalid.path, invalid.reason)

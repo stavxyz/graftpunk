@@ -85,6 +85,7 @@ class PlannedChange:
 _EXISTING = "Refusing to overwrite existing file(s)"
 _CHANGED = "Refusing to edit file(s) changed since they were read"
 _DUPLICATED = "Refusing to change a file more than once in one operation"
+_UNREADABLE = "Refusing to edit file(s) that could not be read"
 
 
 class ChangeConflictError(DevtoolsRefusal):
@@ -92,7 +93,8 @@ class ChangeConflictError(DevtoolsRefusal):
     nothing was written.
 
     ``conflicts`` is every refused path. ``changed`` is the subset that are edits
-    whose file no longer holds the text they were planned from, and
+    whose file no longer holds the text they were planned from, ``unreadable``
+    the subset that are edits whose file could not be read to check, and
     ``duplicates`` the subset that a batch changes more than once; the rest are
     creates over a file that exists. The message gives each kind its own clause.
     """
@@ -102,10 +104,12 @@ class ChangeConflictError(DevtoolsRefusal):
         conflicts: Sequence[Path],
         changed: Sequence[Path] = (),
         duplicates: Sequence[Path] = (),
+        unreadable: Sequence[Path] = (),
     ) -> None:
         self.conflicts = list(conflicts)
         self.changed = tuple(changed)
         self.duplicates = tuple(duplicates)
+        self.unreadable = tuple(unreadable)
         super().__init__(
             "; ".join(
                 f"{header}: {', '.join(str(p) for p in paths)}" for header, paths in self.kinds
@@ -115,13 +119,14 @@ class ChangeConflictError(DevtoolsRefusal):
     @property
     def kinds(self) -> tuple[tuple[str, tuple[Path, ...]], ...]:
         """Each kind of conflict present, as (header, paths), creates first."""
-        named = set(self.changed) | set(self.duplicates)
+        named = set(self.changed) | set(self.duplicates) | set(self.unreadable)
         existing = tuple(p for p in self.conflicts if p not in named)
         return tuple(
             (header, paths)
             for header, paths in (
                 (_EXISTING, existing),
                 (_CHANGED, self.changed),
+                (_UNREADABLE, self.unreadable),
                 (_DUPLICATED, self.duplicates),
             )
             if paths
@@ -129,8 +134,11 @@ class ChangeConflictError(DevtoolsRefusal):
 
     def __reduce__(
         self,
-    ) -> tuple[type[ChangeConflictError], tuple[list[Path], tuple[Path, ...], tuple[Path, ...]]]:
-        return type(self), (self.conflicts, self.changed, self.duplicates)
+    ) -> tuple[
+        type[ChangeConflictError],
+        tuple[list[Path], tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]],
+    ]:
+        return type(self), (self.conflicts, self.changed, self.duplicates, self.unreadable)
 
 
 class InvalidChangeError(DevtoolsRefusal, ValueError):
@@ -169,6 +177,18 @@ def _holds(path: Path, text: str) -> bool:
         return path.read_bytes().decode("utf-8") == text
     except (OSError, UnicodeDecodeError):
         return False
+
+
+def _unreadable(change: PlannedChange) -> bool:
+    """True when *change* is an edit whose file exists and cannot be read, so
+    whether it still holds its original cannot be checked."""
+    if change.original is None or not os.path.lexists(change.path):
+        return False
+    try:
+        change.path.read_bytes()
+    except OSError:
+        return True
+    return False
 
 
 def _conflicts(change: PlannedChange) -> bool:
@@ -312,7 +332,8 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
     Raises:
         ChangeConflictError: Two changes name the same file (compared after
             resolving symlinks), a create's path exists, or an edit's file
-            changed since it was planned. Raised before anything is touched.
+            changed since it was planned or cannot be read to check. Raised
+            before anything is touched.
         InvalidChangeError: A change's content cannot be encoded as UTF-8 or
             fails its validator. Raised before anything is touched.
         ScaffoldWriteError: An edit's file is not writable (raised before
@@ -336,8 +357,13 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
         raise ChangeConflictError(duplicates, duplicates=duplicates)
     conflicts = find_conflicts(changes)
     if conflicts:
-        changed = sorted(c.path for c in changes if c.original is not None and c.path in conflicts)
-        raise ChangeConflictError(conflicts, changed=changed)
+        unreadable = sorted(c.path for c in changes if c.path in conflicts and _unreadable(c))
+        changed = sorted(
+            c.path
+            for c in changes
+            if c.original is not None and c.path in conflicts and c.path not in unreadable
+        )
+        raise ChangeConflictError(conflicts, changed=changed, unreadable=unreadable)
     for change in changes:
         try:
             change.content.encode("utf-8")
