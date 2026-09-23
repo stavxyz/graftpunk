@@ -15,11 +15,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from graftpunk.contracts import current_schema
 from graftpunk.har.digest import Endpoint, RunDigest, ShapeNode
 
 __all__ = [
     "DEFAULT_ENDPOINT_LIMIT",
     "SHAPE_UNAVAILABLE_SUMMARY",
+    "endpoints_projection",
+    "render_endpoints_json",
     "render_json",
     "render_markdown",
     "summarize_shape",
@@ -173,3 +176,51 @@ def _jsonable(value: Any) -> Any:
 def render_json(d: RunDigest) -> str:
     """The complete digest as JSON: nothing capped, nothing summarised."""
     return json.dumps(_jsonable(d), indent=2, sort_keys=True)
+
+
+def endpoints_projection(d: RunDigest) -> dict[str, Any]:
+    """The declared projection ``gp observe digest --endpoints-json`` prints.
+
+    An explicit field list, never a reflection over the digest's dataclasses, so
+    renaming an internal field touches this function and no contract. It carries
+    only what a command proposal consumes, and by construction no cookie name, no
+    token candidate, no example path, and no body. Its field set is pinned per
+    schema version; fields are added and never renamed or removed within one
+    (:mod:`graftpunk.contracts`). ``render_json`` stays an unversioned dump.
+    """
+    source = d.source
+    return {
+        "schema": current_schema("endpoints"),
+        "source": {
+            "session": source.session,
+            "run_id": source.run_id,
+            "har": None if source.session else str(source.har_path),
+        },
+        "primary_host": d.primary_host,
+        "endpoints": [
+            {
+                "method": method,
+                "template": endpoint.template,
+                "login_flow": endpoint.login_flow,
+                "content_type": endpoint.content_type,
+                "shape": summarize_shape(endpoint.shape),
+                "query_params": dict(sorted(endpoint.query_params.items())),
+                "body_params": dict(sorted(endpoint.body_params.items())),
+                "custom_headers": list(endpoint.custom_headers),
+            }
+            for endpoint in sorted(d.endpoints, key=_endpoint_sort_key)
+            for method in endpoint.methods
+        ],
+        "login": {
+            "auth_urls": [{"method": o.method, "url": o.url, "kind": o.kind} for o in d.login],
+            "forms": [
+                {"action": form.action, "fields": dict(sorted(form.fields.items()))}
+                for form in d.login_forms
+            ],
+        },
+    }
+
+
+def render_endpoints_json(d: RunDigest) -> str:
+    """:func:`endpoints_projection` as indented JSON with sorted keys."""
+    return json.dumps(endpoints_projection(d), indent=2, sort_keys=True)

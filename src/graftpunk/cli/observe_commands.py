@@ -29,7 +29,12 @@ from graftpunk.har.digest import DigestSource, body_params, digest
 from graftpunk.har.naming import capture_filename
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.paths import template_path
-from graftpunk.har.report import DEFAULT_ENDPOINT_LIMIT, render_json, render_markdown
+from graftpunk.har.report import (
+    DEFAULT_ENDPOINT_LIMIT,
+    render_endpoints_json,
+    render_json,
+    render_markdown,
+)
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import session_dirname
@@ -123,6 +128,13 @@ def digest_cmd(
     as_json: Annotated[
         bool, typer.Option("--json", help="Print the complete digest as JSON")
     ] = False,
+    endpoints_json: Annotated[
+        bool,
+        typer.Option(
+            "--endpoints-json",
+            help="Print the versioned endpoint projection a program reads (uncapped)",
+        ),
+    ] = False,
     all_hosts: Annotated[
         bool, typer.Option("--all-hosts", help="Model every host, not just the primary one")
     ] = False,
@@ -135,9 +147,17 @@ def digest_cmd(
 ) -> None:
     """Read a HAR (a run or a bare file) into a readable digest of hosts, endpoints, login, and
     tokens."""
+    if as_json and endpoints_json:
+        console.print("[red]Pass --json or --endpoints-json, not both.[/red]")
+        raise typer.Exit(1)
     source = _digest_source(session, run, har)
     result = digest(source, all_hosts=all_hosts)
-    text = render_json(result) if as_json else render_markdown(result, limit=limit)
+    if endpoints_json:
+        text = render_endpoints_json(result)
+    elif as_json:
+        text = render_json(result)
+    else:
+        text = render_markdown(result, limit=limit)
     if output is not None:
         try:
             output.write_text(text, encoding="utf-8")

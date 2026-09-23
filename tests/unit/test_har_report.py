@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 
-from graftpunk.har.digest import SHAPE_UNAVAILABLE, DigestSource, digest
+from graftpunk.har.digest import SHAPE_UNAVAILABLE, DigestSource, Endpoint, digest
 from graftpunk.har.report import (
     SHAPE_UNAVAILABLE_SUMMARY,
+    endpoints_projection,
+    render_endpoints_json,
     render_json,
     render_markdown,
     summarize_shape,
@@ -241,3 +244,122 @@ class TestRenderJson:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         parsed = json.loads(render_json(result))
         assert len(parsed["endpoints"]) == len(result.endpoints) == 80
+
+
+_SAMPLE_HAR = Path(__file__).resolve().parents[1] / "fixtures" / "sample.har"
+
+# The projection's field set at schema 1, frozen here so a rename fails the suite.
+_PROJECTION_V1 = {"schema", "source", "primary_host", "endpoints", "login"}
+_SOURCE_V1 = {"session", "run_id", "har"}
+_ENDPOINT_V1 = {
+    "method",
+    "template",
+    "login_flow",
+    "content_type",
+    "shape",
+    "query_params",
+    "body_params",
+    "custom_headers",
+}
+_LOGIN_V1 = {"auth_urls", "forms"}
+_AUTH_URL_V1 = {"method", "url", "kind"}
+_FORM_V1 = {"action", "fields"}
+
+
+def _planted_run(tmp_path: Path) -> Path:
+    """A run holding a cookie name, a token candidate, an example path, and a body."""
+    account = _entry(
+        "GET",
+        "https://myshop.example.com/account",
+        content_type="text/html",
+        body=(
+            '<html><head><meta name="csrf-token" content="planted-token-value"></head>'
+            '<form action="/session" method="post"><input type="email" id="email" name="email">'
+            '<input type="password" id="password" name="password"></form></html>'
+        ),
+    )
+    order = _entry(
+        "GET",
+        "https://myshop.example.com/api/orders/12345",
+        body='{"id": "planted-body-value"}',
+    )
+    order["response"]["cookies"] = [{"name": "shop_session_cookie", "value": "planted-cookie"}]
+    return _write_har(tmp_path, [account, order])
+
+
+class TestEndpointsProjection:
+    def test_schema_one_and_its_field_set(self, tmp_path: Path) -> None:
+        payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))
+        assert payload["schema"] == 1
+        assert set(payload) == _PROJECTION_V1
+        assert set(payload["source"]) == _SOURCE_V1
+        assert payload["endpoints"]
+        for entry in payload["endpoints"]:
+            assert set(entry) == _ENDPOINT_V1
+        assert set(payload["login"]) == _LOGIN_V1
+        for url in payload["login"]["auth_urls"]:
+            assert set(url) == _AUTH_URL_V1
+        assert payload["login"]["forms"]
+        for form in payload["login"]["forms"]:
+            assert set(form) == _FORM_V1
+
+    def test_no_cookie_name_token_candidate_example_path_or_body(self, tmp_path: Path) -> None:
+        result = digest(DigestSource.from_har(_planted_run(tmp_path)))
+        # The digest itself holds all four, so the assertions below are not vacuous.
+        assert "shop_session_cookie" in result.cookies
+        assert any(token.name == "csrf-token" for token in result.tokens)
+        assert any("/api/orders/12345" in e.examples for e in result.endpoints)
+        text = render_endpoints_json(result)
+        for planted in (
+            "shop_session_cookie",
+            "planted-cookie",
+            "csrf-token",
+            "planted-token-value",
+            "/api/orders/12345",
+            "planted-body-value",
+        ):
+            assert planted not in text, planted
+
+    def test_the_sample_har_leaks_no_cookie_name_or_example_path(self) -> None:
+        result = digest(DigestSource.from_har(_SAMPLE_HAR))
+        assert "sessionId" in result.cookies
+        text = render_endpoints_json(result)
+        assert "sessionId" not in text
+        assert "/api/users/123/posts" not in text
+
+    def test_the_projection_is_uncapped(self, tmp_path: Path) -> None:
+        # Letters only: a segment with a digit is eligible for the high-cardinality
+        # collapse, which would fold these seventy routes into one.
+        words = [f"{chr(97 + i // 26)}{chr(97 + i % 26)}route" for i in range(70)]
+        entries = [
+            _entry("GET", f"https://myshop.example.com/api/{word}", body='{"id": 1}')
+            for word in words
+        ]
+        payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
+        assert len(payload["endpoints"]) == 70
+
+    def test_login_flow_and_shape_come_through(self, tmp_path: Path) -> None:
+        payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))
+        order = next(e for e in payload["endpoints"] if e["template"] == "/api/orders/{order_id}")
+        assert order["method"] == "GET"
+        assert order["login_flow"] is False
+        assert order["shape"] == "object{id}"
+
+    def test_the_projection_survives_a_rename_of_an_internal_endpoint_field(
+        self, tmp_path: Path
+    ) -> None:
+        """Built by an explicit function, not by reflection: renaming a field the
+        projection does not carry changes render_json and leaves this unchanged."""
+        result = digest(DigestSource.from_har(_planted_run(tmp_path)))
+        renames = {"examples": "example_paths", "statuses": "status_codes"}
+        fields = dataclasses.fields(Endpoint)
+        renamed_cls = dataclasses.make_dataclass(
+            "Endpoint", [(renames.get(f.name, f.name), f.type) for f in fields], frozen=True
+        )
+        renamed = tuple(
+            renamed_cls(**{renames.get(f.name, f.name): getattr(e, f.name) for f in fields})
+            for e in result.endpoints
+        )
+        patched = dataclasses.replace(result, endpoints=renamed)
+        assert endpoints_projection(patched) == endpoints_projection(result)
+        assert render_json(patched) != render_json(result)

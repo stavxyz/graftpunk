@@ -200,6 +200,40 @@ class TestDigestCommand:
         result = runner.invoke(app, ["observe", "digest"])
         assert result.exit_code == 1
 
+    def test_endpoints_json_prints_the_projection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+        )
+        # Same structlog reset as test_digest_json_flag above: whichever test
+        # ran earlier in this worker may have left structlog on its
+        # unconfigured default, which prints parse_har_file's INFO event
+        # straight onto stdout ahead of the JSON and breaks json.loads.
+        from graftpunk.logging import configure_logging
+
+        configure_logging(level="WARNING")
+        result = runner.invoke(_build_app(), ["observe", "digest", "myshop", "--endpoints-json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["schema"] == 1
+        assert payload["source"] == {"session": "myshop", "run_id": "run-1", "har": None}
+
+    def test_json_and_endpoints_json_together_is_an_error(self, tmp_path: Path) -> None:
+        har = tmp_path / "network.har"
+        har.write_text(json.dumps({"log": {"version": "1.2", "entries": []}}))
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "digest", "--har", str(har), "--json", "--endpoints-json"],
+        )
+        assert result.exit_code == 1
+        assert "not both" in _plain(result.output)
+
 
 class TestFixturesCommand:
     def test_writes_matching_files_with_sidecars(
