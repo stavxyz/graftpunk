@@ -17,9 +17,13 @@ CAPTURES_DIR = "tests/captures"
 
 
 def with_ignored(text: str, relative: str) -> str:
-    """*text*, a ``.gitignore``'s content, with ``<relative>/`` appended unless that
-    exact line is there, in which case *text* itself. The rule ``ensure_ignored``
-    applies, as a text function a scaffold writer can plan as a change.
+    """*text*, a ``.gitignore``'s content, with ``<relative>/`` appended, or *text*
+    itself when one of its lines already names *relative*: the comparison strips
+    whitespace from both ends of each line, then trailing slashes from each line
+    and from *relative*, so ``  tests/captures`` and ``tests/captures/`` both
+    count. It is textual only; a glob or a parent directory that covers
+    *relative* does not. The rule ``ensure_ignored`` applies, as a text function a
+    scaffold writer can plan as a change.
 
     The appended line ends the way the file's lines do: CRLF when *text* holds a
     CRLF, LF otherwise, so a CRLF file does not gain one LF line.

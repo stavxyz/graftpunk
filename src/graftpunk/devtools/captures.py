@@ -65,10 +65,11 @@ def find_repo_root(start: Path) -> Path | None:
 
 
 def ensure_ignored(repo_root: Path, relative: str) -> bool:
-    """Add ``<relative>/`` to the root ``.gitignore`` unless that exact line is there.
+    """Add ``<relative>/`` to the root ``.gitignore`` unless a line already names it.
 
-    The check is exact-line only, against each line stripped of whitespace and
-    of a trailing slash. It does not ask git whether the path is already
+    The check is :func:`~graftpunk.devtools.captures_rule.with_ignored`'s: each
+    line stripped of whitespace and then of trailing slashes, compared with
+    *relative* stripped of trailing slashes. It does not ask git whether the path is already
     ignored, so a pattern that covers *relative* some other way (a parent
     directory, a glob, an exclude file) still gets the explicit line.
 
