@@ -1411,6 +1411,53 @@ class TestLoginFlowFlag:
         assert flags[("POST", "/cart/add")] is False
         assert flags[("POST", "/newsletter")] is False
 
+    @pytest.mark.parametrize(
+        ("page", "action", "post"),
+        [
+            (
+                "https://www.myshop.example.com/",
+                "/login",
+                "https://api.myshop.example.com/login",
+            ),
+            (
+                "https://www.myshop.example.com/u/alice@example.com/",
+                "/u/alice@example.com/login",
+                "https://www.myshop.example.com/u/bob@example.com/login",
+            ),
+        ],
+        ids=["another-host", "another-email"],
+    )
+    def test_a_post_matches_a_form_action_by_host_and_unmasked_path(
+        self, tmp_path: Path, page: str, action: str, post: str
+    ) -> None:
+        form = (
+            f'<form action="{action}" method="post"><input type="email" name="email">'
+            '<input type="password" name="passcode"></form>'
+        )
+        entries = [
+            _entry("GET", page, content_type="text/html", body=form),
+            _entry("POST", post, post_data=json.dumps({"sku": "x"})),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert not any(o.kind == "credential_post" for o in result.login)
+
+    def test_the_same_login_form_on_several_pages_is_recorded_once(self, tmp_path: Path) -> None:
+        header = (
+            '<form action="/login" method="post"><input type="email" name="email">'
+            '<input type="password" name="password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com/{page}",
+                content_type="text/html",
+                body=header,
+            )
+            for page in ("", "products", "cart")
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert len(result.login_forms) == 1
+
     def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
         """The form's type="password" input names the field, so a name outside the
         password hints (passcode) still marks the POST to its action."""

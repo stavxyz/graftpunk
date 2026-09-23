@@ -123,6 +123,7 @@ class TestExtractLoginForms:
                     'form[action=""]',
                     'form[action^="?"]',
                     'form[action^=";"]',
+                    'form[action^="#"]',
                 ),
             ),
         ],
@@ -179,8 +180,6 @@ class TestExtractLoginForms:
     def test_a_stripped_action_selects_the_live_form_and_not_a_decoy_before_it(
         self, decoy: str, live: str
     ) -> None:
-        lxml_html = pytest.importorskip("lxml.html")
-        pytest.importorskip("cssselect")
         html = (
             f'<html><body><form {decoy}><input name="username" class="decoy">'
             '<input type="password" name="password" class="decoy"></form>'
@@ -189,7 +188,7 @@ class TestExtractLoginForms:
         )
         forms = extract_login_forms(html, source="s")
         live_form = forms[1]
-        document = lxml_html.fromstring(html)
+        document = lxml.html.fromstring(html)
         for selector in live_form.fields.values():
             selected = document.cssselect(selector)
             assert [element.get("class") for element in selected] == ["live"], selector
@@ -656,3 +655,136 @@ class TestLoginSelectorsPickTheIntendedElement:
                 f"<html><body>{_REGISTER_THEN_LOGIN_PAGE}</body></html>"
             ).cssselect(fields[role] or "")
             assert matches[0].getparent().get("action") == "/login", role
+
+
+class TestLoginSemanticsRound8:
+    """Round 8: autocomplete hints by position, registration only against a login
+    form on the same page, image submits, fragment actions, a username after the
+    password, and a button outside its form."""
+
+    def test_a_footer_newsletter_email_hint_does_not_take_the_username(self) -> None:
+        page = _WEBFORMS_PAGE.replace(
+            'name="ctl00$Footer$txtNewsletter"',
+            'name="ctl00$Footer$txtNewsletter" autocomplete="email"',
+        )
+        assert 'autocomplete="email"' in page
+        (form,) = extract_login_forms(page, source="s")
+        fields, _submit = printable_selectors(form)
+        _assert_first_match(
+            page, fields["username"] or "", id_="ctl00_MainContent_LoginUser_UserName"
+        )
+
+    def test_an_email_hint_before_the_password_is_the_username(self) -> None:
+        html = (
+            '<form action="/login"><input type="text" name="q" id="q">'
+            '<input type="text" name="contact" id="contact" autocomplete="email">'
+            '<input type="text" name="nickname"><input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == "#contact"
+
+    def test_a_username_hint_after_the_password_counts_anywhere(self) -> None:
+        html = (
+            '<form action="/login"><input type="password" name="password">'
+            '<input type="text" id="who" autocomplete="username"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == "#who"
+
+    def test_a_literal_username_after_the_password_is_used_when_none_precedes(self) -> None:
+        html = (
+            '<form action="/login"><input type="password" name="password">'
+            '<input type="text" name="username"><button id="go">Go</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == 'form[action="/login"] input[name="username"]'
+        assert form.unresolved_roles == ()
+        assert form.absent_roles == ()
+
+    def test_a_password_only_form_names_the_username_absent(self) -> None:
+        html = '<form action="/login"><input type="password" name="password"></form>'
+        (form,) = extract_login_forms(html, source="s")
+        assert form.absent_roles == ("username",)
+        assert form.unresolved_roles == ("username",)
+
+    def test_a_registration_only_page_is_still_a_login_document(self) -> None:
+        html = (
+            '<form action="/register"><input type="email" name="email">'
+            '<input type="password" name="password" autocomplete="new-password">'
+            '<input type="password" name="password_confirm"></form>'
+        )
+        assert is_login_document(html)
+
+    def test_a_password_and_pin_form_is_a_login_form(self) -> None:
+        html = (
+            '<form action="/login"><input type="email" name="email">'
+            '<input type="password" name="password"><input type="password" name="pin"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["password"] == 'form[action="/login"] input[name="password"]'  # noqa: S105
+
+    def test_a_lone_login_form_marked_new_password_is_kept(self) -> None:
+        html = (
+            '<form action="/login"><input type="email" name="email">'
+            '<input type="password" name="password" autocomplete="new-password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.action == "/login"
+
+    def test_a_combined_login_and_register_form_uses_the_current_password(self) -> None:
+        html = (
+            '<form action="/account"><input type="email" name="login_email">'
+            '<input type="password" name="login_password" autocomplete="current-password">'
+            '<button name="signin">Sign in</button>'
+            '<input type="email" name="register_email">'
+            '<input type="password" name="new_password" autocomplete="new-password">'
+            '<input type="password" name="new_password_confirm" autocomplete="new-password">'
+            '<button name="register">Register</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        fields, submit = printable_selectors(form)
+        _assert_first_match(html, fields["password"] or "", name="login_password")
+        _assert_first_match(html, fields["username"] or "", name="login_email")
+        _assert_first_match(html, submit or "", name="signin")
+
+    def test_an_image_input_is_the_submit_and_never_a_field(self) -> None:
+        html = (
+            '<form action="/login"><input name="username"><input type="password" '
+            'name="password"><input type="image" name="go" src="go.png"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert set(form.fields) == {"username", "password"}
+        assert form.submit is not None
+        _assert_first_match(html, form.submit, name="go")
+
+    @pytest.mark.parametrize("action", ["#", "#login"])
+    def test_a_fragment_action_selects_the_live_form(self, action: str) -> None:
+        html = (
+            '<form action="/other"><input name="username" class="decoy">'
+            '<input type="password" name="password" class="decoy"></form>'
+            f'<form action="{action}"><input name="username" class="live">'
+            '<input type="password" name="password" class="live"></form>'
+        )
+        live = extract_login_forms(html, source="s")[1]
+        document = lxml.html.fromstring(f"<html><body>{html}</body></html>")
+        for selector in live.fields.values():
+            assert [e.get("class") for e in document.cssselect(selector)] == ["live"], selector
+
+    def test_a_button_outside_its_form_belongs_to_that_form(self) -> None:
+        html = (
+            '<form id="signin" action="/login"><input name="username">'
+            '<input type="password" name="password"></form>'
+            '<button type="submit" form="signin" id="outside">Sign in</button>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.submit == "#outside"
+
+    def test_a_neutral_role_records_whether_its_input_had_no_name(self) -> None:
+        html = (
+            '<form action="/login"><input type="email" name="email">'
+            '<input type="tel"><input type="text" name="otp_40912873">'
+            '<input type="password" name="password"><button>Go</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.neutral_roles == ("field_1", "field_2")
+        assert form.nameless_roles == ("field_1",)

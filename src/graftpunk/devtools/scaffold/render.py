@@ -499,26 +499,32 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     for role in form.neutral_roles:
         if role not in form.fields:
             continue
+        cause = (
+            "the recorded input had no name"
+            if role in form.nameless_roles
+            else "the recorded input's name held an account value"
+        )
         lines.extend(
             wrapped_comment_lines(
-                f"GP-FILL: {role} is a placeholder role: the recorded input had no name, "
-                "or one that held an account value; rename it to the field it is.",
+                f"GP-FILL: {role} is a placeholder role: {cause}; rename it to the field it is.",
                 indent=indent,
             )
         )
     for role in printable_unresolved_roles(form):
-        reason = (
-            "none picks one input of the recorded form"
-            if role in form.unresolved_roles
-            else "the form's action holds an id, and without it none picks one input of "
-            "the recorded page"
-        )
-        lines.extend(
-            wrapped_comment_lines(
-                f"GP-FILL: {role} has no selector: {reason}; write one by hand.",
-                indent=indent,
+        if role in form.absent_roles:
+            text = (
+                f"GP-FILL: {role} is not on the recorded form: a multi-step login asks for "
+                "it on another page; add a LoginStep for that page by hand."
             )
-        )
+        else:
+            reason = (
+                "none picks one input of the recorded form"
+                if role in form.unresolved_roles
+                else "the form's action holds an id, and without it none picks one input "
+                "of the recorded page"
+            )
+            text = f"GP-FILL: {role} has no selector: {reason}; write one by hand."
+        lines.extend(wrapped_comment_lines(text, indent=indent))
     lines.append(f"{pad}LoginStep(")
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
     lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))

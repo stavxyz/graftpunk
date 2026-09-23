@@ -12,9 +12,10 @@ import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 from graftpunk.har.paths import (
+    bare_host,
     bare_path,
     bare_url,
     holds_an_id,
@@ -81,6 +82,16 @@ class LoginForm:
     # here is printed unscoped only when its selector is by id (printable_selectors).
     unscoped_fields: dict[str, str] = field(default_factory=dict)
     unscoped_submit: str | None = None
+    # The neutral roles whose input had no name at all (the rest had a name that
+    # held an account value), so a GP-FILL states the right cause.
+    nameless_roles: tuple[str, ...] = ()
+    # The roles the form has no input for at all: a password-only page of a
+    # multi-step login has no username. Each is in unresolved_roles too.
+    absent_roles: tuple[str, ...] = ()
+    # Where the form posts, host and path, resolved against its page and NOT
+    # email-masked, so the digest can match a POST to it exactly. A lookup for code:
+    # marked "internal" (graftpunk.har.digest.INTERNAL) so render_json leaves it out.
+    action_target: tuple[str, str] = field(default=("", ""), metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -102,6 +113,10 @@ class _RawInput:
     # default ("text", or "submit" for a button) when it did not.
     typed: bool = True
     autocomplete: str = ""
+    # The id of the form a form="..." attribute names, and the position on the page,
+    # so a control outside its form joins it in document order.
+    form_owner: str = ""
+    order: int = 0
 
 
 @dataclass
@@ -109,6 +124,7 @@ class _RawForm:
     action: str = ""
     method: str = "GET"
     inputs: list[_RawInput] = field(default_factory=list)
+    element_id: str = ""
 
 
 class _DocumentParser(HTMLParser):
@@ -128,6 +144,7 @@ class _DocumentParser(HTMLParser):
             self._current = _RawForm(
                 action=values.get("action", ""),
                 method=(values.get("method") or "GET").upper(),
+                element_id=values.get("id", ""),
             )
         elif tag in ("input", "button"):
             raw_input = _RawInput(
@@ -139,9 +156,11 @@ class _DocumentParser(HTMLParser):
                 element_id=values.get("id", ""),
                 typed=bool(values.get("type")),
                 autocomplete=values.get("autocomplete", "").strip().lower(),
+                form_owner=values.get("form", ""),
+                order=len(self.inputs),
             )
             self.inputs.append(raw_input)
-            if self._current is not None:
+            if self._current is not None and not raw_input.form_owner:
                 self._current.inputs.append(raw_input)
         elif tag == "meta":
             name, content = values.get("name"), values.get("content")
@@ -159,16 +178,24 @@ def _parse(html: str) -> _DocumentParser:
     parser.feed(html)
     if parser._current is not None:  # an unclosed <form>: keep what was seen
         parser.forms.append(parser._current)
+    # A control with form="id" belongs to that form wherever it sits on the page.
+    owners = {form.element_id: form for form in parser.forms if form.element_id}
+    for raw_input in parser.inputs:
+        owner = owners.get(raw_input.form_owner) if raw_input.form_owner else None
+        if owner is not None:
+            owner.inputs.append(raw_input)
+            owner.inputs.sort(key=lambda control: control.order)
     return parser
 
 
 # The forms an action that strips to nothing can be written as: absent, empty,
-# or only a query or ;params.
+# or only a query, ;params, or fragment.
 _EMPTY_ACTION_SCOPES = (
     "form:not([action])",
     'form[action=""]',
     'form[action^="?"]',
     'form[action^=";"]',
+    'form[action^="#"]',
 )
 
 
@@ -432,8 +459,9 @@ def _is_text_like(raw: _RawInput) -> bool:
 
 
 def _is_submit(raw: _RawInput) -> bool:
-    """An ``<input type="submit">`` or a submitting ``<button>`` (typeless included)."""
-    return raw.input_type == "submit"
+    """An ``<input type="submit">``, an ``<input type="image">``, or a submitting
+    ``<button>`` (typeless included)."""
+    return raw.input_type == "submit" or (raw.tag == "input" and raw.input_type == "image")
 
 
 def _has_username_hint(raw: _RawInput) -> bool:
@@ -443,53 +471,118 @@ def _has_username_hint(raw: _RawInput) -> bool:
     return any(hint in lowered for hint in _USERNAME_HINTS)
 
 
+_LITERAL_USERNAME_NAMES = frozenset({"username", "email", "login", "user"})
+_CONFIRMATION_HINTS = ("confirm", "repeat", "verify", "again", "retype")
+
+
+def _password_inputs(inputs: list[_RawInput]) -> list[_RawInput]:
+    return [i for i in inputs if i.tag == "input" and i.input_type == "password"]
+
+
 def _is_registration(inputs: list[_RawInput]) -> bool:
-    """A sign-up or change-password form: a password marked ``new-password`` or a
-    second password input (a confirmation), and none marked ``current-password``."""
+    """A sign-up or change-password form: no input marked ``current-password``, and
+    either a password marked ``new-password`` or a second password input whose name
+    or id asks for a confirmation (``password_confirm``). A form with a
+    ``current-password`` input is a login form whatever else it holds (a page-wide
+    form with both login and register fields), and a second password input with no
+    confirmation hint (a PIN) does not make a form a registration form. The
+    exclusion applies only when the page also has a login form
+    (:func:`extract_login_forms`); ``is_login_document`` ignores it."""
     if any(i.autocomplete == "current-password" for i in inputs):
         return False
-    passwords = [i for i in inputs if i.tag == "input" and i.input_type == "password"]
-    return len(passwords) > 1 or any(i.autocomplete == "new-password" for i in passwords)
+    passwords = _password_inputs(inputs)
+    if any(i.autocomplete == "new-password" for i in passwords):
+        return True
+    confirmations = [
+        i
+        for i in passwords[1:]
+        if any(hint in f"{i.name} {i.element_id}".lower() for hint in _CONFIRMATION_HINTS)
+    ]
+    return bool(confirmations)
+
+
+def _password_index(inputs: list[_RawInput]) -> int | None:
+    """The input marked ``current-password``, else the first password input."""
+    for index, raw in enumerate(inputs):
+        if raw.tag == "input" and raw.autocomplete == "current-password":
+            return index
+    return next((i for i, raw in enumerate(inputs) if _is_password(raw)), None)
 
 
 def _username_index(inputs: list[_RawInput], password_index: int) -> int | None:
-    """The username input: one ``autocomplete`` names as a username or email, else the
-    hinted text-like input nearest before the password, else the text-like input
-    nearest before it; None when the form has none."""
+    """The username input: one ``autocomplete="username"`` names anywhere in the form;
+    else the input nearest before the password that ``autocomplete="email"`` names;
+    else the hinted text-like input nearest before the password; else the text-like
+    input nearest before it; else, when nothing text-like precedes the password,
+    the first input after it literally named ``username``, ``email``, ``login``, or
+    ``user``. None when the form has none."""
     for index, raw in enumerate(inputs):
-        if _is_text_like(raw) and raw.autocomplete in _USERNAME_AUTOCOMPLETE:
+        if _is_text_like(raw) and raw.autocomplete == "username":
             return index
     before = [index for index in range(password_index) if _is_text_like(inputs[index])]
+    by_email_hint = [index for index in before if inputs[index].autocomplete == "email"]
+    if by_email_hint:
+        return by_email_hint[-1]
     hinted = [index for index in before if _has_username_hint(inputs[index])]
     if hinted:
         return hinted[-1]
-    return before[-1] if before else None
+    if before:
+        return before[-1]
+    return next(
+        (
+            index
+            for index in range(password_index + 1, len(inputs))
+            if _is_text_like(inputs[index])
+            and inputs[index].name.lower() in _LITERAL_USERNAME_NAMES
+        ),
+        None,
+    )
+
+
+def _action_target(raw_action: str, source: str) -> tuple[str, str]:
+    """Where a form posts, as host and path (``;params``, query, and fragment
+    dropped, never email-masked), resolved against its page when *source* is a URL;
+    the host is empty when neither names one."""
+    try:
+        parts = urlsplit(raw_action)
+        action = urlunsplit((parts.scheme, bare_host(parts.netloc), bare_path(parts.path), "", ""))
+        if source.startswith(("http://", "https://")):
+            resolved = urlsplit(urljoin(source, action))
+            return bare_host(resolved.netloc), unquote(bare_path(resolved.path)) or "/"
+        return bare_host(parts.netloc), unquote(bare_path(parts.path))
+    except ValueError:
+        return "", ""
 
 
 def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
     """Every login ``<form>`` in *html*: one with a password input that is not a
-    registration form (:func:`_is_registration`).
+    registration form (:func:`_is_registration`), unless every such form on the page
+    is one, when all are kept.
 
     Each yields a :class:`LoginForm` with the form's action stripped of its query
     string, fragment, and ``;params`` (:func:`graftpunk.har.paths.bare_url`), and
-    roles by HTML semantics, anchored on the first password input: ``password``;
-    ``username``, the input :func:`_username_index` picks (unresolved when there is
-    none); the submit, the first submit control after the password; and each other
-    text-like input between the username and that submit, keyed by its name (a
-    neutral ``field_N`` when the name holds an account value or is missing). A
-    checkbox, radio, file, image, reset, range, or hidden input is never a role,
-    and each role is assigned once. Selectors come from :func:`_selectors_for`; a
-    role with none is recorded in ``unresolved_roles``. Hidden input names are kept
-    as token candidates.
+    roles by HTML semantics, anchored on the password input (the one marked
+    ``current-password``, else the first): ``password``; ``username``, the input
+    :func:`_username_index` picks (absent and unresolved when there is none); the
+    submit, the first submit control after the password (an image input counts);
+    and each other text-like input between the username and that submit, keyed by
+    its name (a neutral ``field_N`` when the name holds an account value or is
+    missing). A control whose ``form`` attribute names the form belongs to it
+    wherever it sits. A checkbox, radio, file, image, reset, range, or hidden input
+    is never a field role, and each role is assigned once. Selectors come from
+    :func:`_selectors_for`; a role with none is recorded in ``unresolved_roles``.
+    Hidden input names are kept as token candidates.
     """
     parsed = _parse(html)
+    candidates = [raw for raw in parsed.forms if _password_index(raw.inputs) is not None]
+    # A registration form is left out only beside a login form: a lone form marked
+    # new-password is still the page's login form.
+    logins = [raw for raw in candidates if not _is_registration(raw.inputs)]
     forms: list[LoginForm] = []
-    for raw in parsed.forms:
+    for raw in logins or candidates:
         inputs = raw.inputs
-        password_index = next(
-            (i for i, raw_input in enumerate(inputs) if _is_password(raw_input)), None
-        )
-        if password_index is None or _is_registration(inputs):
+        password_index = _password_index(inputs)
+        if password_index is None:
             continue
         try:
             action = bare_url(raw.action)
@@ -532,6 +625,7 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
         roles.append(("password", inputs[password_index]))
         taken = {i.name for i in inputs if i.name} | {"username", "password"}
         neutral: list[str] = []
+        nameless: list[str] = []
         for index in range(block_start, block_end):
             raw_input = inputs[index]
             if index in (username_index, password_index) or not _is_text_like(raw_input):
@@ -555,11 +649,14 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
             key = f"field_{number}"
             taken.add(key)
             neutral.append(key)
+            if not raw_input.name:
+                nameless.append(key)
             roles.append((key, raw_input))
 
         fields: dict[str, str] = {}
         unscoped_fields: dict[str, str] = {}
-        unresolved: list[str] = [] if username_index is not None else ["username"]
+        absent: list[str] = [] if username_index is not None else ["username"]
+        unresolved: list[str] = list(absent)
         for role, raw_input in roles:
             if role in fields or role in unresolved:
                 continue
@@ -591,6 +688,9 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
                 unresolved_roles=tuple(unresolved),
                 unscoped_fields=unscoped_fields,
                 unscoped_submit=unscoped_submit,
+                nameless_roles=tuple(nameless),
+                absent_roles=tuple(absent),
+                action_target=_action_target(raw.action, source),
             )
         )
     return tuple(forms)
@@ -624,6 +724,7 @@ def is_login_document(html: str) -> bool:
 
     Used by :mod:`graftpunk.plugins.site_requests` to tell a real login page
     (a stale session gets one back as a 200) apart from any other
-    unexpectedly non-JSON response.
+    unexpectedly non-JSON response. Any password input counts, a registration
+    form's included: the registration exclusion is the digest's, not this test's.
     """
-    return bool(extract_login_forms(html, source=""))
+    return any(_password_index(raw.inputs) is not None for raw in _parse(html).forms)

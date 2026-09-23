@@ -787,8 +787,8 @@ class TestGeneratedLoginHoldsNoAccountValue:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: field_1 is a placeholder role: the recorded input had no name, or "
-            "one that held an account value; rename it to the field it is."
+            "GP-FILL: field_1 is a placeholder role: the recorded input's name held an "
+            "account value; rename it to the field it is."
         ) in comments
         assert (
             "GP-FILL: field_2 has no selector: none picks one input of the recorded form; "
@@ -800,6 +800,39 @@ class TestGeneratedLoginHoldsNoAccountValue:
         ) in comments
         # L4: the rename comment names only a neutral role the step declares.
         assert "field_2 is a placeholder role" not in comments
+
+    def test_each_gp_fill_names_its_own_cause(self) -> None:
+        form = LoginForm(
+            action="/session",
+            method="POST",
+            fields={"password": "#pw", "field_1": "#a", "field_2": "#b"},
+            submit="#go",
+            hidden=(),
+            source="https://myshop.example.com/signin",
+            neutral_roles=("field_1", "field_2"),
+            nameless_roles=("field_1",),
+            unresolved_roles=("username",),
+            absent_roles=("username",),
+        )
+        code = self._plugin_code(form)
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: field_1 is a placeholder role: the recorded input had no name; "
+            "rename it to the field it is."
+        ) in comments
+        assert (
+            "GP-FILL: field_2 is a placeholder role: the recorded input's name held an "
+            "account value; rename it to the field it is."
+        ) in comments
+        assert (
+            "GP-FILL: username is not on the recorded form: a multi-step login asks for it "
+            "on another page; add a LoginStep for that page by hand."
+        ) in comments
+        assert "username has no selector" not in comments
 
     def test_a_selector_that_cannot_be_printed_unscoped_gets_a_gp_fill(self) -> None:
         scope = 'form[action="/accounts/40912873/session"]'

@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from graftpunk.har.documents import (
     LoginForm,
@@ -27,6 +27,7 @@ from graftpunk.har.documents import (
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
+    bare_path,
     bare_url,
     holds_an_id,
     keys_are_ids,
@@ -779,17 +780,36 @@ def _redirect_target_path(entry: HAREntry) -> str:
         return ""
 
 
-def _form_action_path(form: LoginForm) -> str:
-    """The path *form* posts to: its action resolved against the page it was on
-    (an empty action posts to the page itself), or empty when neither is a URL
-    path (a page source file with a relative action)."""
+def _posts_to_a_login_form(url: str, targets: set[tuple[str, str]]) -> bool:
+    """True when a POST to *url* goes where a recorded login form posts: the same
+    host and path (``;params`` dropped, never email-masked), or the same path when
+    the form's host is unknown (a page source file with a relative action)."""
     try:
-        if form.source.startswith(("http://", "https://")):
-            return urlparse(urljoin(form.source, form.action)).path or "/"
-        path = urlparse(form.action).path
+        parts = urlparse(url)
     except ValueError:
-        return ""
-    return path if path.startswith("/") else ""
+        return False
+    path = unquote(bare_path(parts.path)) or "/"
+    return (bare_host(parts.netloc), path) in targets or ("", path) in targets
+
+
+def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
+    """*forms* with a form recorded again (the same site-wide form on several pages)
+    kept once, the first seen."""
+    seen: set[tuple[object, ...]] = set()
+    unique: list[LoginForm] = []
+    for form in forms:
+        key = (
+            form.action,
+            form.method,
+            tuple(sorted(form.fields.items())),
+            form.submit,
+            form.hidden,
+            form.action_target,
+        )
+        if key not in seen:
+            seen.add(key)
+            unique.append(form)
+    return unique
 
 
 def _has_password_field(entry: HAREntry) -> list[str]:
@@ -1107,7 +1127,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # post whatever its password field is named, since the form's type="password"
     # input already names it. No assignment expression here: one inside a
     # comprehension binds in this function and rebound the loop's `path` below.
-    login_action_paths = {action for action in map(_form_action_path, page_forms) if action}
+    login_action_targets = {form.action_target for form in page_forms if form.action_target[1]}
 
     for index, (entry, host, static) in enumerate(classified):
         if static:
@@ -1157,8 +1177,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             document_source = url
             forms_in_entry = extract_login_forms(entry.response.body, source=document_source)
             login_forms.extend(forms_in_entry)
-            login_action_paths.update(
-                action for action in map(_form_action_path, forms_in_entry) if action
+            login_action_targets.update(
+                form.action_target for form in forms_in_entry if form.action_target[1]
             )
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
@@ -1169,7 +1189,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         fields: tuple[str, ...] = ()
         if method == "GET" and forms_in_entry:
             kind = "form_page"
-        elif method == "POST" and (credential_hint_fields or path in login_action_paths):
+        elif method == "POST" and (
+            credential_hint_fields
+            or _posts_to_a_login_form(entry.request.url, login_action_targets)
+        ):
             # Report every body field name, not only the password-hinted
             # ones: a credential post's username/email field is part of the
             # observation too, and the field's own tests require it
@@ -1262,7 +1285,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         hosts=hosts,
         endpoints=_with_login_flow(endpoints, tuple(login)),
         login=tuple(login),
-        login_forms=tuple(login_forms),
+        login_forms=tuple(_unique_forms(login_forms)),
         tokens=tokens,
         cookies=tuple(cookies_seen),
         dropped=dropped,
