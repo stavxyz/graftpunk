@@ -399,12 +399,107 @@ def _observed_type(value: str) -> str:
     return "float" if math.isfinite(number) and str(number) == value else "str"
 
 
-def _merged_types(seen: dict[str, str], observed: dict[str, str]) -> None:
-    """Fold *observed* into *seen* in place: a name typed differently by two
-    requests is ``str``, the one type that sends every recorded value as it was."""
+# The type labels a parameter carries (schema 1 of the endpoints projection):
+# str, int, float, bool, object (a JSON object), mixed (JSON values no one type
+# sends), and list[<element>] with element one of those, list (an array inside
+# an array), or unknown (only empty arrays seen).
+_MIXED = "mixed"
+_UNKNOWN_ELEMENT = "unknown"
+
+
+def _list_label(element: str) -> str:
+    return f"list[{element}]"
+
+
+def _element_of(label: str) -> str | None:
+    """The element label of a ``list[...]`` label, or None for a scalar label."""
+    if label.startswith("list[") and label.endswith("]"):
+        return label[len("list[") : -1]
+    return None
+
+
+def _merged_text_type(known: str, observed: str) -> str:
+    """Query and form values: text on the wire, so any disagreement is ``str``,
+    which re-sends every recorded value as it was. A key seen once and repeated
+    elsewhere is a list, since a repeatable option can send one value."""
+    if known == observed:
+        return known
+    known_element, observed_element = _element_of(known), _element_of(observed)
+    if known_element is None and observed_element is None:
+        return "str"
+    merged = _merged_text_type(known_element or known, observed_element or observed)
+    return _list_label(merged)
+
+
+def _merged_json_element(known: str, observed: str) -> str:
+    if known == observed or observed == _UNKNOWN_ELEMENT:
+        return known
+    if known == _UNKNOWN_ELEMENT:
+        return observed
+    if {known, observed} == {"int", "float"}:
+        return "float"
+    return _MIXED
+
+
+def _merged_json_type(known: str, observed: str) -> str:
+    """JSON values keep their type on the wire: ``int`` and ``float`` merge to
+    ``float``, two arrays merge their element types, and any other disagreement
+    is ``mixed``, which the generator does not declare."""
+    if known == observed:
+        return known
+    if {known, observed} == {"int", "float"}:
+        return "float"
+    known_element, observed_element = _element_of(known), _element_of(observed)
+    if known_element is not None and observed_element is not None:
+        return _list_label(_merged_json_element(known_element, observed_element))
+    return _MIXED
+
+
+def _merged_types(seen: dict[str, str], observed: dict[str, str], *, json_body: bool) -> None:
+    """Fold *observed* into *seen* in place, by the JSON rule when *json_body* and
+    by the text rule (query and form) otherwise."""
+    merge = _merged_json_type if json_body else _merged_text_type
     for name, observed_type in observed.items():
         known = seen.get(name)
-        seen[name] = observed_type if known in (None, observed_type) else "str"
+        seen[name] = observed_type if known is None else merge(known, observed_type)
+
+
+def _text_values_type(values: list[str]) -> str:
+    """The label of one query or form key's recorded values: the value's type, or
+    for a repeated key ``list[<element>]`` with the elements merged as text."""
+    if len(values) == 1:
+        return _observed_type(values[0])
+    element = _observed_type(values[0])
+    for value in values[1:]:
+        element = _merged_text_type(element, _observed_type(value))
+    return _list_label(element)
+
+
+def _json_value_type(value: Any) -> str | None:
+    """The label of one JSON value, or None for ``null``, which is no observation."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        element = _UNKNOWN_ELEMENT
+        for item in value:
+            item_type = _json_value_type(item)
+            if item_type is None:
+                continue
+            # An array inside an array is recorded as the bare element ``list``.
+            item_element = "list" if _element_of(item_type) is not None else item_type
+            element = _merged_json_element(element, item_element)
+        return _list_label(element)
+    return _MIXED
 
 
 def _query_param_types(url: str) -> dict[str, str]:
@@ -419,7 +514,7 @@ def _query_param_types(url: str) -> dict[str, str]:
     for name, values in parsed.items():
         if not _plausible_field_name(name):
             continue
-        types[name] = "list" if len(values) > 1 else _observed_type(values[0])
+        types[name] = _text_values_type(values)
     return types
 
 
@@ -445,21 +540,17 @@ def _json_body_types(parsed: dict[str, Any]) -> dict[str, str]:
     (:func:`_plausible_field_name`): a key that does not read as a field name,
     such as an email address or a key starting with a digit, is dropped. The rule
     is lexical, so a data-shaped key that does read as a field name (a session id
-    like ``sess_a8f3c9e2``) is kept."""
+    like ``sess_a8f3c9e2``) is kept.
+
+    A ``null`` value is no type observation, so a field seen only as ``null`` is
+    left out."""
     types: dict[str, str] = {}
     for key, value in parsed.items():
         if not _plausible_field_name(key):
             continue
-        if isinstance(value, bool):
-            types[key] = "bool"
-        elif isinstance(value, float):
-            types[key] = "float"
-        elif isinstance(value, int):
-            types[key] = "int"
-        elif isinstance(value, list):
-            types[key] = "list"
-        else:
-            types[key] = "str"
+        observed = _json_value_type(value)
+        if observed is not None:
+            types[key] = observed
     return types
 
 
@@ -495,7 +586,7 @@ def _parse_body(entry: HAREntry) -> tuple[dict[str, str], BodyKind]:
     form = parse_qs(post_data, keep_blank_values=True)
     if not form or not all(_plausible_field_name(name) for name in form):
         return {}, "none"
-    types = {k: ("list" if len(v) > 1 else _observed_type(v[0])) for k, v in form.items()}
+    types = {k: _text_values_type(v) for k, v in form.items()}
     return types, "form"
 
 
@@ -648,9 +739,9 @@ class _EndpointAccumulator:
         self.statuses.append(entry.response.status)
         content_type = entry.response.content_type or ""
         self.content_types[content_type] = self.content_types.get(content_type, 0) + 1
-        _merged_types(self.query_params, _query_param_types(entry.request.url))
+        _merged_types(self.query_params, _query_param_types(entry.request.url), json_body=False)
         field_types, body_kind = _parse_body(entry)
-        _merged_types(self.body_params, field_types)
+        _merged_types(self.body_params, field_types, json_body=body_kind == "json")
         if body_kind != "none":
             self.body_kind = body_kind
         # A real shape supersedes an unavailable one: within a family the first
@@ -1009,8 +1100,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.statuses.extend(acc.statuses)
             for ct, n in acc.content_types.items():
                 target.content_types[ct] = target.content_types.get(ct, 0) + n
-            _merged_types(target.query_params, acc.query_params)
-            _merged_types(target.body_params, acc.body_params)
+            _merged_types(target.query_params, acc.query_params, json_body=False)
+            json_body = "json" in (target.body_kind, acc.body_kind)
+            _merged_types(target.body_params, acc.body_params, json_body=json_body)
             target.custom_headers.update(acc.custom_headers)
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost

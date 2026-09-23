@@ -226,13 +226,19 @@ exception: the example paths under each
 endpoint are real, so a digest of a site whose URLs carry account or document
 identifiers is not safe to paste anywhere a capture would not be.
 
-An observed type is `str`, `int`, `float`, `bool`, or `list` (a query key
-repeated in one request). A value gets a type only when the typed value is sent
-back spelled exactly as recorded, so `07030` is a `str` (as an `int` it would go
-out as `7030`), and `bool` means the lowercase `true` or `false`. A parameter
-that two requests to the same endpoint type differently is a `str`. A query or
-body key that does not read as a field name, such as an email address or a key
-starting with a digit, is data rather than a parameter, and the digest drops it.
+An observed type is `str`, `int`, `float`, `bool`, `object` (a JSON object),
+`mixed` (JSON values no one type sends), or `list[<element>]` for a query or
+form key repeated in one request or a JSON array, where the element is one of
+those, `list` (an array inside an array), or `unknown` (only empty arrays were
+seen). A query or form value gets a type only when the typed value is sent back
+spelled exactly as recorded, so `07030` is a `str` (as an `int` it would go out
+as `7030`), and `bool` means the lowercase `true` or `false`; a query or form
+parameter that two requests to the same endpoint type differently is a `str`,
+which re-sends each value as recorded. A JSON body field keeps its JSON type: a
+`null` is not an observation, `int` and `float` together are `float`, and any
+other disagreement is `mixed`. A query or body key that does not read as a field
+name, such as an email address or a key starting with a digit, is data rather
+than a parameter, and the digest drops it.
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:

@@ -210,7 +210,9 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     (:mod:`graftpunk.contracts`). ``render_json`` stays an unversioned dump.
 
     Each ``query_params`` and ``body_params`` value is one of schema 1's type
-    labels: ``str``, ``int``, ``float``, ``bool``, or ``list``.
+    labels: ``str``, ``int``, ``float``, ``bool``, ``object``, ``mixed``, or
+    ``list[<element>]``, the element one of those, ``list``, or ``unknown`` (see
+    ``graftpunk.har.digest``).
     """
     source = d.source
     return {

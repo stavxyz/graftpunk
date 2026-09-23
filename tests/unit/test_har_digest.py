@@ -487,23 +487,88 @@ class TestTypeObservation:
         assert result.endpoints[0].query_params == {"page": "int"}
         assert "alice@example.com" not in render_endpoints_json(result)
 
-    def test_body_types_that_disagree_across_requests_fall_back_to_str(
-        self, tmp_path: Path
-    ) -> None:
+    @staticmethod
+    def _json_posts(tmp_path: Path, *bodies: dict) -> Endpoint:
         entries = [
-            _entry(
-                "POST",
-                "https://api.myshop.example.com/orders",
-                post_data=json.dumps({"amount": 3, "quantity": 1}),
-            ),
-            _entry(
-                "POST",
-                "https://api.myshop.example.com/orders",
-                post_data=json.dumps({"amount": 3.5, "quantity": 2}),
-            ),
+            _entry("POST", "https://api.myshop.example.com/orders", post_data=json.dumps(body))
+            for body in bodies
+        ]
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        return endpoint
+
+    @staticmethod
+    def _form_posts(tmp_path: Path, *bodies: str) -> Endpoint:
+        entries = []
+        for body in bodies:
+            entry = _entry("POST", "https://api.myshop.example.com/orders", post_data=body)
+            entry["request"]["postData"]["mimeType"] = _FORM_CONTENT_TYPE
+            entries.append(entry)
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        return endpoint
+
+    def test_json_int_then_float_merges_to_float(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(tmp_path, {"amount": 3}, {"amount": 3.5})
+        assert endpoint.body_params == {"amount": "float"}
+
+    def test_a_json_null_is_not_a_type_observation(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(tmp_path, {"amount": None}, {"amount": 3})
+        assert endpoint.body_params == {"amount": "int"}
+
+    def test_a_field_only_ever_null_is_not_declared(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(tmp_path, {"amount": None, "note": "x"})
+        assert endpoint.body_params == {"note": "str"}
+
+    def test_json_text_then_number_is_mixed(self, tmp_path: Path) -> None:
+        """No one type sends both, so the generator must not declare it."""
+        endpoint = self._json_posts(tmp_path, {"ref": "a"}, {"ref": 3})
+        assert endpoint.body_params == {"ref": "mixed"}
+
+    def test_json_mixed_is_final(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(tmp_path, {"ref": "a"}, {"ref": 3}, {"ref": "b"})
+        assert endpoint.body_params == {"ref": "mixed"}
+
+    def test_form_int_then_text_is_str(self, tmp_path: Path) -> None:
+        endpoint = self._form_posts(tmp_path, "qty=3", "qty=abc")
+        assert endpoint.body_params == {"qty": "str"}
+
+    def test_a_json_object_is_object(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(tmp_path, {"address": {"city": "x"}})
+        assert endpoint.body_params == {"address": "object"}
+
+    def test_a_json_array_records_its_element_type(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(
+            tmp_path,
+            {"ids": [1, 2], "tags": ["a"], "prices": [1, 2.5], "mix": [1, "a"], "none": []},
+        )
+        assert endpoint.body_params == {
+            "ids": "list[int]",
+            "tags": "list[str]",
+            "prices": "list[float]",
+            "mix": "list[mixed]",
+            "none": "list[unknown]",
+        }
+
+    def test_json_array_element_types_merge_across_requests(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(
+            tmp_path, {"ids": [], "codes": [1]}, {"ids": [4], "codes": ["a"]}
+        )
+        assert endpoint.body_params == {"ids": "list[int]", "codes": "list[mixed]"}
+
+    def test_a_json_array_and_a_scalar_are_mixed(self, tmp_path: Path) -> None:
+        endpoint = self._json_posts(tmp_path, {"ids": [1]}, {"ids": 1})
+        assert endpoint.body_params == {"ids": "mixed"}
+
+    def test_a_repeated_query_key_records_its_element_type(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders?id=1&id=2&tag=a&tag=1"),
+            _entry("GET", "https://api.myshop.example.com/orders?id=3"),
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
-        assert result.endpoints[0].body_params == {"amount": "str", "quantity": "int"}
+        assert result.endpoints[0].query_params == {"id": "list[int]", "tag": "list[str]"}
+
+    def test_a_repeated_form_key_records_its_element_type(self, tmp_path: Path) -> None:
+        endpoint = self._form_posts(tmp_path, "id=1&id=2")
+        assert endpoint.body_params == {"id": "list[int]"}
 
 
 class TestBodyParams:
