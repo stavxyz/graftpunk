@@ -1102,8 +1102,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         page_forms = extract_login_forms(page_html, source=str(source.page_source))
     # The paths a recorded login form posts to: a POST to one is the credential
     # post whatever its password field is named, since the form's type="password"
-    # input already names it.
-    login_action_paths = {path for form in page_forms if (path := _form_action_path(form))}
+    # input already names it. No assignment expression here: one inside a
+    # comprehension binds in this function and rebound the loop's `path` below.
+    login_action_paths = {action for action in map(_form_action_path, page_forms) if action}
 
     for index, (entry, host, static) in enumerate(classified):
         if static:
@@ -1154,7 +1155,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             forms_in_entry = extract_login_forms(entry.response.body, source=document_source)
             login_forms.extend(forms_in_entry)
             login_action_paths.update(
-                path for form in forms_in_entry if (path := _form_action_path(form))
+                action for action in map(_form_action_path, forms_in_entry) if action
             )
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)

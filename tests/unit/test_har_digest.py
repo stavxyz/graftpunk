@@ -1379,6 +1379,38 @@ class TestLoginFlowFlag:
             ("GET", "/api/orders"): False,
         }
 
+    def test_a_header_login_form_on_every_page_does_not_claim_other_posts(
+        self, tmp_path: Path
+    ) -> None:
+        """K1: a login form in a site-wide header marks only a POST to its own action;
+        a POST whose HTML response carries that form is still an ordinary command."""
+        header = (
+            '<form action="/login" method="post"><input type="email" name="email">'
+            '<input type="password" name="passcode"></form>'
+        )
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/", content_type="text/html", body=header),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/cart/add",
+                content_type="text/html",
+                body=header + "<p>added</p>",
+                post_data=json.dumps({"sku": "x", "quantity": 1}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/newsletter",
+                content_type="text/html",
+                body=header + "<p>subscribed</p>",
+                post_data=json.dumps({"email": "alice@example.com"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert not any(o.kind == "credential_post" for o in result.login)
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/cart/add")] is False
+        assert flags[("POST", "/newsletter")] is False
+
     def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
         """The form's type="password" input names the field, so a name outside the
         password hints (passcode) still marks the POST to its action."""
