@@ -185,6 +185,34 @@ class TestSynthesizeCommandFn:
         assert result.exit_code == 0, result.output
         assert captured["kwargs"]["county"] == "all"
 
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [([], None), (["--id", "1"], [1]), (["--id", "1", "--id", "2"], [1, 2])],
+    )
+    def test_a_multiple_option_collects_every_value_or_none(
+        self, argv: list[str], expected: list[int] | None
+    ) -> None:
+        captured: dict = {}
+        fn = synthesize_command_fn(
+            name="search",
+            param_specs=[
+                PluginParamSpec.option(
+                    "ids", type=int, click_kwargs={"multiple": True, "flag": "--id"}
+                )
+            ],
+            body=_capture_body(captured),
+        )
+        result = CliRunner().invoke(_app_with(fn, "search"), argv)
+        assert result.exit_code == 0, result.output
+        assert captured["kwargs"]["ids"] == expected
+
+    def test_a_multiple_bool_flag_is_refused(self) -> None:
+        spec = PluginParamSpec.option(
+            "on", type=bool, click_kwargs={"is_flag": True, "multiple": True}
+        )
+        with pytest.raises(PluginError, match="multiple"):
+            map_param_spec("p", "c", spec)
+
     def test_explicit_value_wins_and_format_detection(self) -> None:
         captured: dict = {}
         fn = synthesize_command_fn(
