@@ -540,8 +540,7 @@ class TestBodyParams:
         """A JSON object keyed by data (an email address used as a map key, a
         session id) is not a field name, held to the same rule
         (_plausible_field_name) a form body's keys already were: reporting the
-        key itself put the data into the digest report and the fixtures sidecar
-        (review round 1, 2026-09-23)."""
+        key itself put the data into the digest report and the fixtures sidecar."""
         long_hex_key = "a" * 128
         entries = [
             _entry(
@@ -1398,8 +1397,7 @@ class TestFlaggedNamesOf:
 
     def test_a_cookie_set_by_a_second_in_scope_host_is_flagged_too(self, tmp_path: Path) -> None:
         """flagged_names must not miss a cookie a first-party subdomain sets: an
-        auth or widget host distinct from the primary one (review round 1,
-        2026-09-23)."""
+        auth or widget host distinct from the primary one."""
         entries = [
             _entry("GET", "https://api.myshop.example.com/orders"),
             _entry("GET", "https://api.myshop.example.com/orders/1"),

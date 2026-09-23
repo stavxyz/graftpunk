@@ -534,8 +534,7 @@ class TestFixturesCommand:
     ) -> None:
         """A JSON object keyed by data (an email address) is not a field name;
         the digest's own filter (_plausible_field_name) applies here too, so
-        the data never reaches the committed sidecar (review round 1,
-        2026-09-23)."""
+        the data never reaches the committed sidecar."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         order = _entry("POST", "https://api.myshop.example.com/orders/1", body='{"id": 1}')

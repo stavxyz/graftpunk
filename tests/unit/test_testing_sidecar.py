@@ -153,7 +153,7 @@ class TestLoad:
 class TestCaptureSha256Format:
     """Enforced in Sidecar construction (Sidecar.__post_init__), so a bad hash
     cannot come out of the writer either, and load_sidecar names the path when
-    it surfaces on read (review round 1, 2026-09-23)."""
+    it surfaces on read."""
 
     @pytest.mark.parametrize(
         "value",
@@ -188,7 +188,7 @@ class TestCaptureSha256Format:
 class TestNormalisation:
     """The sort and dedupe of body_params and flagged_names is Sidecar's own job:
     a Sidecar built directly (not only through write_sidecar) still serializes
-    sorted and deduped (review round 1, 2026-09-23)."""
+    sorted and deduped."""
 
     def test_body_params_and_flagged_names_are_sorted_and_deduped_on_construction(self) -> None:
         sidecar = Sidecar(

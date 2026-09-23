@@ -55,8 +55,7 @@ class SidecarError(GraftpunkError):
 
     A ``GraftpunkError``, not a ``ValueError``: plugin command code routinely
     catches ``ValueError`` around a fixture-backed ``.json()`` call in a test,
-    and a malformed sidecar must not be swallowed by that catch (review round
-    1, 2026-09-23)."""
+    and a malformed sidecar must not be swallowed by that catch."""
 
 
 @dataclass(frozen=True)

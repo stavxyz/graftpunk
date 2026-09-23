@@ -939,7 +939,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         # Every host reaching this point already passed the in-scope check
         # above, not just the primary one: a second first-party host (a
         # cookie-setting auth subdomain, say) must still show up in
-        # flagged_names, which reads this field (review round 1, 2026-09-23).
+        # flagged_names, which reads this field.
         for cookie_name in _response_cookie_names(entry):
             cookies_seen.setdefault(cookie_name, None)
 
