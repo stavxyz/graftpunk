@@ -236,8 +236,10 @@ spelled exactly as recorded, so `07030` is a `str` (as an `int` it would go out
 as `7030`), and `bool` means the lowercase `true` or `false`; a query or form
 parameter that two requests to the same endpoint type differently is a `str`,
 which re-sends each value as recorded. A JSON body field keeps its JSON type: a
-`null` is not an observation, `int` and `float` together are `float`, and any
-other disagreement is `mixed`. A query or body key that does not read as a field
+`null` is not an observation, `int` and `float` together are `float`, two arrays
+merge their element types the same way (`list[int]` and `list[float]` give
+`list[float]`, and elements of two other types give `list[mixed]`), and any other
+disagreement is `mixed`. A query or body key that does not read as a field
 name, such as an email address or a key starting with a digit, is data rather
 than a parameter, and the digest drops it; so is a key that holds an id by the
 path rule's shapes (a run of five or more digits, as in `u_40912873`, or eight or
@@ -665,10 +667,15 @@ A `list[...]` parameter is a repeatable option, `click_kwargs={"multiple": True}
 handler receives a list, or `None` when the option is not given. `requests`
 sends a list in `params` or `data` as repeated keys (`id=1&id=2`), the way the
 site sent it, and a JSON body gets a JSON array. A JSON body field no option can
-send as recorded (an `object`, a `mixed` value, or an array of objects,
-booleans, arrays, or mixed elements) is not declared: the stub says so in a
-`GP-FILL` comment, so you add it to the body by hand if the command needs it,
-rather than getting an option that sends the wrong type.
+send as recorded (an `object`, a `mixed` value, or an array of objects, booleans, arrays, mixed elements, or only empty arrays) is not
+declared: the stub says so in a `GP-FILL` comment, so you add it to the body by
+hand if the command needs it, rather than getting an option that sends the wrong
+type. A body field recorded with a different type from a query parameter of the
+same name gets its own option, `--body-<name>`, so each is sent as recorded.
+
+A site parameter named `format`, `output`, `session`, `view`, or `help` would
+collide with an option every command already has, so its option gets a suffix
+(`--format-2`); the request still sends it under the site's own name.
 
 ```python
 from graftpunk.plugins import CommandContext, PluginParamSpec, command

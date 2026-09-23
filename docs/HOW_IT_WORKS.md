@@ -473,17 +473,24 @@ entirely. That second rule is what makes a generated stub's
 `keyword_search: bool | None = None` mean "omit this parameter unless the
 caller asked for it".
 
-A generated stub sends each parameter in the type and shape the recording
-shows, or does not declare it. A recorded form body goes out as `data=`, a JSON
-body as `json=` holding only the fields the caller gave, a bool is a
-`--x/--no-x` flag, and a list (a repeated query or form key, or a JSON array)
-is a repeatable option sent as repeated keys or a JSON array. A JSON body field
-no option can send as recorded (an object, a mixed value, an array of objects)
-is left out with a `GP-FILL` comment naming it. No id from a recorded URL
-reaches a generated file: `login_config.url` is the page the login form was on,
-or a `GP-FILL` comment when that page's path holds an id; selectors scoped to a
-form action that holds an id are unscoped; and an id in `success_url`'s landing
-path is a `*`.
+A generated stub declares an option for a parameter only when that option can
+send the type and shape the recording shows; a field that cannot be sent as
+recorded is left undeclared, with a `GP-FILL` comment naming it. A recorded form
+body goes out as `data=`, a JSON body as `json=` holding only the fields the
+caller gave, a bool is a `--x/--no-x` flag, and a list (a repeated query or form
+key, or a JSON array) is a repeatable option sent as repeated keys or a JSON
+array. The JSON body fields left undeclared are an object, a `mixed` value, or an array of objects, booleans, arrays, mixed elements, or only empty arrays. A body field typed
+apart from a query parameter of the same name gets its own `--body-<name>`
+option. A path segment the digest's lexical rule reads as an id (all digits, a
+run of five or more digits, a UUID, eight or more hex characters mixing digits
+and letters, a prefixed id such as `cus_...`, a token of eight or more letters
+and digits mixed, a long base64-like token, or an email) is templated, and an
+email segment is also masked in every URL the digest keeps. From that rule:
+`login_config.url` is the page the login form was on, or a `GP-FILL` comment
+when that page's path holds such an id; selectors scoped to a form action that
+holds one are unscoped; and one in `success_url`'s landing path is a `*`. An id
+in a shape the rule does not read as one (a short word-like value, say) is not
+caught.
 
 `graftpunk.testing` (pytest-free) supplies `make_context()` for building a
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
