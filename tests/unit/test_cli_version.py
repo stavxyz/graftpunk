@@ -131,3 +131,33 @@ def test_a_dev_or_local_version_is_ordered_not_rejected(
     monkeypatch.setattr(graftpunk, "__version__", installed)
     result = runner.invoke(app, ["version", "--json", "--at-least", "1.17.0"])
     assert result.exit_code == exit_code, result.output
+
+
+def test_two_mismatches_in_one_call_print_one_stderr_line_each() -> None:
+    result = runner.invoke(app, ["version", "--contract", "endpoints=2", "--contract", "nosuch=1"])
+    assert result.exit_code == 3
+    lines = result.stderr.splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith("endpoints:")
+    assert "graftpunk is older than the caller" in lines[0]
+    assert lines[1].startswith("nosuch:")
+
+
+def test_a_matching_contract_alone_exits_0_and_prints_nothing() -> None:
+    result = runner.invoke(app, ["version", *_contract_args(cli_contracts())])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--at-least", "not-a-version"], ["--contract", "endpoints=one"]],
+    ids=["unreadable-floor", "malformed-contract"],
+)
+def test_json_with_an_unreadable_argument_exits_1_before_printing_any_json(
+    extra: list[str],
+) -> None:
+    result = runner.invoke(app, ["version", "--json", *extra])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr != ""
