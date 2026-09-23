@@ -2014,6 +2014,66 @@ class TestPluginModuleCommandStubs:
         with pytest.raises(ValueError, match="'filter' is labelled 'object'"):
             self._plugin_code(endpoint)
 
+    @staticmethod
+    def _registered_pair(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> tuple[Any, list[Any]]:
+        """A plugin whose /export takes ?format=&help= beside a plain /orders."""
+        import requests
+
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        sent: list[Any] = []
+
+        def send(_session: Any, prepared: Any, **_kwargs: Any) -> requests.Response:
+            sent.append(prepared)
+            response = requests.Response()
+            response.status_code = 200
+            response.headers["Content-Type"] = "application/json"
+            response._content = b"{}"
+            response.url = prepared.url
+            response.request = prepared
+            return response
+
+        monkeypatch.setattr(requests.Session, "send", send)
+        export = TestPluginModuleCommandStubs._endpoint(
+            "/export", query={"format": "str", "help": "int", "output": "str"}
+        )
+        orders = TestPluginModuleCommandStubs._endpoint("/orders", query={"page": "int"})
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(export, orders)),
+        )
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(render(spec)["src/graftpunk_myshop/plugin.py"], namespace)  # noqa: S102
+
+        class _SessionlessPlugin(namespace["MyshopPlugin"]):
+            requires_session = False
+
+        return invoke_plugin_app(_SessionlessPlugin(), argv), sent
+
+    def test_reserved_parameter_names_are_renamed_and_every_command_registers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """format, output, session, and view are the CLI's own options, and help is
+        --help: a site parameter of either name must not break registration."""
+        result, sent = self._registered_pair(monkeypatch, ["myshop", "--help"])
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "export" in output and "orders" in output
+
+        result, sent = self._registered_pair(monkeypatch, ["myshop", "export", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "Usage" in strip_ansi(result.output)
+        assert sent == []
+
+        argv = ["myshop", "export", "--format-2", "csv", "--help-2", "1", "--output-2", "x"]
+        result, sent = self._registered_pair(monkeypatch, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == "https://myshop.example.com/export?format=csv&help=1&output=x"
+
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",
@@ -2850,3 +2910,11 @@ class TestFixturesDirFollowsThePolicy:
         expected = fixtures_root(suite_member=True, module_name="my_shop")
         assert found == tmp_path / expected.rstrip("/")
         assert f"{expected}.gitkeep" in files
+
+
+def test_the_reserved_identifiers_are_the_cli_builtin_options_and_help() -> None:
+    """devtools does not import graftpunk.cli, so render keeps its own copy."""
+    from graftpunk.cli.command_factory import BUILTIN_OPTIONS
+    from graftpunk.devtools.scaffold.render import _RESERVED_OPTION_IDENTIFIERS
+
+    assert set(_RESERVED_OPTION_IDENTIFIERS) == set(BUILTIN_OPTIONS) | {"help"}

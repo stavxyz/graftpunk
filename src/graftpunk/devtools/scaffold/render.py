@@ -105,6 +105,14 @@ _SPEC_TYPE_BY_OBSERVED: dict[str, tuple[str, ...]] = {
     "bool": ("type=bool",),
 }
 
+# The option names every plugin command already carries (command_factory's
+# BUILTIN_OPTIONS: --format, --view, --output, --session) and --help. A site
+# parameter of one of these names would fail the whole plugin's registration, or
+# shadow --help, so its identifier is renamed (format_2, giving --format-2); the
+# site's own name stays the dict key. A copy, since devtools does not import
+# graftpunk.cli; a test holds it equal to BUILTIN_OPTIONS plus help.
+_RESERVED_OPTION_IDENTIFIERS = ("format", "view", "output", "session", "help")
+
 _ENDPOINT_COMMENT = (
     f"{L2}# This request is the endpoint= declared on @command above: change both together."
 )
@@ -738,8 +746,9 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     method = endpoint.methods[0]
     name = _command_name(endpoint.template, seen_names)
     # "self" and "ctx" are taken before any site parameter is named, so a site
-    # parameter called either cannot shadow the stub's own arguments.
-    seen_params = {"self", "ctx"}
+    # parameter called either cannot shadow the stub's own arguments; so are the
+    # CLI's own option names (_RESERVED_OPTION_IDENTIFIERS).
+    seen_params = {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
     url_text, path_params = _templated_url(endpoint.template, seen_params)
     is_json = _is_json_endpoint(endpoint)
     call, role, return_type = (
@@ -1054,7 +1063,9 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         name = _command_name(endpoint.template, seen)
         # The same seeding as _render_command_stub, so the identifiers here are
         # the ones the stub actually declares.
-        _, path_params = _templated_url(endpoint.template, {"self", "ctx"})
+        _, path_params = _templated_url(
+            endpoint.template, {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
+        )
         # "1" round-trips through the naming rule (paths.template_path treats
         # an all-digit segment as dynamic): the request this test issues
         # renames back to the endpoint's own template, so it finds the
