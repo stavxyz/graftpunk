@@ -49,7 +49,8 @@ skills/graft/references/capture.md  the capture hand-off: the command, what to e
 skills/graft/references/digest.md   how to read a digest and turn endpoints into a command proposal
 skills/graft/references/harden.md   fixtures, tests, the gate, the publish checklist
 skills/graft/scripts/preflight.sh   gp present and new enough; relays gp plugin info --json
-tests/unit/test_graft_skill.py      the skill's own tests (see Testing)
+tests/unit/test_graft_*.py          the skill's own tests: manifests, preflight, consent, references (see Testing)
+tests/unit/skill_harness.py         shared fixtures for those tests (no test module imports another)
 .github/workflows/skill-version.yml the version-bump check on pull requests
 scripts/check-skill-version.sh      the check itself, also run by just skill-version
 docs/PLUGIN_DEVELOPMENT.md          gains one short section, "With the skill"
@@ -66,7 +67,8 @@ src/graftpunk/har/digest.py                    login_flow on every endpoint (mov
 src/graftpunk/har/report.py                    the --endpoints-json projection: an explicit field list, versioned; --json stays the diagnostic dump
 src/graftpunk/contracts.py                     the schema number of each versioned payload and the one refuse_unknown_schema helper
 src/graftpunk/har/naming.py                    parse_endpoint (the pair) and parse_command_spec (the triple): the one parser for each encoding
-src/graftpunk/devtools/plugin_project.py       the one reader: resolve and classify the directory's plugin project, one structural view
+src/graftpunk/devtools/plugin_project.py       the one reader: resolve and classify the directory's plugin project, one structural view; require_plugin_project
+src/graftpunk/devtools/plugin_info.py          the gp plugin info payload, refusing with PluginDefectRefusal while any plugin has a defect
 src/graftpunk/devtools/scaffold/policy.py      declarative project policy: PROJECT_GATE, PROJECT_REQUIREMENTS, the fixtures-root rule
 src/graftpunk/devtools/scaffold/write.py       the one write discipline: refuse before touching, validate before writing, restore on failure
 src/graftpunk/devtools/scaffold/project.py     the scaffold writer, through write.py, reading policy like every other consumer
@@ -74,10 +76,11 @@ src/graftpunk/devtools/scaffold/render.py      per-artifact renderers: a single-
 src/graftpunk/devtools/scaffold/pysrc.py       the Python-source formatting helpers split out of render.py (issue #201, item 2)
 src/graftpunk/devtools/scaffold/selection.py   which commands a render or an insert produces, under which names
 src/graftpunk/devtools/scaffold/insert.py      the stub inserter, through write.py
-src/graftpunk/devtools/errors.py               DevtoolsRefusal, the one base class a gp plugin entry point catches, and ScaffoldWriteError, a write failure after write.py restored the original bytes
+src/graftpunk/devtools/errors.py               DevtoolsRefusal, the base class every gp plugin entry point catches, and ScaffoldWriteError, a write failure after write.py restored what it could, naming any path it could not
 src/graftpunk/devtools/scaffold/upgrade.py     the migrator behind gp plugin upgrade, through write.py, applying PROJECT_REQUIREMENTS
 src/graftpunk/devtools/plugin_check.py         the lint behind gp plugin check
-src/graftpunk/devtools/captures.py             the sidecar writer, importing the schema from its owner
+src/graftpunk/devtools/captures_rule.py        the pure capture rules: CAPTURES_DIR and the ignore-file text, no writes
+src/graftpunk/devtools/captures.py             the writing side: the sidecar writer (importing the schema from its owner) and ensure_ignored
 src/graftpunk/cli/scaffold_commands.py         thin entry points: gp plugin new --command, add-command, info, upgrade, check
 src/graftpunk/cli/observe_commands.py          gp observe fixtures writes the sidecar through the devtools writer; the matcher consumes parse_endpoint's pair
 src/graftpunk/cli/main.py                      gp version --json, --at-least, and --contract
@@ -257,7 +260,7 @@ After a merge, users update with `/plugin marketplace update graftpunk` and `/pl
 
 ## Testing
 
-`tests/unit/test_graft_skill.py` and `tests/unit/test_graft_preflight.py`, in the existing unit suite so the normal gate runs them, taking the guide helpers from `tests/unit/guide_harness.py` (no test module imports another):
+`tests/unit/test_graft_manifests.py`, `test_graft_preflight.py`, `test_graft_consent.py`, and `test_graft_references.py`, in the existing unit suite so the normal gate runs them, sharing fixtures through `tests/unit/skill_harness.py` and taking the guide helpers from `tests/unit/guide_harness.py` (no test module imports another):
 
 - Every guide heading cited in `SKILL.md` and the four references exists in `docs/PLUGIN_DEVELOPMENT.md` (with the slug helper in `tests/unit/guide_harness.py`, moved there from `tests/unit/test_plugin_development_guide.py`, which already skips fenced blocks).
 - The references copy nothing from the guide: outside explicit quotations, no run of eight or more consecutive words from a reference appears in the guide (words compared lowercased with punctuation stripped, so the "cite, do not copy" rule is enforced at a stated threshold, not hoped). A quotation is a blockquote line (`> `) that ends with a citation of a guide heading in parentheses; the checker skips those lines and asserts the cited heading exists, so a reference can quote a refusal message, a command sequence, or a rule's short form accurately without being paraphrased to satisfy a lint. Every rule in `rules.md` names a heading that exists.
