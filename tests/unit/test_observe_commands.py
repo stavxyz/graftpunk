@@ -453,6 +453,27 @@ class TestFixturesCommand:
         assert "--match GET /orders/{order_id}." not in strip_ansi(result.output)
         assert list(out_dir.glob("get_orders_*.json"))
 
+    def test_two_templates_that_name_one_file_are_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """G4: /a_b and /a/b both slug to get_a_b; nothing is written."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/a_b", body='{"x": 1}'),
+            _entry("GET", "https://api.myshop.example.com/a/b", body='{"x": 2}'),
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /*", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert "get_a_b.json" in output and "GET /a/b" in output and "GET /a_b" in output
+        assert not out_dir.exists() or not list(out_dir.glob("*.json"))
+
     def test_the_sidecar_is_committable_and_records_the_capture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -544,7 +565,7 @@ class TestFixturesCommand:
         )
         assert result.exit_code == 0, result.output
         written = sorted(p.name for p in out_dir.iterdir() if not p.name.endswith(".meta.json"))
-        assert written == ["get_products_{product_id}.json", "get_products_{product_id}_1.json"]
+        assert written == ["get_products_{product_id}#1.json", "get_products_{product_id}.json"]
 
     def test_flagged_names_cover_cookies_set_on_a_static_response_and_by_another_host(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -712,6 +733,19 @@ class TestFixturesGitignore:
         assert str(gitignore) in output.replace("\n", "")
         assert "not UTF-8 text" in output
         assert gitignore.read_bytes() == b"\xff\xfe not utf-8\n"
+        assert not out_dir.exists()
+
+    def test_a_gitignore_that_is_a_directory_is_refused_as_a_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """W5: its own refusal, not a read error."""
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        (repo / ".gitignore").mkdir()
+        out_dir = repo / "tests" / "captures"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert f"Refusing to write {repo / '.gitignore'}: it is a directory, not a file" in output
         assert not out_dir.exists()
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")

@@ -196,3 +196,18 @@ class TestImportableWithoutPytest:
         )
         assert result.returncode == 0, result.stderr
         assert "OK" in result.stdout
+
+
+def test_a_stem_holding_glob_characters_is_matched_literally(tmp_path: Path) -> None:
+    """G5: the stem is escaped before globbing."""
+    (tmp_path / "get_items_[x].json").write_text('{"id": 1}')
+    (tmp_path / "get_items_x.json").write_text('{"id": 2}')
+    session = FixtureSession(tmp_path)
+    assert session.get("https://myshop.example.com/items/[x]").json() == {"id": 1}
+
+
+def test_a_repeat_capture_is_never_the_fixture_for_a_numeric_segment(tmp_path: Path) -> None:
+    """G4: a repeat suffix cannot read as a path segment."""
+    (tmp_path / "get_orders_{order_id}#1.json").write_text('{"repeat": true}')
+    session = FixtureSession(tmp_path)
+    assert session.get("https://myshop.example.com/orders/1").status_code == 404

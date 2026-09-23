@@ -34,6 +34,7 @@ from graftpunk.devtools.captures import (
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.har.digest import (
     DigestSource,
+    RunDigest,
     body_params,
     digest,
     endpoint_template,
@@ -41,7 +42,7 @@ from graftpunk.har.digest import (
     redacted_names_of,
 )
 from graftpunk.har.naming import EndpointSpecError, capture_filename, parse_endpoint
-from graftpunk.har.parser import parse_har_file
+from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.report import (
     DEFAULT_ENDPOINT_LIMIT,
     render_endpoints_json,
@@ -206,6 +207,29 @@ def _parsed_matches(patterns: list[str]) -> list[tuple[str, str]]:
     return parsed
 
 
+def _colliding_file_names(
+    entries: list[HAREntry], run_digest: RunDigest, endpoints: list[tuple[str, str]]
+) -> dict[str, set[str]]:
+    """The capture file names two or more matched endpoints would share (``/a_b``
+    and ``/a/b`` both name ``get_a_b.json``), each with those endpoints."""
+    keys_by_name: dict[str, set[str]] = {}
+    for entry in entries:
+        try:
+            path = urlparse(entry.request.url).path or "/"
+        except ValueError:
+            continue
+        template = endpoint_template(run_digest, path)
+        method = entry.request.method.upper()
+        if entry.response.body is None or not any(
+            _matches_template(method, template, e) for e in endpoints
+        ):
+            continue
+        content_type = entry.response.content_type or "application/octet-stream"
+        name = capture_filename(method, template, content_type)
+        keys_by_name.setdefault(name, set()).add(f"{method} {template}")
+    return {name: keys for name, keys in keys_by_name.items() if len(keys) > 1}
+
+
 def fixtures_cmd(
     session: Annotated[str, typer.Argument(metavar="SESSION")],
     run: Annotated[str | None, typer.Argument(metavar="RUN_ID")] = None,
@@ -266,6 +290,13 @@ def fixtures_cmd(
         gitignore = repo_root / ".gitignore"
         try:
             added = ensure_ignored(repo_root, relative)
+        except IsADirectoryError:
+            console.print(
+                f"[red]Refusing to write {escape(str(gitignore))}: it is a directory, "
+                "not a file[/red]",
+                soft_wrap=True,
+            )
+            raise typer.Exit(1) from None
         except UnicodeDecodeError:
             # The same refusal gp plugin new gives this file.
             console.print(
@@ -289,6 +320,17 @@ def fixtures_cmd(
             "[yellow]Not inside a git work tree: nothing protects this directory "
             "from being committed.[/yellow]"
         )
+
+    collisions = _colliding_file_names(entries, run_digest, endpoints)
+    if collisions:
+        for filename, keys in sorted(collisions.items()):
+            console.print(
+                f"[red]Refusing to write {escape(filename)}: {escape(' and '.join(sorted(keys)))} "
+                "would both be written to it. Narrow --match to one of them.[/red]",
+                soft_wrap=True,
+                highlight=False,
+            )
+        raise typer.Exit(1)
 
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -331,8 +373,10 @@ def fixtures_cmd(
 
         filename = capture_filename(method, template, content_type)
         if seen > 0:
+            # "#" never occurs in a path (it starts the fragment), so a repeat
+            # cannot take the name of a template with a numeric last segment.
             stem, _, ext = filename.rpartition(".")
-            filename = f"{stem}_{seen}.{ext}"
+            filename = f"{stem}#{seen}.{ext}"
         file_path = target_dir / filename
         try:
             file_path.write_text(entry.response.body, encoding="utf-8")

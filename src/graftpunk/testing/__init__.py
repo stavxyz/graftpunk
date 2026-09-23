@@ -10,6 +10,7 @@ design note).
 
 from __future__ import annotations
 
+import glob
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -84,10 +85,11 @@ class FixtureSession(GraftpunkSession):
     status is 200 and the type is guessed from the file's extension. No matching
     file answers 404.
 
-    The lookup matches the base stem only, so the ``_1``, ``_2`` files
-    ``gp observe fixtures`` writes for repeated captures of one template are
-    never consulted: a second recorded response becomes a fixture by being
-    copied onto the base name. When a stem has several extensions, ``.json``
+    The lookup matches the base stem only, escaped so a ``[`` in a path is a
+    character and not a pattern, so the ``#1``, ``#2`` files ``gp observe
+    fixtures`` writes for repeated captures of one template are never consulted:
+    a second recorded response becomes a fixture by being copied onto the base
+    name. When a stem has several extensions, ``.json``
     wins and the rest follow in sorted order: an endpoint whose fixture
     directory holds both a ``.html`` and a ``.json`` for one stem is a JSON
     endpoint with an error page beside it, and plain sorted order served the
@@ -104,7 +106,11 @@ class FixtureSession(GraftpunkSession):
         path = urlparse(url).path or "/"
         stem = capture_slug(method, path)
         matches = sorted(
-            (p for p in self._fixtures_dir.glob(f"{stem}.*") if p.is_file() and not is_sidecar(p)),
+            (
+                p
+                for p in self._fixtures_dir.glob(f"{glob.escape(stem)}.*")
+                if p.is_file() and not is_sidecar(p)
+            ),
             key=_fixture_preference,
         )
         response = requests.Response()
