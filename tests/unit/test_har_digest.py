@@ -1530,7 +1530,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         ]
         (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
         assert endpoint.custom_headers == ("X-Shop-Client",)
-        assert endpoint.dropped_id_header_names == 1
+        assert endpoint.header_names_dropped_as_ids == 1
 
     def test_dropped_query_and_body_keys_are_counted(self, tmp_path: Path) -> None:
         entries = [
@@ -1548,7 +1548,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
         assert endpoint.query_params == {"page": "int"}
         assert endpoint.body_params == {"note": "str"}
-        assert (endpoint.dropped_id_query_keys, endpoint.dropped_id_body_keys) == (2, 2)
+        assert (endpoint.query_keys_dropped_as_ids, endpoint.body_keys_dropped_as_ids) == (2, 2)
 
     def test_an_id_cookie_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
         """H1: an id-bearing name is written in no form, not even hashed."""
@@ -1562,7 +1562,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         har = _write_har(tmp_path, entries)
         result = digest(DigestSource.from_har(har))
         assert result.cookies == ("shop_session",)
-        assert result.dropped_id_cookie_names == 1
+        assert result.cookie_names_dropped_as_ids == 1
         parsed = parse_har_file(har).entries
         assert flagged_names_of(result, parsed) == ("shop_session",)
         assert redacted_names_of(result, parsed) == 1
@@ -1579,4 +1579,25 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert {token.name for token in result.tokens} == {"X-Csrf-Token"}
-        assert result.dropped_id_token_names == 1
+        assert result.token_names_dropped_as_ids == 1
+
+    def test_keys_that_are_not_field_names_are_counted_apart_from_ids(self, tmp_path: Path) -> None:
+        """P2: the two drop causes are counted and worded separately. A name that
+        holds an id counts as an id whether or not it is also outside the field-name
+        alphabet (an email address is both)."""
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/orders?9lives=1&u_40912873=1&page=1",
+                post_data=json.dumps({"3d": 1, "acct_40912873": 1, "note": "x"}),
+            )
+        ]
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        assert (endpoint.query_keys_dropped_as_ids, endpoint.query_keys_dropped_as_non_names) == (
+            1,
+            1,
+        )
+        assert (endpoint.body_keys_dropped_as_ids, endpoint.body_keys_dropped_as_non_names) == (
+            1,
+            1,
+        )

@@ -365,4 +365,4 @@ class TestLoginFormNamesGoThroughTheIdRule:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.hidden == ("_token",)
-        assert form.dropped_id_hidden_names == 1
+        assert form.hidden_names_dropped_as_ids == 1

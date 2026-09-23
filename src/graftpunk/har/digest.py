@@ -262,13 +262,16 @@ class Endpoint:
     # credential POST): the generator renders no stub for it and a command
     # proposal drops it, both from this one flag (graft skill spec, 2026-09-21).
     login_flow: bool = False
-    # How many distinct recorded names each position dropped because the name was
-    # data, not a field name (graftpunk.har.paths.holds_an_id, or not a field
-    # name at all): a stub says so in a GP-FILL comment, so nothing is lost
-    # silently. The names themselves are never kept.
-    dropped_id_query_keys: int = 0
-    dropped_id_body_keys: int = 0
-    dropped_id_header_names: int = 0
+    # How many distinct recorded names each position dropped, by cause: the name
+    # holds an account value (graftpunk.har.paths.holds_an_id), or it is not a
+    # field name at all (it starts with a digit or holds a character outside the
+    # field-name alphabet). A stub says so in a GP-FILL comment per cause, so
+    # nothing is lost silently. The names themselves are never kept.
+    query_keys_dropped_as_ids: int = 0
+    query_keys_dropped_as_non_names: int = 0
+    body_keys_dropped_as_ids: int = 0
+    body_keys_dropped_as_non_names: int = 0
+    header_names_dropped_as_ids: int = 0
 
 
 @dataclass(frozen=True)
@@ -312,8 +315,8 @@ class RunDigest:
     # How many distinct cookie names (``cookies``) and token candidate names
     # (``tokens``, any kind) were left out because the name held an account value
     # (graftpunk.har.paths.holds_an_id). The names are written in no form.
-    dropped_id_cookie_names: int = 0
-    dropped_id_token_names: int = 0
+    cookie_names_dropped_as_ids: int = 0
+    token_names_dropped_as_ids: int = 0
 
 
 def _scope_root(primary_host: str) -> str:
@@ -772,6 +775,12 @@ def _has_password_field(entry: HAREntry) -> list[str]:
     ]
 
 
+def _count_ids(names: set[str]) -> int:
+    """How many of the dropped *names* were dropped because they hold an id; the
+    rest were dropped for not being field names."""
+    return sum(1 for name in names if holds_an_id(name))
+
+
 class _EndpointAccumulator:
     def __init__(self, host: str) -> None:
         self.host = host
@@ -835,9 +844,12 @@ class _EndpointAccumulator:
             shape=self.shape,
             custom_headers=tuple(sorted(self.custom_headers)),
             examples=tuple(self.examples),
-            dropped_id_query_keys=len(self.dropped_query),
-            dropped_id_body_keys=len(self.dropped_body),
-            dropped_id_header_names=len(self.dropped_headers),
+            query_keys_dropped_as_ids=_count_ids(self.dropped_query),
+            query_keys_dropped_as_non_names=len(self.dropped_query)
+            - _count_ids(self.dropped_query),
+            body_keys_dropped_as_ids=_count_ids(self.dropped_body),
+            body_keys_dropped_as_non_names=len(self.dropped_body) - _count_ids(self.dropped_body),
+            header_names_dropped_as_ids=len(self.dropped_headers),
         )
 
 
@@ -1219,8 +1231,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         cookies=tuple(cookies_seen),
         dropped=dropped,
         collapsed_templates=collapse_map,
-        dropped_id_cookie_names=len(id_cookie_names),
-        dropped_id_token_names=len(id_token_names),
+        cookie_names_dropped_as_ids=len(id_cookie_names),
+        token_names_dropped_as_ids=len(id_token_names),
     )
 
 
@@ -1266,4 +1278,4 @@ def redacted_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> int:
     entry_id_cookies = {
         name for entry in entries for name in _response_cookie_names(entry) if holds_an_id(name)
     }
-    return len(entry_id_cookies) + d.dropped_id_token_names
+    return len(entry_id_cookies) + d.token_names_dropped_as_ids

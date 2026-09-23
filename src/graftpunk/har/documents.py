@@ -68,7 +68,7 @@ class LoginForm:
     source: str
     # Hidden inputs left out of ``hidden`` because the name held an account value
     # (graftpunk.har.paths.holds_an_id); the names are written nowhere.
-    dropped_id_hidden_names: int = 0
+    hidden_names_dropped_as_ids: int = 0
 
 
 @dataclass(frozen=True)
@@ -366,7 +366,7 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
                 submit=submit,
                 hidden=tuple(hidden),
                 source=source,
-                dropped_id_hidden_names=dropped_hidden,
+                hidden_names_dropped_as_ids=dropped_hidden,
             )
         )
     return tuple(forms)

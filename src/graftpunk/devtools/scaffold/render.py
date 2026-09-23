@@ -440,9 +440,9 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
             "    # token_config = TokenConfig(tokens=["
             'Token.from_meta_tag(name="...", header="...")])'
         )
-    if spec.digest.dropped_id_token_names:
+    if spec.digest.token_names_dropped_as_ids:
         text = (
-            f"GP-FILL: {spec.digest.dropped_id_token_names} token candidate(s) were left out "
+            f"GP-FILL: {spec.digest.token_names_dropped_as_ids} token candidate(s) were left out "
             "because their names held an account value; configure any this plugin needs "
             "by hand."
         )
@@ -882,19 +882,27 @@ def _stub_endpoints(spec: ScaffoldSpec) -> list[Endpoint]:
 
 
 def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
-    """The GP-FILL notes for names the digest dropped because they held an account
-    value, so a stub never loses a recorded field without saying so."""
+    """The GP-FILL notes for names the digest dropped, one per cause, so a stub never
+    loses a recorded field without saying so and why."""
     notes: list[str] = []
-    query, body = endpoint.dropped_id_query_keys, endpoint.dropped_id_body_keys
-    if query or body:
+    ids = (endpoint.query_keys_dropped_as_ids, endpoint.body_keys_dropped_as_ids)
+    if any(ids):
         notes.append(
-            f"GP-FILL: {query} recorded query field(s) and {body} body field(s) were left "
+            f"GP-FILL: {ids[0]} recorded query field(s) and {ids[1]} body field(s) were left "
             "out because their names held an account value; add any this command needs "
             "by hand."
         )
-    if endpoint.dropped_id_header_names:
+    non_names = (endpoint.query_keys_dropped_as_non_names, endpoint.body_keys_dropped_as_non_names)
+    if any(non_names):
         notes.append(
-            f"GP-FILL: {endpoint.dropped_id_header_names} recorded header name(s) were left "
+            f"GP-FILL: {non_names[0]} recorded query field(s) and {non_names[1]} body field(s) "
+            "were left out because their names are not field names (a name starting with "
+            "a digit, or holding a character a field name does not); add any this command "
+            "needs by hand."
+        )
+    if endpoint.header_names_dropped_as_ids:
+        notes.append(
+            f"GP-FILL: {endpoint.header_names_dropped_as_ids} recorded header name(s) were left "
             "out because they held an account value; add any this command needs by hand."
         )
     return notes

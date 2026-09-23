@@ -1883,9 +1883,11 @@ class TestPluginModuleCommandStubs:
         """S3: nothing the digest dropped as an id is lost silently."""
         endpoint = dataclasses.replace(
             self._endpoint("/orders", "POST", query={"page": "int"}, body_kind="json"),
-            dropped_id_query_keys=2,
-            dropped_id_body_keys=1,
-            dropped_id_header_names=1,
+            query_keys_dropped_as_ids=2,
+            body_keys_dropped_as_ids=1,
+            header_names_dropped_as_ids=1,
+            query_keys_dropped_as_non_names=1,
+            body_keys_dropped_as_non_names=0,
         )
         comments = " ".join(
             line.strip().lstrip("#").strip()
@@ -1899,6 +1901,11 @@ class TestPluginModuleCommandStubs:
         assert (
             "GP-FILL: 1 recorded header name(s) were left out because they held an account "
             "value; add any this command needs by hand."
+        ) in comments
+        assert (
+            "GP-FILL: 1 recorded query field(s) and 0 body field(s) were left out because "
+            "their names are not field names (a name starting with a digit, or holding a "
+            "character a field name does not); add any this command needs by hand."
         ) in comments
 
     @pytest.mark.parametrize(
@@ -2789,7 +2796,7 @@ def test_token_candidates_dropped_as_ids_are_counted_in_one_gp_fill() -> None:
         mode="new_project",
         backend="nodriver",
         base_url="https://myshop.example.com",
-        digest=dataclasses.replace(_digest(), dropped_id_token_names=2),
+        digest=dataclasses.replace(_digest(), token_names_dropped_as_ids=2),
     )
     code = render(spec)["src/graftpunk_myshop/plugin.py"]
     comments = " ".join(

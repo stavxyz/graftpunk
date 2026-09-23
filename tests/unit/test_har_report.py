@@ -217,8 +217,8 @@ class TestRenderJson:
             "tokens",
             "cookies",
             "dropped",
-            "dropped_id_cookie_names",
-            "dropped_id_token_names",
+            "cookie_names_dropped_as_ids",
+            "token_names_dropped_as_ids",
         }
 
     def test_dropped_carries_every_reason(self, tmp_path: Path) -> None:
