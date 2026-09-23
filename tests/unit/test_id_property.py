@@ -40,6 +40,9 @@ _NAME_POSITIONS = (
     "response_key",
     "header_name",
     "cookie_name",
+    "login_input_id",
+    "login_input_name",
+    "hidden_input_name",
 )
 
 
@@ -98,13 +101,17 @@ def _run(tmp_path: Path, position: str, value: str) -> Path:
     response = {value: {"total": 1}, "ok": True} if position == "response_key" else {"ok": True}
     headers = {value: "1", "X-Shop-Client": "web"} if position == "header_name" else {}
     cookie = f"{value}=v; Path=/" if position == "cookie_name" else "shop_session=v; Path=/"
+    user_id = value if position == "login_input_id" else "email"
+    extra = f'<input type="text" name="{value}">' if position == "login_input_name" else ""
+    hidden = f'<input type="hidden" name="{value}">' if position == "hidden_input_name" else ""
     entries = [
         _entry(
             "GET",
             f"{_HOST}{page}",
             content_type="text/html",
             body=(
-                f'<form action="{action}" method="post"><input name="username">'
+                f'<form action="{action}" method="post">{hidden}{extra}'
+                f'<input id="{user_id}" name="username">'
                 '<input type="password" name="password"></form>'
             ),
         ),

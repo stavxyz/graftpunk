@@ -317,3 +317,52 @@ def test_a_brace_in_the_stripped_query_does_not_hide_a_masked_email() -> None:
     (form,) = extract_login_forms(html, source="s")
     assert form.action == "/users/{user_id}/session"
     assert form.fields["username"] == 'input[name="username"]'
+
+
+class TestLoginFormNamesGoThroughTheIdRule:
+    """F1 and F2: a login form's element ids and input names are names like any
+    other, and one that holds an account value is never printed."""
+
+    def test_an_element_id_holding_an_id_falls_back_to_the_name(self) -> None:
+        html = (
+            '<form action="/login"><input id="user_40912873" name="username">'
+            '<input type="password" id="pw" name="password">'
+            '<button id="btn-5f1a9c2e8b1d" type="submit">Go</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == 'form[action="/login"] input[name="username"]'
+        assert form.submit == 'form[action="/login"] button[type="submit"]'
+
+    def test_an_input_name_holding_an_id_gets_a_neutral_role_and_a_type_selector(self) -> None:
+        html = (
+            '<form action="/login"><input type="text" name="otp_40912873">'
+            '<input type="tel" name="fld_a8f3c9e2b1">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {
+            "field_1": 'form[action="/login"] input[type="text"]',
+            "field_2": 'form[action="/login"] input[type="tel"]',
+            "password": 'form[action="/login"] input[name="password"]',
+        }
+
+    def test_a_credential_input_name_holding_an_id_keeps_its_role(self) -> None:
+        html = (
+            '<form action="/login"><input type="email" name="email_40912873">'
+            '<input type="password" name="pw_ab12cd34ef"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {
+            "username": 'form[action="/login"] input[type="email"]',
+            "password": 'form[action="/login"] input[type="password"]',
+        }
+
+    def test_a_hidden_input_name_holding_an_id_is_dropped_and_counted(self) -> None:
+        html = (
+            '<form action="/login"><input type="hidden" name="7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8">'
+            '<input type="hidden" name="_token"><input name="username">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.hidden == ("_token",)
+        assert form.dropped_id_hidden_names == 1

@@ -14,7 +14,13 @@ from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import urlsplit
 
-from graftpunk.har.paths import bare_path, bare_url, is_placeholder, templates_a_segment
+from graftpunk.har.paths import (
+    bare_path,
+    bare_url,
+    holds_an_id,
+    is_placeholder,
+    templates_a_segment,
+)
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -60,6 +66,9 @@ class LoginForm:
     submit: str | None
     hidden: tuple[str, ...]  # hidden input names (token candidates)
     source: str
+    # Hidden inputs left out of ``hidden`` because the name held an account value
+    # (graftpunk.har.paths.holds_an_id); the names are written nowhere.
+    dropped_id_hidden_names: int = 0
 
 
 @dataclass(frozen=True)
@@ -215,14 +224,17 @@ def _middle_param_scopes(head: str, after: str, trailing_slash: bool) -> tuple[s
 def _selector_for(raw: _RawInput, form_scopes: tuple[str, ...]) -> str:
     """One input's selector: by its id when it has one, else its tag and ``name``
     (or ``type``) scoped to each of *form_scopes*, or unscoped when there are none.
-    Every attribute value is escaped (:func:`_css_string`)."""
-    if raw.element_id:
+    An id or a name that holds an account value (graftpunk.har.paths.holds_an_id)
+    is never used: the selector falls through to the name, then to the type. Every
+    attribute value is escaped (:func:`_css_string`)."""
+    if raw.element_id and not holds_an_id(raw.element_id):
         if _CSS_IDENTIFIER_RE.fullmatch(raw.element_id):
             return f"#{raw.element_id}"
         return f'[id="{_css_string(raw.element_id)}"]'
-    attribute = (
-        f'name="{_css_string(raw.name)}"' if raw.name else f'type="{_css_string(raw.input_type)}"'
-    )
+    if raw.name and not holds_an_id(raw.name):
+        attribute = f'name="{_css_string(raw.name)}"'
+    else:
+        attribute = f'type="{_css_string(raw.input_type)}"'
     suffix = f"{raw.tag}[{attribute}]"
     if not form_scopes:
         return suffix
@@ -323,10 +335,14 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
             scopes = ()
         fields: dict[str, str] = {}
         hidden: list[str] = []
+        dropped_hidden = 0
+        neutral_roles = 0
         submit: str | None = None
         for raw_input in raw.inputs:
             if raw_input.input_type == "hidden":
-                if raw_input.name:
+                if raw_input.name and holds_an_id(raw_input.name):
+                    dropped_hidden += 1
+                elif raw_input.name:
                     hidden.append(raw_input.name)
                 continue
             if raw_input.input_type == "submit" or (
@@ -335,6 +351,11 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
                 submit = _selector_for(raw_input, scopes)
                 continue
             role = _guess_role(raw_input.input_type, raw_input.name)
+            if role and role == raw_input.name and holds_an_id(role):
+                # The input's name is its role key only when it is a word: one
+                # that holds an account value gets a neutral key, in document order.
+                neutral_roles += 1
+                role = f"field_{neutral_roles}"
             if role:
                 fields[role] = _selector_for(raw_input, scopes)
         forms.append(
@@ -345,6 +366,7 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
                 submit=submit,
                 hidden=tuple(hidden),
                 source=source,
+                dropped_id_hidden_names=dropped_hidden,
             )
         )
     return tuple(forms)
