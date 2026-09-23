@@ -660,6 +660,8 @@ class TestRenderAddToSuite:
 _PLANTED_DIGITS = "40912873"
 _PLANTED_HEX = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
 _PLANTED_PAGE_HEX = "c0ffee00d15ea5e0badc0de1234abcd9"
+_PLANTED_EMAIL = "alice@example.com"
+_PLANTED_EMAIL_ENCODED = "alice%40example.com"
 
 
 def _planted_har_entry(
@@ -731,6 +733,10 @@ def test_no_planted_account_value_reaches_any_generated_file(tmp_path: Path) -> 
             f"{host}/api/accounts/{_PLANTED_DIGITS}/notes",
             body='{"id": 1}',
         ),
+        _planted_har_entry("GET", f"{host}/api/users/{_PLANTED_EMAIL}/profile", body='{"id": 1}'),
+        _planted_har_entry(
+            "GET", f"{host}/api/members/{_PLANTED_EMAIL_ENCODED}/cards", body='{"id": 1}'
+        ),
     ]
     har = tmp_path / "network.har"
     har.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
@@ -751,7 +757,13 @@ def test_no_planted_account_value_reaches_any_generated_file(tmp_path: Path) -> 
     files = render(spec)
     assert "login_config = LoginConfig(" in files["src/graftpunk_myshop/plugin.py"]
     for path, content in files.items():
-        for planted in (_PLANTED_DIGITS, _PLANTED_HEX, _PLANTED_PAGE_HEX):
+        for planted in (
+            _PLANTED_DIGITS,
+            _PLANTED_HEX,
+            _PLANTED_PAGE_HEX,
+            _PLANTED_EMAIL,
+            _PLANTED_EMAIL_ENCODED,
+        ):
             assert planted not in content, (path, planted)
             assert planted not in path, (path, planted)
 

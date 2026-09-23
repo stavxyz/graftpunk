@@ -299,7 +299,10 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
             continue
         try:
             action = bare_url(raw.action)
-            scopes = _form_scopes(raw.action, action)
+            # bare_url masked an email segment as a placeholder: no live form's
+            # action reads that way, so its selectors go unscoped.
+            masked = action.count("{") > raw.action.count("{")
+            scopes = () if masked else _form_scopes(raw.action, action)
         except ValueError:
             # urlsplit refuses an action it cannot split (an unclosed IPv6
             # bracket); the form still counts. Its selectors are unscoped: a

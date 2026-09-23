@@ -221,10 +221,11 @@ The digest is redacted by construction. It records header names, cookie names,
 form field names, query parameter names and observed types, and response
 shapes. It never retains a header value, a cookie value, a query value, or a
 body value, and every URL it keeps is scheme, host, and path only, with no query
-string, fragment, userinfo, or `;params` in any segment. Path segments are the
-exception: the example paths under each
-endpoint are real, so a digest of a site whose URLs carry account or document
-identifiers is not safe to paste anywhere a capture would not be.
+string, fragment, userinfo, or `;params` in any segment, and with a segment that
+holds an email address replaced by its placeholder (`/users/{user_id}`). Other
+path segments are the exception: the example paths under each endpoint are
+real, so a digest of a site whose URLs carry account or document identifiers is
+not safe to paste anywhere a capture would not be.
 
 An observed type is `str`, `int`, `float`, `bool`, `object` (a JSON object),
 `mixed` (JSON values no one type sends), or `list[<element>]` for a query or
@@ -313,8 +314,10 @@ for turning one into a `Token`.
 primary host's domain, or every host with `--all-hosts`), names only.
 
 **Endpoints** is one block per method and templated path. Path segments that
-look like opaque identifiers collapse into named parameters, so five requests
-for five order ids become one `GET /api/orders/{order_id}` with a count of five.
+look like opaque identifiers (all digits, a UUID, a long hex or base64-like
+token) or hold an email address (percent-encoded or not) collapse into named
+parameters, so five requests for five order ids become one
+`GET /api/orders/{order_id}` with a count of five.
 Each block carries the observed statuses, the content type, the query and body
 parameter names with the types the recording showed, the names of any
 non-standard request headers, a summary of the JSON response shape, and up to

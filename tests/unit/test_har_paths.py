@@ -8,6 +8,8 @@ from graftpunk.har.paths import (
     _MIN_BASE64_LEN,
     _MIN_HEX_LEN,
     bare_host,
+    bare_url,
+    looks_dynamic,
     param_name_for_segment,
     template_path,
     templated_url,
@@ -152,3 +154,27 @@ class TestTemplatesASegment:
     )
     def test_only_a_segment_template_path_collapses_counts(self, url: str, expected: bool) -> None:
         assert templates_a_segment(url) is expected
+
+
+class TestAnEmailSegmentIsAnAccountValue:
+    @pytest.mark.parametrize("segment", ["alice@example.com", "alice%40example.com"])
+    def test_an_email_segment_templates_like_an_id(self, segment: str) -> None:
+        assert looks_dynamic(segment)
+        assert template_path(f"/users/{segment}/orders") == (
+            "/users/{user_id}/orders",
+            {"user_id": segment},
+        )
+
+    def test_a_word_with_an_at_sign_but_no_domain_is_not_an_email(self) -> None:
+        assert not looks_dynamic("@home")
+        assert not looks_dynamic("team@")
+
+    @pytest.mark.parametrize("segment", ["alice@example.com", "alice%40example.com"])
+    def test_every_url_the_digest_keeps_masks_an_email_segment(self, segment: str) -> None:
+        assert (
+            bare_url(f"https://myshop.example.com/users/{segment}/orders?page=1")
+            == "https://myshop.example.com/users/{user_id}/orders"
+        )
+
+    def test_a_masked_segment_counts_as_templated(self) -> None:
+        assert templates_a_segment("https://myshop.example.com/users/{user_id}/signin")

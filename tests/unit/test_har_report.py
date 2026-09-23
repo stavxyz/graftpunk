@@ -527,6 +527,51 @@ def _url_planted_run(tmp_path: Path) -> Path:
     return _write_har(tmp_path, [page, post, orders])
 
 
+_EMAILS = ("alice@example.com", "alice%40example.com")
+
+
+def _email_planted_run(tmp_path: Path) -> Path:
+    """An email in an API path, a login page path, a form action, and a redirect."""
+    page = _entry(
+        "GET",
+        "https://myshop.example.com/signin/alice%40example.com",
+        content_type="text/html",
+        body=(
+            '<form action="/users/alice@example.com/session" method="post">'
+            '<input name="username"><input type="password" name="password"></form>'
+        ),
+    )
+    post = _entry(
+        "POST",
+        "https://myshop.example.com/users/alice@example.com/session",
+        content_type="text/html",
+        body="",
+    )
+    post["request"]["postData"] = {
+        "mimeType": "application/x-www-form-urlencoded",
+        "text": "username=a&password=b",
+    }
+    post["response"]["status"] = 302
+    redirect = "/users/alice%40example.com/dashboard"
+    post["response"]["redirectURL"] = redirect
+    post["response"]["headers"].append({"name": "Location", "value": redirect})
+    orders = _entry(
+        "GET", "https://myshop.example.com/api/users/alice@example.com/orders", body='{"id": 1}'
+    )
+    return _write_har(tmp_path, [page, post, orders])
+
+
+def test_no_output_carries_an_email_from_a_recorded_path(tmp_path: Path) -> None:
+    result = digest(DigestSource.from_har(_email_planted_run(tmp_path)))
+    # The digest saw the page, the form, the login, and the endpoint.
+    assert result.login_forms
+    assert any(o.kind == "credential_post" for o in result.login)
+    assert "/api/users/{user_id}/orders" in {e.template for e in result.endpoints}
+    for text in (render_json(result), render_endpoints_json(result), render_markdown(result)):
+        for email in _EMAILS:
+            assert email not in text, email
+
+
 class TestNoUrlPartBeyondThePathIsRetained:
     def test_neither_json_output_carries_a_query_fragment_param_or_userinfo(
         self, tmp_path: Path

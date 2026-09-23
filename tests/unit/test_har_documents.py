@@ -291,3 +291,18 @@ class TestSelectorsEscapeAttributeValues:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields == {"username": '[id="user email"]', "password": "#pw"}
+
+
+def test_a_form_whose_action_holds_an_email_gets_unscoped_selectors() -> None:
+    """The action is kept with the email masked, which no live form's action
+    matches, so a scope spelled from it would never select anything."""
+    html = (
+        '<form action="/users/alice%40example.com/session"><input name="username">'
+        '<input type="password" name="password"></form>'
+    )
+    (form,) = extract_login_forms(html, source="s")
+    assert form.action == "/users/{user_id}/session"
+    assert form.fields == {
+        "username": 'input[name="username"]',
+        "password": 'input[name="password"]',
+    }

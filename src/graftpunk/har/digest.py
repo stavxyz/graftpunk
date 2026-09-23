@@ -27,7 +27,6 @@ from graftpunk.har.documents import (
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
-    bare_path,
     bare_url,
     looks_dynamic,
     param_name_for_segment,
@@ -702,7 +701,9 @@ def _redirect_target_path(entry: HAREntry) -> str:
     if not target:
         return ""
     try:
-        return bare_path(urlparse(urljoin(entry.request.url, target)).path)
+        # Through bare_url, the one rule for a URL the digest keeps: it also masks
+        # an email segment, which bare_path alone does not.
+        return urlparse(bare_url(urljoin(entry.request.url, target))).path
     except ValueError:
         # A target urljoin cannot split (an unclosed IPv6 bracket) names no path.
         LOG.warning("digest_redirect_unparseable", url=bare_url(entry.request.url))

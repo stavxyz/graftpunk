@@ -8,13 +8,13 @@ by the digest's endpoint modelling and the fixtures/naming rule below it
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 # A segment collapses to a parameter when it looks like an opaque
 # identifier rather than a word: all digits, a UUID, 16+ hex characters, or
-# 20+ URL-safe-base64-like characters. The base64-like check additionally
-# requires at least one digit, so an ordinary long slug ("administrator-
-# dashboard") is not mistaken for an encoded token.
+# 20+ URL-safe-base64-like characters; or when it holds an email address. The
+# base64-like check additionally requires at least one digit, so an ordinary
+# long slug ("administrator-dashboard") is not mistaken for an encoded token.
 _MIN_HEX_LEN = 16
 _MIN_BASE64_LEN = 20
 
@@ -29,6 +29,9 @@ _UUID_RE = re.compile(
 )
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _BASE64_RE = re.compile(r"^[A-Za-z0-9_-]+=*$")
+# An email address, matched against the percent-decoded segment: account data,
+# so it collapses like an id and is masked in every URL the digest keeps.
+_EMAIL_RE = re.compile(r"^[^@\s/]+@[^@\s/]+\.[^@\s/.]+$")
 
 __all__ = [
     "bare_host",
@@ -43,6 +46,7 @@ __all__ = [
 
 
 _PATH_PARAMS_RE = re.compile(r";[^/]*")
+_PLACEHOLDER_SEGMENT_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
 
 
 def bare_path(path: str) -> str:
@@ -60,20 +64,40 @@ def bare_host(netloc: str) -> str:
     return netloc.rpartition("@")[2]
 
 
+def _is_email(segment: str) -> bool:
+    return bool(_EMAIL_RE.match(unquote(segment)))
+
+
+def _masked_emails(path: str) -> str:
+    """*path* with each segment that holds an email address replaced by the
+    placeholder :func:`template_path` would give it, every other segment as it was."""
+    segments = path.split("/")
+    for index, segment in enumerate(segments):
+        if _is_email(segment):
+            previous = segments[index - 1] if index else ""
+            if looks_dynamic(previous):
+                previous = "{}"
+            segments[index] = f"{{{param_name_for_segment(previous)}}}"
+    return "/".join(segments)
+
+
 def bare_url(url: str) -> str:
-    """*url* reduced to its scheme, host, and :func:`bare_path` path.
+    """*url* reduced to its scheme, host, and :func:`bare_path` path, with any
+    segment that holds an email address masked as its placeholder.
 
     The one rule for every URL the digest keeps: the query string, the fragment,
-    every segment's ``;params``, and any ``user:password@`` are account values,
-    not parts of the route. A relative URL stays relative, and one that was only
-    a query or ``;params`` comes back empty.
+    every segment's ``;params``, any ``user:password@``, and an email in the path
+    are account values, not parts of the route. A relative URL stays relative, and
+    one that was only a query or ``;params`` comes back empty.
     """
     parts = urlsplit(url)
-    return urlunsplit((parts.scheme, bare_host(parts.netloc), bare_path(parts.path), "", ""))
+    path = _masked_emails(bare_path(parts.path))
+    return urlunsplit((parts.scheme, bare_host(parts.netloc), path, "", ""))
 
 
 def looks_dynamic(segment: str) -> bool:
-    """True when *segment* reads as an opaque identifier rather than a word.
+    """True when *segment* reads as an opaque identifier rather than a word, or holds
+    an email address (percent-decoded first), which is account data.
 
     The one owner of that judgement: ``template_path`` collapses on it, and the
     digest's high-cardinality collapse gates on it (in a relaxed form) so a run
@@ -82,7 +106,7 @@ def looks_dynamic(segment: str) -> bool:
     """
     if not segment:
         return False
-    if segment.isdigit():
+    if segment.isdigit() or _is_email(segment):
         return True
     if _UUID_RE.match(segment):
         return True
@@ -150,9 +174,12 @@ def templates_a_segment(url: str) -> bool:
 
     Compared path to path (templated against :func:`bare_path`), never whole
     strings: :func:`templated_url` gives a URL with no path a ``/``, which is not an
-    account value.
+    account value. A segment :func:`bare_url` already masked (an email, now
+    ``{user_id}``) counts too.
     """
     path = bare_path(urlsplit(url).path)
+    if any(_PLACEHOLDER_SEGMENT_RE.fullmatch(segment) for segment in path.split("/")):
+        return True
     return bool(path) and template_path(path)[0] != path
 
 
