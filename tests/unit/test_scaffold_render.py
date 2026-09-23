@@ -657,6 +657,105 @@ class TestRenderAddToSuite:
         assert 'FIXTURES_DIR = Path(__file__).parent / "fixtures"\n' in test_module
 
 
+_PLANTED_DIGITS = "40912873"
+_PLANTED_HEX = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+_PLANTED_PAGE_HEX = "c0ffee00d15ea5e0badc0de1234abcd9"
+
+
+def _planted_har_entry(
+    method: str,
+    url: str,
+    *,
+    status: int = 200,
+    content_type: str = "application/json",
+    body: str = "{}",
+    post_data: str | None = None,
+    location: str | None = None,
+) -> dict[str, Any]:
+    headers = [{"name": "Content-Type", "value": content_type}]
+    if location is not None:
+        headers.append({"name": "Location", "value": location})
+    entry: dict[str, Any] = {
+        "startedDateTime": "2026-09-10T10:00:00.000Z",
+        "time": 5,
+        "request": {"method": method, "url": url, "headers": [], "cookies": [], "queryString": []},
+        "response": {
+            "status": status,
+            "statusText": "OK",
+            "headers": headers,
+            "cookies": [],
+            "content": {"mimeType": content_type, "text": body, "size": len(body)},
+            "redirectURL": location or "",
+        },
+    }
+    if post_data is not None:
+        entry["request"]["postData"] = {
+            "mimeType": "application/x-www-form-urlencoded",
+            "text": post_data,
+        }
+    return entry
+
+
+def test_no_planted_account_value_reaches_any_generated_file(tmp_path: Path) -> None:
+    """G2 over the whole project: ids planted in the login page path, the form
+    action, the redirect target, and an API path appear in no generated file."""
+    host = "https://myshop.example.com"
+    action = f"/accounts/{_PLANTED_DIGITS}/session"
+    entries = [
+        _planted_har_entry(
+            "GET",
+            f"{host}/signin/{_PLANTED_PAGE_HEX}",
+            content_type="text/html",
+            body=(
+                f'<form action="{action}" method="post"><input name="username">'
+                '<input type="password" name="password"><button type="submit">Go</button>'
+                "</form>"
+            ),
+        ),
+        _planted_har_entry(
+            "POST",
+            f"{host}{action}",
+            status=302,
+            content_type="text/html",
+            body="",
+            post_data="username=alice&password=x",
+            location=f"/accounts/{_PLANTED_DIGITS}/dashboard",
+        ),
+        _planted_har_entry(
+            "GET",
+            f"{host}/api/accounts/{_PLANTED_DIGITS}/orders/{_PLANTED_HEX}?page=1",
+            body='{"id": 1}',
+        ),
+        _planted_har_entry(
+            "POST",
+            f"{host}/api/accounts/{_PLANTED_DIGITS}/notes",
+            body='{"id": 1}',
+        ),
+    ]
+    har = tmp_path / "network.har"
+    har.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
+    result = digest(DigestSource.from_har(har))
+    # The digest saw each planted value, so the assertions below are not vacuous.
+    assert any(_PLANTED_PAGE_HEX in o.url for o in result.login)
+    assert any(_PLANTED_DIGITS in f.action for f in result.login_forms)
+    assert any(_PLANTED_DIGITS in o.redirect_to for o in result.login)
+    assert any(_PLANTED_HEX in e for endpoint in result.endpoints for e in endpoint.examples)
+
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url=host,
+        digest=result,
+    )
+    files = render(spec)
+    assert "login_config = LoginConfig(" in files["src/graftpunk_myshop/plugin.py"]
+    for path, content in files.items():
+        for planted in (_PLANTED_DIGITS, _PLANTED_HEX, _PLANTED_PAGE_HEX):
+            assert planted not in content, (path, planted)
+            assert planted not in path, (path, planted)
+
+
 class TestGeneratedLoginHoldsNoAccountValue:
     """G2: the generated LoginConfig opens the login page, and nothing in it spells
     an id the recording's URLs carried."""
