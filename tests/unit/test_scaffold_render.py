@@ -657,6 +657,103 @@ class TestRenderAddToSuite:
         assert 'FIXTURES_DIR = Path(__file__).parent / "fixtures"\n' in test_module
 
 
+class TestGeneratedLoginHoldsNoAccountValue:
+    """G2: the generated LoginConfig opens the login page, and nothing in it spells
+    an id the recording's URLs carried."""
+
+    @staticmethod
+    def _plugin_code(form: LoginForm, *, login: tuple[LoginObservation, ...] = ()) -> str:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,), login=login),
+        )
+        return render(spec)["src/graftpunk_myshop/plugin.py"]
+
+    @staticmethod
+    def _form(action: str, source: str) -> LoginForm:
+        scope = f'form[action="{action}"]'
+        return LoginForm(
+            action=action,
+            method="POST",
+            fields={
+                "username": f'{scope} input[name="username"]',
+                "password": f'{scope} input[name="password"]',
+            },
+            submit=f'{scope} button[type="submit"]',
+            hidden=(),
+            source=source,
+        )
+
+    def test_the_url_is_the_page_the_form_was_on_not_where_it_posts(self) -> None:
+        code = self._plugin_code(self._form("/session", "https://myshop.example.com/signin"))
+        assert '        url="/signin",' in code
+        assert 'url="/session"' not in code
+
+    def test_a_page_on_another_host_is_kept_absolute(self) -> None:
+        code = self._plugin_code(self._form("/session", "https://auth.myshop.example.com/signin"))
+        assert '        url="https://auth.myshop.example.com/signin",' in code
+
+    def test_a_page_path_holding_an_id_is_a_gp_fill(self) -> None:
+        segment = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+        code = self._plugin_code(
+            self._form("/session", f"https://myshop.example.com/signin/{segment}")
+        )
+        assert segment not in code
+        assert "url=" not in code.replace("success_url", "")
+        assert "GP-FILL: url, the path of the login page" in code
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert "The recorded login page path holds an account value." in comments
+
+    def test_selectors_scoped_to_an_action_holding_an_id_are_unscoped(self) -> None:
+        code = self._plugin_code(
+            self._form("/accounts/12345/session", "https://myshop.example.com/signin")
+        )
+        assert "12345" not in code
+        assert '"username": \'input[name="username"]\',' in code
+        assert '"password": \'input[name="password"]\',' in code
+        assert "submit='button[type=\"submit\"]'," in code
+
+    def test_a_selector_that_cannot_be_unscoped_is_a_gp_fill(self) -> None:
+        form = LoginForm(
+            action="/accounts/12345/session",
+            method="POST",
+            fields={
+                "username": 'form[action="/accounts/12345/session"] input.odd',
+                "password": "#pw",
+            },
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        code = self._plugin_code(form)
+        assert "12345" not in code
+        assert '"username": "GP-FILL: username selector",' in code
+        assert '"password": "#pw",' in code
+
+    def test_success_url_templates_an_id_in_the_landing_path(self) -> None:
+        post = LoginObservation(
+            order=1,
+            method="POST",
+            url="https://myshop.example.com/session",
+            status=302,
+            kind="credential_post",
+            fields=("username", "password"),
+            redirect_to="/accounts/12345/dashboard",
+        )
+        code = self._plugin_code(
+            self._form("/session", "https://myshop.example.com/signin"), login=(post,)
+        )
+        assert "12345" not in code
+        assert '        success_url="*/accounts/*/dashboard*",' in code
+
+
 class TestPluginModuleWithLoginForm:
     def test_login_config_uses_the_first_password_form(self) -> None:
         spec = ScaffoldSpec(
@@ -671,7 +768,10 @@ class TestPluginModuleWithLoginForm:
         assert '"username": "#email"' in plugin_code
         assert '"password": "#pw"' in plugin_code
         assert 'submit="#login-btn"' in plugin_code
-        assert 'url="/login"' in plugin_code
+        # The form came from a saved page source, so no page URL was recorded;
+        # the action ("/login") is where the form posts, not the page to open.
+        assert "url=" not in plugin_code.replace("success_url", "")
+        assert "GP-FILL: url, the path of the login page" in plugin_code
         assert "GP-FILL" in plugin_code  # failure/success still need a human
         assert "from graftpunk.plugins import" in plugin_code
         assert "LoginConfig" in plugin_code

@@ -456,7 +456,7 @@ class MyshopPlugin(SitePlugin):
                 submit="#sign-in",
             ),
         ],
-        url="/session",
+        url="/login",
         failure="GP-FILL: text on the page indicating login failure",
         # GP-FILL: success, a CSS selector for an element that is on the page this login lands on
         #   and not on the login form itself.
@@ -508,8 +508,9 @@ class MyshopPlugin(SitePlugin):
 ```
 
 What came from the digest: `base_url` from the primary host; the `LoginStep`
-selectors and the form's action URL from the captured login page, the submit
-selector too, which the digest's markdown form does not print; `success_url`
+selectors from the captured login page, the submit selector too, which the
+digest's markdown form does not print; `url` from the page the form was on
+(the page the engine opens, not the `/session` the form posts to); `success_url`
 from the redirect the credential post answered with; one command stub per
 endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
 twelve, each with the observed query parameters as typed keyword arguments (and,
@@ -774,7 +775,7 @@ login_config = LoginConfig(
             submit="#sign-in",
         ),
     ],
-    url="/session",
+    url="/login",
     failure="Your email or password was incorrect.",
     success="#account-menu",
     success_url="*/dashboard*",

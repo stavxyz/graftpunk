@@ -13,6 +13,7 @@ import keyword
 import re
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlsplit
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.scaffold import policy
@@ -36,8 +37,9 @@ from graftpunk.devtools.scaffold.pysrc import (
     wrapped_docstring_lines,
 )
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
+from graftpunk.har.documents import printable_selectors
 from graftpunk.har.naming import capture_filename
-from graftpunk.har.paths import templated_url
+from graftpunk.har.paths import template_path, templated_url, templates_a_segment
 from graftpunk.har.report import summarize_shape
 
 __all__ = [
@@ -271,14 +273,22 @@ def _success_url_pattern(redirect_path: str) -> str | None:
     A redirect to the site root is every URL's prefix and would match the login page
     itself, so it yields no pattern and the caller emits a comment instead.
 
-    The path itself is escaped: ``[``, ``*`` and ``?`` are glob syntax, and a site
-    that puts one in a path (``/a[b]/c``) would otherwise widen or break the pattern
-    the engine matches with (polish round 1). ``glob.escape`` leaves a bare ``]``
-    alone and needs to: once the ``[`` before it is escaped, nothing opens a bracket
-    expression for it to close, so it is a literal already (polish round 2).
+    The path is templated first (``template_path``), and each ``{placeholder}``
+    becomes ``*``: a landing path such as ``/accounts/12345/dashboard`` holds an
+    account id, which a committed file must not spell, and which differs per account
+    anyway. The literal parts are escaped: ``[``, ``*`` and ``?`` are glob syntax,
+    and a site that puts one in a path (``/a[b]/c``) would otherwise widen or break
+    the pattern the engine matches with. ``glob.escape`` leaves a bare ``]`` alone
+    and needs to: once the ``[`` before it is escaped, nothing opens a bracket
+    expression for it to close, so it is a literal already.
     """
     path = redirect_path.rstrip("/")
-    return f"*{glob.escape(path)}*" if path.startswith("/") else None
+    if not path.startswith("/"):
+        return None
+    template, _ = template_path(path)
+    parts = URL_PLACEHOLDER_RE.split(template)
+    # split() with one group alternates literal text and placeholder names.
+    return "*" + "".join("*" if i % 2 else glob.escape(part) for i, part in enumerate(parts)) + "*"
 
 
 def _password_login_form(d: RunDigest) -> LoginForm | None:
@@ -316,7 +326,24 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     lines = ["    login_config = LoginConfig(", "        steps=["]
     lines.extend(_render_login_step(form, indent=len(L3)))
     lines.append("        ],")
-    lines.extend(literal_lines(form.action, indent=len(L2), prefix="url="))
+    login_url = _login_page_url(form, spec.base_url)
+    if login_url is None:
+        # LoginConfig.url is the page the engine opens, never the action the form
+        # posts to. A GP-FILL literal would be a configured page the engine then
+        # opens, so the hint is a comment and the field stays unset.
+        lines.extend(
+            wrapped_comment_lines(
+                "GP-FILL: url, the path of the login page. "
+                + (
+                    "The recorded login page path holds an account value."
+                    if form.source.startswith(("http://", "https://"))
+                    else "The login form was read from a saved page source, not a URL."
+                ),
+                indent=len(L2),
+            )
+        )
+    else:
+        lines.extend(literal_lines(login_url, indent=len(L2), prefix="url="))
     lines.append('        failure="GP-FILL: text on the page indicating login failure",')
     # Nothing observed says which element marks the landing page, and a GP-FILL
     # literal here would be a configured signal: the engine would poll for that
@@ -411,15 +438,30 @@ def _exploded_literal_dict_lines(entries: list[tuple[str, str]], *, indent: int)
     return lines
 
 
+def _login_page_url(form: LoginForm, base_url: str) -> str | None:
+    """What ``LoginConfig.url`` is set to: the page *form* was read from (its
+    ``source``), as a path when it is on *base_url*'s host and absolute otherwise.
+    None when there is no such page to name (the form came from a saved page source)
+    or when its path holds an id or a token (``templates_a_segment``)."""
+    parts = urlsplit(form.source)
+    if parts.scheme not in ("http", "https") or templates_a_segment(form.source):
+        return None
+    if parts.netloc == urlsplit(base_url).netloc:
+        return parts.path or "/"
+    return form.source
+
+
 def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     """A generated ``LoginStep(...)``, exploded one keyword argument per line so a
-    long selector cannot push the whole call over the generated width."""
+    long selector cannot push the whole call over the generated width. Selectors
+    are the ones ``printable_selectors`` allows: unscoped when the form's action
+    holds an id, and a ``GP-FILL`` where one cannot be."""
     pad = " " * indent
-    submit_value = form.submit or "GP-FILL: submit selector"
+    fields, submit = printable_selectors(form)
+    submit_value = submit or "GP-FILL: submit selector"
+    entries = [(role, selector or f"GP-FILL: {role} selector") for role, selector in fields.items()]
     lines = [f"{pad}LoginStep("]
-    lines.extend(
-        _exploded_literal_dict_lines(sorted(form.fields.items()), indent=indent + INDENT_STEP)
-    )
+    lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
     lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))
     lines.append(f"{pad}),")
     return lines
