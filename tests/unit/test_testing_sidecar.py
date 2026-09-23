@@ -55,6 +55,16 @@ class TestTheFormat:
         assert set(payload) == SIDECAR_FIELDS[current_schema("sidecar")] | {"schema"}
         assert payload["schema"] == current_schema("sidecar")
 
+    def test_a_version_with_no_key_set_is_a_sidecar_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A schema bump that forgot its SIDECAR_FIELDS entry refuses by name
+        instead of raising KeyError out of the loader."""
+        monkeypatch.setattr("graftpunk.testing.sidecar.SIDECAR_FIELDS", {})
+        path = _write(tmp_path / "get_orders.json.meta.json", _v1())
+        with pytest.raises(SidecarError, match="no key set for sidecar schema 1"):
+            load_sidecar(path)
+
     def test_the_path_rule(self, tmp_path: Path) -> None:
         fixture = tmp_path / "get_orders.json"
         assert sidecar_path(fixture) == tmp_path / "get_orders.json.meta.json"

@@ -138,7 +138,12 @@ def load_sidecar(path: Path) -> Sidecar:
         version = refuse_unknown_schema("sidecar", data.get("schema"))
     except UnknownSchemaError as exc:
         raise SidecarError(f"{path}: {exc}") from exc
-    expected = SIDECAR_FIELDS[version] | {"schema"}
+    fields = SIDECAR_FIELDS.get(version)
+    if fields is None:
+        # A schema number contracts accepts that has no key set here: a bump
+        # that missed its SIDECAR_FIELDS entry. Refused by name, not KeyError.
+        raise SidecarError(f"{path}: this graftpunk has no key set for sidecar schema {version}")
+    expected = fields | {"schema"}
     extra = sorted(set(data) - expected)
     missing = sorted(expected - set(data))
     if extra:
