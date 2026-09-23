@@ -211,3 +211,14 @@ def test_a_repeat_capture_is_never_the_fixture_for_a_numeric_segment(tmp_path: P
     (tmp_path / "get_orders_{order_id}#1.json").write_text('{"repeat": true}')
     session = FixtureSession(tmp_path)
     assert session.get("https://myshop.example.com/orders/1").status_code == 404
+
+
+def test_a_fixture_is_its_stem_plus_one_extension(tmp_path: Path) -> None:
+    """A2: get_api_users.csv.txt is another endpoint's fixture, not /api/users's."""
+    (tmp_path / "get_api_users.csv.txt").write_text("a,b")
+    (tmp_path / "get_feed.xml.xml").write_text("<feed/>")
+    session = FixtureSession(tmp_path)
+    assert session.get("https://myshop.example.com/api/users").status_code == 404
+    assert session.get("https://myshop.example.com/feed").status_code == 404
+    (tmp_path / "get_api_users.json").write_text('{"users": []}')
+    assert session.get("https://myshop.example.com/api/users").json() == {"users": []}

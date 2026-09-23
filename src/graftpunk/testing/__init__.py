@@ -109,7 +109,9 @@ class FixtureSession(GraftpunkSession):
             (
                 p
                 for p in self._fixtures_dir.glob(f"{glob.escape(stem)}.*")
-                if p.is_file() and not is_sidecar(p)
+                # The stem plus exactly one extension: get_api_users.csv.txt is
+                # another endpoint's fixture, not get_api_users'.
+                if p.is_file() and not is_sidecar(p) and p.stem == stem
             ),
             key=_fixture_preference,
         )
