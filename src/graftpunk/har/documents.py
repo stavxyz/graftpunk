@@ -12,8 +12,9 @@ import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
+from urllib.parse import urlsplit
 
-from graftpunk.har.paths import bare_url, templates_a_segment
+from graftpunk.har.paths import bare_path, bare_url, templates_a_segment
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -252,6 +253,14 @@ def unscoped_selector(selector: str) -> str | None:
     return match.group(0) if match else None
 
 
+_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
+
+
+def _placeholder_segments(path: str) -> int:
+    """How many of *path*'s segments are a ``{name}`` placeholder."""
+    return sum(1 for segment in path.split("/") if _PLACEHOLDER_RE.fullmatch(segment))
+
+
 def printable_selectors(form: LoginForm) -> tuple[dict[str, str | None], str | None]:
     """*form*'s field selectors (by role) and submit selector as a projection or a
     generated file may print them.
@@ -300,8 +309,11 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
         try:
             action = bare_url(raw.action)
             # bare_url masked an email segment as a placeholder: no live form's
-            # action reads that way, so its selectors go unscoped.
-            masked = action.count("{") > raw.action.count("{")
+            # action reads that way, so its selectors go unscoped. Judged path to
+            # path, so a "{" the stripped query or fragment held does not count.
+            masked = _placeholder_segments(urlsplit(action).path) > _placeholder_segments(
+                bare_path(urlsplit(raw.action).path)
+            )
             scopes = () if masked else _form_scopes(raw.action, action)
         except ValueError:
             # urlsplit refuses an action it cannot split (an unclosed IPv6

@@ -306,3 +306,14 @@ def test_a_form_whose_action_holds_an_email_gets_unscoped_selectors() -> None:
         "username": 'input[name="username"]',
         "password": 'input[name="password"]',
     }
+
+
+def test_a_brace_in_the_stripped_query_does_not_hide_a_masked_email() -> None:
+    """Masking is judged path to path; a "{" the query held is not a placeholder."""
+    html = (
+        '<form action="/users/alice%40example.com/session?next={x}"><input name="username">'
+        '<input type="password" name="password"></form>'
+    )
+    (form,) = extract_login_forms(html, source="s")
+    assert form.action == "/users/{user_id}/session"
+    assert form.fields["username"] == 'input[name="username"]'
