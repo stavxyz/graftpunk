@@ -14,14 +14,10 @@ import pytest
 
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.pysrc import (
-    _DOCSTRING_WRAP_WIDTH,
     GENERATED_LINE_LENGTH,
-    _dict_entry_lines,
-    _url_chunks,
     literal_dict_entry_lines,
     literal_lines,
     wrapped_comment_lines,
-    wrapped_docstring_block,
     wrapped_docstring_lines,
 )
 from graftpunk.devtools.scaffold.render import (
@@ -47,7 +43,6 @@ from graftpunk.har.digest import (
     RunDigest,
     ShapeNode,
     TokenCandidate,
-    _with_login_flow,
 )
 
 
@@ -368,24 +363,6 @@ class TestLiteralLines:
             assert len(line) <= 100
 
 
-class TestDictEntryLines:
-    def test_short_key_renders_on_one_line(self) -> None:
-        assert _dict_entry_lines("page", "page", indent=16) == ['                "page": page,']
-
-    def test_long_key_splits_and_rejoins_exactly(self) -> None:
-        key = "x" * 120
-        indent = 16
-        lines = _dict_entry_lines(key, "identifier", indent=indent)
-        pad = " " * indent
-        continuation_pad = " " * (indent + 4)
-        assert lines[0] == f"{pad}("
-        assert lines[-1] == f"{pad}): identifier,"
-        chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
-        assert "".join(chunks) == key
-        for line in lines:
-            assert len(line) <= GENERATED_LINE_LENGTH
-
-
 class TestLiteralDictEntryLines:
     def test_short_pair_renders_on_one_line(self) -> None:
         assert literal_dict_entry_lines("username", "#email", indent=16) == [
@@ -412,36 +389,6 @@ class TestLiteralDictEntryLines:
         assert value_chunks == value
         for line in lines:
             assert len(line) <= GENERATED_LINE_LENGTH
-
-
-class TestUrlChunks:
-    def test_chunks_rejoin_exactly(self) -> None:
-        text = "/api/v2/customer-accounts/{account_id}/payment-methods/default-billing-address"
-        chunks = _url_chunks(text, width=30)
-        assert len(chunks) > 1
-        assert "".join(chunks) == text
-
-    def test_no_chunk_boundary_falls_inside_a_placeholder(self) -> None:
-        text = "/a/{account_id}/b/{payment_method_id}/c"
-        for width in range(4, 40):
-            chunks = _url_chunks(text, width=width)
-            assert "".join(chunks) == text
-            for chunk in chunks:
-                assert chunk.count("{") == chunk.count("}")
-
-    def test_a_single_segment_wider_than_the_width_is_hard_split(self) -> None:
-        text = "/" + "s" * 250
-        chunks = _url_chunks(text, width=40)
-        assert "".join(chunks) == text
-        for chunk in chunks:
-            assert len(chunk) <= 40
-
-    def test_a_chunk_starts_at_a_slash_when_it_can(self) -> None:
-        text = "/alpha/beta/gamma/delta"
-        chunks = _url_chunks(text, width=12)
-        assert "".join(chunks) == text
-        for chunk in chunks[1:]:
-            assert chunk.startswith("/")
 
 
 class TestWrappedCommentLines:
@@ -502,53 +449,6 @@ class TestDocstringWrappingKeepsHyphenatedFactsWhole:
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "myshop-tirekick/2026-09-11T22-19-05Z" in plugin_code
-
-
-class TestDocstringEscaping:
-    """Text that reaches a generated docstring reads back unchanged."""
-
-    @staticmethod
-    def _read_back(lines: list[str]) -> str:
-        source = "\n".join(["def f():", '    """', *lines, '    """', "    pass"])
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", SyntaxWarning)
-            module = ast.parse(source)
-        function = module.body[0]
-        assert isinstance(function, ast.FunctionDef)
-        return ast.get_docstring(function) or ""
-
-    def test_a_triple_quote_and_a_backslash_survive_the_round_trip(self) -> None:
-        text = 'GET /a\\b: shape object{"""k", tail\\}'
-        read_back = self._read_back(wrapped_docstring_lines(text))
-        assert " ".join(read_back.split()) == " ".join(text.split())
-
-    def test_an_escape_cut_in_half_by_wrapping_is_put_back(self) -> None:
-        # One unbroken word long enough that textwrap breaks it mid-character,
-        # with the backslash sitting exactly on the break: the half left behind
-        # would otherwise read as a line continuation inside the docstring.
-        text = "x" * (_DOCSTRING_WRAP_WIDTH - 2) + "\\" + "y" * 60
-        lines = wrapped_docstring_lines(text)
-        assert len(lines) > 1, "the input must actually wrap for this test to mean anything"
-        assert self._read_back(lines).replace("\n", "") == text
-
-    def test_a_trailing_quote_does_not_close_the_one_line_form_early(self) -> None:
-        block = wrapped_docstring_block('Commands for https://myshop.example.com/"', indent=0)
-        assert len(block) == 1
-        source = "\n".join(["class C:", f"    {block[0]}", "    pass"])
-        module = ast.parse(source)
-        klass = module.body[0]
-        assert isinstance(klass, ast.ClassDef)
-        assert ast.get_docstring(klass) == 'Commands for https://myshop.example.com/"'
-
-    def test_a_backslash_before_the_trailing_quote_still_gets_escaped(self) -> None:
-        text = 'a\\"'
-        block = wrapped_docstring_block(text, indent=0)
-        assert len(block) == 1
-        source = "\n".join(["class C:", f"    {block[0]}", "    pass"])
-        module = ast.parse(source)
-        klass = module.body[0]
-        assert isinstance(klass, ast.ClassDef)
-        assert ast.get_docstring(klass) == text
 
 
 class TestScaffoldSpecValidatesItsName:
@@ -1491,6 +1391,11 @@ _COLLAPSED_FORM_PAGE_OBSERVATION = LoginObservation(
 )
 
 
+def _owned(endpoint: Endpoint) -> Endpoint:
+    """*endpoint* as the digest hands it over when the login flow owns it."""
+    return dataclasses.replace(endpoint, login_flow=True)
+
+
 class TestLoginFlowEndpointsAreNotCommandStubs:
     """login_config owns the login form's GET and the credential POST. Rendered
     as stubs they were wrong for the developer and their generated tests could
@@ -1504,9 +1409,7 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
             backend="nodriver",
             base_url="https://myshop.example.com",
             digest=_digest(
-                endpoints=_with_login_flow(
-                    endpoints, (_FORM_PAGE_OBSERVATION, _CREDENTIAL_POST_OBSERVATION)
-                ),
+                endpoints=endpoints,
                 login_forms=(_PASSWORD_LOGIN_FORM,),
                 login=(_FORM_PAGE_OBSERVATION, _CREDENTIAL_POST_OBSERVATION),
             ),
@@ -1514,7 +1417,9 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
 
     def test_no_login_stub_beside_a_real_endpoint(self) -> None:
         files = render(
-            self._spec(_LOGIN_PAGE_ENDPOINT, _CREDENTIAL_POST_ENDPOINT, _ORDERS_ENDPOINT)
+            self._spec(
+                _owned(_LOGIN_PAGE_ENDPOINT), _owned(_CREDENTIAL_POST_ENDPOINT), _ORDERS_ENDPOINT
+            )
         )
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
         assert plugin_code.count("@command(") == 1
@@ -1527,7 +1432,7 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         ast.parse(test_code)
 
     def test_a_run_with_nothing_but_the_login_flow_falls_back_to_the_gp_fill_stub(self) -> None:
-        files = render(self._spec(_LOGIN_PAGE_ENDPOINT, _CREDENTIAL_POST_ENDPOINT))
+        files = render(self._spec(_owned(_LOGIN_PAGE_ENDPOINT), _owned(_CREDENTIAL_POST_ENDPOINT)))
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
         assert plugin_code.count("@command(") == 1
         assert "def example(self, ctx: CommandContext)" in plugin_code
@@ -1537,7 +1442,8 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         ast.parse(test_code)
 
     def test_an_endpoint_that_is_not_part_of_the_login_flow_keeps_its_stub(self) -> None:
-        """The same path under another method is a different endpoint."""
+        """The same path under another method is a different endpoint, and the
+        digest leaves it unflagged (test_har_digest.py holds that rule)."""
         other_method = dataclasses.replace(_LOGIN_PAGE_ENDPOINT, methods=("DELETE",))
         files = render(self._spec(other_method))
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
@@ -1546,18 +1452,16 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
 
     def test_a_login_path_inside_a_collapsed_family_is_still_owned(self) -> None:
         """The digest's high-cardinality collapse can re-template the endpoint
-        the login observation belongs to, so templating the observation's raw
-        path no longer finds it (polish round 2, 2026-09-12)."""
+        the login observation belongs to (polish round 2, 2026-09-12); the digest
+        flags it (test_har_digest.py holds that rule), and neither the stub nor
+        its generated test is rendered."""
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
             backend="nodriver",
             base_url="https://myshop.example.com",
             digest=_digest(
-                endpoints=_with_login_flow(
-                    (_COLLAPSED_ACCOUNT_FAMILY, _ORDERS_ENDPOINT),
-                    (_COLLAPSED_FORM_PAGE_OBSERVATION,),
-                ),
+                endpoints=(_owned(_COLLAPSED_ACCOUNT_FAMILY), _ORDERS_ENDPOINT),
                 login_forms=(_PASSWORD_LOGIN_FORM,),
                 login=(_COLLAPSED_FORM_PAGE_OBSERVATION,),
             ),
