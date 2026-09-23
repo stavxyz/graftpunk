@@ -140,6 +140,13 @@ def contract_mismatch(surface: str, reads: int) -> str | None:
     older side, so the caller can say which of the two to update.
     """
     current = cli_contracts().get(surface)
+    if current is None and surface in _CURRENT:
+        # Versioned, but served by no command: neither side is older, and the
+        # name is spelled right.
+        return (
+            f"{surface}: graftpunk versions it, but it is not read through the gp CLI, "
+            f"so there is no contract to check."
+        )
     if current is None:
         return (
             f"{surface}: this graftpunk serves no surface by that name to a caller; "

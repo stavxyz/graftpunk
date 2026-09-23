@@ -98,8 +98,18 @@ class TestContractMismatch:
         assert message is not None and "graftpunk is older than the caller" in message
 
     def test_a_surface_no_caller_reads_through_the_cli_is_a_mismatch(self) -> None:
+        """The sidecar is versioned but served by no command: neither side is older,
+        and the name is spelled right."""
         message = contract_mismatch("sidecar", 1)
-        assert message is not None and "sidecar" in message
+        assert message == (
+            "sidecar: graftpunk versions it, but it is not read through the gp CLI, "
+            "so there is no contract to check."
+        )
+
+    def test_an_unknown_surface_names_the_older_side_or_a_misspelling(self) -> None:
+        message = contract_mismatch("endpoint", 1)
+        assert message is not None
+        assert "graftpunk is older than the caller, or the caller misspelled" in message
 
 
 def test_contracts_is_the_only_module_that_declares_a_schema_number() -> None:
