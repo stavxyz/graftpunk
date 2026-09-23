@@ -473,6 +473,18 @@ entirely. That second rule is what makes a generated stub's
 `keyword_search: bool | None = None` mean "omit this parameter unless the
 caller asked for it".
 
+A generated stub sends each parameter in the type and shape the recording
+shows, or does not declare it. A recorded form body goes out as `data=`, a JSON
+body as `json=` holding only the fields the caller gave, a bool is a
+`--x/--no-x` flag, and a list (a repeated query or form key, or a JSON array)
+is a repeatable option sent as repeated keys or a JSON array. A JSON body field
+no option can send as recorded (an object, a mixed value, an array of objects)
+is left out with a `GP-FILL` comment naming it. No id from a recorded URL
+reaches a generated file: `login_config.url` is the page the login form was on,
+or a `GP-FILL` comment when that page's path holds an id; selectors scoped to a
+form action that holds an id are unscoped; and an id in `success_url`'s landing
+path is a `*`.
+
 `graftpunk.testing` (pytest-free) supplies `make_context()` for building a
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
 for answering `ctx.request_json`/`request_text` from a file under
@@ -486,7 +498,8 @@ captured body, every cookie name the recording set, and the token names the
 run's digest recorded, but never the URL or the capture time), written to be
 committed beside the fixture derived from it once you have read its body
 parameter names (a body key that does not read as a field name is dropped, but a
-data-shaped one that does is kept); `FixtureSession` reads the sidecar through
+data-shaped one that does is kept) and its `flagged_names` (some sites put
+account data in a cookie's name); `FixtureSession` reads the sidecar through
 `graftpunk.testing.sidecar` for status and content type, so a fixture copied
 from a capture keeps its recorded status.
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
