@@ -240,7 +240,9 @@ def _param_identifier(site_name: str, seen: set[str]) -> str:
     ``recordedDateRange`` in a Python signature and on the command line, where
     neither reads as this project's own code (polish round 2, 2026-09-12).
     """
-    base = _snake_cased(re.sub(r"[^A-Za-z0-9_]", "_", site_name))
+    # Stripped of leading and trailing underscores, so $filter gives filter and
+    # __VIEWSTATE gives viewstate, not an option spelled with leading hyphens.
+    base = _snake_cased(re.sub(r"[^A-Za-z0-9_]", "_", site_name)).strip("_")
     if base and base[0].isdigit():
         base = f"p_{base}"
     base = base[:_MAX_PARAM_NAME] or "param"

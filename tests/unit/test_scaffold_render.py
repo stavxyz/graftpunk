@@ -339,6 +339,9 @@ class TestParamIdentifier:
 
     def test_a_leading_digit_is_prefixed(self) -> None:
         assert _param_identifier("2fa", set()) == "p_2fa"
+        assert _param_identifier("$filter", set()) == "filter"
+        assert _param_identifier("__VIEWSTATE", set()) == "viewstate"
+        assert _param_identifier("ctl00$Main$txtSearch", set()) == "ctl00_main_txt_search"
 
     def test_camel_case_becomes_snake_case(self) -> None:
         assert _param_identifier("keywordSearch", set()) == "keyword_search"
@@ -1943,6 +1946,29 @@ class TestPluginModuleCommandStubs:
         (prepared,) = sent
         assert prepared.url == f"https://myshop.example.com/items{expected_query}"
         assert json.loads(prepared.body) == expected_body
+
+    def test_an_odata_query_is_sent_under_its_dollar_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = self._endpoint("/orders", query={"$filter": "str", "$top": "int"})
+        argv = ["myshop", "orders", "--filter", "status eq 1", "--top", "5"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == ("https://myshop.example.com/orders?%24filter=status+eq+1&%24top=5")
+
+    def test_a_webforms_postback_is_sent_as_its_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        endpoint = self._endpoint(
+            "/search.aspx",
+            "POST",
+            body={"__VIEWSTATE": "str", "ctl00$Main$txtSearch": "str"},
+            body_kind="form",
+        )
+        argv = ["myshop", "search-aspx", "--viewstate", "dDw", "--ctl00-main-txt-search", "w"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == "__VIEWSTATE=dDw&ctl00%24Main%24txtSearch=w"
 
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(

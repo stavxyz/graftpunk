@@ -1601,3 +1601,37 @@ class TestEveryNamePositionGoesThroughTheIdRule:
             1,
             1,
         )
+
+
+class TestDollarNames:
+    """P3: OData and ASP.NET WebForms spell field names with a "$"."""
+
+    def test_odata_query_keys_are_field_names(self, tmp_path: Path) -> None:
+        entries = [_entry("GET", "https://api.myshop.example.com/orders?$filter=x&$top=5")]
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        assert endpoint.query_params == {"$filter": "str", "$top": "int"}
+
+    def test_a_webforms_postback_is_a_form(self, tmp_path: Path) -> None:
+        entry = _entry(
+            "POST",
+            "https://myshop.example.com/search.aspx",
+            post_data="__VIEWSTATE=dDwtMTA4&ctl00$Main$txtSearch=widget",
+        )
+        entry["request"]["postData"]["mimeType"] = _FORM_CONTENT_TYPE
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, [entry]))).endpoints
+        assert endpoint.body_kind == "form"
+        assert endpoint.body_params == {"__VIEWSTATE": "str", "ctl00$Main$txtSearch": "str"}
+
+    def test_a_form_with_some_unreadable_keys_is_still_a_form_and_counts_them(
+        self, tmp_path: Path
+    ) -> None:
+        entry = _entry(
+            "POST",
+            "https://myshop.example.com/search",
+            post_data="9lives=1&name=alice",
+        )
+        entry["request"]["postData"]["mimeType"] = _FORM_CONTENT_TYPE
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, [entry]))).endpoints
+        assert endpoint.body_kind == "form"
+        assert endpoint.body_params == {"name": "str"}
+        assert endpoint.body_keys_dropped_as_non_names == 1

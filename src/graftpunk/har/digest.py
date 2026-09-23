@@ -186,7 +186,9 @@ _MAX_FIELD_NAME_LEN = 64  # a form field name past this is not a field name
 # field name (polish round 1, 2026-09-12). A key in the alphabet can still be
 # data: _plausible_field_name also refuses one graftpunk.har.paths.holds_an_id
 # says carries an account value, the one rule every path segment and name meets.
-_FORM_FIELD_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-\[\]]*")
+# "$" is admitted, leading and inner: OData spells query keys $filter and $top,
+# and ASP.NET WebForms names its fields ctl00$Main$txtSearch.
+_FORM_FIELD_NAME_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_.\-\[\]$]*")
 
 
 @dataclass(frozen=True)
@@ -623,11 +625,14 @@ def _parse_body_keys(entry: HAREntry) -> tuple[dict[str, str], BodyKind, set[str
     if "=" not in post_data:
         return {}, "none", set()
     form = parse_qs(post_data, keep_blank_values=True)
-    if not form or not all(_field_name_shaped(name) for name in form):
+    # A form when at least one key reads as a field name: a body that is really
+    # XML or prose gives parse_qs one unreadable key and is not one. A key that is
+    # not a field name, or that holds an id, is dropped and counted, never the
+    # whole body.
+    if not form or not any(_field_name_shaped(name) for name in form):
         return {}, "none", set()
-    # Still a form when a key holds an id; that key alone is dropped.
-    types = {k: _text_values_type(v) for k, v in form.items() if not holds_an_id(k)}
-    return types, "form", {k for k in form if holds_an_id(k)}
+    types = {k: _text_values_type(v) for k, v in form.items() if _plausible_field_name(k)}
+    return types, "form", {k for k in form if not _plausible_field_name(k)}
 
 
 def body_params(entry: HAREntry) -> dict[str, str]:
