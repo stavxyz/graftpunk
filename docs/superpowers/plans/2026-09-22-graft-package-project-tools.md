@@ -49,7 +49,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/graftpunk/testing/sidecar.py` (modify, Task 1) | `FIXTURES_PLACEHOLDER`, the `.gitkeep` name; `sidecar_scannable_text`, the text of every field but `flagged_names`. |
+| `src/graftpunk/testing/sidecar.py` (modify, Task 1) | `FIXTURES_PLACEHOLDER`, the `.gitkeep` name; `sidecar_scannable_text`, the text of the fields copied from the capture (every field but `flagged_names` and `capture_sha256`). |
 | `src/graftpunk/testing/plugin.py` (modify, Task 1) | `FixturesTreeReport`, `check_fixtures_tree`, `fixtures_are_sanitised`; the module docstring rewritten. |
 | `src/graftpunk/devtools/scaffold/policy.py` (modify, Tasks 2, 3, 9) | `CONFTEST_PATH`, `FIXTURES_PLACEHOLDER` (imported from `graftpunk.testing.sidecar`), `ProjectRequirement`, `PROJECT_REQUIREMENTS` (Task 2); `GP_FILL_MARKER`, `module_name_for` (Task 3); `PROJECT_GATE` (Task 9). |
 | `src/graftpunk/devtools/scaffold/pysrc.py` (modify, Task 2) | `binds_name`, `with_import`, `Binding`, `with_bindings`, and their private helpers: the one binding predicate and the one assembler for statements added to a module. |
@@ -91,7 +91,7 @@ Append to `tests/unit/test_testing_sidecar.py` (add `FIXTURES_PLACEHOLDER` and `
 
 ```python
 class TestScannableText:
-    def test_every_field_but_the_flagged_names(self) -> None:
+    def test_every_copied_field_is_scanned(self) -> None:
         sidecar = Sidecar(
             status=403,
             content_type="text/plain",
@@ -100,9 +100,10 @@ class TestScannableText:
             flagged_names=("shop_session",),
         )
         text = sidecar_scannable_text(sidecar)
-        for value in ("403", "text/plain", "page", "ab" * 32):
+        for value in ("403", "text/plain", "page"):
             assert value in text
         assert "shop_session" not in text
+        assert "ab" * 32 not in text
 
 
 def test_the_placeholder_is_the_gitkeep() -> None:
@@ -293,20 +294,14 @@ and append:
 
 ```python
 def sidecar_scannable_text(sidecar: Sidecar) -> str:
-    """The value of every field of *sidecar* but ``flagged_names``, space-separated:
-    the text a flagged name must not appear in. ``flagged_names`` is the one field
-    exempt, since it lists the names themselves; ``schema`` is the file's number,
-    not a field of the loaded sidecar. The capture hash is included, as every
-    other field is, so a flagged name that is a short run of hex digits can match
-    it: the same substring bias the body check has."""
-    return " ".join(
-        [
-            str(sidecar.status),
-            sidecar.content_type,
-            *sidecar.body_params,
-            sidecar.capture_sha256 or "",
-        ]
-    )
+    """The values of the fields of *sidecar* that were copied from the capture,
+    space-separated: the text a flagged name must not appear in. Two fields are
+    exempt. ``flagged_names`` lists the names themselves, and ``capture_sha256``
+    is a digest the writer computed, never text copied from the capture, so
+    scanning it could only produce a false match on a name that happens to be a
+    run of hex digits. ``schema`` is the file's number, not a field of the loaded
+    sidecar."""
+    return " ".join([str(sidecar.status), sidecar.content_type, *sidecar.body_params])
 ```
 
 In `src/graftpunk/testing/plugin.py`, replace the whole module docstring (its "Load only as a pytest plugin" sentence and its "and nothing else" paragraph are both false once a second factory exists) with:
