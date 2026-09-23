@@ -204,6 +204,9 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     no form action query string or ``;params``. Its field set is pinned per
     schema version; fields are added and never renamed or removed within one
     (:mod:`graftpunk.contracts`). ``render_json`` stays an unversioned dump.
+
+    Each ``query_params`` and ``body_params`` value is one of schema 1's type
+    labels: ``str``, ``int``, ``float``, ``bool``, or ``list``.
     """
     source = d.source
     return {

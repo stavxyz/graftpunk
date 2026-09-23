@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import json
 import subprocess
 import sys
 import warnings
@@ -43,6 +44,7 @@ from graftpunk.har.digest import (
     RunDigest,
     ShapeNode,
     TokenCandidate,
+    digest,
 )
 from tests.unit.cli_harness import strip_ansi
 
@@ -124,6 +126,21 @@ _NOTES_ENDPOINT = Endpoint(
     shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
     custom_headers=(),
     examples=("/orders/1/notes",),
+)
+
+_PAYMENT_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/payments",
+    methods=("POST",),
+    count=2,
+    statuses=(201,),
+    content_type="application/json",
+    query_params={},
+    body_params={"amount": "float"},
+    body_kind="json",
+    shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
+    custom_headers=(),
+    examples=("/payments",),
 )
 
 _SITE_NAMED_PARAMS_ENDPOINT = Endpoint(
@@ -1268,6 +1285,60 @@ class TestPluginModuleCommandStubs:
         (call,) = calls
         assert call["params"] == {"page": 3}
         assert type(call["params"]["page"]) is int
+
+    def test_a_float_body_field_is_a_float_option(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_PAYMENT_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert 'PluginParamSpec.option("amount", type=float),' in plugin_code
+        assert "amount: float | None = None," in plugin_code
+
+    def test_a_float_option_reaches_the_handler_as_a_float(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        argv = ["myshop", "payments", "--amount", "12.5"]
+        result, calls = self._registered_calls(monkeypatch, _PAYMENT_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["json"]["amount"] == 12.5 and type(call["json"]["amount"]) is float
+
+    def test_a_leading_zero_query_value_is_a_str_option_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Digest to stub: a postal code 07030 stays text, so the command sends
+        it as typed instead of refusing it or dropping the zero."""
+        har = tmp_path / "network.har"
+        entry = {
+            "startedDateTime": "2026-09-10T10:00:00.000Z",
+            "time": 5,
+            "request": {
+                "method": "GET",
+                "url": "https://api.myshop.example.com/stores?zip=07030",
+                "headers": [],
+                "cookies": [],
+                "queryString": [],
+            },
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "cookies": [],
+                "content": {"mimeType": "application/json", "text": "{}", "size": 2},
+            },
+        }
+        har.write_text(json.dumps({"log": {"version": "1.2", "entries": [entry]}}))
+        (endpoint,) = digest(DigestSource.from_har(har)).endpoints
+        result, calls = self._registered_calls(
+            monkeypatch, endpoint, ["myshop", "stores", "--zip", "07030"]
+        )
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["params"] == {"zip": "07030"}
 
     def test_an_untyped_stub_carries_no_params_list(self) -> None:
         spec = ScaffoldSpec(

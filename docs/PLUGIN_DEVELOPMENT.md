@@ -221,6 +221,12 @@ exception: the example paths under each
 endpoint are real, so a digest of a site whose URLs carry account or document
 identifiers is not safe to paste anywhere a capture would not be.
 
+An observed type is `str`, `int`, `float`, `bool`, or `list` (a query key
+repeated in one request). A value gets a type only when the typed value is sent
+back spelled exactly as recorded, so `07030` is a `str` (as an `int` it would go
+out as `7030`), and `bool` means the lowercase `true` or `false`. A parameter
+that two requests to the same endpoint type differently is a `str`.
+
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:
 
@@ -490,7 +496,7 @@ selector too, which the digest's markdown form does not print; `success_url`
 from the redirect the credential post answered with; one command stub per
 endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
 twelve, each with the observed query parameters as typed keyword arguments, an
-explicit `params=` list whenever one of them is an `int` or a `bool` (see
+explicit `params=` list whenever one of them is an `int`, a `float`, or a `bool` (see
 [CLI parameter types](#cli-parameter-types)), the observed custom headers, and
 the endpoint it calls declared as `endpoint=` on its decorator; a docstring
 recording the method, the path, how many times it was seen, which run it came
@@ -605,7 +611,7 @@ or without that import. That is harmless when the value goes straight into
 arithmetic on it. To get a real type, declare it explicitly: an explicit
 `params=` list replaces introspection entirely, so it works in a generated
 module as written. `gp plugin new` writes that explicit list itself for every
-stub with an `int` or `bool` parameter. It writes a `bool` parameter as a flag
+stub with an `int`, `float`, or `bool` parameter. It writes a `bool` parameter as a flag
 (`click_kwargs={"is_flag": True}`), because a `bool` option that is not a flag
 is refused when the command is registered; with the flag left off, the handler
 receives `None`.

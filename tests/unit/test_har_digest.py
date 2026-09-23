@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from structlog.testing import capture_logs
 
 from graftpunk.har.digest import (
@@ -417,6 +418,76 @@ class TestTypeObservation:
         assert endpoint.body_params["quantity"] == "int"
         assert endpoint.body_params["gift"] == "bool"
         assert endpoint.body_params["note"] == "str"
+
+    def test_a_json_float_is_float_not_int(self, tmp_path: Path) -> None:
+        """An int-typed option refuses --amount 12.5, so a float is its own type."""
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/orders",
+                post_data=json.dumps({"amount": 12.5, "quantity": 3, "gift": True}),
+            )
+        ]
+        endpoint = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints[0]
+        assert endpoint.body_params == {"amount": "float", "quantity": "int", "gift": "bool"}
+
+    def test_a_query_float_is_float(self, tmp_path: Path) -> None:
+        entries = [_entry("GET", "https://api.myshop.example.com/orders?min_total=12.5")]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].query_params["min_total"] == "float"
+
+    @pytest.mark.parametrize(
+        "value",
+        ["07030", "007", "+5", " 5", "1_000", "12.50", "1e5", "inf", "nan", "True", "FALSE"],
+    )
+    def test_a_value_is_typed_only_when_the_typed_value_spells_it_the_same(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        """A postal code 07030 typed int would be sent as 7030; a bool is sent as
+        lowercase true/false, so a recorded True stays text."""
+        entries = [_entry("GET", f"https://api.myshop.example.com/orders?code={value}")]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].query_params["code"] == "str"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"), [("-5", "int"), ("0", "int"), ("-0.5", "float")]
+    )
+    def test_a_value_that_round_trips_keeps_its_type(
+        self, tmp_path: Path, value: str, expected: str
+    ) -> None:
+        entries = [_entry("GET", f"https://api.myshop.example.com/orders?code={value}")]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].query_params["code"] == expected
+
+    def test_query_types_that_disagree_across_requests_fall_back_to_str(
+        self, tmp_path: Path
+    ) -> None:
+        """Seen as abc then 1: the last request used to win, and the command then
+        refused abc."""
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders?q=abc&page=1"),
+            _entry("GET", "https://api.myshop.example.com/orders?q=1&page=2"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].query_params == {"q": "str", "page": "int"}
+
+    def test_body_types_that_disagree_across_requests_fall_back_to_str(
+        self, tmp_path: Path
+    ) -> None:
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/orders",
+                post_data=json.dumps({"amount": 3, "quantity": 1}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/orders",
+                post_data=json.dumps({"amount": 3.5, "quantity": 2}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].body_params == {"amount": "str", "quantity": "int"}
 
 
 class TestBodyParams:
@@ -1044,6 +1115,21 @@ class TestCollapseMergeCarriesShapeAndBodyKind:
         assert merged[0].shape is not None
         assert merged[0].body_kind == "json"
         assert "sku" in merged[0].body_params
+
+    def test_members_that_type_a_parameter_differently_merge_to_str(self, tmp_path: Path) -> None:
+        """The family merge applies the same rule a single endpoint's requests do."""
+        count = _HIGH_CARDINALITY_THRESHOLD + 1
+        entries = [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com/products/red-widget-{2000 + i}"
+                f"?ref={'abc' if i == 0 else i}&page={i}",
+            )
+            for i in range(count)
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (merged,) = [e for e in result.endpoints if e.template == "/products/{product_id}"]
+        assert merged.query_params == {"ref": "str", "page": "int"}
 
 
 class TestParseErrorsAndMissingBodies:

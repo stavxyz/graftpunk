@@ -52,6 +52,7 @@ __all__ = [
 _MAX_SCAFFOLD_ENDPOINTS = 12
 _PY_TYPE_BY_OBSERVED: dict[str, str] = {
     "int": "int",
+    "float": "float",
     "bool": "bool",
     "list": "list[str]",
     "str": "str",
@@ -93,6 +94,7 @@ _MUTATING_METHODS = ("POST", "PUT", "PATCH")
 # multi-value option to map it to, so its entry gets no type.
 _SPEC_TYPE_BY_OBSERVED: dict[str, tuple[str, ...]] = {
     "int": ("type=int",),
+    "float": ("type=float",),
     "bool": ("type=bool", 'click_kwargs={"is_flag": True}'),
 }
 

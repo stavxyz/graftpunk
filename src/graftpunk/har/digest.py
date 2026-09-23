@@ -8,6 +8,7 @@ only remaining consumer (plugin tooling spec, 2026-09-11).
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -375,14 +376,35 @@ def _is_static(entry: HAREntry) -> bool:
 
 
 def _observed_type(value: str) -> str:
-    lowered = value.lower()
-    if lowered in ("true", "false"):
+    """The type of one recorded text value: ``bool``, ``int``, ``float``, or ``str``.
+
+    A value gets a type only when that type's value is sent back spelled exactly
+    as recorded, since a generated command sends the typed value: ``07030`` as an
+    ``int`` would go out as ``7030``. So ``int`` needs ``str(int(value)) == value``,
+    ``float`` a finite float whose ``str`` is *value*, and ``bool`` the lowercase
+    ``true`` or ``false`` that ``ctx.request_json`` and ``ctx.request_text`` send
+    for a Python bool.
+    """
+    if value in ("true", "false"):
         return "bool"
     try:
-        int(value)
-        return "int"
+        if str(int(value)) == value:
+            return "int"
+    except ValueError:
+        pass
+    try:
+        number = float(value)
     except ValueError:
         return "str"
+    return "float" if math.isfinite(number) and str(number) == value else "str"
+
+
+def _merged_types(seen: dict[str, str], observed: dict[str, str]) -> None:
+    """Fold *observed* into *seen* in place: a name typed differently by two
+    requests is ``str``, the one type that sends every recorded value as it was."""
+    for name, observed_type in observed.items():
+        known = seen.get(name)
+        seen[name] = observed_type if known in (None, observed_type) else "str"
 
 
 def _query_param_types(url: str) -> dict[str, str]:
@@ -425,7 +447,9 @@ def _json_body_types(parsed: dict[str, Any]) -> dict[str, str]:
             continue
         if isinstance(value, bool):
             types[key] = "bool"
-        elif isinstance(value, (int, float)):
+        elif isinstance(value, float):
+            types[key] = "float"
+        elif isinstance(value, int):
             types[key] = "int"
         elif isinstance(value, list):
             types[key] = "list"
@@ -614,10 +638,9 @@ class _EndpointAccumulator:
         self.statuses.append(entry.response.status)
         content_type = entry.response.content_type or ""
         self.content_types[content_type] = self.content_types.get(content_type, 0) + 1
-        self.query_params.update(_query_param_types(entry.request.url))
+        _merged_types(self.query_params, _query_param_types(entry.request.url))
         field_types, body_kind = _parse_body(entry)
-        if field_types:
-            self.body_params.update(field_types)
+        _merged_types(self.body_params, field_types)
         if body_kind != "none":
             self.body_kind = body_kind
         # A real shape supersedes an unavailable one: within a family the first
@@ -967,8 +990,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.statuses.extend(acc.statuses)
             for ct, n in acc.content_types.items():
                 target.content_types[ct] = target.content_types.get(ct, 0) + n
-            target.query_params.update(acc.query_params)
-            target.body_params.update(acc.body_params)
+            _merged_types(target.query_params, acc.query_params)
+            _merged_types(target.body_params, acc.body_params)
             target.custom_headers.update(acc.custom_headers)
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost
