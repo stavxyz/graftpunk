@@ -1173,6 +1173,34 @@ class TestFlaggedNamesOf:
         )
         assert flagged_names_of(result) == ("csrf-token", "sid")
 
+    def test_entries_add_cookies_the_digests_own_list_leaves_out(self, tmp_path: Path) -> None:
+        """A static response and an out-of-scope host are outside d.cookies, which
+        stays scoped; passing the entries widens only the flagged list."""
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "https://api.myshop.example.com/orders/1"),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/assets/app.js",
+                content_type="application/javascript",
+                body="var a = 1;",
+                set_cookies=["asset_cookie=xyz; Path=/"],
+            ),
+            _entry(
+                "GET",
+                "https://tracker.example.net/pixel",
+                set_cookies=["other_host_cookie=xyz; Path=/"],
+            ),
+        ]
+        har = _write_har(tmp_path, entries)
+        result = digest(DigestSource.from_har(har))
+        assert result.cookies == ()
+        assert flagged_names_of(result) == ()
+        assert flagged_names_of(result, parse_har_file(har).entries) == (
+            "asset_cookie",
+            "other_host_cookie",
+        )
+
     def test_a_cookie_set_by_a_second_in_scope_host_is_flagged_too(self, tmp_path: Path) -> None:
         """flagged_names must not miss a cookie a first-party subdomain sets: an
         auth or widget host distinct from the primary one (review round 1,

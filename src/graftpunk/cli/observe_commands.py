@@ -263,7 +263,7 @@ def fixtures_cmd(
         _refuse_write(target_dir, exc)
     entries = parse_har_file(har_path).entries
     run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
-    flagged = flagged_names_of(run_digest)
+    flagged = flagged_names_of(run_digest, entries)
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
     for entry in entries:

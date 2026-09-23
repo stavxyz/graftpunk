@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -976,11 +977,18 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     )
 
 
-def flagged_names_of(d: RunDigest) -> tuple[str, ...]:
-    """The names a committed fixture must never contain: every cookie name the digest
-    recorded on any in-scope host (not the primary host alone: a second first-party
-    host can set its own session cookie) and every token candidate's name, exactly
-    as the digest holds them, sorted and deduplicated. It lives beside the digest
-    that records the names, so the sidecar writer takes plain strings and imports
-    nothing from the digest."""
-    return tuple(sorted(set(d.cookies) | {token.name for token in d.tokens}))
+def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[str, ...]:
+    """The names a committed fixture must never contain, sorted and deduplicated:
+    every cookie name the digest recorded on any in-scope host (not the primary
+    host alone: a second first-party host can set its own session cookie), every
+    token candidate's name, and every cookie name any of *entries* sets, whatever
+    its host and whether or not the digest counted it as static.
+
+    ``d.cookies`` stays the digest's own scoped list; *entries* widens only this
+    safety net. ``gp observe fixtures`` passes every entry in the HAR, since a
+    ``--match`` glob can write a capture from a static response or an
+    out-of-scope host, and a cookie that entry set must still be looked for. It
+    lives beside the digest that records the names, so the sidecar writer takes
+    plain strings and imports nothing from the digest."""
+    entry_cookies = {name for entry in entries for name in _response_cookie_names(entry)}
+    return tuple(sorted(set(d.cookies) | {token.name for token in d.tokens} | entry_cookies))

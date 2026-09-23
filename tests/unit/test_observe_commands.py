@@ -496,6 +496,34 @@ class TestFixturesCommand:
         assert sidecar["flagged_names"] == ["shop_session"]
         assert "page=2" not in json.dumps(sidecar)
 
+    def test_flagged_names_cover_cookies_set_on_a_static_response_and_by_another_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The digest leaves static and out-of-scope entries out of its cookie list,
+        but a --match glob can still write a capture from either, so the sidecar's
+        safety-net list names every cookie the recording set."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        orders = [
+            _entry("GET", f"https://api.myshop.example.com/orders/{i}", body='{"id": 1}')
+            for i in (1, 2)
+        ]
+        asset = _entry(
+            "GET",
+            "https://api.myshop.example.com/assets/app.js",
+            content_type="application/javascript",
+            body="var a = 1;",
+        )
+        asset["response"]["cookies"] = [{"name": "asset_cookie", "value": "planted"}]
+        other_host = _entry("GET", "https://tracker.example.net/orders/3", body='{"id": 3}')
+        other_host["response"]["cookies"] = [{"name": "other_host_cookie", "value": "planted"}]
+        _write_run(observe_base, "myshop", "run-1", [*orders, asset, other_host])
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir, "--limit", "1")
+        assert result.exit_code == 0, result.output
+        sidecar = json.loads((out_dir / "get_orders_{order_id}.json.meta.json").read_text())
+        assert sidecar["flagged_names"] == ["asset_cookie", "other_host_cookie"]
+
     def test_a_json_body_key_that_is_not_a_field_name_is_not_written_to_the_sidecar(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

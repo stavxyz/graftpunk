@@ -4,10 +4,10 @@ A ``<fixture>.meta.json`` sidecar sits beside every file ``gp observe fixtures``
 writes and travels with the fixture into a plugin's committed fixtures tree.
 Every field in it is meant to be committed: the capture's URL and time are not
 in it (the HAR and the digest hold them), ``capture_sha256`` is the hash of the
-captured body, and ``flagged_names`` is the cookie and token names the digest
-recorded, never a value. ``body_params`` is the request's body keys that read as
-field names; that rule is lexical, so a data-shaped key that reads as one (a
-session id like ``sess_a8f3c9e2``) is kept.
+captured body, and ``flagged_names`` is every cookie name the recording set and
+the token names the digest recorded, never a value. ``body_params`` is the
+request's body keys that read as field names; that rule is lexical, so a
+data-shaped key that reads as one (a session id like ``sess_a8f3c9e2``) is kept.
 
 This module is the only place a key set is spelled. It takes the current
 version number from :mod:`graftpunk.contracts`, and a later version adds its

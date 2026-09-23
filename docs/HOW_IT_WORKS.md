@@ -482,13 +482,13 @@ fixtures` names captures. A plugin added to an existing suite gets
 and two plugins in one suite can share an endpoint path. `gp observe
 fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
 number, the status, the content type, the body parameter names, the hash of the
-captured body, and the cookie and token names the run's digest recorded, but
-never the URL or the capture time), written to be committed beside the fixture
-derived from it once you have read its body parameter names (a body key that
-does not read as a field name is dropped, but a data-shaped one that does is
-kept); `FixtureSession` reads the sidecar through `graftpunk.testing.sidecar`
-for status and content type, so a fixture copied from
-a capture keeps its recorded status.
+captured body, every cookie name the recording set, and the token names the
+run's digest recorded, but never the URL or the capture time), written to be
+committed beside the fixture derived from it once you have read its body
+parameter names (a body key that does not read as a field name is dropped, but a
+data-shaped one that does is kept); `FixtureSession` reads the sidecar through
+`graftpunk.testing.sidecar` for status and content type, so a fixture copied
+from a capture keeps its recorded status.
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each
 test; a generated `conftest.py` imports it and assigns the result to a
