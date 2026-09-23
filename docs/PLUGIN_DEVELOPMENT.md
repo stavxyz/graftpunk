@@ -458,7 +458,11 @@ class MyshopPlugin(SitePlugin):
     @command(
         help="GP-FILL: describe api_orders",
         params=[
-            PluginParamSpec.option("archived", type=bool, click_kwargs={"is_flag": True}),
+            PluginParamSpec.option(
+                "archived",
+                type=bool,
+                click_kwargs={"is_flag": True, "flag": "--archived/--no-archived"},
+            ),
             PluginParamSpec.option("page", type=int),
             PluginParamSpec.option("per_page", type=int),
         ],
@@ -613,10 +617,16 @@ or without that import. That is harmless when the value goes straight into
 arithmetic on it. To get a real type, declare it explicitly: an explicit
 `params=` list replaces introspection entirely, so it works in a generated
 module as written. `gp plugin new` writes that explicit list itself for every
-stub with an `int`, `float`, or `bool` parameter. It writes a `bool` parameter as a flag
-(`click_kwargs={"is_flag": True}`), because a `bool` option that is not a flag
-is refused when the command is registered; with the flag left off, the handler
-receives `None`.
+stub with an `int`, `float`, or `bool` parameter. A `bool` option that is not a
+flag is refused when the command is registered, so it writes a `bool` parameter
+as a flag with a negative: `click_kwargs={"is_flag": True, "flag":
+"--archived/--no-archived"}`, where the `flag` key replaces the option's
+declared name. `--archived` passes `True`, `--no-archived` passes `False`, and
+with neither the handler receives `None`. `ctx.request_json` sends those as
+`archived=true`, `archived=false`, and no `archived` at all; the digest types a
+parameter as `bool` only when the site sent that lowercase spelling, so the
+request matches the recording. In a JSON body the stub sends a JSON boolean, and
+`null` when neither flag is given.
 
 ```python
 from graftpunk.plugins import CommandContext, PluginParamSpec, command

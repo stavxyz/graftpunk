@@ -88,14 +88,17 @@ _MUTATING_METHODS = ("POST", "PUT", "PATCH")
 # #208: remove it, and the params= emission, when #208 lands.
 #
 # A bool option must be a flag or command_factory refuses the command at
-# registration, and PluginParamSpec.option only sets is_flag itself for
-# default=False; the stub's None default stays, so an absent flag still reaches
-# the handler as None. A list stays a plain str option: command_factory has no
+# registration. The stub's bool is a flag with a negative (--archived and
+# --no-archived, through the "flag" key command_factory already reads), so the
+# handler gets True, False, or None when neither is given. ctx.request_json and
+# ctx.request_text send True and False in params and data as true and false,
+# the only spelling the digest types as bool, and drop None; a JSON body gets a
+# JSON boolean. A list stays a plain str option: command_factory has no
 # multi-value option to map it to, so its entry gets no type.
 _SPEC_TYPE_BY_OBSERVED: dict[str, tuple[str, ...]] = {
     "int": ("type=int",),
     "float": ("type=float",),
-    "bool": ("type=bool", 'click_kwargs={"is_flag": True}'),
+    "bool": ("type=bool",),
 }
 
 _ENDPOINT_COMMENT = (
@@ -475,17 +478,41 @@ def _needs_param_specs(endpoint: Endpoint) -> bool:
     return any(t in _SPEC_TYPE_BY_OBSERVED for t in _declared_extras(endpoint).values())
 
 
-def _param_spec(identifier: str, keywords: tuple[str, ...]) -> str:
+def _negatable_flag(identifier: str) -> str:
+    """The option declaration of a bool parameter: ``--name/--no-name``."""
+    flag = identifier.replace("_", "-")
+    return f"--{flag}/--no-{flag}"
+
+
+def _param_spec(identifier: str, keywords: tuple[str, ...], *, negatable: bool = False) -> str:
     """One ``PluginParamSpec.option(...)`` entry of a stub's ``params=`` list, as the
     expression ``_decorator_lines`` places at ``L3``: on one line when that line,
     its trailing comma included, fits the generated width, otherwise exploded one
     argument per line with a magic trailing comma, the shape ``ruff format`` gives
-    it. The exploded form's continuation lines carry their own indentation."""
+    it. The exploded form's continuation lines carry their own indentation.
+
+    *negatable* adds the ``click_kwargs`` that make the option a flag with a
+    negative (:func:`_negatable_flag`). A ``click_kwargs`` too wide for its line is
+    exploded one key per line, the declaration wrapped by
+    ``literal_dict_entry_lines``."""
     args = [quoted_literal(identifier), *keywords]
-    single = f"PluginParamSpec.option({', '.join(args)})"
+    flag = _negatable_flag(identifier)
+    click_kwargs = f'click_kwargs={{"is_flag": True, "flag": {quoted_literal(flag)}}}'
+    single_args = [*args, click_kwargs] if negatable else args
+    single = f"PluginParamSpec.option({', '.join(single_args)})"
     if len(f"{L3}{single},") <= GENERATED_LINE_LENGTH:
         return single
-    exploded = ["PluginParamSpec.option(", *(f"{L3}{' ' * INDENT_STEP}{a}," for a in args)]
+    arg_pad = f"{L3}{' ' * INDENT_STEP}"
+    exploded = ["PluginParamSpec.option(", *(f"{arg_pad}{a}," for a in args)]
+    if negatable:
+        if len(f"{arg_pad}{click_kwargs},") <= GENERATED_LINE_LENGTH:
+            exploded.append(f"{arg_pad}{click_kwargs},")
+        else:
+            entry_indent = len(arg_pad) + INDENT_STEP
+            exploded.append(f"{arg_pad}click_kwargs={{")
+            exploded.append(f'{" " * entry_indent}"is_flag": True,')
+            exploded.extend(literal_dict_entry_lines("flag", flag, indent=entry_indent))
+            exploded.append(f"{arg_pad}}},")
     return "\n".join([*exploded, f"{L3})"])
 
 
@@ -529,7 +556,9 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         annotation = _PY_TYPE_BY_OBSERVED.get(observed, "str")
         params.append(f"{identifier_for[extra]}: {annotation} | None = None")
         keywords = _SPEC_TYPE_BY_OBSERVED.get(observed, ())
-        param_specs.append(_param_spec(identifier_for[extra], keywords))
+        param_specs.append(
+            _param_spec(identifier_for[extra], keywords, negatable=observed == "bool")
+        )
 
     # Through quoted_literal like every other captured value: the method comes from
     # the capture, so it is not this module's to assume is quote-free.

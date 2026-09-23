@@ -1286,6 +1286,88 @@ class TestPluginModuleCommandStubs:
         assert call["params"] == {"page": 3}
         assert type(call["params"]["page"]) is int
 
+    def test_a_bool_parameter_is_a_flag_with_a_negative(self) -> None:
+        """A bool the site recorded as true or false must be able to send either."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_SEARCH_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert (
+            'click_kwargs={"is_flag": True, "flag": "--include-meta/--no-include-meta"},'
+            in plugin_code
+        )
+
+    @staticmethod
+    def _wire_requests(
+        monkeypatch: pytest.MonkeyPatch, endpoint: Endpoint, argv: list[str]
+    ) -> tuple[Any, list[Any]]:
+        """Render a plugin for *endpoint*, register it through the real CLI factory,
+        invoke *argv*, and return the CLI result with every request as ``requests``
+        prepared it for the wire: the real ``ctx.request_json`` runs, and only the
+        socket is replaced."""
+        import requests
+
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        sent: list[Any] = []
+
+        def send(_session: Any, prepared: Any, **_kwargs: Any) -> requests.Response:
+            sent.append(prepared)
+            response = requests.Response()
+            response.status_code = 200
+            response.headers["Content-Type"] = "application/json"
+            response._content = b"{}"
+            response.url = prepared.url
+            response.request = prepared
+            return response
+
+        monkeypatch.setattr(requests.Session, "send", send)
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(render(spec)["src/graftpunk_myshop/plugin.py"], namespace)  # noqa: S102
+
+        class _SessionlessPlugin(namespace["MyshopPlugin"]):
+            requires_session = False
+
+        return invoke_plugin_app(_SessionlessPlugin(), argv), sent
+
+    @pytest.mark.parametrize(
+        ("flag", "expected_query"),
+        [
+            ((), "q=widget"),
+            (("--include-meta",), "include_meta=true&q=widget"),
+            (("--no-include-meta",), "include_meta=false&q=widget"),
+        ],
+    )
+    def test_a_bool_query_parameter_sends_the_recorded_spelling_or_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, flag: tuple[str, ...], expected_query: str
+    ) -> None:
+        argv = ["myshop", "search", "--q", "widget", *flag]
+        result, sent = self._wire_requests(monkeypatch, _SEARCH_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/search?{expected_query}"
+
+    @pytest.mark.parametrize(("flag", "expected"), [("--pinned", True), ("--no-pinned", False)])
+    def test_a_bool_json_body_field_sends_a_json_boolean(
+        self, monkeypatch: pytest.MonkeyPatch, flag: str, expected: bool
+    ) -> None:
+        argv = ["myshop", "orders-by-order-id-notes", "--order-id", "7", flag]
+        result, sent = self._wire_requests(monkeypatch, _NOTES_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert json.loads(prepared.body)["pinned"] is expected
+
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",

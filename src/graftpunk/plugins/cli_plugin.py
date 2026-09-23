@@ -74,7 +74,10 @@ class PluginParamSpec:
     into Typer-native parameters.
 
     For options, supported keys are: ``type``, ``required``, ``default``, ``help``,
-    ``is_flag``, ``show_default``, ``envvar``.
+    ``is_flag``, ``show_default``, ``envvar``, ``flag``. ``flag`` replaces the
+    option's declared name, e.g. ``"--archived/--no-archived"`` for a bool flag
+    with a negative, which passes ``True``, ``False``, or ``None`` when neither is
+    given.
     For arguments, supported keys are: ``type``, ``required``, ``default``, ``nargs``.
     Unsupported keys raise ``PluginError`` at registration.
 
@@ -110,7 +113,7 @@ class PluginParamSpec:
         ``graftpunk.cli.command_factory`` into Typer-native parameters.
 
         Supported ``click_kwargs`` keys: ``type``, ``required``, ``default``, ``help``,
-        ``is_flag``, ``show_default``, ``envvar``.
+        ``is_flag``, ``show_default``, ``envvar``, ``flag`` (see the class docstring).
         Unsupported keys raise ``PluginError`` at registration.
 
         When *type* is ``bool`` and *default* is ``False``, ``is_flag``
