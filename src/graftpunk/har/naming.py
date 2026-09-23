@@ -9,7 +9,14 @@ from __future__ import annotations
 
 from graftpunk.har.paths import template_path
 
-__all__ = ["capture_filename", "capture_slug"]
+__all__ = [
+    "EndpointSpecError",
+    "HTTP_METHODS",
+    "capture_filename",
+    "capture_slug",
+    "parse_command_spec",
+    "parse_endpoint",
+]
 
 _EXTENSION_BY_MIME: dict[str, str] = {
     "application/json": "json",
@@ -47,3 +54,72 @@ def _extension_for_content_type(content_type: str) -> str:
 def capture_filename(method: str, path: str, content_type: str) -> str:
     """``<method>_<slug>.<ext>``, the one name a capture, fixture, and test share."""
     return f"{capture_slug(method, path)}.{_extension_for_content_type(content_type)}"
+
+
+HTTP_METHODS: frozenset[str] = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
+)
+
+_ENDPOINT_EXAMPLE = '"GET /orders/{order_id}"'
+_COMMAND_EXAMPLE = '"order=GET /orders/{order_id}"'
+
+
+class EndpointSpecError(ValueError):
+    """A value that does not read as an endpoint or a command spec. The message says
+    how to write one, and every consumer prints it unchanged."""
+
+
+def parse_endpoint(value: str) -> tuple[str, str]:
+    """``"<METHOD> <template>"``, the way the digest prints an endpoint, as its pair.
+
+    The one reader of the grammar: ``gp observe fixtures --match``, both
+    ``--command`` options, and the skill's own composition all take the halves
+    from here. The method is one of :data:`HTTP_METHODS`, in capitals; the
+    template is everything after the first space, stripped, and may be a glob
+    where the consumer accepts one. A value that splits wrong would match nothing
+    and look like an empty result, so it is refused instead (final fix wave,
+    2026-09-12).
+
+    Raises:
+        EndpointSpecError: No space, a method that is not a capitalised HTTP
+            method, or an empty template.
+    """
+    method, separator, template = value.strip().partition(" ")
+    template = template.strip()
+    if not separator or not template or method not in HTTP_METHODS:
+        raise EndpointSpecError(
+            f'{value!r} is not a "METHOD template" pair. Write the method in capitals, '
+            f"a space, then the template, as in {_ENDPOINT_EXAMPLE}."
+        )
+    return method, template
+
+
+def parse_command_spec(value: str) -> tuple[str, str, str]:
+    """``"<name>=<METHOD> <template>"`` as its (name, method, template) triple.
+
+    A command name cannot contain ``=``, so the split on the first one is
+    unambiguous; the endpoint half goes through :func:`parse_endpoint`. Whether
+    the name is a usable command name is the generator's rule, not this one's.
+
+    Raises:
+        EndpointSpecError: No ``=``, an empty name, nothing after the ``=``, or
+            an endpoint half :func:`parse_endpoint` refuses.
+    """
+    name, separator, endpoint = value.partition("=")
+    name = name.strip()
+    if not separator:
+        raise EndpointSpecError(
+            f"{value!r} has no '='. Write the command name, '=', then the endpoint, "
+            f"as in {_COMMAND_EXAMPLE}."
+        )
+    if not name:
+        raise EndpointSpecError(
+            f"{value!r} has no command name before '='. Write one, as in {_COMMAND_EXAMPLE}."
+        )
+    if not endpoint.strip():
+        raise EndpointSpecError(
+            f"{value!r} has nothing after '='. Write the endpoint the way the digest "
+            f"prints it, as in {_COMMAND_EXAMPLE}."
+        )
+    method, template = parse_endpoint(endpoint)
+    return name, method, template

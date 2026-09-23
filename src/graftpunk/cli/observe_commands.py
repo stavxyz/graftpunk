@@ -26,7 +26,7 @@ from graftpunk.cli.observe_browser import run_observe_go, run_observe_interactiv
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored, find_repo_root, is_tracked
 from graftpunk.har.digest import DigestSource, body_params, digest
-from graftpunk.har.naming import capture_filename
+from graftpunk.har.naming import EndpointSpecError, capture_filename, parse_endpoint
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.paths import template_path
 from graftpunk.har.report import (
@@ -45,9 +45,6 @@ console = Console()
 LOG = get_logger(__name__)
 
 _DEFAULT_FIXTURE_LIMIT = 5
-_HTTP_METHODS = frozenset(
-    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
-)
 
 observe_app = typer.Typer(
     name="observe",
@@ -173,30 +170,26 @@ def digest_cmd(
         console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
-def _matches_template(entry_method: str, entry_template: str, pattern: str) -> bool:
-    method_part, _, path_part = pattern.strip().partition(" ")
-    if method_part.upper() != entry_method:
+def _matches_template(entry_method: str, entry_template: str, endpoint: tuple[str, str]) -> bool:
+    """True when the entry is *endpoint*: the same method, and a template equal to the
+    pattern's or matching it as a glob. *endpoint* is :func:`parse_endpoint`'s pair;
+    this function never splits a pattern itself."""
+    method, template = endpoint
+    if method != entry_method:
         return False
-    return entry_template == path_part or fnmatch.fnmatch(entry_template, path_part)
+    return entry_template == template or fnmatch.fnmatch(entry_template, template)
 
 
-def _validate_match_patterns(patterns: list[str]) -> None:
-    """Refuse a ``--match`` value that cannot match anything.
-
-    The matcher partitions on a space, so ``--match "/orders"`` reads as the
-    method ``/orders`` against an empty template and silently matches nothing:
-    the user sees "No entries matched" and no way to tell a typo from an empty
-    run (final fix wave, 2026-09-12).
-    """
+def _parsed_matches(patterns: list[str]) -> list[tuple[str, str]]:
+    """Every ``--match`` value as its pair, refusing the first that does not parse."""
+    parsed: list[tuple[str, str]] = []
     for pattern in patterns:
-        method_part, separator, path_part = pattern.strip().partition(" ")
-        if not separator or not path_part.strip() or method_part.upper() not in _HTTP_METHODS:
-            console.print(
-                f"[red]--match '{escape(pattern)}' is not a \"METHOD template\" pair. "
-                f"Write the method, a space, then the template, as in "
-                f'"GET /orders/{{order_id}}".[/red]'
-            )
-            raise typer.Exit(1)
+        try:
+            parsed.append(parse_endpoint(pattern))
+        except EndpointSpecError as exc:
+            console.print(f"[red]--match: {escape(str(exc))}[/red]")
+            raise typer.Exit(1) from None
+    return parsed
 
 
 def fixtures_cmd(
@@ -221,7 +214,7 @@ def fixtures_cmd(
     if not match:
         console.print("[red]--match is required (repeatable).[/red]")
         raise typer.Exit(1)
-    _validate_match_patterns(match)
+    endpoints = _parsed_matches(match)
 
     run_dir = resolve_run(session, run)
     har_path = run_dir / "network.har"
@@ -268,7 +261,7 @@ def fixtures_cmd(
         path = urlparse(entry.request.url).path or "/"
         template, _ = template_path(path)
         method = entry.request.method.upper()
-        if not any(_matches_template(method, template, pattern) for pattern in match):
+        if not any(_matches_template(method, template, e) for e in endpoints):
             continue
         content_type = entry.response.content_type or "application/octet-stream"
         if entry.response.body is None:

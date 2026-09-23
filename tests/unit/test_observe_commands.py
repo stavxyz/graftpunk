@@ -595,7 +595,9 @@ class TestLimitMustBePositive:
 
 
 class TestMatchPatternValidation:
-    @pytest.mark.parametrize("pattern", ["/orders", "ORDERS /orders", "GET", "GET   "])
+    @pytest.mark.parametrize(
+        "pattern", ["/orders", "ORDERS /orders", "GET", "GET   ", "get /orders/{order_id}"]
+    )
     def test_a_pattern_that_is_not_method_plus_template_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str
     ) -> None:
@@ -637,12 +639,54 @@ class TestMatchPatternValidation:
                 "fixtures",
                 "myshop",
                 "--match",
-                "get /orders/{order_id}",
+                "GET /orders/{order_id}",
                 "--out",
                 str(out_dir),
             ],
         )
         assert result.exit_code == 0, result.output
+
+    def test_the_matcher_takes_its_halves_from_parse_endpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A grammar change made in parse_endpoint alone reaches the matcher: the
+        matcher never splits a pattern itself."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/synthetic/1", body='{"id": 1}')],
+        )
+        monkeypatch.setattr(
+            "graftpunk.cli.observe_commands.parse_endpoint",
+            lambda value: ("GET", "/synthetic/*"),
+        )
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "PUT /whatever", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        written = [p for p in out_dir.glob("get_synthetic_*") if not p.name.endswith(".meta.json")]
+        assert len(written) == 1
+
+    def test_the_refusal_is_parse_endpoints_own_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.har.naming import EndpointSpecError, parse_endpoint
+
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base, "myshop", "run-1", [_entry("GET", "https://api.myshop.example.com/a")]
+        )
+        with pytest.raises(EndpointSpecError) as caught:
+            parse_endpoint("get /a")
+        result = runner.invoke(_build_app(), ["observe", "fixtures", "myshop", "--match", "get /a"])
+        assert result.exit_code == 1
+        assert f"--match: {caught.value}" in " ".join(_plain(result.output).split())
 
 
 class TestBinaryBodiesAreSkipped:

@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from graftpunk.har.naming import capture_filename, capture_slug
+import pytest
+
+from graftpunk.har.naming import (
+    EndpointSpecError,
+    capture_filename,
+    capture_slug,
+    parse_command_spec,
+    parse_endpoint,
+)
 
 
 class TestCaptureSlug:
@@ -36,3 +44,55 @@ class TestCaptureFilename:
 
     def test_post_method_lowercased(self) -> None:
         assert capture_filename("POST", "/login", "application/json") == "post_login.json"
+
+
+class TestParseEndpoint:
+    def test_the_digest_printed_form_parses_to_the_pair(self) -> None:
+        assert parse_endpoint("GET /api/orders/{order_id}") == ("GET", "/api/orders/{order_id}")
+
+    def test_a_glob_template_is_kept_as_written(self) -> None:
+        assert parse_endpoint("GET /api/orders/*") == ("GET", "/api/orders/*")
+
+    @pytest.mark.parametrize(
+        "value", ["/orders", "get /orders", "Get /orders", "GET", "GET   ", "ORDERS /orders"]
+    )
+    def test_a_value_that_is_not_method_space_template_is_refused(self, value: str) -> None:
+        with pytest.raises(EndpointSpecError, match="METHOD template"):
+            parse_endpoint(value)
+
+    def test_surrounding_whitespace_is_accepted_and_a_tab_is_refused(self) -> None:
+        assert parse_endpoint("  GET   /orders  ") == ("GET", "/orders")
+        with pytest.raises(EndpointSpecError):
+            parse_endpoint("GET\t/orders")
+
+
+class TestParseCommandSpec:
+    def test_the_triple(self) -> None:
+        assert parse_command_spec("order=GET /api/orders/{order_id}") == (
+            "order",
+            "GET",
+            "/api/orders/{order_id}",
+        )
+
+    def test_the_split_is_on_the_first_equals_sign(self) -> None:
+        assert parse_command_spec("search=GET /api/search?q=a") == (
+            "search",
+            "GET",
+            "/api/search?q=a",
+        )
+
+    def test_a_missing_equals_sign_is_refused(self) -> None:
+        with pytest.raises(EndpointSpecError, match="no '='"):
+            parse_command_spec("orders GET /api/orders")
+
+    def test_an_empty_name_is_refused(self) -> None:
+        with pytest.raises(EndpointSpecError, match="no command name"):
+            parse_command_spec("=GET /api/orders")
+
+    def test_a_trailing_equals_sign_is_refused(self) -> None:
+        with pytest.raises(EndpointSpecError, match="nothing after '='"):
+            parse_command_spec("orders=")
+
+    def test_a_malformed_endpoint_half_is_refused_by_parse_endpoint(self) -> None:
+        with pytest.raises(EndpointSpecError, match="METHOD template"):
+            parse_command_spec("orders=get /api/orders")
