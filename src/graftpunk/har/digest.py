@@ -610,7 +610,12 @@ def _redirect_target_path(entry: HAREntry) -> str:
     target = entry.response.redirect_url
     if not target:
         return ""
-    return bare_path(urlparse(urljoin(entry.request.url, target)).path)
+    try:
+        return bare_path(urlparse(urljoin(entry.request.url, target)).path)
+    except ValueError:
+        # A target urljoin cannot split (an unclosed IPv6 bracket) names no path.
+        LOG.warning("digest_redirect_unparseable", url=bare_url(entry.request.url))
+        return ""
 
 
 def _has_password_field(entry: HAREntry) -> list[str]:
@@ -842,9 +847,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     counts or any later rule.
 
     Never raises on a malformed entry (the parser already records per-entry
-    errors) or on a body file the HAR references but that is missing on
-    disk; both count under ``dropped["error"]`` and the digest still
-    completes.
+    errors), on a request URL ``urlparse`` cannot split, or on a body file the
+    HAR references but that is missing on disk; each counts under
+    ``dropped["error"]`` and the digest still completes. A redirect target or
+    a form action that cannot be split is recorded as empty.
     """
     parse_result = parse_har_file(source.har_path)
     entries = parse_result.entries
@@ -859,8 +865,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     non_static_hosts: dict[str, int] = {}
     document_hosts: set[str] = set()
     classified: list[tuple[HAREntry, str, bool]] = []
-    for entry in entries:
-        parsed_url = urlparse(entry.request.url)
+    for index, entry in enumerate(entries):
+        try:
+            parsed_url = urlparse(entry.request.url)
+        except ValueError:
+            # urlparse refuses a URL it cannot split (an unclosed IPv6 bracket).
+            # Every later parse of this entry's URL would raise too, so it goes
+            # no further. The URL itself is not logged: it could not be reduced.
+            dropped["error"] += 1
+            LOG.warning("digest_url_unparseable", entry_index=index)
+            continue
         # Before every other classification: a non-HTTP entry has no host to
         # count and no endpoint to derive.
         if parsed_url.scheme.lower() not in _HTTP_SCHEMES:

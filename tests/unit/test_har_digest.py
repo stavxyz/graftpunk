@@ -1180,6 +1180,53 @@ class TestParseErrorsAndMissingBodies:
         (event,) = [e for e in events if e["event"] == "digest_body_file_missing"]
         assert event["url"] == "https://api.myshop.example.com/big"
 
+    def test_a_malformed_form_action_is_recorded_as_empty(self, tmp_path: Path) -> None:
+        """urlsplit raises on an unclosed IPv6 bracket; the digest must still complete,
+        and the warning names the page, never the action text."""
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/signin?next=QUERYVALUE",
+            content_type="text/html",
+            body=(
+                '<form action="http://[bad/login"><input name="username">'
+                '<input type="password" name="password"></form>'
+            ),
+        )
+        with capture_logs() as events:
+            result = digest(DigestSource.from_har(_write_har(tmp_path, [page])))
+        (form,) = result.login_forms
+        assert form.action == ""
+        assert form.fields["username"].startswith('form:not([action]) input[name="username"]')
+        (event,) = [e for e in events if e["event"] == "login_form_action_unparseable"]
+        assert event["source"] == "https://myshop.example.com/signin"
+        assert "[bad" not in str(event)
+
+    def test_a_malformed_request_url_is_dropped_as_an_error(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders"),
+            _entry("GET", "http://[bad/orders"),
+        ]
+        with capture_logs() as events:
+            result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["error"] == 1
+        assert [e.template for e in result.endpoints] == ["/orders"]
+        assert any(e["event"] == "digest_url_unparseable" for e in events)
+
+    def test_a_malformed_redirect_target_records_no_landing_path(self, tmp_path: Path) -> None:
+        post = _entry(
+            "POST",
+            "https://myshop.example.com/session",
+            status=302,
+            content_type="text/html",
+            body="",
+            response_headers={"Location": "http://[bad/dashboard"},
+            post_data="username=alice&password=x",
+        )
+        post["request"]["postData"]["mimeType"] = _FORM_CONTENT_TYPE
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [post])))
+        (observation,) = [o for o in result.login if o.kind == "credential_post"]
+        assert observation.redirect_to == ""
+
 
 def _flow_endpoint(template: str, method: str = "GET", examples: tuple[str, ...] = ()) -> Endpoint:
     return Endpoint(

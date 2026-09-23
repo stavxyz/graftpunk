@@ -14,6 +14,9 @@ from html.parser import HTMLParser
 from typing import Literal
 
 from graftpunk.har.paths import bare_url
+from graftpunk.logging import get_logger
+
+LOG = get_logger(__name__)
 
 TokenKind = Literal["header", "meta", "hidden_input", "cookie"]
 
@@ -241,7 +244,14 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
         password_inputs = [i for i in raw.inputs if i.input_type == "password"]
         if not password_inputs:
             continue
-        action = bare_url(raw.action)
+        try:
+            action = bare_url(raw.action)
+        except ValueError:
+            # urlsplit refuses an action it cannot split (an unclosed IPv6
+            # bracket); the form still counts, scoped as one with no action.
+            # The page is named, never the action text.
+            LOG.warning("login_form_action_unparseable", source=source)
+            action = ""
         scopes = _form_scopes(raw.action, action)
         fields: dict[str, str] = {}
         hidden: list[str] = []

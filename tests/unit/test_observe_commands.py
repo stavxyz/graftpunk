@@ -565,6 +565,29 @@ class TestFixturesCommand:
         assert sidecar["body_params"] == ["quantity"]
         assert "alice@example.com" not in json.dumps(sidecar)
 
+    def test_an_entry_whose_url_cannot_be_split_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The digest drops it as an error; the fixtures loop must not crash on it."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [
+                _entry("GET", "http://[bad/orders/2", body='{"id": 2}'),
+                _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}'),
+            ],
+        )
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (fixture,) = [
+            p for p in out_dir.glob("get_orders_*.json") if not p.name.endswith(".meta.json")
+        ]
+        assert json.loads(fixture.read_text()) == {"id": 1}
+
 
 class TestFixturesGitignore:
     """The first run inside a repo is the one that matters: the default target

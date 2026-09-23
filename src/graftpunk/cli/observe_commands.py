@@ -272,7 +272,11 @@ def fixtures_cmd(
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
     for entry in entries:
-        path = urlparse(entry.request.url).path or "/"
+        try:
+            path = urlparse(entry.request.url).path or "/"
+        except ValueError:
+            # A URL urlparse cannot split: the digest dropped it as an error too.
+            continue
         # The digest's own template, collapse included: --match takes the
         # template the digest printed, and a generated test looks for the file
         # named after it.
