@@ -776,6 +776,19 @@ def _redirect_target_path(entry: HAREntry) -> str:
         return ""
 
 
+def _form_action_path(form: LoginForm) -> str:
+    """The path *form* posts to: its action resolved against the page it was on
+    (an empty action posts to the page itself), or empty when neither is a URL
+    path (a page source file with a relative action)."""
+    try:
+        if form.source.startswith(("http://", "https://")):
+            return urlparse(urljoin(form.source, form.action)).path or "/"
+        path = urlparse(form.action).path
+    except ValueError:
+        return ""
+    return path if path.startswith("/") else ""
+
+
 def _has_password_field(entry: HAREntry) -> list[str]:
     """Field names on a POST whose body has a password-like field."""
     field_types = body_params(entry)
@@ -1082,6 +1095,15 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     login: list[LoginObservation] = []
     credential_post_indexes: list[int] = []
     order = 0
+    page_forms: tuple[LoginForm, ...] = ()
+    page_html = ""
+    if source.page_source is not None and source.page_source.is_file():
+        page_html = source.page_source.read_text(encoding="utf-8", errors="replace")
+        page_forms = extract_login_forms(page_html, source=str(source.page_source))
+    # The paths a recorded login form posts to: a POST to one is the credential
+    # post whatever its password field is named, since the form's type="password"
+    # input already names it.
+    login_action_paths = {path for form in page_forms if (path := _form_action_path(form))}
 
     for index, (entry, host, static) in enumerate(classified):
         if static:
@@ -1131,6 +1153,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             document_source = url
             forms_in_entry = extract_login_forms(entry.response.body, source=document_source)
             login_forms.extend(forms_in_entry)
+            login_action_paths.update(
+                path for form in forms_in_entry if (path := _form_action_path(form))
+            )
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
@@ -1140,7 +1165,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         fields: tuple[str, ...] = ()
         if method == "GET" and forms_in_entry:
             kind = "form_page"
-        elif method == "POST" and credential_hint_fields:
+        elif method == "POST" and (credential_hint_fields or path in login_action_paths):
             # Report every body field name, not only the password-hinted
             # ones: a credential post's username/email field is part of the
             # observation too, and the field's own tests require it
@@ -1173,9 +1198,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 credential_post_indexes.append(index)
 
     if source.page_source is not None and source.page_source.is_file():
-        page_html = source.page_source.read_text(encoding="utf-8", errors="replace")
         page_label = str(source.page_source)
-        login_forms.extend(extract_login_forms(page_html, source=page_label))
+        login_forms.extend(page_forms)
         for candidate in extract_token_candidates(page_html, source=page_label):
             token_seen.setdefault((candidate.kind, candidate.name), []).extend(candidate.seen_on)
 

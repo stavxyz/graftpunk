@@ -1379,6 +1379,32 @@ class TestLoginFlowFlag:
             ("GET", "/api/orders"): False,
         }
 
+    def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
+        """The form's type="password" input names the field, so a name outside the
+        password hints (passcode) still marks the POST to its action."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/signin",
+                content_type="text/html",
+                body=(
+                    '<form action="/session" method="post">'
+                    '<input type="email" name="email"><input type="password" name="passcode">'
+                    "</form>"
+                ),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"email": "alice@example.com", "passcode": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (post,) = [o for o in result.login if o.method == "POST"]
+        assert post.kind == "credential_post"
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/session")] is True
+
     def test_the_same_path_under_another_method_is_not_flagged(self) -> None:
         (endpoint,) = _with_login_flow(
             (_flow_endpoint("/login", "DELETE"),),
