@@ -242,3 +242,50 @@ class TestRedactedNames:
         path = _write(tmp_path / "get_orders.json.meta.json", _v1(redacted_names=value))
         with pytest.raises(SidecarError, match="redacted_names"):
             load_sidecar(path)
+
+
+class TestEveryParseFailureIsASidecarError:
+    """W1: a sidecar that breaks the JSON parser in any way is a SidecarError."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"schema": 1, "status": ' + "1" * 5000 + "}",
+            "[" * 200_000 + "]" * 200_000,
+        ],
+        ids=["int-string-limit", "deep-nesting"],
+    )
+    def test_a_parser_failure_is_a_sidecar_error(self, tmp_path: Path, text: str) -> None:
+        path = tmp_path / "get_orders.json.meta.json"
+        path.write_text(text)
+        with pytest.raises(SidecarError, match="get_orders.json.meta.json"):
+            load_sidecar(path)
+
+
+class TestASidecarBuiltAnywhereIsFitToSerialize:
+    """W2: Sidecar refuses at construction what the loader refuses on disk."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"status": "200", "content_type": "application/json"},
+            {"status": True, "content_type": "application/json"},
+            {"status": 200, "content_type": 1},
+            {"status": 200, "content_type": "application/json", "body_params": ("a", 1)},
+            {"status": 200, "content_type": "application/json", "flagged_names": (None,)},
+            {"status": 200, "content_type": "application/json", "redacted_names": -1},
+            {"status": 200, "content_type": "application/json", "redacted_names": "2"},
+        ],
+        ids=[
+            "status-text",
+            "status-bool",
+            "content-type-int",
+            "body-param-int",
+            "flagged-none",
+            "redacted-negative",
+            "redacted-text",
+        ],
+    )
+    def test_a_wrong_type_or_sign_is_refused(self, kwargs: dict) -> None:
+        with pytest.raises(SidecarError):
+            Sidecar(**kwargs)

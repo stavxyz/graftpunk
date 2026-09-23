@@ -92,9 +92,22 @@ class Sidecar:
     redacted_names: int = 0
 
     def __post_init__(self) -> None:
-        """Sort and dedupe the name tuples, and refuse a ``capture_sha256`` that is
-        not a lowercase sha256 hex digest or ``None``, here rather than in the
-        writer: a ``Sidecar`` built anywhere is fit to serialize."""
+        """Hold every field to the loader's own type and sign checks, sort and dedupe
+        the name tuples, and refuse a ``capture_sha256`` that is not a lowercase
+        sha256 hex digest or ``None``, here rather than in the writer: a ``Sidecar``
+        built anywhere is fit to serialize."""
+        for key in ("status", "redacted_names"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise SidecarError(f"{key} must be an integer, got {value!r}")
+        if self.redacted_names < 0:
+            raise SidecarError(f"redacted_names must not be negative, got {self.redacted_names}")
+        if not isinstance(self.content_type, str):
+            raise SidecarError(f"content_type must be a string, got {self.content_type!r}")
+        for key in ("body_params", "flagged_names"):
+            value = getattr(self, key)
+            if not all(isinstance(item, str) for item in value):
+                raise SidecarError(f"{key} must hold only strings, got {value!r}")
         if self.capture_sha256 is not None and not _CAPTURE_SHA256_RE.fullmatch(
             self.capture_sha256
         ):
@@ -151,8 +164,10 @@ def load_sidecar(path: Path) -> Sidecar:
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SidecarError(f"{path}: not a readable JSON sidecar ({exc})") from exc
+    except (OSError, ValueError, RecursionError) as exc:
+        # ValueError covers a decode error, a JSON syntax error, and an integer
+        # past the interpreter's digit limit; RecursionError, nesting too deep.
+        raise SidecarError(f"{path}: not a readable JSON sidecar ({type(exc).__name__})") from exc
     if not isinstance(data, dict):
         raise SidecarError(f"{path}: a sidecar is a JSON object")
     try:
@@ -177,12 +192,9 @@ def load_sidecar(path: Path) -> Sidecar:
     capture_sha256 = _optional_text(data, "capture_sha256", path)
     flagged_names = _names(data, "flagged_names", path)
     redacted_names = _integer(data, "redacted_names", path)
-    if redacted_names < 0:
-        raise SidecarError(f"{path}: redacted_names must not be negative, got {redacted_names}")
     try:
-        # Every type check above already names *path*; only Sidecar's own
-        # construction-time check (the capture_sha256 format) can still raise
-        # here, and it does not know *path* on its own.
+        # Sidecar's construction-time checks (a negative count, the
+        # capture_sha256 format) do not know *path*, so it is added here.
         return Sidecar(
             status=status,
             content_type=content_type,

@@ -386,17 +386,15 @@ class TestSuiteFilesKeepTheirBytes:
 
 
 class TestTheWritersOwnConflictCheck:
-    def test_a_gitignore_that_is_a_directory_is_refused_by_apply_changes(
+    def test_a_gitignore_that_is_a_directory_is_refused_as_a_directory(
         self, tmp_path: Path
     ) -> None:
-        """The rendered files pass write_scaffold's early check; the .gitignore
-        create is refused by apply_changes, before anything is written."""
+        """W5: its own refusal, before anything is written."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(_SUITE_PYPROJECT)
         (tmp_path / ".gitignore").mkdir()
-        with pytest.raises(ScaffoldConflictError) as caught:
+        with pytest.raises(InvalidChangeError, match="it is a directory, not a file"):
             write_scaffold(tmp_path, _spec("widgets"))
-        assert caught.value.conflicts == [tmp_path / ".gitignore"]
         assert pyproject.read_text() == _SUITE_PYPROJECT
         assert not (tmp_path / "src").exists()
         assert not (tmp_path / "tests").exists()

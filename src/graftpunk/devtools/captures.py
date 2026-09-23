@@ -9,7 +9,9 @@ file.
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import os
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
@@ -90,10 +92,13 @@ def ensure_ignored(repo_root: Path, relative: str) -> bool:
 
     Raises:
         UnicodeDecodeError: The ``.gitignore`` is not UTF-8 text.
+        IsADirectoryError: The ``.gitignore`` is a directory.
         IgnoreFileReadError: The ``.gitignore`` cannot be read.
         OSError: The ``.gitignore`` cannot be appended to.
     """
     gitignore = repo_root / ".gitignore"
+    if gitignore.is_dir():
+        raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), str(gitignore))
     # Read as bytes so a CRLF file's text is what is on disk; the append below
     # then leaves every existing byte as it was.
     try:

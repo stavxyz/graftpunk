@@ -349,7 +349,9 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
     seen: set[str] = set()
     duplicates: list[Path] = []
     for change in changes:
-        resolved = os.path.realpath(change.path)
+        # Case-folded, so Plugin.py and plugin.py in one batch are refused on every
+        # filesystem, a case-insensitive one included.
+        resolved = os.path.realpath(change.path).casefold()
         if resolved in seen:
             duplicates.append(change.path)
         seen.add(resolved)
@@ -386,26 +388,27 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
     started: list[PlannedChange] = []
     created_dirs: list[Path] = []
     open_partials = _OPEN_PARTIALS.set([])
+    current: Path | None = None
     try:
+        # One handler spans the whole loop, so an interrupt that lands between two
+        # writes restores as surely as one that lands inside a write.
         for change in changes:
-            try:
-                created_dirs.extend(_missing_parents(change.path.parent))
-                change.path.parent.mkdir(parents=True, exist_ok=True)
-                started.append(change)
-                _write_atomically(change.path, change.content)
-            except OSError as exc:
-                unrestored = _restore(started, created_dirs)
-                raise ScaffoldWriteError(change.path, exc, unrestored) from exc
-            except BaseException as exc:
-                # Not a write failure (a bug, or KeyboardInterrupt): restore all
-                # the same, then let the exception itself reach the caller.
-                unrestored = _restore(started, created_dirs)
-                if unrestored:
-                    listing = ", ".join(str(p) for p in unrestored)
-                    exc.add_note(
-                        f"These paths could not be restored and are left changed: {listing}."
-                    )
-                raise
+            current = change.path
+            created_dirs.extend(_missing_parents(change.path.parent))
+            change.path.parent.mkdir(parents=True, exist_ok=True)
+            started.append(change)
+            _write_atomically(change.path, change.content)
+    except OSError as exc:
+        unrestored = _restore(started, created_dirs)
+        raise ScaffoldWriteError(current or changes[0].path, exc, unrestored) from exc
+    except BaseException as exc:
+        # Not a write failure (a bug, or KeyboardInterrupt): restore all the same,
+        # then let the exception itself reach the caller.
+        unrestored = _restore(started, created_dirs)
+        if unrestored:
+            listing = ", ".join(str(p) for p in unrestored)
+            exc.add_note(f"These paths could not be restored and are left changed: {listing}.")
+        raise
     finally:
         _OPEN_PARTIALS.reset(open_partials)
     return tuple(change.path for change in changes)

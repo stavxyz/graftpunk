@@ -22,6 +22,7 @@ from graftpunk.devtools.scaffold.pyproject_edit import (
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, module_name_for, render
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
+    InvalidChangeError,
     PlannedChange,
     Validator,
     apply_changes,
@@ -199,6 +200,8 @@ def write_scaffold(
         # Last in the batch: the ignore line protects files this call writes, so
         # a failed write restores it with everything else.
         gitignore = target_dir / ".gitignore"
+        if gitignore.is_dir():
+            raise InvalidChangeError(gitignore, "it is a directory, not a file")
         before = read_original(gitignore) if gitignore.is_file() else None
         after = with_ignored(before or "", CAPTURES_DIR)
         if after != (before or ""):

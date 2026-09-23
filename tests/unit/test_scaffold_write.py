@@ -759,3 +759,42 @@ def test_the_disk_call_scan_tells_a_path_rename_from_a_string_replace(
     call = statement.value
     assert isinstance(call.func, ast.Attribute)
     assert ([call.func.attr] if _is_disk_call(call) else []) == flagged
+
+
+class TestRound8WriteDiscipline:
+    def test_two_paths_that_differ_only_in_case_are_refused(self, tmp_path: Path) -> None:
+        """W3: refused on every filesystem, before any write."""
+        root = _project_root(tmp_path)
+        with pytest.raises(ChangeConflictError) as caught:
+            apply_changes(
+                [
+                    PlannedChange(root / "Plugin.py", "a = 1\n"),
+                    PlannedChange(root / "plugin.py", "a = 2\n"),
+                ]
+            )
+        assert caught.value.duplicates == (root / "plugin.py",)
+        assert _files(root) == {}
+
+    def test_an_interrupt_during_the_second_change_restores_the_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """W4: one handler spans the whole write loop."""
+        root = _project_root(tmp_path)
+        calls = {"n": 0}
+        real = write._missing_parents
+
+        def interrupt_second(path: Path) -> list[Path]:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise KeyboardInterrupt
+            return real(path)
+
+        monkeypatch.setattr(write, "_missing_parents", interrupt_second)
+        with pytest.raises(KeyboardInterrupt):
+            apply_changes(
+                [
+                    PlannedChange(root / "first.py", "f = 1\n"),
+                    PlannedChange(root / "second.py", "s = 1\n"),
+                ]
+            )
+        assert _files(root) == {}
