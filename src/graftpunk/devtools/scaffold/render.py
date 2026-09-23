@@ -13,7 +13,6 @@ import keyword
 import re
 from dataclasses import dataclass
 from typing import Literal
-from urllib.parse import urlparse
 
 from graftpunk.devtools.captures import CAPTURES_DIR
 from graftpunk.devtools.scaffold.pysrc import (
@@ -36,7 +35,6 @@ from graftpunk.devtools.scaffold.pysrc import (
 )
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
 from graftpunk.har.naming import capture_filename
-from graftpunk.har.paths import template_path
 from graftpunk.har.report import summarize_shape
 
 __all__ = [
@@ -500,58 +498,10 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     return lines
 
 
-_LOGIN_FLOW_KINDS = ("form_page", "credential_post")
-
-
-def _template_covers_path(template: str, path: str) -> bool:
-    """True when *path* is one of the paths *template* stands for: the same number
-    of segments, each of the template's either a ``{placeholder}`` or that segment
-    spelled exactly."""
-    template_segments = template.strip("/").split("/") if template.strip("/") else []
-    path_segments = path.strip("/").split("/") if path.strip("/") else []
-    if len(template_segments) != len(path_segments):
-        return False
-    return all(
-        (segment.startswith("{") and segment.endswith("}")) or segment == observed
-        for segment, observed in zip(template_segments, path_segments, strict=True)
-    )
-
-
-def _login_flow_endpoints(d: RunDigest) -> set[tuple[str, str]]:
-    """The ``(method, template)`` pairs ``login_config`` owns, as the endpoints
-    themselves are keyed.
-
-    The login form's own GET and the credential POST are the login flow, which
-    the generated ``login_config`` drives. Rendered as command stubs they were
-    wrong for the developer and their generated tests could only fail (polish
-    round 1, 2026-09-12). The digest's own endpoint list is unchanged; only the
-    scaffold skips them.
-
-    An observation carries the raw path, and the endpoint it belongs to may have
-    been re-templated by the digest's high-cardinality collapse, so templating
-    the path alone missed it and the stub came back (polish round 2,
-    2026-09-12). Each observation claims every endpoint of its method whose
-    final template covers its path, plus its own templated path for a run whose
-    login flow produced no endpoint at all.
-    """
-    owned: set[tuple[str, str]] = set()
-    for observation in d.login:
-        if observation.kind not in _LOGIN_FLOW_KINDS:
-            continue
-        method = observation.method.upper()
-        path = urlparse(observation.url).path or "/"
-        template, _ = template_path(path)
-        owned.add((method, template))
-        for endpoint in d.endpoints:
-            if method in endpoint.methods and _template_covers_path(endpoint.template, path):
-                owned.add((method, endpoint.template))
-    return owned
-
-
 def _ordered_endpoints(d: RunDigest) -> list[Endpoint]:
-    """The endpoints the scaffold renders a stub for, most useful first."""
-    owned = _login_flow_endpoints(d)
-    kept = [e for e in d.endpoints if not all((m, e.template) in owned for m in e.methods)]
+    """The endpoints the scaffold renders a stub for, most useful first. The login
+    flow's own endpoints are skipped by the digest's ``login_flow`` flag."""
+    kept = [e for e in d.endpoints if not e.login_flow]
     return sorted(kept, key=lambda e: (not _is_json_endpoint(e), -e.count, e.template))
 
 

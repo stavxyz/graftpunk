@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -237,6 +237,10 @@ class Endpoint:
     shape: ShapeNode | None
     custom_headers: tuple[str, ...]
     examples: tuple[str, ...]
+    # Part of the login flow login_config drives (the login form's GET or the
+    # credential POST): the generator renders no stub for it and a command
+    # proposal drops it, both from this one flag (graft skill spec, 2026-09-21).
+    login_flow: bool = False
 
 
 @dataclass(frozen=True)
@@ -709,6 +713,61 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
     return result
 
 
+_LOGIN_FLOW_KINDS: tuple[ObservationKind, ...] = ("form_page", "credential_post")
+
+
+def _template_covers_path(template: str, path: str) -> bool:
+    """True when *path* is one of the paths *template* stands for: the same number
+    of segments, each of the template's either a ``{placeholder}`` or that segment
+    spelled exactly."""
+    template_segments = template.strip("/").split("/") if template.strip("/") else []
+    path_segments = path.strip("/").split("/") if path.strip("/") else []
+    if len(template_segments) != len(path_segments):
+        return False
+    return all(
+        (segment.startswith("{") and segment.endswith("}")) or segment == observed
+        for segment, observed in zip(template_segments, path_segments, strict=True)
+    )
+
+
+def _login_flow_pairs(
+    login: tuple[LoginObservation, ...], endpoints: tuple[Endpoint, ...]
+) -> set[tuple[str, str]]:
+    """The ``(method, template)`` pairs ``login_config`` owns, as endpoints are keyed.
+
+    The login form's own GET and the credential POST are the login flow. An
+    observation carries the raw path, and the endpoint it belongs to may have
+    been re-templated by the high-cardinality collapse, so each observation
+    claims every endpoint of its method whose final template covers its path,
+    plus its own templated path for a run whose login flow produced no endpoint
+    (moved from ``devtools/scaffold/render.py``; polish round 2, 2026-09-12).
+    """
+    owned: set[tuple[str, str]] = set()
+    for observation in login:
+        if observation.kind not in _LOGIN_FLOW_KINDS:
+            continue
+        method = observation.method.upper()
+        path = urlparse(observation.url).path or "/"
+        template, _ = template_path(path)
+        owned.add((method, template))
+        for endpoint in endpoints:
+            if method in endpoint.methods and _template_covers_path(endpoint.template, path):
+                owned.add((method, endpoint.template))
+    return owned
+
+
+def _with_login_flow(
+    endpoints: tuple[Endpoint, ...], login: tuple[LoginObservation, ...]
+) -> tuple[Endpoint, ...]:
+    """*endpoints* with ``login_flow`` set on each one every method of which the
+    login flow owns."""
+    owned = _login_flow_pairs(login, endpoints)
+    return tuple(
+        replace(endpoint, login_flow=all((m, endpoint.template) in owned for m in endpoint.methods))
+        for endpoint in endpoints
+    )
+
+
 def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     """Read *source* into a :class:`RunDigest`.
 
@@ -896,7 +955,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         source=source,
         primary_host=primary_host,
         hosts=hosts,
-        endpoints=endpoints,
+        endpoints=_with_login_flow(endpoints, tuple(login)),
         login=tuple(login),
         login_forms=tuple(login_forms),
         tokens=tokens,

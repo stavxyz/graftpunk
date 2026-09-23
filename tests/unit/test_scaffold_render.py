@@ -45,6 +45,7 @@ from graftpunk.har.digest import (
     RunDigest,
     ShapeNode,
     TokenCandidate,
+    _with_login_flow,
 )
 
 
@@ -1265,7 +1266,9 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
             backend="nodriver",
             base_url="https://myshop.example.com",
             digest=_digest(
-                endpoints=endpoints,
+                endpoints=_with_login_flow(
+                    endpoints, (_FORM_PAGE_OBSERVATION, _CREDENTIAL_POST_OBSERVATION)
+                ),
                 login_forms=(_PASSWORD_LOGIN_FORM,),
                 login=(_FORM_PAGE_OBSERVATION, _CREDENTIAL_POST_OBSERVATION),
             ),
@@ -1313,7 +1316,10 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
             backend="nodriver",
             base_url="https://myshop.example.com",
             digest=_digest(
-                endpoints=(_COLLAPSED_ACCOUNT_FAMILY, _ORDERS_ENDPOINT),
+                endpoints=_with_login_flow(
+                    (_COLLAPSED_ACCOUNT_FAMILY, _ORDERS_ENDPOINT),
+                    (_COLLAPSED_FORM_PAGE_OBSERVATION,),
+                ),
                 login_forms=(_PASSWORD_LOGIN_FORM,),
                 login=(_COLLAPSED_FORM_PAGE_OBSERVATION,),
             ),
@@ -1326,6 +1332,21 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         test_code = files["tests/test_plugin.py"]
         assert "def test_account_by_account_id(" not in test_code
         ast.parse(test_code)
+
+    def test_the_generator_reads_the_digest_flag(self) -> None:
+        """With no login observation at all, an endpoint the digest flagged is still
+        skipped: the generator reads the flag and never recomputes it."""
+        flagged = dataclasses.replace(_ORDERS_ENDPOINT, login_flow=True)
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(flagged, _SEARCH_ENDPOINT)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "def orders_by_order_id(" not in plugin_code
+        assert "def search(" in plugin_code
 
 
 class TestUnavailableShapeIsOmittedFromTheDocstring:

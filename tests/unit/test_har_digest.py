@@ -18,7 +18,11 @@ from graftpunk.har.digest import (
     _SHAPE_MAX_KEYS,
     SHAPE_UNAVAILABLE,
     DigestSource,
+    Endpoint,
+    LoginObservation,
+    ObservationKind,
     _parse_body,
+    _with_login_flow,
     body_params,
     digest,
 )
@@ -1021,3 +1025,91 @@ class TestParseErrorsAndMissingBodies:
         har_path = _write_har(tmp_path, [entry])
         result = digest(DigestSource.from_har(har_path))  # must not raise
         assert result.dropped["error"] == 1
+
+
+def _flow_endpoint(template: str, method: str = "GET", examples: tuple[str, ...] = ()) -> Endpoint:
+    return Endpoint(
+        host="api.myshop.example.com",
+        template=template,
+        methods=(method,),
+        count=1,
+        statuses=(200,),
+        content_type="text/html",
+        query_params={},
+        body_params={},
+        body_kind="none",
+        shape=None,
+        custom_headers=(),
+        examples=examples,
+    )
+
+
+def _flow_observation(kind: ObservationKind, method: str, path: str) -> LoginObservation:
+    return LoginObservation(
+        order=1,
+        method=method,
+        url=f"https://api.myshop.example.com{path}",
+        status=200,
+        kind=kind,
+        fields=(),
+    )
+
+
+class TestLoginFlowFlag:
+    """login_flow marks the endpoints login_config drives: the login form's GET and
+    the credential POST. It moved here from the generator so the proposal table and
+    the scaffold read one flag (graft skill spec, 2026-09-21)."""
+
+    def test_the_form_page_and_the_credential_post_are_flagged(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=(
+                    '<form action="/login" method="post">'
+                    '<input type="email" name="email"><input type="password" name="password">'
+                    "</form>"
+                ),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/login",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+            _entry("GET", "https://api.myshop.example.com/api/orders", body='{"orders": []}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags == {
+            ("GET", "/login"): True,
+            ("POST", "/login"): True,
+            ("GET", "/api/orders"): False,
+        }
+
+    def test_the_same_path_under_another_method_is_not_flagged(self) -> None:
+        (endpoint,) = _with_login_flow(
+            (_flow_endpoint("/login", "DELETE"),),
+            (_flow_observation("form_page", "GET", "/login"),),
+        )
+        assert endpoint.login_flow is False
+
+    def test_a_login_path_inside_a_collapsed_family_is_flagged(self) -> None:
+        """The high-cardinality collapse can re-template the endpoint the observation
+        belongs to, so templating the observation's path alone would miss it."""
+        family = _flow_endpoint("/account/{account_id}", examples=("/account/login",))
+        (endpoint,) = _with_login_flow(
+            (family,), (_flow_observation("form_page", "GET", "/account/login"),)
+        )
+        assert endpoint.login_flow is True
+
+    def test_a_redirect_or_auth_api_observation_flags_nothing(self) -> None:
+        endpoints = (_flow_endpoint("/auth/callback"), _flow_endpoint("/api/session"))
+        observations = (
+            _flow_observation("redirect", "GET", "/auth/callback"),
+            _flow_observation("auth_api", "GET", "/api/session"),
+        )
+        assert [e.login_flow for e in _with_login_flow(endpoints, observations)] == [False, False]
+
+    def test_the_flag_defaults_to_false(self) -> None:
+        assert _flow_endpoint("/anything").login_flow is False
