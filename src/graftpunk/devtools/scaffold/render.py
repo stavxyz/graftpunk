@@ -45,6 +45,7 @@ from graftpunk.har.paths import (
     templates_a_segment,
 )
 from graftpunk.har.report import summarize_shape
+from graftpunk.plugins.cli_plugin import SitePlugin
 
 __all__ = [
     "PLUGIN_NAME_RE",
@@ -208,7 +209,27 @@ def _command_name(template: str, seen: set[str]) -> str:
         if segment
     ]
     base = re.sub(r"[^a-z0-9_]", "_", "_".join(parts).lower())[:_MAX_COMMAND_NAME] or "root"
-    return _deduped(base, seen)
+    return _deduped(_safe_identifier(base, digit_prefix="n_"), seen)
+
+
+def _safe_identifier(base: str, *, digit_prefix: str) -> str:
+    """*base*, already in the identifier alphabet, made a Python identifier: a leading
+    digit gains *digit_prefix*, and a keyword or soft keyword gains a trailing
+    underscore (``import`` gives ``import_``). The one rule for command names, their
+    test names, and parameter identifiers."""
+    if base and base[0].isdigit():
+        base = f"{digit_prefix}{base}"
+    if keyword.iskeyword(base) or keyword.issoftkeyword(base):
+        base = f"{base}_"
+    return base
+
+
+# The names a generated command may not take: every public attribute of
+# SitePlugin, the class the generated plugin subclasses, read from the class itself
+# so a new framework attribute is covered without an edit here.
+_TAKEN_COMMAND_NAMES = frozenset(name for name in dir(SitePlugin) if not name.startswith("_"))
+# The generated test module's fixed tests, whose names a per-command test may not take.
+_FIXED_TEST_NAMES = frozenset({"plugin_instantiates"})
 
 
 def _snake_cased(text: str) -> str:
@@ -243,11 +264,8 @@ def _param_identifier(site_name: str, seen: set[str]) -> str:
     # Stripped of leading and trailing underscores, so $filter gives filter and
     # __VIEWSTATE gives viewstate, not an option spelled with leading hyphens.
     base = _snake_cased(re.sub(r"[^A-Za-z0-9_]", "_", site_name)).strip("_")
-    if base and base[0].isdigit():
-        base = f"p_{base}"
-    base = base[:_MAX_PARAM_NAME] or "param"
-    if keyword.iskeyword(base) or keyword.issoftkeyword(base):
-        base = f"{base}_"
+    base = _safe_identifier(base, digit_prefix="p_")[:_MAX_PARAM_NAME] or "param"
+    base = _safe_identifier(base, digit_prefix="p_")
     return _deduped(base, seen)
 
 
@@ -887,6 +905,11 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
                 indent=len(L2),
             )
         )
+    if path_params:
+        lines.append(
+            f"{L2}# Each path value is percent-encoded, so a / ? or # in it stays in its segment."
+        )
+        lines.extend(f'{L2}{p} = quote({p}, safe="")' for p in path_params)
     lines.append(_ENDPOINT_COMMENT)
     lines.append(f"{L2}return ctx.{call}(")
     lines.extend(call_lines)
@@ -949,7 +972,7 @@ def _render_command_stubs(spec: ScaffoldSpec) -> list[str]:
             '        """GP-FILL: what this command does."""',
             '        return ctx.request_json("GET", "/GP-FILL/path")',
         ]
-    seen_names: set[str] = set()
+    seen_names: set[str] = set(_TAKEN_COMMAND_NAMES)
     lines: list[str] = []
     for endpoint in endpoints:
         lines.extend(_render_command_stub(endpoint, seen_names, _run_label(spec.digest)))
@@ -977,6 +1000,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
     needs_login_import = _needs_login_import(spec)
     needs_token_import = spec.digest is not None and bool(_paired_token_candidates(spec.digest))
     needs_param_spec = any(_needs_param_specs(e) for e in _stub_endpoints(spec))
+    needs_quote = any(URL_PLACEHOLDER_RE.search(e.template) for e in _stub_endpoints(spec))
     plugins_names = _plugins_import_names(
         needs_login_import=needs_login_import, needs_param_spec=needs_param_spec
     )
@@ -988,6 +1012,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         "",
         "from __future__ import annotations",
         "",
+        *(["from urllib.parse import quote", ""] if needs_quote else []),
         *import_lines("graftpunk.plugins", *plugins_names),
     ]
     if needs_token_import:
@@ -1137,9 +1162,11 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         )
         lines.append(marker)
         return "\n".join(lines).rstrip() + "\n"
-    seen: set[str] = set()
+    seen: set[str] = set(_TAKEN_COMMAND_NAMES)
+    seen_tests: set[str] = set(_FIXED_TEST_NAMES)
     for endpoint in endpoints:
         name = _command_name(endpoint.template, seen)
+        test_name = _deduped(name, seen_tests)
         # The same seeding as _render_command_stub, so the identifiers here are
         # the ones the stub actually declares.
         _, path_params = _templated_url(
@@ -1151,7 +1178,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         # renames back to the endpoint's own template, so it finds the
         # fixture named for it. A literal "GP-FILL" would not: it stays a
         # literal segment and the fixture lookup would 404.
-        lines.append(f"def test_{name}() -> None:")
+        lines.append(f"def test_{test_name}() -> None:")
         # base_url is a captured site fact and plugin_name is the user's own
         # name, so this call is exploded one keyword argument per line with
         # both values through literal_lines.

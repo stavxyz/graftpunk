@@ -2935,3 +2935,79 @@ def test_token_candidates_dropped_as_ids_are_counted_in_one_gp_fill() -> None:
         "GP-FILL: 2 token candidate(s) were left out because their names held an account "
         "value; configure any this plugin needs by hand."
     ) in comments
+
+
+def _single_endpoint(template: str, method: str = "GET") -> Endpoint:
+    return dataclasses.replace(
+        _ORDERS_ENDPOINT, template=template, methods=(method,), query_params={}, custom_headers=()
+    )
+
+
+def _render_endpoints(*endpoints: Endpoint) -> dict[str, str]:
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=endpoints),
+    )
+    return render(spec)
+
+
+class TestGeneratedNamesAreSafe:
+    @pytest.mark.parametrize(
+        ("template", "name"),
+        [
+            ("/import", "import_"),
+            ("/1/statuses", "n_1_statuses"),
+            ("/class/{class_id}", "class_by_class_id"),
+        ],
+    )
+    def test_a_command_name_is_an_identifier(self, template: str, name: str) -> None:
+        """G1: through one helper, for the command and its test alike."""
+        files = _render_endpoints(_single_endpoint(template))
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        test_code = files["tests/test_plugin.py"]
+        assert f"def {name}(" in plugin_code
+        assert f"def test_{name}(" in test_code
+        assert f"plugin.{name}(" in test_code
+        compile(plugin_code, "plugin.py", "exec")
+        compile(test_code, "test_plugin.py", "exec")
+
+    @pytest.mark.parametrize("template", ["/setup", "/backend", "/login_config"])
+    def test_a_command_never_shadows_a_site_plugin_attribute(self, template: str) -> None:
+        """G2: the names are seeded from SitePlugin itself."""
+        from graftpunk.plugins.cli_plugin import SitePlugin
+
+        files = _render_endpoints(_single_endpoint(template))
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        attribute = template.strip("/")
+        assert hasattr(SitePlugin, attribute)
+        assert f"def {attribute}(" not in plugin_code
+        assert f"def {attribute}_2(" in plugin_code
+
+    def test_a_generated_test_name_never_repeats_a_fixed_test(self) -> None:
+        """G3: a command named plugin_instantiates gets a test of its own name."""
+        files = _render_endpoints(_single_endpoint("/plugin/instantiates"))
+        test_code = files["tests/test_plugin.py"]
+        assert test_code.count("def test_plugin_instantiates(") == 1
+        assert "def test_plugin_instantiates_2(" in test_code
+        compile(test_code, "test_plugin.py", "exec")
+
+    def test_a_path_parameter_is_percent_encoded_into_its_segment(self) -> None:
+        """G6: a value holding a slash, a query, or a fragment stays in its segment."""
+        plugin_code = _render_endpoints(_single_endpoint("/orders/{order_id}"))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(plugin_code, namespace)  # noqa: S102
+        urls: list[str] = []
+
+        class _Ctx:
+            def request_json(self, method: str, url: str, **kwargs: Any) -> dict:
+                urls.append(url)
+                return {}
+
+        plugin = namespace["MyshopPlugin"]()
+        plugin.orders_by_order_id(_Ctx(), order_id="../../admin?x=1#")
+        assert urls == ["/orders/..%2F..%2Fadmin%3Fx%3D1%23"]
