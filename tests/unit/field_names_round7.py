@@ -1,17 +1,16 @@
-"""A held-out corpus of field, parameter, and header names as public SDKs and web
-APIs spell them: payment, source hosting, cloud (PascalCase with an acronym and a
-digit), commerce, CRM, crypto, and container orchestration names.
+"""A corpus of field, parameter, and header names as public SDKs and web APIs spell
+them: payment, source hosting, cloud (PascalCase with an acronym and a digit),
+commerce, CRM, crypto, and container orchestration names.
 
-Held out: written down before the id rule was last changed and never used to tune
-it. A name here that the rule reads as an id is a measured false positive, not a
-reason to change the rule for that name. ``test_id_miss_rates.py`` holds the share
-read as ids under its own ceiling, apart from the regression corpus
-(``field_names_regression.py``).
+Written before round 7 (2026-09-23) as a held-out corpus; the round-7b thresholds
+of the name rule were then set against it, so it is held out no longer. The fresh
+corpus (``field_names_fresh.py``) took its place. ``test_id_miss_rates.py`` holds
+the share read as ids under its own ceiling.
 """
 
 from __future__ import annotations
 
-HELD_OUT_NAMES = (
+ROUND7_NAMES = (
     # Payment APIs
     "payment_intent",
     "payment_method_types",

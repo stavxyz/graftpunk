@@ -29,6 +29,7 @@ from graftpunk.har.paths import (
     bare_host,
     bare_url,
     holds_an_id,
+    keys_are_ids,
     looks_dynamic,
     param_name_for_segment,
     template_path,
@@ -664,10 +665,12 @@ def _shape_of(value: Any, depth: int = 0) -> ShapeNode:
             return ShapeNode(kind="object", truncated=bool(value))
         # A key holding an id (a map keyed by account or order ids) is data, not
         # a field: every such key becomes one "{key}", whose shape is the first
-        # such sibling's.
+        # such sibling's. A map whose keys are ids as a group (keys_are_ids) has
+        # every key replaced.
         children: dict[str, ShapeNode] = {}
+        map_of_ids = keys_are_ids(value)
         for key, child in value.items():
-            name = _ID_KEY if holds_an_id(key) else key
+            name = _ID_KEY if map_of_ids or holds_an_id(key) else key
             if name not in children:
                 children[name] = _shape_of(child, depth + 1)
         truncated = len(children) > _SHAPE_MAX_KEYS

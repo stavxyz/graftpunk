@@ -209,6 +209,10 @@ KEY_POSITION_IDS = (
     "usr-8fK2x9QaZ1mN",
     "Zm9vYmFyYmF6cXV4MTIzNDU2",
     "sess-Zm9vYmFyYmF6cXV4MTIzNDU2",
+    "(555)123-4567",
+    "tel(512)555-0100",
+    "0xdeadbeefcafe12",
+    "wallet_0x5f1aBcDeF09aAbBc",
 )
 # Shapes an account value takes in a path, beyond the table above. A path segment
 # fails closed, so each is dynamic there; as a name most are kept (short random

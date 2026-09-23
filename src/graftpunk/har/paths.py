@@ -8,7 +8,7 @@ by the digest's endpoint modelling and the fixtures/naming rule below it
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 # The name rule's length thresholds (see holds_an_id): mixed hex, a prefixed id's
@@ -33,6 +33,7 @@ __all__ = [
     "bare_url",
     "holds_an_id",
     "is_placeholder",
+    "keys_are_ids",
     "looks_dynamic",
     "param_name_for_segment",
     "template_path",
@@ -77,6 +78,10 @@ _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _MIN_DIGIT_GROUPS = 3
 _MIN_GROUPED_DIGITS = 7
 _PLACEHOLDER_SEGMENT_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
+# A phone number with its area code in parentheses: (555)123-4567, (512)555.0100.
+_PARENTHESISED_PHONE_RE = re.compile(r"\(\d{3}\)\s?\d{3}[-.\s]?\d{4}")
+# 0x and 12 or more hex digits: a wallet address, a hash, or a key id.
+_PREFIXED_HEX_RE = re.compile(rf"0[xX][0-9a-fA-F]{{{_MIN_HEX_LEN},}}")
 
 
 def _has_digit(text: str) -> bool:
@@ -124,6 +129,14 @@ def _digit_groups(text: str) -> bool:
     )
 
 
+def _parenthesised_phone(text: str) -> bool:
+    return bool(_PARENTHESISED_PHONE_RE.search(text))
+
+
+def _prefixed_hex(text: str) -> bool:
+    return any(_PREFIXED_HEX_RE.fullmatch(part) for part in _parts(text))
+
+
 def _prefixed_id(text: str) -> bool:
     """A prefix of 2 to 8 letters, a separator, and a tail of 12 or more characters
     mixing upper case, lower case, and digits (``cus_NffrFeUfNV2Hib``)."""
@@ -157,6 +170,8 @@ _NAME_ID_RULES: tuple[tuple[str, Callable[[str], bool]], ...] = (
     ("digit run", _long_digit_run),
     ("mixed hex", _mixed_hex),
     ("digit groups", _digit_groups),
+    ("parenthesised phone", _parenthesised_phone),
+    ("0x hex", _prefixed_hex),
     ("prefixed id", _prefixed_id),
     ("base64 token", _base64_token),
 )
@@ -176,7 +191,9 @@ def holds_an_id(text: str) -> bool:
     - a run of 6 or more digits (``user_40912873``);
     - hex of 12 or more characters mixing digits and letters (``a3f9c2d1e0b4``);
     - 3 or more all-digit parts totalling 7 or more digits (``4111-1111-1111-1111``,
-      ``123-45-6789``; a date such as ``2024-01-15`` as a whole is not);
+      ``123-45-6789``; a date such as ``2024-01-15`` as a whole is not), or a phone
+      number with its area code in parentheses (``(555)123-4567``);
+    - ``0x`` and 12 or more hex digits (``0xdeadbeefcafe12``);
     - a prefixed id: 2 to 8 letters, a separator, and a tail of 12 or more
       characters mixing upper case, lower case, and digits (``cus_NffrFeUfNV2Hib``);
     - a base64-like token of 24 or more characters switching between letters and
@@ -191,6 +208,33 @@ def holds_an_id(text: str) -> bool:
     if not text:
         return False
     return any(rule(text) for _name, rule in _NAME_ID_RULES)
+
+
+# A response object whose keys are all ids the name rule keeps (push ids, record
+# ids): at least this many keys, all of one length at least this long, each an
+# alphanumeric run (a leading "-" allowed) mixing letters and digits.
+_MIN_ID_MAP_KEYS = 3
+_MIN_ID_MAP_KEY_LEN = 12
+_ID_MAP_KEY_RE = re.compile(r"-?[A-Za-z0-9]+")
+
+
+def keys_are_ids(keys: Iterable[str]) -> bool:
+    """True when *keys*, one response object's keys, are ids as a group: 3 or more,
+    all one length of 12 or more, each an alphanumeric run (a leading ``-``
+    allowed) mixing letters and digits (``-NqF7xYz3abcDEFghiJK``,
+    ``recA1b2C3d4E5f6G7``). A map-level rule for response keys only: one such name
+    alone is a field name. Keys with an inner separator are names
+    (``ctl00_MainContent_LoginUser_Password``)."""
+    keys = list(keys)
+    lengths = {len(key) for key in keys}
+    return (
+        len(keys) >= _MIN_ID_MAP_KEYS
+        and len(lengths) == 1
+        and next(iter(lengths)) >= _MIN_ID_MAP_KEY_LEN
+        and all(
+            _ID_MAP_KEY_RE.fullmatch(key) and _has_digit(key) and _has_letter(key) for key in keys
+        )
+    )
 
 
 # A path segment's own checks, on top of the name rule: fail closed on any digit

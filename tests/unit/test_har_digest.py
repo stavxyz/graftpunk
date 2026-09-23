@@ -1579,6 +1579,34 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         assert endpoint.shape is not None
         assert set(endpoint.shape.children) == {"{key}", "name"}
 
+    @pytest.mark.parametrize(
+        "keys",
+        [
+            ["-NqF7xYz3abcDEFghiJK", "-NqF7xZ01bcdEFGhijKL", "-NqF7y0Q2cdeFGHijkLM"],
+            ["recA1b2C3d4E5f6G7", "recH8i9J0k1L2m3N4", "recO5p6Q7r8S9t0U1"],
+        ],
+        ids=["push-ids", "record-ids"],
+    )
+    def test_a_map_keyed_by_ids_the_name_rule_keeps_becomes_one_placeholder_key(
+        self, tmp_path: Path, keys: list[str]
+    ) -> None:
+        body = json.dumps({"items": {key: {"total": 1} for key in keys}})
+        entries = [_entry("GET", "https://api.myshop.example.com/balances", body=body)]
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        assert endpoint.shape is not None
+        items = endpoint.shape.children["items"]
+        assert set(items.children) == {"{key}"}
+        text = render_json(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
+        for key in keys:
+            assert key not in text
+
+    def test_a_map_of_two_keys_or_of_mixed_lengths_keeps_its_names(self, tmp_path: Path) -> None:
+        body = json.dumps({"sha256Checksum": 1, "md5Checksum2": 2, "x509Certificate": 3, "ab": 4})
+        entries = [_entry("GET", "https://api.myshop.example.com/files", body=body)]
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        assert endpoint.shape is not None
+        assert "{key}" not in endpoint.shape.children
+
     def test_an_id_header_name_is_dropped_and_counted(self, tmp_path: Path) -> None:
         entries = [
             _entry(
