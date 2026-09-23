@@ -8,6 +8,7 @@ by the digest's endpoint modelling and the fixtures/naming rule below it
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 # A segment collapses to a parameter when it looks like an opaque
 # identifier rather than a word: all digits, a UUID, 16+ hex characters, or
@@ -29,7 +30,32 @@ _UUID_RE = re.compile(
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _BASE64_RE = re.compile(r"^[A-Za-z0-9_-]+=*$")
 
-__all__ = ["looks_dynamic", "param_name_for_segment", "template_path"]
+__all__ = ["bare_path", "bare_url", "looks_dynamic", "param_name_for_segment", "template_path"]
+
+
+_PATH_PARAMS_RE = re.compile(r";[^/]*")
+
+
+def bare_path(path: str) -> str:
+    """*path* with the ``;params`` of every segment removed.
+
+    A matrix parameter (``;jsessionid=...``) can sit on any segment, not only
+    the last, and it carries a session id or a token rather than a route.
+    """
+    return _PATH_PARAMS_RE.sub("", path)
+
+
+def bare_url(url: str) -> str:
+    """*url* reduced to its scheme, host, and :func:`bare_path` path.
+
+    The one rule for every URL the digest keeps: the query string, the fragment,
+    every segment's ``;params``, and any ``user:password@`` are account values,
+    not parts of the route. A relative URL stays relative, and one that was only
+    a query or ``;params`` comes back empty.
+    """
+    parts = urlsplit(url)
+    host = parts.netloc.rpartition("@")[2]
+    return urlunsplit((parts.scheme, host, bare_path(parts.path), "", ""))
 
 
 def looks_dynamic(segment: str) -> bool:
@@ -77,12 +103,14 @@ def template_path(path: str) -> tuple[str, dict[str, str]]:
     """Collapse a URL path's dynamic segments into named parameters.
 
     ``/orders/123`` becomes ``/orders/{order_id}``. A leading and/or
-    trailing slash is preserved exactly as given.
+    trailing slash is preserved exactly as given, and every segment's
+    ``;params`` are dropped first (:func:`bare_path`).
 
     Returns:
         The templated path, and a dict mapping each collapsed parameter
         name to the literal segment value it replaced.
     """
+    path = bare_path(path)
     leading = "/" if path.startswith("/") else ""
     trailing = "/" if len(path) > 1 and path.endswith("/") else ""
     segments = path.strip("/").split("/") if path.strip("/") else []

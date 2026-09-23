@@ -100,3 +100,11 @@ class TestParamNameForSegment:
         """Naive stripping gave statu_id, addres_id, analysi_id and bu_id; the
         letter before the final s decides, and orders still gives order_id."""
         assert param_name_for_segment(prev) == expected
+
+
+def test_path_params_are_dropped_from_every_segment() -> None:
+    assert template_path("/auth;sid=MIDSEG999/session") == ("/auth/session", {})
+    assert template_path("/orders;v=2/123;jsessionid=X") == (
+        "/orders/{order_id}",
+        {"order_id": "123"},
+    )

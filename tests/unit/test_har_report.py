@@ -406,6 +406,79 @@ class TestEndpointsProjection:
         assert render_json(patched) != render_json(result)
 
 
+# A distinct marker in the query, the fragment, a ;param, and the userinfo of
+# every URL a digest reads: none of them is a path, so none may be retained.
+_URL_MARKERS = (
+    "QVALUEPAGE",
+    "FRAGPAGE",
+    "SEMIPAGE",
+    "USERINFOPW",
+    "QVALUEACTION",
+    "FRAGACTION",
+    "SEMIACTION",
+    "QVALUEPOST",
+    "SEMIPOST",
+    "QVALUEREDIR",
+    "FRAGREDIR",
+    "SEMIREDIR",
+    "QVALUEORDERS",
+    "SEMIMIDDLE",
+)
+
+
+def _url_planted_run(tmp_path: Path) -> Path:
+    page = _entry(
+        "GET",
+        "https://alice:USERINFOPW@myshop.example.com/signin;s=SEMIPAGE/page?q=QVALUEPAGE#FRAGPAGE",
+        content_type="text/html",
+        body=(
+            '<html><head><meta name="csrf-token" content="t"></head>'
+            '<form action="/login;jsessionid=SEMIACTION?q=QVALUEACTION#FRAGACTION" method="post">'
+            '<input type="hidden" name="authenticity_token" value="t">'
+            '<input name="username"><input type="password" name="password"></form></html>'
+        ),
+    )
+    post = _entry(
+        "POST",
+        "https://myshop.example.com/login;s=SEMIPOST?q=QVALUEPOST",
+        content_type="text/html",
+        body="",
+    )
+    post["request"]["postData"] = {
+        "mimeType": "application/x-www-form-urlencoded",
+        "text": "username=a&password=b",
+    }
+    post["response"]["status"] = 302
+    redirect = "/dashboard;s=SEMIREDIR?q=QVALUEREDIR#FRAGREDIR"
+    post["response"]["redirectURL"] = redirect
+    post["response"]["headers"].append({"name": "Location", "value": redirect})
+    orders = _entry(
+        "GET",
+        "https://myshop.example.com/api;s=SEMIMIDDLE/orders?q=QVALUEORDERS",
+        body='{"id": 1}',
+    )
+    return _write_har(tmp_path, [page, post, orders])
+
+
+class TestNoUrlPartBeyondThePathIsRetained:
+    def test_neither_json_output_carries_a_query_fragment_param_or_userinfo(
+        self, tmp_path: Path
+    ) -> None:
+        result = digest(DigestSource.from_har(_url_planted_run(tmp_path)))
+        # The digest saw the form, the login, the redirect, and the token, so the
+        # absence below is not vacuous.
+        assert result.login_forms
+        assert any(o.kind == "credential_post" for o in result.login)
+        assert any(t.name == "csrf-token" for t in result.tokens)
+        for text in (render_json(result), render_endpoints_json(result), render_markdown(result)):
+            for marker in _URL_MARKERS:
+                assert marker not in text, marker
+
+    def test_a_middle_segment_param_leaves_the_endpoint_template(self, tmp_path: Path) -> None:
+        payload = endpoints_projection(digest(DigestSource.from_har(_url_planted_run(tmp_path))))
+        assert "/api/orders" in {e["template"] for e in payload["endpoints"]}
+
+
 def test_render_json_carries_no_collapsed_member_beyond_the_capped_examples(
     tmp_path: Path,
 ) -> None:

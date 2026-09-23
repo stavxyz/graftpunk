@@ -24,7 +24,13 @@ from graftpunk.har.documents import (
     looks_like_token_name,
 )
 from graftpunk.har.parser import HAREntry, parse_har_file
-from graftpunk.har.paths import looks_dynamic, param_name_for_segment, template_path
+from graftpunk.har.paths import (
+    bare_path,
+    bare_url,
+    looks_dynamic,
+    param_name_for_segment,
+    template_path,
+)
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -574,7 +580,7 @@ def _redirect_target_path(entry: HAREntry) -> str:
     target = entry.response.redirect_url
     if not target:
         return ""
-    return urlparse(urljoin(entry.request.url, target)).path
+    return bare_path(urlparse(urljoin(entry.request.url, target)).path)
 
 
 def _has_password_field(entry: HAREntry) -> list[str]:
@@ -831,7 +837,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if parsed_url.scheme.lower() not in _HTTP_SCHEMES:
             dropped["other_scheme"] += 1
             continue
-        host = parsed_url.netloc.lower()
+        # Userinfo is a credential, not part of the host (paths.bare_url).
+        host = parsed_url.netloc.rpartition("@")[2].lower()
         hosts[host] = hosts.get(host, 0) + 1
         static = _is_static(entry)
         if not static:
@@ -868,7 +875,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             LOG.warning("digest_body_file_missing", url=entry.request.url)
             continue
 
-        path = urlparse(entry.request.url).path or "/"
+        # Path only: every URL the digest keeps goes through paths.bare_url, so
+        # no query, fragment, ;params, or userinfo reaches an example, a
+        # template, a login observation, a form source, or a token's seen_on.
+        url = bare_url(entry.request.url)
+        path = urlparse(url).path or "/"
         method = entry.request.method.upper()
         raw_template, _ = template_path(path)
         key = (method, raw_template)
@@ -893,7 +904,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         content_type = (entry.response.content_type or "").lower()
         forms_in_entry: tuple[LoginForm, ...] = ()
         if "html" in content_type and entry.response.body:
-            document_source = entry.request.url
+            document_source = url
             forms_in_entry = extract_login_forms(entry.response.body, source=document_source)
             login_forms.extend(forms_in_entry)
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
@@ -926,7 +937,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 LoginObservation(
                     order=order,
                     method=method,
-                    url=f"{urlparse(entry.request.url).scheme}://{host}{path}",
+                    url=url,
                     status=entry.response.status,
                     kind=kind,
                     fields=fields,

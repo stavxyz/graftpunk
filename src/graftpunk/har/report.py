@@ -14,7 +14,7 @@ import dataclasses
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit
 
 from graftpunk.contracts import current_schema
 from graftpunk.har.digest import INTERNAL, Endpoint, RunDigest, ShapeNode
@@ -189,9 +189,9 @@ def render_json(d: RunDigest) -> str:
 def _templated_url(url: str) -> str:
     """*url* with its path templated the way endpoints are: an observation carries
     the raw path, which can hold an account id or a one-time token."""
-    parsed = urlparse(url)
-    template, _ = template_path(parsed.path or "/")
-    return parsed._replace(path=template).geturl()
+    parts = urlsplit(url)
+    template, _ = template_path(parts.path or "/")
+    return urlunsplit((parts.scheme, parts.netloc, template, "", ""))
 
 
 def endpoints_projection(d: RunDigest) -> dict[str, Any]:

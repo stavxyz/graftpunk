@@ -215,7 +215,9 @@ and `--output PATH` writes to a file.
 The digest is redacted by construction. It records header names, cookie names,
 form field names, query parameter names and observed types, and response
 shapes. It never retains a header value, a cookie value, a query value, or a
-body value. Path segments are the exception: the example paths under each
+body value, and every URL it keeps is scheme, host, and path only, with no query
+string, fragment, userinfo, or `;params` in any segment. Path segments are the
+exception: the example paths under each
 endpoint are real, so a digest of a site whose URLs carry account or document
 identifiers is not safe to paste anywhere a capture would not be.
 
