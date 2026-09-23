@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -66,7 +67,14 @@ class TestAddToSuiteMode:
         assert result.mode == "add_to_suite"
         assert (tmp_path / "src" / "graftpunk_widgets" / "plugin.py").exists()
         assert (tmp_path / "tests" / "test_widgets.py").exists()
-        assert not (tmp_path / "pyproject.toml").exists() or True  # untouched path, not rewritten
+        # Suite mode edits the suite's own pyproject.toml rather than replacing it
+        # with a rendered one: it still loads, as the same project, with the
+        # entry point it already declared.
+        suite = tomllib.loads((tmp_path / "pyproject.toml").read_text())
+        assert suite["project"]["name"] == "mysuite"
+        assert suite["project"]["entry-points"]["graftpunk.plugins"]["existing"] == (
+            "mysuite.existing:ExistingPlugin"
+        )
 
     def test_entry_point_and_package_added_to_pyproject(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(_SUITE_PYPROJECT)
