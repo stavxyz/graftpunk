@@ -27,7 +27,13 @@ from graftpunk.har.digest import (
 from graftpunk.har.parser import parse_har_file
 from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 from graftpunk.testing.sidecar import Sidecar, sidecar_text
-from tests.unit.test_har_paths import KEY_POSITION_IDS, MUST_BE_KEPT, MUST_STAY_LITERAL_SEGMENT
+from tests.unit.test_har_paths import (
+    KEY_POSITION_IDS,
+    MUST_BE_KEPT,
+    MUST_STAY_LITERAL_SEGMENT,
+    PATH_ID_SHAPES,
+    SHORT_DIGIT_GROUPS,
+)
 
 _HOST = "https://myshop.example.com"
 
@@ -219,8 +225,8 @@ def test_an_ordinary_name_survives_in_every_name_position(tmp_path: Path, name: 
         assert found, position
 
 
-# Digit groups (card, national id, phone numbers) and dates, which a path fails
-# closed on and a name judges by holds_an_id.
+# Digit groups (card, national id, phone numbers), dates, short digit groups, and
+# the path rule's own id shapes, which a path fails closed on.
 _DIGIT_GROUPS_AND_DATES = (
     "4111-1111-1111-1111",
     "123-45-6789",
@@ -228,6 +234,8 @@ _DIGIT_GROUPS_AND_DATES = (
     "1-800-555-0199",
     "1987-03-14",
     "2026-09-23",
+    *SHORT_DIGIT_GROUPS,
+    *PATH_ID_SHAPES,
 )
 
 

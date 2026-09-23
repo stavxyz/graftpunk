@@ -215,7 +215,7 @@ _VOWELS = frozenset("aeiouyAEIOUY")
 # most 2 after it (address2, windows10, ec2), a version, or a lone digit run of at
 # most 2 (/page/2).
 _WORD_WITH_DIGITS_RE = re.compile(r"([A-Za-z]+)\d{1,2}")
-_VERSION_RE = re.compile(r"v\d+(?:alpha|beta|rc)?\d*")
+_VERSION_RE = re.compile(r"v\d{1,2}(?:alpha|beta|rc)?\d{0,2}")
 # A run of capitals this long is an acronym no longer: MAPLETON7 reads as a code.
 _MAX_CAPITALS_RUN = 3
 
@@ -233,12 +233,25 @@ def _spelled(letters: str) -> bool:
 
 
 def _literal_part(part: str) -> bool:
+    """A part of a literal segment: no digit, a version, a lone digit run of at most
+    2, or a spelled word with a digit run of at most 2 after it."""
     if not _has_digit(part):
         return True
     if _VERSION_RE.fullmatch(part) or (part.isdigit() and len(part) <= 2):
         return True
     match = _WORD_WITH_DIGITS_RE.fullmatch(part)
     return match is not None and _spelled(match.group(1))
+
+
+def _literal_segment(text: str) -> bool:
+    """True when every part of *text* is literal (:func:`_literal_part`) and a lone
+    short digit run is the only part holding a digit: ``/page/2`` and ``step-2``
+    stay literal, ``03-14-87``, ``10.0.0.1``, and ``acct-12-34`` do not."""
+    parts = _parts(text)
+    if not all(_literal_part(part) for part in parts):
+        return False
+    digit_parts = [part for part in parts if _has_digit(part)]
+    return not (len(digit_parts) > 1 and any(part.isdigit() for part in digit_parts))
 
 
 def _joined_token(text: str) -> bool:
@@ -292,17 +305,20 @@ def looks_dynamic(segment: str) -> bool:
     """True when *segment* is a path segment that collapses into a named parameter.
 
     Fails closed: a segment is dynamic when :func:`holds_an_id` says so (an email, a
-    UUID, a long number, ...) or it is 3 or more short letter-and-digit parts joined
-    by ``-`` or ``_`` (``ab12-cd34-ef56``), and a segment holding a digit is literal
+    long number, ...) or it is 3 or more short letter-and-digit parts joined by
+    ``-`` or ``_`` (``ab12-cd34-ef56``), and a segment holding a digit is literal
     only when every part of it (split on ``_ . - ~ $``) holds no digit, is a word
     spelled with the consonant pairs English uses and no run of 4 or more capitals,
     followed by a digit run of at most 2 (``address2``, ``windows10``, ``ec2``), is
-    a version (``v2``, ``v1beta1``), or is a digit run of at most 2 standing alone
-    (``/page/2``). Every other segment holding a digit is dynamic: a date, a card,
-    phone, or national id number in digit groups, a long number, a mixed token
-    (``kqzpwmab47``, ``MAPLETON7``). A letters-only segment that holds no id stays
-    literal; the digest's high-cardinality collapse templates a family of many
-    digit-bearing siblings.
+    a version of at most 2 digits (``v2``, ``v1beta1``; not ``v40912``), or is a
+    digit run of at most 2 standing alone, and a lone digit run is the only part
+    holding a digit (``/page/2`` and ``step-2`` stay literal; ``03-14-87``,
+    ``10.0.0.1``, and ``acct-12-34`` do not). Every other segment holding a digit is
+    dynamic: a date, a card, phone, or national id number in digit groups, a long
+    number, a mixed token (``kqzpwmab47``, ``MAPLETON7``). The known limits: a
+    letters-only segment that holds no id stays literal, and so does a word with one
+    or two digits after it (``smith42``, ``mary12``); the digest's high-cardinality
+    collapse templates a family of many digit-bearing siblings.
 
     The one owner of that judgement: ``template_path`` collapses on it, and the
     digest's high-cardinality collapse gates on it. Names (keys, headers, input
@@ -315,7 +331,7 @@ def looks_dynamic(segment: str) -> bool:
     text = unquote(segment)
     if not _has_digit(text):
         return False
-    return _joined_token(text) or not all(_literal_part(part) for part in _parts(text))
+    return _joined_token(text) or not _literal_segment(text)
 
 
 def param_name_for_segment(prev_segment: str) -> str:

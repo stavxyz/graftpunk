@@ -368,6 +368,23 @@ class TestHoldsAnId:
 # Path segments fail closed (graftpunk.har.paths.looks_dynamic): a segment holding a
 # digit stays literal only when every part is letters, a word with a trailing digit
 # run of at most 2, a version, or a lone digit run of at most 2.
+# Short digit groups: dates, sort codes, addresses, and phone fragments whose
+# every digit part is 1 or 2 digits long. A lone short digit part keeps a segment
+# literal only when it is the segment's only part holding a digit.
+SHORT_DIGIT_GROUPS = (
+    "12-34-56",
+    "03-14-87",
+    "14.03.87",
+    "15-01-24",
+    "01.15.24",
+    "4-11-11",
+    "12$34$56",
+    "acct-12-34",
+    "10.0.0.1",
+    "10.0.0.12",
+    "v40912",
+    "v1beta12345",
+)
 MUST_BE_DYNAMIC_SEGMENT = (
     "4111-1111-1111-1111",
     "123-45-6789",
@@ -389,9 +406,15 @@ MUST_BE_DYNAMIC_SEGMENT = (
     "cus_NffrFeUfNV2Hib",
     *KEY_POSITION_IDS,
     *PATH_ID_SHAPES,
+    *SHORT_DIGIT_GROUPS,
 )
 MUST_STAY_LITERAL_SEGMENT = (
     "v2",
+    "v10",
+    "v2beta1",
+    "step-2",
+    "page-12",
+    "smith42",
     "v1beta1",
     "v2alpha1",
     "api",
