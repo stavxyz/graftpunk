@@ -14,9 +14,11 @@ import dataclasses
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from graftpunk.contracts import current_schema
 from graftpunk.har.digest import Endpoint, RunDigest, ShapeNode
+from graftpunk.har.paths import template_path
 
 __all__ = [
     "DEFAULT_ENDPOINT_LIMIT",
@@ -178,13 +180,22 @@ def render_json(d: RunDigest) -> str:
     return json.dumps(_jsonable(d), indent=2, sort_keys=True)
 
 
+def _templated_url(url: str) -> str:
+    """*url* with its path templated the way endpoints are: an observation carries
+    the raw path, which can hold an account id or a one-time token."""
+    parsed = urlparse(url)
+    template, _ = template_path(parsed.path or "/")
+    return parsed._replace(path=template).geturl()
+
+
 def endpoints_projection(d: RunDigest) -> dict[str, Any]:
     """The declared projection ``gp observe digest --endpoints-json`` prints.
 
     An explicit field list, never a reflection over the digest's dataclasses, so
     renaming an internal field touches this function and no contract. It carries
     only what a command proposal consumes, and by construction no cookie name, no
-    token candidate, no example path, and no body. Its field set is pinned per
+    token candidate, no example path, no body, no untemplated login URL path, and
+    no form action query string or ``;params``. Its field set is pinned per
     schema version; fields are added and never renamed or removed within one
     (:mod:`graftpunk.contracts`). ``render_json`` stays an unversioned dump.
     """
@@ -212,7 +223,9 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
             for method in endpoint.methods
         ],
         "login": {
-            "auth_urls": [{"method": o.method, "url": o.url, "kind": o.kind} for o in d.login],
+            "auth_urls": [
+                {"method": o.method, "url": _templated_url(o.url), "kind": o.kind} for o in d.login
+            ],
             "forms": [
                 {"action": form.action, "fields": dict(sorted(form.fields.items()))}
                 for form in d.login_forms

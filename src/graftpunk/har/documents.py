@@ -8,6 +8,7 @@ HAR entry, so this module knows nothing about HAR (plugin tooling spec,
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Literal
@@ -27,6 +28,7 @@ __all__ = [
 _USERNAME_HINTS = ("user", "email", "login", "account")
 _TOKEN_NAME_HINTS = ("csrf", "xsrf", "token")
 _HIDDEN_TOKEN_NAME_HINTS = ("_token", "csrf", "authenticity_token")
+_PATH_PARAMS_RE = re.compile(r";[^/]*")
 
 
 def looks_like_token_name(name: str) -> bool:
@@ -123,12 +125,36 @@ def _parse(html: str) -> _DocumentParser:
     return parser
 
 
-def _selector_for(raw: _RawInput, form_action: str) -> str:
+def _bare_action(action: str) -> str:
+    """*action* without its query string, fragment, or ``;params`` path parameters.
+
+    A form's ``action`` attribute can carry a session id (``;jsessionid=...``) or
+    a one-time token in its query string; both are account values, and the
+    action reaches the digest report, ``--endpoints-json``, and generated
+    ``login_config``.
+    """
+    for mark in ("?", "#"):
+        action = action.split(mark, 1)[0]
+    return _PATH_PARAMS_RE.sub("", action)
+
+
+def _form_scope(raw_action: str, action: str) -> str:
+    """The CSS selector for the form whose attribute reads *raw_action*, spelled
+    with the bare *action* only: a prefix match when anything was stripped, so
+    the selector still finds the form on the live page."""
+    if action == raw_action:
+        return f'form[action="{action}"]'
+    if action:
+        return f'form[action^="{action}"]'
+    return "form"
+
+
+def _selector_for(raw: _RawInput, form_scope: str) -> str:
     if raw.element_id:
         return f"#{raw.element_id}"
     if raw.name:
-        return f'form[action="{form_action}"] {raw.tag}[name="{raw.name}"]'
-    return f'form[action="{form_action}"] {raw.tag}[type="{raw.input_type}"]'
+        return f'{form_scope} {raw.tag}[name="{raw.name}"]'
+    return f'{form_scope} {raw.tag}[type="{raw.input_type}"]'
 
 
 def _guess_role(input_type: str, name: str) -> str:
@@ -145,9 +171,10 @@ def _guess_role(input_type: str, name: str) -> str:
 def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
     """Every ``<form>`` in *html* that contains a password input.
 
-    Each yields a :class:`LoginForm` with one CSS selector per input (an
-    ``#id`` selector when the input has one, else a selector scoped to the
-    form's action), the credential role guessed from type and name, the
+    Each yields a :class:`LoginForm` with the form's action stripped of its
+    query string, fragment, and ``;params`` (:func:`_bare_action`), one CSS
+    selector per input (an ``#id`` selector when the input has one, else a
+    selector scoped to the form's action), the credential role guessed from type and name, the
     submit control's selector, and hidden input names.
     """
     forms: list[LoginForm] = []
@@ -155,6 +182,8 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
         password_inputs = [i for i in raw.inputs if i.input_type == "password"]
         if not password_inputs:
             continue
+        action = _bare_action(raw.action)
+        scope = _form_scope(raw.action, action)
         fields: dict[str, str] = {}
         hidden: list[str] = []
         submit: str | None = None
@@ -166,14 +195,14 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
             if raw_input.input_type == "submit" or (
                 raw_input.tag == "button" and raw_input.input_type != "button"
             ):
-                submit = _selector_for(raw_input, raw.action)
+                submit = _selector_for(raw_input, scope)
                 continue
             role = _guess_role(raw_input.input_type, raw_input.name)
             if role:
-                fields[role] = _selector_for(raw_input, raw.action)
+                fields[role] = _selector_for(raw_input, scope)
         forms.append(
             LoginForm(
-                action=raw.action,
+                action=action,
                 method=raw.method,
                 fields=fields,
                 submit=submit,

@@ -78,6 +78,29 @@ class TestExtractLoginForms:
         (form,) = extract_login_forms(_MULTI_FORM_PAGE, source="s")
         assert form.submit == 'form[action="/login"] input[type="submit"]'
 
+    @pytest.mark.parametrize(
+        ("raw_action", "action", "scope"),
+        [
+            ("/login;jsessionid=S3CR3T?t=tok", "/login", 'form[action^="/login"]'),
+            (
+                "https://myshop.example.com/a;v=1/login#top",
+                "https://myshop.example.com/a/login",
+                'form[action^="https://myshop.example.com/a/login"]',
+            ),
+            ("?next=/orders", "", "form"),
+        ],
+    )
+    def test_an_action_loses_its_query_fragment_and_path_params(
+        self, raw_action: str, action: str, scope: str
+    ) -> None:
+        html = (
+            f'<form action="{raw_action}"><input name="username">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.action == action
+        assert form.fields["username"] == f'{scope} input[name="username"]'
+
 
 class TestExtractTokenCandidates:
     def test_meta_tag_with_csrf_name_is_a_candidate(self) -> None:

@@ -266,6 +266,9 @@ _AUTH_URL_V1 = {"method", "url", "kind"}
 _FORM_V1 = {"action", "fields"}
 
 
+_PLANTED_RESET_SEGMENT = "reset-7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+
+
 def _planted_run(tmp_path: Path) -> Path:
     """A run holding a cookie name, a token candidate, an example path, and a body."""
     account = _entry(
@@ -284,7 +287,29 @@ def _planted_run(tmp_path: Path) -> Path:
         body='{"id": "planted-body-value"}',
     )
     order["response"]["cookies"] = [{"name": "shop_session_cookie", "value": "planted-cookie"}]
-    return _write_har(tmp_path, [account, order])
+    # A form whose action carries a session id and a query token, with inputs that
+    # have no id, so every selector is built from the action.
+    signin = _entry(
+        "GET",
+        "https://myshop.example.com/signin",
+        content_type="text/html",
+        body=(
+            '<form action="/login;jsessionid=SECRETSESSION123?t=tok999" method="post">'
+            '<input type="text" name="username"><input type="password" name="password">'
+            "</form>"
+        ),
+    )
+    # A form page served at a token-bearing path.
+    reset = _entry(
+        "GET",
+        f"https://myshop.example.com/signin/{_PLANTED_RESET_SEGMENT}",
+        content_type="text/html",
+        body=(
+            '<form action="/password/reset" method="post">'
+            '<input type="password" name="password"></form>'
+        ),
+    )
+    return _write_har(tmp_path, [account, order, signin, reset])
 
 
 class TestEndpointsProjection:
@@ -317,8 +342,24 @@ class TestEndpointsProjection:
             "planted-token-value",
             "/api/orders/12345",
             "planted-body-value",
+            "SECRETSESSION123",
+            "jsessionid",
+            "tok999",
+            _PLANTED_RESET_SEGMENT,
         ):
             assert planted not in text, planted
+
+    def test_a_raw_form_action_and_a_token_bearing_form_page_path_are_not_printed(
+        self, tmp_path: Path
+    ) -> None:
+        result = digest(DigestSource.from_har(_planted_run(tmp_path)))
+        # The run observed both, so the assertions below are not vacuous.
+        assert any(_PLANTED_RESET_SEGMENT in o.url for o in result.login)
+        payload = endpoints_projection(result)
+        urls = [o["url"] for o in payload["login"]["auth_urls"]]
+        assert "https://myshop.example.com/signin/{signin_id}" in urls
+        login_form = next(f for f in payload["login"]["forms"] if f["action"] == "/login")
+        assert login_form["fields"]["username"] == 'form[action^="/login"] input[name="username"]'
 
     def test_the_sample_har_leaks_no_cookie_name_or_example_path(self) -> None:
         result = digest(DigestSource.from_har(_SAMPLE_HAR))
