@@ -506,7 +506,10 @@ selectors and the form's action URL from the captured login page, the submit
 selector too, which the digest's markdown form does not print; `success_url`
 from the redirect the credential post answered with; one command stub per
 endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
-twelve, each with the observed query parameters as typed keyword arguments, an
+twelve, each with the observed query parameters as typed keyword arguments (and,
+for a `POST`, `PUT`, or `PATCH`, the observed body fields too, sent as `data=`
+when the recording posted a form and as `json=` otherwise, either way with only
+the fields the caller gave), an
 explicit `params=` list whenever one of them is an `int`, a `float`, or a `bool` (see
 [CLI parameter types](#cli-parameter-types)), the observed custom headers, and
 the endpoint it calls declared as `endpoint=` on its decorator; a docstring
@@ -631,7 +634,7 @@ with neither the handler receives `None`. `ctx.request_json` sends those as
 `archived=true`, `archived=false`, and no `archived` at all; the digest types a
 parameter as `bool` only when the site sent that lowercase spelling, so the
 request matches the recording. In a JSON body the stub sends a JSON boolean, and
-`null` when neither flag is given.
+leaves the field out when neither flag is given.
 
 ```python
 from graftpunk.plugins import CommandContext, PluginParamSpec, command

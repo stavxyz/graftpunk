@@ -24,6 +24,7 @@ __all__ = [
     "URL_PLACEHOLDER_RE",
     "call_expression_lines",
     "exploded_dict_lines",
+    "given_entries_dict_lines",
     "import_lines",
     "literal_dict_entry_lines",
     "literal_lines",
@@ -233,6 +234,27 @@ def exploded_dict_lines(name: str, entries: list[tuple[str, str]]) -> list[str]:
     for key, value in entries:
         lines.extend(_dict_entry_lines(key, value, indent=len(_L4)))
     lines.append(f"{L3}" + "},")
+    return lines
+
+
+def given_entries_dict_lines(name: str, entries: list[tuple[str, str]]) -> list[str]:
+    """A ``name={...}`` call argument like :func:`exploded_dict_lines`, wrapped in a
+    comprehension that leaves out every entry whose value is ``None``, in the shape
+    ``ruff format`` gives it::
+
+        name={
+            key: value
+            for key, value in {
+                "field": field,
+            }.items()
+            if value is not None
+        },
+    """
+    inner = " " * (len(L3) + INDENT_STEP)
+    lines = [f"{L3}{name}=" + "{", f"{inner}key: value", f"{inner}for key, value in " + "{"]
+    for key, value in entries:
+        lines.extend(_dict_entry_lines(key, value, indent=len(inner) + INDENT_STEP))
+    lines.extend([f"{inner}" + "}.items()", f"{inner}if value is not None", f"{L3}" + "},"])
     return lines
 
 

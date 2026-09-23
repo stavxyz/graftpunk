@@ -25,6 +25,7 @@ from graftpunk.devtools.scaffold.pysrc import (
     URL_PLACEHOLDER_RE,
     call_expression_lines,
     exploded_dict_lines,
+    given_entries_dict_lines,
     import_lines,
     literal_dict_entry_lines,
     literal_lines,
@@ -572,7 +573,14 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         call_lines.extend(exploded_dict_lines("params", entries))
     if emits_body:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.body_params)]
-        call_lines.extend(exploded_dict_lines("json", entries))
+        if endpoint.body_kind == "form":
+            # Sent as the recording sent it. ctx.request_* drops a None value
+            # from data= and spells a bool true/false, as it does for params=.
+            call_lines.extend(exploded_dict_lines("data", entries))
+        else:
+            # json= is sent as given, so an option left off is left out here,
+            # rather than sent as null.
+            call_lines.extend(given_entries_dict_lines("json", entries))
     if endpoint.custom_headers:
         entries = [(h, '"GP-FILL"') for h in endpoint.custom_headers]
         call_lines.extend(exploded_dict_lines("headers", entries))

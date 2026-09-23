@@ -128,6 +128,21 @@ _NOTES_ENDPOINT = Endpoint(
     examples=("/orders/1/notes",),
 )
 
+_FORM_POST_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/newsletter/subscribe",
+    methods=("POST",),
+    count=1,
+    statuses=(200,),
+    content_type="application/json",
+    query_params={},
+    body_params={"email": "str", "weekly": "bool"},
+    body_kind="form",
+    shape=ShapeNode(kind="object", children={"ok": ShapeNode(kind="boolean")}),
+    custom_headers=(),
+    examples=("/newsletter/subscribe",),
+)
+
 _PAYMENT_ENDPOINT = Endpoint(
     host="api.myshop.example.com",
     template="/payments",
@@ -1391,6 +1406,36 @@ class TestPluginModuleCommandStubs:
         (prepared,) = sent
         assert json.loads(prepared.body)["pinned"] is expected
 
+    def test_a_json_body_carries_only_the_fields_given(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An option left off is left out of the body, as a query parameter is,
+        rather than sent as null."""
+        argv = ["myshop", "orders-by-order-id-notes", "--order-id", "7", "--body", "hi"]
+        result, sent = self._wire_requests(monkeypatch, _NOTES_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == "https://myshop.example.com/orders/7/notes"
+        assert json.loads(prepared.body) == {"body": "hi"}
+
+    def test_a_form_body_is_sent_as_form_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The digest recorded a form post, so the stub posts a form, not JSON."""
+        argv = ["myshop", "newsletter-subscribe", "--email", "alice@example.com", "--weekly"]
+        result, sent = self._wire_requests(monkeypatch, _FORM_POST_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.headers["Content-Type"] == "application/x-www-form-urlencoded"
+        assert prepared.body == "email=alice%40example.com&weekly=true"
+
+    def test_a_form_body_carries_only_the_fields_given(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        argv = ["myshop", "newsletter-subscribe", "--no-weekly"]
+        result, sent = self._wire_requests(monkeypatch, _FORM_POST_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == "weekly=false"
+
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",
@@ -1866,7 +1911,7 @@ class TestRenderedTreeIsRuffClean:
         self._assert_tree_is_clean(tree)
 
     def test_endpoints_project(self, tmp_path: Path) -> None:
-        digest = _digest(endpoints=(_SEARCH_ENDPOINT, _NOTES_ENDPOINT))
+        digest = _digest(endpoints=(_SEARCH_ENDPOINT, _NOTES_ENDPOINT, _FORM_POST_ENDPOINT))
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
