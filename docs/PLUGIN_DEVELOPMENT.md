@@ -218,17 +218,19 @@ just the primary one, `--limit N` raises the cap on how many endpoints the
 markdown form lists (60 by default), and `--output PATH` writes to a file.
 
 The digest is redacted by construction. It records header names, cookie names,
-form field names, query parameter names and observed types, and response
-shapes. It never retains a header value, a cookie value, a query value, or a
-body value, and every URL it keeps is scheme, host, and path only, with no query
-string, fragment, userinfo, or `;params` in any segment, and with a segment that
-holds an email address replaced by its placeholder (`/users/{user_id}`). The
-markdown digest and `--json` print other path segments as recorded in four
-places: the example paths under each endpoint, the URL and redirect target of
-each login step, each login form's action line, and the login form selectors
-scoped to that action. A digest of a site whose URLs carry account or document
-identifiers is not safe to paste anywhere a capture would not be.
-`--endpoints-json` and every generated file print those paths templated.
+form field names, query parameter names and observed types, and response shapes.
+It never retains a header value, a cookie value, a query value, or a body value,
+and every URL it keeps is scheme, host, and path only, with no query string,
+fragment, userinfo, or `;params` in any segment, and with a segment that holds
+an email address replaced by its placeholder (`/users/{user_id}`). The markdown
+digest and `--json` print other path segments as recorded in six places: the
+example paths under each endpoint, the URL and redirect target of each login
+step, each login form's action line, the login form selectors scoped to that
+action, each login form's `source` (the page it was on), and each token's `seen
+on` (the page a meta tag or hidden input token was on). A digest of a site whose
+URLs carry account or document identifiers is not safe to paste anywhere a
+capture would not be. `--endpoints-json` and every generated file print those
+paths templated.
 
 An observed type is `str`, `int`, `float`, `bool`, `object` (a JSON object),
 `mixed` (JSON values no one type sends), or `list[<element>]` for a query or
@@ -276,11 +278,14 @@ and twelve or more hex digits; three or more all-digit parts totalling seven or
 more digits (`4111-1111-1111-1111`, `123-45-6789`; a date such as `2024-01-15`
 as a whole is a name), or a phone number with its area code in parentheses
 (`(555)123-4567`); a prefixed id whose tail is twelve or more characters mixing
-upper case, lower case, and digits (`cus_NffrFeUfNV2Hib`); or a base64-like
-token of twenty-four or more characters switching between letters and digits at
-least five times. A response object whose keys are ids as a group (three or more
-keys of one length of twelve or more, each an alphanumeric run mixing letters
-and digits, such as push ids or record ids) has every key replaced by `{key}`.
+upper case, lower case, and digits (`cus_NffrFeUfNV2Hib`), at the start of the
+name or of any `_`/`-` part (`otp_cus_NffrFeUfNV2Hib`); or a base64-like token
+of twenty-four or more characters switching between letters and digits at least
+five times. A response object whose keys are ids as a group (three or more keys
+of one length of twelve or more, each an alphanumeric run mixing letters and
+digits that does not read as a word with a short number, and not one name with
+different trailing numbers such as `addressLine1` to `addressLine3`; push ids
+and record ids are such groups) has every key replaced by `{key}`.
 
 A path segment that holds an id becomes a placeholder; a query, body, or form
 key or a header name that holds one is dropped and counted, and so is a key that
@@ -303,15 +308,18 @@ input nearest before it; else, when nothing text-like precedes the password, the
 first input after it named exactly `username`, `email`, `login`, or `user`. The
 submit is the first submit control after the password (an image input counts),
 and a control whose `form` attribute names the form belongs to it wherever it
-sits. Each other text-like input between the username and that submit is a role
-keyed by its name. A checkbox, radio, file, image, reset, range, or hidden input
-is never a field role, each role is assigned once, and an empty `type=""` counts
-as no type. A registration form (no input marked `current-password`, and either
-one marked `new-password` or a second password input named as a confirmation) is
-left out only when the page also has a login form, so a lone login form marked
-`new-password` is kept and a password-plus-PIN form is a login form; a
-stale-session check still counts any form with a password input as a login page.
-Each input is selected by its id, else its name, else its type
+sits; one outside its form is selected by its id, else by `tag[form="id"]` with
+its name or type when that picks it alone on the page, else it is unresolved.
+Each other text-like input between the username and that submit is a role keyed
+by its name. A checkbox, radio, file, image, reset, range, or hidden input is
+never a field role, each role is assigned once, and an empty `type=""` counts as
+no type. A registration form (no input marked `current-password`, and either one
+marked `new-password` or a second password input named as a confirmation) is
+left out, and so is a lone one with a confirmation password; a lone form with
+one password marked `new-password` is kept (the attribute misused on a login
+form), and a password-plus-PIN form is a login form; a stale-session check still
+counts any form with a password input as a login page. Each input is selected by
+its id, else its name (when no other input of the form shares it), else its type
 (`input:not([type])` for a typeless input), and an id or a name that holds an
 account value is never used; a name that holds one, or no name, gets a neutral
 role key (`field_1`, never a name another input of the form has) and a `GP-FILL`
@@ -324,9 +332,14 @@ role left without a selector is listed in `LoginForm.unresolved_roles` and the
 projection's `unresolved_roles`, and the generated `LoginStep` carries a
 `GP-FILL` naming it and why; a username the form has no input for (the password
 page of a multi-step login) gets its own `GP-FILL` saying so. A POST to where a
-recorded login form posts (the same host and path, compared before any email in
-it is masked) is the credential post whatever its password field is named, and
-the same form recorded on several pages is listed once.
+login form a GET served posts (the same host and path, the action resolved
+against the page as requested and compared before any email in it is masked) is
+the credential post whatever its password field is named; a form in a POST's own
+response never marks that POST. A page carrying a login form is the login form's
+page only when a credential post follows it within the login window, so an
+ordinary page with a site-wide header form keeps its stub. The same form
+recorded on several pages is listed once, and the form a credential post went to
+is listed first, so the generator's `login_config` is built from it.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
@@ -621,25 +634,25 @@ class MyshopPlugin(SitePlugin):
 
 What came from the digest: `base_url` from the primary host; the `LoginStep`
 selectors from the captured login page, the submit selector too, which the
-digest's markdown form does not print; `url` from the page the form was on
-(the page the engine opens, not the `/session` the form posts to); `success_url`
-from the redirect the credential post answered with; one command stub per
-endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
-twelve, each with the observed query parameters as typed keyword arguments (and,
-for a `POST`, `PUT`, or `PATCH`, the observed body fields too, sent as `data=`
-when the recording posted a form and as `json=` otherwise, either way with only
-the fields the caller gave, and a body field no option can send as recorded, such
-as a JSON object, left out with a `GP-FILL` comment naming it), an
-explicit `params=` list whenever one of them is an `int`, a `float`, a `bool`, or
-a list (see
-[CLI parameter types](#cli-parameter-types)), the observed custom headers, and
-the endpoint it calls declared as `endpoint=` on its decorator; a docstring
+digest's markdown form does not print; `url` from the page the form was on (the
+page the engine opens, not the `/session` the form posts to); `success_url` from
+the redirect the credential post answered with; one command stub per endpoint,
+the login flow's own endpoints excluded, JSON endpoints first, up to twelve,
+each with the observed query parameters as typed keyword arguments (and, for a
+`POST`, `PUT`, or `PATCH`, the observed body fields too, sent as `data=` when
+the recording posted a form and as `json=` otherwise, either way with only the
+fields the caller gave, and a body field no option can send as recorded, such as
+a JSON object, left out with a `GP-FILL` comment naming it), an explicit
+`params=` list whenever one of them is an `int`, a `float`, a `bool`, or a list
+(see [CLI parameter types](#cli-parameter-types)), the observed custom headers,
+and the endpoint it calls declared as `endpoint=` on its decorator; a docstring
 recording the method, the path, how many times it was seen, which run it came
 from, and the response shape. Each path value is percent-encoded before it goes
-into the URL (`quote(order_id, safe="")`), so a `/`, `?`, or `#` in it stays in
-its segment. A command's name is a Python identifier (`import` becomes
-`import_`, a leading digit gains `n_`) and never one of `SitePlugin`'s own
-attributes (`setup` becomes `setup_2`).
+into the URL (`_quote_path(order_id, safe="")`, `urllib.parse.quote` imported
+under a private name so a site parameter called `quote` cannot shadow it), so a
+`/`, `?`, or `#` in it stays in its segment. A command's name is a Python
+identifier (`import` becomes `import_`, a leading digit gains `n_`) and never
+one of `SitePlugin`'s own attributes (`setup` becomes `setup_2`).
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
@@ -1201,9 +1214,11 @@ to write (`./tests/captures` by default), `--limit N` caps how many files are
 written per matched template (5 by default), and `--allow-tracked` overrides the
 refusal to write onto a git-tracked path. Repeated captures of one template get
 `#1`, `#2` suffixes (a `#` cannot occur in a path, so a repeat never takes the
-name of a numeric segment), and two templates that would name one file (`/a_b`
-and `/a/b`) are refused before anything is written; `FixtureSession` looks only
-at the base name, so those extras are there for you to read, not for a test to
+name of a numeric segment), and two templates that would share a fixture stem
+(`/a_b` and `/a/b`, whatever their extensions, since `FixtureSession` looks a
+fixture up by stem) are refused before anything is written, as `gp plugin new`
+writes one test and a `GP-FILL` for such a pair; `FixtureSession` looks only at
+the base name, so those extras are there for you to read, not for a test to
 load.
 
 Then do the work by hand. **A fixture copies the real structure and invents the

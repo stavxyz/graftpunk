@@ -516,11 +516,14 @@ and twelve or more hex digits; three or more all-digit parts totalling seven or
 more digits (`4111-1111-1111-1111`, `123-45-6789`; a date such as `2024-01-15`
 as a whole is a name), or a phone number with its area code in parentheses
 (`(555)123-4567`); a prefixed id whose tail is twelve or more characters mixing
-upper case, lower case, and digits (`cus_NffrFeUfNV2Hib`); or a base64-like
-token of twenty-four or more characters switching between letters and digits at
-least five times. A response object whose keys are ids as a group (three or more
-keys of one length of twelve or more, each an alphanumeric run mixing letters
-and digits, such as push ids or record ids) has every key replaced by `{key}`.
+upper case, lower case, and digits (`cus_NffrFeUfNV2Hib`), at the start of the
+name or of any `_`/`-` part (`otp_cus_NffrFeUfNV2Hib`); or a base64-like token
+of twenty-four or more characters switching between letters and digits at least
+five times. A response object whose keys are ids as a group (three or more keys
+of one length of twelve or more, each an alphanumeric run mixing letters and
+digits that does not read as a word with a short number, and not one name with
+different trailing numbers such as `addressLine1` to `addressLine3`; push ids
+and record ids are such groups) has every key replaced by `{key}`.
 
 A path segment that holds an id becomes a placeholder; a query, body, or form
 key or a header name that holds one is dropped and counted, and so is a key that
@@ -543,15 +546,18 @@ input nearest before it; else, when nothing text-like precedes the password, the
 first input after it named exactly `username`, `email`, `login`, or `user`. The
 submit is the first submit control after the password (an image input counts),
 and a control whose `form` attribute names the form belongs to it wherever it
-sits. Each other text-like input between the username and that submit is a role
-keyed by its name. A checkbox, radio, file, image, reset, range, or hidden input
-is never a field role, each role is assigned once, and an empty `type=""` counts
-as no type. A registration form (no input marked `current-password`, and either
-one marked `new-password` or a second password input named as a confirmation) is
-left out only when the page also has a login form, so a lone login form marked
-`new-password` is kept and a password-plus-PIN form is a login form; a
-stale-session check still counts any form with a password input as a login page.
-Each input is selected by its id, else its name, else its type
+sits; one outside its form is selected by its id, else by `tag[form="id"]` with
+its name or type when that picks it alone on the page, else it is unresolved.
+Each other text-like input between the username and that submit is a role keyed
+by its name. A checkbox, radio, file, image, reset, range, or hidden input is
+never a field role, each role is assigned once, and an empty `type=""` counts as
+no type. A registration form (no input marked `current-password`, and either one
+marked `new-password` or a second password input named as a confirmation) is
+left out, and so is a lone one with a confirmation password; a lone form with
+one password marked `new-password` is kept (the attribute misused on a login
+form), and a password-plus-PIN form is a login form; a stale-session check still
+counts any form with a password input as a login page. Each input is selected by
+its id, else its name (when no other input of the form shares it), else its type
 (`input:not([type])` for a typeless input), and an id or a name that holds an
 account value is never used; a name that holds one, or no name, gets a neutral
 role key (`field_1`, never a name another input of the form has) and a `GP-FILL`
@@ -564,9 +570,14 @@ role left without a selector is listed in `LoginForm.unresolved_roles` and the
 projection's `unresolved_roles`, and the generated `LoginStep` carries a
 `GP-FILL` naming it and why; a username the form has no input for (the password
 page of a multi-step login) gets its own `GP-FILL` saying so. A POST to where a
-recorded login form posts (the same host and path, compared before any email in
-it is masked) is the credential post whatever its password field is named, and
-the same form recorded on several pages is listed once.
+login form a GET served posts (the same host and path, the action resolved
+against the page as requested and compared before any email in it is masked) is
+the credential post whatever its password field is named; a form in a POST's own
+response never marks that POST. A page carrying a login form is the login form's
+page only when a credential post follows it within the login window, so an
+ordinary page with a site-wide header form keeps its stub. The same form
+recorded on several pages is listed once, and the form a credential post went to
+is listed first, so the generator's `login_config` is built from it.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of

@@ -333,7 +333,9 @@ def _success_url_pattern(redirect_path: str) -> str | None:
 
 
 def _password_login_form(d: RunDigest) -> LoginForm | None:
-    """The first captured login form with a password field, if any.
+    """The first captured login form with a password field, if any. The digest
+    lists the form a credential post went to first, so this is the form the
+    recording used when there was one.
 
     The one place that decides "did we capture a usable login form":
     ``_render_login_config`` and the plugin module's import list
