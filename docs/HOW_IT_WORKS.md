@@ -484,53 +484,100 @@ an array of objects, booleans, arrays, mixed elements, or only empty arrays. A
 body field typed apart from a query parameter of the same name gets its own
 `--body-<name>` option.
 
-One rule, `graftpunk.har.paths.holds_an_id`, decides whether a name or a path
-segment carries an account value, and every position goes through it: path
-segments; query, JSON body, and form keys; response keys; request header names;
-cookie and token candidate names; and a login form's element ids, input names,
-and hidden input names. A name holds an id when, percent-decoded, it is an email
-or a UUID; a URL-safe base64-like token of twenty or more characters holding a
-digit and switching between letters and digits at least twice, unless it is a
-name joined by `_` or `-` whose parts all read as words
-(`line_item_2_unit_price`, `ctl00_MainContent_LoginUser_Password`); three or
-more parts joined by `-` or `_` that are each two to six characters mixing
-letters and digits (`ab12-cd34-ef56`), or that include a part of three or more
-digits with a leading zero beside a part holding a letter (`ORD-2024-0001`; a
-date such as `2024-01-15` is not an id); a prefixed id (`cus_NffrFeUfNV2Hib`);
-or when one of its parts (split on `_`, `.`, `-`, `~`, and `$`) holds a run of
-five or more digits, is a hex token (sixteen or more characters, or eight or
-more mixing digits and letters), is a base64-like token of twenty or more
-characters with a digit that does not read as a word, or is eight or more
-characters mixing letters and digits that do not read as a word. A word is a
-version (`v1beta1`), or letters and digits that start with a letter and are
-spelled like English. Its letter runs split at camel and Pascal boundaries; at
-least one run has four or more letters, and every such run is not all capitals,
-has no four consonants in a row, and holds only consonant pairs English words
-use (where two words meet included, as in `backpack`); at most one run has one
-or two letters (an acronym, as in `md5Checksum`); and letters after digits start
-a new word, capitalised (`oauth2Token`) or four or more lower-case letters after
-a word (`added2cart`). A digit run in a word is at most four digits, since five
-or more is an id. `address2`, `AddressLine1`, `ipv4Address`, and
-`shippingAddressLine2` are words. A path segment that holds an id (or is all
-digits) is templated, and an email segment is also masked in every URL the
-digest keeps. A query, body, or form key and a header name that holds one is
-dropped and counted, apart from a key dropped for not being a field name at all;
-the generated stub states each count in its own `GP-FILL` comment. A response
-key becomes `{key}`; a cookie or token name is left out and counted, written in
-no form; a login input's id or name that holds one is never used in its selector
-or role key. From the path rule: `login_config.url` is the page the login form
-was on, or a `GP-FILL` comment when that page's path holds an id; selectors
-scoped to a form action that holds one are unscoped; and one in `success_url`'s
-landing path is a `*`. The rule is lexical, and it is measured in both
-directions on fixed inputs (`tests/unit/test_id_miss_rates.py`: how often it
-misses a seeded random token of each shape, and how often it reads a name from a
-corpus of ordinary field names as an id), each rate held under a ceiling. Its
-known limits: a random token with no digit, or a short word-like value, reads as
-a word and is not caught; and a name of eight or more characters with a word of
-three letters or fewer, a digit, and a lower-case word (`add2cart`) reads as an
-id. A missed id is kept, so read what a digest prints before you commit it; a
-name read as an id is templated or dropped, which fails safe, and the `GP-FILL`
-counts make it visible.
+Path segments and names are judged apart. A path segment fails closed: one that
+holds a digit stays literal only when every part of it (split on `_`, `.`, `-`,
+`~`, and `$`) is letters alone, a word with a digit run of at most two after it
+(`address2`, `windows10`, `ec2`), a version (`v2`, `v1beta1`), or a digit run of
+at most two standing alone (`/page/2`). Every other segment holding a digit
+becomes a placeholder: a date, a card, phone, or national id number written in
+digit groups, a long number, or a mixed token. A segment the name rule below
+reads as an id (an email, a UUID, a hex or random token) becomes one too. A
+letters-only segment that holds no id stays literal, and a family of many
+sibling segments that each carry a digit (`red-widget-1`, `red-widget-2`, ...)
+collapses by count.
+
+Every name position goes through one lexical rule,
+`graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys; response
+keys; request header names; cookie and token candidate names; and a login form's
+element ids, input names, and hidden input names. A name holds an id when,
+percent-decoded, it is an email or a UUID; three or more all-digit parts
+totalling seven or more digits (`4111-1111-1111-1111`, `123-45-6789`; a date
+such as `2024-01-15` as a whole is a name); a URL-safe base64-like token of
+twenty or more characters holding a digit and switching between letters and
+digits at least twice, unless it is a name joined by `_` or `-` whose parts all
+read as words (`line_item_2_unit_price`,
+`ctl00_MainContent_LoginUser_Password`); three or more parts joined by `-` or
+`_` that are each two to six characters mixing letters and digits
+(`ab12-cd34-ef56`), or that include a part of three or more digits with a
+leading zero beside a part holding a letter (`ORD-2024-0001`); a prefixed id
+(`cus_4fK2x9QaZ1`); or when one of its parts (split on `_`, `.`, `-`, `~`, and
+`$`) holds a run of five or more digits, is a hex token (sixteen or more
+characters, or eight or more mixing digits and letters), is a base64-like token
+of twenty or more characters with a digit that does not read as a word, or is
+eight or more characters mixing letters and digits that do not read as a word. A
+word is a version (`v1beta1`), or letters and digits that start with a letter
+and are spelled like English: its letter runs split at camel and Pascal
+boundaries, at least one run has four or more letters, every such run is not all
+capitals and holds only consonant pairs English words use (where two words meet
+included, as in `backpack`), and letters after digits start a new word,
+capitalised (`oauth2Token`) or four or more lower-case letters after a word
+(`added2cart`). `address2`, `AddressLine1`, `ipv4Address`, `md5Checksum`, and
+`shippingAddressLine2` are words.
+
+A path segment that holds an id becomes a placeholder; a query, body, or form
+key or a header name that holds one is dropped and counted, and so is a key that
+is not a field name at all (one starting with a digit, holding a character
+outside the field-name alphabet, or longer than 64 characters; `$` is inside it,
+so OData's `$filter` and WebForms' `ctl00$Main$txtSearch` are field names), each
+cause counted apart and stated in its own `GP-FILL` comment in the generated
+stub; a response key that holds one becomes `{key}` in the shape; a cookie or
+token name that holds one is left out and counted, written in no form (not even
+hashed: a hash of a short id is reversed by brute force); and a hidden login
+input whose name holds one is dropped and counted.
+
+A login form's roles follow HTML semantics, anchored on its first password
+input. The username is the input whose `autocomplete` is `username` or `email`,
+else the text-like input nearest before the password with a username hint (an
+`email` type, or a name holding user, email, login, or account), else the
+text-like input nearest before it; the submit is the first submit control after
+the password; and each other text-like input between the username and that
+submit is a role keyed by its name. A checkbox, radio, file, image, reset,
+range, or hidden input is never a role, each role is assigned once, an empty
+`type=""` counts as no type, and a form with a second password input or one
+marked `new-password` is a registration form, not a login form. Each input is
+selected by its id, else its name, else its type (`input:not([type])` for a
+typeless input), and an id or a name that holds an account value is never used;
+a name that holds one, or no name, gets a neutral role key (`field_1`, never a
+name another input of the form has) and a `GP-FILL` saying to rename it. A
+selector by type is used only when it picks one input of the form, and is never
+printed without the form scope: when the form's action holds an id the printed
+selectors drop the scope, so only an id selector, or a name no other input on
+the page shares, is printed. A role left without a selector (a username the form
+lacks included) is listed in `LoginForm.unresolved_roles` and the projection's
+`unresolved_roles`, and the generated `LoginStep` carries a `GP-FILL` naming it
+and why. A POST to a recorded login form's action is the credential post
+whatever its password field is named.
+
+The rule is lexical, and it is measured in both directions on fixed inputs
+(`tests/unit/test_id_miss_rates.py`): how often it misses a seeded random token
+of each shape, and how often it reads as an id a name from a regression corpus
+(the names reviewers raised) and from a held-out corpus of public SDK and API
+names it was not tuned against, each rate held under a ceiling, and every word
+sub-rule must breach a miss-rate ceiling when it is removed. As a name rule it
+misses a random token with no digit, a short word-like value, and a random token
+whose letter runs each read as words (`cus_NffrFeUfNV2Hib`): 8.3% of
+eight-character lower-case random tokens. It reads as an id a name with
+lower-case letters right after a digit (`add2cart`, `retina2x`, `k8sNamespace`),
+a run of five or more digits (`ed25519`), no run of four or more letters
+(`sha256Key`), a letter run with a consonant pair words do not use
+(`pbkdf2Iterations`), or twenty or more characters read as a base64 token
+(`Md5OfMessageAttributes`): 7.3% of the held-out corpus. A path segment holding
+a digit is not subject to the first limit, since it fails closed. From the path
+rule: `login_config.url` is the page the login form was on, or a `GP-FILL`
+comment when that page's path holds an id; and one in `success_url`'s landing
+path is a `*`. A missed id is kept, so read what a digest prints before you
+commit it; a name read as an id is templated or dropped, which fails safe, and
+the `GP-FILL` counts make it visible.
 
 `graftpunk.testing` (pytest-free) supplies `make_context()` for building a
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`

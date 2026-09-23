@@ -425,8 +425,8 @@ def looks_dynamic(segment: str) -> bool:
     ``ec2``), a version (``v2``, ``v1beta1``), or a digit run of at most 2 standing
     alone (``/page/2``). Every other segment holding a digit is dynamic: a date, a
     card, phone, or national id number in digit groups, a long number, a mixed
-    token. A letters-only segment that holds no id stays literal here; the digest's
-    high-cardinality collapse still templates a family of them.
+    token. A letters-only segment that holds no id stays literal; the digest's
+    high-cardinality collapse templates a family of many digit-bearing siblings.
 
     The one owner of that judgement: ``template_path`` collapses on it, and the
     digest's high-cardinality collapse gates on it. Names (keys, headers, input
