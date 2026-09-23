@@ -485,27 +485,39 @@ body field typed apart from a query parameter of the same name gets its own
 `--body-<name>` option.
 
 One rule, `graftpunk.har.paths.holds_an_id`, decides whether a name or a path
-segment carries an account value, and every position goes through it. A name
-holds an id when it is an email or a UUID, a prefixed id (`cus_NffrFeUfNV2Hib`),
-or a part (split on `_`, `.`, `-`, `~`) holding a run of five or more digits, a
-hex token of eight or more characters with a digit and a letter, sixteen or more
-hex characters, a base64-like token of twenty or more characters with a digit, a
-token of eight or more characters mixing upper case, lower case, and digits, or
-a part of eight or more characters that switches between a letter and a digit
-three or more times (`x7kq29lp`; `html5player1` counts too, which fails safe); a
-lower-case word with trailing digits (`address2`), a camelCase word
-(`orderId2`), and a version (`v1beta1`) are words. A path segment that holds an
-id (or is all digits) is templated, and an email segment is also masked in every
-URL the digest keeps. A query, body, or form key and a header name that holds
-one is dropped, counted, and named by count in a `GP-FILL` comment in the stub;
-a response key becomes `{key}`; a cookie or token name is left out and counted,
-written in no form. From the path rule: `login_config.url` is the page the login
-form was on, or a `GP-FILL` comment when that page's path holds an id; selectors
-scoped to a form action that holds one are unscoped; and one in `success_url`'s
-landing path is a `*`. The rule is lexical. An account value in a shape it does
-not read as an id (a short word-like value) is not caught, and a word it does
-read as one (a route such as `x7Kq29Lp`) is templated or dropped; the second
-fails safe and the `GP-FILL` counts make it visible.
+segment carries an account value, and every position goes through it: path
+segments; query, JSON body, and form keys; response keys; request header names;
+cookie and token candidate names; and a login form's element ids, input names,
+and hidden input names. A name holds an id when, percent-decoded, it is an email
+or a UUID; a URL-safe base64-like token of twenty or more characters holding a
+digit and switching between letters and digits at least twice; three or more
+parts joined by `-` or `_` that are each two to six characters mixing letters
+and digits (`ab12-cd34-ef56`), or that include an all-digit part with a leading
+zero (`ORD-2024-0001`); a prefixed id (`cus_NffrFeUfNV2Hib`); or when one of its
+parts (split on `_`, `.`, `-`, `~`) holds a run of five or more digits, is a hex
+token (sixteen or more characters, or eight or more mixing digits and letters),
+is a base64-like token of twenty or more characters with a digit, switches
+between a letter and a digit three or more times (`x7kq29lp`), or is eight or
+more characters mixing letters and digits that do not read as a word. A word is
+a version (`v1beta1`) or letters spelled like English (camel and Pascal casing
+allowed, each run of four or more letters holding a vowel and only consonant
+pairs words use) with at most two short digit runs placed as in `address2`,
+`AddressLine1`, `ipv4Address`, `oauth2Token`, or `md5Checksum`. A path segment
+that holds an id (or is all digits) is templated, and an email segment is also
+masked in every URL the digest keeps. A query, body, or form key and a header
+name that holds one is dropped and counted, apart from a key dropped for not
+being a field name at all; the generated stub states each count in its own
+`GP-FILL` comment. A response key becomes `{key}`; a cookie or token name is
+left out and counted, written in no form; a login input's id or name that holds
+one is never used in its selector or role key. From the path rule:
+`login_config.url` is the page the login form was on, or a `GP-FILL` comment
+when that page's path holds an id; selectors scoped to a form action that holds
+one are unscoped; and one in `success_url`'s landing path is a `*`. The rule is
+lexical. An account value in a shape it does not read as an id (a random token
+with no digit, a short word-like value) is not caught, and a name it does read
+as one although it is a word (a camel name with a digit inside a word part, such
+as `apiV2Client`) is templated or dropped; the second fails safe and the
+`GP-FILL` counts make it visible.
 
 `graftpunk.testing` (pytest-free) supplies `make_context()` for building a
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
@@ -520,9 +532,10 @@ captured body, every cookie name the recording set, and the token names the
 run's digest recorded, a name that holds an id left out and counted in
 `redacted_names`, but never the URL or the capture time), written to be
 committed beside the fixture derived from it once you have read its body
-parameter names (a body key that does not read as a field name is dropped, but a
-data-shaped one that does is kept) and its `flagged_names` (some sites put
-account data in a cookie's name); `FixtureSession` reads the sidecar through
+parameter names and its `flagged_names`: a body key that does not read as a
+field name or holds an id is dropped, but the rule is lexical, so an account
+value in a shape it does not read as an id is kept, and some sites put account
+data in a cookie's name. `FixtureSession` reads the sidecar through
 `graftpunk.testing.sidecar` for status and content type, so a fixture copied
 from a capture keeps its recorded status.
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
