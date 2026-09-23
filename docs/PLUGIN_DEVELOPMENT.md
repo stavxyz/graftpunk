@@ -1012,6 +1012,9 @@ gp observe fixtures myshop --match "GET /api/orders" --match "GET /api/orders/{o
 
 The first argument is the recording's name. `--match` takes a `"METHOD
 template"` pair, is required, is repeatable, and accepts a glob in the template.
+The template is the one `gp observe digest` prints, a collapsed family included:
+a dozen product pages the digest shows as `GET /products/{product_id}` are
+matched by that template and written as `get_products_{product_id}.json`.
 `--out PATH` chooses where to write (`./tests/captures` by
 default), `--limit N` caps how many files are written per matched template (5 by
 default), and `--allow-tracked` overrides the refusal to write onto a

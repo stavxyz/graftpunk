@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -48,6 +48,7 @@ __all__ = [
     "TokenKind",
     "body_params",
     "digest",
+    "endpoint_template",
     "flagged_names_of",
 ]
 
@@ -274,6 +275,11 @@ class RunDigest:
     tokens: tuple[TokenCandidate, ...]
     cookies: tuple[str, ...]
     dropped: dict[DropReason, int]
+    # Each raw template (paths.template_path of an observed path) the
+    # high-cardinality collapse re-templated, to the endpoint template it now
+    # belongs to; a raw template missing here is its own endpoint's template.
+    # Read it through endpoint_template.
+    collapsed_templates: dict[str, str] = field(default_factory=dict)
 
 
 def _scope_root(primary_host: str) -> str:
@@ -974,7 +980,19 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         tokens=tokens,
         cookies=tuple(cookies_seen),
         dropped=dropped,
+        collapsed_templates=collapse_map,
     )
+
+
+def endpoint_template(d: RunDigest, path: str) -> str:
+    """The template *d* files a request for *path* under: the path templated by
+    :func:`graftpunk.har.paths.template_path`, then carried through the digest's
+    own high-cardinality collapse, so twelve product slugs answer
+    ``/products/{product_id}`` exactly as the digest prints the endpoint. The
+    method does not enter into it: the collapse is decided per path.
+    """
+    raw, _ = template_path(path)
+    return d.collapsed_templates.get(raw, raw)
 
 
 def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[str, ...]:

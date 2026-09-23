@@ -496,6 +496,44 @@ class TestFixturesCommand:
         assert sidecar["flagged_names"] == ["shop_session"]
         assert "page=2" not in json.dumps(sidecar)
 
+    def test_a_collapsed_family_is_matched_and_named_by_the_digests_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Twelve slugs under /products/ are one endpoint in the digest,
+        GET /products/{product_id}; --match takes that template as the digest
+        prints it, and the files carry the name the generated tests look for."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+        words += ["golf", "hotel", "india", "juliet", "kilo", "lima"]
+        entries = [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com/products/{word}-widget-2024",
+                body=json.dumps({"id": word}),
+            )
+            for word in words
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /products/{product_id}",
+                "--limit",
+                "2",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        written = sorted(p.name for p in out_dir.iterdir() if not p.name.endswith(".meta.json"))
+        assert written == ["get_products_{product_id}.json", "get_products_{product_id}_1.json"]
+
     def test_flagged_names_cover_cookies_set_on_a_static_response_and_by_another_host(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

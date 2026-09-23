@@ -25,6 +25,7 @@ from graftpunk.har.digest import (
     _with_login_flow,
     body_params,
     digest,
+    endpoint_template,
     flagged_names_of,
 )
 from graftpunk.har.parser import parse_har_file
@@ -879,6 +880,17 @@ class TestHighCardinalityCollapse:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         templates = {e.template for e in result.endpoints}
         assert "/products/{product_id}" in templates
+
+    def test_endpoint_template_answers_with_the_collapsed_template(self, tmp_path: Path) -> None:
+        entries = [
+            _entry("GET", f"https://api.myshop.example.com/products/item-{i}")
+            for i in range(_HIGH_CARDINALITY_THRESHOLD + 2)
+        ]
+        entries.append(_entry("GET", "https://api.myshop.example.com/orders/7"))
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert endpoint_template(result, "/products/item-3") == "/products/{product_id}"
+        assert endpoint_template(result, "/orders/7") == "/orders/{order_id}"
+        assert endpoint_template(result, "/never/seen") == "/never/seen"
 
     def test_segment_at_or_below_threshold_stays_literal(self, tmp_path: Path) -> None:
         entries = [

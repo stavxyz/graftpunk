@@ -216,6 +216,7 @@ class TestRenderJson:
             "tokens",
             "cookies",
             "dropped",
+            "collapsed_templates",
         }
 
     def test_dropped_carries_every_reason(self, tmp_path: Path) -> None:

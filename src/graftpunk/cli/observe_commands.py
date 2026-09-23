@@ -31,10 +31,15 @@ from graftpunk.devtools.captures import (
     write_sidecar,
 )
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
-from graftpunk.har.digest import DigestSource, body_params, digest, flagged_names_of
+from graftpunk.har.digest import (
+    DigestSource,
+    body_params,
+    digest,
+    endpoint_template,
+    flagged_names_of,
+)
 from graftpunk.har.naming import EndpointSpecError, capture_filename, parse_endpoint
 from graftpunk.har.parser import parse_har_file
-from graftpunk.har.paths import template_path
 from graftpunk.har.report import (
     DEFAULT_ENDPOINT_LIMIT,
     render_endpoints_json,
@@ -268,7 +273,10 @@ def fixtures_cmd(
     written: list[Path] = []
     for entry in entries:
         path = urlparse(entry.request.url).path or "/"
-        template, _ = template_path(path)
+        # The digest's own template, collapse included: --match takes the
+        # template the digest printed, and a generated test looks for the file
+        # named after it.
+        template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
         if not any(_matches_template(method, template, e) for e in endpoints):
             continue
@@ -289,7 +297,7 @@ def fixtures_cmd(
             continue
         per_template_count[key] = seen + 1
 
-        filename = capture_filename(method, path, content_type)
+        filename = capture_filename(method, template, content_type)
         if seen > 0:
             stem, _, ext = filename.rpartition(".")
             filename = f"{stem}_{seen}.{ext}"
