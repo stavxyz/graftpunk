@@ -120,7 +120,7 @@ _NOTES_ENDPOINT = Endpoint(
         "body": "str",
         "author": "str",
         "pinned": "bool",
-        "tags": "list",
+        "tags": "list[str]",
     },
     body_kind="json",
     shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
@@ -1435,6 +1435,129 @@ class TestPluginModuleCommandStubs:
         assert result.exit_code == 0, result.output
         (prepared,) = sent
         assert prepared.body == "weekly=false"
+
+    @staticmethod
+    def _endpoint(
+        template: str,
+        method: str = "GET",
+        *,
+        query: dict[str, str] | None = None,
+        body: dict[str, str] | None = None,
+        body_kind: str = "none",
+    ) -> Endpoint:
+        return Endpoint(
+            host="api.myshop.example.com",
+            template=template,
+            methods=(method,),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params=query or {},
+            body_params=body or {},
+            body_kind=body_kind,  # type: ignore[arg-type]
+            shape=ShapeNode(kind="object", children={}),
+            custom_headers=(),
+            examples=(template,),
+        )
+
+    @staticmethod
+    def _plugin_code(endpoint: Endpoint) -> str:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        return render(spec)["src/graftpunk_myshop/plugin.py"]
+
+    @pytest.mark.parametrize(
+        ("label", "reason"),
+        [
+            ("object", "a JSON object"),
+            ("mixed", "values of more than one JSON type"),
+            ("list[mixed]", "a JSON array whose elements have more than one type"),
+            ("list[object]", "a JSON array of objects"),
+            ("list[unknown]", "only empty JSON arrays"),
+        ],
+    )
+    def test_a_json_field_no_option_can_send_is_not_declared(
+        self, monkeypatch: pytest.MonkeyPatch, label: str, reason: str
+    ) -> None:
+        """G1: a value of another type is never sent; the stub names the field instead."""
+        endpoint = self._endpoint(
+            "/profile", "POST", body={"extra": label, "name": "str"}, body_kind="json"
+        )
+        plugin_code = self._plugin_code(endpoint)
+        assert "extra:" not in plugin_code
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert f'GP-FILL: body field "extra" is not an option: the recording sent {reason}' in (
+            comment
+        )
+        result, sent = self._wire_requests(
+            monkeypatch, endpoint, ["myshop", "profile", "--name", "alice"]
+        )
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert json.loads(prepared.body) == {"name": "alice"}
+
+    def test_a_json_body_with_no_declarable_field_sends_no_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = self._endpoint("/profile", "POST", body={"extra": "object"}, body_kind="json")
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "profile"])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body is None
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_query"),
+        [([], ""), (["--id", "1"], "?id=1"), (["--id", "1", "--id", "2"], "?id=1&id=2")],
+    )
+    def test_a_repeated_query_key_is_a_repeatable_option(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_query: str
+    ) -> None:
+        endpoint = self._endpoint("/orders", query={"id": "list[int]"})
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
+
+    def test_a_repeated_query_key_option_is_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        endpoint = self._endpoint("/orders", query={"id": "list[int]"})
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", "--id", "x"])
+        assert result.exit_code == 2
+        assert sent == []
+
+    def test_a_repeated_form_key_is_sent_as_repeated_keys(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = self._endpoint("/tags", "POST", body={"tag": "list[str]"}, body_kind="form")
+        argv = ["myshop", "tags", "--tag", "a", "--tag", "b"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == "tag=a&tag=b"
+
+    def test_a_json_array_is_sent_as_a_json_array(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        endpoint = self._endpoint("/batch", "POST", body={"ids": "list[int]"}, body_kind="json")
+        argv = ["myshop", "batch", "--ids", "1", "--ids", "2"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == b'{"ids": [1, 2]}'
+
+    def test_a_json_float_field_sends_a_number(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        endpoint = self._endpoint("/pay", "POST", body={"amount": "float"}, body_kind="json")
+        argv = ["myshop", "pay", "--amount", "3.5"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == b'{"amount": 3.5}'
 
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(

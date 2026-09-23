@@ -515,8 +515,10 @@ endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
 twelve, each with the observed query parameters as typed keyword arguments (and,
 for a `POST`, `PUT`, or `PATCH`, the observed body fields too, sent as `data=`
 when the recording posted a form and as `json=` otherwise, either way with only
-the fields the caller gave), an
-explicit `params=` list whenever one of them is an `int`, a `float`, or a `bool` (see
+the fields the caller gave, and a body field no option can send as recorded, such
+as a JSON object, left out with a `GP-FILL` comment naming it), an
+explicit `params=` list whenever one of them is an `int`, a `float`, a `bool`, or
+a list (see
 [CLI parameter types](#cli-parameter-types)), the observed custom headers, and
 the endpoint it calls declared as `endpoint=` on its decorator; a docstring
 recording the method, the path, how many times it was seen, which run it came
@@ -641,6 +643,16 @@ with neither the handler receives `None`. `ctx.request_json` sends those as
 parameter as `bool` only when the site sent that lowercase spelling, so the
 request matches the recording. In a JSON body the stub sends a JSON boolean, and
 leaves the field out when neither flag is given.
+
+A `list[...]` parameter is a repeatable option, `click_kwargs={"multiple": True}`
+(`--id 1 --id 2`), typed by its element when that is `int` or `float`; the
+handler receives a list, or `None` when the option is not given. `requests`
+sends a list in `params` or `data` as repeated keys (`id=1&id=2`), the way the
+site sent it, and a JSON body gets a JSON array. A JSON body field no option can
+send as recorded (an `object`, a `mixed` value, or an array of objects,
+booleans, arrays, or mixed elements) is not declared: the stub says so in a
+`GP-FILL` comment, so you add it to the body by hand if the command needs it,
+rather than getting an option that sends the wrong type.
 
 ```python
 from graftpunk.plugins import CommandContext, PluginParamSpec, command

@@ -52,13 +52,12 @@ __all__ = [
 ]
 
 _MAX_SCAFFOLD_ENDPOINTS = 12
-_PY_TYPE_BY_OBSERVED: dict[str, str] = {
-    "int": "int",
-    "float": "float",
-    "bool": "bool",
-    "list": "list[str]",
-    "str": "str",
-}
+# The scalar labels a stub declares an option for. A label outside these, and
+# outside the list labels _declaration accepts, is left undeclared (see there).
+_SCALAR_LABELS = ("str", "int", "float", "bool")
+# The list element types a repeatable option is typed as; any other element of a
+# query or form list is sent as text (str).
+_TYPED_LIST_ELEMENTS = ("int", "float")
 # A generated stub's docstring is one line: shallower than report.py's own
 # default (3), so a wide response shows its top-level keys without spilling
 # nested detail into the docstring.
@@ -91,12 +90,13 @@ _MUTATING_METHODS = ("POST", "PUT", "PATCH")
 #
 # A bool option must be a flag or command_factory refuses the command at
 # registration. The stub's bool is a flag with a negative (--archived and
-# --no-archived, through the "flag" key command_factory already reads), so the
-# handler gets True, False, or None when neither is given. ctx.request_json and
+# --no-archived, through the "flag" key command_factory reads), so the handler
+# gets True, False, or None when neither is given. ctx.request_json and
 # ctx.request_text send True and False in params and data as true and false,
 # the only spelling the digest types as bool, and drop None; a JSON body gets a
-# JSON boolean. A list stays a plain str option: command_factory has no
-# multi-value option to map it to, so its entry gets no type.
+# JSON boolean. A list is a repeatable option ("multiple"), which passes a list
+# or None: requests sends a list in params or data as repeated keys, and a JSON
+# body gets a JSON array.
 _SPEC_TYPE_BY_OBSERVED: dict[str, tuple[str, ...]] = {
     "int": ("type=int",),
     "float": ("type=float",),
@@ -468,17 +468,95 @@ def _emits_body(endpoint: Endpoint) -> bool:
     return bool(endpoint.body_params) and any(m in _MUTATING_METHODS for m in endpoint.methods)
 
 
-def _declared_extras(endpoint: Endpoint) -> dict[str, str]:
+@dataclass(frozen=True)
+class _Declaration:
+    """How a stub declares one query or body parameter: the handler annotation (without
+    ``| None``), the ``PluginParamSpec.option`` keywords after the name, and whether
+    it is a repeatable option. A bool's flag keywords depend on the other options of
+    the stub, so the stub adds them (see ``_bool_flag_kwargs``)."""
+
+    label: str
+    annotation: str
+    keywords: tuple[str, ...]
+    multiple: bool = False
+
+    @property
+    def needs_spec(self) -> bool:
+        """Whether this parameter needs an explicit ``PluginParamSpec`` entry: a
+        typed scalar (#208) or a repeatable option."""
+        return self.multiple or self.label in _SPEC_TYPE_BY_OBSERVED
+
+
+# Why a JSON body label is left undeclared, for the stub's GP-FILL comment.
+_UNDECLARED_REASONS = {
+    "object": "a JSON object",
+    "mixed": "values of more than one JSON type",
+    "list[mixed]": "a JSON array whose elements have more than one type",
+    "list[object]": "a JSON array of objects",
+    "list[unknown]": "only empty JSON arrays",
+    "list[bool]": "a JSON array of booleans",
+    "list[list]": "a JSON array of arrays",
+}
+
+
+def _declaration(label: str, *, json_body: bool) -> _Declaration | str:
+    """How a stub declares a parameter the digest labelled *label*, or, when no
+    command-line option can send the recorded type and shape, the reason it is left
+    undeclared. Query and form values are text on the wire, so a list of anything
+    but numbers is a list of ``str``; a JSON body sends its own types, so an object,
+    a mixed value, or an array of anything but text and numbers is undeclared."""
+    if label in _SCALAR_LABELS:
+        return _Declaration(label, label, _SPEC_TYPE_BY_OBSERVED.get(label, ()))
+    element = label[len("list[") : -1] if label.startswith("list[") else None
+    if element is not None:
+        if element in _TYPED_LIST_ELEMENTS:
+            return _Declaration(label, f"list[{element}]", (f"type={element}",), multiple=True)
+        if element == "str" or (not json_body and element in _SCALAR_LABELS):
+            return _Declaration(label, "list[str]", (), multiple=True)
+    return _UNDECLARED_REASONS.get(label, f"a value the digest labelled {label}")
+
+
+def _body_declarations(endpoint: Endpoint) -> dict[str, _Declaration | str]:
+    """Each body field the stub sends, with its declaration or undeclared reason."""
+    if not _emits_body(endpoint):
+        return {}
+    json_body = endpoint.body_kind != "form"
+    return {
+        name: _declaration(label, json_body=json_body)
+        for name, label in endpoint.body_params.items()
+    }
+
+
+def _declared_extras(endpoint: Endpoint) -> dict[str, _Declaration]:
     """The query and body parameters a stub declares as keyword arguments, each with
-    its observed type; a query parameter's type wins over a body parameter's."""
-    declared = dict(endpoint.body_params) if _emits_body(endpoint) else {}
-    declared.update(endpoint.query_params)
+    its declaration; a query parameter's wins over a body parameter's. A body field
+    no option can send is not among them (see ``_undeclared_body_fields``)."""
+    declared = {
+        name: found
+        for name, found in _body_declarations(endpoint).items()
+        if isinstance(found, _Declaration)
+    }
+    for name, label in endpoint.query_params.items():
+        found = _declaration(label, json_body=False)
+        # A query label is always declarable: _declaration refuses only JSON shapes.
+        assert isinstance(found, _Declaration)
+        declared[name] = found
     return declared
 
 
+def _undeclared_body_fields(endpoint: Endpoint) -> dict[str, str]:
+    """The body fields the stub leaves out, each with why (G1: a command sends the
+    recorded type and shape, or does not declare the field)."""
+    return {
+        name: found
+        for name, found in _body_declarations(endpoint).items()
+        if isinstance(found, str) and name not in endpoint.query_params
+    }
+
+
 def _needs_param_specs(endpoint: Endpoint) -> bool:
-    """Whether the stub declares its parameters explicitly (see _SPEC_TYPE_BY_OBSERVED)."""
-    return any(t in _SPEC_TYPE_BY_OBSERVED for t in _declared_extras(endpoint).values())
+    """Whether the stub declares its parameters explicitly (see _Declaration.needs_spec)."""
+    return any(d.needs_spec for d in _declared_extras(endpoint).values())
 
 
 def _negatable_flag(identifier: str) -> str:
@@ -487,34 +565,46 @@ def _negatable_flag(identifier: str) -> str:
     return f"--{flag}/--no-{flag}"
 
 
-def _param_spec(identifier: str, keywords: tuple[str, ...], *, negatable: bool = False) -> str:
+ClickKwargs = tuple[tuple[str, "bool | str"], ...]
+
+
+def _click_kwargs_value(value: bool | str) -> str:
+    return str(value) if isinstance(value, bool) else quoted_literal(value)
+
+
+def _param_spec(
+    identifier: str, keywords: tuple[str, ...], *, click_kwargs: ClickKwargs = ()
+) -> str:
     """One ``PluginParamSpec.option(...)`` entry of a stub's ``params=`` list, as the
     expression ``_decorator_lines`` places at ``L3``: on one line when that line,
     its trailing comma included, fits the generated width, otherwise exploded one
     argument per line with a magic trailing comma, the shape ``ruff format`` gives
     it. The exploded form's continuation lines carry their own indentation.
 
-    *negatable* adds the ``click_kwargs`` that make the option a flag with a
-    negative (:func:`_negatable_flag`). A ``click_kwargs`` too wide for its line is
-    exploded one key per line, the declaration wrapped by
+    *click_kwargs* is ``(key, value)`` pairs, a bool value written as ``True`` or
+    ``False`` and a str value as a string literal. A ``click_kwargs`` too wide for
+    its line is exploded one key per line, a string value wrapped by
     ``literal_dict_entry_lines``."""
     args = [quoted_literal(identifier), *keywords]
-    flag = _negatable_flag(identifier)
-    click_kwargs = f'click_kwargs={{"is_flag": True, "flag": {quoted_literal(flag)}}}'
-    single_args = [*args, click_kwargs] if negatable else args
+    inline = ", ".join(f"{quoted_literal(k)}: {_click_kwargs_value(v)}" for k, v in click_kwargs)
+    click_arg = f"click_kwargs={{{inline}}}"
+    single_args = [*args, click_arg] if click_kwargs else args
     single = f"PluginParamSpec.option({', '.join(single_args)})"
     if len(f"{L3}{single},") <= GENERATED_LINE_LENGTH:
         return single
     arg_pad = f"{L3}{' ' * INDENT_STEP}"
     exploded = ["PluginParamSpec.option(", *(f"{arg_pad}{a}," for a in args)]
-    if negatable:
-        if len(f"{arg_pad}{click_kwargs},") <= GENERATED_LINE_LENGTH:
-            exploded.append(f"{arg_pad}{click_kwargs},")
+    if click_kwargs:
+        if len(f"{arg_pad}{click_arg},") <= GENERATED_LINE_LENGTH:
+            exploded.append(f"{arg_pad}{click_arg},")
         else:
             entry_indent = len(arg_pad) + INDENT_STEP
             exploded.append(f"{arg_pad}click_kwargs={{")
-            exploded.append(f'{" " * entry_indent}"is_flag": True,')
-            exploded.extend(literal_dict_entry_lines("flag", flag, indent=entry_indent))
+            for key, value in click_kwargs:
+                if isinstance(value, bool):
+                    exploded.append(f"{' ' * entry_indent}{quoted_literal(key)}: {value},")
+                else:
+                    exploded.extend(literal_dict_entry_lines(key, value, indent=entry_indent))
             exploded.append(f"{arg_pad}}},")
     return "\n".join([*exploded, f"{L3})"])
 
@@ -547,20 +637,26 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     call, role, return_type = (
         ("request_json", "xhr", "dict") if is_json else ("request_text", "navigation", "str")
     )
-    emits_body = _emits_body(endpoint)
     extras = _declared_extras(endpoint)
+    undeclared = _undeclared_body_fields(endpoint)
+    body_fields = (
+        sorted(p for p in endpoint.body_params if p in extras) if _emits_body(endpoint) else []
+    )
 
     params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
     param_specs = [_param_spec(p, ("required=True",)) for p in path_params]
     identifier_for: dict[str, str] = {}
     for extra in sorted(extras):
-        observed = extras[extra]
+        declaration = extras[extra]
         identifier_for[extra] = _param_identifier(extra, seen_params)
-        annotation = _PY_TYPE_BY_OBSERVED.get(observed, "str")
-        params.append(f"{identifier_for[extra]}: {annotation} | None = None")
-        keywords = _SPEC_TYPE_BY_OBSERVED.get(observed, ())
+        params.append(f"{identifier_for[extra]}: {declaration.annotation} | None = None")
+        click_kwargs: ClickKwargs = ()
+        if declaration.multiple:
+            click_kwargs = (("multiple", True),)
+        elif declaration.label == "bool":
+            click_kwargs = (("is_flag", True), ("flag", _negatable_flag(identifier_for[extra])))
         param_specs.append(
-            _param_spec(identifier_for[extra], keywords, negatable=observed == "bool")
+            _param_spec(identifier_for[extra], declaration.keywords, click_kwargs=click_kwargs)
         )
 
     # Through quoted_literal like every other captured value: the method comes from
@@ -571,8 +667,8 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     if endpoint.query_params:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.query_params)]
         call_lines.extend(exploded_dict_lines("params", entries))
-    if emits_body:
-        entries = [(p, identifier_for[p]) for p in sorted(endpoint.body_params)]
+    if body_fields:
+        entries = [(p, identifier_for[p]) for p in body_fields]
         if endpoint.body_kind == "form":
             # Sent as the recording sent it. ctx.request_* drops a None value
             # from data= and spells a bool true/false, as it does for params=.
@@ -605,6 +701,15 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
+    for field_name, reason in sorted(undeclared.items()):
+        lines.extend(
+            wrapped_comment_lines(
+                f'GP-FILL: body field "{field_name}" is not an option: the recording sent '
+                f"{reason}, which no command-line option sends as recorded. Add it to the "
+                "body by hand if this command needs it.",
+                indent=len(L2),
+            )
+        )
     lines.append(_ENDPOINT_COMMENT)
     lines.append(f"{L2}return ctx.{call}(")
     lines.extend(call_lines)
