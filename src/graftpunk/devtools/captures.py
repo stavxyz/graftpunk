@@ -74,6 +74,10 @@ def ensure_ignored(repo_root: Path, relative: str) -> bool:
 
     Returns:
         True when the line was added, False when it was already present.
+
+    Raises:
+        UnicodeDecodeError: The ``.gitignore`` is not UTF-8 text.
+        OSError: The ``.gitignore`` cannot be read or appended to.
     """
     gitignore = repo_root / ".gitignore"
     # Read as bytes so a CRLF file's text is what is on disk; the append below

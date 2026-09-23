@@ -652,6 +652,45 @@ class TestFixturesGitignore:
         assert result.exit_code == 1, result.output
         assert not (repo / ".gitignore").exists()
 
+    def test_a_gitignore_that_is_not_utf8_is_refused_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        gitignore = repo / ".gitignore"
+        gitignore.write_bytes(b"\xff\xfe not utf-8\n")
+        out_dir = repo / "tests" / "captures"
+
+        result = _invoke_fixtures(out_dir)
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        output = strip_ansi(result.output)
+        assert str(gitignore) in output.replace("\n", "")
+        assert "not UTF-8 text" in output
+        assert gitignore.read_bytes() == b"\xff\xfe not utf-8\n"
+        assert not out_dir.exists()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
+    def test_an_unreadable_gitignore_is_refused_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        gitignore = repo / ".gitignore"
+        gitignore.write_text("node_modules/\n")
+        gitignore.chmod(0)
+        out_dir = repo / "tests" / "captures"
+        try:
+            result = _invoke_fixtures(out_dir)
+        finally:
+            gitignore.chmod(0o644)
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        output = strip_ansi(result.output).replace("\n", "")
+        assert str(gitignore) in output
+        assert "Permission denied" in output
+        assert not out_dir.exists()
+
     def test_a_digest_failure_leaves_gitignore_and_the_target_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

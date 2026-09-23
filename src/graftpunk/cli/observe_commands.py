@@ -260,7 +260,24 @@ def fixtures_cmd(
             relative = str(target_dir.resolve().relative_to(repo_root))
         except ValueError:
             relative = CAPTURES_DIR
-        if ensure_ignored(repo_root, relative):
+        gitignore = repo_root / ".gitignore"
+        try:
+            added = ensure_ignored(repo_root, relative)
+        except UnicodeDecodeError:
+            # The same refusal gp plugin new gives this file.
+            console.print(
+                f"[red]Refusing to write {escape(str(gitignore))}: it is not UTF-8 text[/red]",
+                soft_wrap=True,
+            )
+            raise typer.Exit(1) from None
+        except OSError as exc:
+            reason = exc.strerror or str(exc)
+            console.print(
+                f"[red]Could not write {escape(str(gitignore))}: {escape(reason)}[/red]",
+                soft_wrap=True,
+            )
+            raise typer.Exit(1) from None
+        if added:
             console.print(f"[dim]Added '{escape(relative)}/' to .gitignore[/dim]")
     else:
         console.print(
