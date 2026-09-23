@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse, urlunparse
 
 from graftpunk.har.documents import (
     LoginForm,
@@ -780,16 +780,46 @@ def _redirect_target_path(entry: HAREntry) -> str:
         return ""
 
 
-def _posts_to_a_login_form(url: str, targets: set[tuple[str, str]]) -> bool:
-    """True when a POST to *url* goes where a recorded login form posts: the same
-    host and path (``;params`` dropped, never email-masked), or the same path when
-    the form's host is unknown (a page source file with a relative action)."""
+def _request_target(url: str) -> tuple[str, str]:
+    """Where a request to *url* goes, as host and path (``;params`` dropped, never
+    email-masked), the way a form's ``action_target`` is spelled."""
     try:
         parts = urlparse(url)
     except ValueError:
-        return False
-    path = unquote(bare_path(parts.path)) or "/"
-    return (bare_host(parts.netloc), path) in targets or ("", path) in targets
+        return "", ""
+    return bare_host(parts.netloc), unquote(bare_path(parts.path)) or "/"
+
+
+def _unmasked_page(entry: HAREntry) -> str:
+    """*entry*'s URL as scheme, host, and path with no email masked: the base a form
+    on the page resolves its action against. Never printed."""
+    try:
+        parts = urlparse(entry.request.url)
+    except ValueError:
+        return ""
+    return urlunparse((parts.scheme, bare_host(parts.netloc), bare_path(parts.path), "", "", ""))
+
+
+def _posts_to_a_login_form(target: tuple[str, str], targets: set[tuple[str, str]]) -> bool:
+    """True when a POST to *target* goes where a recorded login form posts: the same
+    host and path, or the same path when the form's host is unknown (a page source
+    file with a relative action)."""
+    host, path = target
+    return bool(path) and ((host, path) in targets or ("", path) in targets)
+
+
+def _used_forms_first(forms: list[LoginForm], posted: set[tuple[str, str]]) -> list[LoginForm]:
+    """*forms* with each one a credential post went to ahead of the rest, order kept
+    otherwise, so the generator's first form is the one the recording used."""
+    return sorted(forms, key=lambda form: not _posts_to_a_login_form_target(form, posted))
+
+
+def _posts_to_a_login_form_target(form: LoginForm, posted: set[tuple[str, str]]) -> bool:
+    host, path = form.action_target
+    return bool(path) and any(
+        path == posted_path and (not host or host == posted_host)
+        for posted_host, posted_path in posted
+    )
 
 
 def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
@@ -798,13 +828,14 @@ def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
     seen: set[tuple[object, ...]] = set()
     unique: list[LoginForm] = []
     for form in forms:
+        # Not action_target: an empty-action form resolves to each page it is on,
+        # and the same site-wide form must still be listed once.
         key = (
             form.action,
             form.method,
             tuple(sorted(form.fields.items())),
             form.submit,
             form.hidden,
-            form.action_target,
         )
         if key not in seen:
             seen.add(key)
@@ -1116,6 +1147,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     cookies_seen: dict[str, None] = {}
     id_cookie_names: set[str] = set()
     login: list[LoginObservation] = []
+    pending: list[tuple[int, ObservationKind | None, LoginObservation]] = []
+    posted_targets: set[tuple[str, str]] = set()
     credential_post_indexes: list[int] = []
     order = 0
     page_forms: tuple[LoginForm, ...] = ()
@@ -1175,11 +1208,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         forms_in_entry: tuple[LoginForm, ...] = ()
         if "html" in content_type and entry.response.body:
             document_source = url
-            forms_in_entry = extract_login_forms(entry.response.body, source=document_source)
-            login_forms.extend(forms_in_entry)
-            login_action_targets.update(
-                form.action_target for form in forms_in_entry if form.action_target[1]
+            forms_in_entry = extract_login_forms(
+                entry.response.body, source=document_source, base=_unmasked_page(entry)
             )
+            login_forms.extend(forms_in_entry)
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
@@ -1191,7 +1223,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             kind = "form_page"
         elif method == "POST" and (
             credential_hint_fields
-            or _posts_to_a_login_form(entry.request.url, login_action_targets)
+            or _posts_to_a_login_form(_request_target(entry.request.url), login_action_targets)
         ):
             # Report every body field name, not only the password-hinted
             # ones: a credential post's username/email field is part of the
@@ -1205,24 +1237,50 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             elif _response_cookie_names(entry):
                 kind = "set_cookie"
                 fields = tuple(n for n in _response_cookie_names(entry) if not holds_an_id(n))
-        if kind is None and _AUTH_URL_REGEX.search(path):
-            kind = "auth_api"
+        fallback: ObservationKind | None = "auth_api" if _AUTH_URL_REGEX.search(path) else None
+        if kind is None:
+            kind = fallback
 
         if kind is not None:
-            order += 1
-            login.append(
-                LoginObservation(
-                    order=order,
-                    method=method,
-                    url=url,
-                    status=entry.response.status,
-                    kind=kind,
-                    fields=fields,
-                    redirect_to=_redirect_target_path(entry),
+            pending.append(
+                (
+                    index,
+                    fallback,
+                    LoginObservation(
+                        order=0,
+                        method=method,
+                        url=url,
+                        status=entry.response.status,
+                        kind=kind,
+                        fields=fields,
+                        redirect_to=_redirect_target_path(entry),
+                    ),
                 )
             )
             if kind == "credential_post":
                 credential_post_indexes.append(index)
+                posted_targets.add(_request_target(entry.request.url))
+        # Recorded after this entry is classified, and only from a page a GET
+        # served: a form in a POST's own response (a site-wide header form) must
+        # not make that POST, or a later one to the same page, the credential post.
+        if method == "GET":
+            login_action_targets.update(
+                form.action_target for form in forms_in_entry if form.action_target[1]
+            )
+
+    # A page carrying a login form is the login form's page only when a credential
+    # post follows it in the login window; otherwise it is an ordinary page (a
+    # site-wide header form) and keeps its stub.
+    for index, fallback, observation in pending:
+        kind = observation.kind
+        if kind == "form_page" and not any(
+            index < post <= index + _LOGIN_WINDOW for post in credential_post_indexes
+        ):
+            kind = fallback
+        if kind is None:
+            continue
+        order += 1
+        login.append(replace(observation, order=order, kind=kind))
 
     if source.page_source is not None and source.page_source.is_file():
         page_label = str(source.page_source)
@@ -1285,7 +1343,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         hosts=hosts,
         endpoints=_with_login_flow(endpoints, tuple(login)),
         login=tuple(login),
-        login_forms=tuple(_unique_forms(login_forms)),
+        login_forms=tuple(_unique_forms(_used_forms_first(login_forms, posted_targets))),
         tokens=tokens,
         cookies=tuple(cookies_seen),
         dropped=dropped,

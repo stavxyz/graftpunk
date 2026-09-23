@@ -117,6 +117,9 @@ class _RawInput:
     # so a control outside its form joins it in document order.
     form_owner: str = ""
     order: int = 0
+    # A control whose form= names a form it does not sit inside: a selector scoped
+    # to that form would match nothing, so it is selected by its form attribute.
+    outside_form: bool = False
 
 
 @dataclass
@@ -159,6 +162,8 @@ class _DocumentParser(HTMLParser):
                 form_owner=values.get("form", ""),
                 order=len(self.inputs),
             )
+            inside = self._current.element_id if self._current is not None else ""
+            raw_input.outside_form = bool(raw_input.form_owner) and raw_input.form_owner != inside
             self.inputs.append(raw_input)
             if self._current is not None and not raw_input.form_owner:
                 self._current.inputs.append(raw_input)
@@ -327,19 +332,51 @@ def _selectors_for(
     by_id = _id_selector(raw)
     if by_id is not None:
         return by_id, by_id
+    if raw.outside_form:
+        return _outside_selector(raw, page_inputs)
     by_name = _name_selector(raw)
+    if by_name is not None and (
+        sum(1 for other in form_inputs if other.tag == raw.tag and other.name == raw.name) > 1
+    ):
+        # A name two inputs of the form share picks the first of them, which may
+        # not be this one: fall back as for any selector that is not unique.
+        by_name = None
     unscoped = None
     if by_name is not None and (
         sum(1 for other in page_inputs if other.tag == raw.tag and other.name == raw.name) == 1
     ):
         unscoped = by_name
     if not form_scopes:
-        return unscoped, unscoped
+        return (unscoped, unscoped) if by_name is not None else (None, None)
     if by_name is not None:
         return _scoped((by_name,), form_scopes), unscoped
     if sum(1 for other in form_inputs if _same_type(raw, other)) > 1:
         return None, None
     return _scoped(_type_selectors(raw), form_scopes), None
+
+
+def _outside_selector(
+    raw: _RawInput, page_inputs: list[_RawInput]
+) -> tuple[str | None, str | None]:
+    """The selector of a control outside the form its ``form`` attribute names:
+    ``tag[form="id"][name="..."]``, else ``tag[form="id"][type="..."]`` (with
+    ``:not([type])`` for a typeless one), each only when it picks this one control
+    on the page, else none. It spells no action, so it prints as it is."""
+    owner = f'[form="{_css_string(raw.form_owner)}"]'
+    siblings = [other for other in page_inputs if other.form_owner == raw.form_owner]
+    by_name = _name_selector(raw)
+    if by_name is not None and (
+        sum(1 for other in siblings if other.tag == raw.tag and other.name == raw.name) == 1
+    ):
+        selector = f'{raw.tag}{owner}[name="{_css_string(raw.name)}"]'
+        return selector, selector
+    if sum(1 for other in siblings if _same_type(raw, other)) == 1:
+        suffixes = tuple(
+            suffix.replace(raw.tag, f"{raw.tag}{owner}", 1) for suffix in _type_selectors(raw)
+        )
+        selector = ", ".join(suffixes)
+        return selector, selector
+    return None, None
 
 
 # The input part every alternative of a form-scoped selector ends with (see
@@ -554,7 +591,9 @@ def _action_target(raw_action: str, source: str) -> tuple[str, str]:
         return "", ""
 
 
-def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
+def extract_login_forms(
+    html: str, source: str, *, base: str | None = None
+) -> tuple[LoginForm, ...]:
     """Every login ``<form>`` in *html*: one with a password input that is not a
     registration form (:func:`_is_registration`), unless every such form on the page
     is one, when all are kept.
@@ -571,15 +610,21 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
     wherever it sits. A checkbox, radio, file, image, reset, range, or hidden input
     is never a field role, and each role is assigned once. Selectors come from
     :func:`_selectors_for`; a role with none is recorded in ``unresolved_roles``.
-    Hidden input names are kept as token candidates.
+    Hidden input names are kept as token candidates. *base*, when given, is the
+    unmasked URL of the page the form came from (*source* is the masked one the
+    digest prints), and the form's ``action_target`` resolves against it.
     """
     parsed = _parse(html)
     candidates = [raw for raw in parsed.forms if _password_index(raw.inputs) is not None]
     # A registration form is left out only beside a login form: a lone form marked
     # new-password is still the page's login form.
     logins = [raw for raw in candidates if not _is_registration(raw.inputs)]
+    if not logins:
+        # A lone form with one password is kept (new-password misused on a login
+        # form); a lone form with a confirmation password is a registration form.
+        logins = [raw for raw in candidates if len(_password_inputs(raw.inputs)) == 1]
     forms: list[LoginForm] = []
-    for raw in logins or candidates:
+    for raw in logins:
         inputs = raw.inputs
         password_index = _password_index(inputs)
         if password_index is None:
@@ -690,7 +735,7 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
                 unscoped_submit=unscoped_submit,
                 nameless_roles=tuple(nameless),
                 absent_roles=tuple(absent),
-                action_target=_action_target(raw.action, source),
+                action_target=_action_target(raw.action, base or source),
             )
         )
     return tuple(forms)

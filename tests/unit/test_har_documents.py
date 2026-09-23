@@ -788,3 +788,66 @@ class TestLoginSemanticsRound8:
         (form,) = extract_login_forms(html, source="s")
         assert form.neutral_roles == ("field_1", "field_2")
         assert form.nameless_roles == ("field_1",)
+
+
+class TestLoginSemanticsRound9:
+    def test_a_lone_registration_form_with_a_confirmation_is_not_a_login_form(self) -> None:
+        """J1: only a lone form with one password (new-password misused) is kept."""
+        html = (
+            '<form action="/register"><input type="email" name="email">'
+            '<input type="password" name="password">'
+            '<input type="password" name="password_confirm"></form>'
+        )
+        assert extract_login_forms(html, source="s") == ()
+        assert is_login_document(html)
+
+    def test_a_scoped_name_shared_within_the_form_falls_back(self) -> None:
+        """J6: a name selector must pick one input of its form."""
+        html = (
+            '<form action="/login"><input type="text" name="user" id="u1" class="first">'
+            '<input type="password" name="password">'
+            '<input type="checkbox" name="password"><button>Go</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["password"] == 'form[action="/login"] input[type="password"]'  # noqa: S105
+        _assert_first_match(html, form.fields["password"], name="password")
+        first = lxml.html.fromstring(f"<html><body>{html}</body></html>").cssselect(
+            form.fields["password"]
+        )[0]
+        assert first.get("type") == "password"
+
+    @pytest.mark.parametrize(
+        ("control", "expected", "check"),
+        [
+            (
+                '<button type="submit" form="signin" id="outside">Sign in</button>',
+                "#outside",
+                {"id_": "outside"},
+            ),
+            (
+                '<button type="submit" form="signin" name="go">Sign in</button>',
+                'button[form="signin"][name="go"]',
+                {"name": "go"},
+            ),
+            (
+                '<button type="submit" form="signin">Sign in</button>',
+                'button[form="signin"][type="submit"]',
+                {"text": "Sign in"},
+            ),
+        ],
+        ids=["id", "name", "type"],
+    )
+    def test_a_control_outside_its_form_is_selected_by_its_form_attribute(
+        self, control: str, expected: str, check: dict
+    ) -> None:
+        """I3: a descendant selector would match nothing for a control outside its form."""
+        html = (
+            '<form id="signin" action="/login"><input name="username">'
+            '<input type="password" name="password"></form>'
+            f"{control}"
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.submit == expected
+        _assert_first_match(html, form.submit, **check)
+        fields, submit = printable_selectors(form)
+        assert submit == expected

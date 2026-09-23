@@ -826,13 +826,16 @@ class TestCustomHeaders:
 
 class TestLoginObservations:
     def test_form_page_observation(self, tmp_path: Path) -> None:
+        """A page carrying a login form is the form page when a credential post
+        follows it (J3, round 9)."""
         entries = [
             _entry(
                 "GET",
                 "https://api.myshop.example.com/login",
                 content_type="text/html",
                 body='<form><input type="password" name="pw"></form>',
-            )
+            ),
+            _entry("POST", "https://api.myshop.example.com/login", post_data='{"pw": "x"}'),
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert result.login[0].kind == "form_page"
@@ -1457,6 +1460,153 @@ class TestLoginFlowFlag:
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert len(result.login_forms) == 1
+
+    @pytest.mark.parametrize(
+        "form_open",
+        ['<form method="post">', '<form action="./add" method="post">'],
+        ids=["no-action", "relative-action"],
+    )
+    def test_a_self_posting_header_form_does_not_claim_the_post_that_served_it(
+        self, tmp_path: Path, form_open: str
+    ) -> None:
+        """I1: targets come only from forms a GET served, and an entry is classified
+        before its own forms are recorded."""
+        header = (
+            f'{form_open}<input type="email" name="email">'
+            '<input type="password" name="passcode"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/shop/", content_type="text/html", body=header
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/cart/add",
+                content_type="text/html",
+                body=header + "<p>added</p>",
+                post_data=json.dumps({"sku": "x", "quantity": 1}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert not any(o.kind == "credential_post" for o in result.login)
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/cart/add")] is False
+        assert flags[("GET", "/shop/")] is False
+
+    def test_a_page_with_a_login_form_is_the_form_page_only_before_a_credential_post(
+        self, tmp_path: Path
+    ) -> None:
+        """J3: an ordinary page carrying a site-wide login form keeps its stub."""
+        form = (
+            '<form action="/session" method="post"><input type="email" name="email">'
+            '<input type="password" name="password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/products",
+                content_type="text/html",
+                body=form,
+            ),
+            _entry("GET", "https://api.myshop.example.com/api/orders", body='{"orders": []}'),
+            _entry(
+                "GET", "https://api.myshop.example.com/signin", content_type="text/html", body=form
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        entries = [
+            entries[0],
+            entries[1],
+            *[
+                _entry("GET", f"https://api.myshop.example.com/api/filler/{n}", body="{}")
+                for n in range(1001, 1030)
+            ],
+            entries[2],
+            entries[3],
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        pages = [o.url for o in result.login if o.kind == "form_page"]
+        assert pages == ["https://api.myshop.example.com/signin"]
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/products")] is False
+        assert flags[("GET", "/signin")] is True
+        assert [o.order for o in result.login] == list(range(1, len(result.login) + 1))
+
+    @pytest.mark.parametrize(
+        ("action", "post_path"),
+        [("", "/u/alice@example.com/signin"), ('action="verify"', "/u/alice@example.com/verify")],
+        ids=["no-action", "relative-action"],
+    )
+    def test_a_form_target_resolves_against_the_unmasked_page(
+        self, tmp_path: Path, action: str, post_path: str
+    ) -> None:
+        """M1: the page path holds an email; the target is resolved against the page
+        as requested, not as the digest masks it for printing."""
+        form = (
+            f'<form {action} method="post"><input type="email" name="email">'
+            '<input type="password" name="passcode"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/u/alice@example.com/signin",
+                content_type="text/html",
+                body=form,
+            ),
+            _entry(
+                "POST",
+                f"https://api.myshop.example.com{post_path}",
+                post_data=json.dumps({"email": "alice@example.com", "passcode": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert [o.kind for o in result.login if o.method == "POST"] == ["credential_post"]
+        assert "alice@example.com" not in render_json(result)
+
+    def test_the_same_empty_action_form_on_several_pages_is_listed_once(
+        self, tmp_path: Path
+    ) -> None:
+        """M2: the target, which differs per page, is not part of the identity."""
+        header = (
+            '<form method="post"><input type="email" name="email">'
+            '<input type="password" name="password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com/{page}",
+                content_type="text/html",
+                body=header,
+            )
+            for page in ("", "products", "cart")
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert len(result.login_forms) == 1
+
+    def test_the_form_a_credential_post_went_to_is_listed_first(self, tmp_path: Path) -> None:
+        """J2: the generator takes the first form, which is the one that was used."""
+        page = (
+            '<form action="/a/login" method="post"><input type="email" name="email">'
+            '<input type="password" name="password"></form>'
+            '<form action="/b/login" method="post"><input type="text" name="username">'
+            '<input type="password" name="password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/signin", content_type="text/html", body=page
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/b/login",
+                post_data=json.dumps({"username": "alice", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert [form.action for form in result.login_forms] == ["/b/login", "/a/login"]
 
     def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
         """The form's type="password" input names the field, so a name outside the
