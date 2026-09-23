@@ -12,34 +12,34 @@ import graftpunk.devtools.scaffold.render as render
 
 _FORMATTING_HELPERS = frozenset(
     {
-        "_GENERATED_LINE_LENGTH",
-        "_L1",
-        "_L2",
-        "_L3",
+        "GENERATED_LINE_LENGTH",
+        "L1",
+        "L2",
+        "L3",
         "_L4",
-        "_INDENT_STEP",
+        "INDENT_STEP",
         "_DOCSTRING_WRAP_WIDTH",
         "_escaped_for_docstring",
         "_repaired_escape_splits",
         "_escaped_docstring_wrap",
-        "_wrapped_docstring_lines",
-        "_wrapped_comment_lines",
-        "_wrapped_docstring_block",
-        "_quoted",
+        "wrapped_docstring_lines",
+        "wrapped_comment_lines",
+        "wrapped_docstring_block",
+        "quoted_literal",
         "_quote_char",
         "_escaped_body",
         "_split_key_lines",
         "_dict_entry_lines",
-        "_exploded_dict_lines",
-        "_call_lines",
-        "_literal_lines",
-        "_literal_dict_entry_lines",
-        "_URL_PLACEHOLDER_RE",
+        "exploded_dict_lines",
+        "call_expression_lines",
+        "literal_lines",
+        "literal_dict_entry_lines",
+        "URL_PLACEHOLDER_RE",
         "_quoted_fstring",
         "_url_atoms",
         "_url_chunks",
-        "_url_expr_lines",
-        "_import_lines",
+        "url_expr_lines",
+        "import_lines",
     }
 )
 
@@ -79,3 +79,21 @@ def test_pysrc_imports_nothing_from_graftpunk() -> None:
         for alias in node.names
     }
     assert {name for name in imported if name.startswith("graftpunk")} == set()
+
+
+def test_every_name_another_module_imports_is_public_and_exported() -> None:
+    """No module imports a private name from pysrc: what it shares is its __all__."""
+    package = Path(pysrc.__file__).parents[2]
+    imported: set[str] = set()
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imported |= {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "graftpunk.devtools.scaffold.pysrc"
+            for alias in node.names
+        }
+    assert imported
+    assert imported <= set(pysrc.__all__)
+    assert not [name for name in pysrc.__all__ if name.startswith("_")]

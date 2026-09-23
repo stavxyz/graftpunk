@@ -17,22 +17,22 @@ from urllib.parse import urlparse
 
 from graftpunk.devtools.captures import CAPTURES_DIR
 from graftpunk.devtools.scaffold.pysrc import (
-    _GENERATED_LINE_LENGTH,
-    _INDENT_STEP,
-    _L1,
-    _L2,
-    _L3,
-    _URL_PLACEHOLDER_RE,
-    _call_lines,
-    _exploded_dict_lines,
-    _import_lines,
-    _literal_dict_entry_lines,
-    _literal_lines,
-    _quoted,
-    _url_expr_lines,
-    _wrapped_comment_lines,
-    _wrapped_docstring_block,
-    _wrapped_docstring_lines,
+    GENERATED_LINE_LENGTH,
+    INDENT_STEP,
+    L1,
+    L2,
+    L3,
+    URL_PLACEHOLDER_RE,
+    call_expression_lines,
+    exploded_dict_lines,
+    import_lines,
+    literal_dict_entry_lines,
+    literal_lines,
+    quoted_literal,
+    url_expr_lines,
+    wrapped_comment_lines,
+    wrapped_docstring_block,
+    wrapped_docstring_lines,
 )
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
 from graftpunk.har.naming import capture_filename
@@ -279,7 +279,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             text = (
                 f"{observation.order}. {observation.method} {observation.url} ({observation.kind})"
             )
-            lines.extend(_wrapped_comment_lines(text, indent=len(_L1)))
+            lines.extend(wrapped_comment_lines(text, indent=len(L1)))
         lines.append(
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])'
         )
@@ -287,9 +287,9 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     landing_path = _login_landing_path(spec.digest)
     pattern = _success_url_pattern(landing_path) if landing_path else None
     lines = ["    login_config = LoginConfig(", "        steps=["]
-    lines.extend(_render_login_step(form, indent=len(_L3)))
+    lines.extend(_render_login_step(form, indent=len(L3)))
     lines.append("        ],")
-    lines.extend(_literal_lines(form.action, indent=len(_L2), prefix="url="))
+    lines.extend(literal_lines(form.action, indent=len(L2), prefix="url="))
     lines.append('        failure="GP-FILL: text on the page indicating login failure",')
     # Nothing observed says which element marks the landing page, and a GP-FILL
     # literal here would be a configured signal: the engine would poll for that
@@ -298,27 +298,27 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     # scaffold whose success_url was pre-filled has exactly one signal, which is
     # the intended state (polish round 2).
     lines.extend(
-        _wrapped_comment_lines(
+        wrapped_comment_lines(
             "GP-FILL: success, a CSS selector for an element that is on the page this "
             "login lands on and not on the login form itself.",
-            indent=len(_L2),
+            indent=len(L2),
         )
     )
     if pattern:
         # What the run saw the credential post redirect to: the engine polls for
         # this URL after submit, and an element check is still worth filling in.
-        lines.extend(_literal_lines(pattern, indent=len(_L2), prefix="success_url="))
+        lines.extend(literal_lines(pattern, indent=len(L2), prefix="success_url="))
     else:
         # No landing URL was observed, so there is nothing to copy. A GP-FILL string
         # here would be a configured signal: the engine would poll for that literal
         # until the timeout and fail naming it, even for an author who filled in
         # success instead. The hint is a comment, and the field stays unset.
         lines.extend(
-            _wrapped_comment_lines(
+            wrapped_comment_lines(
                 "GP-FILL: success_url, a glob matched against the whole URL this login "
                 "lands on, e.g. */dashboard*. This run observed no redirect after the "
                 "credential post.",
-                indent=len(_L2),
+                indent=len(L2),
             )
         )
     lines.append("    )")
@@ -352,7 +352,7 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
         lines.append("    token_config = TokenConfig(")
         lines.append("        tokens=[")
         for header, source in pairs:
-            lines.extend(_render_token_call(header, source, indent=len(_L3)))
+            lines.extend(_render_token_call(header, source, indent=len(L3)))
         lines.append("        ]")
         lines.append("    )")
     else:
@@ -362,7 +362,7 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
         )
     for candidate in unpaired:
         text = f"GP-FILL: unpaired token candidate: {candidate.kind} '{candidate.name}'"
-        lines.extend(_wrapped_comment_lines(text, indent=len(_L1)))
+        lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     return lines
 
 
@@ -375,11 +375,11 @@ def _exploded_literal_dict_lines(entries: list[tuple[str, str]], *, indent: int)
     entry per line. Unlike a stub's parameter dicts, both halves here are captured site
     facts (a credential role is the form input's own name when it is neither the
     username nor the password field), so both route through
-    ``_literal_dict_entry_lines``."""
+    ``literal_dict_entry_lines``."""
     pad = " " * indent
     lines = [f"{pad}fields={{"]
     for role, selector in entries:
-        lines.extend(_literal_dict_entry_lines(role, selector, indent=indent + _INDENT_STEP))
+        lines.extend(literal_dict_entry_lines(role, selector, indent=indent + INDENT_STEP))
     lines.append(f"{pad}}},")
     return lines
 
@@ -391,9 +391,9 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     submit_value = form.submit or "GP-FILL: submit selector"
     lines = [f"{pad}LoginStep("]
     lines.extend(
-        _exploded_literal_dict_lines(sorted(form.fields.items()), indent=indent + _INDENT_STEP)
+        _exploded_literal_dict_lines(sorted(form.fields.items()), indent=indent + INDENT_STEP)
     )
-    lines.extend(_literal_lines(submit_value, indent=indent + _INDENT_STEP, prefix="submit="))
+    lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))
     lines.append(f"{pad}),")
     return lines
 
@@ -409,9 +409,9 @@ def _render_token_call(header: TokenCandidate, source: TokenCandidate, *, indent
         call_name, value_keyword = "Token.from_cookie", "cookie_name"
     lines = [f"{pad}{call_name}("]
     lines.extend(
-        _literal_lines(source.name, indent=indent + _INDENT_STEP, prefix=f"{value_keyword}=")
+        literal_lines(source.name, indent=indent + INDENT_STEP, prefix=f"{value_keyword}=")
     )
-    lines.extend(_literal_lines(header.name, indent=indent + _INDENT_STEP, prefix="header="))
+    lines.extend(literal_lines(header.name, indent=indent + INDENT_STEP, prefix="header="))
     lines.append(f"{pad}),")
     return lines
 
@@ -431,7 +431,7 @@ def _templated_url(template: str, seen: set[str]) -> tuple[str, list[str]]:
         identifiers.append(identifier)
         return f"{{{identifier}}}"
 
-    return _URL_PLACEHOLDER_RE.sub(rename, template), identifiers
+    return URL_PLACEHOLDER_RE.sub(rename, template), identifiers
 
 
 def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: str) -> list[str]:
@@ -462,40 +462,40 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         annotation = _PY_TYPE_BY_OBSERVED.get(observed, "str")
         params.append(f"{identifier_for[extra]}: {annotation} | None = None")
 
-    # Through _quoted like every other captured value: the method comes from
+    # Through quoted_literal like every other captured value: the method comes from
     # the capture, so it is not this module's to assume is quote-free.
-    call_lines = [f"{_L3}{_quoted(method)},"]
-    call_lines.extend(_url_expr_lines(url_text, is_fstring=bool(path_params), indent=len(_L3)))
-    call_lines.append(f"{_L3}role={_quoted(role)},")
+    call_lines = [f"{L3}{quoted_literal(method)},"]
+    call_lines.extend(url_expr_lines(url_text, is_fstring=bool(path_params), indent=len(L3)))
+    call_lines.append(f"{L3}role={quoted_literal(role)},")
     if endpoint.query_params:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.query_params)]
-        call_lines.extend(_exploded_dict_lines("params", entries))
+        call_lines.extend(exploded_dict_lines("params", entries))
     if emits_body:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.body_params)]
-        call_lines.extend(_exploded_dict_lines("json", entries))
+        call_lines.extend(exploded_dict_lines("json", entries))
     if endpoint.custom_headers:
         entries = [(h, '"GP-FILL"') for h in endpoint.custom_headers]
-        call_lines.extend(_exploded_dict_lines("headers", entries))
+        call_lines.extend(exploded_dict_lines("headers", entries))
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
     # An unavailable shape is not a fact about the site, so the docstring says
     # nothing rather than guessing (polish round 1, 2026-09-12).
     shape_known = endpoint.shape is None or endpoint.shape != SHAPE_UNAVAILABLE
 
-    lines = _call_lines("@command", [f'help="GP-FILL: describe {name}"'], indent=len(_L1))
-    lines.append(f"{_L1}def {name}(")
-    lines.extend(f"{_L2}{p}," for p in params)
-    lines.append(f"{_L1}) -> {return_type}:")
-    lines.append(f'{_L2}"""')
-    lines.extend(_wrapped_docstring_lines(summary))
+    lines = call_expression_lines("@command", [f'help="GP-FILL: describe {name}"'], indent=len(L1))
+    lines.append(f"{L1}def {name}(")
+    lines.extend(f"{L2}{p}," for p in params)
+    lines.append(f"{L1}) -> {return_type}:")
+    lines.append(f'{L2}"""')
+    lines.extend(wrapped_docstring_lines(summary))
     if shape_known:
         shape_line = f"Shape: {summarize_shape(endpoint.shape, depth=_SCAFFOLD_SHAPE_DEPTH)}."
         lines.append("")
-        lines.extend(_wrapped_docstring_lines(shape_line))
-    lines.append(f'{_L2}"""')
-    lines.append(f"{_L2}return ctx.{call}(")
+        lines.extend(wrapped_docstring_lines(shape_line))
+    lines.append(f'{L2}"""')
+    lines.append(f"{L2}return ctx.{call}(")
     lines.extend(call_lines)
-    lines.append(f"{_L2})")
+    lines.append(f"{L2})")
     lines.append("")
     return lines
 
@@ -615,13 +615,13 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         lines.append("from graftpunk.tokens import Token, TokenConfig")
     lines += ["", "", f"class {klass}(SitePlugin):"]
     class_docstring = f"Commands for {spec.base_url or 'GP-FILL: base_url'}."
-    lines.extend(_wrapped_docstring_block(class_docstring, indent=len(_L1)))
+    lines.extend(wrapped_docstring_block(class_docstring, indent=len(L1)))
     lines.append("")
     lines.append(f'    site_name = "{spec.name}"')
     lines.append(f'    session_name = "{spec.name}"')
     lines.append(f'    help_text = "Commands for {spec.name}"')
-    base_url_lines = _literal_lines(
-        spec.base_url, indent=len(_L1), prefix="base_url = ", trailing_comma=False
+    base_url_lines = literal_lines(
+        spec.base_url, indent=len(L1), prefix="base_url = ", trailing_comma=False
     )
     if not spec.base_url:
         # Neither --url nor --from-run: the class docstring already says
@@ -668,7 +668,7 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
         f'packages = ["src/{package}"]\n'
         "\n"
         "[tool.ruff]\n"
-        f"line-length = {_GENERATED_LINE_LENGTH}\n"
+        f"line-length = {GENERATED_LINE_LENGTH}\n"
         "\n"
         "[tool.ruff.lint]\n"
         'select = ["E", "F", "I", "UP", "B"]\n'
@@ -747,7 +747,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         # settings.
         lines += ["from graftpunk.testing import fixture_context", ""]
     lines += [
-        *_import_lines(f"{package}.plugin", klass),
+        *import_lines(f"{package}.plugin", klass),
         "",
         f"FIXTURES_DIR = {_fixtures_dir_expression(spec)}",
         "",
@@ -776,19 +776,19 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         lines.append(f"def test_{name}() -> None:")
         # base_url is a captured site fact and plugin_name is the user's own
         # name, so this call is exploded one keyword argument per line with
-        # both values through _literal_lines (validation fix round 4,
+        # both values through literal_lines (validation fix round 4,
         # 2026-09-12).
-        lines.append(f"{_L1}ctx = fixture_context(")
-        lines.append(f"{_L2}FIXTURES_DIR,")
-        lines.extend(_literal_lines(spec.name, indent=len(_L2), prefix="plugin_name="))
-        lines.extend(_literal_lines(spec.base_url, indent=len(_L2), prefix="base_url="))
-        lines.append(f"{_L1})")
-        lines.append(f"{_L1}plugin = {klass}()")
+        lines.append(f"{L1}ctx = fixture_context(")
+        lines.append(f"{L2}FIXTURES_DIR,")
+        lines.extend(literal_lines(spec.name, indent=len(L2), prefix="plugin_name="))
+        lines.extend(literal_lines(spec.base_url, indent=len(L2), prefix="base_url="))
+        lines.append(f"{L1})")
+        lines.append(f"{L1}plugin = {klass}()")
         lines.extend(
-            _call_lines(
+            call_expression_lines(
                 f"result = plugin.{name}",
                 ["ctx", *(f'{p}="1"' for p in path_params)],
-                indent=len(_L1),
+                indent=len(L1),
             )
         )
         lines.append("    assert result  # GP-FILL: assert on the shape you expect")

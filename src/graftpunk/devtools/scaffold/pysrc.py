@@ -4,9 +4,9 @@ escaping, and wrapping.
 Every helper here turns a captured site fact into Python source that parses
 and that ``ruff format`` leaves unchanged at the generated project's line
 length. ``render.py`` decides what a generated file says; this module decides
-how each line of it is spelled (issue #201, item 2). The names keep their
-leading underscore because they are internal to ``graftpunk.devtools.scaffold``;
-moving them here changed no behaviour.
+how each line of it is spelled (issue #201, item 2). A name another module
+imports is public and listed in ``__all__``; the rest are private to this
+module.
 """
 
 from __future__ import annotations
@@ -15,20 +15,39 @@ import json
 import re
 import textwrap
 
+__all__ = [
+    "GENERATED_LINE_LENGTH",
+    "INDENT_STEP",
+    "L1",
+    "L2",
+    "L3",
+    "URL_PLACEHOLDER_RE",
+    "call_expression_lines",
+    "exploded_dict_lines",
+    "import_lines",
+    "literal_dict_entry_lines",
+    "literal_lines",
+    "quoted_literal",
+    "url_expr_lines",
+    "wrapped_comment_lines",
+    "wrapped_docstring_block",
+    "wrapped_docstring_lines",
+]
+
 # The line length a generated project's own [tool.ruff] declares (_render_pyproject
 # below): every wrapping decision this module makes for generated content is
 # against this one number, so the two cannot silently drift apart.
-_GENERATED_LINE_LENGTH = 100
+GENERATED_LINE_LENGTH = 100
 
 # Indentation levels used when a generated command stub is exploded onto
 # multiple lines (a class body; a method body; a call's arguments; an
 # argument dict's entries), one owner each, so the levels cannot drift.
-_L1 = "    "
-_L2 = "        "
-_L3 = "            "
+L1 = "    "
+L2 = "        "
+L3 = "            "
 _L4 = "                "
-_INDENT_STEP = 4  # the step between the levels above, and one nesting level anywhere else
-_DOCSTRING_WRAP_WIDTH = _GENERATED_LINE_LENGTH - len(_L2)
+INDENT_STEP = 4  # the step between the levels above, and one nesting level anywhere else
+_DOCSTRING_WRAP_WIDTH = GENERATED_LINE_LENGTH - len(L2)
 
 
 def _escaped_for_docstring(text: str) -> str:
@@ -86,15 +105,15 @@ def _escaped_docstring_wrap(text: str, *, width: int) -> list[str]:
     return _repaired_escape_splits(wrapped)
 
 
-def _wrapped_docstring_lines(text: str) -> list[str]:
+def wrapped_docstring_lines(text: str) -> list[str]:
     """*text* escaped for a docstring and word-wrapped to fit a generated stub's
-    docstring at ``_L2`` indentation, each returned line already carrying that
+    docstring at ``L2`` indentation, each returned line already carrying that
     indentation."""
     wrapped = _escaped_docstring_wrap(text, width=_DOCSTRING_WRAP_WIDTH)
-    return [f"{_L2}{line}" for line in wrapped]
+    return [f"{L2}{line}" for line in wrapped]
 
 
-def _wrapped_comment_lines(text: str, *, indent: int) -> list[str]:
+def wrapped_comment_lines(text: str, *, indent: int) -> list[str]:
     """*text* as one or more ``#``-prefixed comment lines at *indent* spaces: a
     captured URL or candidate name is unbounded, and ``E501`` applies to a comment
     line exactly as it does to code, so every comment this module emits routes
@@ -107,7 +126,7 @@ def _wrapped_comment_lines(text: str, *, indent: int) -> list[str]:
     pad = " " * indent
     return textwrap.wrap(
         text,
-        width=_GENERATED_LINE_LENGTH,
+        width=GENERATED_LINE_LENGTH,
         initial_indent=f"{pad}# ",
         subsequent_indent=f"{pad}#   ",
         break_long_words=True,
@@ -115,20 +134,20 @@ def _wrapped_comment_lines(text: str, *, indent: int) -> list[str]:
     ) or [f"{pad}# "]
 
 
-def _wrapped_docstring_block(text: str, *, indent: int) -> list[str]:
+def wrapped_docstring_block(text: str, *, indent: int) -> list[str]:
     """A one-line docstring ``\"\"\"{text}\"\"\"`` at *indent* spaces when that fits the
     generated width; otherwise the same text as a multi-line docstring with the
     closing quotes on their own line (validation fix round 3, 2026-09-12). *text* is
     escaped for a docstring in both shapes (final fix wave, 2026-09-12)."""
     pad = " " * indent
     single_line = f'{pad}"""{_escaped_for_docstring(text)}"""'
-    if len(single_line) <= _GENERATED_LINE_LENGTH:
+    if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
-    wrapped = _escaped_docstring_wrap(text, width=max(1, _GENERATED_LINE_LENGTH - indent))
+    wrapped = _escaped_docstring_wrap(text, width=max(1, GENERATED_LINE_LENGTH - indent))
     return [f'{pad}"""', *(f"{pad}{line}" for line in wrapped), f'{pad}"""']
 
 
-def _quoted(value: str) -> str:
+def quoted_literal(value: str) -> str:
     """*value* as a complete Python string literal, quotes included.
 
     A captured site fact carries quoting of its own: ``har.documents`` builds a
@@ -170,12 +189,12 @@ def _split_key_lines(key: str, *, indent: int) -> list[str]:
     alone once the joined form no longer fits the width.
     """
     pad = " " * indent
-    continuation_pad = " " * (indent + _INDENT_STEP)
+    continuation_pad = " " * (indent + INDENT_STEP)
     # A chunk is quoted after it is cut, so the budget comes off the whole key's own
     # quoting overhead (its two quotes plus whatever escaping it needs), which is an
     # upper bound on any one chunk's.
-    overhead = len(_quoted(key)) - len(key)
-    chunk_width = max(1, _GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
+    overhead = len(quoted_literal(key)) - len(key)
+    chunk_width = max(1, GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
     chunks = textwrap.wrap(
         key,
         width=chunk_width,
@@ -183,7 +202,7 @@ def _split_key_lines(key: str, *, indent: int) -> list[str]:
         break_on_hyphens=False,
         drop_whitespace=False,
     ) or [key]
-    return [f"{pad}(", *(f"{continuation_pad}{_quoted(chunk)}" for chunk in chunks)]
+    return [f"{pad}(", *(f"{continuation_pad}{quoted_literal(chunk)}" for chunk in chunks)]
 
 
 def _dict_entry_lines(key: str, value: str, *, indent: int) -> list[str]:
@@ -198,34 +217,34 @@ def _dict_entry_lines(key: str, value: str, *, indent: int) -> list[str]:
     Finding 4, 2026-09-12).
     """
     pad = " " * indent
-    single_line = f"{pad}{_quoted(key)}: {value},"
-    if len(single_line) <= _GENERATED_LINE_LENGTH:
+    single_line = f"{pad}{quoted_literal(key)}: {value},"
+    if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
     return [*_split_key_lines(key, indent=indent), f"{pad}): {value},"]
 
 
-def _exploded_dict_lines(name: str, entries: list[tuple[str, str]]) -> list[str]:
+def exploded_dict_lines(name: str, entries: list[tuple[str, str]]) -> list[str]:
     """A ``name={...}`` call argument, one ``"key": value,`` entry per line, with a
     magic trailing comma on the closing brace so ``ruff format`` leaves it exploded.
     Each *entries* pair is the site's own name for the key (quoted and, if it is too
     wide, split by ``_dict_entry_lines``) and the value expression."""
-    lines = [f"{_L3}{name}=" + "{"]
+    lines = [f"{L3}{name}=" + "{"]
     for key, value in entries:
         lines.extend(_dict_entry_lines(key, value, indent=len(_L4)))
-    lines.append(f"{_L3}" + "},")
+    lines.append(f"{L3}" + "},")
     return lines
 
 
-def _call_lines(prefix: str, args: list[str], *, indent: int) -> list[str]:
+def call_expression_lines(prefix: str, args: list[str], *, indent: int) -> list[str]:
     """``{prefix}(arg, arg)`` at *indent* spaces on one line when it fits the generated
     width, otherwise one argument per line with a magic trailing comma so
     ``ruff format`` leaves it exploded. Both shapes are stable under the formatter, so
     the generated file needs no second pass either way."""
     pad = " " * indent
     single_line = f"{pad}{prefix}({', '.join(args)})"
-    if len(single_line) <= _GENERATED_LINE_LENGTH:
+    if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
-    continuation_pad = " " * (indent + _INDENT_STEP)
+    continuation_pad = " " * (indent + INDENT_STEP)
     return [
         f"{pad}{prefix}(",
         *(f"{continuation_pad}{arg}," for arg in args),
@@ -233,7 +252,7 @@ def _call_lines(prefix: str, args: list[str], *, indent: int) -> list[str]:
     ]
 
 
-def _literal_lines(
+def literal_lines(
     value: str, *, indent: int, prefix: str = "", trailing_comma: bool = True
 ) -> list[str]:
     """A quoted Python string literal for a captured site fact (a selector, a URL, a
@@ -249,15 +268,15 @@ def _literal_lines(
     """
     comma = "," if trailing_comma else ""
     pad = " " * indent
-    quoted = _quoted(value)
+    quoted = quoted_literal(value)
     single_line = f"{pad}{prefix}{quoted}{comma}"
-    if len(single_line) <= _GENERATED_LINE_LENGTH:
+    if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
-    continuation_pad = " " * (indent + _INDENT_STEP)
+    continuation_pad = " " * (indent + INDENT_STEP)
     # A chunk is quoted after it is cut, so the budget comes off the whole value's own
     # quoting overhead (see _split_key_lines).
     overhead = len(quoted) - len(value)
-    chunk_width = max(1, _GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
+    chunk_width = max(1, GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
     chunks = textwrap.wrap(
         value,
         width=chunk_width,
@@ -266,34 +285,34 @@ def _literal_lines(
         drop_whitespace=False,
     ) or [value]
     lines = [f"{pad}{prefix}("]
-    lines.extend(f"{continuation_pad}{_quoted(chunk)}" for chunk in chunks)
+    lines.extend(f"{continuation_pad}{quoted_literal(chunk)}" for chunk in chunks)
     lines.append(f"{pad}){comma}")
     return lines
 
 
-def _literal_dict_entry_lines(key: str, value: str, *, indent: int) -> list[str]:
+def literal_dict_entry_lines(key: str, value: str, *, indent: int) -> list[str]:
     """One ``"key": "value",`` dict entry where both halves are captured site facts and
     either can be too wide for a line.
 
     The key keeps the whole line when it leaves room for the value's opening
     parenthesis; past that, the key splits too and the value follows on the ``):``
-    line, which ``_literal_lines`` renders by taking ``"): "`` as its prefix.
+    line, which ``literal_lines`` renders by taking ``"): "`` as its prefix.
     """
     pad = " " * indent
-    if len(f"{pad}{_quoted(key)}: (") <= _GENERATED_LINE_LENGTH:
-        return _literal_lines(value, indent=indent, prefix=f"{_quoted(key)}: ")
+    if len(f"{pad}{quoted_literal(key)}: (") <= GENERATED_LINE_LENGTH:
+        return literal_lines(value, indent=indent, prefix=f"{quoted_literal(key)}: ")
     return [
         *_split_key_lines(key, indent=indent),
-        *_literal_lines(value, indent=indent, prefix="): "),
+        *literal_lines(value, indent=indent, prefix="): "),
     ]
 
 
-_URL_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z0-9_]+)\}")
+URL_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z0-9_]+)\}")
 
 
 def _quoted_fstring(text: str) -> str:
     """*text* as a complete f-string literal: each literal span quoted the way
-    ``_quoted`` quotes it and each brace outside a ``{placeholder}`` doubled, so a
+    ``quoted_literal`` quotes it and each brace outside a ``{placeholder}`` doubled, so a
     captured path holding a stray brace or a quote cannot emit a file that will not
     parse. The quote character is chosen once, for the whole literal, from the text
     outside the placeholders (a placeholder is an identifier and holds neither quote).
@@ -301,7 +320,7 @@ def _quoted_fstring(text: str) -> str:
     spans: list[str] = []
     parts: list[str] = []
     position = 0
-    for match in _URL_PLACEHOLDER_RE.finditer(text):
+    for match in URL_PLACEHOLDER_RE.finditer(text):
         spans.append(text[position : match.start()])
         parts.append(match.group(0))
         position = match.end()
@@ -329,7 +348,7 @@ def _url_chunks(text: str, *, width: int) -> list[str]:
     never splitting inside a ``{placeholder}``. The chunks rejoin to exactly *text*."""
     atoms: list[str] = []
     position = 0
-    for match in _URL_PLACEHOLDER_RE.finditer(text):
+    for match in URL_PLACEHOLDER_RE.finditer(text):
         atoms.extend(_url_atoms(text[position : match.start()], width=width))
         atoms.append(match.group(0))
         position = match.end()
@@ -343,7 +362,7 @@ def _url_chunks(text: str, *, width: int) -> list[str]:
     return chunks or [text]
 
 
-def _url_expr_lines(url_text: str, *, is_fstring: bool, indent: int) -> list[str]:
+def url_expr_lines(url_text: str, *, is_fstring: bool, indent: int) -> list[str]:
     """The URL argument of a generated stub's request call: ``f"/a/{id}/b",`` on one
     line at *indent* spaces when that fits the generated width, otherwise the same
     string as a parenthesised implicit concatenation split at ``/`` boundaries. A
@@ -351,16 +370,16 @@ def _url_expr_lines(url_text: str, *, is_fstring: bool, indent: int) -> list[str
     deeply nested one is past the width on its own (validation fix round 4, Finding 4,
     2026-09-12)."""
     pad = " " * indent
-    render = _quoted_fstring if is_fstring else _quoted
+    render = _quoted_fstring if is_fstring else quoted_literal
     single_line = f"{pad}{render(url_text)},"
-    if len(single_line) <= _GENERATED_LINE_LENGTH:
+    if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
-    continuation_pad = " " * (indent + _INDENT_STEP)
+    continuation_pad = " " * (indent + INDENT_STEP)
     # A chunk is quoted after it is cut, so the budget comes off the whole template's
     # own literal overhead (its quotes, its `f`, and any escaping or brace doubling),
     # which is an upper bound on any one chunk's.
     overhead = len(render(url_text)) - len(url_text)
-    chunk_width = max(1, _GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
+    chunk_width = max(1, GENERATED_LINE_LENGTH - len(continuation_pad) - overhead)
     lines = [f"{pad}("]
     lines.extend(
         f"{continuation_pad}{render(chunk)}" for chunk in _url_chunks(url_text, width=chunk_width)
@@ -369,13 +388,13 @@ def _url_expr_lines(url_text: str, *, is_fstring: bool, indent: int) -> list[str
     return lines
 
 
-def _import_lines(module: str, name: str) -> list[str]:
+def import_lines(module: str, name: str) -> list[str]:
     """``from {module} import {name}`` on one line when it fits the generated width,
     otherwise the parenthesised form with a magic trailing comma. The generated
     package name and class name are both plugin-name derivatives, so together they
     can still pass the width even with the name capped at ``_MAX_PLUGIN_NAME``, and
     ``ruff format`` would split the single line for itself."""
     single_line = f"from {module} import {name}"
-    if len(single_line) <= _GENERATED_LINE_LENGTH:
+    if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
-    return [f"from {module} import (", f"{_L1}{name},", ")"]
+    return [f"from {module} import (", f"{L1}{name},", ")"]

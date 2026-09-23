@@ -13,14 +13,14 @@ import pytest
 
 from graftpunk.devtools.scaffold.pysrc import (
     _DOCSTRING_WRAP_WIDTH,
-    _GENERATED_LINE_LENGTH,
+    GENERATED_LINE_LENGTH,
     _dict_entry_lines,
-    _literal_dict_entry_lines,
-    _literal_lines,
     _url_chunks,
-    _wrapped_comment_lines,
-    _wrapped_docstring_block,
-    _wrapped_docstring_lines,
+    literal_dict_entry_lines,
+    literal_lines,
+    wrapped_comment_lines,
+    wrapped_docstring_block,
+    wrapped_docstring_lines,
 )
 from graftpunk.devtools.scaffold.render import (
     _MAX_COMMAND_NAME,
@@ -310,7 +310,7 @@ class TestModuleNameFor:
 
 class TestLiteralLines:
     def test_short_value_renders_on_one_line(self) -> None:
-        assert _literal_lines("#login-btn", indent=8, prefix="submit=") == [
+        assert literal_lines("#login-btn", indent=8, prefix="submit=") == [
             '        submit="#login-btn",'
         ]
 
@@ -321,7 +321,7 @@ class TestLiteralLines:
         )
         assert len(value) > 100
         indent = 16
-        lines = _literal_lines(value, indent=indent, prefix="submit=")
+        lines = literal_lines(value, indent=indent, prefix="submit=")
         pad = " " * indent
         continuation_pad = " " * (indent + 4)
         assert lines[0] == f"{pad}submit=("
@@ -334,7 +334,7 @@ class TestLiteralLines:
     def test_long_value_with_no_whitespace_reconstructs_exactly(self) -> None:
         value = "x" * 90
         indent = 12
-        lines = _literal_lines(value, indent=indent, prefix="header=")
+        lines = literal_lines(value, indent=indent, prefix="header=")
         continuation_pad = " " * (indent + 4)
         chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
         assert "".join(chunks) == value
@@ -357,12 +357,12 @@ class TestDictEntryLines:
         chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
         assert "".join(chunks) == key
         for line in lines:
-            assert len(line) <= _GENERATED_LINE_LENGTH
+            assert len(line) <= GENERATED_LINE_LENGTH
 
 
 class TestLiteralDictEntryLines:
     def test_short_pair_renders_on_one_line(self) -> None:
-        assert _literal_dict_entry_lines("username", "#email", indent=16) == [
+        assert literal_dict_entry_lines("username", "#email", indent=16) == [
             '                "username": "#email",'
         ]
 
@@ -370,7 +370,7 @@ class TestLiteralDictEntryLines:
         key = "k" * 110
         value = "v" * 110
         indent = 16
-        lines = _literal_dict_entry_lines(key, value, indent=indent)
+        lines = literal_dict_entry_lines(key, value, indent=indent)
         pad = " " * indent
         continuation_pad = " " * (indent + 4)
         assert lines[0] == f"{pad}("
@@ -385,7 +385,7 @@ class TestLiteralDictEntryLines:
         assert key_chunks == key
         assert value_chunks == value
         for line in lines:
-            assert len(line) <= _GENERATED_LINE_LENGTH
+            assert len(line) <= GENERATED_LINE_LENGTH
 
 
 class TestUrlChunks:
@@ -420,7 +420,7 @@ class TestUrlChunks:
 
 class TestWrappedCommentLines:
     def test_short_text_is_one_line(self) -> None:
-        assert _wrapped_comment_lines("short comment", indent=4) == ["    # short comment"]
+        assert wrapped_comment_lines("short comment", indent=4) == ["    # short comment"]
 
     def test_long_text_reconstructs_after_stripping_prefixes(self) -> None:
         text = (
@@ -429,7 +429,7 @@ class TestWrappedCommentLines:
             "wrapped line (auth_api)"
         )
         indent = 4
-        lines = _wrapped_comment_lines(text, indent=indent)
+        lines = wrapped_comment_lines(text, indent=indent)
         assert len(lines) > 1
         pad = " " * indent
         first_prefix = f"{pad}# "
@@ -454,7 +454,7 @@ class TestDocstringWrappingKeepsHyphenatedFactsWhole:
     _LABEL = "myshop-tirekick/2026-09-11T22-19-05Z"
 
     def test_a_run_label_is_never_split_at_its_hyphen(self) -> None:
-        lines = _wrapped_docstring_lines(f"{self._FILLER} run {self._LABEL}.")
+        lines = wrapped_docstring_lines(f"{self._FILLER} run {self._LABEL}.")
         assert len(lines) > 1, "the input must actually wrap for this test to mean anything"
         assert any(self._LABEL in line for line in lines)
 
@@ -493,7 +493,7 @@ class TestDocstringEscaping:
 
     def test_a_triple_quote_and_a_backslash_survive_the_round_trip(self) -> None:
         text = 'GET /a\\b: shape object{"""k", tail\\}'
-        read_back = self._read_back(_wrapped_docstring_lines(text))
+        read_back = self._read_back(wrapped_docstring_lines(text))
         assert " ".join(read_back.split()) == " ".join(text.split())
 
     def test_an_escape_cut_in_half_by_wrapping_is_put_back(self) -> None:
@@ -501,12 +501,12 @@ class TestDocstringEscaping:
         # with the backslash sitting exactly on the break: the half left behind
         # would otherwise read as a line continuation inside the docstring.
         text = "x" * (_DOCSTRING_WRAP_WIDTH - 2) + "\\" + "y" * 60
-        lines = _wrapped_docstring_lines(text)
+        lines = wrapped_docstring_lines(text)
         assert len(lines) > 1, "the input must actually wrap for this test to mean anything"
         assert self._read_back(lines).replace("\n", "") == text
 
     def test_a_trailing_quote_does_not_close_the_one_line_form_early(self) -> None:
-        block = _wrapped_docstring_block('Commands for https://myshop.example.com/"', indent=0)
+        block = wrapped_docstring_block('Commands for https://myshop.example.com/"', indent=0)
         assert len(block) == 1
         source = "\n".join(["class C:", f"    {block[0]}", "    pass"])
         module = ast.parse(source)
@@ -516,7 +516,7 @@ class TestDocstringEscaping:
 
     def test_a_backslash_before_the_trailing_quote_still_gets_escaped(self) -> None:
         text = 'a\\"'
-        block = _wrapped_docstring_block(text, indent=0)
+        block = wrapped_docstring_block(text, indent=0)
         assert len(block) == 1
         source = "\n".join(["class C:", f"    {block[0]}", "    pass"])
         module = ast.parse(source)
@@ -1488,7 +1488,7 @@ class TestRenderedTreeIsRuffClean:
             if not relative_path.endswith(".py"):
                 continue
             for number, line in enumerate(content.splitlines(), start=1):
-                assert len(line) <= _GENERATED_LINE_LENGTH, (
+                assert len(line) <= GENERATED_LINE_LENGTH, (
                     f"{relative_path}:{number} is {len(line)} characters: {line!r}"
                 )
 
@@ -1582,7 +1582,7 @@ class TestRenderedTreeIsRuffClean:
         # A username selector well past the generated width, a submit selector
         # long enough to be typical but still short enough to fit on one line,
         # and a header name with no whitespace at all: the three shapes
-        # _literal_lines must handle (validation fix round 2, Finding 4,
+        # literal_lines must handle (validation fix round 2, Finding 4,
         # 2026-09-12).
         long_selector = (
             "#login-form div.field-wrapper.username-wrapper > label + "
