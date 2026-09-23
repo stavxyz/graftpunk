@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from graftpunk.contracts import current_schema
-from graftpunk.har.digest import Endpoint, RunDigest, ShapeNode
+from graftpunk.har.digest import INTERNAL, Endpoint, RunDigest, ShapeNode
 from graftpunk.har.paths import template_path
 
 __all__ = [
@@ -165,7 +165,11 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
 
 def _jsonable(value: Any) -> Any:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _jsonable(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        return {
+            f.name: _jsonable(getattr(value, f.name))
+            for f in dataclasses.fields(value)
+            if not f.metadata.get(INTERNAL)
+        }
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, dict):
@@ -176,7 +180,9 @@ def _jsonable(value: Any) -> Any:
 
 
 def render_json(d: RunDigest) -> str:
-    """The complete digest as JSON: nothing capped, nothing summarised."""
+    """The complete digest as JSON: nothing capped, nothing summarised. A field
+    marked :data:`graftpunk.har.digest.INTERNAL` is a lookup for code and is left
+    out."""
     return json.dumps(_jsonable(d), indent=2, sort_keys=True)
 
 

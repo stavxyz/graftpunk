@@ -216,7 +216,6 @@ class TestRenderJson:
             "tokens",
             "cookies",
             "dropped",
-            "collapsed_templates",
         }
 
     def test_dropped_carries_every_reason(self, tmp_path: Path) -> None:
@@ -405,3 +404,22 @@ class TestEndpointsProjection:
         patched = dataclasses.replace(result, endpoints=renamed)
         assert endpoints_projection(patched) == endpoints_projection(result)
         assert render_json(patched) != render_json(result)
+
+
+def test_render_json_carries_no_collapsed_member_beyond_the_capped_examples(
+    tmp_path: Path,
+) -> None:
+    words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+    words += ["golf", "hotel", "india", "juliet", "kilo", "lima"]
+    entries = [
+        _entry("GET", f"https://myshop.example.com/products/{word}-widget-2024") for word in words
+    ]
+    result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+    (endpoint,) = result.endpoints
+    assert endpoint.template == "/products/{product_id}"
+    text = render_json(result)
+    assert "collapsed_templates" not in json.loads(text)
+    retained = [w for w in words if any(w in example for example in endpoint.examples)]
+    assert len(retained) == len(endpoint.examples) < len(words)
+    for word in words:
+        assert (word in text) == (word in retained), word

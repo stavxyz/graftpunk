@@ -38,6 +38,7 @@ __all__ = [
     "DigestSource",
     "DropReason",
     "Endpoint",
+    "INTERNAL",
     "LoginForm",
     "LoginObservation",
     "ObservationKind",
@@ -51,6 +52,10 @@ __all__ = [
     "endpoint_template",
     "flagged_names_of",
 ]
+
+INTERNAL = "internal"
+"""The dataclass field metadata key marking a field that is a lookup for code, not
+part of the digest a reader sees: ``render_json`` skips a field that carries it."""
 
 # Thresholds, every one a named constant (plugin tooling spec, "Rules the digest applies").
 # A body over this size that does not parse is reported as "shape unavailable"
@@ -280,8 +285,12 @@ class RunDigest:
     # Each raw template (paths.template_path of an observed path) the
     # high-cardinality collapse re-templated, to the endpoint template it now
     # belongs to; a raw template missing here is its own endpoint's template.
-    # Read it through endpoint_template.
-    collapsed_templates: dict[str, str] = field(default_factory=dict)
+    # Read it through endpoint_template. A lookup, not a finding: its keys are
+    # every member path of every collapsed family, far past the capped
+    # examples, so it is marked INTERNAL and render_json leaves it out.
+    collapsed_templates: dict[str, str] = field(
+        default_factory=dict, repr=False, metadata={INTERNAL: True}
+    )
 
 
 def _scope_root(primary_host: str) -> str:
