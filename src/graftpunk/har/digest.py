@@ -390,9 +390,10 @@ def _declared_request_content_type(entry: HAREntry) -> str:
 def _json_body_types(parsed: dict[str, Any]) -> dict[str, str]:
     """*parsed*'s field names and observed types, keys that do not read as a field
     name dropped by the same rule a form body's keys are held to
-    (:func:`_plausible_field_name`): a JSON object keyed by data (an email
-    address, a session id) is not a field name either, and reporting it as one
-    put the data itself into the digest report and the fixtures sidecar."""
+    (:func:`_plausible_field_name`): a key that does not read as a field name,
+    such as an email address or a key starting with a digit, is dropped. The rule
+    is lexical, so a data-shaped key that does read as a field name (a session id
+    like ``sess_a8f3c9e2``) is kept."""
     types: dict[str, str] = {}
     for key, value in parsed.items():
         if not _plausible_field_name(key):

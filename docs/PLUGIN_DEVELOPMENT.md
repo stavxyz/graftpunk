@@ -976,9 +976,14 @@ reads `get_api_orders.json`; `GET /api/orders/1001` reads
 `get_api_orders_{order_id}.json`. No matching file answers 404.
 
 A `<filename>.meta.json` sidecar beside a fixture supplies its status and
-content type. `gp observe fixtures` writes one for every capture, and it is safe
-to commit: it holds no URL, no time, and no value, only the hash of the captured
-body and the cookie and token names the recording's digest listed.
+content type. `gp observe fixtures` writes one for every capture to commit
+beside the fixture. It holds no URL, no time, and no header, cookie, or query
+value: only the status, the content type, the hash of the captured body, the
+request's body parameter names, and the cookie and token names the recording
+listed. A body key that does not read as a field name, such as an email address
+or a key starting with a digit, is dropped from `body_params`; a data-shaped key
+that does read as one (`sess_a8f3c9e2`) is kept, so read the list before you
+commit it.
 
 ```json
 {
