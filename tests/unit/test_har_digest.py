@@ -33,6 +33,7 @@ from graftpunk.har.digest import (
     flagged_names_of,
 )
 from graftpunk.har.parser import parse_har_file
+from graftpunk.har.report import render_endpoints_json
 
 
 def _entry(
@@ -470,6 +471,21 @@ class TestTypeObservation:
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert result.endpoints[0].query_params == {"q": "str", "page": "int"}
+
+    def test_a_query_key_that_does_not_read_as_a_field_name_is_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        """The body-key rule applies to query keys too: an email-shaped or digit
+        key is data, and it reached the projection and generated source."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/orders?alice@example.com&4111111111111111=1&page=2",
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.endpoints[0].query_params == {"page": "int"}
+        assert "alice@example.com" not in render_endpoints_json(result)
 
     def test_body_types_that_disagree_across_requests_fall_back_to_str(
         self, tmp_path: Path

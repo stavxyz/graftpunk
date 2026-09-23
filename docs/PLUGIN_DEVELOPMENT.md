@@ -225,7 +225,9 @@ An observed type is `str`, `int`, `float`, `bool`, or `list` (a query key
 repeated in one request). A value gets a type only when the typed value is sent
 back spelled exactly as recorded, so `07030` is a `str` (as an `int` it would go
 out as `7030`), and `bool` means the lowercase `true` or `false`. A parameter
-that two requests to the same endpoint type differently is a `str`.
+that two requests to the same endpoint type differently is a `str`. A query or
+body key that does not read as a field name, such as an email address or a key
+starting with a digit, is data rather than a parameter, and the digest drops it.
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:

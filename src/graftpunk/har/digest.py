@@ -408,12 +408,17 @@ def _merged_types(seen: dict[str, str], observed: dict[str, str]) -> None:
 
 
 def _query_param_types(url: str) -> dict[str, str]:
+    """*url*'s query parameter names and observed types, keys that do not read as
+    a field name dropped by the rule body keys are held to
+    (:func:`_plausible_field_name`)."""
     query = urlparse(url).query
     if not query:
         return {}
     parsed = parse_qs(query, keep_blank_values=True)
     types: dict[str, str] = {}
     for name, values in parsed.items():
+        if not _plausible_field_name(name):
+            continue
         types[name] = "list" if len(values) > 1 else _observed_type(values[0])
     return types
 
