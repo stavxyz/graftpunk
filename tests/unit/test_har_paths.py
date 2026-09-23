@@ -11,6 +11,7 @@ from graftpunk.har.paths import (
     bare_url,
     holds_an_id,
     is_placeholder,
+    keys_are_ids,
     looks_dynamic,
     param_name_for_segment,
     template_path,
@@ -213,6 +214,8 @@ KEY_POSITION_IDS = (
     "tel(512)555-0100",
     "0xdeadbeefcafe12",
     "wallet_0x5f1aBcDeF09aAbBc",
+    "otp_cus_NffrFeUfNV2Hib",
+    "x-cus_NffrFeUfNV2Hib",
 )
 # Shapes an account value takes in a path, beyond the table above. A path segment
 # fails closed, so each is dynamic there; as a name most are kept (short random
@@ -451,3 +454,29 @@ class TestPathSegmentsFailClosed:
     def test_a_route_segment_stays_literal(self, segment: str) -> None:
         assert not looks_dynamic(segment)
         assert template_path(f"/api/{segment}/items")[0] == f"/api/{segment}/items"
+
+
+class TestKeysAreIds:
+    @pytest.mark.parametrize(
+        "keys",
+        [
+            ["-NqF7xYz3abcDEFghiJK", "-NqF7xZ01bcdEFGhijKL", "-NqF7y0Q2cdeFGHijkLM"],
+            ["recA1b2C3d4E5f6G7", "recH8i9J0k1L2m3N4", "recO5p6Q7r8S9t0U1"],
+        ],
+        ids=["push-ids", "record-ids"],
+    )
+    def test_random_keys_of_one_length_are_ids(self, keys: list[str]) -> None:
+        assert keys_are_ids(keys)
+
+    @pytest.mark.parametrize(
+        "keys",
+        [
+            ["addressLine1", "addressLine2", "addressLine3"],
+            ["customField1", "customField2", "customField3", "customField4"],
+            ["streetLine01", "streetLine02", "streetLine03"],
+        ],
+        ids=["address-lines", "custom-fields", "street-lines"],
+    )
+    def test_a_numbered_field_group_is_not_ids(self, keys: list[str]) -> None:
+        """M4: keys that differ only in a trailing digit run are one field, numbered."""
+        assert not keys_are_ids(keys)

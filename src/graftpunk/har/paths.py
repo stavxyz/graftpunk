@@ -69,7 +69,11 @@ _JOIN_SPLIT_RE = re.compile(r"[_\-]")
 _MIN_DIGIT_RUN = 6
 _DIGIT_RUN_RE = re.compile(rf"\d{{{_MIN_DIGIT_RUN},}}")
 _MIXED_HEX_RE = re.compile(rf"[0-9a-fA-F]{{{_MIN_HEX_LEN},}}")
-_PREFIXED_ID_RE = re.compile(rf"[A-Za-z]{{2,8}}[_.\-]([A-Za-z0-9]{{{_MIN_PREFIXED_TAIL},}})")
+# A prefix of 2 to 8 letters starting the text or a _/- part, a separator, and a
+# tail running to the end of the text or of a part.
+_PREFIXED_ID_RE = re.compile(
+    rf"(?:^|(?<=[_\-]))[A-Za-z]{{2,8}}[_.\-]([A-Za-z0-9]{{{_MIN_PREFIXED_TAIL},}})(?=$|[_.\-~$])"
+)
 _BASE64_RE = re.compile(rf"[A-Za-z0-9+/_\-]{{{_MIN_BASE64_LEN},}}=*")
 _MIN_BASE64_SWITCHES = 5
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -139,13 +143,11 @@ def _prefixed_hex(text: str) -> bool:
 
 def _prefixed_id(text: str) -> bool:
     """A prefix of 2 to 8 letters, a separator, and a tail of 12 or more characters
-    mixing upper case, lower case, and digits (``cus_NffrFeUfNV2Hib``)."""
-    match = _PREFIXED_ID_RE.fullmatch(text)
-    if match is None:
-        return False
-    tail = match.group(1)
-    return (
+    mixing upper case, lower case, and digits (``cus_NffrFeUfNV2Hib``), at the start
+    of *text* or of any ``_``/``-`` part (``otp_cus_NffrFeUfNV2Hib``)."""
+    return any(
         any(ch.isupper() for ch in tail) and any(ch.islower() for ch in tail) and _has_digit(tail)
+        for tail in (match.group(1) for match in _PREFIXED_ID_RE.finditer(text))
     )
 
 
@@ -195,7 +197,8 @@ def holds_an_id(text: str) -> bool:
       number with its area code in parentheses (``(555)123-4567``);
     - ``0x`` and 12 or more hex digits (``0xdeadbeefcafe12``);
     - a prefixed id: 2 to 8 letters, a separator, and a tail of 12 or more
-      characters mixing upper case, lower case, and digits (``cus_NffrFeUfNV2Hib``);
+      characters mixing upper case, lower case, and digits (``cus_NffrFeUfNV2Hib``),
+      at the start of the text or of any ``_``/``-`` part (``otp_cus_...``);
     - a base64-like token of 24 or more characters switching between letters and
       digits at least 5 times.
 
@@ -222,18 +225,29 @@ def keys_are_ids(keys: Iterable[str]) -> bool:
     """True when *keys*, one response object's keys, are ids as a group: 3 or more,
     all one length of 12 or more, each an alphanumeric run (a leading ``-``
     allowed) mixing letters and digits (``-NqF7xYz3abcDEFghiJK``,
-    ``recA1b2C3d4E5f6G7``). A map-level rule for response keys only: one such name
-    alone is a field name. Keys with an inner separator are names
-    (``ctl00_MainContent_LoginUser_Password``)."""
+    ``recA1b2C3d4E5f6G7``), each reading as random (not a word with a short digit
+    run, by the path rule's literal-part test), and not all one name with a
+    different trailing number (``addressLine1``, ``addressLine2``, ...). A map-level
+    rule for response keys only: one such name alone is a field name. Keys with an
+    inner separator are names (``ctl00_MainContent_LoginUser_Password``)."""
     keys = list(keys)
     lengths = {len(key) for key in keys}
-    return (
+    if not (
         len(keys) >= _MIN_ID_MAP_KEYS
         and len(lengths) == 1
         and next(iter(lengths)) >= _MIN_ID_MAP_KEY_LEN
-        and all(
-            _ID_MAP_KEY_RE.fullmatch(key) and _has_digit(key) and _has_letter(key) for key in keys
-        )
+    ):
+        return False
+    # A numbered field group (addressLine1..3, streetLine01..03) differs only in a
+    # trailing digit run: one field, numbered, not ids.
+    if len({key.rstrip("0123456789") for key in keys}) == 1:
+        return False
+    return all(
+        _ID_MAP_KEY_RE.fullmatch(key)
+        and _has_digit(key)
+        and _has_letter(key)
+        and not _literal_part(key.lstrip("-"))
+        for key in keys
     )
 
 
