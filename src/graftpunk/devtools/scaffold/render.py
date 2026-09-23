@@ -569,31 +569,70 @@ def _body_declarations(endpoint: Endpoint) -> dict[str, _Declaration | str]:
     }
 
 
-def _declared_extras(endpoint: Endpoint) -> dict[str, _Declaration]:
-    """The query and body parameters a stub declares as keyword arguments, each with
-    its declaration; a query parameter's wins over a body parameter's. A body field
-    no option can send is not among them (see ``_undeclared_body_fields``)."""
-    declared = {
-        name: found
-        for name, found in _body_declarations(endpoint).items()
-        if isinstance(found, _Declaration)
-    }
+def _query_declarations(endpoint: Endpoint) -> dict[str, _Declaration]:
+    """Each query parameter's declaration. Every query label is declarable
+    (``_declaration`` refuses only JSON shapes); one that is not is a digest the
+    generator does not understand, and is refused by name."""
+    declared: dict[str, _Declaration] = {}
     for name, label in endpoint.query_params.items():
         found = _declaration(label, json_body=False)
-        # A query label is always declarable: _declaration refuses only JSON shapes.
-        assert isinstance(found, _Declaration)
+        if not isinstance(found, _Declaration):
+            raise ValueError(
+                f"query parameter {name!r} is labelled {label!r}, which a query cannot carry"
+            )
         declared[name] = found
+    return declared
+
+
+_BODY_KEY_PREFIX = "body_"
+
+
+def _body_field_keys(endpoint: Endpoint) -> dict[str, str]:
+    """For each body field the stub sends, the key of its declaration in
+    ``_declared_extras``: the field's own name, or ``body_<name>`` when a query
+    parameter of the same name is declared differently, so each is sent with its
+    own recorded type (an option ``--body-<name>``). A field one option serves for
+    both keeps the shared name."""
+    query = _query_declarations(endpoint)
+    keys: dict[str, str] = {}
+    for name, found in _body_declarations(endpoint).items():
+        if not isinstance(found, _Declaration):
+            continue
+        keys[name] = name if query.get(name, found) == found else f"{_BODY_KEY_PREFIX}{name}"
+    return keys
+
+
+def _declared_extras(endpoint: Endpoint) -> dict[str, _Declaration]:
+    """The query and body parameters a stub declares as keyword arguments, each with
+    its declaration, keyed by the name the stub's identifier is derived from: the
+    site's own name, or ``body_<name>`` for a body field whose query namesake is
+    declared differently (see ``_body_field_keys``). A body field no option can send
+    is not among them (see ``_undeclared_body_fields``)."""
+    declared = dict(_query_declarations(endpoint))
+    bodies = _body_declarations(endpoint)
+    for name, key in _body_field_keys(endpoint).items():
+        found = bodies[name]
+        if isinstance(found, _Declaration):
+            declared[key] = found
     return declared
 
 
 def _undeclared_body_fields(endpoint: Endpoint) -> dict[str, str]:
     """The body fields the stub leaves out, each with why (G1: a command sends the
-    recorded type and shape, or does not declare the field)."""
-    return {
-        name: found
-        for name, found in _body_declarations(endpoint).items()
-        if isinstance(found, str) and name not in endpoint.query_params
-    }
+    recorded type and shape, or does not declare the field). A field whose query
+    namesake is declared says so, since that option sends the query value only."""
+    undeclared: dict[str, str] = {}
+    for name, found in _body_declarations(endpoint).items():
+        if not isinstance(found, str):
+            continue
+        query_label = endpoint.query_params.get(name)
+        if query_label is not None:
+            found = (
+                f'{found} (the query parameter "{name}" is {query_label}, and its '
+                "option sends the query value only)"
+            )
+        undeclared[name] = found
+    return undeclared
 
 
 def _needs_param_specs(endpoint: Endpoint) -> bool:
@@ -694,9 +733,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     )
     extras = _declared_extras(endpoint)
     undeclared = _undeclared_body_fields(endpoint)
-    body_fields = (
-        sorted(p for p in endpoint.body_params if p in extras) if _emits_body(endpoint) else []
-    )
+    body_keys = _body_field_keys(endpoint)
 
     params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
     param_specs = [_param_spec(p, ("required=True",)) for p in path_params]
@@ -730,8 +767,8 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     if endpoint.query_params:
         entries = [(p, identifier_for[p]) for p in sorted(endpoint.query_params)]
         call_lines.extend(exploded_dict_lines("params", entries))
-    if body_fields:
-        entries = [(p, identifier_for[p]) for p in body_fields]
+    if body_keys:
+        entries = [(p, identifier_for[body_keys[p]]) for p in sorted(body_keys)]
         if endpoint.body_kind == "form":
             # Sent as the recording sent it. ctx.request_* drops a None value
             # from data= and spells a bool true/false, as it does for params=.

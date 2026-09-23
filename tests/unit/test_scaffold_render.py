@@ -1840,6 +1840,78 @@ class TestPluginModuleCommandStubs:
             "are both other options of this command."
         ) in comments
 
+    def test_a_body_object_sharing_a_query_name_is_left_out_naming_both_labels(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = self._endpoint(
+            "/items", "POST", query={"limit": "int"}, body={"limit": "object"}, body_kind="json"
+        )
+        code = self._plugin_code(endpoint)
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert 'GP-FILL: body field "limit" is not an option: the recording sent a JSON object' in (
+            comments
+        )
+        assert 'the query parameter "limit" is int' in comments
+        result, sent = self._wire_requests(
+            monkeypatch, endpoint, ["myshop", "items", "--limit", "10"]
+        )
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == "https://myshop.example.com/items?limit=10"
+        assert prepared.body is None
+
+    @pytest.mark.parametrize(
+        ("query", "body", "argv", "expected_query", "expected_body"),
+        [
+            (
+                {"page": "str"},
+                {"page": "int"},
+                ["--page", "abc", "--body-page", "2"],
+                "?page=abc",
+                b'{"page": 2}',
+            ),
+            (
+                {"n": "int"},
+                {"n": "str"},
+                ["--n", "5", "--body-n", "five"],
+                "?n=5",
+                b'{"n": "five"}',
+            ),
+            (
+                {"q": "str"},
+                {"q": "str"},
+                ["--q", "x"],
+                "?q=x",
+                b'{"q": "x"}',
+            ),
+        ],
+    )
+    def test_a_body_field_typed_apart_from_its_query_namesake_gets_its_own_option(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        query: dict[str, str],
+        body: dict[str, str],
+        argv: list[str],
+        expected_query: str,
+        expected_body: bytes,
+    ) -> None:
+        endpoint = self._endpoint("/items", "POST", query=query, body=body, body_kind="json")
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "items", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/items{expected_query}"
+        assert prepared.body == expected_body
+
+    def test_a_query_label_a_query_cannot_carry_is_refused_by_name(self) -> None:
+        """Not an assert: the check holds under python -O too."""
+        endpoint = self._endpoint("/items", query={"filter": "object"})
+        with pytest.raises(ValueError, match="'filter' is labelled 'object'"):
+            self._plugin_code(endpoint)
+
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",
