@@ -65,14 +65,35 @@ class UnknownSchemaError(ValueError):
     """A payload's ``schema`` is missing or is not a version this graftpunk reads."""
 
 
+def _current(surface: Surface) -> int:
+    """*surface*'s current number. The one lookup of ``_CURRENT``: a name outside
+    ``Surface`` gets past the type only at runtime, and is refused by name here
+    rather than as a bare ``KeyError``.
+
+    Raises:
+        UnknownSchemaError: *surface* is not a surface this graftpunk versions.
+    """
+    try:
+        return _CURRENT[surface]
+    except KeyError:
+        known = ", ".join(sorted(_CURRENT))
+        raise UnknownSchemaError(
+            f"{surface!r} is not a surface this graftpunk versions (it versions {known})."
+        ) from None
+
+
 def current_schema(surface: Surface) -> int:
-    """The schema number *surface* is written at by this graftpunk."""
-    return _CURRENT[surface]
+    """The schema number *surface* is written at by this graftpunk.
+
+    Raises:
+        UnknownSchemaError: *surface* is not a surface this graftpunk versions.
+    """
+    return _current(surface)
 
 
 def cli_contracts() -> dict[str, int]:
     """Each CLI-read surface and its current number, as ``gp version --json`` prints them."""
-    return {surface: _CURRENT[surface] for surface in CLI_SURFACES}
+    return {surface: _current(surface) for surface in CLI_SURFACES}
 
 
 def refuse_unknown_schema(surface: Surface, value: object) -> int:
@@ -83,10 +104,10 @@ def refuse_unknown_schema(surface: Surface, value: object) -> int:
     integer and nothing else.
 
     Raises:
-        UnknownSchemaError: *value* is missing (``None``) or unknown; the message
-            names *surface*.
+        UnknownSchemaError: *surface* is not a surface this graftpunk versions, or
+            *value* is missing (``None``) or unknown; the message names *surface*.
     """
-    current = _CURRENT[surface]
+    current = _current(surface)
     if value is None:
         raise UnknownSchemaError(
             f"{surface}: no schema number. This payload predates its versioned format "

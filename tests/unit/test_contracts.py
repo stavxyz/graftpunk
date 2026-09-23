@@ -10,6 +10,7 @@ from typing import get_args
 import pytest
 
 import graftpunk
+from graftpunk import contracts
 from graftpunk.contracts import (
     _CURRENT,
     CLI_SURFACES,
@@ -62,6 +63,24 @@ class TestRefuseUnknownSchema:
 
     def test_the_error_is_a_value_error(self) -> None:
         assert issubclass(UnknownSchemaError, ValueError)
+
+
+class TestAnUnknownSurface:
+    """A surface name outside Surface reaches these at runtime only through a caller
+    that ignored the type; each refuses it by name instead of raising KeyError."""
+
+    def test_refuse_unknown_schema(self) -> None:
+        with pytest.raises(UnknownSchemaError, match="'info' is not a surface"):
+            refuse_unknown_schema("info", 1)
+
+    def test_current_schema(self) -> None:
+        with pytest.raises(UnknownSchemaError, match="'info' is not a surface"):
+            current_schema("info")
+
+    def test_cli_contracts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contracts, "CLI_SURFACES", ("endpoints", "info"))
+        with pytest.raises(UnknownSchemaError, match="'info' is not a surface"):
+            cli_contracts()
 
 
 class TestContractMismatch:
