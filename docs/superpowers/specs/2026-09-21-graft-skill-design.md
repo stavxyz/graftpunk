@@ -74,7 +74,7 @@ src/graftpunk/devtools/scaffold/render.py      per-artifact renderers: a single-
 src/graftpunk/devtools/scaffold/pysrc.py       the Python-source formatting helpers split out of render.py (issue #201, item 2)
 src/graftpunk/devtools/scaffold/selection.py   which commands a render or an insert produces, under which names
 src/graftpunk/devtools/scaffold/insert.py      the stub inserter, through write.py
-src/graftpunk/devtools/errors.py               ScaffoldRefusal, the one base class a gp plugin entry point catches
+src/graftpunk/devtools/errors.py               ScaffoldRefusal, the one base class a gp plugin entry point catches, and ScaffoldWriteError, a write failure after write.py restored the original bytes
 src/graftpunk/devtools/scaffold/upgrade.py     the migrator behind gp plugin upgrade, through write.py, applying PROJECT_REQUIREMENTS
 src/graftpunk/devtools/plugin_check.py         the lint behind gp plugin check
 src/graftpunk/devtools/captures.py             the sidecar writer, importing the schema from its owner
