@@ -82,7 +82,9 @@ def parse_endpoint(value: str) -> tuple[str, str]:
 
     Raises:
         EndpointSpecError: No space, a method that is not a capitalised HTTP
-            method, or an empty template.
+            method, an empty template, a template with whitespace inside it, or
+            one that starts with neither ``/`` nor ``*`` (a path always starts
+            with ``/``, so such a template could only ever match nothing).
     """
     method, separator, template = value.strip().partition(" ")
     template = template.strip()
@@ -90,6 +92,16 @@ def parse_endpoint(value: str) -> tuple[str, str]:
         raise EndpointSpecError(
             f'{value!r} is not a "METHOD template" pair. Write the method in capitals, '
             f"a space, then the template, as in {_ENDPOINT_EXAMPLE}."
+        )
+    if any(character.isspace() for character in template):
+        raise EndpointSpecError(
+            f"{value!r}: the template {template!r} has whitespace inside it. Write one "
+            f"method and one path, as in {_ENDPOINT_EXAMPLE}."
+        )
+    if not template.startswith(("/", "*")):
+        raise EndpointSpecError(
+            f"{value!r}: the template {template!r} starts with neither '/' nor '*'. "
+            f"Write the path as the digest prints it, as in {_ENDPOINT_EXAMPLE}."
         )
     return method, template
 

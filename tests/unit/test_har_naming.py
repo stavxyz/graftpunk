@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from graftpunk.har.naming import (
@@ -59,6 +61,24 @@ class TestParseEndpoint:
     def test_a_value_that_is_not_method_space_template_is_refused(self, value: str) -> None:
         with pytest.raises(EndpointSpecError, match="METHOD template"):
             parse_endpoint(value)
+
+    @pytest.mark.parametrize(
+        ("value", "problem"),
+        [
+            ("GET /orders extra", "has whitespace inside it"),
+            ("GET /orders\t/items", "has whitespace inside it"),
+            ("GET orders", "starts with neither '/' nor '*'"),
+            ("GET https://myshop.example.com/orders", "starts with neither '/' nor '*'"),
+        ],
+    )
+    def test_a_template_that_would_match_nothing_is_refused_naming_the_problem(
+        self, value: str, problem: str
+    ) -> None:
+        with pytest.raises(EndpointSpecError, match=re.escape(problem)):
+            parse_endpoint(value)
+
+    def test_a_template_may_start_with_a_glob(self) -> None:
+        assert parse_endpoint("GET */orders") == ("GET", "*/orders")
 
     def test_surrounding_whitespace_is_accepted_and_a_tab_is_refused(self) -> None:
         assert parse_endpoint("  GET   /orders  ") == ("GET", "/orders")
