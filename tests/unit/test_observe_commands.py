@@ -464,6 +464,32 @@ class TestFixturesCommand:
         assert sidecar["flagged_names"] == ["shop_session"]
         assert "page=2" not in json.dumps(sidecar)
 
+    def test_the_sidecar_counts_an_id_cookie_name_and_holds_no_trace_of_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M4: a cookie name that holds an id is counted in redacted_names and
+        written in no form (plain, hashed, or as its digits)."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')
+        order["response"]["cookies"] = [
+            {"name": "shop_session", "value": "planted"},
+            {"name": "sess_40912873", "value": "planted"},
+        ]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (meta,) = out_dir.glob("*.meta.json")
+        text = meta.read_text()
+        sidecar = json.loads(text)
+        assert sidecar["redacted_names"] == 1
+        assert sidecar["flagged_names"] == ["shop_session"]
+        digest_of_name = hashlib.sha256(b"sess_40912873").hexdigest()
+        for trace in ("sess_40912873", "40912873", digest_of_name):
+            assert trace not in text
+            assert trace not in result.output
+
     def test_a_collapsed_family_is_matched_and_named_by_the_digests_template(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
