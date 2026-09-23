@@ -1847,3 +1847,47 @@ class TestRenderedTreeIsRuffClean:
         assert '        account_id="1",' in test_code  # the wide stub's call exploded
         tree = self._write_tree(tmp_path / "maximal", files)
         self._assert_tree_is_clean(tree)
+
+
+class TestFixturesDirFollowsThePolicy:
+    """The generated test module's FIXTURES_DIR is the policy's root for that plugin."""
+
+    @staticmethod
+    def _fixtures_dir(test_module: str, project: Path, test_file: str) -> Path:
+        for node in ast.parse(test_module).body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "FIXTURES_DIR" for t in node.targets
+            ):
+                expression = ast.unparse(node.value)
+                return eval(  # noqa: S307 - evaluates the generator's own Path expression
+                    expression, {"Path": Path, "__file__": str(project / test_file)}
+                )
+        raise AssertionError("no FIXTURES_DIR in the generated test module")
+
+    def test_a_new_project(self, tmp_path: Path) -> None:
+        from graftpunk.devtools.scaffold.policy import fixtures_root
+
+        spec = ScaffoldSpec(
+            name="myshop", mode="new_project", backend="nodriver", base_url="https://myshop.example"
+        )
+        files = render(spec)
+        found = self._fixtures_dir(files["tests/test_plugin.py"], tmp_path, "tests/test_plugin.py")
+        expected = fixtures_root(suite_member=False, module_name="myshop")
+        assert found == tmp_path / expected.rstrip("/")
+
+    def test_a_suite_member(self, tmp_path: Path) -> None:
+        from graftpunk.devtools.scaffold.policy import fixtures_root
+
+        spec = ScaffoldSpec(
+            name="my-shop",
+            mode="add_to_suite",
+            backend="nodriver",
+            base_url="https://myshop.example",
+        )
+        files = render(spec)
+        found = self._fixtures_dir(
+            files["tests/test_my_shop.py"], tmp_path, "tests/test_my_shop.py"
+        )
+        expected = fixtures_root(suite_member=True, module_name="my_shop")
+        assert found == tmp_path / expected.rstrip("/")
+        assert f"{expected}.gitkeep" in files

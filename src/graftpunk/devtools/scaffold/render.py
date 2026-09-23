@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from graftpunk.devtools.captures import CAPTURES_DIR
+from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.pysrc import (
     GENERATED_LINE_LENGTH,
     INDENT_STEP,
@@ -42,7 +43,7 @@ __all__ = [
     "ScaffoldSpec",
     "class_name_for",
     "fixture_paths",
-    "fixtures_root",
+    "fixtures_root_for",
     "module_name_for",
     "render",
     "validate_plugin_name",
@@ -640,18 +641,12 @@ def _render_conftest(spec: ScaffoldSpec) -> str:
     )
 
 
-def fixtures_root(spec: ScaffoldSpec) -> str:
-    """Where *spec*'s generated tests look for fixtures, relative to the project root.
-
-    A suite holds several plugins and each names its fixtures for its own
-    endpoints, so a suite member owns a subdirectory rather than sharing one
-    directory with its siblings: two plugins with a ``GET /orders`` between them
-    would otherwise claim the same file (polish round 1, 2026-09-12). This is
-    also the directory ``gp plugin new``'s ``Next:`` line points the developer at.
-    """
-    if spec.mode == "add_to_suite":
-        return f"tests/fixtures/{module_name_for(spec.name)}/"
-    return "tests/fixtures/"
+def fixtures_root_for(spec: ScaffoldSpec) -> str:
+    """Where *spec*'s generated tests look for fixtures: the policy's rule, from the
+    spec's two facts. Also the directory ``gp plugin new``'s ``Next:`` line names."""
+    return policy.fixtures_root(
+        suite_member=spec.mode == "add_to_suite", module_name=module_name_for(spec.name)
+    )
 
 
 def fixture_paths(spec: ScaffoldSpec) -> list[str]:
@@ -662,18 +657,18 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
     CLI prints is the list ``FixtureSession`` will go looking for.
     """
     return [
-        f"{fixtures_root(spec)}"
+        f"{fixtures_root_for(spec)}"
         f"{capture_filename(endpoint.methods[0], endpoint.template, endpoint.content_type)}"
         for endpoint in _stub_endpoints(spec)
     ]
 
 
 def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
-    """The generated ``FIXTURES_DIR`` assignment's right-hand side."""
-    base = 'Path(__file__).parent / "fixtures"'
-    if spec.mode == "add_to_suite":
-        return f'{base} / "{module_name_for(spec.name)}"'
-    return base
+    """The generated ``FIXTURES_DIR`` assignment's right-hand side: the fixtures root,
+    relative to the test module, which lives in ``policy.TESTS_DIR``. Every root
+    lies under that directory by the policy's own rule, which its tests pin."""
+    parts = fixtures_root_for(spec).removeprefix(policy.TESTS_DIR).strip("/").split("/")
+    return "Path(__file__).parent" + "".join(f' / "{part}"' for part in parts)
 
 
 def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
@@ -709,7 +704,9 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         "",
     ]
     if not has_endpoint_tests:
-        marker = f"# GP-FILL: add a test per command, against a fixture in {fixtures_root(spec)}"
+        marker = (
+            f"# GP-FILL: add a test per command, against a fixture in {fixtures_root_for(spec)}"
+        )
         lines.append(marker)
         return "\n".join(lines).rstrip() + "\n"
     seen: set[str] = set()
@@ -778,15 +775,17 @@ def render(spec: ScaffoldSpec) -> dict[str, str]:
             "pyproject.toml": _render_pyproject(spec),
             f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
             f"src/{package}/plugin.py": plugin_module,
-            "tests/conftest.py": _render_conftest(spec),
-            "tests/test_plugin.py": _render_test_module(spec, package=package),
-            "tests/fixtures/.gitkeep": "",
+            f"{policy.TESTS_DIR}conftest.py": _render_conftest(spec),
+            f"{policy.TESTS_DIR}test_plugin.py": _render_test_module(spec, package=package),
+            f"{fixtures_root_for(spec)}.gitkeep": "",
             ".gitignore": _render_gitignore(),
             "README.md": _render_readme(spec),
         }
     return {
         f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
         f"src/{package}/plugin.py": plugin_module,
-        f"tests/test_{module_name_for(spec.name)}.py": _render_test_module(spec, package=package),
-        f"{fixtures_root(spec)}.gitkeep": "",
+        f"{policy.TESTS_DIR}test_{module_name_for(spec.name)}.py": _render_test_module(
+            spec, package=package
+        ),
+        f"{fixtures_root_for(spec)}.gitkeep": "",
     }
