@@ -11,9 +11,18 @@ from pathlib import Path
 
 import pytest
 
-from graftpunk.devtools.scaffold.render import (
+from graftpunk.devtools.scaffold.pysrc import (
     _DOCSTRING_WRAP_WIDTH,
     _GENERATED_LINE_LENGTH,
+    _dict_entry_lines,
+    _literal_dict_entry_lines,
+    _literal_lines,
+    _url_chunks,
+    _wrapped_comment_lines,
+    _wrapped_docstring_block,
+    _wrapped_docstring_lines,
+)
+from graftpunk.devtools.scaffold.render import (
     _MAX_COMMAND_NAME,
     _MAX_PARAM_NAME,
     _MAX_PLUGIN_NAME,
@@ -21,14 +30,7 @@ from graftpunk.devtools.scaffold.render import (
     PLUGIN_NAME_RE,
     ScaffoldSpec,
     _command_name,
-    _dict_entry_lines,
-    _literal_dict_entry_lines,
-    _literal_lines,
     _param_identifier,
-    _url_chunks,
-    _wrapped_comment_lines,
-    _wrapped_docstring_block,
-    _wrapped_docstring_lines,
     class_name_for,
     module_name_for,
     render,
