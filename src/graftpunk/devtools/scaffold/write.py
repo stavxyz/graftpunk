@@ -356,7 +356,7 @@ def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
         # writable, so without this a read-only file would be replaced silently.
         if change.original is not None and not os.access(os.path.realpath(change.path), os.W_OK):
             denied = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(change.path))
-            raise ScaffoldWriteError(change.path, denied, ())
+            raise ScaffoldWriteError(change.path, denied, before_first_write=True)
     started: list[PlannedChange] = []
     created_dirs: list[Path] = []
     open_partials = _OPEN_PARTIALS.set([])

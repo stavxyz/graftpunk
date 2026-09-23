@@ -497,6 +497,7 @@ class TestAReadOnlyTargetIsRefused:
             assert caught.value.errno == errno.EACCES
             assert caught.value.path == locked
             assert caught.value.unrestored == ()
+            assert str(caught.value).endswith(". Nothing was written.")
             assert _files(root) == {"pyproject.toml": b"[project]\n"}
             assert locked.stat().st_mode & 0o777 == 0o444
         finally:

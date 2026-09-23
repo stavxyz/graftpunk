@@ -33,6 +33,12 @@ def test_a_write_error_keeps_the_os_errors_fields_and_its_own_message() -> None:
     )
 
 
+def test_a_refusal_before_the_first_write_says_nothing_was_written() -> None:
+    denied = OSError(13, "Permission denied", "pyproject.toml")
+    raised = ScaffoldWriteError(Path("pyproject.toml"), denied, before_first_write=True)
+    assert str(raised) == "Could not write pyproject.toml: Permission denied. Nothing was written."
+
+
 _E = TypeVar("_E", bound=BaseException)
 
 
@@ -51,7 +57,12 @@ def test_each_refusal_survives_pickling() -> None:
         [Path("a.py"), Path("b.py")], changed=(Path("b.py"),), duplicates=()
     )
     invalid = InvalidChangeError(Path("bad.py"), "the result does not parse as Python")
-    for error in (write_error, conflict, invalid):
+    refused_early = ScaffoldWriteError(
+        Path("pyproject.toml"),
+        OSError(13, "Permission denied", "pyproject.toml"),
+        before_first_write=True,
+    )
+    for error in (write_error, refused_early, conflict, invalid):
         copy = _round_trip(error)
         assert type(copy) is type(error)
         assert str(copy) == str(error)
