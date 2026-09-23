@@ -92,6 +92,9 @@ class LoginForm:
     # email-masked, so the digest can match a POST to it exactly. A lookup for code:
     # marked "internal" (graftpunk.har.digest.INTERNAL) so render_json leaves it out.
     action_target: tuple[str, str] = field(default=("", ""), metadata={"internal": True})
+    # The name of every control of the form, so the digest can tell which of two
+    # forms posting to one place a POST's body came from. Internal like the above.
+    input_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,9 @@ class _RawInput:
     # A control whose form= names a form it does not sit inside: a selector scoped
     # to that form would match nothing, so it is selected by its form attribute.
     outside_form: bool = False
+    # The form this control sits inside in the document, whatever form= says: what
+    # a descendant selector scoped to that form matches.
+    container: _RawForm | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -162,6 +168,7 @@ class _DocumentParser(HTMLParser):
                 form_owner=values.get("form", ""),
                 order=len(self.inputs),
             )
+            raw_input.container = self._current
             inside = self._current.element_id if self._current is not None else ""
             raw_input.outside_form = bool(raw_input.form_owner) and raw_input.form_owner != inside
             self.inputs.append(raw_input)
@@ -314,7 +321,7 @@ def _scoped(suffixes: tuple[str, ...], form_scopes: tuple[str, ...]) -> str:
 def _selectors_for(
     raw: _RawInput,
     form_scopes: tuple[str, ...],
-    form_inputs: list[_RawInput],
+    contained: list[_RawInput],
     page_inputs: list[_RawInput],
 ) -> tuple[str | None, str | None]:
     """One input's selector as recorded, and the one safe to print without the
@@ -323,8 +330,10 @@ def _selectors_for(
     By its id when it has one, else its tag and ``name``, else its type; an id or a
     name that holds an account value is never used, and every attribute value is
     escaped (:func:`_css_string`). The recorded selector is scoped to each of
-    *form_scopes*; a selector by type is used only when it picks this one input of
-    the recorded form (*form_inputs*). The unscoped one is the id selector, or the
+    *form_scopes*; a selector by name or by type is used only when it picks this one
+    of the controls the form physically contains (*contained*, what a descendant
+    selector matches, a control another form owns by its form attribute included).
+    The unscoped one is the id selector, or the
     name selector when no other input on the recorded page (*page_inputs*) has that
     tag and name; a selector by type is never printed unscoped, since it would pick
     the first input of that type on the page. With no form scope (an action that is
@@ -336,7 +345,7 @@ def _selectors_for(
         return _outside_selector(raw, page_inputs)
     by_name = _name_selector(raw)
     if by_name is not None and (
-        sum(1 for other in form_inputs if other.tag == raw.tag and other.name == raw.name) > 1
+        sum(1 for other in contained if other.tag == raw.tag and other.name == raw.name) > 1
     ):
         # A name two inputs of the form share picks the first of them, which may
         # not be this one: fall back as for any selector that is not unique.
@@ -350,7 +359,7 @@ def _selectors_for(
         return (unscoped, unscoped) if by_name is not None else (None, None)
     if by_name is not None:
         return _scoped((by_name,), form_scopes), unscoped
-    if sum(1 for other in form_inputs if _same_type(raw, other)) > 1:
+    if sum(1 for other in contained if _same_type(raw, other)) > 1:
         return None, None
     return _scoped(_type_selectors(raw), form_scopes), None
 
@@ -586,7 +595,10 @@ def _action_target(raw_action: str, source: str) -> tuple[str, str]:
         if source.startswith(("http://", "https://")):
             resolved = urlsplit(urljoin(source, action))
             return bare_host(resolved.netloc), unquote(bare_path(resolved.path)) or "/"
-        return bare_host(parts.netloc), unquote(bare_path(parts.path))
+        path = unquote(bare_path(parts.path))
+        # A document-relative action with no page URL to resolve it against stays
+        # relative, without its "./", and matches a POST path ending in it.
+        return bare_host(parts.netloc), path.removeprefix("./")
     except ValueError:
         return "", ""
 
@@ -702,10 +714,11 @@ def extract_login_forms(
         unscoped_fields: dict[str, str] = {}
         absent: list[str] = [] if username_index is not None else ["username"]
         unresolved: list[str] = list(absent)
+        contained = [control for control in parsed.inputs if control.container is raw]
         for role, raw_input in roles:
             if role in fields or role in unresolved:
                 continue
-            selector, unscoped = _selectors_for(raw_input, scopes, inputs, parsed.inputs)
+            selector, unscoped = _selectors_for(raw_input, scopes, contained, parsed.inputs)
             if selector is None:
                 unresolved.append(role)
                 continue
@@ -716,7 +729,7 @@ def extract_login_forms(
         unscoped_submit: str | None = None
         if submit_index is not None:
             submit, unscoped_submit = _selectors_for(
-                inputs[submit_index], scopes, inputs, parsed.inputs
+                inputs[submit_index], scopes, contained, parsed.inputs
             )
             if submit is None:
                 unresolved.append("submit")
@@ -736,6 +749,7 @@ def extract_login_forms(
                 nameless_roles=tuple(nameless),
                 absent_roles=tuple(absent),
                 action_target=_action_target(raw.action, base or source),
+                input_names=tuple(i.name for i in inputs if i.name),
             )
         )
     return tuple(forms)

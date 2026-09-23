@@ -12,7 +12,6 @@ from graftpunk.har.documents import (
     looks_like_token_name,
     printable_selectors,
     printable_unresolved_roles,
-    unscoped_selector,
 )
 
 _LOGIN_PAGE = """
@@ -244,28 +243,32 @@ class TestLooksLikeTokenName:
         assert looks_like_token_name(name) is False
 
 
-class TestUnscopedSelector:
-    def test_a_form_scoped_selector_keeps_its_input_part(self) -> None:
-        scoped = (
-            'form[action="/a/1"] input[name="username"], '
-            'form[action^="/a/1;"] input[name="username"]'
-        )
-        assert unscoped_selector(scoped) == 'input[name="username"]'
+class TestPrintedWithoutTheFormScope:
+    """printable_selectors, the public path: when the form's action holds an id, a
+    selector prints without its scope only when it still picks its input."""
 
-    def test_a_type_selector_keeps_its_input_part(self) -> None:
-        assert (
-            unscoped_selector('form[action=""] input[type="password"]') == 'input[type="password"]'
-        )
+    _PAGE = (
+        '<form action="/a/40912873/session"><input type="email" name="username">'
+        '<input type="password" id="email"><input type="text">'
+        '<button type="submit">Go</button></form>'
+    )
 
-    def test_an_id_selector_is_unchanged(self) -> None:
-        assert unscoped_selector("#email") == "#email"
+    def test_a_name_selector_prints_its_input_part(self) -> None:
+        (form,) = extract_login_forms(self._PAGE, source="s")
+        fields, _submit = printable_selectors(form)
+        assert fields["username"] == 'input[name="username"]'
 
-    def test_a_selector_that_does_not_end_in_an_input_part_is_refused(self) -> None:
-        """Fails closed: returning the selector would print its scope, action included."""
-        assert unscoped_selector('form[action="/a/1"] input.login') is None
+    def test_an_id_selector_prints_unchanged(self) -> None:
+        (form,) = extract_login_forms(self._PAGE, source="s")
+        fields, _submit = printable_selectors(form)
+        assert fields["password"] == "#email"  # noqa: S105
 
-    def test_an_id_attribute_selector_is_unchanged(self) -> None:
-        assert unscoped_selector('[id="user email"]') == '[id="user email"]'
+    def test_a_type_selector_does_not_print(self) -> None:
+        """Fails closed: without the scope it would pick the first such control."""
+        (form,) = extract_login_forms(self._PAGE, source="s")
+        _fields, submit = printable_selectors(form)
+        assert submit is None
+        assert "submit" in printable_unresolved_roles(form)
 
 
 class TestSelectorsEscapeAttributeValues:
@@ -276,7 +279,7 @@ class TestSelectorsEscapeAttributeValues:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.fields["username"] == 'form[action="/login"] input[name="ref\\"x\\\\y"]'
-        assert unscoped_selector(form.fields["username"]) == 'input[name="ref\\"x\\\\y"]'
+        _assert_first_match(html, form.fields["username"], name='ref"x\\y')
 
     def test_an_action_holding_a_quote_is_escaped(self) -> None:
         html = (
@@ -398,9 +401,6 @@ class TestLoginFallbackSelectors:
         scope = 'form[action="/login"]'
         assert form.fields["username"] == (f'{scope} input:not([type]), {scope} input[type="text"]')
         assert form.submit == f'{scope} button:not([type]), {scope} button[type="submit"]'
-        assert unscoped_selector(form.fields["username"]) == (
-            'input:not([type]), input[type="text"]'
-        )
         _assert_first_match(html, form.fields["username"], name="user_40912873")
         _assert_first_match(html, form.submit, text="Go")
 
@@ -851,3 +851,20 @@ class TestLoginSemanticsRound9:
         _assert_first_match(html, form.submit, **check)
         fields, submit = printable_selectors(form)
         assert submit == expected
+
+
+class TestRound10Selectors:
+    def test_a_name_counted_on_what_the_form_physically_holds(self) -> None:
+        """A4: a control inside the form but owned by another still matches a
+        descendant selector, so it counts against the name's uniqueness."""
+        html = (
+            '<form id="search" action="/search"></form>'
+            '<form action="/login"><input type="search" name="username" form="search">'
+            '<input name="username"><input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        selector = form.fields["username"]
+        assert "name=" not in selector
+        _assert_first_match(html, selector, name="username")
+        first = lxml.html.fromstring(f"<html><body>{html}</body></html>").cssselect(selector)[0]
+        assert first.get("type") is None

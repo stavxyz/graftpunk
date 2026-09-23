@@ -1608,6 +1608,99 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert [form.action for form in result.login_forms] == ["/b/login", "/a/login"]
 
+    def test_assets_between_the_login_page_and_the_post_do_not_demote_the_page(
+        self, tmp_path: Path
+    ) -> None:
+        """A1: the form page is found by the post's target, not by distance."""
+        form = (
+            '<form action="/session" method="post"><input type="email" name="email">'
+            '<input type="password" name="password"></form>'
+        )
+        assets = [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com/static/app{n}.js",
+                content_type="application/javascript",
+                body="var a;",
+            )
+            for n in range(25)
+        ]
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/signin", content_type="text/html", body=form
+            ),
+            *assets,
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                status=302,
+                response_headers={"Location": "/dashboard"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+            *assets,
+            _entry("GET", "https://api.myshop.example.com/dashboard", set_cookies=["s=v; Path=/"]),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        kinds = [o.kind for o in result.login]
+        assert kinds[:2] == ["form_page", "credential_post"]
+        assert "set_cookie" in kinds
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/signin")] is True
+
+    @pytest.mark.parametrize("action", ["session", "./session"])
+    def test_a_relative_action_in_a_saved_page_source_marks_the_post(
+        self, tmp_path: Path, action: str
+    ) -> None:
+        """A5: a page source file has no URL to resolve against."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "page-source.html").write_text(
+            f'<form action="{action}" method="post"><input type="email" name="email">'
+            '<input type="password" name="passcode"></form>'
+        )
+        _write_har(
+            run_dir,
+            [
+                _entry(
+                    "POST",
+                    "https://api.myshop.example.com/account/session",
+                    post_data=json.dumps({"email": "alice@example.com", "passcode": "x"}),
+                )
+            ],
+        )
+        result = digest(DigestSource.from_run_dir(run_dir, session="myshop", run_id="run"))
+        assert [o.kind for o in result.login if o.method == "POST"] == ["credential_post"]
+
+    def test_the_form_on_the_promoted_page_is_first_among_forms_posting_there(
+        self, tmp_path: Path
+    ) -> None:
+        """A8: two pages carry forms posting to /session; the one the post followed
+        wins, then the form whose names cover the post body."""
+        header = (
+            '<form action="/session" method="post"><input type="email" name="email">'
+            '<input type="password" name="password"></form>'
+        )
+        signin = (
+            '<form action="/session" method="post"><input type="text" name="username">'
+            '<input type="password" name="password"><input type="hidden" name="otp"></form>'
+        )
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/", content_type="text/html", body=header),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/signin",
+                content_type="text/html",
+                body=signin,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"username": "alice", "password": "x", "otp": "1"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.login_forms[0].source == "https://api.myshop.example.com/signin"
+
     def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
         """The form's type="password" input names the field, so a name outside the
         password hints (passcode) still marks the POST to its action."""
