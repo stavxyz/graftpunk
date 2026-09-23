@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -24,15 +23,9 @@ from graftpunk.cli.observe_commands import (  # noqa: F401
     observe_app,
     resolve_run,
 )
+from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
-
-
-def _plain(text: str) -> str:
-    """*text* without ANSI escapes. Rich colours paths and usage errors when a
-    terminal or FORCE_COLOR is detected, and the codes land inside the words
-    these tests look for; CI and local runs differ on that, the words do not."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _git(argv: list[str], cwd: Path) -> None:
@@ -208,7 +201,7 @@ class TestDigestCommand:
         )
         assert result.exit_code == 1
         assert result.stdout == ""
-        assert "not both" in _plain(result.stderr)
+        assert "not both" in strip_ansi(result.stderr)
 
 
 class TestFixturesCommand:
@@ -658,7 +651,7 @@ class TestWroteListingDoesNotWrapMidWord:
         assert result.exit_code == 0, result.output
         expected = str(out_dir / "get_orders_{order_id}.json")
         assert len(expected) > 80
-        assert expected in _plain(result.output)
+        assert expected in strip_ansi(result.output)
 
 
 class TestLimitMustBePositive:
@@ -681,7 +674,7 @@ class TestLimitMustBePositive:
             _build_app(), ["observe", "digest", "--har", str(har_path), "--limit", "0"]
         )
         assert result.exit_code != 0
-        assert "--limit" in _plain(result.output)
+        assert "--limit" in strip_ansi(result.output)
 
     def test_fixtures_refuses_a_negative_limit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -792,7 +785,7 @@ class TestMatchPatternValidation:
             parse_endpoint("get /a")
         result = runner.invoke(_build_app(), ["observe", "fixtures", "myshop", "--match", "get /a"])
         assert result.exit_code == 1
-        assert f"--match: {caught.value}" in " ".join(_plain(result.output).split())
+        assert f"--match: {caught.value}" in " ".join(strip_ansi(result.output).split())
 
 
 class TestBinaryBodiesAreSkipped:

@@ -44,6 +44,7 @@ from graftpunk.har.digest import (
     ShapeNode,
     TokenCandidate,
 )
+from tests.unit.cli_harness import strip_ansi
 
 
 def _digest(
@@ -1242,7 +1243,7 @@ class TestPluginModuleCommandStubs:
         )
         assert result.exit_code == 0, result.output
         for option in ("--include-meta", "--page", "--q"):
-            assert option in result.output
+            assert option in strip_ansi(result.output)
 
         result, calls = self._registered_calls(
             monkeypatch, _SEARCH_ENDPOINT, ["myshop", "search", "--page", "2", "--include-meta"]

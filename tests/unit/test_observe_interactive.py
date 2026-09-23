@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,13 +12,9 @@ from typer.testing import CliRunner
 
 from graftpunk.cli.main import app
 from graftpunk.plugins import infer_site_name
+from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
-
-
-def strip_ansi(text: str) -> str:
-    """Remove ANSI escape codes from text."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 class TestObserveInteractiveCommandRegistered:
@@ -617,7 +612,7 @@ class TestObserveBrowserHygiene:
                 "test-ns", "https://example.com", 5 * 1024 * 1024, headless=True, session_name=None
             )
 
-        assert "Cleaned up 1 orphaned Chrome process(es)" in capsys.readouterr().out
+        assert "Cleaned up 1 orphaned Chrome process(es)" in strip_ansi(capsys.readouterr().out)
 
     @pytest.mark.asyncio
     async def test_the_browser_is_registered_for_signals_and_released_on_stop(

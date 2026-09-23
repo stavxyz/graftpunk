@@ -9,7 +9,6 @@ is written where no reader will ever look (#151).
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,17 +19,12 @@ from typer.testing import CliRunner
 from graftpunk.cli.http_commands import _save_observe_data
 from graftpunk.cli.main import app
 from graftpunk.observe.storage import session_dirname
-from tests.unit.cli_harness import echo_loaded_session
+from tests.unit.cli_harness import echo_loaded_session, strip_ansi
 
 runner = CliRunner()
 
 LABELLED = "myshop@alice"
 UNDERSCORED = "my_shop"
-
-
-def strip_ansi(text: str) -> str:
-    """Remove ANSI escape codes from text."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _fake_response() -> MagicMock:

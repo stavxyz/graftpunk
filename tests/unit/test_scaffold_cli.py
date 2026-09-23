@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -18,15 +17,9 @@ from typer.testing import CliRunner
 
 from graftpunk.cli.scaffold_commands import plugin_app
 from graftpunk.logging import configure_logging
+from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
-
-
-def _plain(text: str) -> str:
-    """*text* without ANSI escapes. Rich colours paths and usage errors when a
-    terminal or FORCE_COLOR is detected, and the codes land inside the words
-    these tests look for; CI and local runs differ on that, the words do not."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _build_app() -> typer.Typer:
@@ -304,7 +297,7 @@ class TestPathListingsDoNotWrapMidWord:
         assert result.exit_code == 0, result.output
         expected = str(target / "src" / "graftpunk_myshop" / "plugin.py")
         assert len(expected) > 80
-        assert expected in _plain(result.output)
+        assert expected in strip_ansi(result.output)
 
     def test_the_conflict_listing_keeps_whole_paths(self, tmp_path: Path) -> None:
         target = self._deep_target(tmp_path)
@@ -325,7 +318,7 @@ class TestPathListingsDoNotWrapMidWord:
         assert result.exit_code == 1
         expected = str(target / "README.md")
         assert len(expected) > 80
-        assert expected in _plain(result.output)
+        assert expected in strip_ansi(result.output)
 
 
 class TestNextStepsNamesTheFixtures:
@@ -351,7 +344,7 @@ class TestNextStepsNamesTheFixtures:
         )
 
         assert result.exit_code == 0, result.output
-        plain_output = _plain(result.output)
+        plain_output = strip_ansi(result.output)
         assert "Next:" in plain_output
         assert "tests/fixtures/get_orders_{order_id}.json" in plain_output
         assert "gp observe fixtures --help" in plain_output
@@ -725,7 +718,7 @@ class TestRefusalReasons:
                 ],
             )
         assert result.exit_code == 1, result.output
-        assert "not UTF-8 text" in _plain(result.output)
+        assert "not UTF-8 text" in strip_ansi(result.output)
         assert self._reasons(events) == ["invalid_change"]
 
     def test_a_refusal_logs_at_debug_so_the_console_line_stands_alone(self, tmp_path: Path) -> None:
@@ -802,7 +795,7 @@ class TestCheckName:
             real_app, ["plugin", "new", "myshop", "--check-name", "--dir", str(tmp_path)]
         )
         assert result.exit_code == 0, result.output
-        assert _plain(result.output) == "'myshop' is an acceptable plugin name.\n"
+        assert strip_ansi(result.output) == "'myshop' is an acceptable plugin name.\n"
         assert set(tmp_path.iterdir()) == before
 
     @pytest.mark.parametrize("name", ["observe", "2fa-site", "a" * 41])
@@ -820,7 +813,7 @@ class TestCheckName:
         )
         created = runner.invoke(real_app, ["plugin", "new", name, "--dir", str(tmp_path)])
         assert checked.exit_code == created.exit_code == 1
-        assert _plain(checked.output) == _plain(created.output)
+        assert strip_ansi(checked.output) == strip_ansi(created.output)
         assert set(tmp_path.iterdir()) == before
 
     def test_check_name_ignores_an_existing_target_directory(self, tmp_path: Path) -> None:
@@ -840,7 +833,7 @@ class TestCheckName:
         )
 
         assert result.exit_code == 0, result.output
-        assert _plain(result.output) == "'myshop' is an acceptable plugin name.\n"
+        assert strip_ansi(result.output) == "'myshop' is an acceptable plugin name.\n"
         assert set(tmp_path.iterdir()) == before_entries
         assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before_bytes
 
@@ -877,7 +870,7 @@ class TestAWriteFailureIsOneRefusal:
             ["plugin", "new", "widgets", "--url", "https://myshop.example", "--dir", str(suite)],
         )
         assert result.exit_code == 1, result.output
-        (line,) = _plain(result.output).strip().splitlines()
+        (line,) = strip_ansi(result.output).strip().splitlines()
         assert line.startswith("Could not write ")
         assert "No space left on device" in line
         assert {p.name: p.read_bytes() for p in suite.iterdir()} == before
@@ -903,7 +896,7 @@ class TestAConflictSaysWhichKind:
             ["plugin", "new", "widgets", "--url", "https://myshop.example", "--dir", str(tmp_path)],
         )
         assert result.exit_code == 1, result.output
-        assert _plain(result.output).splitlines() == [
+        assert strip_ansi(result.output).splitlines() == [
             "Refusing to overwrite existing file(s):",
             f"  {taken}",
             "Refusing to edit file(s) changed since they were read:",
@@ -942,7 +935,7 @@ class TestAConflictSaysWhichKind:
                 ],
             )
         assert result.exit_code == 1, result.output
-        (line,) = _plain(result.output).strip().splitlines()
+        (line,) = strip_ansi(result.output).strip().splitlines()
         assert line.startswith("Refusing to write ")
         assert "does not parse as Python" in line
         reasons = [e.get("reason") for e in events if e.get("event") == "scaffold_refused"]
