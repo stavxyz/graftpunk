@@ -4,7 +4,7 @@
 
 **Goal:** Land the third of the three pull requests the graft skill design orders: a Claude Code plugin marketplace inside the graftpunk repository with one skill, `graftpunk:graft`, which walks a developer through the plugin guide and runs the `gp` commands itself, plus the tests, the version-bump check, and the documentation that make it maintainable.
 
-**Architecture:** `.claude-plugin/marketplace.json` and `.claude-plugin/plugin.json` make the repository root a plugin (`source: "./"`), and `skills/graft/` holds the skill: `SKILL.md` (frontmatter and the flow), five references read one step at a time (`commands.md`, `rules.md`, `capture.md`, `digest.md`, `harden.md`), and `scripts/preflight.sh`, the one version handshake. Everything the skill knows about a plugin project comes from the package (`gp version --json --at-least --contract`, `gp plugin info --json`, `gp observe digest --endpoints-json`, and the scaffold commands); the skill's own tests pin its prose to the guide's headings, forbid copying the guide, hold the frontmatter's pre-approval to preflight alone and every offered allow rule to a command a step runs, and run preflight against real and fake `gp` executables. The tests take the guide helpers from `tests/unit/guide_harness.py` (the project-tools plan, Task 9) and import no other test module. A CI job and a `just` recipe enforce the skill's independent version.
+**Architecture:** `.claude-plugin/marketplace.json` and `.claude-plugin/plugin.json` make the repository root a plugin (`source: "./"`), and `skills/graft/` holds the skill: `SKILL.md` (frontmatter and the flow), five references read one step at a time (`commands.md`, `rules.md`, `capture.md`, `digest.md`, `harden.md`), and `scripts/preflight.sh`, the one version handshake. Everything the skill knows about a plugin project comes from the package (`gp version --json --at-least --contract`, `gp plugin info --json`, `gp observe digest --endpoints-json`, and the scaffold commands); the skill's own tests pin its prose to the guide's headings, forbid copying the guide, hold the frontmatter's pre-approval to preflight alone and every offered allow rule to a command the skill itself runs, and run preflight against real and fake `gp` executables. The tests take the guide helpers from `tests/unit/guide_harness.py` (the project-tools plan, Task 9) and import no other test module. A CI job and a `just` recipe enforce the skill's independent version.
 
 **Permissions, decided (primary source: https://code.claude.com/docs/en/skills):** `allowed-tools` grants "Tools Claude can use without asking permission during the turn that invokes this skill. The grant clears when you send your next message." The frontmatter therefore pre-approves only preflight, the one command the invoking turn reliably runs. `references/commands.md` stays the one declared list of the commands each step runs and gains the allow rules the skill offers for a prompt-free run; the skill offers them in its first message and never adds them itself. The live login and the first live read are asked for in words at the kick-the-tires step, whatever the user's settings allow.
 
@@ -62,9 +62,9 @@
 
 ### Task 1 [manual]: Probe whether Ctrl+C in Claude Code's `!` shell mode reaches `gp observe interactive`
 
-The spec marks this UNVERIFIED: that a Ctrl+C typed while a `!` command runs in a Claude Code session reaches `gp` as SIGINT, so the recorder's handler runs and the HAR is saved. The interactive-mode documentation (https://code.claude.com/docs/en/interactive-mode) describes Ctrl+C only as interrupting the running operation. The outcome decides one wording choice in Task 5 (`capture.md`) and nothing else; every other task is independent of it. A person runs this task on a workstation with a display, because the recorder opens a real browser.
+The spec marks this UNVERIFIED: that a Ctrl+C typed while a `!` command runs in a Claude Code session reaches `gp` as SIGINT, so the recorder's handler runs and the HAR is saved. The interactive-mode documentation (https://code.claude.com/docs/en/interactive-mode) lists Ctrl+C as "Interrupt, or clear input", and its shell-mode section does not say whether Ctrl+C reaches a running `!` command. The outcome decides one wording choice in Task 5 (`capture.md`) and nothing else; every other task is independent of it. A person runs this task on a workstation with a display, because the recorder opens a real browser.
 
-The spec's former second UNVERIFIED claim, that an unchanged version string leaves users on the content they have, needs no probe (the spec now cites the source): the plugins reference (https://code.claude.com/docs/en/plugins-reference, the `version` field) says setting a version "pins the plugin to that version string, so users only receive updates when you bump it". The version rule in Task 6 rests on that sentence.
+The spec's former second UNVERIFIED claim, that an unchanged version string leaves users on the content they have, needs no probe (the spec now cites the source): the plugins reference (https://code.claude.com/docs/en/plugins-reference, the `version` field) says setting a version "pins the plugin to that version string, so users only receive updates when you bump it" (the sentence goes on to exempt a `command` source and a plugin loaded in place from a local-directory marketplace; neither applies to a GitHub install). The version rule in Task 6 rests on that sentence.
 
 **Files:**
 - None. The result is recorded in the pull request's test plan and in Task 5's commit message.
@@ -156,6 +156,10 @@ def _json(path: Path) -> dict[str, Any]:
 
 class TestManifests:
     def test_the_two_versions_are_equal(self) -> None:
+        """plugin.json's version is the one that pins an installed plugin (plugins
+        reference, the version field); marketplace.json's root version is the
+        marketplace manifest's own (plugin marketplaces, root fields). This
+        repository keeps them in lockstep so one number names a release."""
         assert _json(MARKETPLACE)["version"] == _json(PLUGIN_MANIFEST)["version"]
 
     def test_the_plugin_name_matches_the_marketplace_entry(self) -> None:
@@ -238,8 +242,8 @@ git commit -m "feat(skill): the repository is a Claude Code plugin marketplace s
 - Test: `tests/unit/test_graft_preflight.py`
 
 **Interfaces:**
-- Consumes: `gp version --json --at-least VERSION --contract SURFACE=N ...` from the foundations plan, Task 5 (prints one line of JSON first, then exits 0; 1 when the installed version is below VERSION or VERSION is unreadable, with gp's message on stderr for the latter; 3 when a named surface differs, one line per mismatch on stderr naming the older side; 2 for an option gp does not know); `gp plugin info --json` from the project-tools plan, Task 4; `REPO_ROOT` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9).
-- Produces: `skills/graft/scripts/preflight.sh` with `SKILL_REQUIRES_GRAFTPUNK="1.17.0"`, `SKILL_READS_INFO_SCHEMA=1`, and `SKILL_READS_ENDPOINTS_SCHEMA=1` at the top; it passes all three to gp in one `gp version` call, parses no JSON, and compares nothing itself. On success it prints `{"installation": <gp version --json>, "project": <gp plugin info --json>}` and exits 0; otherwise one message on stderr and exit 2 (no `gp`), 3 (graftpunk too old, or gp reports a contract mismatch, with gp's own lines relayed and the fix for each side), 4 (`gp` could not read the project), or 5 (`gp` rejected an option preflight passed). Task 4's `SKILL.md` runs it first.
+- Consumes: `gp version --json --at-least VERSION --contract SURFACE=N ...` from the foundations plan, Task 5 (prints one line of JSON first, then exits 0; 1 when the installed version is below VERSION, VERSION is unreadable, or a `--contract` value is malformed, with gp's message on stderr for the latter two; 3 when a named surface differs, one line per mismatch on stderr naming the older side; 2 for an option gp does not know); `gp plugin info --json` from the project-tools plan, Task 4; `REPO_ROOT` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9).
+- Produces: `skills/graft/scripts/preflight.sh` with `SKILL_REQUIRES_GRAFTPUNK="1.17.0"`, `SKILL_READS_INFO_SCHEMA=1`, and `SKILL_READS_ENDPOINTS_SCHEMA=1` at the top; it passes all three to gp in one `gp version` call, parses no JSON, and compares nothing itself. On success it prints `{"installation": <gp version --json>, "project": <gp plugin info --json>}` and exits 0; otherwise one message on stderr and exit 2 (no `gp`), 3 (`gp version` exited 1, whose message names all three readings: graftpunk below the floor, a floor gp cannot read, or a malformed `--contract` value; or gp reports a contract mismatch, with gp's own lines relayed and the fix for each side), 4 (`gp` could not read the project), 5 (`gp` rejected an option preflight passed), or 6 (`gp version` exited with any other status, relayed with gp's output). Task 4's `SKILL.md` runs it first.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -274,14 +278,16 @@ from tests.unit.guide_harness import REPO_ROOT
 PREFLIGHT = REPO_ROOT / "skills" / "graft" / "scripts" / "preflight.sh"
 BASH = shutil.which("bash")
 # The only programs preflight may use besides bash builtins and gp. The PATH the
-# tests build holds nothing else, so a preflight that reached for a JSON or text
-# tool would fail here.
+# fake-gp tests build holds nothing else, so a preflight that reached for a JSON
+# or text tool would fail there; the real-gp tests also put the environment's own
+# bin directory on the PATH, so they do not prove it.
 _TOOLS = ("mktemp", "cat", "rm")
 _REAL_GP_DIR = Path(sys.executable).parent
 _VERSION_OK = '{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "9.9.9"}'
 _INFO_EMPTY = '{"directory": "empty", "plugins": [], "schema": 1}'
 _OLDER_CALLER = (
-    "info: this graftpunk writes schema 2 and the caller reads 1; the caller is older than graftpunk."
+    "info: this graftpunk writes schema 2 and the caller reads 1; "
+    "the caller is older than graftpunk."
 )
 
 
@@ -404,7 +410,17 @@ class TestPreflightWithTheRealGp:
         contract numbers."""
         work, home, tools = dirs
         if kind == "plugin":
-            _real_gp(work, home, "plugin", "new", "myshop", "--url", "https://myshop.example", "--dir", str(work))
+            _real_gp(
+                work,
+                home,
+                "plugin",
+                "new",
+                "myshop",
+                "--url",
+                "https://myshop.example",
+                "--dir",
+                str(work),
+            )
         elif kind == "foreign":
             (work / "pyproject.toml").write_text('[project]\nname = "other"\n')
         result = _preflight(work, home, _REAL_GP_DIR, tools)
@@ -435,9 +451,7 @@ class TestPreflightWithAFakeGp:
             f"endpoints={_constant('SKILL_READS_ENDPOINTS_SCHEMA')}",
         ]
 
-    def test_gp_missing_exits_2_with_the_install_line(
-        self, dirs: tuple[Path, Path, Path]
-    ) -> None:
+    def test_gp_missing_exits_2_with_the_install_line(self, dirs: tuple[Path, Path, Path]) -> None:
         work, home, tools = dirs
         result = _preflight(work, home, tools)
         assert result.returncode == 2
@@ -453,6 +467,8 @@ class TestPreflightWithAFakeGp:
         assert result.returncode == 3
         assert "--at-least: below the floor" in result.stderr
         assert "uv tool upgrade graftpunk" in result.stderr
+        for reading in ("older than", "version floor", "--contract value"):
+            assert reading in result.stderr, reading
 
     def test_a_contract_mismatch_exits_3_relaying_gp_and_the_fix_for_each_side(
         self, tmp_path: Path, dirs: tuple[Path, Path, Path]
@@ -483,6 +499,18 @@ class TestPreflightWithAFakeGp:
         work, home, tools = dirs
         result = _preflight(work, home, _fake_gp(tmp_path, info_exit=2), tools)
         assert result.returncode == 5
+
+    def test_an_unexpected_version_status_exits_6_not_4(
+        self, tmp_path: Path, dirs: tuple[Path, Path, Path]
+    ) -> None:
+        """Exit 4 means the project could not be read; a gp version crash is another
+        failure and gets its own code."""
+        work, home, tools = dirs
+        fake = _fake_gp(tmp_path, version_exit=70, version_message="Traceback: boom")
+        result = _preflight(work, home, fake, tools)
+        assert result.returncode == 6
+        assert "exited 70" in result.stderr
+        assert "Traceback: boom" in result.stderr
 
     def test_a_project_gp_cannot_read_exits_4_with_gps_message(
         self, tmp_path: Path, dirs: tuple[Path, Path, Path]
@@ -524,10 +552,12 @@ Create `skills/graft/scripts/preflight.sh`:
 #   {"installation": <gp version --json>, "project": <gp plugin info --json>}
 # and exits 0. Otherwise prints one message on stderr and exits:
 #   2  gp is not on PATH
-#   3  graftpunk is older than this skill needs, or gp reports a contract
-#      mismatch (gp's own lines name the older side)
+#   3  gp version exited 1 (graftpunk older than this skill needs, or gp could
+#      not read the floor or a --contract value this script passed), or gp
+#      reports a contract mismatch (gp's own lines name the older side)
 #   4  gp could not read the project in this directory
 #   5  gp rejected an option this script passed
+#   6  gp version exited with a status this script does not expect
 # It compares nothing and parses no JSON: gp answers by its exit status, and the
 # JSON is relayed exactly as gp printed it.
 set -u
@@ -567,9 +597,12 @@ status=$?
 case "$status" in
   0) ;;
   1)
-    printf 'graftpunk is older than this skill needs (%s or later).\n' "$SKILL_REQUIRES_GRAFTPUNK" >&2
+    printf 'gp version refused (exit 1): the installed graftpunk is older than %s, or gp\n' \
+      "$SKILL_REQUIRES_GRAFTPUNK" >&2
+    printf 'could not read the version floor or a --contract value this skill passed.\n' >&2
+    printf "gp's message, when it gave one, says which:\n" >&2
     cat "$errfile" >&2
-    printf 'Upgrade: %s\n' "$UPGRADE_LINE" >&2
+    printf 'When graftpunk is older, upgrade it: %s\n' "$UPGRADE_LINE" >&2
     exit 3
     ;;
   2) option_rejected "gp version --json --at-least --contract" ;;
@@ -581,9 +614,9 @@ case "$status" in
     exit 3
     ;;
   *)
-    printf 'gp version failed (exit %s):\n' "$status" >&2
+    printf 'gp version exited %s, which preflight does not expect:\n%s\n' "$status" "$installation" >&2
     cat "$errfile" >&2
-    exit 4
+    exit 6
     ;;
 esac
 
@@ -666,14 +699,37 @@ def _allowed() -> list[str]:
     return re.findall(r"Bash\(([^)]*)\)", _frontmatter()["allowed-tools"])
 
 
-def _declared_commands() -> list[str]:
-    """Every line of every fenced bash block in commands.md: the commands the steps run."""
+def _commands_in(text: str) -> list[str]:
     return [
         line.strip()
-        for _start, body in blocks(COMMANDS_MD.read_text(encoding="utf-8"), "bash")
+        for _start, body in blocks(text, "bash")
         for line in body.splitlines()
         if line.strip()
     ]
+
+
+def _section(heading: str) -> str:
+    """commands.md from the line *heading* to the next heading of the same level."""
+    text = COMMANDS_MD.read_text(encoding="utf-8")
+    start = text.index(f"\n{heading}\n")
+    level = heading.split(" ", 1)[0] + " "
+    end = text.find(f"\n{level}", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def _declared_commands() -> list[str]:
+    """Every line of every fenced bash block in commands.md: the commands the steps run,
+    whoever runs them."""
+    return _commands_in(COMMANDS_MD.read_text(encoding="utf-8"))
+
+
+def _skill_run_commands() -> list[str]:
+    """The commands under "Run by the skill": the only ones an offered rule may cover."""
+    return _commands_in(_section("## Run by the skill"))
+
+
+def _preflight_commands() -> list[str]:
+    return _commands_in(_section("## Run by preflight"))
 
 
 def _offered_rules() -> list[str]:
@@ -690,7 +746,11 @@ def _offered_rules() -> list[str]:
 def _matches(pattern: str, command: str) -> bool:
     """Claude Code's Bash permission rule: a trailing " *" matches the prefix with or
     without arguments; anything else matches exactly
-    (https://code.claude.com/docs/en/permissions, wildcard rules)."""
+    (https://code.claude.com/docs/en/permissions, wildcard rules).
+
+    Valid only under the restriction test_every_rule_is_a_scoped_gp_rule enforces
+    (a "*" only as the trailing " *"); it models no other wildcard form. Re-check
+    it against that page whenever the page changes."""
     if pattern.endswith(" *"):
         prefix = pattern[:-2]
         return command == prefix or command.startswith(prefix + " ")
@@ -722,13 +782,21 @@ class TestFrontmatter:
 
 
 class TestOfferedAllowRules:
-    def test_every_offered_rule_matches_a_command_a_step_runs(self) -> None:
-        """Containment: a rule for a command no step runs any more fails."""
-        declared = _declared_commands()
+    def test_every_offered_rule_matches_a_command_the_skill_runs(self) -> None:
+        """Containment: a rule for a command the skill no longer runs itself fails."""
+        declared = _skill_run_commands()
         for pattern in _offered_rules():
             assert any(_matches(pattern, command) for command in declared), (
-                f"Bash({pattern}) matches no command in references/commands.md"
+                f"Bash({pattern}) matches no command under Run by the skill"
             )
+
+    def test_no_rule_is_offered_for_what_only_preflight_runs(self) -> None:
+        """Preflight runs its gp calls inside the one pre-approved call, so a rule
+        for them would widen consent for nothing."""
+        preflight_only = set(_preflight_commands()) - set(_skill_run_commands())
+        assert preflight_only
+        for command in preflight_only:
+            assert not any(_matches(p, command) for p in _offered_rules()), command
 
     def test_every_rule_is_a_scoped_gp_rule(self) -> None:
         """Never Bash(*), never a bare Bash(gp *), never a command other than gp."""
@@ -752,8 +820,16 @@ class TestOfferedAllowRules:
 
 
 def test_the_live_step_asks_before_the_first_live_call() -> None:
+    """Found by the step's bold name, up to the next numbered item or heading, so
+    adding or removing a step does not move it."""
     text = SKILL_MD.read_text(encoding="utf-8")
-    step = text[text.index("7. **Kick the tires**") : text.index("8. **Publish checklist**")]
+    rest = text[text.index("**Kick the tires**") :]
+    ends = [
+        m.start()
+        for m in (re.search(r"^\d+\. \*\*", rest, re.M), re.search(r"^## ", rest, re.M))
+        if m
+    ]
+    step = rest[: min(ends)] if ends else rest
     assert _LIVE_CALL_QUESTION in " ".join(step.split())
 
 
@@ -855,8 +931,9 @@ it.
 
 ## The steps
 
-1. **Frame** (guide: Frame). Collect the plugin name and check it with
-   `gp plugin new <name> --check-name`, which writes nothing: exit 0 means the
+1. **Frame** (guide: Frame). Collect the plugin name and check it with the
+   command in the Frame block of `references/commands.md`, which writes
+   nothing: exit 0 means the
    name is usable, and on exit 1 show the refusal and ask for another. Collect
    the site URL, and what the user wants to do on the site in plain words ("see
    my orders and download invoices" is enough). Do not ask for command names or
@@ -867,14 +944,13 @@ it.
    recording to the user exactly as it says. You never run the recorder
    yourself. When the user says the recording is done, run `gp observe list`,
    take the newest run under the inferred name, and say that name back.
-3. **Understand** (guide: Understand). Run
-   `gp observe digest <session> --endpoints-json`, then read
+3. **Understand** (guide: Understand). Run the command in the Understand block
+   of `references/commands.md`, then read
    `references/digest.md` and build the proposal it describes. The user keeps,
    renames, or drops rows in one answer.
-4. **Scaffold** (guide: Scaffold). Run
-   `gp plugin new <name> --from-run <session> --command "<name>=<METHOD> <template>"`
-   with one `--command` per row the user kept (add `--run <run-id>` to pin an
-   older run). The generator writes only those stubs, under those names, each
+4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
+   block in `references/commands.md`, with one `--command` per row the user kept
+   (its `--run` form pins an older run). The generator writes only those stubs, under those names, each
    with its endpoint declared. Edit nothing it wrote during this step. Then run
    `gp plugin info --json` and confirm every agreed command is listed with the
    endpoint it was agreed for.
@@ -890,9 +966,10 @@ it.
    Before the first live call, ask in words, whatever the user's settings
    allow: "run a live login and one read-only command now?" Their answer is
    the consent for the live site and the login; an allow rule does not stand in
-   for it. On yes, run `gp <name> --help` and confirm every agreed command name
-   is listed, then `gp <name> login` and one read-only command against the live
-   site while the user watches. Credentials come from the
+   for it. On yes, run the help line of the Kick the tires block in
+   `references/commands.md` and confirm every agreed command name is listed,
+   then its login line and one read-only command against the live site while
+   the user watches. Credentials come from the
    environment or the workstation env file, which the user fills in: print the
    `gp config set` lines with placeholder values, never real ones. If the login
    fails, diagnose it against the guide's Login section, adjust the plugin's
@@ -918,8 +995,8 @@ with these differences, and this list is the only place they are stated:
   row of its own reading "existing command, endpoint not declared", so the user
   can say whether a proposed row duplicates it. Never drop or propose over an
   undeclared command silently.
-- Scaffold does not run `gp plugin new`. For each agreed command it runs
-  `gp plugin add-command <plugin> --from-run <session> --command "<name>=<METHOD> <template>"`,
+- Scaffold does not run `gp plugin new`. For each agreed command it runs the
+  `gp plugin add-command` line of the Scaffold block in `references/commands.md`,
   which adds one stub in the generated shape and prints the fixture path its
   test will look for.
 - The publish checklist is limited to the items the new commands touch.
@@ -941,66 +1018,78 @@ Create `skills/graft/references/commands.md`:
 ````markdown
 # The commands each step runs
 
-The declared list of every command the steps run, one fenced block per step.
-`SKILL.md` and the other references describe these commands in prose and point
-here instead of repeating them; this file is the one place they are listed.
-The placeholders are `<name>` (the plugin), `<session>` (the recording's name),
-`<run-id>`, `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
+The declared list of every command a step runs, one fenced block per step.
+`SKILL.md` and the other references point to a block here by its step's name
+and never spell a templated command themselves; this file is the one place the
+commands are written. The placeholders are `<name>` (the plugin), `<command>`
+(a command's name, as agreed in the proposal), `<session>` (the recording's
+name), `<run-id>`, `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
 
 Only preflight is pre-approved (`SKILL.md`, "Permissions"). Every other command
-asks the user's permission unless their settings allow it. The rules at the end
-of this file are the ones the skill offers for that, and the skill's tests hold
-each of them to a command listed here.
+the skill runs asks the user's permission unless their settings allow it. The
+rules at the end of this file are the ones the skill offers for that, drawn
+from "Run by the skill" alone, and the skill's tests hold each of them to a
+command listed there.
 
-## Preflight
+## Run by preflight
 
-Preflight runs the two `gp` lines itself, and the skill runs
-`gp plugin info --json` again after the scaffold step, to read back the
-commands it added.
+`preflight.sh` runs these itself, inside the one pre-approved call; the skill
+never runs them directly, so no rule is offered for them.
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/preflight.sh
 gp version --json --at-least <version> --contract info=<n> --contract endpoints=<n>
 gp plugin info --json
 ```
 
-## Frame
+## Run by the user
 
-```bash
-gp plugin new <name> --check-name
-```
-
-## Capture
-
-The user runs the recorder; the skill never does.
+The recorder needs a person at the keyboard. The skill prints one of these for
+the user to run, and never runs it.
 
 ```bash
 gp observe --no-session interactive <url>
 gp observe -s <session> interactive <url>
 ```
 
-The skill runs these:
+## Run by the skill
+
+### Start
+
+```bash
+${CLAUDE_SKILL_DIR}/scripts/preflight.sh
+```
+
+### Frame
+
+```bash
+gp plugin new <name> --check-name
+```
+
+### Capture
 
 ```bash
 gp session list
 gp observe list
 ```
 
-## Understand
+### Understand
 
 ```bash
 gp observe digest <session> --endpoints-json
 ```
 
-## Scaffold
+### Scaffold
+
+The last line reads back the commands the step added.
 
 ```bash
-gp plugin new <name> --from-run <session> --command "<name>=<METHOD> <template>"
-gp plugin new <name> --from-run <session> --run <run-id> --command "<name>=<METHOD> <template>"
-gp plugin add-command <name> --from-run <session> --command "<name>=<METHOD> <template>"
+gp plugin new <name> --from-run <session> --command "<command>=<METHOD> <template>"
+gp plugin new <name> --from-run <session> --run <run-id> --command "<command>=<METHOD> <template>"
+gp plugin add-command <name> --from-run <session> --command "<command>=<METHOD> <template>"
+gp plugin info --json
 ```
 
-## Harden
+### Harden
 
 ```bash
 gp observe fixtures <session> --match "<METHOD> <template>"
@@ -1011,7 +1100,7 @@ gp plugin upgrade
 The project's gate is whatever the guide's "The gate" section lists; it includes
 `gp plugin check`.
 
-## Kick the tires
+### Kick the tires
 
 These touch the live site or a credential. The skill asks in words before the
 first of them runs, whatever the user's settings allow.
@@ -1029,7 +1118,6 @@ to the project's settings with `/permissions`; the skill never adds them. The
 last rule covers the plugin's own commands, its login included.
 
 ```text
-Bash(gp version *)
 Bash(gp plugin info *)
 Bash(gp session list *)
 Bash(gp observe list *)
@@ -1105,7 +1193,22 @@ def _prose(text: str) -> str:
     return _CITATION_RE.sub(" ", "\n".join(kept))
 
 
-GUIDE_RUNS = _runs(_words(GUIDE_TEXT))
+def _without_section(text: str, heading: str) -> str:
+    """*text* without the section under the line *heading*, up to the next heading of
+    the same level; *text* itself when it has no such line."""
+    lines = text.splitlines()
+    if heading not in lines:
+        return text
+    start = lines.index(heading)
+    level = heading.split(" ", 1)[0] + " "
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith(level)), len(lines))
+    return "\n".join(lines[:start] + lines[end:])
+
+
+# The guide's "With the skill" section describes this skill, and holds only its
+# install and invocation facts, which the skill may state in the same words;
+# every other section is the guide's to state and the skill's to cite.
+GUIDE_RUNS = _runs(_words(_without_section(GUIDE_TEXT, "## With the skill")))
 
 
 class TestCitations:
@@ -1116,8 +1219,10 @@ class TestCitations:
             assert slug(title) in slugs, f"{doc.name} cites a heading the guide lacks: {title!r}"
 
     def test_every_step_cites_a_heading(self) -> None:
-        steps = [line for line in SKILL_MD.read_text().splitlines() if re.match(r"^\d\. \*\*", line)]
-        assert len(steps) == 8
+        steps = [
+            line for line in SKILL_MD.read_text().splitlines() if re.match(r"^\d+\. \*\*", line)
+        ]
+        assert steps
         assert all(_CITATION_RE.search(step) for step in steps)
 
     def test_every_rule_names_a_heading(self) -> None:
@@ -1137,7 +1242,9 @@ class TestCitations:
 class TestNothingIsCopied:
     @pytest.mark.parametrize("doc", _skill_docs(), ids=lambda p: p.name)
     def test_no_run_of_eight_words_from_the_guide(self, doc: Path) -> None:
-        copied = sorted(" ".join(run) for run in _runs(_words(_prose(doc.read_text()))) & GUIDE_RUNS)
+        copied = sorted(
+            " ".join(run) for run in _runs(_words(_prose(doc.read_text()))) & GUIDE_RUNS
+        )
         assert copied == [], f"{doc.name} copies the guide: {copied[:3]}"
 
     def test_the_detector_catches_a_copied_sentence(self) -> None:
@@ -1159,10 +1266,38 @@ class TestNothingIsCopied:
                 assert match and slug(match.group(1)) in slugs, line
 
 
-@pytest.mark.parametrize("name", ["rules.md", "capture.md", "digest.md", "harden.md", "commands.md"])
+@pytest.mark.parametrize(
+    "name", ["rules.md", "capture.md", "digest.md", "harden.md", "commands.md"]
+)
 def test_each_reference_exists_and_stays_short(name: str) -> None:
     lines = (SKILL_DIR / "references" / name).read_text().splitlines()
     assert len(lines) < _MAX_REFERENCE_LINES
+
+
+_TEMPLATED_GP_SPAN_RE = re.compile(r"`!? ?(gp [^`]*<[^`]*)`")
+
+
+def _outside_fences(text: str) -> str:
+    kept: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+@pytest.mark.parametrize("doc", _skill_docs(), ids=lambda p: p.name)
+def test_no_templated_command_is_spelled_in_prose(doc: Path) -> None:
+    """One owner for the commands, in prose as in fenced blocks: a backticked gp
+    command with a <placeholder> outside commands.md is a second spelling, so the
+    prose names the commands.md block instead."""
+    if doc == COMMANDS_MD:
+        pytest.skip("commands.md is the declaration")
+    spelled = _TEMPLATED_GP_SPAN_RE.findall(_outside_fences(doc.read_text(encoding="utf-8")))
+    assert spelled == [], f"{doc.name} spells a command commands.md owns: {spelled}"
 
 
 @pytest.mark.parametrize("doc", _skill_docs(), ids=lambda p: p.name)
@@ -1225,8 +1360,8 @@ Create `skills/graft/references/capture.md` with the content below, replacing th
 For `CTRL_C_REACHES_GP=yes`:
 
 ```markdown
-Tell the user to run that line in this Claude Code session with the `!`
-prefix, as in `! gp observe --no-session interactive <url>`. Then they log in,
+Tell the user to run that line in this Claude Code session, typed after the
+`!` prefix and a space. Then they log in,
 work through every item on the list below, and press Ctrl+C, which ends the
 recorder and saves what it captured. Wait until they say it is done.
 ```
@@ -1253,7 +1388,7 @@ and waits. It never runs the recorder itself.
 
 ## What to print
 
-Print the recorder line from the Capture block of `references/commands.md`,
+Print the recorder line from the "Run by the user" block of `references/commands.md`,
 with the site's URL in place of `<url>`: the `--no-session` line in create mode,
 and in enhance mode when `gp session list` shows no session for the plugin; the
 `-s <session>` line in enhance mode when a session exists, so the recording
@@ -1290,8 +1425,8 @@ Create `skills/graft/references/digest.md`:
 # From the digest to a command proposal
 
 The user should never have to know the commands in advance. The source is the
-`gp observe digest <session> --endpoints-json` projection: one entry per
-endpoint with `method`, `template`, `login_flow`, `content_type`, `shape`,
+projection the Understand block of `references/commands.md` prints: one entry
+per endpoint with `method`, `template`, `login_flow`, `content_type`, `shape`,
 `query_params`, `body_params`, and `custom_headers`, plus a `login` summary.
 Read that projection only; never read the HAR, a capture, or `--json`.
 
@@ -1323,8 +1458,9 @@ the user only when that summary leaves it open.
 
 ## A worked example
 
-On the guide's example recording of `myshop`, the projection holds, among
-others:
+On the guide's example recording of `myshop`, the projection would hold, among
+others (the guide elides the three non-JSON endpoints; the three rows below are
+the ones its Login section implies):
 
 | method | template | login_flow | shape |
 | --- | --- | --- | --- |
@@ -1483,8 +1619,14 @@ class _Repo:
         path.write_text(text)
 
     def manifests(self, marketplace: str, plugin: str) -> None:
-        self.write(".claude-plugin/marketplace.json", json.dumps({"name": "graftpunk", "version": marketplace}, indent=2))
-        self.write(".claude-plugin/plugin.json", json.dumps({"name": "graftpunk", "version": plugin}, indent=2))
+        self.write(
+            ".claude-plugin/marketplace.json",
+            json.dumps({"name": "graftpunk", "version": marketplace}, indent=2),
+        )
+        self.write(
+            ".claude-plugin/plugin.json",
+            json.dumps({"name": "graftpunk", "version": plugin}, indent=2),
+        )
 
     def commit(self, message: str) -> str:
         self.git("add", "-A")
@@ -1572,10 +1714,13 @@ Create `scripts/check-skill-version.sh`:
 #
 # When the diff from BASE to HEAD touches skills/ or .claude-plugin/, the version
 # field of .claude-plugin/plugin.json and .claude-plugin/marketplace.json must be
-# equal to each other and different from BASE's. Claude Code pins an installed
-# plugin to its version string, so a skill change without a bump never reaches
-# people who already installed it. Run by .github/workflows/skill-version.yml on
-# pull requests, and by hand as `just skill-version`.
+# equal to each other and different from BASE's. plugin.json's version is the one
+# that pins an installed plugin: Claude Code keeps a GitHub install on that string,
+# so a skill change without a bump never reaches people who already installed it
+# (a local-directory marketplace loads the plugin in place and is not pinned).
+# marketplace.json's root version is the marketplace manifest's own, and moves in
+# lockstep so one number names a release. Run by .github/workflows/skill-version.yml
+# on pull requests, and by hand as `just skill-version`.
 set -euo pipefail
 
 base="${1:?usage: scripts/check-skill-version.sh <base commit>}"
@@ -1703,16 +1848,14 @@ In `docs/PLUGIN_DEVELOPMENT.md`, insert before `## Frame`:
 ```markdown
 ## With the skill
 
-graftpunk's repository is also a Claude Code plugin marketplace, and its one
-skill takes you through these six steps. Install it with `/plugin marketplace
-add stavxyz/graftpunk` and `/plugin install graftpunk@graftpunk`, then run
+graftpunk's repository is also a Claude Code plugin marketplace with one skill.
+Install it with `/plugin marketplace add stavxyz/graftpunk` and
+`/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
-The skill runs the `gp` commands itself, asking your permission for each unless
-you added the allow rules it offers, and hands two things to you: the browser
-recording and the first live login. It follows this guide step by step, so
-where the two disagree, this guide is the reference.
 ```
+
+The section holds install and invocation facts and nothing else: the skill's copy check leaves it out of the guide text it compares against, so anything else written here would escape that check.
 
 - [ ] **Step 2: Add the install lines to the README**
 
@@ -1738,11 +1881,15 @@ The Claude Code skill under `skills/` is versioned apart from the graftpunk
 package. Any change under `skills/` or `.claude-plugin/` needs a patch bump of
 the `version` field in both `.claude-plugin/plugin.json` and
 `.claude-plugin/marketplace.json`, and the two stay equal; a new skill or a
-changed invocation contract is a minor bump. Claude Code pins an installed
-plugin to its version string, so people who installed the skill receive a
-change only when the version moves
+changed invocation contract is a minor bump. The version in `plugin.json` is the
+one that pins an installed plugin: Claude Code keeps a GitHub install on that
+string, so people who installed the skill receive a change only when it moves
 ([plugins reference](https://code.claude.com/docs/en/plugins-reference), the
-`version` field).
+`version` field; a plugin loaded in place from a local-directory marketplace is
+not pinned). The root `version` in `marketplace.json` is the marketplace
+manifest's own
+([plugin marketplaces](https://code.claude.com/docs/en/plugin-marketplaces),
+root fields); it moves with the plugin's so one number names a release.
 
 The `Skill version` workflow checks this on every pull request that touches
 those paths. Run the same check before pushing with `just skill-version`, which
@@ -1778,7 +1925,7 @@ git commit -m "docs(skill): install and release notes for the graft skill"
 
 - [ ] **Step 8 [manual]: The dry run, recorded on the pull request**
 
-With the branch's skill installed from a local path (`/plugin marketplace add <path to this worktree>`, then `/plugin install graftpunk@graftpunk`), run in an empty scratch directory:
+With the branch's skill installed from a local path (`/plugin marketplace add <path to this worktree>`, then `/plugin install graftpunk@graftpunk`), run in an empty scratch directory. A local-directory marketplace loads the plugin in place, so the version does not pin this install.
 
 1. `/graftpunk:graft myshop https://example.com/`. Where no live capture is available, stand in for the capture step with this repository's synthetic recording, filed as a run the scaffold step can read: `mkdir -p ~/.local/share/graftpunk/observe/example/dry-run && cp tests/fixtures/sample.har ~/.local/share/graftpunk/observe/example/dry-run/network.har`, then tell the skill the recording is done. Carry the flow through understand, scaffold, implement, and harden until the project's gate is green; skip the live check and say so in the notes.
 2. In the resulting project, `/graftpunk:graft` with no arguments, adding one command.
