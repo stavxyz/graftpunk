@@ -66,11 +66,14 @@ validated:
 | `skills/graft/SKILL.md` (new, Task 4) | Frontmatter and the flow. |
 | `skills/graft/references/commands.md` (new, Task 4) | The declared commands each step runs, and the allow rules the skill offers for them; the referent of the consent tests. |
 | `skills/graft/references/rules.md`, `capture.md`, `digest.md`, `harden.md` (new, Task 5) | What each step needs, citing the guide by heading and pointing to `commands.md` for every command. |
-| `tests/unit/test_graft_skill.py` (new, Tasks 2, 4, 5) | The skill's own tests: manifests, frontmatter and consent, citations, and the copy check. |
+| `tests/unit/test_graft_manifests.py` (new, Task 2) | The manifests' tests. |
+| `tests/unit/skill_harness.py` (new, Task 4) | The skill's files, found once for the skill's test modules: `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, `commands_in`, and `declared_commands`. Not a test module. |
+| `tests/unit/test_graft_consent.py` (new, Task 4) | The frontmatter, the offered allow rules against the declared commands, the live-call question, and every `gp` invocation resolved against the CLI. |
+| `tests/unit/test_graft_references.py` (new, Task 5) | Citations, the copy check, the references' length, and the commands' one owner. |
 | `tests/unit/test_graft_preflight.py` (new, Task 3) | Preflight against the real `gp` and a fake one. |
 | `scripts/check-skill-version.sh` (new, Task 6) | The version-bump check. |
 | `.github/workflows/skill-version.yml` (new, Task 6) | Runs the check on pull requests. |
-| `.github/workflows/python-quality.yml` (modify, Task 6) | Runs the unit suite when only the skill or the guide changes. |
+| `.github/workflows/python-quality.yml` (modify, Task 6) | Runs the Python quality jobs (the full test suite, lint, type check, typer compatibility, and the lean install) when only the skill or the guide changes. |
 | `justfile` (modify, Task 6) | `just skill-version`. |
 | `tests/unit/test_skill_version_script.py` (new, Task 6) | The check against throwaway git repositories. |
 | `docs/PLUGIN_DEVELOPMENT.md`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md` (modify, Task 7) | "With the skill", the install lines, "Releasing the skill", one Added line. |
@@ -134,24 +137,25 @@ Write one line into the pull request description's test plan, with the date and 
 
 **Files:**
 - Create: `.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`
-- Test: `tests/unit/test_graft_skill.py`
+- Test: `tests/unit/test_graft_manifests.py`
 
 **Interfaces:**
 - Consumes: nothing.
 - Consumes: `REPO_ROOT` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9).
-- Produces: the marketplace `graftpunk` serving plugin `graftpunk` at version `0.1.0` from `./`, so the install lines are `/plugin marketplace add stavxyz/graftpunk` and `/plugin install graftpunk@graftpunk`. `tests/unit/test_graft_skill.py` with `SKILL_DIR`, `MARKETPLACE`, `PLUGIN_MANIFEST`, and `_json`, which Tasks 4 and 5 extend.
+- Produces: the marketplace `graftpunk` serving plugin `graftpunk` at version `0.1.0` from `./`, so the install lines are `/plugin marketplace add stavxyz/graftpunk` and `/plugin install graftpunk@graftpunk`. `tests/unit/test_graft_manifests.py`, which holds the manifests' tests and nothing else; Tasks 4 and 5 put the skill's other tests in modules of their own.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `tests/unit/test_graft_skill.py`:
+Create `tests/unit/test_graft_manifests.py`:
 
 ```python
-"""The graft skill's own tests (graft skill spec, 2026-09-21, "Testing").
+"""The graft skill's manifests (graft skill spec, 2026-09-21, "Testing").
 
-Nothing here runs Claude Code. The skill is checked as files: its manifests, its
-frontmatter's one pre-approved command and the allow rules it offers against
-the declared list, and its prose against the guide it cites. Preflight has its
-own module, tests/unit/test_graft_preflight.py.
+Nothing here runs Claude Code. The skill's tests are split along its files: the
+manifests here, the frontmatter and consent in tests/unit/test_graft_consent.py,
+the references' citations and the copy check in
+tests/unit/test_graft_references.py, and preflight in
+tests/unit/test_graft_preflight.py.
 """
 
 from __future__ import annotations
@@ -164,7 +168,6 @@ from tests.unit.guide_harness import REPO_ROOT
 
 MARKETPLACE = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 PLUGIN_MANIFEST = REPO_ROOT / ".claude-plugin" / "plugin.json"
-SKILL_DIR = REPO_ROOT / "skills" / "graft"
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -197,7 +200,7 @@ class TestManifests:
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_skill.py -q`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_manifests.py -q`
 Expected: FAIL (`FileNotFoundError: ... .claude-plugin/marketplace.json`).
 
 - [ ] **Step 3: Write the manifests**
@@ -235,7 +238,7 @@ Create `.claude-plugin/plugin.json`:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_skill.py -q`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_manifests.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Confirm the sdist stays an allowlist**
@@ -246,7 +249,7 @@ Expected: PASS. `.claude-plugin/` and `skills/` are outside `[tool.hatch.build.t
 - [ ] **Step 6: Commit**
 
 ```bash
-git add .claude-plugin/marketplace.json .claude-plugin/plugin.json tests/unit/test_graft_skill.py
+git add .claude-plugin/marketplace.json .claude-plugin/plugin.json tests/unit/test_graft_manifests.py
 git commit -m "feat(skill): the repository is a Claude Code plugin marketplace serving graftpunk"
 ```
 
@@ -676,19 +679,81 @@ git commit -m "feat(skill): preflight asks gp every version question in one call
 
 **Files:**
 - Create: `skills/graft/SKILL.md`, `skills/graft/references/commands.md`
-- Test: `tests/unit/test_graft_skill.py`
+- Create: `tests/unit/skill_harness.py` (the skill's files, found once for the skill's test modules)
+- Test: `tests/unit/test_graft_consent.py`
 
 **Interfaces:**
-- Consumes: `preflight.sh` (Task 3); `check_invocation`, `gp_invocations`, and `blocks` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9, which moved them out of the guide's test module).
-- Produces: the skill, invoked as `/graftpunk:graft [plugin-name] [site-url]`, whose frontmatter pre-approves preflight alone; `references/commands.md` with the declared commands per step and the offered allow rules; `_skill_docs()`, `COMMANDS_MD`, and `_declared_commands()` in the test module, which Task 5's tests use.
+- Consumes: `preflight.sh` (Task 3); `REPO_ROOT`, `check_invocation`, `gp_invocations`, `blocks`, and `section` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9, which moved them out of the guide's test module and added `section`, the one rule for where a markdown section ends).
+- Produces: the skill, invoked as `/graftpunk:graft [plugin-name] [site-url]`, whose frontmatter pre-approves preflight alone; `references/commands.md` with the declared commands per step and the offered allow rules; `tests/unit/skill_harness.py`, a non-test module (pytest does not collect it) with `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs() -> list[Path]`, `commands_in(text: str) -> list[str]`, and `declared_commands() -> list[str]`, which Task 5's tests use; `tests/unit/test_graft_consent.py`, the frontmatter and consent tests.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/unit/test_graft_skill.py`, add `import os`, `import re`, `import shlex`, `import pytest`, and `import yaml` to the imports, extend the harness import to `from tests.unit.guide_harness import REPO_ROOT, blocks, check_invocation, gp_invocations`, and append:
+Create `tests/unit/skill_harness.py`:
 
 ```python
+"""The graft skill's files, found once for the skill's test modules
+(tests/unit/test_graft_consent.py and tests/unit/test_graft_references.py), so no
+test module imports another. Nothing here is a test.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from tests.unit.guide_harness import REPO_ROOT, blocks
+
+SKILL_DIR = REPO_ROOT / "skills" / "graft"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 COMMANDS_MD = SKILL_DIR / "references" / "commands.md"
+
+
+def skill_docs() -> list[Path]:
+    """SKILL.md and every reference: the files the skill's prose tests read."""
+    return [SKILL_MD, *sorted((SKILL_DIR / "references").glob("*.md"))]
+
+
+def commands_in(text: str) -> list[str]:
+    """Every non-blank line of every fenced bash block in *text*."""
+    return [
+        line.strip()
+        for _start, body in blocks(text, "bash")
+        for line in body.splitlines()
+        if line.strip()
+    ]
+
+
+def declared_commands() -> list[str]:
+    """Every line of every fenced bash block in commands.md: the commands the steps
+    run, whoever runs them."""
+    return commands_in(COMMANDS_MD.read_text(encoding="utf-8"))
+```
+
+Create `tests/unit/test_graft_consent.py`:
+
+```python
+"""The graft skill's frontmatter and consent (graft skill spec, 2026-09-21,
+"Testing"): the one pre-approved command, and every allow rule the skill offers
+held to the commands commands.md declares."""
+
+from __future__ import annotations
+
+import os
+import re
+import shlex
+from typing import Any
+
+import pytest
+import yaml
+
+from tests.unit.guide_harness import blocks, check_invocation, gp_invocations, section
+from tests.unit.skill_harness import (
+    COMMANDS_MD,
+    SKILL_DIR,
+    SKILL_MD,
+    commands_in,
+    skill_docs,
+)
+
 _SKILL_DIR_VAR = "${CLAUDE_SKILL_DIR}/"
 # The whole pre-approved list. Claude Code keeps an allowed-tools grant only for
 # the turn that invokes the skill (https://code.claude.com/docs/en/skills), and
@@ -702,10 +767,6 @@ _PLUGIN_RULE = "gp <name> *"
 _LIVE_CALL_QUESTION = "run a live login and one read-only command now?"
 
 
-def _skill_docs() -> list[Path]:
-    return [SKILL_MD, *sorted((SKILL_DIR / "references").glob("*.md"))]
-
-
 def _frontmatter() -> dict[str, Any]:
     text = SKILL_MD.read_text(encoding="utf-8")
     assert text.startswith("---\n")
@@ -716,45 +777,25 @@ def _allowed() -> list[str]:
     return re.findall(r"Bash\(([^)]*)\)", _frontmatter()["allowed-tools"])
 
 
-def _commands_in(text: str) -> list[str]:
-    return [
-        line.strip()
-        for _start, body in blocks(text, "bash")
-        for line in body.splitlines()
-        if line.strip()
-    ]
-
-
-def _section(heading: str) -> str:
-    """commands.md from the line *heading* to the next heading of the same level."""
-    text = COMMANDS_MD.read_text(encoding="utf-8")
-    start = text.index(f"\n{heading}\n")
-    level = heading.split(" ", 1)[0] + " "
-    end = text.find(f"\n{level}", start + 1)
-    return text[start : end if end != -1 else len(text)]
-
-
-def _declared_commands() -> list[str]:
-    """Every line of every fenced bash block in commands.md: the commands the steps run,
-    whoever runs them."""
-    return _commands_in(COMMANDS_MD.read_text(encoding="utf-8"))
+def _commands_section(heading: str) -> str:
+    """commands.md's section under *heading*, by the harness's one section rule."""
+    return section(COMMANDS_MD.read_text(encoding="utf-8"), heading)
 
 
 def _skill_run_commands() -> list[str]:
     """The commands under "Run by the skill": the only ones an offered rule may cover."""
-    return _commands_in(_section("## Run by the skill"))
+    return commands_in(_commands_section("## Run by the skill"))
 
 
 def _preflight_commands() -> list[str]:
-    return _commands_in(_section("## Run by preflight"))
+    return commands_in(_commands_section("## Run by preflight"))
 
 
 def _offered_rules() -> list[str]:
     """The patterns of the allow rules commands.md offers: its fenced text block under
     "Allow rules for a prompt-free run", one Bash(<pattern>) rule per line."""
-    text = COMMANDS_MD.read_text(encoding="utf-8")
-    section = text[text.index("## Allow rules for a prompt-free run") :]
-    (_start, body), *_rest = blocks(section, "text")
+    rules_section = _commands_section("## Allow rules for a prompt-free run")
+    (_start, body), *_rest = blocks(rules_section, "text")
     rules = [line.strip() for line in body.splitlines() if line.strip()]
     assert rules and all(re.fullmatch(r"Bash\([^()]+\)", rule) for rule in rules), rules
     return [rule.removeprefix("Bash(").removesuffix(")") for rule in rules]
@@ -852,7 +893,7 @@ def test_the_live_step_asks_before_the_first_live_call() -> None:
 
 SKILL_INVOCATIONS = [
     (doc.name, line_no, invocation)
-    for doc in _skill_docs()
+    for doc in skill_docs()
     for line_no, invocation in gp_invocations(doc.read_text(encoding="utf-8"))
 ]
 
@@ -875,7 +916,7 @@ def test_every_gp_invocation_names_a_real_command_and_options(
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_skill.py -q`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_consent.py -q`
 Expected: collection error, `FileNotFoundError` reading `skills/graft/SKILL.md`.
 
 - [ ] **Step 3: Write `SKILL.md`**
@@ -931,11 +972,15 @@ replaced by the plugin's name once you know it, and say that the user can add
 them to this project's settings with `/permissions` for a run without prompts.
 Say that the skill works either way: without the rules, each command asks first.
 
-In create mode, `$0` is the plugin name and `$1` the site URL. Ask for whichever
-is missing, one question at a time. In enhance mode, ignore both and say so in
-one line; the plugin comes from `project.plugins`. With one entry, take it. With
-several (a suite), take the entry whose `entry_point` is `$0` when there is one,
-and otherwise ask which.
+This invocation's arguments: plugin name `$0`, site URL `$1`. Claude Code puts
+each argument given in its place, and a position with no argument keeps its
+placeholder as written, a dollar sign followed by a digit. A value that reads
+that way, or is empty, was not given. In create mode, ask for each one not
+given, one question at a time. In enhance mode the plugin comes from
+`project.plugins`, and any argument other than a suite member's name is
+ignored, which you say in one line. With one entry, take it. With several (a
+suite), take the entry whose `entry_point` is the plugin name given above; when
+none was given or none matches, ask which.
 
 ## How to run the steps
 
@@ -1028,6 +1073,8 @@ recording, read the `--endpoints-json` projection and nothing else. When the
 user pastes a secret into the conversation, say where it belongs
 (`gp config set NAME '$(your-secret-tool read ...)'`) and do not use it.
 ````
+
+The argument paragraph reads correctly whether or not Claude Code substitutes the placeholders. The skills documentation (https://code.claude.com/docs/en/skills, fetched 2026-09-23) says `$0` is "the first argument" (0-based) and "An indexed placeholder with no corresponding argument, such as `$2` when only one argument was passed, stays in the content unchanged." Whether a placeholder is substituted everywhere it appears in the file is unverified (the page does not say so in as many words), so the paragraph is written to be safe if it is: it names a placeholder only where it wants the value, and describes a missing one in words ("a dollar sign followed by a digit") rather than by writing one.
 
 - [ ] **Step 4: Write `commands.md`**
 
@@ -1152,13 +1199,13 @@ Bash(gp <name> *)
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_skill.py -q`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_consent.py -q`
 Expected: PASS. The walker test resolves every `gp` invocation in `SKILL.md` and `commands.md` against the installed CLI, the interactive recorder and the `gp version --contract` handshake included.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add skills/graft/SKILL.md skills/graft/references/commands.md tests/unit/test_graft_skill.py
+git add skills/graft/SKILL.md skills/graft/references/commands.md tests/unit/skill_harness.py tests/unit/test_graft_consent.py
 git commit -m "feat(skill): SKILL.md pre-approves preflight alone, and commands.md declares the commands and the allow rules offered for them"
 ```
 
@@ -1168,19 +1215,48 @@ git commit -m "feat(skill): SKILL.md pre-approves preflight alone, and commands.
 
 **Files:**
 - Create: `skills/graft/references/rules.md`, `capture.md`, `digest.md`, `harden.md`
-- Test: `tests/unit/test_graft_skill.py`
+- Test: `tests/unit/test_graft_references.py`
 
 The slug helpers the citation tests use are `slug` and `slugs_of` in `tests/unit/guide_harness.py`. The project-tools plan's Task 9 moved `_slugs_of` there from `tests/unit/test_plugin_development_guide.py:317-337` and extracted `slug` from it, so this task edits no guide test.
 
 **Interfaces:**
-- Consumes: `CTRL_C_REACHES_GP` (Task 1); `_skill_docs`, `COMMANDS_MD`, and `_declared_commands` (Task 4); `GUIDE`, `GUIDE_TEXT`, `blocks`, `slug`, and `slugs_of` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9).
-- Produces: the four references `SKILL.md` names. The copy detector (`_words`, `_runs`, `_prose`) stays in `tests/unit/test_graft_skill.py`, its one user. `capture.md` and `harden.md` carry no fenced command blocks: they point to the step's block in `commands.md`, the one owner of the commands.
+- Consumes: `CTRL_C_REACHES_GP` (Task 1); `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, and `declared_commands` from `tests/unit/skill_harness.py` (Task 4); `GUIDE`, `GUIDE_TEXT`, `blocks`, `gp_invocations`, `outside_fences`, `section`, `slug`, and `slugs_of` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9). Fence handling and the section rule have one owner each, in the harness: `_prose` starts from `outside_fences`, and `_without_section` is derived from `section`.
+- Produces: the four references `SKILL.md` names, and `tests/unit/test_graft_references.py`, the citation, copy, and command-ownership tests. The copy detector (`_words`, `_runs`, `_prose`) stays in that module, its one user. `capture.md` and `harden.md` carry no fenced command blocks: they point to the step's block in `commands.md`, the one owner of the commands.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/unit/test_graft_skill.py`, extend the harness import with `GUIDE`, `GUIDE_TEXT`, `slug`, and `slugs_of`, and append:
+Create `tests/unit/test_graft_references.py`:
 
 ```python
+"""The graft skill's references against the guide they cite, and the commands
+against commands.md, their one owner (graft skill spec, 2026-09-21, "Testing")."""
+
+from __future__ import annotations
+
+import re
+import shlex
+from pathlib import Path
+
+import pytest
+
+from tests.unit.guide_harness import (
+    GUIDE,
+    GUIDE_TEXT,
+    blocks,
+    gp_invocations,
+    outside_fences,
+    section,
+    slug,
+    slugs_of,
+)
+from tests.unit.skill_harness import (
+    COMMANDS_MD,
+    SKILL_DIR,
+    SKILL_MD,
+    declared_commands,
+    skill_docs,
+)
+
 _CITATION_RE = re.compile(r"\(guide: ([^)]+)\)")
 _QUOTE_CITATION_RE = re.compile(r"\(guide: ([^)]+)\)\s*$")
 # "Cite, do not copy", enforced at a stated threshold.
@@ -1199,28 +1275,24 @@ def _runs(words: list[str]) -> set[tuple[str, ...]]:
 
 def _prose(text: str) -> str:
     """*text* outside fenced blocks and quotations, with its citations removed: what the
-    copy check compares. A quotation is a blockquote line ending with a citation."""
-    kept: list[str] = []
-    in_fence = False
-    for line in text.splitlines():
-        if line.startswith("```"):
-            in_fence = not in_fence
-            continue
-        if in_fence or (line.startswith("> ") and _QUOTE_CITATION_RE.search(line)):
-            continue
-        kept.append(line)
+    copy check compares. A quotation is a blockquote line ending with a citation.
+    Fences are the harness's to find (``outside_fences``)."""
+    kept = [
+        line
+        for line in outside_fences(text).splitlines()
+        if not (line.startswith("> ") and _QUOTE_CITATION_RE.search(line))
+    ]
     return _CITATION_RE.sub(" ", "\n".join(kept))
 
 
 def _without_section(text: str, heading: str) -> str:
-    """*text* without the section under the line *heading*, up to the next heading of
-    the same level; *text* itself when it has no such line."""
+    """*text* without the section under the line *heading*, where the section ends by
+    the harness's one rule (``section``); *text* itself when it has no such line."""
     lines = text.splitlines()
     if heading not in lines:
         return text
     start = lines.index(heading)
-    level = heading.split(" ", 1)[0] + " "
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith(level)), len(lines))
+    end = start + len(section(text, heading).splitlines())
     return "\n".join(lines[:start] + lines[end:])
 
 
@@ -1231,7 +1303,7 @@ GUIDE_RUNS = _runs(_words(_without_section(GUIDE_TEXT, "## With the skill")))
 
 
 class TestCitations:
-    @pytest.mark.parametrize("doc", _skill_docs(), ids=lambda p: p.name)
+    @pytest.mark.parametrize("doc", skill_docs(), ids=lambda p: p.name)
     def test_every_cited_heading_exists(self, doc: Path) -> None:
         slugs = slugs_of(GUIDE)
         for title in _CITATION_RE.findall(doc.read_text(encoding="utf-8")):
@@ -1259,7 +1331,7 @@ class TestCitations:
 
 
 class TestNothingIsCopied:
-    @pytest.mark.parametrize("doc", _skill_docs(), ids=lambda p: p.name)
+    @pytest.mark.parametrize("doc", skill_docs(), ids=lambda p: p.name)
     def test_no_run_of_eight_words_from_the_guide(self, doc: Path) -> None:
         copied = sorted(
             " ".join(run) for run in _runs(_words(_prose(doc.read_text()))) & GUIDE_RUNS
@@ -1276,7 +1348,7 @@ class TestNothingIsCopied:
         assert not _runs(_words(_prose(f"> {sentence} (guide: Capture)"))) & GUIDE_RUNS
         assert _runs(_words(_prose(f"> {sentence}"))) & GUIDE_RUNS
 
-    @pytest.mark.parametrize("doc", _skill_docs(), ids=lambda p: p.name)
+    @pytest.mark.parametrize("doc", skill_docs(), ids=lambda p: p.name)
     def test_every_quotation_cites_a_heading_that_exists(self, doc: Path) -> None:
         slugs = slugs_of(GUIDE)
         for line in doc.read_text().splitlines():
@@ -1296,30 +1368,65 @@ def test_each_reference_exists_and_stays_short(name: str) -> None:
 _TEMPLATED_GP_SPAN_RE = re.compile(r"`!? ?(gp [^`]*<[^`]*)`")
 
 
-def _outside_fences(text: str) -> str:
-    kept: list[str] = []
-    in_fence = False
-    for line in text.splitlines():
-        if line.startswith("```"):
-            in_fence = not in_fence
-            continue
-        if not in_fence:
-            kept.append(line)
-    return "\n".join(kept)
-
-
-@pytest.mark.parametrize("doc", _skill_docs(), ids=lambda p: p.name)
+@pytest.mark.parametrize("doc", skill_docs(), ids=lambda p: p.name)
 def test_no_templated_command_is_spelled_in_prose(doc: Path) -> None:
     """One owner for the commands, in prose as in fenced blocks: a backticked gp
     command with a <placeholder> outside commands.md is a second spelling, so the
     prose names the commands.md block instead."""
     if doc == COMMANDS_MD:
         pytest.skip("commands.md is the declaration")
-    spelled = _TEMPLATED_GP_SPAN_RE.findall(_outside_fences(doc.read_text(encoding="utf-8")))
+    spelled = _TEMPLATED_GP_SPAN_RE.findall(outside_fences(doc.read_text(encoding="utf-8")))
     assert spelled == [], f"{doc.name} spells a command commands.md owns: {spelled}"
 
 
-@pytest.mark.parametrize("doc", _skill_docs(), ids=lambda p: p.name)
+# gp invocations the skill docs spell that Claude does not run from commands.md:
+# lines printed for the user to fill in, one named only to say its output is never
+# printed, and a worked example with real values. Named, so a new exemption shows
+# in review as a change to this test.
+_NOT_RUN_FROM_COMMANDS_MD = (
+    "gp config set",  # printed for the user with placeholder values (SKILL.md, Secrets)
+    "gp config get --resolve",  # named only to say its output is never printed
+    "gp plugin new myshop --from-run myshop",  # digest.md's worked example
+)
+
+
+def _token_pattern(token: str) -> re.Pattern[str]:
+    """A commands.md token as a pattern: each ``<placeholder>`` in it stands for any
+    non-empty value."""
+    return re.compile(".+".join(re.escape(part) for part in re.split(r"<[^<>]+>", token)))
+
+
+def _is_declared(invocation: str, declared: list[str]) -> bool:
+    """Whether *invocation* is a commands.md line, with its placeholders filled or not,
+    or the leading words of one (prose that names "the `gp plugin new` line" points
+    at it). Leading words stop before the first option, so a partial command with
+    options of its own must match a line in full."""
+    words = shlex.split(invocation)
+    for line in declared:
+        tokens = shlex.split(line)
+        if len(words) > len(tokens):
+            continue
+        if not all(_token_pattern(t).fullmatch(w) for t, w in zip(tokens, words, strict=False)):
+            continue
+        if len(words) == len(tokens) or not any(w.startswith("-") for w in words):
+            return True
+    return False
+
+
+@pytest.mark.parametrize("doc", skill_docs(), ids=lambda p: p.name)
+def test_every_gp_command_the_docs_spell_is_declared_in_commands_md(doc: Path) -> None:
+    """Containment for the commands themselves: every gp invocation a skill doc spells,
+    backticked or fenced, is a commands.md line or the leading words of one, or a
+    named exemption. A command added to a step without adding it to commands.md
+    fails here."""
+    declared = declared_commands()
+    for line_no, invocation in gp_invocations(doc.read_text(encoding="utf-8")):
+        if invocation.startswith(_NOT_RUN_FROM_COMMANDS_MD):
+            continue
+        assert _is_declared(invocation, declared), f"{doc.name}:{line_no}: {invocation}"
+
+
+@pytest.mark.parametrize("doc", skill_docs(), ids=lambda p: p.name)
 def test_a_templated_command_in_a_fenced_block_is_declared_in_commands_md(doc: Path) -> None:
     """One owner for the commands: a reference points to commands.md instead of
     repeating a command, so a templated gp line in any other file's fenced block
@@ -1327,7 +1434,7 @@ def test_a_templated_command_in_a_fenced_block_is_declared_in_commands_md(doc: P
     <placeholder>) is not a declaration and is exempt."""
     if doc == COMMANDS_MD:
         pytest.skip("commands.md is the declaration")
-    declared = set(_declared_commands())
+    declared = set(declared_commands())
     for _start, body in blocks(doc.read_text(encoding="utf-8"), "bash"):
         for line in body.splitlines():
             command = line.strip()
@@ -1337,7 +1444,7 @@ def test_a_templated_command_in_a_fenced_block_is_declared_in_commands_md(doc: P
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_skill.py tests/unit/test_plugin_development_guide.py -q`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_references.py tests/unit/test_plugin_development_guide.py -q`
 Expected: FAIL (`test_each_reference_exists_and_stays_short[rules.md]` and its siblings: `FileNotFoundError`). The guide tests still pass.
 
 - [ ] **Step 3: Write `rules.md`**
@@ -1554,7 +1661,7 @@ guide is the one place it lives.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_skill.py tests/unit/test_plugin_development_guide.py -q`
+Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_references.py tests/unit/test_plugin_development_guide.py -q`
 Expected: PASS. If `test_no_run_of_eight_words_from_the_guide` names a run, reword that sentence of the reference in your own words (do not edit the guide to make it pass), and run again.
 
 - [ ] **Step 8: Commit**
@@ -1562,7 +1669,7 @@ Expected: PASS. If `test_no_run_of_eight_words_from_the_guide` names a run, rewo
 The message names the hand-off Task 1 chose (`in-session` for `yes`, `separate terminal` for `no`):
 
 ```bash
-git add skills/graft/references/rules.md skills/graft/references/capture.md skills/graft/references/digest.md skills/graft/references/harden.md tests/unit/test_graft_skill.py
+git add skills/graft/references/rules.md skills/graft/references/capture.md skills/graft/references/digest.md skills/graft/references/harden.md tests/unit/test_graft_references.py
 git commit -m "feat(skill): the step references, cited by heading and checked against copying the guide (capture hand-off: in-session)"
 ```
 
@@ -1919,7 +2026,7 @@ compares against `origin/main`, or name another base with
 
 - [ ] **Step 4: Add the CHANGELOG line**
 
-Append to `CHANGELOG.md` under `[Unreleased]` / `### Added`:
+Append to `CHANGELOG.md` under `[Unreleased]` / `### Added`. The 1.17.0 release this plan waits for moves the package's lines out of `[Unreleased]`, so the section may be empty now: if `[Unreleased]` has no `### Added` heading, create one directly under `[Unreleased]` and put the line there.
 
 ```markdown
 - **The `/graftpunk:graft` Claude Code skill.** The repository is now a Claude Code plugin marketplace: `/plugin marketplace add stavxyz/graftpunk`, then `/plugin install graftpunk@graftpunk`. `/graftpunk:graft myshop https://myshop.example/` in an empty directory creates a plugin by walking `docs/PLUGIN_DEVELOPMENT.md` (frame, capture, understand, scaffold, implement, harden, a live check, and the publish checklist), running the `gp` commands itself (each subject to your permission settings; the skill offers allow rules for a prompt-free run) and handing you the browser recording and the live login; `/graftpunk:graft` inside a plugin project adds commands to it. The skill is versioned apart from the package (0.1.0) and needs graftpunk 1.17.0 or later.
