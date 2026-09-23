@@ -39,7 +39,12 @@ from graftpunk.devtools.scaffold.pysrc import (
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
 from graftpunk.har.documents import printable_selectors
 from graftpunk.har.naming import capture_filename
-from graftpunk.har.paths import template_path, templated_url, templates_a_segment
+from graftpunk.har.paths import (
+    REDACTED_NAME_PREFIX,
+    template_path,
+    templated_url,
+    templates_a_segment,
+)
 from graftpunk.har.report import summarize_shape
 
 __all__ = [
@@ -404,6 +409,10 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
 def _paired_token_candidates(d: RunDigest) -> list[tuple[TokenCandidate, TokenCandidate]]:
     by_name: dict[str, list[TokenCandidate]] = {}
     for candidate in d.tokens:
+        # A name the digest kept only as its hash held an account value: there is
+        # no name to configure, so it is never paired.
+        if candidate.name.startswith(REDACTED_NAME_PREFIX):
+            continue
         by_name.setdefault(candidate.name.lower(), []).append(candidate)
     pairs: list[tuple[TokenCandidate, TokenCandidate]] = []
     for candidates in by_name.values():
@@ -438,6 +447,11 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
         )
     for candidate in unpaired:
         text = f"GP-FILL: unpaired token candidate: {candidate.kind} '{candidate.name}'"
+        if candidate.name.startswith(REDACTED_NAME_PREFIX):
+            text = (
+                f"GP-FILL: token candidate whose name held an account value: "
+                f"{candidate.kind} {candidate.name}"
+            )
         lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     return lines
 
@@ -824,7 +838,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
-    for note in flag_notes:
+    for note in [*_dropped_name_notes(endpoint), *flag_notes]:
         lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
@@ -859,6 +873,25 @@ def _stub_endpoints(spec: ScaffoldSpec) -> list[Endpoint]:
     if spec.digest is None:
         return []
     return _ordered_endpoints(spec.digest)[:_MAX_SCAFFOLD_ENDPOINTS]
+
+
+def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
+    """The GP-FILL notes for names the digest dropped because they held an account
+    value, so a stub never loses a recorded field without saying so."""
+    notes: list[str] = []
+    query, body = endpoint.dropped_id_query_keys, endpoint.dropped_id_body_keys
+    if query or body:
+        notes.append(
+            f"GP-FILL: {query} recorded query field(s) and {body} body field(s) were left "
+            "out because their names held an account value; add any this command needs "
+            "by hand."
+        )
+    if endpoint.dropped_id_header_names:
+        notes.append(
+            f"GP-FILL: {endpoint.dropped_id_header_names} recorded header name(s) were left "
+            "out because they held an account value; add any this command needs by hand."
+        )
+    return notes
 
 
 def _render_command_stubs(spec: ScaffoldSpec) -> list[str]:

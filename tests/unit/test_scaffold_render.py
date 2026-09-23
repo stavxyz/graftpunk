@@ -2074,6 +2074,28 @@ class TestPluginModuleCommandStubs:
         (prepared,) = sent
         assert prepared.url == "https://myshop.example.com/export?format=csv&help=1&output=x"
 
+    def test_names_dropped_as_ids_are_counted_in_a_gp_fill(self) -> None:
+        """S3: nothing the digest dropped as an id is lost silently."""
+        endpoint = dataclasses.replace(
+            self._endpoint("/orders", "POST", query={"page": "int"}, body_kind="json"),
+            dropped_id_query_keys=2,
+            dropped_id_body_keys=1,
+            dropped_id_header_names=1,
+        )
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in self._plugin_code(endpoint).splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: 2 recorded query field(s) and 1 body field(s) were left out because "
+            "their names held an account value; add any this command needs by hand."
+        ) in comments
+        assert (
+            "GP-FILL: 1 recorded header name(s) were left out because they held an account "
+            "value; add any this command needs by hand."
+        ) in comments
+
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",
@@ -2918,3 +2940,22 @@ def test_the_reserved_identifiers_are_the_cli_builtin_options_and_help() -> None
     from graftpunk.devtools.scaffold.render import _RESERVED_OPTION_IDENTIFIERS
 
     assert set(_RESERVED_OPTION_IDENTIFIERS) == set(BUILTIN_OPTIONS) | {"help"}
+
+
+def test_a_token_whose_name_held_an_id_is_not_paired_and_is_named_by_its_hash() -> None:
+    hashed = "sha256:" + "0" * 64
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(
+            tokens=(
+                TokenCandidate(kind="header", name=hashed, seen_on=("GET /orders",)),
+                TokenCandidate(kind="cookie", name=hashed, seen_on=("GET /orders",)),
+            )
+        ),
+    )
+    code = render(spec)["src/graftpunk_myshop/plugin.py"]
+    assert "token_config = TokenConfig(" not in code.replace("# token_config", "")
+    assert "GP-FILL: token candidate whose name held an account value" in code
