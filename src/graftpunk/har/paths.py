@@ -87,6 +87,19 @@ def _has_digit(text: str) -> bool:
     return any(ch.isdigit() for ch in text)
 
 
+# A part this long that switches between letters and digits 3 or more times is an
+# interleaved random token (x7kq29lp); a word with digits switches once or twice
+# (address2, added2cart). html5player1 switches 3 times and templates, which fails
+# safe.
+_MIN_INTERLEAVED_LEN = 8
+
+
+def _letter_digit_transitions(part: str) -> int:
+    """How many times *part* switches between a letter and a digit."""
+    kinds = [ch.isdigit() for ch in part if ch.isalnum()]
+    return sum(1 for before, after in zip(kinds, kinds[1:], strict=False) if before != after)
+
+
 def _is_word(part: str) -> bool:
     return bool(
         _WORD_WITH_DIGITS_RE.fullmatch(part)
@@ -105,6 +118,8 @@ def _part_holds_an_id(part: str) -> bool:
     if len(part) >= _MIN_HEX_LEN and _HEX_RE.match(part):
         return True
     if _BASE64_PART_RE.fullmatch(part) and _has_digit(part):
+        return True
+    if len(part) >= _MIN_INTERLEAVED_LEN and _letter_digit_transitions(part) >= 3:
         return True
     return bool(
         _MIXED_TOKEN_RE.fullmatch(part)
@@ -125,8 +140,9 @@ def holds_an_id(text: str) -> bool:
     ``cus_NffrFeUfNV2Hib``), or when any of its parts, split on ``_ . - ~``, holds a
     run of 5 or more digits, is a hex token of 8 or more characters holding a digit
     and a letter, is 16 or more hex characters, is a base64-like token of 20 or more
-    characters holding a digit, or is a token of 8 or more characters mixing upper
-    case, lower case, and digits. A lower-case word with trailing digits
+    characters holding a digit, is a token of 8 or more characters mixing upper
+    case, lower case, and digits, or is 8 or more characters switching between a
+    letter and a digit 3 or more times (``x7kq29lp``). A lower-case word with trailing digits
     (``address2``), a camelCase word (``orderId2``), and a version (``v1beta1``) are
     words, not ids, unless they hold a run of 5 or more digits.
 

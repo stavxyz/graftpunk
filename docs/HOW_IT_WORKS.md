@@ -486,13 +486,21 @@ body field typed apart from a query parameter of the same name gets its own
 
 One rule, `graftpunk.har.paths.holds_an_id`, decides whether a name or a path
 segment carries an account value, and every position goes through it. A name
-holds an id when it is an email or a UUID, a prefixed id (`cus_NffrFeUfNV2Hib`), or a part (split on `_`, `.`, `-`, `~`) holding a run of five or more digits, a hex token of eight or more characters with a digit and a letter, sixteen or more hex characters, a base64-like token of twenty or more characters with a digit, or a token of eight or more characters mixing upper case, lower case, and digits; a lower-case word with trailing digits (`address2`), a camelCase word (`orderId2`), and a version (`v1beta1`) are words. A path segment that holds an id (or is all
-digits) is templated, and an email segment is also masked in every URL the
-digest keeps. A query, body, or form key and a header name that holds one is
-dropped, counted, and named by count in a `GP-FILL` comment in the stub; a
-response key becomes `{key}`; a cookie or token name is kept only as its
-`sha256:` hash. From the path rule: `login_config.url` is the page the login form
-was on, or a `GP-FILL` comment when that page's path holds an id; selectors
+holds an id when it is an email or a UUID, a prefixed id (`cus_NffrFeUfNV2Hib`),
+or a part (split on `_`, `.`, `-`, `~`) holding a run of five or more digits, a
+hex token of eight or more characters with a digit and a letter, sixteen or more
+hex characters, a base64-like token of twenty or more characters with a digit, a
+token of eight or more characters mixing upper case, lower case, and digits, or
+a part of eight or more characters that switches between a letter and a digit
+three or more times (`x7kq29lp`; `html5player1` counts too, which fails safe); a
+lower-case word with trailing digits (`address2`), a camelCase word
+(`orderId2`), and a version (`v1beta1`) are words. A path segment that holds an
+id (or is all digits) is templated, and an email segment is also masked in every
+URL the digest keeps. A query, body, or form key and a header name that holds
+one is dropped, counted, and named by count in a `GP-FILL` comment in the stub;
+a response key becomes `{key}`; a cookie or token name is kept only as its
+`sha256:` hash. From the path rule: `login_config.url` is the page the login
+form was on, or a `GP-FILL` comment when that page's path holds an id; selectors
 scoped to a form action that holds one are unscoped; and one in `success_url`'s
 landing path is a `*`. The rule is lexical. An account value in a shape it does
 not read as an id (a short word-like value) is not caught, and a word it does

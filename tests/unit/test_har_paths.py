@@ -200,6 +200,8 @@ MUST_BE_ID = (
     "cus_NffrFeUfNV2Hib",
     "usr_8fK2x9Qa",
     "usr_8fk2x9qa",
+    "x7kq29lp",
+    "a9b8c7d6e5",
     "usr-Zq9XkLmPwR",
     "acct.Zq9XkLmPwR",
     "Zq9XkLmPwR",

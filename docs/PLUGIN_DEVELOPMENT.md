@@ -213,9 +213,9 @@ It takes the recording's name and, optionally, a run id; without one it reads
 the newest run. `--har PATH` digests a bare HAR file from any tool instead of a
 run. `--json` prints the complete model rather than the markdown summary,
 `--endpoints-json` prints the versioned projection a program reads (uncapped,
-and not combinable with `--json`), `--all-hosts` models every host instead of just the primary one, `--limit N`
-raises the cap on how many endpoints the markdown form lists (60 by default),
-and `--output PATH` writes to a file.
+and not combinable with `--json`), `--all-hosts` models every host instead of
+just the primary one, `--limit N` raises the cap on how many endpoints the
+markdown form lists (60 by default), and `--output PATH` writes to a file.
 
 The digest is redacted by construction. It records header names, cookie names,
 form field names, query parameter names and observed types, and response
@@ -244,14 +244,23 @@ disagreement is `mixed`.
 One rule decides whether a name or a path segment carries an account value, and
 every position goes through it: path segments, query, body, and form keys,
 response keys, request header names, and cookie and token names. A name holds an
-id when it is an email or a UUID, a prefixed id (`cus_NffrFeUfNV2Hib`), or a part (split on `_`, `.`, `-`, `~`) holding a run of five or more digits, a hex token of eight or more characters with a digit and a letter, sixteen or more hex characters, a base64-like token of twenty or more characters with a digit, or a token of eight or more characters mixing upper case, lower case, and digits; a lower-case word with trailing digits (`address2`), a camelCase word (`orderId2`), and a version (`v1beta1`) are words. A path segment that holds an id becomes a placeholder; a
-query, body, or form key or a header name that holds one is dropped, and the
-digest counts how many (the generated stub says so in a `GP-FILL` comment); a
-response key that holds one becomes `{key}` in the shape; and a cookie or token
-name that holds one is kept only as `sha256:<hex digest of the name>`. A key that
-does not read as a field name at all (an email address, a key starting with a
-digit) is dropped as well. The rule is lexical: an account value in a shape it
-does not read as an id (a short word-like value) is not caught.
+id when it is an email or a UUID, a prefixed id (`cus_NffrFeUfNV2Hib`), or a
+part (split on `_`, `.`, `-`, `~`) holding a run of five or more digits, a hex
+token of eight or more characters with a digit and a letter, sixteen or more hex
+characters, a base64-like token of twenty or more characters with a digit, a
+token of eight or more characters mixing upper case, lower case, and digits, or
+a part of eight or more characters that switches between a letter and a digit
+three or more times (`x7kq29lp`; `html5player1` counts too, which fails safe); a
+lower-case word with trailing digits (`address2`), a camelCase word
+(`orderId2`), and a version (`v1beta1`) are words. A path segment that holds an
+id becomes a placeholder; a query, body, or form key or a header name that holds
+one is dropped, and the digest counts how many (the generated stub says so in a
+`GP-FILL` comment); a response key that holds one becomes `{key}` in the shape;
+and a cookie or token name that holds one is kept only as `sha256:<hex digest of
+the name>`. A key that does not read as a field name at all (an email address, a
+key starting with a digit) is dropped as well. The rule is lexical: an account
+value in a shape it does not read as an id (a short word-like value) is not
+caught.
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:
@@ -678,9 +687,10 @@ site sent it, and a JSON body gets a JSON array. A JSON body field no option can
 send as recorded (an `object`, a `mixed` value, or an array of objects,
 booleans, arrays, mixed elements, or only empty arrays) is not declared: the stub
 says so in a `GP-FILL` comment, so you add it to the body by hand if the command
-needs it, rather than getting an option that sends the wrong type. A body field recorded with a different type from a query parameter of the
-same name gets its own option, `--body-<name>` (with a numeric suffix when the
-site also has a parameter of that name), so each is sent as recorded.
+needs it, rather than getting an option that sends the wrong type. A body field
+recorded with a different type from a query parameter of the same name gets its
+own option, `--body-<name>` (with a numeric suffix when the site also has a
+parameter of that name), so each is sent as recorded.
 
 A site parameter named `format`, `output`, `session`, `view`, or `help` would
 collide with an option every command already has, so its option gets a suffix
