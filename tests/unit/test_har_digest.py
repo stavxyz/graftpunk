@@ -1505,3 +1505,76 @@ class TestFlaggedNamesOf:
         assert "www.myshop.example.com" in result.hosts
         assert "shop_session" in result.cookies
         assert "shop_session" in flagged_names_of(result)
+
+
+class TestEveryNamePositionGoesThroughTheIdRule:
+    """S2 and S3: response keys, header names, and cookie names go through
+    holds_an_id like path segments and parameter keys, and a dropped key is
+    counted, never lost silently."""
+
+    def test_an_id_response_key_becomes_one_placeholder_key(self, tmp_path: Path) -> None:
+        body = json.dumps({"40912873": {"total": 1}, "ab12cd34ef": {"total": 2}, "name": "x"})
+        entries = [_entry("GET", "https://api.myshop.example.com/balances", body=body)]
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        assert endpoint.shape is not None
+        assert set(endpoint.shape.children) == {"{key}", "name"}
+
+    def test_an_id_header_name_is_dropped_and_counted(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/orders",
+                request_headers={"X-Acct-40912873": "1", "X-Shop-Client": "web"},
+            )
+        ]
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        assert endpoint.custom_headers == ("X-Shop-Client",)
+        assert endpoint.dropped_id_header_names == 1
+
+    def test_dropped_query_and_body_keys_are_counted(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/orders?u_40912873=1&cus_NffrFeUfNV2Hib=2&page=1",
+                post_data=json.dumps({"acct_40912873": 1, "note": "x"}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/orders?u_40912873=3",
+                post_data=json.dumps({"usr-Zq9XkLmPwR": 1}),
+            ),
+        ]
+        (endpoint,) = digest(DigestSource.from_har(_write_har(tmp_path, entries))).endpoints
+        assert endpoint.query_params == {"page": "int"}
+        assert endpoint.body_params == {"note": "str"}
+        assert (endpoint.dropped_id_query_keys, endpoint.dropped_id_body_keys) == (2, 2)
+
+    def test_an_id_cookie_name_is_kept_as_its_hash(self, tmp_path: Path) -> None:
+        import hashlib
+
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/orders",
+                set_cookies=["sess_40912873=v; Path=/", "shop_session=v; Path=/"],
+            )
+        ]
+        har = _write_har(tmp_path, entries)
+        result = digest(DigestSource.from_har(har))
+        hashed = "sha256:" + hashlib.sha256(b"sess_40912873").hexdigest()
+        assert set(result.cookies) == {hashed, "shop_session"}
+        flagged = flagged_names_of(result, parse_har_file(har).entries)
+        assert hashed in flagged
+        assert "sess_40912873" not in flagged
+
+    def test_an_id_token_candidate_name_is_kept_as_its_hash(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/orders",
+                request_headers={"X-Csrf-Token-40912873": "t"},
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        names = {token.name for token in result.tokens}
+        assert names and all(name.startswith("sha256:") for name in names)

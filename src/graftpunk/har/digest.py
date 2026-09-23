@@ -31,6 +31,7 @@ from graftpunk.har.paths import (
     holds_an_id,
     looks_dynamic,
     param_name_for_segment,
+    redacted_name,
     template_path,
 )
 from graftpunk.logging import get_logger
@@ -259,6 +260,13 @@ class Endpoint:
     # credential POST): the generator renders no stub for it and a command
     # proposal drops it, both from this one flag (graft skill spec, 2026-09-21).
     login_flow: bool = False
+    # How many distinct recorded names each position dropped because the name was
+    # data, not a field name (graftpunk.har.paths.holds_an_id, or not a field
+    # name at all): a stub says so in a GP-FILL comment, so nothing is lost
+    # silently. The names themselves are never kept.
+    dropped_id_query_keys: int = 0
+    dropped_id_body_keys: int = 0
+    dropped_id_header_names: int = 0
 
 
 @dataclass(frozen=True)
@@ -502,20 +510,21 @@ def _json_value_type(value: Any) -> str | None:
     return _MIXED
 
 
-def _query_param_types(url: str) -> dict[str, str]:
-    """*url*'s query parameter names and observed types, keys that do not read as
-    a field name dropped by the rule body keys are held to
-    (:func:`_plausible_field_name`)."""
+def _query_param_types(url: str) -> tuple[dict[str, str], set[str]]:
+    """*url*'s query parameter names and observed types, and the keys dropped
+    because they do not read as a field name (:func:`_plausible_field_name`)."""
     query = urlparse(url).query
     if not query:
-        return {}
+        return {}, set()
     parsed = parse_qs(query, keep_blank_values=True)
     types: dict[str, str] = {}
+    dropped: set[str] = set()
     for name, values in parsed.items():
         if not _plausible_field_name(name):
+            dropped.add(name)
             continue
         types[name] = _text_values_type(values)
-    return types
+    return types, dropped
 
 
 def _field_name_shaped(name: str) -> bool:
@@ -544,28 +553,35 @@ def _declared_request_content_type(entry: HAREntry) -> str:
     return declared.split(";")[0].strip().lower()
 
 
-def _json_body_types(parsed: dict[str, Any]) -> dict[str, str]:
-    """*parsed*'s field names and observed types, keys that do not read as a field
-    name dropped by the same rule a form body's keys are held to
-    (:func:`_plausible_field_name`): a key that does not read as a field name,
-    such as an email address or a key starting with a digit, is dropped. The rule
-    is lexical, so a data-shaped key that does read as a field name (a session id
-    like ``sess_a8f3c9e2``) is kept.
+def _json_body_types(parsed: dict[str, Any]) -> tuple[dict[str, str], set[str]]:
+    """*parsed*'s field names and observed types, and the keys dropped by the rule
+    every key is held to (:func:`_plausible_field_name`): an email address, a key
+    starting with a digit, or a key holding an id (``acct_40912873``).
 
     A ``null`` value is no type observation, so a field seen only as ``null`` is
     left out."""
     types: dict[str, str] = {}
+    dropped: set[str] = set()
     for key, value in parsed.items():
         if not _plausible_field_name(key):
+            dropped.add(key)
             continue
         observed = _json_value_type(value)
         if observed is not None:
             types[key] = observed
-    return types
+    return types, dropped
 
 
 def _parse_body(entry: HAREntry) -> tuple[dict[str, str], BodyKind]:
-    """The request body's field names and observed types, and which kind it was.
+    """The request body's field names and observed types, and which kind it was
+    (:func:`_parse_body_keys` without the dropped keys)."""
+    types, kind, _dropped = _parse_body_keys(entry)
+    return types, kind
+
+
+def _parse_body_keys(entry: HAREntry) -> tuple[dict[str, str], BodyKind, set[str]]:
+    """The request body's field names and observed types, which kind it was, and
+    the keys dropped because they are data rather than field names.
 
     A body is read as a form only when it really looks like one: the request
     declared no content type other than ``application/x-www-form-urlencoded``,
@@ -579,26 +595,29 @@ def _parse_body(entry: HAREntry) -> tuple[dict[str, str], BodyKind]:
     """
     post_data = entry.request.post_data
     if not post_data:
-        return {}, "none"
+        return {}, "none", set()
 
     try:
         parsed = json.loads(post_data)
     except (ValueError, TypeError):
         pass
     else:
-        return (_json_body_types(parsed), "json") if isinstance(parsed, dict) else ({}, "json")
+        if isinstance(parsed, dict):
+            types, dropped = _json_body_types(parsed)
+            return types, "json", dropped
+        return {}, "json", set()
 
     declared = _declared_request_content_type(entry)
     if declared and declared != _FORM_CONTENT_TYPE:
-        return {}, "none"
+        return {}, "none", set()
     if "=" not in post_data:
-        return {}, "none"
+        return {}, "none", set()
     form = parse_qs(post_data, keep_blank_values=True)
     if not form or not all(_field_name_shaped(name) for name in form):
-        return {}, "none"
+        return {}, "none", set()
     # Still a form when a key holds an id; that key alone is dropped.
     types = {k: _text_values_type(v) for k, v in form.items() if not holds_an_id(k)}
-    return types, "form"
+    return types, "form", {k for k in form if holds_an_id(k)}
 
 
 def body_params(entry: HAREntry) -> dict[str, str]:
@@ -617,14 +636,24 @@ def body_params(entry: HAREntry) -> dict[str, str]:
     return types
 
 
+_ID_KEY = "{key}"
+
+
 def _shape_of(value: Any, depth: int = 0) -> ShapeNode:
     if isinstance(value, dict):
         if depth >= _SHAPE_MAX_DEPTH:
             return ShapeNode(kind="object", truncated=bool(value))
-        keys = list(value.keys())
-        truncated = len(keys) > _SHAPE_MAX_KEYS
-        children = {k: _shape_of(value[k], depth + 1) for k in keys[:_SHAPE_MAX_KEYS]}
-        return ShapeNode(kind="object", children=children, truncated=truncated)
+        # A key holding an id (a map keyed by account or order ids) is data, not
+        # a field: every such key becomes one "{key}", whose shape is the first
+        # such sibling's.
+        children: dict[str, ShapeNode] = {}
+        for key, child in value.items():
+            name = _ID_KEY if holds_an_id(key) else key
+            if name not in children:
+                children[name] = _shape_of(child, depth + 1)
+        truncated = len(children) > _SHAPE_MAX_KEYS
+        kept = dict(list(children.items())[:_SHAPE_MAX_KEYS])
+        return ShapeNode(kind="object", children=kept, truncated=truncated)
     if isinstance(value, list):
         if depth >= _SHAPE_MAX_DEPTH:
             return ShapeNode(kind="array", truncated=bool(value))
@@ -666,16 +695,22 @@ def _response_shape(entry: HAREntry) -> ShapeNode | None:
     return _shape_of(parsed)
 
 
-def _custom_headers(entry: HAREntry) -> tuple[str, ...]:
+def _custom_headers(entry: HAREntry) -> tuple[tuple[str, ...], set[str]]:
+    """*entry*'s non-standard request header names, and the ones dropped because
+    the name holds an id (:func:`graftpunk.har.paths.holds_an_id`)."""
     names: list[str] = []
+    dropped: set[str] = set()
     for name in entry.request.headers:
         lowered = name.lower()
         if lowered in _STANDARD_REQUEST_HEADERS:
             continue
         if any(lowered.startswith(p) for p in _STANDARD_REQUEST_HEADER_PREFIXES):
             continue
+        if holds_an_id(name):
+            dropped.add(name)
+            continue
         names.append(name)
-    return tuple(names)
+    return tuple(names), dropped
 
 
 def _response_cookie_names(entry: HAREntry) -> list[str]:
@@ -743,6 +778,10 @@ class _EndpointAccumulator:
         self.shape: ShapeNode | None = None
         self.custom_headers: set[str] = set()
         self.examples: list[str] = []
+        # Dropped names, held only to count them distinctly; never kept past finish.
+        self.dropped_query: set[str] = set()
+        self.dropped_body: set[str] = set()
+        self.dropped_headers: set[str] = set()
 
     def record(self, entry: HAREntry, path: str) -> None:
         method = entry.request.method.upper()
@@ -752,9 +791,12 @@ class _EndpointAccumulator:
         self.statuses.append(entry.response.status)
         content_type = entry.response.content_type or ""
         self.content_types[content_type] = self.content_types.get(content_type, 0) + 1
-        _merged_types(self.query_params, _query_param_types(entry.request.url), json_body=False)
-        field_types, body_kind = _parse_body(entry)
+        query_types, query_dropped = _query_param_types(entry.request.url)
+        _merged_types(self.query_params, query_types, json_body=False)
+        self.dropped_query |= query_dropped
+        field_types, body_kind, body_dropped = _parse_body_keys(entry)
         _merged_types(self.body_params, field_types, json_body=body_kind == "json")
+        self.dropped_body |= body_dropped
         if body_kind != "none":
             self.body_kind = body_kind
         # A real shape supersedes an unavailable one: within a family the first
@@ -763,7 +805,9 @@ class _EndpointAccumulator:
             observed = _response_shape(entry)
             if observed is not None:
                 self.shape = observed
-        self.custom_headers.update(_custom_headers(entry))
+        header_names, headers_dropped = _custom_headers(entry)
+        self.custom_headers.update(header_names)
+        self.dropped_headers |= headers_dropped
         if path not in self.examples and len(self.examples) < _MAX_ENDPOINT_EXAMPLES:
             self.examples.append(path)
 
@@ -784,6 +828,9 @@ class _EndpointAccumulator:
             shape=self.shape,
             custom_headers=tuple(sorted(self.custom_headers)),
             examples=tuple(self.examples),
+            dropped_id_query_keys=len(self.dropped_query),
+            dropped_id_body_keys=len(self.dropped_body),
+            dropped_id_header_names=len(self.dropped_headers),
         )
 
 
@@ -1045,7 +1092,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         # cookie-setting auth subdomain, say) must still show up in
         # flagged_names, which reads this field.
         for cookie_name in _response_cookie_names(entry):
-            cookies_seen.setdefault(cookie_name, None)
+            cookies_seen.setdefault(redacted_name(cookie_name), None)
 
         content_type = (entry.response.content_type or "").lower()
         forms_in_entry: tuple[LoginForm, ...] = ()
@@ -1073,7 +1120,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             if entry.response.status in _REDIRECT_STATUSES:
                 kind = "redirect"
             elif _response_cookie_names(entry):
-                kind, fields = "set_cookie", tuple(_response_cookie_names(entry))
+                kind = "set_cookie"
+                fields = tuple(redacted_name(n) for n in _response_cookie_names(entry))
         if kind is None and _AUTH_URL_REGEX.search(path):
             kind = "auth_api"
 
@@ -1117,6 +1165,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             json_body = "json" in (target.body_kind, acc.body_kind)
             _merged_types(target.body_params, acc.body_params, json_body=json_body)
             target.custom_headers.update(acc.custom_headers)
+            target.dropped_query |= acc.dropped_query
+            target.dropped_body |= acc.dropped_body
+            target.dropped_headers |= acc.dropped_headers
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost
             # the merged endpoint its response shape or its request body kind
@@ -1138,8 +1189,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         )
     )
 
+    # A token name holding an id is kept as its hash (redacted_name), so the
+    # sidecar can still flag it and the generator can say it was left out.
     tokens = tuple(
-        TokenCandidate(kind=kind, name=name, seen_on=tuple(dict.fromkeys(seen_on)))
+        TokenCandidate(kind=kind, name=redacted_name(name), seen_on=tuple(dict.fromkeys(seen_on)))
         for (kind, name), seen_on in token_seen.items()
     )
 
@@ -1181,5 +1234,7 @@ def flagged_names_of(d: RunDigest, entries: Iterable[HAREntry] = ()) -> tuple[st
     out-of-scope host, and a cookie that entry set must still be looked for. It
     lives beside the digest that records the names, so the sidecar writer takes
     plain strings and imports nothing from the digest."""
-    entry_cookies = {name for entry in entries for name in _response_cookie_names(entry)}
+    entry_cookies = {
+        redacted_name(name) for entry in entries for name in _response_cookie_names(entry)
+    }
     return tuple(sorted(set(d.cookies) | {token.name for token in d.tokens} | entry_cookies))
