@@ -236,6 +236,12 @@ def fixtures_cmd(
 
     target_dir = out if out is not None else Path.cwd() / CAPTURES_DIR
 
+    # Everything read from the run comes before any write: a digest that fails
+    # must not leave an edited .gitignore or an empty target behind.
+    entries = parse_har_file(har_path).entries
+    run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
+    flagged = flagged_names_of(run_digest, entries)
+
     if not allow_tracked and target_dir.exists():
         tracked = [p for p in sorted(target_dir.rglob("*")) if p.is_file() and is_tracked(p)]
         if tracked:
@@ -266,9 +272,6 @@ def fixtures_cmd(
         target_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         _refuse_write(target_dir, exc)
-    entries = parse_har_file(har_path).entries
-    run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
-    flagged = flagged_names_of(run_digest, entries)
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
     for entry in entries:

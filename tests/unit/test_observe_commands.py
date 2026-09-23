@@ -652,6 +652,23 @@ class TestFixturesGitignore:
         assert result.exit_code == 1, result.output
         assert not (repo / ".gitignore").exists()
 
+    def test_a_digest_failure_leaves_gitignore_and_the_target_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The digest is computed before any write, so a failure there edits nothing."""
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        out_dir = repo / "tests" / "captures"
+
+        def fail(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("digest failed")
+
+        monkeypatch.setattr("graftpunk.cli.observe_commands.digest", fail)
+        result = _invoke_fixtures(out_dir)
+
+        assert isinstance(result.exception, RuntimeError)
+        assert not (repo / ".gitignore").exists()
+        assert not out_dir.exists()
+
 
 class TestWroteListingDoesNotWrapMidWord:
     def test_a_long_written_path_appears_whole(
