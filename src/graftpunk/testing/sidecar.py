@@ -13,6 +13,11 @@ field names and hold no id by that rule; the rule is lexical, so an account valu
 in a shape it does not read as an id is kept, which is why the list is read before
 it is committed.
 
+The key set of a version is closed: the loader refuses a sidecar with a key
+missing or a key outside it, so any change to the keys (added, renamed, or
+removed) is a new schema version. ``redacted_names`` joined schema 1 without one
+only because schema 1 had not been released when it did.
+
 This module is the only place a key set is spelled. It takes the current
 version number from :mod:`graftpunk.contracts`, and a later version adds its
 own key set to :data:`SIDECAR_FIELDS` so sidecars committed under an earlier

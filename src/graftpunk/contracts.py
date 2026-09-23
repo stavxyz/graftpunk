@@ -4,7 +4,9 @@ Payloads a program reads carry a ``schema`` number: the ``gp observe digest
 --endpoints-json`` projection (``endpoints``) and the fixture sidecar
 (``sidecar``). Within one schema version, fields are added and never renamed or
 removed; a rename or a removal is a new version, and a reader accepts every
-version from 1 to the current one.
+version from 1 to the current one. The sidecar is stricter: its loader refuses a
+missing key and a key outside its version, so any change to its keys, an added
+one included, is a new version (:mod:`graftpunk.testing.sidecar`).
 
 ``gp version --json`` is the bootstrap of every other contract, so it carries no
 number of its own: its two fields, ``graftpunk`` and ``contracts``, are
