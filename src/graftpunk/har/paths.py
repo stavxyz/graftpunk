@@ -8,6 +8,7 @@ by the digest's endpoint modelling and the fixtures/naming rule below it
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 # A segment collapses to a parameter when it is all digits or holds_an_id says
@@ -63,10 +64,10 @@ def bare_host(netloc: str) -> str:
 
 
 # holds_an_id's shapes. The rule is lexical, reads the whole name first and then
-# its parts (split on _ . - ~, so a file extension splits off), and errs toward
+# its parts (split on _ . - ~ $, so a file extension splits off), and errs toward
 # an id: a false positive costs a readable name, which a GP-FILL comment counts;
 # a false negative commits an account value.
-_PART_SPLIT_RE = re.compile(r"[_.\-~]")
+_PART_SPLIT_RE = re.compile(r"[_.\-~$]")
 _JOIN_SPLIT_RE = re.compile(r"[_\-]")
 _WHOLE_BASE64_RE = re.compile(rf"[A-Za-z0-9_\-]{{{_MIN_BASE64_LEN},}}=*")
 _DIGIT_RUN_RE = re.compile(r"\d{5,}")
@@ -74,7 +75,7 @@ _HEX_PART_RE = re.compile(r"[0-9a-fA-F]{8,}")
 _BASE64_PART_RE = re.compile(rf"[A-Za-z0-9+/]{{{_MIN_BASE64_LEN},}}=*")
 _PREFIXED_ID_RE = re.compile(r"[A-Za-z]{2,8}[_.\-]([A-Za-z0-9]{8,})")
 _ALNUM_RE = re.compile(r"[A-Za-z0-9]+")
-_LEADING_ZERO_RE = re.compile(r"0\d+")
+_LEADING_ZERO_RE = re.compile(r"0\d{2,}")
 _VERSION_RE = re.compile(r"v\d+(?:alpha|beta|rc)?\d*")
 # A word's letter runs split at camel and Pascal boundaries (AddressLine, HTTPClient).
 _WORD_RUN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
@@ -84,9 +85,8 @@ _PLACEHOLDER_SEGMENT_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
 # reads as a word or a version.
 _MIN_MIXED_LEN = 8
 _MAX_WORD_DIGIT_RUN = 4
-_MAX_WORD_SWITCHES = 2
-_MIN_INTERLEAVED_LEN = 8
-_INTERLEAVED_SWITCHES = 3
+# A long joined name reads as words with at most this many 1- or 2-letter runs.
+_MAX_JOINED_SHORT_RUNS = 1
 
 
 def _has_digit(text: str) -> bool:
@@ -103,280 +103,203 @@ def _letter_digit_transitions(part: str) -> int:
     return sum(1 for before, after in zip(kinds, kinds[1:], strict=False) if before != after)
 
 
-# The consonant pairs English field names are spelled with (y counts as a vowel).
-# A letter run of 4 or more holding any other pair (fb, kq, zh, ...) reads as
-# random, not as a word.
+# The consonant pairs English field names are spelled with (y counts as a vowel),
+# the ones where two words meet included (backpack, webhook, thumbnail). A letter
+# run of 4 or more holding any other pair (fb, kq, zh, ...) reads as random.
 _WORD_CONSONANT_PAIRS = frozenset(
-    {
-        "bb",
-        "bl",
-        "br",
-        "bs",
-        "cc",
-        "ch",
-        "ck",
-        "cl",
-        "cr",
-        "cs",
-        "ct",
-        "dd",
-        "dg",
-        "dl",
-        "dm",
-        "dn",
-        "dr",
-        "ds",
-        "dt",
-        "dw",
-        "ff",
-        "fl",
-        "fr",
-        "fs",
-        "ft",
-        "gg",
-        "gh",
-        "gl",
-        "gm",
-        "gn",
-        "gr",
-        "gs",
-        "hl",
-        "hm",
-        "hn",
-        "hr",
-        "ht",
-        "kl",
-        "kn",
-        "kr",
-        "ks",
-        "kw",
-        "lb",
-        "lc",
-        "ld",
-        "lf",
-        "lg",
-        "lk",
-        "ll",
-        "lm",
-        "ln",
-        "lp",
-        "lr",
-        "ls",
-        "lt",
-        "lv",
-        "lw",
-        "mb",
-        "ml",
-        "mm",
-        "mn",
-        "mp",
-        "mr",
-        "ms",
-        "nb",
-        "nc",
-        "nd",
-        "nf",
-        "ng",
-        "nk",
-        "nl",
-        "nm",
-        "nn",
-        "np",
-        "ns",
-        "nt",
-        "nv",
-        "nx",
-        "ph",
-        "pl",
-        "pm",
-        "pn",
-        "pp",
-        "pr",
-        "ps",
-        "pt",
-        "rb",
-        "rc",
-        "rd",
-        "rf",
-        "rg",
-        "rh",
-        "rk",
-        "rl",
-        "rm",
-        "rn",
-        "rp",
-        "rr",
-        "rs",
-        "rt",
-        "rv",
-        "rw",
-        "sc",
-        "sf",
-        "sh",
-        "sk",
-        "sl",
-        "sm",
-        "sn",
-        "sp",
-        "sq",
-        "ss",
-        "st",
-        "sw",
-        "tb",
-        "tc",
-        "tf",
-        "th",
-        "tl",
-        "tm",
-        "tn",
-        "tp",
-        "tr",
-        "ts",
-        "tt",
-        "tw",
-        "wb",
-        "wd",
-        "wf",
-        "wk",
-        "wl",
-        "wm",
-        "wn",
-        "wp",
-        "wr",
-        "ws",
-        "wt",
-        "xc",
-        "xp",
-        "xs",
-        "xt",
-        "zz",
-    }
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        "bb bd bh bk bl bm bn bp br bs bt bv bw cc ch ck cl cm cn cr cs ct db dd dg dh "
+        "dl dm dn dp dr ds dt dv dw ff fl fn fr fs ft gg gh gl gm gn gr gs gt hb hd hf "
+        "hl hm hn hp hr hs ht hw kb kd kf kg kh kl km kn kp kr ks kt kw lb lc ld lf lg "
+        "lh lk ll lm ln lp lr ls lt lv lw mb md mf mh ml mm mn mp mr ms mt mw nb nc nd "
+        "nf ng nh nk nl nm nn np nr ns nt nv nw nx pb pc pd pf ph pl pm pn pp pr ps pt "
+        "pw rb rc rd rf rg rh rk rl rm rn rp rr rs rt rv rw sb sc sd sf sg sh sk sl sm "
+        "sn sp sq sr ss st sv sw tb tc td tf tg th tl tm tn tp tr ts tt tv tw wb wc wd "
+        "wf wh wk wl wm wn wp wr ws wt xc xp xs xt zz"
+    ).split()
 )
 # The consonant pairs a word starts with.
 _WORD_INITIAL_PAIRS = frozenset(
-    {
-        "bl",
-        "br",
-        "ch",
-        "cl",
-        "cr",
-        "dr",
-        "fl",
-        "fr",
-        "gl",
-        "gn",
-        "gr",
-        "kl",
-        "kn",
-        "kr",
-        "ph",
-        "pl",
-        "pr",
-        "sc",
-        "sh",
-        "sk",
-        "sl",
-        "sm",
-        "sn",
-        "sp",
-        "sq",
-        "st",
-        "sw",
-        "th",
-        "tr",
-        "tw",
-        "wh",
-        "wr",
-    }
+    (  # noqa: SIM905 - one compact string on purpose: the set is data
+        "bl br ch cl cr dr fl fr gl gn gr kl kn kr ph pl pr sc sh sk sl sm sn sp sq st "
+        "sw th tr tw wh wr"
+    ).split()
 )
-# Vowel pairs English field names do not spell (a random token often does).
-_ODD_VOWEL_PAIRS = frozenset({"aa", "ii", "uu", "yy", "iy", "yi", "uy", "yu"})
 _MIN_SPOKEN_RUN = 4
 
 
+def _odd_initial_pair(lowered: str) -> bool:
+    return (
+        lowered[0] not in _VOWELS
+        and lowered[1] not in _VOWELS
+        and lowered[:2] not in _WORD_INITIAL_PAIRS
+    )
+
+
+def _four_consonants(lowered: str) -> bool:
+    run = 0
+    for ch in lowered:
+        run = 0 if ch in _VOWELS else run + 1
+        if run >= 4:
+            return True
+    return False
+
+
+def _odd_consonant_pair(lowered: str) -> bool:
+    return any(
+        a not in _VOWELS and b not in _VOWELS and a + b not in _WORD_CONSONANT_PAIRS
+        for a, b in zip(lowered, lowered[1:], strict=False)
+    )
+
+
+# Each check rejects a letter run of 4 or more as not spelled like a word. Every
+# one is pinned by a MUST_BE_ID entry it alone catches (tests/unit/test_har_paths.py
+# drops each in turn and asserts its entry flips); a check that bought nothing on
+# the miss-rate ceilings was deleted (round 6: odd vowel pairs, q without u, a
+# tripled letter, a run with no vowel).
+_SPELLING_REJECTS: tuple[tuple[str, Callable[[str], bool]], ...] = (
+    ("consonant pair", _odd_consonant_pair),
+    ("word-initial pair", _odd_initial_pair),
+    ("four consonants", _four_consonants),
+)
+
+
 def _spoken_run(run: str) -> bool:
-    """True when the letter run *run* (4 or more letters) is spelled like a word:
-    it holds a vowel, starts with a vowel or a consonant pair words start with,
-    holds no 4 consonants in a row, no letter three times running, no ``q`` without
-    a ``u``, no vowel pair English does not spell (``ii``, ``yy``), and every pair
-    of adjacent consonants is one English spells words with."""
+    """True when the letter run *run* (4 or more letters) is spelled like a word: no
+    check in ``_SPELLING_REJECTS`` rejects it."""
     lowered = run.lower()
-    if not any(ch in _VOWELS for ch in lowered):
-        return False
-    starts_with_a_cluster = lowered[0] not in _VOWELS and lowered[1] not in _VOWELS
-    if starts_with_a_cluster and lowered[:2] not in _WORD_INITIAL_PAIRS:
-        return False
-    if any(lowered[i : i + 2] in _ODD_VOWEL_PAIRS for i in range(len(lowered) - 1)):
-        return False
-    if "q" in lowered.replace("qu", ""):
-        return False
-    consonants = 0
-    for index, ch in enumerate(lowered):
-        if index >= 2 and ch == lowered[index - 1] == lowered[index - 2]:
-            return False
-        if ch in _VOWELS:
-            consonants = 0
-            continue
-        consonants += 1
-        if consonants >= 4:
-            return False
-        if consonants >= 2 and lowered[index - 1 : index + 1] not in _WORD_CONSONANT_PAIRS:
-            return False
-    return True
+    return not any(reject(lowered) for _name, reject in _SPELLING_REJECTS)
+
+
+def _starts_with_a_digit(part: str, runs: list[str]) -> bool:
+    return part[0].isdigit()
+
+
+def _several_short_runs(part: str, runs: list[str]) -> bool:
+    return sum(1 for run in runs if run.isalpha() and len(run) <= 2) > 1
+
+
+def _capitals_run(part: str, runs: list[str]) -> bool:
+    return any(run.isalpha() and len(run) >= _MIN_SPOKEN_RUN and run.isupper() for run in runs)
+
+
+def _unspelled_run(part: str, runs: list[str]) -> bool:
+    return any(
+        run.isalpha() and len(run) >= _MIN_SPOKEN_RUN and not _spoken_run(run) for run in runs
+    )
+
+
+def _no_word_run(part: str, runs: list[str]) -> bool:
+    return not any(run.isalpha() and len(run) >= _MIN_SPOKEN_RUN for run in runs)
+
+
+def _short_lower_run_after_digits(part: str, runs: list[str]) -> bool:
+    return any(
+        previous.isdigit() and run.isalpha() and run[0].islower() and len(run) < _MIN_SPOKEN_RUN
+        for previous, run in zip(runs, runs[1:], strict=False)
+    )
+
+
+def _lower_run_after_acronym_digits(part: str, runs: list[str]) -> bool:
+    return any(
+        acronym.isalpha()
+        and len(acronym) < _MIN_SPOKEN_RUN
+        and digits.isdigit()
+        and run.isalpha()
+        and run[0].islower()
+        for acronym, digits, run in zip(runs, runs[1:], runs[2:], strict=False)
+    )
+
+
+# Each check rejects a part of letters and digits mixed as not a word. Every one
+# is pinned the same way as _SPELLING_REJECTS; the ones that bought nothing were
+# deleted (round 6: at most two letter/digit switches, a digit run of at most 4,
+# a vowel in every 3-letter run, and the separate 3-or-more-switches rule).
+_WORD_REJECTS: tuple[tuple[str, Callable[[str, list[str]], bool]], ...] = (
+    ("starts with a digit", _starts_with_a_digit),
+    ("several short runs", _several_short_runs),
+    ("capitals run", _capitals_run),
+    ("unspelled run", _unspelled_run),
+    ("no word run", _no_word_run),
+    ("short lower run after digits", _short_lower_run_after_digits),
+    ("lower run after acronym digits", _lower_run_after_acronym_digits),
+)
 
 
 def _reads_as_a_word(part: str) -> bool:
     """True when *part*, letters and digits mixed, reads as a field name: a version
-    (``v1beta1``), or a word. A word starts with a letter, switches between letters
-    and digits at most twice, holds no digit run longer than 4, and holds at least
-    one letter run (split at camel and Pascal boundaries) of 4 or more letters;
-    every such run is spelled like a word (:func:`_spoken_run`) and is not 4 or more
-    capitals, and every run of 3 letters holds a vowel. Shorter runs stand as
-    acronyms (``md5Checksum``, ``ipv4Address``, ``x509Certificate``). A letter run
-    after digits starts a new word: it is capitalised (``oauth2Token``) or a
-    lower-case run of 4 or more letters (``added2cart``)."""
+    (``v1beta1``), or a word no check in ``_WORD_REJECTS`` rejects. Its letter runs
+    split at camel and Pascal boundaries. A word starts with a letter, holds at most
+    one run of 1 or 2 letters (an acronym: ``md5Checksum``, ``orderId2``), holds a
+    run of 4 or more letters, spells every such run like a word and never in
+    capitals alone, and starts a letter run after digits as a new word: capitalised
+    (``oauth2Token``), or lower-case of 4 or more letters (``added2cart``) when the
+    letters before the digits are a word, not an acronym (``ipv4Address``)."""
     if _VERSION_RE.fullmatch(part):
         return True
-    if part[0].isdigit() or _letter_digit_transitions(part) > _MAX_WORD_SWITCHES:
-        return False
-    spoken = False
-    after_digits = False
-    after_acronym = False
-    previous_letters = ""
-    for run in _WORD_RUN_RE.findall(part):
-        if run.isdigit():
-            if len(run) > _MAX_WORD_DIGIT_RUN:
-                return False
-            after_digits = True
-            after_acronym = 0 < len(previous_letters) < _MIN_SPOKEN_RUN
-            continue
-        if after_digits and run[0].islower() and (after_acronym or len(run) < _MIN_SPOKEN_RUN):
-            return False
-        after_digits = False
-        previous_letters = run
-        if len(run) >= _MIN_SPOKEN_RUN:
-            if run.isupper() or not _spoken_run(run):
-                return False
-            spoken = True
-        elif len(run) == 3 and not any(ch in _VOWELS for ch in run):
-            return False
-    return spoken
+    runs = _WORD_RUN_RE.findall(part)
+    return not any(reject(part, runs) for _name, reject in _WORD_REJECTS)
 
 
 def _joined_token(text: str) -> bool:
     """A segment of 3 or more parts joined by ``-`` or ``_`` that is an id as a
     whole: every part 2 to 6 characters mixing letters and digits
-    (``ab12-cd34-ef56``), or one part all digits with a leading zero
-    (``ORD-2024-0001``)."""
+    (``ab12-cd34-ef56``), or one part of 3 or more digits with a leading zero beside
+    a part holding a letter (``ORD-2024-0001``). A date (``2024-01-15``) and a
+    two-digit step (``step_01_done``) are not."""
     parts = _JOIN_SPLIT_RE.split(text)
     if len(parts) < 3:
         return False
-    if any(_LEADING_ZERO_RE.fullmatch(part) for part in parts):
+    if any(_LEADING_ZERO_RE.fullmatch(part) for part in parts) and any(
+        _has_letter(part) for part in parts
+    ):
         return True
     return all(
         2 <= len(part) <= 6 and _has_digit(part) and _has_letter(part) and part.isalnum()
         for part in parts
     )
+
+
+_SHORT_WORD_WITH_DIGITS_RE = re.compile(r"[a-z]{2,}\d{1,2}")
+
+
+def _joined_part_reads_as_a_word(part: str) -> bool:
+    """True when one ``_``/``-`` part of a long name reads as a word: a digit run of at
+    most 4, a lower-case word with 1 or 2 digits (``ctl00``, ``line2``), a version, a
+    letter run spelled like a word, or letters and digits that read as a word."""
+    if not part:
+        return True
+    if part.isdigit():
+        return len(part) <= _MAX_WORD_DIGIT_RUN
+    if _SHORT_WORD_WITH_DIGITS_RE.fullmatch(part) or _VERSION_RE.fullmatch(part):
+        return True
+    if part.isalpha():
+        return _letters_read_as_words(part)
+    return bool(_ALNUM_RE.fullmatch(part)) and _reads_as_a_word(part)
+
+
+def _joined_name_reads_as_words(text: str) -> bool:
+    """True when a long ``_``/``-`` joined *text* reads as words, not as a random
+    token: every part reads as a word (:func:`_joined_part_reads_as_a_word`), and the
+    whole holds at most one run of 1 or 2 letters outside a version or a short word
+    with digits (``X-Goog-Upload-Protocol-v2-Status``)."""
+    parts = _JOIN_SPLIT_RE.split(text)
+    short = sum(
+        1
+        for part in parts
+        if not (_VERSION_RE.fullmatch(part) or _SHORT_WORD_WITH_DIGITS_RE.fullmatch(part))
+        for run in _WORD_RUN_RE.findall(part)
+        if run.isalpha() and len(run) <= 2
+    )
+    return short <= _MAX_JOINED_SHORT_RUNS and all(
+        _joined_part_reads_as_a_word(part) for part in parts
+    )
+
+
+def _letters_read_as_words(part: str) -> bool:
+    """True when the letters-only *part* reads as words: every camel or Pascal run of
+    4 or more letters is spelled like a word (``txtUserName``: ``User``, ``Name``)."""
+    return all(len(run) < _MIN_SPOKEN_RUN or _spoken_run(run) for run in _WORD_RUN_RE.findall(part))
 
 
 def _part_holds_an_id(part: str) -> bool:
@@ -386,12 +309,10 @@ def _part_holds_an_id(part: str) -> bool:
         return True
     if _HEX_PART_RE.fullmatch(part) and _has_digit(part) and _has_letter(part):
         return True
-    if _BASE64_PART_RE.fullmatch(part) and _has_digit(part):
-        return True
     if (
-        len(part) >= _MIN_INTERLEAVED_LEN
-        and _letter_digit_transitions(part) >= _INTERLEAVED_SWITCHES
-        and not _VERSION_RE.fullmatch(part)
+        _BASE64_PART_RE.fullmatch(part)
+        and _has_digit(part)
+        and not (_ALNUM_RE.fullmatch(part) and _reads_as_a_word(part))
     ):
         return True
     return bool(
@@ -411,24 +332,29 @@ def holds_an_id(text: str) -> bool:
 
     1. The whole text is an email or a UUID; or a URL-safe base64-like token of 20
        or more characters holding a digit and switching between letters and digits
-       at least twice (a random token; a long snake_case name with one trailing
-       digit is not one).
+       at least twice, unless it is a long ``_``/``-`` joined name whose parts all
+       read as words (``line_item_2_unit_price``,
+       ``ctl00_MainContent_LoginUser_Password``).
     2. The whole text is 3 or more parts joined by ``-`` or ``_``, every part 2 to 6
-       characters mixing letters and digits, or one part all digits with a leading
-       zero (``ORD-2024-0001``).
+       characters mixing letters and digits, or one part of 3 or more digits with a
+       leading zero beside a part holding a letter (``ORD-2024-0001``; a date such
+       as ``2024-01-15`` and a step such as ``step_01_done`` are not).
     3. The whole text is a prefixed id: 2 to 8 letters, a separator, and a tail of 8
        or more characters mixing letters and digits that does not read as a word
        (``cus_NffrFeUfNV2Hib``).
-    4. A part (split on ``_ . - ~``) holds a run of 5 or more digits, is 16 or more
-       hex characters or 8 or more mixing hex digits and letters, is a base64-like
-       token of 20 or more characters holding a digit, or is 8 or more characters
-       switching between letters and digits 3 or more times (``x7kq29lp``).
+    4. A part (split on ``_ . - ~ $``) holds a run of 5 or more digits, is 16 or more
+       hex characters or 8 or more mixing hex digits and letters, or is a
+       base64-like token of 20 or more characters holding a digit that does not read
+       as a word (``shippingAddressLine2`` does).
     5. A part of 8 or more letters and digits mixed does not read as a word
        (:func:`_reads_as_a_word`): ``kqzpwmab47``, ``XKQ29LPZ``, ``Zq9XkLmPwR``.
 
-    The rule is lexical. A random token with no digit reads as a word and is not
-    caught, nor is a short word-like value; a camel name with a digit inside a word
-    part (``apiV2Client``, ``getUser2FA``) may read as an id.
+    The rule is lexical and measured both ways (``tests/unit/test_id_miss_rates.py``:
+    random-token miss rates and a false-positive rate over a corpus of ordinary
+    field names). A random token with no digit reads as a word and is not caught,
+    nor is a short word-like value; a compound whose word before a digit is 3
+    letters or fewer and whose word after it is lower-case (``add2cart``) reads as
+    an id.
     """
     text = unquote(text)
     if not text:
@@ -439,6 +365,7 @@ def holds_an_id(text: str) -> bool:
         _WHOLE_BASE64_RE.fullmatch(text)
         and _has_digit(text)
         and _letter_digit_transitions(text) >= 2
+        and not _joined_name_reads_as_words(text)
     ):
         return True
     if _joined_token(text):

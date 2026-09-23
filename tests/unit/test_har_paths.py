@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from graftpunk.har import paths
 from graftpunk.har.paths import (
     _MIN_BASE64_LEN,
     _MIN_HEX_LEN,
@@ -215,6 +216,17 @@ MUST_BE_ID = (
     "btn-5f1a9c2e8b1d",
     "otp_40912873",
     "fld_a8f3c9e2b1",
+    "img-001-thumb",
+    "abfkuro7",
+    "tmelora7",
+    "ostrkami4",
+    "4address",
+    "LEKoje7WHx",
+    "MAPLETON7",
+    "zPde0Igx",
+    "window7us",
+    "abc4order",
+    "Lmv8Lifonp-Rq-X-bivNx",
     "usr-Zq9XkLmPwR",
     "acct.Zq9XkLmPwR",
     "Zq9XkLmPwR",
@@ -257,6 +269,20 @@ MUST_BE_KEPT = (
     "line2Address",
     "PhoneNumber2",
     "billing_address_line2",
+    "shippingAddressLine2",
+    "shipping_address_line2_city",
+    "line_item_2_unit_price",
+    "X-Goog-Upload-Protocol-v2-Status",
+    "ctl00_MainContent_LoginUser_Password",
+    "ctl00$ContentPlaceHolder1$txtUserName",
+    "ctl00$ContentPlaceHolder1$btnLogin",
+    "step_01_done",
+    "2024-01-15",
+    "webhook2",
+    "backpack2",
+    "thumbnail2",
+    "PDFExport2",
+    "address4",
     "$filter",
     "$top",
     "ctl00$Main$txtSearch",
@@ -296,3 +322,43 @@ class TestHoldsAnId:
         assert is_placeholder("{user_id}")
         assert not is_placeholder("user_id")
         assert not is_placeholder("{x}y")
+
+
+# Each remaining sub-rule of the id rule, with the MUST_BE_ID entry it alone catches
+# and a MUST_BE_KEPT entry at its edge: dropping the rule flips the first, and the
+# second shows how close to the rule an ordinary name sits.
+RULE_PINS = (
+    ("_SPELLING_REJECTS", "consonant pair", "abfkuro7", "webhook2"),
+    ("_SPELLING_REJECTS", "word-initial pair", "tmelora7", "PhoneNumber2"),
+    ("_SPELLING_REJECTS", "four consonants", "ostrkami4", "address2"),
+    ("_WORD_REJECTS", "starts with a digit", "4address", "address4"),
+    ("_WORD_REJECTS", "several short runs", "LEKoje7WHx", "md5Checksum"),
+    ("_WORD_REJECTS", "capitals run", "MAPLETON7", "PDFExport2"),
+    ("_WORD_REJECTS", "unspelled run", "abfkuro7", "shippingAddressLine2"),
+    ("_WORD_REJECTS", "no word run", "zPde0Igx", "base64Data"),
+    ("_WORD_REJECTS", "short lower run after digits", "window7us", "added2cart"),
+    ("_WORD_REJECTS", "lower run after acronym digits", "abc4order", "ipv4Address"),
+)
+
+
+@pytest.mark.parametrize(("table", "rule", "caught", "kept"), RULE_PINS)
+def test_each_word_sub_rule_alone_catches_its_pinned_entry(
+    monkeypatch: pytest.MonkeyPatch, table: str, rule: str, caught: str, kept: str
+) -> None:
+    """A sub-rule that catches nothing on its own is deleted, not kept (round 6)."""
+    assert caught in MUST_BE_ID and kept in MUST_BE_KEPT
+    assert holds_an_id(caught)
+    assert not holds_an_id(kept)
+    rules = getattr(paths, table)
+    assert rule in {name for name, _check in rules}
+    monkeypatch.setattr(paths, table, tuple(r for r in rules if r[0] != rule))
+    assert not holds_an_id(caught)
+
+
+def test_the_joined_short_run_limit_alone_catches_its_pinned_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert holds_an_id("Lmv8Lifonp-Rq-X-bivNx")
+    assert not holds_an_id("X-Goog-Upload-Protocol-v2-Status")
+    monkeypatch.setattr(paths, "_MAX_JOINED_SHORT_RUNS", 99)
+    assert not holds_an_id("Lmv8Lifonp-Rq-X-bivNx")
