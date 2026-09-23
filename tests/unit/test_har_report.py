@@ -359,7 +359,11 @@ class TestEndpointsProjection:
         urls = [o["url"] for o in payload["login"]["auth_urls"]]
         assert "https://myshop.example.com/signin/{signin_id}" in urls
         login_form = next(f for f in payload["login"]["forms"] if f["action"] == "/login")
-        assert login_form["fields"]["username"] == 'form[action^="/login"] input[name="username"]'
+        assert login_form["fields"]["username"] == (
+            'form[action="/login"] input[name="username"], '
+            'form[action^="/login;"] input[name="username"], '
+            'form[action^="/login?"] input[name="username"]'
+        )
 
     def test_the_sample_har_leaks_no_cookie_name_or_example_path(self) -> None:
         result = digest(DigestSource.from_har(_SAMPLE_HAR))

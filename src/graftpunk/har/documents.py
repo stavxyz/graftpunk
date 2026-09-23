@@ -125,23 +125,42 @@ def _parse(html: str) -> _DocumentParser:
     return parser
 
 
-def _form_scope(raw_action: str, action: str) -> str:
-    """The CSS selector for the form whose attribute reads *raw_action*, spelled
-    with the bare *action* only: a prefix match when anything was stripped, so
-    the selector still finds the form on the live page."""
+# The forms an action that strips to nothing can be written as: absent, empty,
+# or only a query or ;params.
+_EMPTY_ACTION_SCOPES = (
+    "form:not([action])",
+    'form[action=""]',
+    'form[action^="?"]',
+    'form[action^=";"]',
+)
+
+
+def _form_scopes(raw_action: str, action: str) -> tuple[str, ...]:
+    """The CSS form selectors for the form whose attribute reads *raw_action*, spelled
+    with the bare *action* only (:func:`graftpunk.har.paths.bare_url`).
+
+    An unchanged action is one exact match. A stripped one is the action exactly or
+    followed by ``;`` or ``?``, so the live form still matches and a sibling such as
+    ``/login-help`` does not. An action that strips to nothing matches only a form
+    whose action is absent, empty, or only a query or ``;params``.
+    """
+    if not action:
+        return _EMPTY_ACTION_SCOPES
     if action == raw_action:
-        return f'form[action="{action}"]'
-    if action:
-        return f'form[action^="{action}"]'
-    return "form"
+        return (f'form[action="{action}"]',)
+    return (
+        f'form[action="{action}"]',
+        f'form[action^="{action};"]',
+        f'form[action^="{action}?"]',
+    )
 
 
-def _selector_for(raw: _RawInput, form_scope: str) -> str:
+def _selector_for(raw: _RawInput, form_scopes: tuple[str, ...]) -> str:
     if raw.element_id:
         return f"#{raw.element_id}"
-    if raw.name:
-        return f'{form_scope} {raw.tag}[name="{raw.name}"]'
-    return f'{form_scope} {raw.tag}[type="{raw.input_type}"]'
+    attribute = f'name="{raw.name}"' if raw.name else f'type="{raw.input_type}"'
+    suffix = f"{raw.tag}[{attribute}]"
+    return ", ".join(f"{scope} {suffix}" for scope in form_scopes)
 
 
 def _guess_role(input_type: str, name: str) -> str:
@@ -171,7 +190,7 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
         if not password_inputs:
             continue
         action = bare_url(raw.action)
-        scope = _form_scope(raw.action, action)
+        scopes = _form_scopes(raw.action, action)
         fields: dict[str, str] = {}
         hidden: list[str] = []
         submit: str | None = None
@@ -183,11 +202,11 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
             if raw_input.input_type == "submit" or (
                 raw_input.tag == "button" and raw_input.input_type != "button"
             ):
-                submit = _selector_for(raw_input, scope)
+                submit = _selector_for(raw_input, scopes)
                 continue
             role = _guess_role(raw_input.input_type, raw_input.name)
             if role:
-                fields[role] = _selector_for(raw_input, scope)
+                fields[role] = _selector_for(raw_input, scopes)
         forms.append(
             LoginForm(
                 action=action,

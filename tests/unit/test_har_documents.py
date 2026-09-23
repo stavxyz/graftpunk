@@ -79,19 +79,18 @@ class TestExtractLoginForms:
         assert form.submit == 'form[action="/login"] input[type="submit"]'
 
     @pytest.mark.parametrize(
-        ("raw_action", "action", "scope"),
+        ("raw_action", "action"),
         [
-            ("/login;jsessionid=S3CR3T?t=tok", "/login", 'form[action^="/login"]'),
+            ("/login;jsessionid=S3CR3T?t=tok", "/login"),
             (
                 "https://myshop.example.com/a;v=1/login#top",
                 "https://myshop.example.com/a/login",
-                'form[action^="https://myshop.example.com/a/login"]',
             ),
-            ("?next=/orders", "", "form"),
+            ("?next=/orders", ""),
         ],
     )
     def test_an_action_loses_its_query_fragment_and_path_params(
-        self, raw_action: str, action: str, scope: str
+        self, raw_action: str, action: str
     ) -> None:
         html = (
             f'<form action="{raw_action}"><input name="username">'
@@ -99,7 +98,36 @@ class TestExtractLoginForms:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.action == action
-        assert form.fields["username"] == f'{scope} input[name="username"]'
+
+    @pytest.mark.parametrize(
+        ("decoy", "live"),
+        [
+            ('action="/login-help"', 'action="/login;jsessionid=S3CR3T?t=tok"'),
+            ('action="/login2"', 'action="/login?t=tok"'),
+            ('action="/other"', 'action="?next=/orders"'),
+            ('action="/other"', 'action=";jsessionid=S3CR3T"'),
+            ('action="/other"', ""),
+            ('action="/other"', 'action=""'),
+        ],
+        ids=["prefix-decoy", "digit-decoy", "query-only", "params-only", "no-action", "empty"],
+    )
+    def test_a_stripped_action_selects_the_live_form_and_not_a_decoy_before_it(
+        self, decoy: str, live: str
+    ) -> None:
+        lxml_html = pytest.importorskip("lxml.html")
+        pytest.importorskip("cssselect")
+        html = (
+            f'<html><body><form {decoy}><input name="username" class="decoy">'
+            '<input type="password" name="password" class="decoy"></form>'
+            f'<form {live}><input name="username" class="live">'
+            '<input type="password" name="password" class="live"></form></body></html>'
+        )
+        forms = extract_login_forms(html, source="s")
+        live_form = forms[1]
+        document = lxml_html.fromstring(html)
+        for selector in live_form.fields.values():
+            selected = document.cssselect(selector)
+            assert [element.get("class") for element in selected] == ["live"], selector
 
 
 class TestExtractTokenCandidates:
