@@ -89,6 +89,9 @@ dev = [
     "ruff>=0.5.0",
     "mypy>=1.10.0",
     "openpyxl>=3.1.0",
+    # The login selector tests run each selector against the recorded HTML.
+    "lxml>=5.0.0",
+    "cssselect>=1.2.0",
 ]
 all = [
     "graftpunk[browser,supabase,s3,jmespath,nodriver,dev]",
@@ -182,4 +185,6 @@ dev = [
     "graftpunk[browser]",
     "pytest-asyncio>=1.3.0",
     "pytest-xdist>=3.0.0",
+    "lxml>=5.0.0",
+    "cssselect>=1.2.0",
 ]
