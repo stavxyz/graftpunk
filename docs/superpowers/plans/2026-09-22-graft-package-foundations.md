@@ -1,15 +1,15 @@
 ---
 type: plan
 validated:
-  sha: 7bd960466f6e1484ad4e5b85e5d943b83e3948e2
-  date: 2026-09-23T06:14:41Z
+  sha: 80a738066bb7d3d8adbcc65437249edcb47cd2a8
+  date: 2026-09-23T07:07:51Z
   reviewers: [fact-check, solid-hygiene]
   findings:
     critical: 0
     important: 0
-    medium: 3
-    low: 9
-    nitpick: 0
+    medium: 2
+    low: 8
+    nitpick: 1
   net_negative_raised: 0
   net_negative_addressed: 0
   net_negative_remaining: 0
