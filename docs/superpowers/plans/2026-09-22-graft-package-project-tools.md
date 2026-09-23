@@ -3425,8 +3425,9 @@ class TestAddCommand:
         result = _add(recorded, "myshop", "invoices=GET /api/invoices")
         assert result.exit_code == 0, result.output
 
-    def test_a_directory_that_is_not_a_plugin_project_is_refused(self, tmp_path: Path) -> None:
-        result = _add(tmp_path, "myshop", "orders=GET /api/orders")
+    def test_a_directory_that_is_not_a_plugin_project_is_refused(self, recorded: Path) -> None:
+        """The recording exists and the project directory is empty."""
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
         assert result.exit_code == 1
         assert "not a graftpunk plugin project (empty)" in " ".join(_plain(result.output).split())
 ```
