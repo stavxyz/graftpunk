@@ -758,6 +758,39 @@ class TestGeneratedLoginHoldsNoAccountValue:
         assert "success_url=" not in code
         assert "GP-FILL: success_url" in code
 
+    def test_neutral_and_unresolved_roles_get_a_gp_fill(self) -> None:
+        form = LoginForm(
+            action="/session",
+            method="POST",
+            fields={
+                "password": "#pw",
+                "field_1": 'input[type="tel"]',
+            },
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/signin",
+            neutral_roles=("field_1", "field_2"),
+            unresolved_roles=("field_2", "submit"),
+        )
+        code = self._plugin_code(form)
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: field_1 is a placeholder role: the recorded input's name held an "
+            "account value; rename it to the field it is."
+        ) in comments
+        assert (
+            "GP-FILL: field_2 has no selector: none picks one input of the recorded form; "
+            "write one by hand."
+        ) in comments
+        assert (
+            "GP-FILL: submit has no selector: none picks one input of the recorded form; "
+            "write one by hand."
+        ) in comments
+
     def test_success_url_templates_an_id_in_the_landing_path(self) -> None:
         post = LoginObservation(
             order=1,

@@ -495,7 +495,24 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     fields, submit = printable_selectors(form)
     submit_value = submit or "GP-FILL: submit selector"
     entries = [(role, selector or f"GP-FILL: {role} selector") for role, selector in fields.items()]
-    lines = [f"{pad}LoginStep("]
+    lines: list[str] = []
+    for role in form.neutral_roles:
+        lines.extend(
+            wrapped_comment_lines(
+                f"GP-FILL: {role} is a placeholder role: the recorded input's name held "
+                "an account value; rename it to the field it is.",
+                indent=indent,
+            )
+        )
+    for role in form.unresolved_roles:
+        lines.extend(
+            wrapped_comment_lines(
+                f"GP-FILL: {role} has no selector: none picks one input of the recorded "
+                "form; write one by hand.",
+                indent=indent,
+            )
+        )
+    lines.append(f"{pad}LoginStep(")
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
     lines.extend(literal_lines(submit_value, indent=indent + INDENT_STEP, prefix="submit="))
     lines.append(f"{pad}),")

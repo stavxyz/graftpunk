@@ -366,3 +366,62 @@ class TestLoginFormNamesGoThroughTheIdRule:
         (form,) = extract_login_forms(html, source="s")
         assert form.hidden == ("_token",)
         assert form.hidden_names_dropped_as_ids == 1
+
+
+class TestLoginFallbackSelectors:
+    """L1: a fallback selector (no usable id or name) is used only when it picks one
+    input of the recorded form; a typeless input or button gets a selector that
+    matches it."""
+
+    def test_a_webforms_page_picks_the_login_inputs_not_the_header_search(self) -> None:
+        html = (
+            '<form id="aspnetForm" action="/Login.aspx" method="post">'
+            '<input type="text" name="ctl00$Main$txtSearch">'
+            '<input type="submit" name="ctl00$Main$btnGo" value="Go">'
+            '<input type="text" id="ctl00_MainContent_LoginUser_UserName"'
+            ' name="ctl00$MainContent$LoginUser$UserName">'
+            '<input type="password" id="ctl00_MainContent_LoginUser_Password"'
+            ' name="ctl00$MainContent$LoginUser$Password">'
+            '<input type="submit" id="ctl00_MainContent_LoginUser_LoginButton"'
+            ' name="ctl00$MainContent$LoginUser$LoginButton" value="Log In"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["username"] == "#ctl00_MainContent_LoginUser_UserName"
+        password = form.fields["password"]
+        assert password == "#ctl00_MainContent_LoginUser_Password"  # noqa: S105
+        assert form.submit == "#ctl00_MainContent_LoginUser_LoginButton"
+
+    def test_two_inputs_one_fallback_would_match_are_left_unresolved(self) -> None:
+        html = (
+            '<form action="/login"><input type="text" name="otp_40912873">'
+            '<input type="text" name="fld_a8f3c9e2b1">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields == {"password": 'form[action="/login"] input[name="password"]'}
+        assert form.neutral_roles == ("field_1", "field_2")
+        assert form.unresolved_roles == ("field_1", "field_2")
+
+    def test_a_typeless_input_and_button_get_selectors_that_match_them(self) -> None:
+        html = (
+            '<form action="/login"><input name="user_40912873">'
+            '<input type="password" name="password"><button>Go</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        scope = 'form[action="/login"]'
+        assert form.fields["username"] == (f'{scope} input:not([type]), {scope} input[type="text"]')
+        assert form.submit == f'{scope} button:not([type]), {scope} button[type="submit"]'
+        assert unscoped_selector(form.fields["username"]) == (
+            'input:not([type]), input[type="text"]'
+        )
+
+    def test_a_neutral_key_never_takes_a_real_input_name(self) -> None:
+        html = (
+            '<form action="/login"><input type="text" name="field_1">'
+            '<input type="tel" name="otp_40912873">'
+            '<input type="password" name="password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.fields["field_1"] == 'form[action="/login"] input[name="field_1"]'
+        assert form.fields["field_2"] == 'form[action="/login"] input[type="tel"]'
+        assert form.neutral_roles == ("field_2",)

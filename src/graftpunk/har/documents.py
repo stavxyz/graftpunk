@@ -69,6 +69,12 @@ class LoginForm:
     # Hidden inputs left out of ``hidden`` because the name held an account value
     # (graftpunk.har.paths.holds_an_id); the names are written nowhere.
     hidden_names_dropped_as_ids: int = 0
+    # Roles keyed neutrally (field_1, ...) because the input's name held an account
+    # value; a generated LoginStep says to rename each.
+    neutral_roles: tuple[str, ...] = ()
+    # Roles (and "submit") left out of fields (or submit left unset) because the only
+    # selector left, by input type, would not pick one input of the recorded form.
+    unresolved_roles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,9 @@ class _RawInput:
     input_type: str
     name: str
     element_id: str
+    # Whether the element carried a type attribute; input_type is the default
+    # ("text", or "submit" for a button) when it did not.
+    typed: bool = True
 
 
 @dataclass
@@ -120,6 +129,7 @@ class _DocumentParser(HTMLParser):
                     ).lower(),
                     name=values.get("name", ""),
                     element_id=values.get("id", ""),
+                    typed="type" in values,
                 )
             )
         elif tag == "meta":
@@ -221,30 +231,51 @@ def _middle_param_scopes(head: str, after: str, trailing_slash: bool) -> tuple[s
     )
 
 
-def _selector_for(raw: _RawInput, form_scopes: tuple[str, ...]) -> str:
-    """One input's selector: by its id when it has one, else its tag and ``name``
-    (or ``type``) scoped to each of *form_scopes*, or unscoped when there are none.
+def _type_selectors(raw: _RawInput) -> tuple[str, ...]:
+    """The selectors that pick *raw* by its type alone: a typeless input matches
+    ``input:not([type])`` (and ``input[type="text"]``, its type by default), a
+    typeless button ``button:not([type])`` (and ``button[type="submit"]``)."""
+    if raw.typed:
+        return (f'{raw.tag}[type="{_css_string(raw.input_type)}"]',)
+    return (f"{raw.tag}:not([type])", f'{raw.tag}[type="{_css_string(raw.input_type)}"]')
+
+
+def _same_type(raw: _RawInput, other: _RawInput) -> bool:
+    """Whether a type selector for *raw* would also pick *other*: same tag and same
+    type, a typeless element counted as its default type."""
+    return other.tag == raw.tag and other.input_type == raw.input_type
+
+
+def _selector_for(
+    raw: _RawInput, form_scopes: tuple[str, ...], siblings: list[_RawInput]
+) -> str | None:
+    """One input's selector: by its id when it has one, else its tag and ``name``,
+    else its type, scoped to each of *form_scopes* (unscoped when there are none).
     An id or a name that holds an account value (graftpunk.har.paths.holds_an_id)
-    is never used: the selector falls through to the name, then to the type. Every
+    is never used. A selector by type is used only when it picks this one input of
+    the recorded form's *siblings*; otherwise there is none (``None``). Every
     attribute value is escaped (:func:`_css_string`)."""
     if raw.element_id and not holds_an_id(raw.element_id):
         if _CSS_IDENTIFIER_RE.fullmatch(raw.element_id):
             return f"#{raw.element_id}"
         return f'[id="{_css_string(raw.element_id)}"]'
     if raw.name and not holds_an_id(raw.name):
-        attribute = f'name="{_css_string(raw.name)}"'
+        suffixes: tuple[str, ...] = (f'{raw.tag}[name="{_css_string(raw.name)}"]',)
     else:
-        attribute = f'type="{_css_string(raw.input_type)}"'
-    suffix = f"{raw.tag}[{attribute}]"
+        if sum(1 for other in siblings if _same_type(raw, other)) > 1:
+            return None
+        suffixes = _type_selectors(raw)
     if not form_scopes:
-        return suffix
-    return ", ".join(f"{scope} {suffix}" for scope in form_scopes)
+        return ", ".join(suffixes)
+    return ", ".join(f"{scope} {suffix}" for suffix in suffixes for scope in form_scopes)
 
 
 # The input part every alternative of a form-scoped selector ends with (see
 # _selector_for): a tag and its one name= or type= attribute, whose value may hold
 # backslash escapes.
-_INPUT_PART_RE = re.compile(r'[A-Za-z][\w-]*\[(?:name|type)="(?:[^"\\]|\\.)*"\]$')
+_INPUT_PART_RE = re.compile(
+    r'[A-Za-z][\w-]*(?:\[(?:name|type)="(?:[^"\\]|\\.)*"\]|:not\(\[type\]\))$'
+)
 # A selector with no form scope: by id, as _selector_for writes one.
 _ID_SELECTOR_RE = re.compile(r'#-?[A-Za-z_][\w-]*|\[id="(?:[^"\\]|\\.)*"\]')
 
@@ -261,8 +292,35 @@ def unscoped_selector(selector: str) -> str | None:
     """
     if _ID_SELECTOR_RE.fullmatch(selector):
         return selector
-    match = _INPUT_PART_RE.search(selector)
-    return match.group(0) if match else None
+    parts: list[str] = []
+    for alternative in _selector_alternatives(selector):
+        match = _INPUT_PART_RE.search(alternative)
+        if match is None:
+            return None
+        if match.group(0) not in parts:
+            parts.append(match.group(0))
+    return ", ".join(parts) if parts else None
+
+
+def _selector_alternatives(selector: str) -> list[str]:
+    """*selector*'s comma-separated alternatives, split outside quoted values."""
+    alternatives: list[str] = []
+    current: list[str] = []
+    quoted = escaped = False
+    for ch in selector:
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            quoted = not quoted
+        elif ch == "," and not quoted:
+            alternatives.append("".join(current).strip())
+            current = []
+            continue
+        current.append(ch)
+    alternatives.append("".join(current).strip())
+    return alternatives
 
 
 def _placeholder_segments(path: str) -> int:
@@ -336,7 +394,9 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
         fields: dict[str, str] = {}
         hidden: list[str] = []
         dropped_hidden = 0
-        neutral_roles = 0
+        neutral: list[str] = []
+        unresolved: list[str] = []
+        taken = {i.name for i in raw.inputs if i.name}
         submit: str | None = None
         for raw_input in raw.inputs:
             if raw_input.input_type == "hidden":
@@ -348,16 +408,28 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
             if raw_input.input_type == "submit" or (
                 raw_input.tag == "button" and raw_input.input_type != "button"
             ):
-                submit = _selector_for(raw_input, scopes)
+                submit = _selector_for(raw_input, scopes, raw.inputs)
+                if submit is None:
+                    unresolved.append("submit")
+                elif "submit" in unresolved:
+                    unresolved.remove("submit")
                 continue
             role = _guess_role(raw_input.input_type, raw_input.name)
             if role and role == raw_input.name and holds_an_id(role):
                 # The input's name is its role key only when it is a word: one
-                # that holds an account value gets a neutral key, in document order.
-                neutral_roles += 1
-                role = f"field_{neutral_roles}"
+                # that holds an account value gets a neutral key, in document order,
+                # never one a real input of the form is named.
+                number = len(neutral) + 1
+                while f"field_{number}" in taken or f"field_{number}" in fields:
+                    number += 1
+                role = f"field_{number}"
+                neutral.append(role)
             if role:
-                fields[role] = _selector_for(raw_input, scopes)
+                selector = _selector_for(raw_input, scopes, raw.inputs)
+                if selector is None:
+                    unresolved.append(role)
+                else:
+                    fields[role] = selector
         forms.append(
             LoginForm(
                 action=action,
@@ -367,6 +439,8 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
                 hidden=tuple(hidden),
                 source=source,
                 hidden_names_dropped_as_ids=dropped_hidden,
+                neutral_roles=tuple(neutral),
+                unresolved_roles=tuple(unresolved),
             )
         )
     return tuple(forms)
