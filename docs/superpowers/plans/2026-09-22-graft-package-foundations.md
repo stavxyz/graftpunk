@@ -594,7 +594,7 @@ git commit -m "feat(contracts): one owner for every versioned payload's schema n
 ### Task 3: `login_flow` on every digest endpoint
 
 **Files:**
-- Modify: `src/graftpunk/har/digest.py:224-239` (`Endpoint`), `:712-905` (`digest()`), new private functions above `digest()`
+- Modify: `src/graftpunk/har/digest.py:224-239` (`Endpoint`), `src/graftpunk/har/digest.py:712-905` (`def digest(`), new private functions above `digest()`
 - Modify: `src/graftpunk/devtools/scaffold/render.py` (`_LOGIN_FLOW_KINDS`, `_template_covers_path`, `_login_flow_endpoints` removed; `_ordered_endpoints` reads the flag)
 - Modify: `tests/unit/test_scaffold_render.py` (`TestLoginFlowEndpointsAreNotCommandStubs`)
 - Test: `tests/unit/test_har_digest.py`
@@ -1109,7 +1109,7 @@ git commit -m "feat(observe): gp observe digest --endpoints-json, a versioned pr
 
 **Files:**
 - Modify: `pyproject.toml:33-47` (`dependencies`), `uv.lock`
-- Modify: `src/graftpunk/cli/main.py:6-14` (standard-library and third-party imports), `:31` (`from graftpunk.config import get_settings`, the import the new one follows), `:169-182` (`version`)
+- Modify: `src/graftpunk/cli/main.py:6-14` (standard-library and third-party imports), `:32` (`from graftpunk.console import err_console`, the import the new one follows), `:169-182` (`version`)
 - Modify: `src/graftpunk/contracts.py` (new `contract_mismatch`; `__all__`; docstring)
 - Test: `tests/unit/test_cli_version.py`, `tests/unit/test_contracts.py`
 
@@ -1325,7 +1325,7 @@ def contract_mismatch(surface: str, reads: int) -> str | None:
 
 - [ ] **Step 5: Write the command**
 
-In `src/graftpunk/cli/main.py`, add `import json` to the standard-library imports, `from packaging.version import InvalidVersion, Version` after `from rich.panel import Panel`, and `from graftpunk.contracts import cli_contracts, contract_mismatch` after `from graftpunk.config import get_settings`. Replace the `version` command with:
+In `src/graftpunk/cli/main.py`, add `import json` to the standard-library imports, `from packaging.version import InvalidVersion, Version` after `import typer` and before `from rich.console import Console` (isort's order; anywhere else ruff reports I001), and `from graftpunk.contracts import cli_contracts, contract_mismatch` after `from graftpunk.console import err_console` (`main.py:32`). Replace the `version` command with:
 
 ```python
 def installation_facts() -> dict[str, object]:
@@ -1665,7 +1665,7 @@ git commit -m "feat(har): parse_endpoint and parse_command_spec own the endpoint
 - Modify: `src/graftpunk/devtools/captures.py` (new `flagged_names_of`, `write_sidecar`; `__all__`)
 - Modify: `src/graftpunk/cli/observe_commands.py:201-296` (`fixtures_cmd` writes the sidecar through the writer)
 - Modify: `tests/unit/test_graftpunk_testing.py:66-74` (the sidecar test writes a schema 1 sidecar)
-- Modify: `docs/PLUGIN_DEVELOPMENT.md` ("Test against fixtures, not against the site": the sentence that introduces the sidecar, the JSON block after it, and the error-path sentence of the paragraph after that), `docs/HOW_IT_WORKS.md:483-487` (the sidecar's field list)
+- Modify: `docs/PLUGIN_DEVELOPMENT.md` ("Test against fixtures, not against the site": the sentence that introduces the sidecar, the JSON block after it, and the error-path sentence of the paragraph after that), `docs/HOW_IT_WORKS.md:483-486` (the sidecar's field list)
 - Test: `tests/unit/test_testing_sidecar.py`, `tests/unit/test_devtools_captures.py`, `tests/unit/test_observe_commands.py`, `tests/unit/test_graftpunk_testing.py`
 
 **Interfaces:**
@@ -2200,7 +2200,7 @@ body and the cookie and token names the recording's digest listed.
 
 In the paragraph after it, replace "A sidecar is how you test an error path: copy a fixture, set the sidecar's status to 403, and assert that the command raises `SessionRejectedError`." with "A sidecar is how you test an error path: copy a fixture together with its sidecar, set the copied sidecar's `status` to 403, and assert that the command raises `SessionRejectedError`." Leave that paragraph's first sentence ("Without a sidecar ...") as it is; the project-tools plan's last task rewrites it once the generated suite requires a sidecar.
 
-In `docs/HOW_IT_WORKS.md`, replace "writes a `<file>.meta.json` sidecar beside every capture (url, status, content type, body parameter names, capture time); `FixtureSession` reads the same sidecar for status and content type" (lines 483-486) with "writes a `<file>.meta.json` sidecar beside every capture (a `schema` number, the status, the content type, the body parameter names, the hash of the captured body, and the cookie and token names the run's digest recorded, but never the URL or the capture time), safe to commit beside the fixture derived from it; `FixtureSession` reads the sidecar through `graftpunk.testing.sidecar` for status and content type". The phrase wraps across lines 483 to 486, so match it with the line breaks as they are in the file.
+In `docs/HOW_IT_WORKS.md`, replace "writes a `<file>.meta.json` sidecar beside every capture (url, status, content type, body parameter names, capture time); `FixtureSession` reads the same sidecar for status and content type" (lines 483 to 485) with "writes a `<file>.meta.json` sidecar beside every capture (a `schema` number, the status, the content type, the body parameter names, the hash of the captured body, and the cookie and token names the run's digest recorded, but never the URL or the capture time), safe to commit beside the fixture derived from it; `FixtureSession` reads the sidecar through `graftpunk.testing.sidecar` for status and content type". The phrase wraps across lines 483 to 485, so match it with the line breaks as they are in the file. The rest of line 485 (", so a fixture copied from") and line 486 ("a capture keeps its recorded status.") stay as they are.
 
 - [ ] **Step 9: Run the tests to verify they pass**
 
@@ -3221,7 +3221,7 @@ For `test_a_short_write_that_touches_the_file_is_still_cleaned_up`, use this fau
         monkeypatch.setattr(write, "_write_atomically", write_touching_then_failing)
 ```
 
-Every assertion in those tests stays as it is. The docstring of `test_files_written_before_the_failure_are_removed` (`tests/unit/test_scaffold_project.py:190-194`) still says the fault is injected at `Path.write_text`; replace its last two sentences with: "Fault injection at ``write._write_atomically``, the one place a planned change reaches the disk, is how one file fails and the rest do not; the assertions are all on the tree the call leaves on disk."
+Every assertion in those tests stays as it is. The docstring of `test_files_written_before_the_failure_are_removed` (`tests/unit/test_scaffold_project.py:188-195`) still says the fault is injected at `Path.write_text`. Keep its first two sentences (the second says ``plugin.py`` is the third file the renderer emits, which is still true and is why two files are on disk when it fails), and replace only its last sentence, the one that begins "Fault injection at ``Path.write_text``", with: "Fault injection at ``write._write_atomically``, the one place a planned change reaches the disk, is how one file fails and the rest do not; the assertions are all on the tree the call leaves on disk."
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -3612,7 +3612,7 @@ replace the line `    @command(help="GP-FILL: describe api_orders")` with:
     )
 ```
 
-and insert `        # This request is the endpoint= declared on @command above: change both together.` directly above `        return ctx.request_json(` in that block. In the paragraph that begins "What came from the digest", replace "each with the observed query parameters as typed keyword arguments and the observed custom headers;" (the phrase wraps across `docs/PLUGIN_DEVELOPMENT.md:473-474`, breaking after "arguments and", so an exact-match edit has to carry that line break) with "each with the observed query parameters as typed keyword arguments, an explicit `params=` list whenever one of them is an `int` or a `bool` (see [CLI parameter types](#cli-parameter-types)), the observed custom headers, and the endpoint it calls declared as `endpoint=` on its decorator;". Append this paragraph after the one that begins "Everything the digest could not decide":
+and insert `        # This request is the endpoint= declared on @command above: change both together.` directly above `        return ctx.request_json(` in that block. In the paragraph that begins "What came from the digest", replace "each with the observed query parameters as typed keyword arguments and the observed custom headers;" (the phrase wraps across `docs/PLUGIN_DEVELOPMENT.md:474-475`, breaking after "arguments and", so an exact-match edit has to carry that line break) with "each with the observed query parameters as typed keyword arguments, an explicit `params=` list whenever one of them is an `int` or a `bool` (see [CLI parameter types](#cli-parameter-types)), the observed custom headers, and the endpoint it calls declared as `endpoint=` on its decorator;". Append this paragraph after the one that begins "Everything the digest could not decide":
 
 ```markdown
 The `endpoint=` keyword is a declaration, not a check: nothing compares it with
