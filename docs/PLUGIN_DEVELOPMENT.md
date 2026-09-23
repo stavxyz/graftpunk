@@ -448,7 +448,7 @@ class MyshopPlugin(SitePlugin):
     @command(
         help="GP-FILL: describe api_orders",
         params=[
-            PluginParamSpec.option("archived", type=bool),
+            PluginParamSpec.option("archived", type=bool, click_kwargs={"is_flag": True}),
             PluginParamSpec.option("page", type=int),
             PluginParamSpec.option("per_page", type=int),
         ],
@@ -603,7 +603,10 @@ or without that import. That is harmless when the value goes straight into
 arithmetic on it. To get a real type, declare it explicitly: an explicit
 `params=` list replaces introspection entirely, so it works in a generated
 module as written. `gp plugin new` writes that explicit list itself for every
-stub with an `int` or `bool` parameter.
+stub with an `int` or `bool` parameter. It writes a `bool` parameter as a flag
+(`click_kwargs={"is_flag": True}`), because a `bool` option that is not a flag
+is refused when the command is registered; with the flag left off, the handler
+receives `None`.
 
 ```python
 from graftpunk.plugins import CommandContext, PluginParamSpec, command

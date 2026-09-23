@@ -181,6 +181,29 @@ _LONG_TEMPLATE_ENDPOINT = Endpoint(
     examples=("/records/search-results/by-recorded-date-range/detail",),
 )
 
+# A template too wide for its endpoint= line, so the declaration wraps, and an int
+# and a bool parameter named at the identifier cap, so their params= entries are
+# too wide for one line each.
+_LONG_TYPED_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template=(
+        "/accounts/{account_identifier}/statements/by-recorded-date-range/detail/summary/line-items"
+    ),
+    methods=("GET",),
+    count=2,
+    statuses=(200,),
+    content_type="application/json",
+    query_params={
+        "include_" + "x" * (_MAX_PARAM_NAME - len("include_")): "bool",
+        "page_" + "n" * (_MAX_PARAM_NAME - len("page_")): "int",
+    },
+    body_params={},
+    body_kind="none",
+    shape=ShapeNode(kind="object", children={"rows": ShapeNode(kind="array")}),
+    custom_headers=(),
+    examples=("/accounts/1/statements/by-recorded-date-range/detail/summary/line-items",),
+)
+
 _PASSWORD_LOGIN_FORM = LoginForm(
     action="/login",
     method="POST",
@@ -1191,7 +1214,13 @@ class TestPluginModuleCommandStubs:
         so each one has to come back as the method and template the stub calls."""
         from graftpunk.har.naming import parse_endpoint
 
-        endpoints = (_ORDERS_ENDPOINT, _SEARCH_ENDPOINT, _NOTES_ENDPOINT, _LONG_TEMPLATE_ENDPOINT)
+        endpoints = (
+            _ORDERS_ENDPOINT,
+            _SEARCH_ENDPOINT,
+            _NOTES_ENDPOINT,
+            _LONG_TEMPLATE_ENDPOINT,
+            _LONG_TYPED_ENDPOINT,
+        )
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
@@ -1208,6 +1237,39 @@ class TestPluginModuleCommandStubs:
             assert isinstance(endpoint, ast.Constant) and isinstance(endpoint.value, str)
             declared.add(parse_endpoint(endpoint.value))
         assert declared == {(e.methods[0], e.template) for e in endpoints}
+
+    def test_a_declaration_too_wide_for_its_line_wraps_and_reads_back_whole(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_LONG_TYPED_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "        endpoint=(" in plugin_code.splitlines()
+        assert all(len(line) <= GENERATED_LINE_LENGTH for line in plugin_code.splitlines())
+        (stub,) = [n for n in ast.walk(ast.parse(plugin_code)) if isinstance(n, ast.FunctionDef)]
+        (decorator,) = stub.decorator_list
+        assert isinstance(decorator, ast.Call)
+        (endpoint,) = [k.value for k in decorator.keywords if k.arg == "endpoint"]
+        assert isinstance(endpoint, ast.Constant)
+        assert endpoint.value == f"GET {_LONG_TYPED_ENDPOINT.template}"
+
+    def test_the_placeholder_stub_declares_no_endpoint(self) -> None:
+        """With no digest there is no observed endpoint, and a declaration of the
+        placeholder path would be a claim tooling reads as true."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        tree = ast.parse(render(spec)["src/graftpunk_myshop/plugin.py"])
+        (stub,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+        (decorator,) = stub.decorator_list
+        assert isinstance(decorator, ast.Call)
+        assert "endpoint" not in {k.arg for k in decorator.keywords}
 
     def test_a_comment_above_the_request_ties_it_to_the_declaration(self) -> None:
         spec = ScaffoldSpec(
@@ -1236,21 +1298,75 @@ class TestPluginModuleCommandStubs:
         assert 'PluginParamSpec.option("page", type=int),' in plugin_code
         assert "PluginParamSpec" in plugin_code.split("class ")[0]
 
-    def test_the_param_specs_register_the_types_at_runtime(self, tmp_path: Path) -> None:
+    @staticmethod
+    def _registered_calls(
+        monkeypatch: pytest.MonkeyPatch, endpoint: Endpoint, argv: list[str]
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Render a plugin for *endpoint*, register it through the real CLI factory,
+        invoke *argv*, and return the CLI result with the keyword arguments each
+        request the handler made carried. The request itself is recorded, not sent:
+        what is under test is what the CLI hands the handler."""
+        from graftpunk.plugins import CommandContext
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        calls: list[dict[str, Any]] = []
+
+        def record(_ctx: Any, method: str, url: str, **kwargs: Any) -> dict:
+            calls.append(kwargs)
+            return {}
+
+        monkeypatch.setattr(CommandContext, "request_json", record)
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
             backend="nodriver",
             base_url="https://myshop.example.com",
-            digest=_digest(endpoints=(_SEARCH_ENDPOINT,)),
+            digest=_digest(endpoints=(endpoint,)),
         )
         namespace: dict[str, Any] = {"__name__": "generated_plugin"}
         exec(render(spec)["src/graftpunk_myshop/plugin.py"], namespace)  # noqa: S102
-        meta = namespace["MyshopPlugin"].search._command_meta
-        types = {p.name: p.click_kwargs["type"] for p in meta.params}
-        assert types["page"] is int
-        assert types["include_meta"] is bool
-        assert types["q"] is str
+
+        class _SessionlessPlugin(namespace["MyshopPlugin"]):
+            requires_session = False
+
+        return invoke_plugin_app(_SessionlessPlugin(), argv), calls
+
+    def test_a_stub_with_a_bool_parameter_registers_and_passes_typed_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#208 compensation, end to end: the generated params= list has to survive
+        the CLI factory's own checks (a bool option must be a flag), and the handler
+        has to receive an int and a bool, not their text."""
+        result, _ = self._registered_calls(
+            monkeypatch, _SEARCH_ENDPOINT, ["myshop", "search", "--help"]
+        )
+        assert result.exit_code == 0, result.output
+        for option in ("--include-meta", "--page", "--q"):
+            assert option in result.output
+
+        result, calls = self._registered_calls(
+            monkeypatch, _SEARCH_ENDPOINT, ["myshop", "search", "--page", "2", "--include-meta"]
+        )
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["params"]["page"] == 2 and type(call["params"]["page"]) is int
+        assert call["params"]["include_meta"] is True
+
+        result, calls = self._registered_calls(monkeypatch, _SEARCH_ENDPOINT, ["myshop", "search"])
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["params"]["include_meta"] is None
+        assert call["params"]["page"] is None
+
+    def test_a_stub_with_only_an_int_parameter_registers_and_passes_an_int(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        argv = ["myshop", "orders-by-order-id", "--order-id", "7", "--page", "3"]
+        result, calls = self._registered_calls(monkeypatch, _ORDERS_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["params"] == {"page": 3}
+        assert type(call["params"]["page"]) is int
 
     def test_an_untyped_stub_carries_no_params_list(self) -> None:
         spec = ScaffoldSpec(
@@ -1719,6 +1835,24 @@ class TestRenderedTreeIsRuffClean:
         files = render(spec)
         assert "success_url=" in files["src/graftpunk_myshop/plugin.py"]
         tree = self._write_tree(tmp_path / "long_redirect", files)
+        self._assert_tree_is_clean(tree)
+
+    def test_long_typed_parameters_and_template_project(self, tmp_path: Path) -> None:
+        # params= entries too wide for one line explode one argument per line, and
+        # a wrapped endpoint= declaration: both have to be the shape ruff format
+        # would give them.
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_LONG_TYPED_ENDPOINT, _SEARCH_ENDPOINT)),
+        )
+        files = render(spec)
+        plugin_lines = files["src/graftpunk_myshop/plugin.py"].splitlines()
+        assert "            PluginParamSpec.option(" in plugin_lines
+        assert "        endpoint=(" in plugin_lines
+        tree = self._write_tree(tmp_path / "long_typed", files)
         self._assert_tree_is_clean(tree)
 
     def test_long_selectors_and_header_name_project(self, tmp_path: Path) -> None:

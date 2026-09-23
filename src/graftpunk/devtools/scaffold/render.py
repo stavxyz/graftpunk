@@ -80,12 +80,21 @@ _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]
 # The methods whose stub carries a JSON body dict.
 _MUTATING_METHODS = ("POST", "PUT", "PATCH")
 
-# The observed types an explicit PluginParamSpec entry carries. A stub with a
-# parameter of one of these gets an explicit params= list, the one route that
-# keeps the type under the generated module's future-annotations import. This
-# is the compensation for #208: remove it, and the params= emission, when #208
-# lands.
-_SPEC_TYPE_BY_OBSERVED: dict[str, str] = {"int": "int", "bool": "bool"}
+# The observed types an explicit PluginParamSpec entry carries, each with the
+# keywords its entry adds after the name. A stub with a parameter of one of these
+# gets an explicit params= list, the one route that keeps the type under the
+# generated module's future-annotations import. This is the compensation for
+# #208: remove it, and the params= emission, when #208 lands.
+#
+# A bool option must be a flag or command_factory refuses the command at
+# registration, and PluginParamSpec.option only sets is_flag itself for
+# default=False; the stub's None default stays, so an absent flag still reaches
+# the handler as None. A list stays a plain str option: command_factory has no
+# multi-value option to map it to, so its entry gets no type.
+_SPEC_TYPE_BY_OBSERVED: dict[str, tuple[str, ...]] = {
+    "int": ("type=int",),
+    "bool": ("type=bool", 'click_kwargs={"is_flag": True}'),
+}
 
 _ENDPOINT_COMMENT = (
     f"{L2}# This request is the endpoint= declared on @command above: change both together."
@@ -464,9 +473,26 @@ def _needs_param_specs(endpoint: Endpoint) -> bool:
     return any(t in _SPEC_TYPE_BY_OBSERVED for t in _declared_extras(endpoint).values())
 
 
+def _param_spec(identifier: str, keywords: tuple[str, ...]) -> str:
+    """One ``PluginParamSpec.option(...)`` entry of a stub's ``params=`` list, as the
+    expression ``_decorator_lines`` places at ``L3``: on one line when that line,
+    its trailing comma included, fits the generated width, otherwise exploded one
+    argument per line with a magic trailing comma, the shape ``ruff format`` gives
+    it. The exploded form's continuation lines carry their own indentation."""
+    args = [quoted_literal(identifier), *keywords]
+    single = f"PluginParamSpec.option({', '.join(args)})"
+    if len(f"{L3}{single},") <= GENERATED_LINE_LENGTH:
+        return single
+    exploded = ["PluginParamSpec.option(", *(f"{L3}{' ' * INDENT_STEP}{a}," for a in args)]
+    return "\n".join([*exploded, f"{L3})"])
+
+
 def _decorator_lines(name: str, endpoint_literal: str, param_specs: list[str]) -> list[str]:
-    """A stub's ``@command(...)``, always exploded one keyword per line so the
-    ``endpoint=`` declaration sits on a line of its own."""
+    """A stub's ``@command(...)``, always exploded one keyword per line. The
+    ``endpoint=`` keyword starts a line of its own; a value too wide for that line
+    wraps as a parenthesised implicit concatenation, which Python reads back as
+    one string. Each *param_specs* entry is an expression placed at ``L3`` (see
+    ``_param_spec``)."""
     lines = [f"{L1}@command("]
     lines.extend(literal_lines(f"GP-FILL: describe {name}", indent=len(L2), prefix="help="))
     if param_specs:
@@ -493,20 +519,15 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     extras = _declared_extras(endpoint)
 
     params = ["self", "ctx: CommandContext"] + [f"{p}: str" for p in path_params]
-    param_specs = [
-        f"PluginParamSpec.option({quoted_literal(p)}, required=True)" for p in path_params
-    ]
+    param_specs = [_param_spec(p, ("required=True",)) for p in path_params]
     identifier_for: dict[str, str] = {}
     for extra in sorted(extras):
         observed = extras[extra]
         identifier_for[extra] = _param_identifier(extra, seen_params)
         annotation = _PY_TYPE_BY_OBSERVED.get(observed, "str")
         params.append(f"{identifier_for[extra]}: {annotation} | None = None")
-        spec_type = _SPEC_TYPE_BY_OBSERVED.get(observed)
-        type_keyword = f", type={spec_type}" if spec_type else ""
-        param_specs.append(
-            f"PluginParamSpec.option({quoted_literal(identifier_for[extra])}{type_keyword})"
-        )
+        keywords = _SPEC_TYPE_BY_OBSERVED.get(observed, ())
+        param_specs.append(_param_spec(identifier_for[extra], keywords))
 
     # Through quoted_literal like every other captured value: the method comes from
     # the capture, so it is not this module's to assume is quote-free.

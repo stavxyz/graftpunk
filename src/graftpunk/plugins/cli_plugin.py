@@ -223,8 +223,9 @@ class CommandMetadata:
     click_kwargs: dict[str, Any] = field(default_factory=dict)
     # Tooling provenance, not behaviour: the "<METHOD> <template>" this command
     # implements, as gp plugin new declares it. Never consulted at runtime and
-    # never shown in help; gp plugin info reads it from source. A recorded
-    # exception to the devtools placement rule (graft skill spec, 2026-09-21).
+    # never shown in help; devtools read it from the plugin's source, never from
+    # this object. A recorded exception to the devtools placement rule (graft
+    # skill spec, 2026-09-21).
     endpoint: str | None = None
 
     def __post_init__(self) -> None:
