@@ -357,6 +357,7 @@ def fixtures_cmd(
             console.print(
                 f"[yellow]No entries matched --match {escape(method)} {escape(template)}.[/yellow]",
                 soft_wrap=True,
+                highlight=False,
             )
 
 
