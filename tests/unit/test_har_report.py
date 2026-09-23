@@ -266,7 +266,7 @@ _ENDPOINT_V1 = {
 }
 _LOGIN_V1 = {"auth_urls", "forms"}
 _AUTH_URL_V1 = {"method", "url", "kind"}
-_FORM_V1 = {"action", "fields"}
+_FORM_V1 = {"action", "fields", "submit", "neutral_roles", "unresolved_roles"}
 
 
 _PLANTED_RESET_SEGMENT = "reset-7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
@@ -403,7 +403,13 @@ class TestEndpointsProjection:
         )
         payload = endpoints_projection(dataclasses.replace(result, login_forms=(form,)))
         assert payload["login"]["forms"] == [
-            {"action": "https://myshop.example.com", "fields": {"username": scoped}}
+            {
+                "action": "https://myshop.example.com",
+                "fields": {"username": scoped},
+                "submit": None,
+                "neutral_roles": [],
+                "unresolved_roles": [],
+            }
         ]
 
     def test_a_selector_that_cannot_be_unscoped_is_left_out(self, tmp_path: Path) -> None:
@@ -421,8 +427,33 @@ class TestEndpointsProjection:
         )
         payload = endpoints_projection(dataclasses.replace(result, login_forms=(form,)))
         assert payload["login"]["forms"] == [
-            {"action": "/accounts/{account_id}/session", "fields": {"password": "#pw"}}
+            {
+                "action": "/accounts/{account_id}/session",
+                "fields": {"password": "#pw"},
+                "submit": None,
+                "neutral_roles": [],
+                "unresolved_roles": ["username"],
+            }
         ]
+
+    def test_a_form_carries_its_submit_neutral_and_unresolved_roles(self, tmp_path: Path) -> None:
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/signin",
+            content_type="text/html",
+            body=(
+                '<form action="/session" method="post"><input type="text" name="username">'
+                '<input type="text" name="otp_40912873"><input type="text" name="fld_a8f3c9e2b1">'
+                '<input type="password" name="password"><button id="signin">Sign in</button>'
+                "</form>"
+            ),
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [page])))
+        (form,) = endpoints_projection(result)["login"]["forms"]
+        assert form["submit"] == "#signin"
+        assert form["neutral_roles"] == ["field_1", "field_2"]
+        assert form["unresolved_roles"] == ["field_1", "field_2"]
+        assert "otp_40912873" not in render_endpoints_json(result)
 
     def test_a_form_action_holding_an_id_is_templated_and_its_selectors_unscoped(
         self, tmp_path: Path
@@ -445,6 +476,9 @@ class TestEndpointsProjection:
         assert form == {
             "action": "/accounts/{account_id}/session",
             "fields": {"password": "#pw", "username": 'input[name="username"]'},
+            "submit": None,
+            "neutral_roles": [],
+            "unresolved_roles": [],
         }
         assert _PLANTED_RESET_SEGMENT not in render_endpoints_json(result)
 

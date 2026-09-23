@@ -36,6 +36,7 @@ __all__ = [
     "is_login_document",
     "looks_like_token_name",
     "printable_selectors",
+    "printable_unresolved_roles",
     "unscoped_selector",
 ]
 
@@ -70,11 +71,16 @@ class LoginForm:
     # (graftpunk.har.paths.holds_an_id); the names are written nowhere.
     hidden_names_dropped_as_ids: int = 0
     # Roles keyed neutrally (field_1, ...) because the input's name held an account
-    # value; a generated LoginStep says to rename each.
+    # value or was missing; a generated LoginStep says to rename each it declares.
     neutral_roles: tuple[str, ...] = ()
-    # Roles (and "submit") left out of fields (or submit left unset) because the only
-    # selector left, by input type, would not pick one input of the recorded form.
+    # Roles (and "submit") the form needs but has no selector for: no username input,
+    # or no selector that picks the one input of the recorded form. Each once.
     unresolved_roles: tuple[str, ...] = ()
+    # The selectors safe to print without the form scope, by role: an id selector,
+    # or a name selector no other input on the recorded page shares. A role missing
+    # here is printed unscoped only when its selector is by id (printable_selectors).
+    unscoped_fields: dict[str, str] = field(default_factory=dict)
+    unscoped_submit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,9 +98,10 @@ class _RawInput:
     input_type: str
     name: str
     element_id: str
-    # Whether the element carried a type attribute; input_type is the default
-    # ("text", or "submit" for a button) when it did not.
+    # Whether the element carried a non-empty type attribute; input_type is the
+    # default ("text", or "submit" for a button) when it did not.
     typed: bool = True
+    autocomplete: str = ""
 
 
 @dataclass
@@ -111,6 +118,8 @@ class _DocumentParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.forms: list[_RawForm] = []
         self.metas: list[tuple[str, str]] = []
+        # Every input and button on the page, in a form or not, in document order.
+        self.inputs: list[_RawInput] = []
         self._current: _RawForm | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -120,18 +129,20 @@ class _DocumentParser(HTMLParser):
                 action=values.get("action", ""),
                 method=(values.get("method") or "GET").upper(),
             )
-        elif tag in ("input", "button") and self._current is not None:
-            self._current.inputs.append(
-                _RawInput(
-                    tag=tag,
-                    input_type=(
-                        values.get("type") or ("submit" if tag == "button" else "text")
-                    ).lower(),
-                    name=values.get("name", ""),
-                    element_id=values.get("id", ""),
-                    typed="type" in values,
-                )
+        elif tag in ("input", "button"):
+            raw_input = _RawInput(
+                tag=tag,
+                input_type=(
+                    values.get("type") or ("submit" if tag == "button" else "text")
+                ).lower(),
+                name=values.get("name", ""),
+                element_id=values.get("id", ""),
+                typed=bool(values.get("type")),
+                autocomplete=values.get("autocomplete", "").strip().lower(),
             )
+            self.inputs.append(raw_input)
+            if self._current is not None:
+                self._current.inputs.append(raw_input)
         elif tag == "meta":
             name, content = values.get("name"), values.get("content")
             if name and content:
@@ -246,37 +257,71 @@ def _same_type(raw: _RawInput, other: _RawInput) -> bool:
     return other.tag == raw.tag and other.input_type == raw.input_type
 
 
-def _selector_for(
-    raw: _RawInput, form_scopes: tuple[str, ...], siblings: list[_RawInput]
-) -> str | None:
-    """One input's selector: by its id when it has one, else its tag and ``name``,
-    else its type, scoped to each of *form_scopes* (unscoped when there are none).
-    An id or a name that holds an account value (graftpunk.har.paths.holds_an_id)
-    is never used. A selector by type is used only when it picks this one input of
-    the recorded form's *siblings*; otherwise there is none (``None``). Every
-    attribute value is escaped (:func:`_css_string`)."""
-    if raw.element_id and not holds_an_id(raw.element_id):
-        if _CSS_IDENTIFIER_RE.fullmatch(raw.element_id):
-            return f"#{raw.element_id}"
-        return f'[id="{_css_string(raw.element_id)}"]'
-    if raw.name and not holds_an_id(raw.name):
-        suffixes: tuple[str, ...] = (f'{raw.tag}[name="{_css_string(raw.name)}"]',)
-    else:
-        if sum(1 for other in siblings if _same_type(raw, other)) > 1:
-            return None
-        suffixes = _type_selectors(raw)
-    if not form_scopes:
-        return ", ".join(suffixes)
+def _id_selector(raw: _RawInput) -> str | None:
+    """*raw*'s selector by id, or None when it has none or its id holds an account
+    value (graftpunk.har.paths.holds_an_id)."""
+    if not raw.element_id or holds_an_id(raw.element_id):
+        return None
+    if _CSS_IDENTIFIER_RE.fullmatch(raw.element_id):
+        return f"#{raw.element_id}"
+    return f'[id="{_css_string(raw.element_id)}"]'
+
+
+def _name_selector(raw: _RawInput) -> str | None:
+    """*raw*'s tag and ``name`` selector, unscoped, or None when it has no name or
+    its name holds an account value."""
+    if not raw.name or holds_an_id(raw.name):
+        return None
+    return f'{raw.tag}[name="{_css_string(raw.name)}"]'
+
+
+def _scoped(suffixes: tuple[str, ...], form_scopes: tuple[str, ...]) -> str:
     return ", ".join(f"{scope} {suffix}" for suffix in suffixes for scope in form_scopes)
 
 
+def _selectors_for(
+    raw: _RawInput,
+    form_scopes: tuple[str, ...],
+    form_inputs: list[_RawInput],
+    page_inputs: list[_RawInput],
+) -> tuple[str | None, str | None]:
+    """One input's selector as recorded, and the one safe to print without the
+    form scope; each None when there is none.
+
+    By its id when it has one, else its tag and ``name``, else its type; an id or a
+    name that holds an account value is never used, and every attribute value is
+    escaped (:func:`_css_string`). The recorded selector is scoped to each of
+    *form_scopes*; a selector by type is used only when it picks this one input of
+    the recorded form (*form_inputs*). The unscoped one is the id selector, or the
+    name selector when no other input on the recorded page (*page_inputs*) has that
+    tag and name; a selector by type is never printed unscoped, since it would pick
+    the first input of that type on the page. With no form scope (an action that is
+    masked or cannot be parsed) the recorded selector is the unscoped one."""
+    by_id = _id_selector(raw)
+    if by_id is not None:
+        return by_id, by_id
+    by_name = _name_selector(raw)
+    unscoped = None
+    if by_name is not None and (
+        sum(1 for other in page_inputs if other.tag == raw.tag and other.name == raw.name) == 1
+    ):
+        unscoped = by_name
+    if not form_scopes:
+        return unscoped, unscoped
+    if by_name is not None:
+        return _scoped((by_name,), form_scopes), unscoped
+    if sum(1 for other in form_inputs if _same_type(raw, other)) > 1:
+        return None, None
+    return _scoped(_type_selectors(raw), form_scopes), None
+
+
 # The input part every alternative of a form-scoped selector ends with (see
-# _selector_for): a tag and its one name= or type= attribute, whose value may hold
-# backslash escapes.
+# _selectors_for): a tag and its one name= or type= attribute, whose value may
+# hold backslash escapes, or a typeless element's :not([type]).
 _INPUT_PART_RE = re.compile(
     r'[A-Za-z][\w-]*(?:\[(?:name|type)="(?:[^"\\]|\\.)*"\]|:not\(\[type\]\))$'
 )
-# A selector with no form scope: by id, as _selector_for writes one.
+# A selector with no form scope: by id, as _selectors_for writes one.
 _ID_SELECTOR_RE = re.compile(r'#-?[A-Za-z_][\w-]*|\[id="(?:[^"\\]|\\.)*"\]')
 
 
@@ -285,10 +330,10 @@ def unscoped_selector(selector: str) -> str | None:
     None when it cannot be reduced to a part that holds no form action.
 
     An id selector has no scope and comes back as it is. A form-scoped one comes
-    back as its input part (``input[name="username"]``), which matches the same
-    input in any form: for printing a selector whose scope would carry the form
-    action's literal path. Anything else fails closed: returning it would print the
-    scope, action included.
+    back as its input part (``input[name="username"]``), or the list of them for a
+    selector list. Anything else fails closed: returning it would print the scope,
+    action included. The input part can match another input on the page; the
+    printing rule (:func:`printable_selectors`) does not rely on this function.
     """
     if _ID_SELECTOR_RE.fullmatch(selector):
         return selector
@@ -328,50 +373,123 @@ def _placeholder_segments(path: str) -> int:
     return sum(1 for segment in path.split("/") if is_placeholder(segment))
 
 
+def _printed_unscoped(form: LoginForm, role: str, selector: str) -> str | None:
+    if role in form.unscoped_fields:
+        return form.unscoped_fields[role]
+    return selector if _ID_SELECTOR_RE.fullmatch(selector) else None
+
+
 def printable_selectors(form: LoginForm) -> tuple[dict[str, str | None], str | None]:
     """*form*'s field selectors (by role) and submit selector as a projection or a
     generated file may print them.
 
     The one rule for both: when the action's path holds an id or a token
     (:func:`graftpunk.har.paths.templates_a_segment`), a scoped selector would spell
-    it, so each selector is unscoped (:func:`unscoped_selector`), and one that cannot
-    be is ``None``: the caller leaves it out, or writes a ``GP-FILL`` in its place.
-    Otherwise every selector is printed as the digest recorded it. A form with no
-    submit control has a ``None`` submit either way.
+    it, so each is printed without its scope, and only when that still picks the
+    intended input: an id selector, or a name selector no other input on the
+    recorded page shares (``LoginForm.unscoped_fields``). A selector by type, or a
+    shared name, is ``None``: the caller leaves it out, or writes a ``GP-FILL`` in
+    its place (:func:`printable_unresolved_roles` names them). Otherwise every
+    selector is printed as the digest recorded it. A form with no submit control
+    has a ``None`` submit either way.
     """
     fields = dict(sorted(form.fields.items()))
     if not templates_a_segment(form.action):
         return dict[str, str | None](fields), form.submit
-    unscoped = {role: unscoped_selector(selector) for role, selector in fields.items()}
-    return unscoped, unscoped_selector(form.submit) if form.submit else None
+    printed = {role: _printed_unscoped(form, role, selector) for role, selector in fields.items()}
+    if form.submit is None:
+        return printed, None
+    submit = form.unscoped_submit
+    if submit is None and _ID_SELECTOR_RE.fullmatch(form.submit):
+        submit = form.submit
+    return printed, submit
 
 
-def _guess_role(input_type: str, name: str) -> str:
-    if input_type == "password":
-        return "password"
-    if input_type == "email":
-        return "username"
-    lowered = name.lower()
-    if any(hint in lowered for hint in _USERNAME_HINTS):
-        return "username"
-    return name
+def printable_unresolved_roles(form: LoginForm) -> tuple[str, ...]:
+    """The roles (and ``submit``) a printed login step has no selector for: the ones
+    the digest left unresolved (``LoginForm.unresolved_roles``), then the ones
+    :func:`printable_selectors` cannot print without the form scope, each once."""
+    fields, submit = printable_selectors(form)
+    roles = list(form.unresolved_roles)
+    roles += [role for role in form.fields if fields.get(role) is None and role not in roles]
+    if form.submit is not None and submit is None and "submit" not in roles:
+        roles.append("submit")
+    return tuple(roles)
+
+
+_TEXT_LIKE_TYPES = frozenset({"text", "email", "tel", "number", "url"})
+_USERNAME_AUTOCOMPLETE = frozenset({"username", "email"})
+
+
+def _is_password(raw: _RawInput) -> bool:
+    return raw.tag == "input" and (
+        raw.input_type == "password" or raw.autocomplete == "current-password"
+    )
+
+
+def _is_text_like(raw: _RawInput) -> bool:
+    return raw.tag == "input" and raw.input_type in _TEXT_LIKE_TYPES
+
+
+def _is_submit(raw: _RawInput) -> bool:
+    """An ``<input type="submit">`` or a submitting ``<button>`` (typeless included)."""
+    return raw.input_type == "submit"
+
+
+def _has_username_hint(raw: _RawInput) -> bool:
+    if raw.autocomplete in _USERNAME_AUTOCOMPLETE or raw.input_type == "email":
+        return True
+    lowered = raw.name.lower()
+    return any(hint in lowered for hint in _USERNAME_HINTS)
+
+
+def _is_registration(inputs: list[_RawInput]) -> bool:
+    """A sign-up or change-password form: a password marked ``new-password`` or a
+    second password input (a confirmation), and none marked ``current-password``."""
+    if any(i.autocomplete == "current-password" for i in inputs):
+        return False
+    passwords = [i for i in inputs if i.tag == "input" and i.input_type == "password"]
+    return len(passwords) > 1 or any(i.autocomplete == "new-password" for i in passwords)
+
+
+def _username_index(inputs: list[_RawInput], password_index: int) -> int | None:
+    """The username input: one ``autocomplete`` names as a username or email, else the
+    hinted text-like input nearest before the password, else the text-like input
+    nearest before it; None when the form has none."""
+    for index, raw in enumerate(inputs):
+        if _is_text_like(raw) and raw.autocomplete in _USERNAME_AUTOCOMPLETE:
+            return index
+    before = [index for index in range(password_index) if _is_text_like(inputs[index])]
+    hinted = [index for index in before if _has_username_hint(inputs[index])]
+    if hinted:
+        return hinted[-1]
+    return before[-1] if before else None
 
 
 def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
-    """Every ``<form>`` in *html* that contains a password input.
+    """Every login ``<form>`` in *html*: one with a password input that is not a
+    registration form (:func:`_is_registration`).
 
-    Each yields a :class:`LoginForm` with the form's action stripped of its
-    query string, fragment, and ``;params``
-    (:func:`graftpunk.har.paths.bare_url`), one CSS selector per input (an id
-    selector when the input has one, else a selector scoped to the form's action,
-    or unscoped when the action cannot be parsed, with its attribute values
-    escaped), the credential role guessed from type and name, the submit control's
-    selector, and hidden input names.
+    Each yields a :class:`LoginForm` with the form's action stripped of its query
+    string, fragment, and ``;params`` (:func:`graftpunk.har.paths.bare_url`), and
+    roles by HTML semantics, anchored on the first password input: ``password``;
+    ``username``, the input :func:`_username_index` picks (unresolved when there is
+    none); the submit, the first submit control after the password; and each other
+    text-like input between the username and that submit, keyed by its name (a
+    neutral ``field_N`` when the name holds an account value or is missing). A
+    checkbox, radio, file, image, reset, range, or hidden input is never a role,
+    and each role is assigned once. Selectors come from :func:`_selectors_for`; a
+    role with none is recorded in ``unresolved_roles``. Hidden input names are kept
+    as token candidates.
     """
+    parsed = _parse(html)
     forms: list[LoginForm] = []
-    for raw in _parse(html).forms:
-        password_inputs = [i for i in raw.inputs if i.input_type == "password"]
-        if not password_inputs:
+    for raw in parsed.forms:
+        inputs = raw.inputs
+        password_index = next(
+            (i for i, raw_input in enumerate(inputs) if _is_password(raw_input)), None
+        )
+        if password_index is None or _is_registration(inputs):
             continue
         try:
             action = bare_url(raw.action)
@@ -391,45 +509,75 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
             LOG.warning("login_form_action_unparseable", source=source)
             action = ""
             scopes = ()
-        fields: dict[str, str] = {}
+
         hidden: list[str] = []
         dropped_hidden = 0
+        for raw_input in inputs:
+            if raw_input.input_type != "hidden" or not raw_input.name:
+                continue
+            if holds_an_id(raw_input.name):
+                dropped_hidden += 1
+            else:
+                hidden.append(raw_input.name)
+
+        username_index = _username_index(inputs, password_index)
+        submit_index = next(
+            (i for i in range(password_index + 1, len(inputs)) if _is_submit(inputs[i])), None
+        )
+        block_start = (username_index if username_index is not None else password_index) + 1
+        block_end = submit_index if submit_index is not None else len(inputs)
+        roles: list[tuple[str, _RawInput]] = []
+        if username_index is not None:
+            roles.append(("username", inputs[username_index]))
+        roles.append(("password", inputs[password_index]))
+        taken = {i.name for i in inputs if i.name} | {"username", "password"}
         neutral: list[str] = []
-        unresolved: list[str] = []
-        taken = {i.name for i in raw.inputs if i.name}
-        submit: str | None = None
-        for raw_input in raw.inputs:
-            if raw_input.input_type == "hidden":
-                if raw_input.name and holds_an_id(raw_input.name):
-                    dropped_hidden += 1
-                elif raw_input.name:
-                    hidden.append(raw_input.name)
+        for index in range(block_start, block_end):
+            raw_input = inputs[index]
+            if index in (username_index, password_index) or not _is_text_like(raw_input):
                 continue
-            if raw_input.input_type == "submit" or (
-                raw_input.tag == "button" and raw_input.input_type != "button"
+            if (
+                raw_input.name
+                and not holds_an_id(raw_input.name)
+                and raw_input.name
+                not in (
+                    "username",
+                    "password",
+                )
             ):
-                submit = _selector_for(raw_input, scopes, raw.inputs)
-                if submit is None:
-                    unresolved.append("submit")
-                elif "submit" in unresolved:
-                    unresolved.remove("submit")
+                roles.append((raw_input.name, raw_input))
                 continue
-            role = _guess_role(raw_input.input_type, raw_input.name)
-            if role and role == raw_input.name and holds_an_id(role):
-                # The input's name is its role key only when it is a word: one
-                # that holds an account value gets a neutral key, in document order,
-                # never one a real input of the form is named.
-                number = len(neutral) + 1
-                while f"field_{number}" in taken or f"field_{number}" in fields:
-                    number += 1
-                role = f"field_{number}"
-                neutral.append(role)
-            if role:
-                selector = _selector_for(raw_input, scopes, raw.inputs)
-                if selector is None:
-                    unresolved.append(role)
-                else:
-                    fields[role] = selector
+            # A name that holds an account value, or none, gets a neutral key in
+            # document order, never one a real input of the form is named.
+            number = len(neutral) + 1
+            while f"field_{number}" in taken:
+                number += 1
+            key = f"field_{number}"
+            taken.add(key)
+            neutral.append(key)
+            roles.append((key, raw_input))
+
+        fields: dict[str, str] = {}
+        unscoped_fields: dict[str, str] = {}
+        unresolved: list[str] = [] if username_index is not None else ["username"]
+        for role, raw_input in roles:
+            if role in fields or role in unresolved:
+                continue
+            selector, unscoped = _selectors_for(raw_input, scopes, inputs, parsed.inputs)
+            if selector is None:
+                unresolved.append(role)
+                continue
+            fields[role] = selector
+            if unscoped is not None:
+                unscoped_fields[role] = unscoped
+        submit: str | None = None
+        unscoped_submit: str | None = None
+        if submit_index is not None:
+            submit, unscoped_submit = _selectors_for(
+                inputs[submit_index], scopes, inputs, parsed.inputs
+            )
+            if submit is None:
+                unresolved.append("submit")
         forms.append(
             LoginForm(
                 action=action,
@@ -441,6 +589,8 @@ def extract_login_forms(html: str, source: str) -> tuple[LoginForm, ...]:
                 hidden_names_dropped_as_ids=dropped_hidden,
                 neutral_roles=tuple(neutral),
                 unresolved_roles=tuple(unresolved),
+                unscoped_fields=unscoped_fields,
+                unscoped_submit=unscoped_submit,
             )
         )
     return tuple(forms)

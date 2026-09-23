@@ -37,7 +37,7 @@ from graftpunk.devtools.scaffold.pysrc import (
     wrapped_docstring_lines,
 )
 from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
-from graftpunk.har.documents import printable_selectors
+from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
 from graftpunk.har.naming import capture_filename
 from graftpunk.har.paths import (
     template_path,
@@ -497,18 +497,25 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     entries = [(role, selector or f"GP-FILL: {role} selector") for role, selector in fields.items()]
     lines: list[str] = []
     for role in form.neutral_roles:
+        if role not in form.fields:
+            continue
         lines.extend(
             wrapped_comment_lines(
-                f"GP-FILL: {role} is a placeholder role: the recorded input's name held "
-                "an account value; rename it to the field it is.",
+                f"GP-FILL: {role} is a placeholder role: the recorded input had no name, "
+                "or one that held an account value; rename it to the field it is.",
                 indent=indent,
             )
         )
-    for role in form.unresolved_roles:
+    for role in printable_unresolved_roles(form):
+        reason = (
+            "none picks one input of the recorded form"
+            if role in form.unresolved_roles
+            else "the form's action holds an id, and without it none picks one input of "
+            "the recorded page"
+        )
         lines.extend(
             wrapped_comment_lines(
-                f"GP-FILL: {role} has no selector: none picks one input of the recorded "
-                "form; write one by hand.",
+                f"GP-FILL: {role} has no selector: {reason}; write one by hand.",
                 indent=indent,
             )
         )

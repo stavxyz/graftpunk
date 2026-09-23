@@ -17,7 +17,7 @@ from typing import Any
 
 from graftpunk.contracts import current_schema
 from graftpunk.har.digest import INTERNAL, Endpoint, RunDigest, ShapeNode
-from graftpunk.har.documents import LoginForm, printable_selectors
+from graftpunk.har.documents import LoginForm, printable_selectors, printable_unresolved_roles
 from graftpunk.har.paths import templated_url, templates_a_segment
 
 __all__ = [
@@ -192,12 +192,21 @@ def _projected_form(form: LoginForm) -> dict[str, Any]:
     through :func:`templated_url`, as the auth URLs are, and each field selector
     without its form scope (:func:`graftpunk.har.documents.printable_selectors`,
     the rule the generator applies too); one that cannot be unscoped is left out.
-    Otherwise both are printed as recorded."""
+    Otherwise both are printed as recorded. The submit selector follows the same
+    rule; ``neutral_roles`` are the placeholder role keys (``field_N``), and
+    ``unresolved_roles`` the roles the printed step has no selector for
+    (:func:`graftpunk.har.documents.printable_unresolved_roles`)."""
     action = templated_url(form.action) if templates_a_segment(form.action) else form.action
-    selectors, _submit = printable_selectors(form)
+    selectors, submit = printable_selectors(form)
     # A selector that cannot be unscoped is left out, never printed scoped.
     fields = {role: selector for role, selector in selectors.items() if selector is not None}
-    return {"action": action, "fields": fields}
+    return {
+        "action": action,
+        "fields": fields,
+        "submit": submit,
+        "neutral_roles": list(form.neutral_roles),
+        "unresolved_roles": list(printable_unresolved_roles(form)),
+    }
 
 
 def endpoints_projection(d: RunDigest) -> dict[str, Any]:

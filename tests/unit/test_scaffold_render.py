@@ -715,13 +715,21 @@ class TestGeneratedLoginHoldsNoAccountValue:
         assert "The recorded login page path holds an account value." in comments
 
     def test_selectors_scoped_to_an_action_holding_an_id_are_unscoped(self) -> None:
-        code = self._plugin_code(
-            self._form("/accounts/12345/session", "https://myshop.example.com/signin")
+        """A name selector the digest found unique on the page prints unscoped; a
+        selector by type never does, since it would pick the first such control on
+        the page."""
+        form = dataclasses.replace(
+            self._form("/accounts/12345/session", "https://myshop.example.com/signin"),
+            unscoped_fields={
+                "username": 'input[name="username"]',
+                "password": 'input[name="password"]',
+            },
         )
+        code = self._plugin_code(form)
         assert "12345" not in code
         assert '"username": \'input[name="username"]\',' in code
         assert '"password": \'input[name="password"]\',' in code
-        assert "submit='button[type=\"submit\"]'," in code
+        assert 'submit="GP-FILL: submit selector",' in code
 
     def test_a_selector_that_cannot_be_unscoped_is_a_gp_fill(self) -> None:
         form = LoginForm(
@@ -779,8 +787,8 @@ class TestGeneratedLoginHoldsNoAccountValue:
             if line.strip().startswith("#")
         )
         assert (
-            "GP-FILL: field_1 is a placeholder role: the recorded input's name held an "
-            "account value; rename it to the field it is."
+            "GP-FILL: field_1 is a placeholder role: the recorded input had no name, or "
+            "one that held an account value; rename it to the field it is."
         ) in comments
         assert (
             "GP-FILL: field_2 has no selector: none picks one input of the recorded form; "
@@ -790,6 +798,32 @@ class TestGeneratedLoginHoldsNoAccountValue:
             "GP-FILL: submit has no selector: none picks one input of the recorded form; "
             "write one by hand."
         ) in comments
+        # L4: the rename comment names only a neutral role the step declares.
+        assert "field_2 is a placeholder role" not in comments
+
+    def test_a_selector_that_cannot_be_printed_unscoped_gets_a_gp_fill(self) -> None:
+        scope = 'form[action="/accounts/40912873/session"]'
+        form = LoginForm(
+            action="/accounts/40912873/session",
+            method="POST",
+            fields={"username": f'{scope} input[type="text"]', "password": "#pw"},
+            submit=f'{scope} button[type="submit"]',
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        code = self._plugin_code(form)
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        for role in ("username", "submit"):
+            assert (
+                f"GP-FILL: {role} has no selector: the form's action holds an id, and "
+                "without it none picks one input of the recorded page; write one by hand."
+            ) in comments
+        assert 'input[type="text"]' not in code
+        assert "40912873" not in code
 
     def test_success_url_templates_an_id_in_the_landing_path(self) -> None:
         post = LoginObservation(
