@@ -610,10 +610,14 @@ def _negatable_flag(identifier: str, option_names: set[str]) -> str:
     """The option declaration of a bool parameter: ``--name/--no-name``, or
     ``--name/--name-false`` when ``no-name`` is already one of the stub's
     *option_names* (a ``no_cache`` beside a ``cache``), so each option keeps its own
-    value."""
+    value. When both are taken, the positive ``--name`` alone: the option can send
+    ``true`` or nothing, and the stub says in a ``GP-FILL`` comment why ``false``
+    cannot be sent."""
     flag = _option_name(identifier)
-    negative = f"no-{flag}" if f"no-{flag}" not in option_names else f"{flag}-false"
-    return f"--{flag}/--{negative}"
+    for negative in (f"no-{flag}", f"{flag}-false"):
+        if negative not in option_names:
+            return f"--{flag}/--{negative}"
+    return f"--{flag}"
 
 
 ClickKwargs = tuple[tuple[str, "bool | str"], ...]
@@ -698,6 +702,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     param_specs = [_param_spec(p, ("required=True",)) for p in path_params]
     identifier_for = {extra: _param_identifier(extra, seen_params) for extra in sorted(extras)}
     option_names = {_option_name(i) for i in [*path_params, *identifier_for.values()]}
+    flag_notes: list[str] = []
     for extra in sorted(extras):
         declaration = extras[extra]
         params.append(f"{identifier_for[extra]}: {declaration.annotation} | None = None")
@@ -707,6 +712,12 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         elif declaration.label == "bool":
             flag = _negatable_flag(identifier_for[extra], option_names)
             click_kwargs = (("is_flag", True), ("flag", flag))
+            if "/" not in flag:
+                positive = flag.removeprefix("--")
+                flag_notes.append(
+                    f'GP-FILL: "{extra}" can send true but not false: --no-{positive} and '
+                    f"--{positive}-false are both other options of this command."
+                )
         param_specs.append(
             _param_spec(identifier_for[extra], declaration.keywords, click_kwargs=click_kwargs)
         )
@@ -753,6 +764,8 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         lines.append("")
         lines.extend(wrapped_docstring_lines(shape_line))
     lines.append(f'{L2}"""')
+    for note in flag_notes:
+        lines.extend(wrapped_comment_lines(note, indent=len(L2)))
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
             wrapped_comment_lines(

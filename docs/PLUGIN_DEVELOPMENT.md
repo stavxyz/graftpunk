@@ -648,7 +648,9 @@ parameter as `bool` only when the site sent that lowercase spelling, so the
 request matches the recording. In a JSON body the stub sends a JSON boolean, and
 leaves the field out when neither flag is given. When `--no-archived` is already
 another option of the same command (the site also takes a `no_archived`), the
-negative is `--archived-false` instead, so each option keeps its own value.
+negative is `--archived-false` instead, so each option keeps its own value. When
+that is taken too, the flag is `--archived` alone, which sends `true` or nothing,
+and a `GP-FILL` comment in the stub says why `false` cannot be sent.
 
 A `list[...]` parameter is a repeatable option, `click_kwargs={"multiple": True}`
 (`--id 1 --id 2`), typed by its element when that is `int` or `float`; the

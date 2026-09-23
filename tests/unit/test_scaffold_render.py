@@ -1804,6 +1804,42 @@ class TestPluginModuleCommandStubs:
         (prepared,) = sent
         assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
 
+    @pytest.mark.parametrize(
+        ("argv", "expected_query"),
+        [
+            ([], ""),
+            (["--cache"], "?cache=true"),
+            (["--no-cache", "y"], "?no_cache=y"),
+            (["--cache-false", "x"], "?cache_false=x"),
+        ],
+    )
+    def test_a_bool_whose_both_negatives_are_taken_is_positive_only(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_query: str
+    ) -> None:
+        endpoint = self._endpoint(
+            "/orders", query={"cache": "bool", "no_cache": "str", "cache_false": "str"}
+        )
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
+
+    def test_a_positive_only_bool_says_why_false_cannot_be_sent(self) -> None:
+        endpoint = self._endpoint(
+            "/orders", query={"cache": "bool", "no_cache": "str", "cache_false": "str"}
+        )
+        code = self._plugin_code(endpoint)
+        assert '"flag": "--cache"}' in code
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            'GP-FILL: "cache" can send true but not false: --no-cache and --cache-false '
+            "are both other options of this command."
+        ) in comments
+
     def test_a_float_body_field_is_a_float_option(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",
