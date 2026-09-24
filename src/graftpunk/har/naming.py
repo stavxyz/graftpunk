@@ -14,6 +14,7 @@ __all__ = [
     "HTTP_METHODS",
     "capture_filename",
     "capture_slug",
+    "fixture_rank",
     "parse_command_spec",
     "parse_endpoint",
 ]
@@ -59,6 +60,15 @@ def _extension_for_content_type(content_type: str) -> str:
 def capture_filename(method: str, path: str, content_type: str) -> str:
     """``<method>_<slug>.<ext>``, the one name a capture, fixture, and test share."""
     return f"{capture_slug(method, path)}.{_extension_for_content_type(content_type)}"
+
+
+def fixture_rank(body: str | None) -> int:
+    """Where a recording of a template stands for ``gp observe fixtures``: 0 when it
+    carries a body, 1 when it does not. The fixtures are written in this order,
+    stably, so the unsuffixed fixture a generated test reads is the first recording
+    with a body when any has one; the digest reads the same recording
+    (``Endpoint.falsy_first_response``)."""
+    return 0 if body else 1
 
 
 HTTP_METHODS: frozenset[str] = frozenset(

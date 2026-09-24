@@ -45,6 +45,7 @@ from graftpunk.har.naming import (
     EndpointSpecError,
     capture_filename,
     capture_slug,
+    fixture_rank,
     parse_endpoint,
 )
 from graftpunk.har.parser import HAREntry, parse_har_file
@@ -362,7 +363,9 @@ def fixtures_cmd(
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
     matched: set[tuple[str, str]] = set()
-    for entry in entries:
+    # A template's first recording with a body is written first, so it takes the
+    # unsuffixed name a generated test reads (fixture_rank); the sort is stable.
+    for entry in sorted(entries, key=lambda e: fixture_rank(_capture_text(e))):
         try:
             path = urlparse(entry.request.url).path or "/"
         except ValueError:

@@ -533,6 +533,75 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
 
+    @staticmethod
+    def _scaffold_fixture_and_test(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entries: list[dict], match: str
+    ) -> tuple[Path, subprocess.CompletedProcess[str]]:
+        """gp plugin new from *entries*, gp observe fixtures --match *match* into the
+        project's fixtures, then the project's own pytest."""
+        from graftpunk.cli.observe_commands import observe_app
+
+        monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+        app = _build_app()
+        app.add_typer(observe_app)
+        target = tmp_path / "out"
+        argv = ["plugin", "new", "myshop", "--from-run", "myshop", "--run", "run-1"]
+        result = runner.invoke(app, [*argv, "--dir", str(target)])
+        assert result.exit_code == 0, result.output
+        fixtures_dir = target / "tests" / "fixtures"
+        result = runner.invoke(
+            app, ["observe", "fixtures", "myshop", "--match", match, "--out", str(fixtures_dir)]
+        )
+        assert result.exit_code == 0, result.output
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return target, pytest_result
+
+    @pytest.mark.parametrize("body", ["0", "false"])
+    def test_a_text_endpoint_s_generated_test_passes_on_a_falsy_looking_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+    ) -> None:
+        """A text/plain 0 is the string "0", which the generated test's assert result
+        holds."""
+        entry = _entry(
+            "GET", "https://api.myshop.example.com/count", content_type="text/plain", body=body
+        )
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [entry], "GET /count"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        test_code = (target / "tests" / "test_plugin.py").read_text()
+        assert "assert result  # GP-FILL" in test_code
+
+    def test_a_json_endpoint_recorded_empty_then_with_a_body_gets_a_passing_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 204 then a 200 {"n": 1}: the unsuffixed fixture is the 200's body, which
+        the generated test reads."""
+        first = _entry("GET", "https://api.myshop.example.com/cart", body="")
+        first["response"]["status"] = 204
+        second = _entry("GET", "https://api.myshop.example.com/cart", body='{"n": 1}')
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second], "GET /cart"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
+
     def test_a_recorder_redirect_hop_s_fixture_passes_the_generated_test(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -591,7 +660,7 @@ class TestGeneratedProjectPassesItsOwnGate:
     @pytest.mark.parametrize(
         ("status", "body", "assertion"),
         [
-            (204, "", "assert result is not None"),
+            (204, "", 'assert result == ""'),
             (200, "{}", "assert result == {}"),
             (200, "[]", "assert result == []"),
             (200, "null", "assert result is None"),

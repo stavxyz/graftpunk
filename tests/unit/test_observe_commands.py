@@ -1062,6 +1062,24 @@ class TestResponsesRecordedWithNoText:
         assert "image/png" in result.output
         assert list(out_dir.iterdir()) == []
 
+    def test_the_unsuffixed_fixture_is_the_first_recording_with_a_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 204 then a 200: the generated test reads the unsuffixed file, so it holds
+        the 200's body, and the empty 204 takes the suffix."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        empty = _entry("GET", "https://api.myshop.example.com/orders/1001", body="")
+        empty["response"]["status"] = 204
+        bodied = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        _write_run(observe_base, "myshop", "run-1", [empty, bodied])
+        out_dir = tmp_path / "out"
+
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        assert (out_dir / "get_orders_{order_id}.json").read_text() == '{"id": 1}'
+        assert (out_dir / "get_orders_{order_id}#1.json").read_text() == ""
+
     @pytest.mark.parametrize("status", [302, 204])
     def test_a_bodyless_redirect_or_no_content_writes_an_empty_fixture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int

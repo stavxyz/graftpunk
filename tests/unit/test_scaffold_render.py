@@ -3125,8 +3125,9 @@ def test_an_endpoint_recorded_with_no_body_gets_a_test_that_can_pass() -> None:
     test_code = _render_endpoints(bodyless, _single_endpoint("/orders"))["tests/test_plugin.py"]
     go = test_code[test_code.index("def test_go(") :]
     go = go[: go.index("\n\n\n")] if "\n\n\n" in go else go
-    assert "assert result is not None" in go
-    assert "GP-FILL: the recorded response had no body" in go
+    assert '    assert result == ""\n' in go
+    assert "GP-FILL: every recorded response had no body" in go
+    assert "a redirect, say" not in go
     orders = test_code[test_code.index("def test_orders(") :]
     assert "assert result  # GP-FILL" in orders
 
@@ -3140,7 +3141,6 @@ def test_a_json_endpoint_recorded_with_no_body_is_requested_as_text() -> None:
         content_type="application/json",
         shape=None,
         response_body_empty=True,
-        falsy_first_response="",
     )
     files = _render_endpoints(no_content)
     plugin = files["src/graftpunk_myshop/plugin.py"]
@@ -3148,7 +3148,7 @@ def test_a_json_endpoint_recorded_with_no_body_is_requested_as_text() -> None:
     assert "return ctx.request_text(" in stub
     assert "request_json" not in stub
     test_code = files["tests/test_plugin.py"]
-    assert "assert result is not None" in test_code[test_code.index("def test_cart_clear(") :]
+    assert '    assert result == ""\n' in test_code[test_code.index("def test_cart_clear(") :]
 
 
 @pytest.mark.parametrize(
@@ -3180,8 +3180,16 @@ def test_an_endpoint_recorded_with_a_falsy_json_body_asserts_that_value(
     assert "assert result  # GP-FILL" in orders
 
 
-def test_an_endpoint_whose_first_recording_had_no_body_asserts_the_call_completed() -> None:
-    """Later recordings had a body, but the fixture is the first, empty one."""
-    go = dataclasses.replace(_single_endpoint("/go"), falsy_first_response="")
-    test_code = _render_endpoints(go)["tests/test_plugin.py"]
-    assert "assert result is not None" in test_code[test_code.index("def test_go(") :]
+@pytest.mark.parametrize("falsy", ["0", "false"])
+def test_a_text_endpoint_never_gets_a_falsy_json_assertion(falsy: str) -> None:
+    """A text endpoint's result is a string, so a falsy JSON value is not asserted."""
+    text = dataclasses.replace(
+        _single_endpoint("/count"),
+        content_type="text/plain",
+        shape=None,
+        falsy_first_response=falsy,
+    )
+    test_code = _render_endpoints(text)["tests/test_plugin.py"]
+    count = test_code[test_code.index("def test_count(") :]
+    assert "assert result  # GP-FILL" in count
+    assert "falsy JSON value" not in count

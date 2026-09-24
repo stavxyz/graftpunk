@@ -27,6 +27,7 @@ from graftpunk.har.documents import (
     looks_like_new_password_name,
     looks_like_token_name,
 )
+from graftpunk.har.naming import fixture_rank
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
@@ -1091,9 +1092,12 @@ class _EndpointAccumulator:
         self.body_params: dict[str, str] = {}
         self.body_kind: BodyKind = "none"
         self.shape: ShapeNode | None = None
-        # Whether any recorded response carried a body, and the first one's falsy
-        # value (_falsy_value).
+        # Whether any recorded response carried a body. The recording gp observe
+        # fixtures writes without a suffix (graftpunk.har.naming.fixture_rank, then
+        # the order recorded), as its (rank, step) key, and its falsy JSON value
+        # (_falsy_value) when its content type is JSON.
         self.bodied = False
+        self.fixture_key: tuple[int, int] | None = None
         self.falsy_first: str | None = None
         self.custom_headers: set[str] = set()
         self.examples: list[str] = []
@@ -1102,9 +1106,12 @@ class _EndpointAccumulator:
         self.dropped_body: set[str] = set()
         self.dropped_headers: set[str] = set()
 
-    def record(self, entry: HAREntry, path: str) -> None:
-        if self.count == 0:
-            self.falsy_first = _falsy_value(entry.response.body)
+    def record(self, entry: HAREntry, path: str, step: int) -> None:
+        key = (fixture_rank(entry.response.body), step)
+        if self.fixture_key is None or key < self.fixture_key:
+            self.fixture_key = key
+            is_json = "json" in (entry.response.content_type or "").lower()
+            self.falsy_first = _falsy_value(entry.response.body) if is_json else None
         method = entry.request.method.upper()
         if method not in self.methods:
             self.methods.append(method)
@@ -1163,11 +1170,12 @@ class _EndpointAccumulator:
 
 
 def _falsy_value(body: str | None) -> str | None:
-    """*body* as :attr:`Endpoint.falsy_first_response` records it: ``""`` when it is
-    empty, the falsy JSON value it parses to (``{}``, ``[]``, ``""``, ``0``,
-    ``false``, or ``null``) as canonical JSON, and None for anything else."""
+    """*body*, a JSON response's, as :attr:`Endpoint.falsy_first_response` records
+    it: the falsy JSON value it parses to (``{}``, ``[]``, ``""``, ``0``,
+    ``false``, or ``null``) as canonical JSON, and None for anything else, an empty
+    body included (``Endpoint.response_body_empty`` records that)."""
     if not body:
-        return ""
+        return None
     try:
         value = json.loads(body)
     except ValueError:
@@ -1458,7 +1466,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         raw_template, _ = template_path(path)
         key = (method, raw_template)
         acc = accumulators.setdefault(key, _EndpointAccumulator(host=host))
-        acc.record(entry, path)
+        acc.record(entry, path, step)
 
         for name in entry.request.headers:
             if looks_like_token_name(name):
@@ -1695,6 +1703,13 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.dropped_query |= acc.dropped_query
             target.dropped_body |= acc.dropped_body
             target.bodied = target.bodied or acc.bodied
+            # The family's fixture is its members' first recording by the fixtures
+            # order, whichever member recorded it.
+            if acc.fixture_key is not None and (
+                target.fixture_key is None or acc.fixture_key < target.fixture_key
+            ):
+                target.fixture_key = acc.fixture_key
+                target.falsy_first = acc.falsy_first
             target.dropped_headers |= acc.dropped_headers
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost

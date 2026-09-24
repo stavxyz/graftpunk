@@ -1059,7 +1059,7 @@ class TestEndpointExamples:
             ("0", "0"),
             ("false", "false"),
             ("null", "null"),
-            ("", ""),
+            ("", None),
             ('{"ok": true}', None),
             ("[1]", None),
             ("not json", None),
@@ -1081,8 +1081,8 @@ class TestEndpointExamples:
     def test_the_first_response_s_falsy_value_is_recorded(
         self, tmp_path: Path, body: str, falsy: str | None
     ) -> None:
-        """A falsy JSON value is recorded as canonical JSON, an empty body as an empty
-        string, and anything else as None."""
+        """A falsy JSON value is recorded as canonical JSON; an empty body (which
+        response_body_empty records) and anything else is None."""
         entries = [_entry("POST", "https://api.myshop.example.com/ack", body=body)]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (endpoint,) = result.endpoints
@@ -1090,18 +1090,35 @@ class TestEndpointExamples:
 
     @pytest.mark.parametrize(
         ("bodies", "falsy"),
-        [(["{}", '{"ok": true}'], "{}"), (['{"ok": true}', "{}"], None)],
-        ids=["falsy-first", "truthy-first"],
+        [
+            (["{}", '{"ok": true}'], "{}"),
+            (['{"ok": true}', "{}"], None),
+            (["", "{}"], "{}"),
+            (["", '{"ok": true}'], None),
+        ],
+        ids=["falsy-first", "truthy-first", "empty-then-falsy", "empty-then-truthy"],
     )
-    def test_the_first_recording_decides(
+    def test_the_fixture_recording_decides(
         self, tmp_path: Path, bodies: list[str], falsy: str | None
     ) -> None:
-        """gp observe fixtures names the first recording's fixture without a suffix,
-        and that is the one a generated test reads."""
+        """gp observe fixtures names the first recording with a body without a
+        suffix, and that is the one a generated test reads."""
         entries = [_entry("GET", "https://api.myshop.example.com/ack", body=b) for b in bodies]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (endpoint,) = result.endpoints
         assert endpoint.falsy_first_response == falsy
+
+    @pytest.mark.parametrize("body", ["0", "false", "{}"])
+    def test_a_text_response_has_no_falsy_json_value(self, tmp_path: Path, body: str) -> None:
+        """Only a JSON response is read as JSON: a text/plain 0 is the text "0"."""
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/count", content_type="text/plain", body=body
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.falsy_first_response is None
 
     def test_examples_stop_at_the_cap(self, tmp_path: Path) -> None:
         entries = [
@@ -1326,6 +1343,25 @@ class TestCollapseMergeCarriesShapeAndBodyKind:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (merged,) = [e for e in result.endpoints if e.template == "/products/{product_id}"]
         assert merged.falsy_first_response == falsy
+
+    def test_the_family_s_fixture_is_its_first_recording_with_a_body(self, tmp_path: Path) -> None:
+        """The first member's first recording is empty, so the family's fixture is the
+        second member's {}, recorded before the first member's own body."""
+        count = _HIGH_CARDINALITY_THRESHOLD + 1
+        paths = [f"/products/widget-{chr(ord('a') + i)}1" for i in range(count)]
+        first_empty = _entry("GET", f"https://api.myshop.example.com{paths[0]}", body="")
+        first_empty["response"]["status"] = 204
+        entries = [
+            first_empty,
+            _entry("GET", f"https://api.myshop.example.com{paths[1]}", body="{}"),
+            *(
+                _entry("GET", f"https://api.myshop.example.com{path}", body='{"id": 1}')
+                for path in [*paths[2:], paths[0]]
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (merged,) = [e for e in result.endpoints if e.template == "/products/{product_id}"]
+        assert merged.falsy_first_response == "{}"
 
     def test_members_that_type_a_parameter_differently_merge_to_str(self, tmp_path: Path) -> None:
         """The family merge applies the same rule a single endpoint's requests do."""

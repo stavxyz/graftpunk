@@ -1251,17 +1251,17 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
             )
         )
         falsy = endpoint.falsy_first_response
-        if endpoint.response_body_empty or falsy == "":
-            # An empty body is falsy, so `assert result` would fail out of the box.
+        if endpoint.response_body_empty:
+            # The fixture is empty, and the command reads it as text.
             lines.extend(
                 wrapped_comment_lines(
-                    "GP-FILL: the recorded response had no body (a redirect, say): assert "
-                    "on the page the redirect leads to.",
+                    "GP-FILL: every recorded response had no body (a redirect or a 204): "
+                    "assert on what the call should return.",
                     indent=len(L1),
                 )
             )
-            lines.append("    assert result is not None")
-        elif falsy is not None:
+            lines.append('    assert result == ""')
+        elif falsy is not None and _is_json_endpoint(endpoint):
             # The fixture holds this falsy value, which `assert result` would fail on.
             lines.extend(
                 wrapped_comment_lines(
