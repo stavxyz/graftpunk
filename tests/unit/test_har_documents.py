@@ -72,6 +72,18 @@ class TestExtractLoginForms:
         assert form.hidden == ("_token",)
         assert {"region", "note"} <= set(form.input_names)
 
+    def test_a_javascript_action_keeps_its_scope_and_submit(self) -> None:
+        """javascript:void(0) holds no id, so the scoped selectors are printed."""
+        html = (
+            '<form action="javascript:void(0)"><input name="username">'
+            '<input type="password" name="password"><button>Sign in</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        fields, submit = printable_selectors(form)
+        assert fields["username"] == 'form[action="javascript:void(0)"] input[name="username"]'
+        assert submit is not None
+        assert printable_unresolved_roles(form) == ()
+
     def test_submit_selector(self) -> None:
         (form,) = extract_login_forms(_LOGIN_PAGE, source="s")
         assert form.submit == "#login-btn"

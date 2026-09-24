@@ -138,6 +138,11 @@ class TestTemplatedUrl:
         """An empty form action submits to the page itself; "/" would be a claim."""
         assert templated_url("") == ""
 
+    @pytest.mark.parametrize("url", ["javascript:void(0)", "javascript:submitLogin(12345)"])
+    def test_a_url_of_another_scheme_is_left_alone(self, url: str) -> None:
+        """A javascript: action has no path to template."""
+        assert templated_url(url) == url
+
 
 class TestTemplatesASegment:
     @pytest.mark.parametrize(
@@ -150,6 +155,9 @@ class TestTemplatesASegment:
             ("/session", False),
             ("/orders/", False),
             ("", False),
+            ("javascript:void(0)", False),
+            ("javascript:submitLogin(12345)", False),
+            ("HTTPS://myshop.example.com/accounts/12345/session", True),
         ],
     )
     def test_only_a_segment_template_path_collapses_counts(self, url: str, expected: bool) -> None:

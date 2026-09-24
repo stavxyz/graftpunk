@@ -529,6 +529,22 @@ class TestEndpointsProjection:
             ("POST", "https://myshop.example.com/session"),
         }
 
+    def test_a_javascript_action_is_printed_as_written(self, tmp_path: Path) -> None:
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/login",
+            content_type="text/html",
+            body=(
+                '<form action="javascript:void(0)"><input name="username">'
+                '<input type="password" name="password"><button>Sign in</button></form>'
+            ),
+        )
+        payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, [page]))))
+        (form,) = payload["login"]["forms"]
+        assert form["action"] == "javascript:void(0)"
+        assert form["submit"] is not None
+        assert form["unresolved_roles"] == []
+
     def test_login_flow_and_shape_come_through(self, tmp_path: Path) -> None:
         payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))
         order = next(e for e in payload["endpoints"] if e["template"] == "/api/orders/{order_id}")

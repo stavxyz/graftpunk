@@ -455,6 +455,12 @@ def template_path(path: str) -> tuple[str, dict[str, str]]:
     return f"{leading}{body}{trailing}" if body else (leading or "/"), params
 
 
+def _other_scheme(scheme: str) -> bool:
+    """True when *scheme* (lower case, as urlsplit gives it) is present and names
+    neither ``http`` nor ``https``."""
+    return bool(scheme) and scheme not in ("http", "https")
+
+
 def templates_a_segment(url: str) -> bool:
     """True when :func:`template_path` turns a segment of *url*'s path into a
     parameter, so the path holds an id or a token.
@@ -462,9 +468,13 @@ def templates_a_segment(url: str) -> bool:
     Compared path to path (templated against :func:`bare_path`), never whole
     strings: :func:`templated_url` gives a URL with no path a ``/``, which is not an
     account value. A segment :func:`bare_url` already masked (an email, now
-    ``{user_id}``) counts too.
+    ``{user_id}``) counts too. A URL of another scheme than ``http`` or ``https``
+    (``javascript:void(0)``) has no path to template, so it never does.
     """
-    path = bare_path(urlsplit(url).path)
+    parts = urlsplit(url)
+    if _other_scheme(parts.scheme):
+        return False
+    path = bare_path(parts.path)
     if any(is_placeholder(segment) for segment in path.split("/")):
         return True
     return bool(path) and template_path(path)[0] != path
@@ -478,9 +488,12 @@ def templated_url(url: str) -> str:
     and a projection or generated file then prints: its path can hold an account
     id or a one-time token. An absolute URL with no path gets ``/``; a relative
     one stays relative, and an empty one stays empty (an empty form action posts
-    to the page itself).
+    to the page itself). A URL of another scheme than ``http`` or ``https``
+    (``javascript:void(0)``) has no path to template and is returned unchanged.
     """
     parts = urlsplit(url)
+    if _other_scheme(parts.scheme):
+        return url
     path = parts.path or ("/" if parts.netloc else "")
     template = template_path(path)[0] if path else ""
     return urlunsplit((parts.scheme, bare_host(parts.netloc), template, "", ""))
