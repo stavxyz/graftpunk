@@ -716,22 +716,31 @@ in it stays in its segment. A command's name is a Python identifier (`import`
 becomes `import_`, a leading digit gains `n_`) and never one of `SitePlugin`'s
 own attributes (`setup` becomes `setup_2`) or a root command graftpunk adds
 itself (`login` becomes `login_2`). A generated test reads the fixture
-`gp observe fixtures` writes without a suffix: the first recording of the
-endpoint's main content type, one with a body preferred, or of any type when
-that one has none written; the stub reads that type too. For an endpoint every
-recording of which had no body (a redirect or a 204), the test asserts
-`result == ""`, with a `GP-FILL` saying to assert on what the call should
-return, and a JSON endpoint recorded that way reads its response as text, since
-there is no JSON to parse. An endpoint `gp observe fixtures` writes no fixture
-for, because no recording kept any text and none was a redirect or a 204 (a
-third-party HAR that kept no text for a 200, say), gets no test: a `GP-FILL`
-stands in its place, and its fixture is not in the list `gp plugin new` prints.
-A recording with empty text, which graftpunk's own recorders keep for a
-body-less response, is written, so its endpoint keeps its test. When the
-fixture's recording is JSON and parses to a falsy value, the test asserts that
-value (`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or
-`is None`), with a `GP-FILL` saying to assert on the shape you expect; a text
-response is never read as JSON, so a `text/plain` `0` keeps `assert result`.
+`gp observe fixtures` writes without a suffix: the endpoint's one fixture
+recording, decided over the recordings the digest kept (in scope, not static,
+and with text to write), media types compared normalised (parameters stripped,
+case-insensitive). Its type is the most-recorded one among the types with a
+recording that carries a body, a count tie going to a JSON type and then to the
+type whose winning recording came first; only when no type has a body at all
+does the same rule run over every recorded type instead. Within that type, the
+fixture is the first recording with a body, or its first recording when the
+type is empty-only. The stub's request method and return type, the test's
+assertion, the fixture name `gp plugin new` lists, and the docstring's response
+shape (shown only when the fixture recording is JSON) all read that one
+recording. For an endpoint whose fixture recording has no body (every
+recording answered with a redirect or a 204), the test asserts `result == ""`,
+with a `GP-FILL` saying to assert on what the call should return, and a JSON
+endpoint recorded that way reads its response as text, since there is no JSON
+to parse. An endpoint `gp observe fixtures` writes no fixture for, because no
+recording kept any text and none was a redirect or a 204 (a third-party HAR
+that kept no text for a 200, say), gets no test: a `GP-FILL` stands in its
+place, and its fixture is not in the list `gp plugin new` prints. A recording
+with empty text, which graftpunk's own recorders keep for a body-less
+response, is written, so its endpoint keeps its test. When the fixture's
+recording is JSON and parses to a falsy value, the test asserts that value
+(`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or `is None`),
+with a `GP-FILL` saying to assert on the shape you expect; a text response is
+never read as JSON, so a `text/plain` `0` keeps `assert result`.
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
@@ -1291,9 +1300,12 @@ tests pass `"1"`); a real slug would be looked up as
 `get_products_alpha-widget-2024.json` and answer 404. `--out PATH` chooses where
 to write (`./tests/captures` by default), `--limit N` caps how many files are
 written per matched template (5 by default), and `--allow-tracked` overrides the
-refusal to write onto a git-tracked path. A template's fixture recording (the
-first of its endpoint's main content type, one with a body preferred) is written
-first and takes the unsuffixed name a generated test reads; the others, an empty
+refusal to write onto a git-tracked path. A template's fixture recording, the
+one `gp plugin new`'s digest chose (see above: the most-recorded type with a
+body, ties going to JSON and then to the earliest, or, with no type having a
+body, the same rule over every type; the first recording of that type with a
+body, or its first recording when the type is empty-only), is written first and
+takes the unsuffixed name a generated test reads; the others, an empty
 one included, get `#1`, `#2` suffixes (a `#` cannot occur in a path, so a repeat
 never takes the name of a numeric segment), and two templates that would share a
 fixture stem (`/a_b` and `/a/b`, or `/Users` and `/users`, whatever their
