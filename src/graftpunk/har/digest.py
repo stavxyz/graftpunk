@@ -1368,7 +1368,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         if parsed_url.scheme.lower() not in _HTTP_SCHEMES:
             dropped["other_scheme"] += 1
             continue
-        host = bare_host(parsed_url.netloc).lower()
+        # One spelling per host, so an entry recorded as API.example.com:443 counts
+        # with, and is in scope with, api.example.com.
+        host = normal_host(parsed_url.scheme, parsed_url.netloc)
         hosts[host] = hosts.get(host, 0) + 1
         static = _is_static(entry)
         if not static:

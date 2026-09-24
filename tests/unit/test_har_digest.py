@@ -2782,13 +2782,23 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'success_url="*/app*",' in self._plugin(result)
 
-    def test_a_form_post_submission_s_host_is_compared_without_case(self, tmp_path: Path) -> None:
-        """The form posts to api.myshop.../callback; the recorded POST went to
-        API.MYSHOP.../callback, and is its submission."""
-        entries = self._form_post_chain(
-            "https://api.myshop.example.com/callback", "https://API.MYSHOP.example.com/callback"
-        )
+    @pytest.mark.parametrize(
+        "callback_url",
+        [
+            "https://API.MYSHOP.example.com/callback",
+            "https://api.myshop.example.com:443/callback",
+            "https://API.MYSHOP.example.com:443/callback",
+        ],
+        ids=["upper-case", "default-port", "both"],
+    )
+    def test_a_form_post_submission_s_host_is_compared_without_case_or_a_default_port(
+        self, tmp_path: Path, callback_url: str
+    ) -> None:
+        """The form posts to api.myshop.../callback; the recorded POST went to the same
+        host spelled in upper case, with :443, or both, and is its submission."""
+        entries = self._form_post_chain("https://api.myshop.example.com/callback", callback_url)
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.dropped["third_party"] == 0
         assert 'success_url="*/app*",' in self._plugin(result)
 
     def test_a_200_login_takes_no_landing_even_through_an_auto_submit_form(
