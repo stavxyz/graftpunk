@@ -986,11 +986,14 @@ def _used_login(
 ) -> tuple[set[int], set[int]]:
     """The steps of the credential posts and the form pages of the login the
     generator uses: the first ranked form with a password field (the one
-    ``login_config`` is built from), the posts that went to its target or promoted
-    a page it is on, and the pages those posts promoted. When none went there, the
-    posts found by their field names alone to the first target no recorded form
-    posts to (a script posting elsewhere than the form says). With no such form,
-    every credential post and its page."""
+    ``login_config`` is built from), and the pages the owned posts promoted. Owned
+    are the posts that went to its target; the posts a recorded form's target
+    matched that promoted a page it is on; and, only when no post went to its
+    target, the posts found by their field names alone to the first target no
+    recorded form posts to (a script posting elsewhere than the form says), whether
+    they promoted its page or not. A field-name-only post that promoted its page but
+    went elsewhere than that first target is not owned. With no such form, every
+    credential post and its page."""
     selected = next((form for form in ranked if "password" in form.fields), None)
     if selected is None:
         owned = set(post_steps)
