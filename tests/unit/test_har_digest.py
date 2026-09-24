@@ -2613,6 +2613,59 @@ class TestLoginFlowFlag:
         assert flags[("POST", path)] is False
         assert 'success_url="*/dashboard*",' in self._plugin(result)
 
+    @pytest.mark.parametrize("form_open", ['<form method="post">', "<form>"], ids=["self", "none"])
+    def test_password_confirmed_actions_keep_their_commands_whatever_the_form_action(
+        self, tmp_path: Path, form_open: str
+    ) -> None:
+        """The login form posts to its own page, or has no action at all: later
+        password-confirmed actions found by their field names are still their own."""
+        form = (
+            f'{form_open}<input type="email" name="email" id="email">'
+            '<input type="password" name="password" id="pass"></form>'
+        )
+        login_post = (
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/login",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            )
+            if form_open == '<form method="post">'
+            else _entry(
+                "POST",
+                "https://api.myshop.example.com/api/v1/sessions",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            )
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=form
+            ),
+            login_post,
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/account/email",
+                status=302,
+                response_headers={"Location": "/account"},
+                post_data=json.dumps({"email": "bob@example.com", "password": "x"}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/account/delete",
+                status=303,
+                response_headers={"Location": "/goodbye"},
+                post_data=json.dumps({"password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/api/account/email")] is False
+        assert flags[("POST", "/api/account/delete")] is False
+        assert 'success_url="*/app*",' in self._plugin(result)
+
     def test_only_the_first_script_login_target_is_owned(self, tmp_path: Path) -> None:
         """No post went to the form's action; the first field-name-only post's
         target is the login's, and a later one to another target is not."""

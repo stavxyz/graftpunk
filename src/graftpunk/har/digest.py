@@ -974,26 +974,33 @@ def _used_login(
         pages = {
             page_of[id(form)] for form in recorded if id(form) in page_of and _form_key(form) == key
         }
-        owned = {
+        steps_and_posts = list(zip(post_steps, posts, strict=True))
+        direct = {
             step
-            for step, post in zip(post_steps, posts, strict=True)
-            if _target_matches(selected.action_target, post.target) or post.page_step in pages
+            for step, post in steps_and_posts
+            if _target_matches(selected.action_target, post.target)
         }
         # A login script can post elsewhere than its form's action. Only when no post
         # went to the form's action is a post found by its field names alone, to no
         # recorded form's action, the login's; and only the first such target, so a
         # later password-confirmed action (change email, delete account) stays its
-        # own command.
-        if not owned:
-            script_posts = [
-                (step, post)
-                for step, post in zip(post_steps, posts, strict=True)
-                if post.by_field_names
-                and not any(_target_matches(form.action_target, post.target) for form in recorded)
-            ]
-            if script_posts:
-                first_target = script_posts[0][1].target
-                owned = {step for step, post in script_posts if post.target == first_target}
+        # own command. The same rule holds for a field-name-only post that reached
+        # the form's page through the scripted fallback (a self-posting or actionless
+        # login form), so no such post is owned by the page alone.
+        script_posts = [
+            (step, post)
+            for step, post in steps_and_posts
+            if post.by_field_names
+            and not any(_target_matches(form.action_target, post.target) for form in recorded)
+        ]
+        first_target = script_posts[0][1].target if script_posts and not direct else None
+        by_page = {
+            step
+            for step, post in steps_and_posts
+            if post.page_step in pages and (not post.by_field_names or post.target == first_target)
+        }
+        by_script = {step for step, post in script_posts if post.target == first_target}
+        owned = direct | by_page | by_script
     owned_pages = {
         post.page_step
         for step, post in zip(post_steps, posts, strict=True)
