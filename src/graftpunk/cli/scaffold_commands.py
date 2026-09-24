@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 from pathlib import Path
 from typing import Annotated, Literal
@@ -15,7 +16,9 @@ import graftpunk
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.plugin_commands import derive_reserved_cli_names
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
-from graftpunk.devtools.errors import ScaffoldWriteError
+from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
+from graftpunk.devtools.plugin_info import info_payload
+from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold.project import (
     NotAPluginSuiteError,
     ScaffoldConflictError,
@@ -242,3 +245,21 @@ def _print_next_steps(spec: ScaffoldSpec) -> None:
         "[dim]Derive each one from a capture of the same name: gp observe fixtures --help[/dim]",
         soft_wrap=True,
     )
+
+
+@plugin_app.command("info")
+def plugin_info(
+    as_json: Annotated[bool, typer.Option("--json", help="Print JSON (the only form)")] = False,
+    dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
+) -> None:
+    """Describe the plugin project in --dir: its classification, plugins, and commands."""
+    if not as_json:
+        console.print("[red]gp plugin info prints JSON only: pass --json.[/red]")
+        raise typer.Exit(1)
+    try:
+        payload = info_payload(read_project(dir_))
+    except DevtoolsRefusal as exc:
+        LOG.debug("plugin_info_refused", reason=type(exc).__name__)
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))

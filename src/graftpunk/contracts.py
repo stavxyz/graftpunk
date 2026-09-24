@@ -1,10 +1,11 @@
 """The schema number of every versioned machine payload, and the one check a reader applies.
 
 Payloads a program reads carry a ``schema`` number: the ``gp observe digest
---endpoints-json`` projection (``endpoints``) and the fixture sidecar
-(``sidecar``). Within one schema version, fields are added and never renamed or
-removed; a rename or a removal is a new version, and a reader accepts every
-version from 1 to the current one. The sidecar is stricter: its loader refuses a
+--endpoints-json`` projection (``endpoints``), the ``gp plugin info --json``
+payload (``info``), and the fixture sidecar (``sidecar``). Within one schema
+version, fields are added and never renamed or removed; a rename or a removal
+is a new version, and a reader accepts every version from 1 to the current
+one. The sidecar is stricter: its loader refuses a
 missing key and a key outside its version, so any change to its keys, an added
 one included, is a new version (:mod:`graftpunk.testing.sidecar`).
 
@@ -36,6 +37,7 @@ import graftpunk
 __all__ = [
     "CLI_SURFACES",
     "ENDPOINTS_SCHEMA",
+    "INFO_SCHEMA",
     "SIDECAR_SCHEMA",
     "Surface",
     "UnknownSchemaError",
@@ -46,17 +48,19 @@ __all__ = [
     "refuse_unknown_schema",
 ]
 
-Surface = Literal["endpoints", "sidecar"]
+Surface = Literal["endpoints", "info", "sidecar"]
 
 ENDPOINTS_SCHEMA: Final = 1
+INFO_SCHEMA: Final = 1
 SIDECAR_SCHEMA: Final = 1
 
 _CURRENT: Final[dict[Surface, int]] = {
     "endpoints": ENDPOINTS_SCHEMA,
+    "info": INFO_SCHEMA,
     "sidecar": SIDECAR_SCHEMA,
 }
 
-CLI_SURFACES: Final[tuple[Surface, ...]] = ("endpoints",)
+CLI_SURFACES: Final[tuple[Surface, ...]] = ("endpoints", "info")
 """The surfaces a caller reads through the CLI, which ``gp version --json`` lists.
 
 The sidecar is not one: it is read by ``graftpunk.testing`` from a plugin's
