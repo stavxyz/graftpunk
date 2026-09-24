@@ -15,6 +15,7 @@ from graftpunk.contracts import (
     _CURRENT,
     CLI_SURFACES,
     ENDPOINTS_SCHEMA,
+    INFO_SCHEMA,
     SIDECAR_SCHEMA,
     Surface,
     UnknownSchemaError,
@@ -47,6 +48,10 @@ class TestCurrentNumbers:
         assert set(_CURRENT) == set(get_args(Surface))
         assert set(CLI_SURFACES) <= set(_CURRENT)
 
+    def test_the_info_surface_is_read_through_the_cli(self) -> None:
+        assert current_schema("info") == INFO_SCHEMA == 1
+        assert cli_contracts() == {"endpoints": 1, "info": 1}
+
 
 class TestRefuseUnknownSchema:
     def test_the_current_number_is_accepted(self) -> None:
@@ -70,16 +75,16 @@ class TestAnUnknownSurface:
     that ignored the type; each refuses it by name instead of raising KeyError."""
 
     def test_refuse_unknown_schema(self) -> None:
-        with pytest.raises(UnknownSchemaError, match="'info' is not a surface"):
-            refuse_unknown_schema("info", 1)
+        with pytest.raises(UnknownSchemaError, match="'bogus' is not a surface"):
+            refuse_unknown_schema("bogus", 1)
 
     def test_current_schema(self) -> None:
-        with pytest.raises(UnknownSchemaError, match="'info' is not a surface"):
-            current_schema("info")
+        with pytest.raises(UnknownSchemaError, match="'bogus' is not a surface"):
+            current_schema("bogus")
 
     def test_cli_contracts(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(contracts, "CLI_SURFACES", ("endpoints", "info"))
-        with pytest.raises(UnknownSchemaError, match="'info' is not a surface"):
+        monkeypatch.setattr(contracts, "CLI_SURFACES", ("endpoints", "bogus"))
+        with pytest.raises(UnknownSchemaError, match="'bogus' is not a surface"):
             cli_contracts()
 
 
