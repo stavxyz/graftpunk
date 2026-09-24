@@ -915,9 +915,10 @@ def _used_login(
     """The steps of the credential posts and the form pages of the login the
     generator uses: the first ranked form with a password field (the one
     ``login_config`` is built from), the posts that went to its target or promoted
-    a page it is on, a post found by its field names alone that went to no recorded
-    form's action (a script posting elsewhere than the form says), and the pages
-    those posts promoted. With no such form, every credential post and its page."""
+    a page it is on, and the pages those posts promoted. When none went there, the
+    posts found by their field names alone to the first target no recorded form
+    posts to (a script posting elsewhere than the form says). With no such form,
+    every credential post and its page."""
     selected = next((form for form in ranked if "password" in form.fields), None)
     if selected is None:
         owned = set(post_steps)
@@ -929,15 +930,23 @@ def _used_login(
         owned = {
             step
             for step, post in zip(post_steps, posts, strict=True)
-            if _target_matches(selected.action_target, post.target)
-            or post.page_step in pages
-            # A login script posts elsewhere than its form's action: a post found by
-            # its field names alone, to no recorded form's action, is the login's.
-            or (
-                post.by_field_names
-                and not any(_target_matches(form.action_target, post.target) for form in recorded)
-            )
+            if _target_matches(selected.action_target, post.target) or post.page_step in pages
         }
+        # A login script can post elsewhere than its form's action. Only when no post
+        # went to the form's action is a post found by its field names alone, to no
+        # recorded form's action, the login's; and only the first such target, so a
+        # later password-confirmed action (change email, delete account) stays its
+        # own command.
+        if not owned:
+            script_posts = [
+                (step, post)
+                for step, post in zip(post_steps, posts, strict=True)
+                if post.by_field_names
+                and not any(_target_matches(form.action_target, post.target) for form in recorded)
+            ]
+            if script_posts:
+                first_target = script_posts[0][1].target
+                owned = {step for step, post in script_posts if post.target == first_target}
     owned_pages = {
         post.page_step
         for step, post in zip(post_steps, posts, strict=True)

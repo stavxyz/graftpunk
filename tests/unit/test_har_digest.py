@@ -2371,6 +2371,105 @@ class TestLoginFlowFlag:
         assert 'success_url="*/app*",' in code
         assert "def api_v1_sessions(" not in code
 
+    @pytest.mark.parametrize(
+        ("path", "body", "status", "location"),
+        [
+            (
+                "/api/account/email",
+                {"email": "alice@example.com", "password": "x"},
+                302,
+                "/account",
+            ),
+            ("/api/account/delete", {"password": "x"}, 303, "/goodbye"),
+        ],
+        ids=["change-email", "delete-account"],
+    )
+    def test_a_later_password_confirmed_action_is_not_absorbed_into_the_login(
+        self, tmp_path: Path, path: str, body: dict, status: int, location: str
+    ) -> None:
+        """Once the login posted to its form, a later script post found by its
+        field names alone is not the login's."""
+        entries = [
+            *self._login_entries(),
+            _entry(
+                "POST",
+                f"https://api.myshop.example.com{path}",
+                status=status,
+                response_headers={"Location": location},
+                post_data=json.dumps(body),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", path)] is False
+        assert 'success_url="*/dashboard*",' in self._plugin(result)
+
+    def test_only_the_first_script_login_target_is_owned(self, tmp_path: Path) -> None:
+        """No post went to the form's action; the first field-name-only post's
+        target is the login's, and a later one to another target is not."""
+        form = (
+            '<form action="/auth/login" method="post"><input type="email" name="email" id="email">'
+            '<input type="password" name="password" id="pass"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=form
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/v1/sessions",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/account/delete",
+                status=303,
+                response_headers={"Location": "/goodbye"},
+                post_data=json.dumps({"password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/api/v1/sessions")] is True
+        assert flags[("POST", "/api/account/delete")] is False
+        assert 'success_url="*/app*",' in self._plugin(result)
+
+    def test_a_script_post_to_a_recorded_unselected_form_is_not_owned(self, tmp_path: Path) -> None:
+        """A field-name-only post to a recorded form's action is not a script login,
+        even when that form is not the one login_config uses."""
+        main = (
+            '<form action="/session" method="post"><input type="email" name="email" id="email">'
+            '<input type="password" name="password" id="pass"></form>'
+        )
+        other = (
+            '<form action="/api/other" method="post"><input type="email" name="email">'
+            '<input type="password"><input type="password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=main
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/search",
+                content_type="text/html",
+                body=other,
+                post_data=json.dumps({"q": "x"}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/other",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        # login_config is built from the first form with a password field.
+        assert next(f for f in result.login_forms if "password" in f.fields).action == "/session"
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/api/other")] is False
+
     def test_a_login_with_no_form_owns_every_credential_post(self, tmp_path: Path) -> None:
         """R4 (no-form fallback)."""
         entries = [
