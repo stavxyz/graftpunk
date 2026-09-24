@@ -3140,7 +3140,7 @@ def test_a_json_endpoint_recorded_with_no_body_is_requested_as_text() -> None:
         content_type="application/json",
         shape=None,
         response_body_empty=True,
-        response_body_falsy=True,
+        falsy_first_response="",
     )
     files = _render_endpoints(no_content)
     plugin = files["src/graftpunk_myshop/plugin.py"]
@@ -3151,15 +3151,37 @@ def test_a_json_endpoint_recorded_with_no_body_is_requested_as_text() -> None:
     assert "assert result is not None" in test_code[test_code.index("def test_cart_clear(") :]
 
 
-def test_an_endpoint_recorded_with_a_falsy_json_body_gets_a_test_that_can_pass() -> None:
-    """An ack answering {} parses to a falsy value, so the generated test asserts
-    the call completed and says to assert on the value expected."""
+@pytest.mark.parametrize(
+    ("falsy", "assertion"),
+    [
+        ("{}", "assert result == {}"),
+        ("[]", "assert result == []"),
+        ('""', 'assert result == ""'),
+        ("0", "assert result == 0"),
+        ("false", "assert result is False"),
+        ("null", "assert result is None"),
+    ],
+    ids=["object", "array", "string", "zero", "false", "null"],
+)
+def test_an_endpoint_recorded_with_a_falsy_json_body_asserts_that_value(
+    falsy: str, assertion: str
+) -> None:
+    """The generated test asserts the recorded falsy value, and says to assert on
+    the shape expected."""
     ack = dataclasses.replace(
-        _single_endpoint("/ack"), content_type="application/json", response_body_falsy=True
+        _single_endpoint("/ack"), content_type="application/json", falsy_first_response=falsy
     )
     test_code = _render_endpoints(ack, _single_endpoint("/orders"))["tests/test_plugin.py"]
     ack_test = test_code[test_code.index("def test_ack(") : test_code.index("def test_orders(")]
-    assert "assert result is not None" in ack_test
-    assert "GP-FILL: the recorded response was a falsy JSON value" in ack_test
+    assert f"    {assertion}\n" in ack_test
+    assert "is not None" not in ack_test
+    assert "GP-FILL: the recorded response was the falsy JSON value" in ack_test
     orders = test_code[test_code.index("def test_orders(") :]
     assert "assert result  # GP-FILL" in orders
+
+
+def test_an_endpoint_whose_first_recording_had_no_body_asserts_the_call_completed() -> None:
+    """Later recordings had a body, but the fixture is the first, empty one."""
+    go = dataclasses.replace(_single_endpoint("/go"), falsy_first_response="")
+    test_code = _render_endpoints(go)["tests/test_plugin.py"]
+    assert "assert result is not None" in test_code[test_code.index("def test_go(") :]

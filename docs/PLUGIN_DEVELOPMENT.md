@@ -705,9 +705,10 @@ one of `SitePlugin`'s own attributes (`setup` becomes `setup_2`) or a root
 command graftpunk adds itself (`login` becomes `login_2`). A generated test for
 an endpoint the recording saw answer with no body (a redirect, say) asserts the
 call completed, with a `GP-FILL` saying to assert on the page the redirect leads
-to, since an empty body is falsy; so does one for an endpoint the recording saw
-answer with a falsy JSON value (`{}`, `[]`, `""`, `0`, or `false`), with a
-`GP-FILL` saying to assert on the value you expect. A JSON endpoint that
+to, since an empty body is falsy. One whose first recorded response (the one
+`gp observe fixtures` writes without a suffix) is a falsy JSON value asserts
+that value (`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or
+`is None`), with a `GP-FILL` saying to assert on the shape you expect. A JSON endpoint that
 answered with no body every time it was recorded (a 204) reads its response as
 text, since there is no JSON to parse.
 

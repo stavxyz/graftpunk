@@ -280,10 +280,12 @@ class Endpoint:
     # Every recorded response to this endpoint had no body (a redirect, a 204): a
     # generated test asserts the call completed, since an empty body is falsy.
     response_body_empty: bool = False
-    # Some recorded response had no body, or a JSON body that parses to a falsy
-    # value ({}, [], "", 0, false): the fixture a generated test reads may be that
-    # one, so the test asserts the call completed rather than a truthy result.
-    response_body_falsy: bool = False
+    # The first recorded response's body when a generated test's `assert result`
+    # would fail on it: "" when it had no body, or the falsy JSON value it parses to
+    # ({}, [], "", 0, false, or null) spelled as canonical JSON. None otherwise.
+    # gp observe fixtures names the first recording's fixture without a suffix, and
+    # that is the one the generated test reads, so the test asserts this value.
+    falsy_first_response: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1089,10 +1091,10 @@ class _EndpointAccumulator:
         self.body_params: dict[str, str] = {}
         self.body_kind: BodyKind = "none"
         self.shape: ShapeNode | None = None
-        # Whether any recorded response carried a body, and whether any had none or
-        # a falsy JSON one (_falsy_body).
+        # Whether any recorded response carried a body, and the first one's falsy
+        # value (_falsy_value).
         self.bodied = False
-        self.falsy = False
+        self.falsy_first: str | None = None
         self.custom_headers: set[str] = set()
         self.examples: list[str] = []
         # Dropped names, held only to count them distinctly; never kept past finish.
@@ -1101,6 +1103,8 @@ class _EndpointAccumulator:
         self.dropped_headers: set[str] = set()
 
     def record(self, entry: HAREntry, path: str) -> None:
+        if self.count == 0:
+            self.falsy_first = _falsy_value(entry.response.body)
         method = entry.request.method.upper()
         if method not in self.methods:
             self.methods.append(method)
@@ -1120,8 +1124,6 @@ class _EndpointAccumulator:
         # member that was captured whole answers for the rest.
         if entry.response.body:
             self.bodied = True
-        if _falsy_body(entry.response.body):
-            self.falsy = True
         if self.shape is None or self.shape == SHAPE_UNAVAILABLE:
             observed = _response_shape(entry)
             if observed is not None:
@@ -1156,21 +1158,21 @@ class _EndpointAccumulator:
             body_keys_dropped_as_non_names=len(self.dropped_body) - _count_ids(self.dropped_body),
             header_names_dropped_as_ids=len(self.dropped_headers),
             response_body_empty=not self.bodied,
-            response_body_falsy=self.falsy,
+            falsy_first_response=self.falsy_first,
         )
 
 
-def _falsy_body(body: str | None) -> bool:
-    """True when *body* is empty or is JSON parsing to a falsy value other than
-    ``null`` (``{}``, ``[]``, ``""``, ``0``, ``false``): what a generated test's
-    ``assert result`` would fail on."""
+def _falsy_value(body: str | None) -> str | None:
+    """*body* as :attr:`Endpoint.falsy_first_response` records it: ``""`` when it is
+    empty, the falsy JSON value it parses to (``{}``, ``[]``, ``""``, ``0``,
+    ``false``, or ``null``) as canonical JSON, and None for anything else."""
     if not body:
-        return True
+        return ""
     try:
         value = json.loads(body)
     except ValueError:
-        return False
-    return value is not None and not value
+        return None
+    return None if value else json.dumps(value)
 
 
 def _collapse_eligible(segment: str) -> bool:
@@ -1693,7 +1695,6 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.dropped_query |= acc.dropped_query
             target.dropped_body |= acc.dropped_body
             target.bodied = target.bodied or acc.bodied
-            target.falsy = target.falsy or acc.falsy
             target.dropped_headers |= acc.dropped_headers
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost

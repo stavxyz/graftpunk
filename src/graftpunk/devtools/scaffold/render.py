@@ -1250,22 +1250,43 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
                 indent=len(L1),
             )
         )
-        if endpoint.response_body_empty or endpoint.response_body_falsy:
-            # An empty body or a falsy JSON value fails `assert result` out of the box.
-            note = (
-                "GP-FILL: the recorded response had no body (a redirect, say): assert "
-                "on the page the redirect leads to."
-                if endpoint.response_body_empty
-                else 'GP-FILL: the recorded response was a falsy JSON value ({}, [], "", '
-                "0, or false): assert on the value you expect."
+        falsy = endpoint.falsy_first_response
+        if endpoint.response_body_empty or falsy == "":
+            # An empty body is falsy, so `assert result` would fail out of the box.
+            lines.extend(
+                wrapped_comment_lines(
+                    "GP-FILL: the recorded response had no body (a redirect, say): assert "
+                    "on the page the redirect leads to.",
+                    indent=len(L1),
+                )
             )
-            lines.extend(wrapped_comment_lines(note, indent=len(L1)))
             lines.append("    assert result is not None")
+        elif falsy is not None:
+            # The fixture holds this falsy value, which `assert result` would fail on.
+            lines.extend(
+                wrapped_comment_lines(
+                    f"GP-FILL: the recorded response was the falsy JSON value {falsy}: "
+                    "assert on the shape you expect.",
+                    indent=len(L1),
+                )
+            )
+            lines.append(f"    assert {_falsy_assertion(falsy)}")
         else:
             lines.append("    assert result  # GP-FILL: assert on the shape you expect")
         lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _falsy_assertion(falsy: str) -> str:
+    """The generated test's assertion that ``result`` is *falsy*, a falsy JSON value
+    as canonical JSON: an identity check for ``false`` and ``null``, and equality
+    otherwise, since ``{}``, ``[]``, ``""``, and a zero are spelled the same in
+    Python."""
+    identity = {"false": "False", "null": "None"}
+    if falsy in identity:
+        return f"result is {identity[falsy]}"
+    return f"result == {falsy}"
 
 
 def _render_gitignore() -> str:

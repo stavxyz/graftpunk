@@ -589,15 +589,25 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
 
     @pytest.mark.parametrize(
-        ("status", "body"),
-        [(204, ""), (200, "{}")],
-        ids=["no-content", "empty-object"],
+        ("status", "body", "assertion"),
+        [
+            (204, "", "assert result is not None"),
+            (200, "{}", "assert result == {}"),
+            (200, "[]", "assert result == []"),
+            (200, "null", "assert result is None"),
+        ],
+        ids=["no-content", "empty-object", "empty-array", "null"],
     )
     def test_a_generated_test_passes_for_a_json_endpoint_with_an_empty_or_falsy_body(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int, body: str
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        status: int,
+        body: str,
+        assertion: str,
     ) -> None:
-        """A JSON endpoint answering 204, or an ack answering {}: the generated
-        command and test pass against the recorded body."""
+        """A JSON endpoint answering 204, or an ack answering {}, [], or null: the
+        generated command and test pass against the recorded body."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         run_dir = observe_base / "myshop" / "run-1"
@@ -623,6 +633,7 @@ class TestGeneratedProjectPassesItsOwnGate:
             ],
         )
         assert result.exit_code == 0, result.output
+        assert f"    {assertion}\n" in (target / "tests" / "test_plugin.py").read_text()
         (target / "tests" / "fixtures" / "get_ack.json").write_text(body)
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input

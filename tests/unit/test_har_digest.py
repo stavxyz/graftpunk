@@ -1052,48 +1052,56 @@ class TestEndpointExamples:
     @pytest.mark.parametrize(
         ("body", "falsy"),
         [
-            ("{}", True),
-            ("[]", True),
-            ('""', True),
-            ("0", True),
-            ("false", True),
-            ("", True),
-            ('{"ok": true}', False),
-            ("[1]", False),
-            ("not json", False),
-            ("null", False),
+            ("{}", "{}"),
+            ("{ }", "{}"),
+            ("[]", "[]"),
+            ('""', '""'),
+            ("0", "0"),
+            ("false", "false"),
+            ("null", "null"),
+            ("", ""),
+            ('{"ok": true}', None),
+            ("[1]", None),
+            ("not json", None),
         ],
         ids=[
             "object",
+            "spaced-object",
             "array",
             "string",
             "zero",
             "false",
+            "null",
             "empty",
             "truthy",
             "list",
             "text",
-            "null",
         ],
     )
-    def test_a_falsy_json_or_empty_body_is_recorded(
-        self, tmp_path: Path, body: str, falsy: bool
+    def test_the_first_response_s_falsy_value_is_recorded(
+        self, tmp_path: Path, body: str, falsy: str | None
     ) -> None:
+        """A falsy JSON value is recorded as canonical JSON, an empty body as an empty
+        string, and anything else as None."""
         entries = [_entry("POST", "https://api.myshop.example.com/ack", body=body)]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (endpoint,) = result.endpoints
-        assert endpoint.response_body_falsy is falsy
+        assert endpoint.falsy_first_response == falsy
 
-    def test_one_falsy_recording_marks_the_endpoint(self, tmp_path: Path) -> None:
-        """The fixture a generated test reads may be any recording, so one falsy
-        body among truthy ones is enough."""
-        entries = [
-            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
-            _entry("GET", "https://api.myshop.example.com/ack", body="{}"),
-        ]
+    @pytest.mark.parametrize(
+        ("bodies", "falsy"),
+        [(["{}", '{"ok": true}'], "{}"), (['{"ok": true}', "{}"], None)],
+        ids=["falsy-first", "truthy-first"],
+    )
+    def test_the_first_recording_decides(
+        self, tmp_path: Path, bodies: list[str], falsy: str | None
+    ) -> None:
+        """gp observe fixtures names the first recording's fixture without a suffix,
+        and that is the one a generated test reads."""
+        entries = [_entry("GET", "https://api.myshop.example.com/ack", body=b) for b in bodies]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (endpoint,) = result.endpoints
-        assert endpoint.response_body_falsy is True
+        assert endpoint.falsy_first_response == falsy
 
     def test_examples_stop_at_the_cap(self, tmp_path: Path) -> None:
         entries = [
@@ -1295,23 +1303,29 @@ class TestCollapseMergeCarriesShapeAndBodyKind:
         assert merged[0].body_kind == "json"
         assert "sku" in merged[0].body_params
 
-    def test_a_later_member_s_falsy_body_survives_the_merge(self, tmp_path: Path) -> None:
-        """One member of a collapsed family answered {}: the family's fixture may be
-        that one, so the merged endpoint records it."""
+    @pytest.mark.parametrize(
+        ("falsy_member", "falsy"), [(0, "{}"), (-1, None)], ids=["first", "later"]
+    )
+    def test_the_family_s_first_member_decides_its_falsy_value(
+        self, tmp_path: Path, falsy_member: int, falsy: str | None
+    ) -> None:
+        """The family's fixture is its first member's recording, so only that
+        member's {} counts."""
         count = _HIGH_CARDINALITY_THRESHOLD + 1
+        falsy_index = falsy_member % count
         entries = [
             _entry(
                 "GET",
                 # A letter and one digit: each path is its own raw template, so the
                 # family is merged by the high-cardinality collapse.
                 f"https://api.myshop.example.com/products/widget-{chr(ord('a') + i)}1",
-                body="{}" if i == count - 1 else '{"id": 1}',
+                body="{}" if i == falsy_index else '{"id": 1}',
             )
             for i in range(count)
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (merged,) = [e for e in result.endpoints if e.template == "/products/{product_id}"]
-        assert merged.response_body_falsy is True
+        assert merged.falsy_first_response == falsy
 
     def test_members_that_type_a_parameter_differently_merge_to_str(self, tmp_path: Path) -> None:
         """The family merge applies the same rule a single endpoint's requests do."""
