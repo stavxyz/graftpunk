@@ -32,6 +32,7 @@ import pytest
 from graftpunk.contracts import current_schema
 from graftpunk.testing.sidecar import (
     FIXTURES_PLACEHOLDER,
+    Sidecar,
     SidecarError,
     is_sidecar,
     load_sidecar,
@@ -149,20 +150,30 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
                     f"{relative}: an unchanged copy of its capture. A fixture keeps the "
                     f"capture's structure and invents every value."
                 )
-        text = body.decode("utf-8", errors="replace")
-        rest = sidecar_scannable_text(sidecar)
-        for name in sidecar.flagged_names:
-            if name in text:
-                problems.append(
-                    f"{relative}: contains the flagged name {name!r}, a cookie or token "
-                    f"name the capture's digest recorded."
-                )
-            if name in rest:
-                problems.append(
-                    f"{relative.parent / meta.name}: carries the flagged name {name!r} "
-                    f"outside flagged_names."
-                )
+        problems.extend(_flagged_name_problems(relative, meta.name, sidecar, body))
     return FixturesTreeReport(problems=tuple(problems), verified=verified, declared=declared)
+
+
+def _flagged_name_problems(
+    relative: Path, meta_name: str, sidecar: Sidecar, body: bytes
+) -> list[str]:
+    """One problem per flagged name found in the fixture's body or in a sidecar field
+    other than ``flagged_names``."""
+    problems: list[str] = []
+    text = body.decode("utf-8", errors="replace")
+    rest = sidecar_scannable_text(sidecar)
+    for name in sidecar.flagged_names:
+        if name in text:
+            problems.append(
+                f"{relative}: contains the flagged name {name!r}, a cookie or token "
+                f"name the capture's digest recorded."
+            )
+        if name in rest:
+            problems.append(
+                f"{relative.parent / meta_name}: carries the flagged name {name!r} "
+                f"outside flagged_names."
+            )
+    return problems
 
 
 def fixtures_are_sanitised(tree: Path | str) -> Any:
