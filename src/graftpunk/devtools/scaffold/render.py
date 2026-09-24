@@ -1185,6 +1185,15 @@ def fixtures_root_for(spec: ScaffoldSpec) -> str:
     )
 
 
+def _no_fixture_is_written(endpoint: Endpoint) -> bool:
+    """True when ``gp observe fixtures`` writes no fixture for *endpoint*: no
+    recording had a body, and not every one was a 3xx or a 204, the only responses
+    it writes an empty fixture for. Such an endpoint gets no generated test."""
+    return endpoint.response_body_empty and any(
+        not (300 <= status < 400 or status == 204) for status in endpoint.statuses
+    )
+
+
 def fixture_paths(spec: ScaffoldSpec) -> list[str]:
     """The fixture file each generated endpoint test looks for, project-relative.
 
@@ -1195,6 +1204,8 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
     paths: list[str] = []
     stems: set[str] = set()
     for endpoint in _stub_endpoints(spec):
+        if _no_fixture_is_written(endpoint):
+            continue  # no generated test reads one (see _render_test_module)
         # Case-folded, as a case-insensitive filesystem compares them.
         stem = capture_slug(endpoint.methods[0], endpoint.template).casefold()
         if stem in stems:
@@ -1221,7 +1232,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     # it when there is nothing to call it with is an unused import in the
     # generated file's own ruff run (F401).
     endpoints = _stub_endpoints(spec)
-    has_endpoint_tests = bool(endpoints)
+    has_endpoint_tests = any(not _no_fixture_is_written(e) for e in endpoints)
     lines = [
         f'"""Tests for the {spec.name} plugin."""',
         "",
@@ -1259,6 +1270,17 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     for endpoint in endpoints:
         name = _command_name(endpoint.template, seen)
         method = endpoint.methods[0]
+        if _no_fixture_is_written(endpoint):
+            note = (
+                f"GP-FILL: no test for {name} ({method} {endpoint.template}): no recording "
+                "had a body, and not every one was a redirect or a 204, so gp observe "
+                "fixtures writes no fixture for it; write its test against a fixture of "
+                "your own."
+            )
+            lines.extend(wrapped_comment_lines(note, indent=0))
+            lines.append("")
+            lines.append("")
+            continue
         stem = capture_slug(method, endpoint.template)
         if stem.casefold() in stems:
             # FixtureSession looks a fixture up by stem, so this endpoint's test

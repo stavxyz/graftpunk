@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import json
+import re
 import subprocess
 import sys
 import warnings
@@ -3193,3 +3194,69 @@ def test_a_text_endpoint_never_gets_a_falsy_json_assertion(falsy: str) -> None:
     count = test_code[test_code.index("def test_count(") :]
     assert "assert result  # GP-FILL" in count
     assert "falsy JSON value" not in count
+
+
+@pytest.mark.parametrize("statuses", [(200,), (204, 200), (302, 500)])
+def test_a_bodyless_endpoint_whose_fixture_is_never_written_gets_no_test(
+    statuses: tuple[int, ...],
+) -> None:
+    """No recording had text, and not every one was a 3xx or a 204, so gp observe
+    fixtures writes no fixture: no test, a GP-FILL in its place, and no fixture
+    listed."""
+    bodyless = dataclasses.replace(
+        _single_endpoint("/report"),
+        statuses=statuses,
+        content_type="text/html",
+        shape=None,
+        response_body_empty=True,
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(bodyless, _single_endpoint("/orders"))),
+    )
+    test_code = render(spec)["tests/test_plugin.py"]
+    assert "def test_report(" not in test_code
+    note = re.sub(r"\s*\n#\s*", " ", test_code)
+    assert "GP-FILL: no test for report (GET /report): no recording had a body" in note
+    assert "def test_orders(" in test_code
+    assert not any("get_report" in path for path in fixture_paths(spec))
+    assert any("get_orders" in path for path in fixture_paths(spec))
+
+
+@pytest.mark.parametrize("statuses", [(302,), (204,), (204, 301)])
+def test_a_bodyless_redirect_or_no_content_endpoint_keeps_its_test(
+    statuses: tuple[int, ...],
+) -> None:
+    bodyless = dataclasses.replace(
+        _single_endpoint("/go"),
+        statuses=statuses,
+        content_type="text/html",
+        shape=None,
+        response_body_empty=True,
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(bodyless,)),
+    )
+    assert "def test_go(" in render(spec)["tests/test_plugin.py"]
+    assert any("get_go" in path for path in fixture_paths(spec))
+
+
+def test_a_project_whose_only_endpoint_gets_no_test_imports_no_fixture_context() -> None:
+    """With no endpoint test to call it, the import would be unused (F401)."""
+    bodyless = dataclasses.replace(
+        _single_endpoint("/report"),
+        statuses=(200,),
+        content_type="text/html",
+        shape=None,
+        response_body_empty=True,
+    )
+    test_code = _render_endpoints(bodyless)["tests/test_plugin.py"]
+    assert "fixture_context" not in test_code
+    assert "GP-FILL: add a test per command" in test_code

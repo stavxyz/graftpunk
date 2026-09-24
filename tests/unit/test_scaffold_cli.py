@@ -602,6 +602,35 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
         assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
 
+    def test_a_bodyless_200_endpoint_is_not_in_the_fixtures_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A third-party HAR with no text for a 200: gp observe fixtures would write
+        nothing, so gp plugin new neither lists a fixture nor generates a test."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        bodyless = _entry("GET", "https://api.myshop.example.com/report", content_type="text/html")
+        bodyless["response"]["content"] = {"mimeType": "text/html", "size": 0}
+        entries = [
+            bodyless,
+            _entry("GET", "https://api.myshop.example.com/orders", body='{"n": 1}'),
+        ]
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+        target = tmp_path / "out"
+        argv = ["plugin", "new", "myshop", "--from-run", "myshop", "--run", "run-1"]
+        result = runner.invoke(_build_app(), [*argv, "--dir", str(target)])
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "get_orders.json" in output
+        assert "get_report" not in output
+        test_code = (target / "tests" / "test_plugin.py").read_text()
+        assert "def test_report(" not in test_code
+        assert "GP-FILL: no test for report" in test_code
+
     def test_a_recorder_redirect_hop_s_fixture_passes_the_generated_test(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
