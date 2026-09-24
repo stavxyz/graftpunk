@@ -1,17 +1,17 @@
 ---
 type: plan
 validated:
-  sha: 80a738066bb7d3d8adbcc65437249edcb47cd2a8
-  date: 2026-09-23T07:07:51Z
+  sha: 141636b9ea2ce53ac7c643064293b01eb5850581
+  date: 2026-09-24T21:44:08Z
   reviewers: [fact-check, solid-hygiene]
   findings:
     critical: 0
-    important: 1
-    medium: 2
-    low: 9
-    nitpick: 0
-  net_negative_raised: 1
-  net_negative_addressed: 1
+    important: 0
+    medium: 1
+    low: 1
+    nitpick: 1
+  net_negative_raised: 0
+  net_negative_addressed: 0
   net_negative_remaining: 0
 ---
 
@@ -1149,7 +1149,7 @@ git commit -m "feat(scaffold): PROJECT_REQUIREMENTS declares the conftest wiring
 
 **Interfaces:**
 - Consumes: `graftpunk.plugins.PLUGINS_GROUP` (existing, `src/graftpunk/plugins/__init__.py:176` (`PLUGINS_GROUP = "graftpunk.plugins"`)); `policy.PROJECT_REQUIREMENTS`, `ProjectRequirement`, `pysrc.binds_name` (Task 2); `policy.fixtures_root` (foundations Task 9); `graftpunk.devtools.errors.DevtoolsRefusal` and `ScaffoldWriteError`, with `write.ChangeConflictError` and `write.InvalidChangeError` already subclassing `DevtoolsRefusal` (foundations Task 10).
-- Produces: `policy.GP_FILL_MARKER: Final = "GP-FILL"`; `policy.module_name_for(name: str) -> str` (moved; `render` no longer has the name, and every importer, `project.py` and `tests/unit/test_scaffold_render.py` included, takes it from policy); `graftpunk.har.naming.to_cli_name(name: str) -> str`, in the dependency-free naming module that already owns the naming stems, which `cli_plugin`, `client.py`, the reader, and `selection.py` (Task 5) import from there; `graftpunk.har.naming.registered_name(name_pin: str | None, identifier: str) -> str`, the one owner of "the `name=` pin, else `to_cli_name(identifier)`", which the `command` decorator's two pinnable sites, `CommandView.cli_name`, and `PlannedCommand.registered_name` (Task 5) call; no `_to_cli_name` left in `src/` or `tests/` (historical design docs under `docs/plans/` keep the old name); `PluginProjectError` and `NotAPluginProjectError` join the refusals under `DevtoolsRefusal` (`CommandSelectionError`, `CommandInsertError`, and `UpgradeRefusedError` join in Tasks 5 to 7), each keeping its existing second base. In `plugin_project`: `DirectoryKind = Literal["empty", "plugin", "foreign"]`; `@dataclass(frozen=True) class Span(start: int, end: int)` (1-based, inclusive); `@dataclass(frozen=True) class CommandView(method: str, span: Span, keywords: Mapping[str, str | None])` (a read-only `MappingProxyType`) with properties `endpoint -> str | None` and `cli_name -> str` (`registered_name(keywords.get("name"), method)`: the name the CLI registers); `@dataclass(frozen=True) class PluginView(entry_point: str, module_path: str, class_name: str, class_span: Span, site_name: str | None, base_url: str | None, commands: tuple[CommandView, ...], markers: tuple[int, ...], fixtures_root: str)`, where `entry_point` is the entry-point name the reader keys the plugin by (and derives `fixtures_root` from, through `module_name_for`): the one identity every consumer addresses a plugin by; `@dataclass(frozen=True) class PluginDefect(entry_point: str, module_path: str, message: str)`, a plugin whose module the reader parsed but that does not hold exactly one `SitePlugin` subclass; `RequirementState = Literal["bound", "unbound", "unreadable"]`; `@dataclass(frozen=True) class RequirementStatus(state: RequirementState, reason: str | None = None)`, where `unreadable` means the requirement's file does not parse and `reason` says why (the reader parses each distinct requirement file once, so every requirement in one file carries that file's one reason); `@dataclass(frozen=True) class ProjectView(directory: DirectoryKind, plugins: tuple[PluginView, ...], defects: tuple[PluginDefect, ...], requirements: Mapping[str, RequirementStatus], requirement_set: tuple[ProjectRequirement, ...])` (read-only; `requirements` and `requirement_set` are both snapshotted from `policy.PROJECT_REQUIREMENTS` at read time, by `read_project`, so the view's own methods never read the module attribute again; design note where the class is defined) with methods `missing_requirements() -> tuple[ProjectRequirement, ...]`, the one owner of "which requirements does this project lack" (the `unbound` ones, from `self.requirement_set`), and `unreadable_files() -> tuple[tuple[str, str], ...]`, the one owner of "which requirement files do not parse": one `(path, reason)` entry per file, in the order `requirement_set` first names it, however many requirements the file holds; `class PluginProjectError(DevtoolsRefusal, ValueError)`, raised only when the project cannot be read at all (invalid TOML, or a plugin module missing or not parsing), while a per-plugin structural defect is recorded in `defects` and an unparseable requirement file as `unreadable` instead; `class NotAPluginProjectError(DevtoolsRefusal, ValueError)`; `classify(root: Path) -> DirectoryKind`; `read_project(root: Path) -> ProjectView`; `require_plugin_project(root: Path) -> ProjectView`, the one owner of "this directory must be a plugin project", which reads *root* and raises `NotAPluginProjectError` naming the classification for anything but `plugin`. The reader imports neither `render.py` nor `write.py`. Task 4's `plugin_info.info_payload` reads the view and reports `entry_point`; Task 6 addresses the target plugin and its defect by `entry_point`; Tasks 6, 7, and 8 consume `require_plugin_project` (Task 8 turns its refusal into a finding); Tasks 7 and 8 call `missing_requirements()` and `unreadable_files()` and neither groups requirements by path (Task 7 refuses on the unreadable files, naming each once, Task 8 reports one finding per file, and Tasks 4 and 6 never look); Tasks 4 and 6 read `CommandView.cli_name`; Task 4 refuses on any defect, Task 6 refuses only when the plugin it targets is defective, Task 7 applies requirements whatever the plugins hold, and Task 8 lists each defect as a finding.
+- Produces: `policy.GP_FILL_MARKER: Final = "GP-FILL"`; `policy.module_name_for(name: str) -> str` (moved; `render` no longer has the name, and every importer, `project.py` and `tests/unit/test_scaffold_render.py` included, takes it from policy); `graftpunk.har.naming.to_cli_name(name: str) -> str`, in the dependency-free naming module that already owns the naming stems, which `cli_plugin`, `client.py`, the reader, and `selection.py` (Task 5) import from there (it lives under `har/` because that module is the one both `graftpunk.plugins` and `graftpunk.devtools` import without a cycle, not because the rule is about HAR files; a third non-HAR naming rule arriving there is the point to lift the module to a neutral top-level path); `graftpunk.har.naming.registered_name(name_pin: str | None, identifier: str) -> str`, the one owner of "the `name=` pin, else `to_cli_name(identifier)`", which the `command` decorator's two pinnable sites, `CommandView.cli_name`, and `PlannedCommand.registered_name` (Task 5) call; no `_to_cli_name` left in `src/` or `tests/` (historical design docs under `docs/plans/` keep the old name); `PluginProjectError` and `NotAPluginProjectError` join the refusals under `DevtoolsRefusal` (`CommandSelectionError`, `CommandInsertError`, and `UpgradeRefusedError` join in Tasks 5 to 7), each keeping its existing second base. In `plugin_project`: `DirectoryKind = Literal["empty", "plugin", "foreign"]`; `@dataclass(frozen=True) class Span(start: int, end: int)` (1-based, inclusive); `@dataclass(frozen=True) class CommandView(method: str, span: Span, keywords: Mapping[str, str | None])` (a read-only `MappingProxyType`) with properties `endpoint -> str | None` and `cli_name -> str` (`registered_name(keywords.get("name"), method)`: the name the CLI registers); `@dataclass(frozen=True) class PluginView(entry_point: str, module_path: str, class_name: str, class_span: Span, site_name: str | None, base_url: str | None, commands: tuple[CommandView, ...], markers: tuple[int, ...], fixtures_root: str)`, where `entry_point` is the entry-point name the reader keys the plugin by (and derives `fixtures_root` from, through `module_name_for`): the one identity every consumer addresses a plugin by; `@dataclass(frozen=True) class PluginDefect(entry_point: str, module_path: str, message: str)`, a plugin whose module the reader parsed but that does not hold exactly one `SitePlugin` subclass; `RequirementState = Literal["bound", "unbound", "unreadable"]`; `@dataclass(frozen=True) class RequirementStatus(state: RequirementState, reason: str | None = None)`, where `unreadable` means the requirement's file does not parse and `reason` says why (the reader parses each distinct requirement file once, so every requirement in one file carries that file's one reason); `@dataclass(frozen=True) class ProjectView(directory: DirectoryKind, plugins: tuple[PluginView, ...], defects: tuple[PluginDefect, ...], requirements: Mapping[str, RequirementStatus], requirement_set: tuple[ProjectRequirement, ...])` (read-only; `requirements` and `requirement_set` are both snapshotted from `policy.PROJECT_REQUIREMENTS` at read time, by `read_project`, so the view's own methods never read the module attribute again; design note where the class is defined) with methods `plugin(entry_point: str) -> PluginView | PluginDefect | None`, the one owner of "which plugin does this name address" (Task 6 calls it); `missing_requirements() -> tuple[ProjectRequirement, ...]`, the one owner of "which requirements does this project lack" (the `unbound` ones, from `self.requirement_set`), and `unreadable_files() -> tuple[tuple[str, str], ...]`, the one owner of "which requirement files do not parse": one `(path, reason)` entry per file, in the order `requirement_set` first names it, however many requirements the file holds; `class PluginProjectError(DevtoolsRefusal, ValueError)`, raised only when the project cannot be read at all (invalid TOML, or a plugin module missing or not parsing), while a per-plugin structural defect is recorded in `defects` and an unparseable requirement file as `unreadable` instead; `class NotAPluginProjectError(DevtoolsRefusal, ValueError)`; `classify(root: Path) -> DirectoryKind`; `read_project(root: Path) -> ProjectView`; `require_plugin_project(root: Path) -> ProjectView`, the one owner of "this directory must be a plugin project", which reads *root* and raises `NotAPluginProjectError` naming the classification for anything but `plugin`. The reader imports neither `render.py` nor `write.py`. Task 4's `plugin_info.info_payload` reads the view and reports `entry_point`; Task 6 addresses the target plugin and its defect by `entry_point`; Tasks 6, 7, and 8 consume `require_plugin_project` (Task 8 turns its refusal into a finding); Tasks 7 and 8 call `missing_requirements()` and `unreadable_files()` and neither groups requirements by path (Task 7 refuses on the unreadable files, naming each once, Task 8 reports one finding per file, and Tasks 4 and 6 never look); Tasks 4 and 6 read `CommandView.cli_name`; Task 4 refuses on any defect, Task 6 refuses only when the plugin it targets is defective, Task 7 applies requirements whatever the plugins hold, and Task 8 lists each defect as a finding.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1343,6 +1343,13 @@ class TestTheView:
         assert all("GP-FILL" in text[line - 1] for line in plugin.markers)
         assert plugin.fixtures_root == "tests/fixtures/"
 
+    def test_a_plugin_is_found_by_its_entry_point_name(self, tmp_path: Path) -> None:
+        _generate(tmp_path)
+        view = read_project(tmp_path)
+        (plugin,) = view.plugins
+        assert view.plugin("myshop") is plugin
+        assert view.plugin("nope") is None
+
     def test_a_hand_written_command_without_a_declaration_reads_none(self, tmp_path: Path) -> None:
         _hand_written(tmp_path)
         (plugin,) = read_project(tmp_path).plugins
@@ -1395,6 +1402,7 @@ class TestTheView:
         )
         assert f"exactly one SitePlugin subclass, found {classes}" in defect.message
         assert view.requirements, "the requirements still read"
+        assert view.plugin("myshop") == defect
 
     def test_a_module_that_does_not_parse_is_refused(self, tmp_path: Path) -> None:
         _hand_written(tmp_path, "class (:\n")
@@ -1904,6 +1912,16 @@ class ProjectView:
     defects: tuple[PluginDefect, ...]
     requirements: Mapping[str, RequirementStatus]
     requirement_set: tuple[ProjectRequirement, ...]
+
+    def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
+        """The plugin or defect whose entry-point name is *entry_point*, or ``None``:
+        the one owner of "which plugin does this name address". The reader keys
+        both tuples by entry point and never records a name twice, so at most one
+        matches."""
+        for found in (*self.plugins, *self.defects):
+            if found.entry_point == entry_point:
+                return found
+        return None
 
     def _state(self, requirement: ProjectRequirement) -> RequirementState:
         status = self.requirements.get(requirement.key)
@@ -2575,7 +2593,7 @@ git commit -m "feat(scaffold): gp plugin info --json describes the directory's p
 ### Task 5: The single-command renderer and `gp plugin new --command`
 
 **Files:**
-- Create: `src/graftpunk/devtools/scaffold/selection.py` (`CommandSelection`, `CommandSelectionError`, `command_identifier`, `PlannedCommand`, `plan_command`, `planned_commands`; `_MAX_COMMAND_NAME` moves here from `render.py`)
+- Create: `src/graftpunk/devtools/scaffold/selection.py` (`CommandSelection`, `CommandSelectionError`, `command_identifier`, `PlannedCommand`, `plan_command`, `planned_commands`; `_MAX_COMMAND_NAME` moves here from `render.py`, which imports it back)
 - Modify: `src/graftpunk/devtools/scaffold/policy.py` (new `_AUTO_ROOT_COMMAND_NAMES`, `RESERVED_COMMAND_NAMES`, moved here word for word from `render.py`'s `_AUTO_ROOT_COMMAND_NAMES`/`_TAKEN_COMMAND_NAMES`)
 - Modify: `src/graftpunk/devtools/scaffold/render.py` (imports the selection names and `policy.RESERVED_COMMAND_NAMES`; new `RenderedCommand`, `render_command`, `_default_commands`; `ScaffoldSpec.commands`; `render` plans the commands once and passes them to `_render_plugin_module`, `_render_command_stubs`, and `_render_test_module`; `_decorator_lines` and `_render_command_stub` take a planned command; `fixture_paths` reads planned commands; `_stub_endpoints` removed; `_AUTO_ROOT_COMMAND_NAMES`/`_TAKEN_COMMAND_NAMES` removed)
 - Modify: `src/graftpunk/cli/scaffold_commands.py` (`--command` on `plugin_new`; `_command_selections`)
@@ -3487,7 +3505,7 @@ git commit -m "feat(scaffold): gp plugin new --command selects and names the stu
 - Test: `tests/unit/test_plugin_project_cli.py`
 
 **Interfaces:**
-- Consumes: `require_plugin_project`, `PluginView` (with `entry_point`), `ProjectView.defects`, `CommandView.cli_name` (Task 3); `DevtoolsRefusal` and `ScaffoldWriteError` (foundations Task 10); `pysrc.with_import` and `ImportPlacementError` (Task 2); `plan_command`, `PlannedCommand.registered_name`, `CommandSelection` (Task 5, `selection.py`); `render_command`, `RenderedCommand.imports` (Task 5, `render.py`); `policy.RESERVED_COMMAND_NAMES` (Task 5, `policy.py`); `_command_selections` (Task 5); `apply_changes`, `PlannedChange`, `read_original`, `validate_python` (foundations Task 10); `resolve_run` (existing, `src/graftpunk/cli/observe_commands.py`).
+- Consumes: `require_plugin_project`, `PluginView` (with `entry_point`), `PluginDefect`, `ProjectView.plugin`, `ProjectView.defects`, `CommandView.cli_name` (Task 3); `DevtoolsRefusal` and `ScaffoldWriteError` (foundations Task 10); `pysrc.with_import` and `ImportPlacementError` (Task 2); `plan_command`, `PlannedCommand.registered_name`, `CommandSelection` (Task 5, `selection.py`); `render_command`, `RenderedCommand.imports` (Task 5, `render.py`); `policy.RESERVED_COMMAND_NAMES` (Task 5, `policy.py`); `_command_selections` (Task 5); `apply_changes`, `PlannedChange`, `read_original`, `validate_python` (foundations Task 10); `resolve_run` (existing, `src/graftpunk/cli/observe_commands.py`).
 - Produces: `insert.CommandInsertError(DevtoolsRefusal, ValueError)`, raised when the target plugin is defective (and only then: another plugin's defect does not stop it), when no entry point has the given name (the message lists the entry-point names that exist), when the name is reserved (refused earlier, by `plan_command`, and again by `_taken_names`, which seeds itself from `policy.RESERVED_COMMAND_NAMES` too), and when the module's imports are in a shape `with_import` will not place into; `@dataclass(frozen=True) class AddedCommand(module: Path, cli_name: str, fixture: str)`; `insertion_line(plugin: PluginView) -> int`; `add_command(root: Path, entry_point: str, d: RunDigest, selection: CommandSelection) -> AddedCommand`, which looks up both the defect and the plugin by `entry_point`; `gp plugin add-command PLUGIN --from-run SESSION --command "NAME=METHOD template" [--run RUN_ID] [--dir PATH]`, where `PLUGIN` is the entry-point name `gp plugin info --json` reports. A write that fails reaches the entry point as `ScaffoldWriteError`, a `DevtoolsRefusal`, so `except DevtoolsRefusal` is its only arm. `tests/unit/test_scaffold_write.py` finds `insert.py` among the modules that apply changes without being told (foundations Task 10).
 
 - [ ] **Step 1: Write the failing tests**
@@ -3789,7 +3807,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.plugin_project import PluginView, require_plugin_project
+from graftpunk.devtools.plugin_project import PluginDefect, PluginView, require_plugin_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, with_import
 from graftpunk.devtools.scaffold.render import render_command
@@ -3853,10 +3871,9 @@ def add_command(
             the error names it as left changed.
     """
     view = require_plugin_project(root)
-    defect = next((d for d in view.defects if d.entry_point == entry_point), None)
-    if defect is not None:
-        raise CommandInsertError(defect.message)
-    plugin = next((p for p in view.plugins if p.entry_point == entry_point), None)
+    plugin = view.plugin(entry_point)
+    if isinstance(plugin, PluginDefect):
+        raise CommandInsertError(plugin.message)
     if plugin is None:
         names = ", ".join(
             sorted({p.entry_point for p in view.plugins} | {d.entry_point for d in view.defects})
@@ -4552,7 +4569,7 @@ git commit -m "feat(devtools): gp plugin check lints markers, the one-class rule
 
 - [ ] **Step 1: Move the guide helpers into `tests/unit/guide_harness.py`**
 
-A pure move with public names, so this task's gate test and the skill plan's tests share the helpers without importing a test module. The guide's own tests keep passing unchanged. The ranges below were re-measured against the current 612-line file, each traced against every caller of the moved public functions, not only the ones already named: `_repo_root` plus `REPO_ROOT`/`GUIDE`/`GUIDE_TEXT` move together, and `_FENCE_RE`, `_HEADING_RE`, and `_CODE_SPAN_RE` move too, each used only inside a moved function (`_HEADING_RE` only by `_slugs_of`, easy to miss since it sits three lines away from `_FENCE_RE`); the script refuses to run if any first line has moved. Run from the worktree root:
+A pure move with public names, so this task's gate test and the skill plan's tests share the helpers without importing a test module. The guide's own tests keep passing unchanged. The ranges below were re-measured against the current 612-line file, each traced against every caller of the moved public functions, not only the ones already named: `_repo_root` plus `REPO_ROOT`/`GUIDE`/`GUIDE_TEXT` move together, and `_FENCE_RE`, `_HEADING_RE`, and `_CODE_SPAN_RE` move too, each used only inside a moved function (`_HEADING_RE` only by `_slugs_of`, easy to miss since it sits on the line after `_FENCE_RE`); the script refuses to run if any first line has moved. Run from the worktree root:
 
 ```bash
 uv run python - <<'PY'
