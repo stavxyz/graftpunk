@@ -40,7 +40,7 @@ validated:
 ## Global Constraints
 
 - The placement rule in `src/graftpunk/devtools/__init__.py`: public API a plugin imports at runtime or in its own tests lives at the top level of the package; CLI-only tooling that a plugin never imports lives under `graftpunk.devtools`. `graftpunk.testing` imports nothing from `graftpunk.devtools`, and a test asserts it on the import graph. The import direction is: devtools reads policy; `graftpunk.testing` imports neither.
-- `policy.py` is imported by readers and writers alike and imports nothing that touches the filesystem; the reader (`plugin_project.py`) and the lint (`plugin_check.py`) never import `write.py`; the writers (`project.py`, `insert.py`, `upgrade.py`) write only through it.
+- `policy.py` holds only declarative facts a generated project must satisfy and shared literals two consumers would otherwise duplicate; a new behaviour (a predicate beyond a one-line name rule, or a computation with its own tests) gets its own module instead. It is imported by readers and writers alike and imports nothing that touches the filesystem; the reader (`plugin_project.py`) and the lint (`plugin_check.py`) never import `write.py`; the writers (`project.py`, `insert.py`, `upgrade.py`) write only through it.
 - Consumers read `policy.PROJECT_REQUIREMENTS` and `policy.PROJECT_GATE` as module attributes (`from graftpunk.devtools.scaffold import policy`), never by `from ... import PROJECT_REQUIREMENTS`, so one entry added in a test reaches every consumer.
 - `src/graftpunk/cli/scaffold_commands.py` stays "argument handling only": each entry point parses its options and calls into `devtools`.
 - Placeholders only, in code, tests, docs, and commit messages: `myshop`, `myshop.example`, `alice@example.com`, and `example.com` and `example.net` hosts. Never a real site, vendor, account, `op://` path, or a named secret manager.
@@ -497,7 +497,7 @@ git commit -m "feat(testing): fixtures_are_sanitised checks every committed fixt
 
 **Interfaces:**
 - Consumes: `fixtures_are_sanitised` (Task 1); `policy.TESTS_DIR`, `policy.FIXTURES_TREE` (foundations Task 9); `pysrc.import_lines(module, *names)` (foundations Tasks 1 and 11).
-- Produces: `policy.CONFTEST_PATH: Final = f"{TESTS_DIR}conftest.py"`; `policy.FIXTURES_PLACEHOLDER` (the name `graftpunk.testing.sidecar` owns, re-exported); `@dataclass(frozen=True) class ProjectRequirement(path: str, name: str, statement: str, imports: tuple[tuple[str, str], ...] = ())` with property `key -> str` (`f"{path}:{name}"`); `policy.PROJECT_REQUIREMENTS: Final[tuple[ProjectRequirement, ...]]` (two entries, both `CONFTEST_PATH`: `FIXTURES_TREE` and `sanitised_fixtures`). In `pysrc`: `binds_name(tree: ast.Module, name: str) -> bool`, the one binding predicate; `class ImportPlacementError(ValueError)`; `with_import(text: str, module: str, name: str) -> str`, which merges into an existing same-module from-import or places a new line into the shapes generated files have (imports contiguous at the top, after a docstring and any `__future__` import, in at most two isort sections: the standard library, then everything else) and raises `ImportPlacementError`, whose message says to add the import by hand and run `ruff check --fix`, for anything else; `class Binding(Protocol)` with read-only `statement: str` and `imports: tuple[tuple[str, str], ...]` (a `ProjectRequirement` is one); `with_bindings(text: str, bindings: Sequence[Binding]) -> str`, the one assembler and the one blank-line rule for statements added to a module. The entry-point group has one owner, the runtime's `graftpunk.plugins.PLUGINS_GROUP`: `project.py`, `pyproject_edit.py`, and `render.py` import it here, Task 3's reader imports it, and policy never does. Task 3's reader decides presence with `binds_name`; Task 6 merges imports with `with_import`; Task 7 applies requirements with `with_bindings`; Tasks 3, 7, and 8 read `policy.PROJECT_REQUIREMENTS`.
+- Produces: `policy.CONFTEST_PATH: Final = f"{TESTS_DIR}conftest.py"`; `policy.FIXTURES_PLACEHOLDER` (the name `graftpunk.testing.sidecar` owns, re-exported); `@dataclass(frozen=True) class ProjectRequirement(path: str, name: str, statement: str, imports: tuple[tuple[str, str], ...] = ())` with property `key -> str` (`f"{path}:{name}"`); `policy.PROJECT_REQUIREMENTS: Final[tuple[ProjectRequirement, ...]]` (two entries, both `CONFTEST_PATH`: `FIXTURES_TREE` and `sanitised_fixtures`). In `pysrc`: `binds_name(tree: ast.Module, name: str) -> bool`, the one binding predicate; `class ImportPlacementError(ValueError)`; `with_import(text: str, module: str, name: str) -> str`, which merges into an existing same-module from-import or places a new line into the shapes generated files have (imports contiguous at the top, after a docstring and any `__future__` import, in at most two isort sections: the standard library, then everything else) and raises `ImportPlacementError`, whose message says to add the import by hand and run `ruff check --fix`, for anything else (the placer is deliberately narrow: a need for a third isort section or alias handling is the point to replace it with a naive insert followed by `ruff check --fix --select I`, not to extend it); `class Binding(Protocol)` with read-only `statement: str` and `imports: tuple[tuple[str, str], ...]` (a `ProjectRequirement` is one); `with_bindings(text: str, bindings: Sequence[Binding]) -> str`, the one assembler and the one blank-line rule for statements added to a module. The entry-point group has one owner, the runtime's `graftpunk.plugins.PLUGINS_GROUP`: `project.py`, `pyproject_edit.py`, and `render.py` import it here, Task 3's reader imports it, and policy never does. Task 3's reader decides presence with `binds_name`; Task 6 merges imports with `with_import`; Task 7 applies requirements with `with_bindings`; Tasks 3, 7, and 8 read `policy.PROJECT_REQUIREMENTS`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1250,7 +1250,7 @@ class MyshopPlugin(SitePlugin):
 
     @command(help="List orders")
     def orders(self, ctx: CommandContext) -> dict:
-        return ctx.request_json("GET", "/api/orders")
+        return ctx.request_json("GET", "/api/orders", role="xhr")
 """
 
 
@@ -1311,6 +1311,7 @@ class TestTheView:
             "plugins",
             "defects",
             "requirements",
+            "requirement_set",
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]
         assert [f.name for f in fields(PluginView)] == [
