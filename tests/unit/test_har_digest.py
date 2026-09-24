@@ -1701,6 +1701,136 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert result.login_forms[0].source == "https://api.myshop.example.com/signin"
 
+    def test_a_site_wide_header_form_ranks_below_the_main_form(self, tmp_path: Path) -> None:
+        """I1: both post to /session and both sit on the promoted page; the header
+        form also sits on a page no post promoted, so the main form lists first."""
+        header = (
+            '<form action="/session" method="post" class="mini">'
+            '<input type="email" name="login[username]">'
+            '<input type="password" name="login[password]">'
+            "<button>Go</button>"
+            "</form>"
+        )
+        main = (
+            '<form action="/session" method="post" class="main">'
+            '<input type="email" name="login[username]" id="email">'
+            '<input type="password" name="login[password]" id="pass">'
+            '<button id="send2">Sign in</button>'
+            "</form>"
+        )
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/", content_type="text/html", body=header),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=header + main,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"login[username]": "alice", "login[password]": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.login_forms[0].fields == {"username": "#email", "password": "#pass"}
+
+    def test_a_form_on_the_promoted_page_beats_one_covering_more_of_the_body(
+        self, tmp_path: Path
+    ) -> None:
+        """M4 (promoted-page preference): the form on the page the post followed wins
+        over a form elsewhere whose names cover more of the body."""
+        elsewhere = (
+            '<form action="/session" method="post"><input type="text" name="username" id="u1">'
+            '<input type="password" name="password" id="p1"><input type="hidden" name="otp">'
+            "</form>"
+        )
+        promoted = (
+            '<form action="/session" method="post"><input type="text" name="username" id="u2">'
+            '<input type="password" name="password" id="p2"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/a", content_type="text/html", body=elsewhere
+            ),
+            _entry(
+                "GET", "https://api.myshop.example.com/b", content_type="text/html", body=promoted
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"username": "alice", "password": "x", "otp": "1"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.login_forms[0].fields["username"] == "#u2"
+
+    def test_on_one_page_the_form_covering_more_of_the_body_wins(self, tmp_path: Path) -> None:
+        """M4 (body-name coverage): two forms on the promoted page, the second one
+        carrying the hidden field the post sent."""
+        page = (
+            '<form action="/session" method="post"><input type="text" name="username" id="u1">'
+            '<input type="password" name="password" id="p1"></form>'
+            '<form action="/session" method="post"><input type="text" name="username" id="u2">'
+            '<input type="password" name="password" id="p2"><input type="hidden" name="otp">'
+            "</form>"
+        )
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/b", content_type="text/html", body=page),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"username": "alice", "password": "x", "otp": "1"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.login_forms[0].fields["username"] == "#u2"
+
+    def test_a_post_found_by_its_field_names_promotes_no_page_with_a_real_target(
+        self, tmp_path: Path
+    ) -> None:
+        """M1: a change-password XHR long after a page with a header login form."""
+        header = (
+            '<form action="/login" method="post"><input type="email" name="email">'
+            '<input type="password" name="passcode"></form>'
+        )
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/", content_type="text/html", body=header),
+            *[
+                _entry("GET", f"https://api.myshop.example.com/api/items/{n}", body="{}")
+                for n in range(1001, 1061)
+            ],
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/account/password",
+                post_data=json.dumps({"current_password": "x", "new_password": "y"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/")] is False
+
+    def test_a_post_found_by_its_field_names_promotes_a_js_driven_form_page(
+        self, tmp_path: Path
+    ) -> None:
+        """M1: a form with no action of its own posts by script."""
+        form = (
+            '<form><input type="email" name="email"><input type="password" name="password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/signin", content_type="text/html", body=form
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/auth",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/signin")] is True
+
     def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
         """The form's type="password" input names the field, so a name outside the
         password hints (passcode) still marks the POST to its action."""

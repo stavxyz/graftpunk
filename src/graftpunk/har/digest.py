@@ -829,23 +829,56 @@ class _CredentialPost:
     page_step: int | None
 
 
+def _has_a_script_driven_form(entry: HAREntry, forms: tuple[LoginForm, ...]) -> bool:
+    """True when one of *forms*, served by *entry*, has no target of its own: an
+    empty, ``#``, or ``javascript:`` action, or one resolving to the page itself.
+    Such a form posts by script, so a POST found by its field names alone may be
+    its credential post."""
+    page = _request_target(entry.request.url)
+    return any(
+        form.action_target == page or form.action.lower().startswith("javascript:")
+        for form in forms
+    )
+
+
 def _used_forms_first(
     forms: list[LoginForm], page_of: dict[int, int], posts: list[_CredentialPost]
 ) -> list[LoginForm]:
     """*forms* in the order the generator should prefer them: a form a credential
-    post went to first; among those, one on the page the post was promoted from;
-    then the one whose control names cover the most of the post's body; then
-    document order. *page_of* maps a form's ``id`` to its page's step."""
+    post went to first; among those, one on the page that same post promoted; then
+    the one whose control names cover the most of the post's body; then one that
+    appears on no page a post did not promote (not a site-wide header form); then
+    the one with fewer unresolved roles; then document order. *page_of* maps a
+    form's ``id`` to its page's step."""
     promoted = {post.page_step for post in posts if post.page_step is not None}
+    pages_of_key: dict[tuple[object, ...], set[int]] = {}
+    for form in forms:
+        if id(form) in page_of:
+            pages_of_key.setdefault(_form_key(form), set()).add(page_of[id(form)])
 
-    def rank(form: LoginForm) -> tuple[bool, bool, int]:
+    def rank(form: LoginForm) -> tuple[bool, bool, int, bool, int]:
         matching = [post for post in posts if _target_matches(form.action_target, post.target)]
+        on_its_page = any(page_of.get(id(form)) == post.page_step for post in matching)
         coverage = max(
             (len(set(form.input_names) & post.body_names) for post in matching), default=0
         )
-        return (not matching, page_of.get(id(form)) not in promoted, -coverage)
+        site_wide = bool(pages_of_key.get(_form_key(form), set()) - promoted)
+        return (not matching, not on_its_page, -coverage, site_wide, len(form.unresolved_roles))
 
     return sorted(forms, key=rank)
+
+
+def _form_key(form: LoginForm) -> tuple[object, ...]:
+    """What makes two recorded forms the same form. Not action_target: an
+    empty-action form resolves to each page it is on, and the same site-wide form
+    must still be one form."""
+    return (
+        form.action,
+        form.method,
+        tuple(sorted(form.fields.items())),
+        form.submit,
+        form.hidden,
+    )
 
 
 def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
@@ -854,15 +887,7 @@ def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
     seen: set[tuple[object, ...]] = set()
     unique: list[LoginForm] = []
     for form in forms:
-        # Not action_target: an empty-action form resolves to each page it is on,
-        # and the same site-wide form must still be listed once.
-        key = (
-            form.action,
-            form.method,
-            tuple(sorted(form.fields.items())),
-            form.submit,
-            form.hidden,
-        )
+        key = _form_key(form)
         if key not in seen:
             seen.add(key)
             unique.append(form)
@@ -1174,11 +1199,14 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     id_cookie_names: set[str] = set()
     login: list[LoginObservation] = []
     # Each observation with the step it was classified at, the kind it falls back
-    # to when it is a form page no credential post claims, and its forms' targets.
-    pending: list[tuple[int, ObservationKind | None, LoginObservation, set[tuple[str, str]]]] = []
+    # to when it is a form page no credential post claims, its forms' targets, and
+    # whether one of its forms has no target of its own (posted by script).
+    pending: list[
+        tuple[int, ObservationKind | None, LoginObservation, set[tuple[str, str]], bool]
+    ] = []
     posts: list[tuple[int, tuple[str, str], frozenset[str]]] = []
     page_of: dict[int, int] = {}
-    credential_post_indexes: list[int] = []
+    credential_post_steps: list[int] = []
     # Counts only the entries that reach classification: static and out-of-scope
     # entries between a credential post and its redirect do not use up the window.
     step = 0
@@ -1265,7 +1293,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # (deviation from the brief's credential_fields-only draft,
             # documented in task-3-report.md).
             kind, fields = "credential_post", tuple(sorted(body_params(entry)))
-        elif credential_post_indexes and step - credential_post_indexes[-1] <= _LOGIN_WINDOW:
+        elif credential_post_steps and step - credential_post_steps[-1] <= _LOGIN_WINDOW:
             if entry.response.status in _REDIRECT_STATUSES:
                 kind = "redirect"
             elif _response_cookie_names(entry):
@@ -1290,10 +1318,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                         redirect_to=_redirect_target_path(entry),
                     ),
                     {form.action_target for form in forms_in_entry},
+                    _has_a_script_driven_form(entry, forms_in_entry),
                 )
             )
             if kind == "credential_post":
-                credential_post_indexes.append(step)
+                credential_post_steps.append(step)
                 posts.append(
                     (step, _request_target(entry.request.url), frozenset(body_params(entry)))
                 )
@@ -1306,19 +1335,24 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
 
     # Each credential post promotes one form page: the nearest earlier one whose form
-    # posts where it went, else (a post found by field-name hints) the nearest
-    # earlier one. Every other page carrying a login form is an ordinary page (a
-    # site-wide header form) and keeps its stub. By target, not distance, so the
-    # assets a login page loads cannot push it out of reach.
-    form_pages = [(at, targets) for at, _f, o, targets in pending if o.kind == "form_page"]
+    # posts where it went; else, for a post found by its field names alone, the
+    # nearest earlier one whose form has no target of its own (it posts by script),
+    # and none when every earlier form posts somewhere real. Every other page
+    # carrying a login form is an ordinary page (a site-wide header form) and keeps
+    # its stub. By target, not distance, so the assets a login page loads cannot
+    # push it out of reach.
+    form_pages = [
+        (at, targets, scripted) for at, _f, o, targets, scripted in pending if o.kind == "form_page"
+    ]
     credential_posts: list[_CredentialPost] = []
     for post_step, target, body_names in posts:
-        earlier = [(at, targets) for at, targets in form_pages if at < post_step]
-        matching = [at for at, targets in earlier if _posts_to_a_login_form(target, targets)]
-        chosen = max(matching or [at for at, _targets in earlier], default=None)
+        earlier = [page for page in form_pages if page[0] < post_step]
+        matching = [at for at, targets, _s in earlier if _posts_to_a_login_form(target, targets)]
+        scripted = [at for at, _targets, is_scripted in earlier if is_scripted]
+        chosen = max(matching or scripted, default=None)
         credential_posts.append(_CredentialPost(target, body_names, chosen))
     promoted = {post.page_step for post in credential_posts}
-    for at, fallback, observation, _targets in pending:
+    for at, fallback, observation, _targets, _scripted in pending:
         kind = observation.kind
         if kind == "form_page" and at not in promoted:
             kind = fallback
