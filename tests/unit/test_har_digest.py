@@ -1109,6 +1109,24 @@ class TestEndpointExamples:
         (endpoint,) = result.endpoints
         assert endpoint.falsy_first_response == falsy
 
+    def test_the_fixture_recording_s_content_type_is_recorded(self, tmp_path: Path) -> None:
+        """An HTML page first, then two JSON answers: the fixture is the first
+        recording, so its type is text/html while the endpoint's majority is JSON."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/ack",
+                content_type="text/html",
+                body="<p>ok</p>",
+            ),
+            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.content_type == "application/json"
+        assert endpoint.fixture_content_type == "text/html"
+
     @pytest.mark.parametrize("body", ["0", "false", "{}"])
     def test_a_text_response_has_no_falsy_json_value(self, tmp_path: Path, body: str) -> None:
         """Only a JSON response is read as JSON: a text/plain 0 is the text "0"."""
@@ -1363,6 +1381,32 @@ class TestCollapseMergeCarriesShapeAndBodyKind:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (merged,) = [e for e in result.endpoints if e.template == "/products/{product_id}"]
         assert merged.falsy_first_response == "{}"
+
+    def test_the_family_s_fixture_content_type_is_its_fixture_recording_s(
+        self, tmp_path: Path
+    ) -> None:
+        """The first member's first recording is empty, so the family's fixture is the
+        second member's HTML page, and its type is the family's fixture type."""
+        count = _HIGH_CARDINALITY_THRESHOLD + 1
+        paths = [f"/products/widget-{chr(ord('a') + i)}1" for i in range(count)]
+        first_empty = _entry("GET", f"https://api.myshop.example.com{paths[0]}", body="")
+        first_empty["response"]["status"] = 204
+        entries = [
+            first_empty,
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com{paths[1]}",
+                content_type="text/html",
+                body="<p>widget</p>",
+            ),
+            *(
+                _entry("GET", f"https://api.myshop.example.com{path}", body='{"id": 1}')
+                for path in [*paths[2:], paths[0]]
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (merged,) = [e for e in result.endpoints if e.template == "/products/{product_id}"]
+        assert merged.fixture_content_type == "text/html"
 
     def test_members_that_type_a_parameter_differently_merge_to_str(self, tmp_path: Path) -> None:
         """The family merge applies the same rule a single endpoint's requests do."""

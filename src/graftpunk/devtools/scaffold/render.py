@@ -551,6 +551,10 @@ def _is_json_endpoint(endpoint: Endpoint) -> bool:
     ``request_json`` could not parse."""
     if endpoint.response_body_empty:
         return False
+    if endpoint.fixture_content_type:
+        # The fixture recording's own type, so the stub reads what its test's
+        # fixture holds.
+        return "json" in endpoint.fixture_content_type.lower()
     return endpoint.shape is not None or "json" in endpoint.content_type.lower()
 
 
@@ -1194,6 +1198,12 @@ def _no_fixture_is_written(endpoint: Endpoint) -> bool:
     )
 
 
+def _fixture_type(endpoint: Endpoint) -> str:
+    """The content type *endpoint*'s fixture is named by: its fixture recording's,
+    or, for an endpoint the digest did not build, its majority type."""
+    return endpoint.fixture_content_type or endpoint.content_type
+
+
 def fixture_paths(spec: ScaffoldSpec) -> list[str]:
     """The fixture file each generated endpoint test looks for, project-relative.
 
@@ -1213,7 +1223,7 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
         stems.add(stem)
         paths.append(
             f"{fixtures_root_for(spec)}"
-            f"{capture_filename(endpoint.methods[0], endpoint.template, endpoint.content_type)}"
+            f"{capture_filename(endpoint.methods[0], endpoint.template, _fixture_type(endpoint))}"
         )
     return paths
 

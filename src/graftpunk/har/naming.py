@@ -12,6 +12,7 @@ from graftpunk.har.paths import template_path
 __all__ = [
     "EndpointSpecError",
     "HTTP_METHODS",
+    "UNNAMED_CONTENT_TYPE",
     "capture_filename",
     "capture_slug",
     "fixture_rank",
@@ -60,6 +61,11 @@ def _extension_for_content_type(content_type: str) -> str:
 def capture_filename(method: str, path: str, content_type: str) -> str:
     """``<method>_<slug>.<ext>``, the one name a capture, fixture, and test share."""
     return f"{capture_slug(method, path)}.{_extension_for_content_type(content_type)}"
+
+
+# The content type a capture is named by when its response named none: gp observe
+# fixtures and the digest's record of the fixture recording both use it.
+UNNAMED_CONTENT_TYPE = "application/octet-stream"
 
 
 def fixture_rank(body: str | None) -> int:

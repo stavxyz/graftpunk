@@ -3260,3 +3260,21 @@ def test_a_project_whose_only_endpoint_gets_no_test_imports_no_fixture_context()
     test_code = _render_endpoints(bodyless)["tests/test_plugin.py"]
     assert "fixture_context" not in test_code
     assert "GP-FILL: add a test per command" in test_code
+
+
+def test_the_stub_and_its_fixture_follow_the_fixture_recording_s_content_type() -> None:
+    """The endpoint is mostly JSON, but the fixture its test reads is HTML: the stub
+    reads text, and the listed fixture is .html, so all three agree."""
+    mixed = dataclasses.replace(
+        _single_endpoint("/ack"), content_type="application/json", fixture_content_type="text/html"
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(mixed,)),
+    )
+    plugin = render(spec)["src/graftpunk_myshop/plugin.py"]
+    assert "return ctx.request_text(" in plugin[plugin.index("def ack(") :]
+    assert [path.rsplit("/", 1)[-1] for path in fixture_paths(spec)] == ["get_ack.html"]

@@ -27,7 +27,7 @@ from graftpunk.har.documents import (
     looks_like_new_password_name,
     looks_like_token_name,
 )
-from graftpunk.har.naming import fixture_rank
+from graftpunk.har.naming import UNNAMED_CONTENT_TYPE, fixture_rank
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
@@ -284,12 +284,17 @@ class Endpoint:
     # Every recorded response to this endpoint had no body (a redirect, a 204): a
     # generated test asserts the call completed, since an empty body is falsy.
     response_body_empty: bool = False
-    # The first recorded response's body when a generated test's `assert result`
-    # would fail on it: "" when it had no body, or the falsy JSON value it parses to
-    # ({}, [], "", 0, false, or null) spelled as canonical JSON. None otherwise.
-    # gp observe fixtures names the first recording's fixture without a suffix, and
-    # that is the one the generated test reads, so the test asserts this value.
+    # The fixture recording's body (the one gp observe fixtures writes without a
+    # suffix: the first recording with a body, graftpunk.har.naming.fixture_rank)
+    # when it is JSON parsing to a falsy value ({}, [], "", 0, false, or null),
+    # spelled as canonical JSON; None otherwise, an empty body included. The
+    # generated test reads that fixture, so it asserts this value.
     falsy_first_response: str | None = None
+    # The fixture recording's content type (application/octet-stream when it named
+    # none, as gp observe fixtures writes it): the stub's request method, the
+    # fixture's file name, and the falsy decision all read this one recording. A
+    # lookup for the generator, so render_json leaves it out.
+    fixture_content_type: str = field(default="", metadata={INTERNAL: True})
 
 
 @dataclass(frozen=True)
@@ -1113,6 +1118,7 @@ class _EndpointAccumulator:
         self.bodied = False
         self.fixture_key: tuple[int, int] | None = None
         self.falsy_first: str | None = None
+        self.fixture_content_type = ""
         self.custom_headers: set[str] = set()
         self.examples: list[str] = []
         # Dropped names, held only to count them distinctly; never kept past finish.
@@ -1126,6 +1132,7 @@ class _EndpointAccumulator:
             self.fixture_key = key
             is_json = "json" in (entry.response.content_type or "").lower()
             self.falsy_first = _falsy_value(entry.response.body) if is_json else None
+            self.fixture_content_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
         method = entry.request.method.upper()
         if method not in self.methods:
             self.methods.append(method)
@@ -1180,6 +1187,7 @@ class _EndpointAccumulator:
             header_names_dropped_as_ids=len(self.dropped_headers),
             response_body_empty=not self.bodied,
             falsy_first_response=self.falsy_first,
+            fixture_content_type=self.fixture_content_type,
         )
 
 
@@ -1752,6 +1760,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             ):
                 target.fixture_key = acc.fixture_key
                 target.falsy_first = acc.falsy_first
+                target.fixture_content_type = acc.fixture_content_type
             target.dropped_headers |= acc.dropped_headers
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost

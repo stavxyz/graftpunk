@@ -631,6 +631,28 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert "def test_report(" not in test_code
         assert "GP-FILL: no test for report" in test_code
 
+    def test_a_mixed_content_type_endpoint_s_generated_test_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An HTML answer first, then two JSON ones: the fixture is the HTML, and the
+        stub reads text, so the generated test passes on it."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/ack",
+                content_type="text/html",
+                body="<p>ok</p>",
+            ),
+            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+        ]
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, entries, "GET /ack"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_ack.html").read_text() == "<p>ok</p>"
+
     def test_a_recorder_redirect_hop_s_fixture_passes_the_generated_test(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

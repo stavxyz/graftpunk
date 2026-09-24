@@ -42,6 +42,7 @@ from graftpunk.har.digest import (
     redacted_names_of,
 )
 from graftpunk.har.naming import (
+    UNNAMED_CONTENT_TYPE,
     EndpointSpecError,
     capture_filename,
     capture_slug,
@@ -380,7 +381,7 @@ def fixtures_cmd(
         if not hits:
             continue
         matched.update(hits)
-        content_type = entry.response.content_type or "application/octet-stream"
+        content_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
         text = _capture_text(entry)
         if text is None:
             # A capture holds no text for a binary response, and writing
