@@ -1263,10 +1263,13 @@ class TestCollapseMergeCarriesShapeAndBodyKind:
         """The first member of a collapsed family answers for the family, and it may
         be the one that returned HTML and posted nothing."""
         count = _HIGH_CARDINALITY_THRESHOLD + 1
+        # A letter and one digit: each path stays its own raw template, so only the
+        # high-cardinality collapse makes them one endpoint.
+        paths = [f"/products/widget-{chr(ord('a') + i)}1" for i in range(count)]
         entries = [
             _entry(
                 "POST",
-                "https://api.myshop.example.com/products/red-widget-2000",
+                f"https://api.myshop.example.com{paths[0]}",
                 content_type="text/html",
                 body="<html></html>",
             )
@@ -1274,16 +1277,21 @@ class TestCollapseMergeCarriesShapeAndBodyKind:
         entries += [
             _entry(
                 "POST",
-                f"https://api.myshop.example.com/products/red-widget-{2000 + i}",
+                f"https://api.myshop.example.com{path}",
                 body='{"id": 1}',
                 post_data='{"sku": "widget"}',
             )
-            for i in range(1, count)
+            for path in paths[1:]
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        # The merge ran: every member's raw template was re-templated into one family.
+        assert set(result.collapsed_templates) == set(paths)
         merged = [e for e in result.endpoints if e.template == "/products/{product_id}"]
         assert len(merged) == 1, [e.template for e in result.endpoints]
+        assert len(result.endpoints) == 1
+        assert merged[0].count == count
         assert merged[0].shape is not None
+        assert merged[0].shape != SHAPE_UNAVAILABLE
         assert merged[0].body_kind == "json"
         assert "sku" in merged[0].body_params
 
