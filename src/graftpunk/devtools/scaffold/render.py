@@ -275,8 +275,9 @@ def _param_identifier(site_name: str, seen: set[str]) -> str:
     return _deduped(base, seen)
 
 
-def _login_landing_path(d: RunDigest) -> str:
-    """The path the login's redirect chain came to rest on, or an empty string.
+def _login_landing_path(d: RunDigest) -> tuple[str, str]:
+    """The path the login's redirect chain came to rest on, or an empty string, and
+    when it is empty, why: the clause the ``success_url`` GP-FILL states.
 
     Every observation whose own status is a 3xx carries the path it sent the
     client to, the credential post included: a login whose POST answers 302 is
@@ -295,7 +296,11 @@ def _login_landing_path(d: RunDigest) -> str:
     chain, whatever its page holds. A chain that rests on a 200 page holding a
     ``form_post``-shaped form it did not follow (a same-host identity provider's,
     or a hidden-only logout form on the landing page;
-    ``LoginObservation.landing_unresolved``) may continue past it or not.
+    ``LoginObservation.landing_unresolved``) may continue past it or not. A chain
+    whose last hop is a ``form_post`` submission answering without a redirect
+    leaves the client on that hop, which no redirect named. Each credential post
+    starts over: only the last post's own chain decides, so a later post never
+    brings back a landing an earlier post's chain refused.
 
     The digest follows a chain only within its ``_LOGIN_WINDOW`` of classified
     entries after the credential post, so a chain longer than that ends with an
@@ -305,15 +310,22 @@ def _login_landing_path(d: RunDigest) -> str:
     """
     landing = ""
     posted = False
-    unresolved = False
+    unresolved = ""
     # Only the login the generator uses: a password change's redirect is not it.
     for observation in (o for o in d.login if o.login_flow):
         if observation.kind == "credential_post":
+            # Each post starts over: only the last post's own chain decides, so a
+            # later post never brings back a landing an earlier one's chain refused.
             posted = True
+            landing = ""
             unresolved = observation.landing_unresolved
         if posted and observation.redirect_to:
             landing = observation.redirect_to
-    return "" if unresolved else landing
+    if unresolved:
+        return "", f"The login's redirect chain {unresolved}, so where it lands is ambiguous."
+    if not landing:
+        return "", "This run observed no redirect after the credential post."
+    return landing, ""
 
 
 def _success_url_pattern(redirect_path: str) -> str | None:
@@ -384,7 +396,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])'
         )
         return lines
-    landing_path = _login_landing_path(spec.digest)
+    landing_path, no_landing = _login_landing_path(spec.digest)
     pattern = _success_url_pattern(landing_path) if landing_path else None
     lines = ["    login_config = LoginConfig(", "        steps=["]
     lines.extend(_render_login_step(form, indent=len(L3)))
@@ -438,7 +450,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
                     "The redirect this run observed after the credential post has no "
                     "literal path segment to match on."
                     if landing_path
-                    else "This run observed no redirect after the credential post."
+                    else no_landing
                 ),
                 indent=len(L2),
             )

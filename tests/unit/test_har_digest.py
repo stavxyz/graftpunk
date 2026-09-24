@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -2375,6 +2376,26 @@ class TestLoginFlowFlag:
         '<input type="password" name="password" id="pass"></form>'
     )
 
+    @staticmethod
+    def _comments(code: str) -> str:
+        """*code*'s comment text with each wrapped comment joined into one line."""
+        return re.sub(r"\s*\n\s*#\s*", " ", code)
+
+    def _refused_then_retried(self, retry: dict) -> list[dict]:
+        """A login whose chain rests on a page holding a hidden-only form it did not
+        follow (a refused landing), then *retry*, a second post of the same form."""
+        dashboard = '<form method="post" action="/logout"><input type="hidden" name="csrf"></form>'
+        return [
+            *self._login_entries(),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/dashboard",
+                content_type="text/html",
+                body=dashboard,
+            ),
+            retry,
+        ]
+
     def _login_entries(self, landing: str = "/dashboard") -> list[dict]:
         return [
             _entry(
@@ -2731,6 +2752,86 @@ class TestLoginFlowFlag:
         assert "success_url=" not in code
         assert "GP-FILL: success_url" in code
 
+    def test_a_later_post_answering_200_does_not_bring_back_a_refused_landing(
+        self, tmp_path: Path
+    ) -> None:
+        """The first post's landing was refused; the second post answers 200 and
+        decides alone: no landing, and the comment says no redirect followed it."""
+        retry = _entry(
+            "POST",
+            "https://api.myshop.example.com/session",
+            post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+        )
+        entries = self._refused_then_retried(retry)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert "success_url=" not in code
+        assert "observed no redirect after the credential post" in self._comments(code)
+
+    def test_a_later_post_s_own_redirect_is_the_landing(self, tmp_path: Path) -> None:
+        """The first post's landing was refused; the second post redirects to /app,
+        and its own chain decides."""
+        retry = _entry(
+            "POST",
+            "https://api.myshop.example.com/session",
+            status=302,
+            response_headers={"Location": "/app"},
+            post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+        )
+        entries = self._refused_then_retried(retry)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert 'success_url="*/app*",' in code
+        assert "*/dashboard*" not in code
+
+    def test_a_form_post_callback_answering_200_takes_no_landing(self, tmp_path: Path) -> None:
+        """The identity provider's form posts to the app's callback, which answers 200:
+        the client rests on the callback, not on the provider's page, so the login
+        takes no landing."""
+        entries = self._form_post_chain(
+            "https://api.myshop.example.com/callback", "https://api.myshop.example.com/callback"
+        )
+        callback = entries[-1]
+        callback["response"]["status"] = 200
+        callback["response"]["headers"] = [
+            h for h in callback["response"]["headers"] if h["name"].lower() != "location"
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert "*/authorize/resume*" not in code
+        assert "success_url=" not in code
+        comments = self._comments(code)
+        assert "the last hop answered 200" in comments
+        assert "observed no redirect" not in comments
+
+    def test_a_submission_answering_a_page_that_the_chain_follows_on_keeps_the_landing(
+        self, tmp_path: Path
+    ) -> None:
+        """The callback answers 200 with another form_post form, whose submission
+        redirects to /app: the chain ends on that redirect, and /app is the landing."""
+        entries = self._form_post_chain(
+            "https://api.myshop.example.com/callback", "https://api.myshop.example.com/callback"
+        )
+        callback = entries[-1]
+        callback["response"]["status"] = 200
+        callback["response"]["headers"] = [{"name": "Content-Type", "value": "text/html"}]
+        page = (
+            '<form method="post" action="https://auth.myshop.example.com/continue">'
+            '<input type="hidden" name="ticket" value="t"></form>'
+        )
+        callback["response"]["content"] = {"mimeType": "text/html", "text": page, "size": 1}
+        entries.append(
+            _entry(
+                "POST",
+                "https://auth.myshop.example.com/continue",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"ticket": "t"}),
+            )
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/app*",' in self._plugin(result)
+
     def test_a_same_host_identity_provider_s_form_post_takes_no_landing(
         self, tmp_path: Path
     ) -> None:
@@ -2780,6 +2881,9 @@ class TestLoginFlowFlag:
         assert "*/auth/resume*" not in code
         assert "success_url=" not in code
         assert "GP-FILL: success_url" in code
+        comments = self._comments(code)
+        assert "came to rest on a page holding a form it did not follow" in comments
+        assert "observed no redirect" not in comments
 
     def _form_post_chain(self, form_action: str, callback_url: str) -> list[dict]:
         """An identity provider's login on auth., whose resume page's form_post form

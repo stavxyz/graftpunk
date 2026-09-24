@@ -312,12 +312,15 @@ class LoginObservation:
     # change, an account edit, or a later POST answering with a redirect recorded in
     # the same run is observed but not part of it.
     login_flow: bool = True
-    # On a credential post only: its redirect chain came to rest on a 200 page
-    # holding an OAuth form_post-shaped form the chain did not follow (a same-host
-    # identity provider's, or a hidden-only logout form on the landing page), so
-    # where the login lands is ambiguous and the generator takes no landing. A
-    # lookup for the generator, so render_json leaves it out.
-    landing_unresolved: bool = field(default=False, metadata={INTERNAL: True})
+    # On a credential post only: why where its login lands is ambiguous, as a clause
+    # the generator's GP-FILL states, or empty when it is not. The chain came to
+    # rest on a 200 page holding an OAuth form_post-shaped form it did not follow
+    # (a same-host identity provider's, or a hidden-only logout form on the landing
+    # page), or its last hop, a form_post submission, answered without a redirect,
+    # leaving the client on that hop rather than on the last redirect's target. The
+    # generator then takes no landing. A lookup for the generator, so render_json
+    # leaves it out.
+    landing_unresolved: str = field(default="", metadata={INTERNAL: True})
 
 
 @dataclass(frozen=True)
@@ -1428,6 +1431,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     chain_next: dict[int, tuple[str, str]] = {}
     # With the host of the page that served them: an OAuth form_post crosses hosts.
     chain_forms: dict[int, tuple[str, dict[tuple[str, str], frozenset[str]]]] = {}
+    # A credential post whose chain's last hop was a form_post submission answering
+    # without a redirect, to that hop's status.
+    chain_ended_on_submission: dict[int, int] = {}
     # Counts only the entries that reach classification: static and out-of-scope
     # entries between a credential post and its redirect do not use up the window.
     step = 0
@@ -1540,18 +1546,27 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             last_post = credential_post_steps[-1]
             hop_url = urlparse(url)
             hop_host = normal_host(hop_url.scheme, hop_url.netloc)
-            if _continues_chain(hop_host, path, chain_next.get(last_post, ("", ""))) or (
-                method == "POST"
+            by_path = _continues_chain(hop_host, path, chain_next.get(last_post, ("", "")))
+            by_form = (
+                not by_path
+                and method == "POST"
                 and _submits_a_chain_form(
                     hop_host,
                     post_target,
                     frozenset(body_params(entry)),
                     chain_forms.get(last_post, ("", {})),
                 )
-            ):
+            )
+            if by_path or by_form:
                 follows_post[step] = last_post
                 chain_next[last_post] = _redirect_target(entry)
                 chain_forms[last_post] = (hop_host, _hop_form_targets(entry))
+                # A submission answering a page leaves the client on it, a URL no
+                # redirect named.
+                if by_form and entry.response.status not in _REDIRECT_STATUSES:
+                    chain_ended_on_submission[last_post] = entry.response.status
+                else:
+                    chain_ended_on_submission.pop(last_post, None)
             if entry.response.status in _REDIRECT_STATUSES:
                 kind = "redirect"
             elif _response_cookie_names(entry):
@@ -1671,8 +1686,13 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             or (kind in ("redirect", "set_cookie") and follows_post.get(at) in owned_posts)
         )
         # The chain's last hop is a 200 page whose form_post-shaped forms it did not
-        # follow: that hop's forms are still the chain's own.
-        unresolved = kind == "credential_post" and bool(chain_forms.get(at, ("", {}))[1])
+        # follow (that hop's forms are still the chain's own), or a submission that
+        # answered a page.
+        unresolved = ""
+        if kind == "credential_post" and chain_forms.get(at, ("", {}))[1]:
+            unresolved = "came to rest on a page holding a form it did not follow"
+        elif kind == "credential_post" and at in chain_ended_on_submission:
+            unresolved = f"ended when the last hop answered {chain_ended_on_submission[at]}"
         login.append(
             replace(
                 observation,
