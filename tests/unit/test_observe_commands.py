@@ -519,6 +519,8 @@ class TestFixturesCommand:
         assert result.exit_code == 1, result.output
         output = strip_ansi(result.output).replace("\n", "")
         assert "GET /Users" in output and "GET /users" in output
+        # M3: the refusal names a real stem, the first one seen, not its folded key.
+        assert "Refusing to write get_Users:" in output
 
     def test_the_sidecar_is_committable_and_records_the_capture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

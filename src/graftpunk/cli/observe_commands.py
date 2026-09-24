@@ -219,6 +219,8 @@ def _colliding_file_names(
     ``/a/b`` both name ``get_a_b``, whatever each one's extension), each with those
     endpoints: ``FixtureSession`` looks a fixture up by stem."""
     keys_by_name: dict[str, set[str]] = {}
+    # Keyed on the folded stem, printed as the first real stem seen under it.
+    shown: dict[str, str] = {}
     for entry in entries:
         try:
             path = urlparse(entry.request.url).path or "/"
@@ -232,9 +234,11 @@ def _colliding_file_names(
             continue
         # Case-folded: on a case-insensitive filesystem get_Users and get_users
         # are one file.
-        name = capture_slug(method, template).casefold()
+        stem = capture_slug(method, template)
+        name = stem.casefold()
+        shown.setdefault(name, stem)
         keys_by_name.setdefault(name, set()).add(f"{method} {template}")
-    return {name: keys for name, keys in keys_by_name.items() if len(keys) > 1}
+    return {shown[name]: keys for name, keys in keys_by_name.items() if len(keys) > 1}
 
 
 def fixtures_cmd(
