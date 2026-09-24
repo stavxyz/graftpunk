@@ -16,6 +16,7 @@ __all__ = [
     "capture_filename",
     "capture_slug",
     "capture_text",
+    "fixture_order",
     "fixture_rank",
     "parse_command_spec",
     "parse_endpoint",
@@ -89,6 +90,17 @@ def fixture_rank(body: str | None) -> int:
     with a body when any has one; the digest reads the same recording
     (``Endpoint.falsy_first_response``)."""
     return 0 if body else 1
+
+
+def fixture_order(text: str | None, content_type: str, fixture_type: str) -> tuple[int, int]:
+    """Where a recording of a template stands for ``gp observe fixtures``, which
+    writes a template's recordings in this order, stably, so the first takes the
+    unsuffixed name a generated test reads: first those of *fixture_type*, the
+    endpoint's ``Endpoint.fixture_content_type`` (its main content type when that
+    type has a written recording), then by :func:`fixture_rank`. *content_type* is
+    the recording's own, :data:`UNNAMED_CONTENT_TYPE` when it named none. The digest
+    chooses the same recording."""
+    return (0 if content_type == fixture_type else 1, fixture_rank(text))
 
 
 HTTP_METHODS: frozenset[str] = frozenset(

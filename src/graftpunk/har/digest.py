@@ -285,15 +285,17 @@ class Endpoint:
     # generated test asserts the call completed, since an empty body is falsy.
     response_body_empty: bool = False
     # The fixture recording's body (the one gp observe fixtures writes without a
-    # suffix: the first recording with a body, graftpunk.har.naming.fixture_rank)
-    # when it is JSON parsing to a falsy value ({}, [], "", 0, false, or null),
-    # spelled as canonical JSON; None otherwise, an empty body included. The
-    # generated test reads that fixture, so it asserts this value.
+    # suffix, graftpunk.har.naming.fixture_order: the first written recording of
+    # the endpoint's main content type, a body preferred, or of any type when the
+    # main one has none) when it is JSON parsing to a falsy value ({}, [], "", 0,
+    # false, or null), spelled as canonical JSON; None otherwise, an empty body
+    # included. The generated test reads that fixture, so it asserts this value.
     falsy_first_response: str | None = None
     # The fixture recording's content type (application/octet-stream when it named
-    # none, as gp observe fixtures writes it): the stub's request method, the
-    # fixture's file name, and the falsy decision all read this one recording. A
-    # lookup for the generator, so render_json leaves it out.
+    # none, as gp observe fixtures writes it): the main content type whenever that
+    # type has a written recording. The stub's request method, the fixture's file
+    # name, and the falsy decision all read this one recording. A lookup for the
+    # generator, so render_json leaves it out.
     fixture_content_type: str = field(default="", metadata={INTERNAL: True})
     # Whether gp observe fixtures writes a fixture for any recording
     # (graftpunk.har.naming.capture_text): the generator writes no test for an
@@ -1115,14 +1117,13 @@ class _EndpointAccumulator:
         self.body_params: dict[str, str] = {}
         self.body_kind: BodyKind = "none"
         self.shape: ShapeNode | None = None
-        # Whether any recorded response carried a body. The recording gp observe
-        # fixtures writes without a suffix (graftpunk.har.naming.fixture_rank, then
-        # the order recorded), as its (rank, step) key, and its falsy JSON value
-        # (_falsy_value) when its content type is JSON.
+        # Whether any recorded response carried a body. Per content type (keyed as
+        # content_types is), the recording gp observe fixtures would write first of
+        # that type's (graftpunk.har.naming.fixture_rank, then the order recorded):
+        # its (rank, step) key and its falsy JSON value (_falsy_value). finish
+        # picks the main type's, as graftpunk.har.naming.fixture_order does.
         self.bodied = False
-        self.fixture_key: tuple[int, int] | None = None
-        self.falsy_first: str | None = None
-        self.fixture_content_type = ""
+        self.fixture_candidates: dict[str, tuple[tuple[int, int], str | None]] = {}
         self.custom_headers: set[str] = set()
         self.examples: list[str] = []
         # Dropped names, held only to count them distinctly; never kept past finish.
@@ -1133,12 +1134,14 @@ class _EndpointAccumulator:
     def record(self, entry: HAREntry, path: str, step: int) -> None:
         text = capture_text(entry.response.body, entry.response.status)
         # A recording gp observe fixtures writes nothing for is never the fixture.
-        key = (fixture_rank(text), step)
-        if text is not None and (self.fixture_key is None or key < self.fixture_key):
-            self.fixture_key = key
-            is_json = "json" in (entry.response.content_type or "").lower()
-            self.falsy_first = _falsy_value(text) if is_json else None
-            self.fixture_content_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
+        if text is not None:
+            recorded_type = entry.response.content_type or ""
+            key = (fixture_rank(text), step)
+            best = self.fixture_candidates.get(recorded_type)
+            if best is None or key < best[0]:
+                is_json = "json" in recorded_type.lower()
+                falsy = _falsy_value(text) if is_json else None
+                self.fixture_candidates[recorded_type] = (key, falsy)
         method = entry.request.method.upper()
         if method not in self.methods:
             self.methods.append(method)
@@ -1172,6 +1175,14 @@ class _EndpointAccumulator:
         primary_content_type = max(
             self.content_types, key=lambda ct: self.content_types[ct], default=""
         )
+        # The fixture is the main type's first written recording; with none of that
+        # type, the first written recording of any type.
+        candidates = self.fixture_candidates
+        fixture_type = (
+            primary_content_type
+            if primary_content_type in candidates
+            else min(candidates, key=lambda ct: candidates[ct][0], default=None)
+        )
         return Endpoint(
             host=self.host,
             template=template,
@@ -1192,9 +1203,11 @@ class _EndpointAccumulator:
             body_keys_dropped_as_non_names=len(self.dropped_body) - _count_ids(self.dropped_body),
             header_names_dropped_as_ids=len(self.dropped_headers),
             response_body_empty=not self.bodied,
-            falsy_first_response=self.falsy_first,
-            fixture_content_type=self.fixture_content_type,
-            fixture_written=self.fixture_key is not None,
+            falsy_first_response=None if fixture_type is None else candidates[fixture_type][1],
+            fixture_content_type=(
+                "" if fixture_type is None else fixture_type or UNNAMED_CONTENT_TYPE
+            ),
+            fixture_written=bool(candidates),
         )
 
 
@@ -1760,14 +1773,12 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.dropped_query |= acc.dropped_query
             target.dropped_body |= acc.dropped_body
             target.bodied = target.bodied or acc.bodied
-            # The family's fixture is its members' first recording by the fixtures
-            # order, whichever member recorded it.
-            if acc.fixture_key is not None and (
-                target.fixture_key is None or acc.fixture_key < target.fixture_key
-            ):
-                target.fixture_key = acc.fixture_key
-                target.falsy_first = acc.falsy_first
-                target.fixture_content_type = acc.fixture_content_type
+            # The family's fixture candidates are its members' first recordings of
+            # each type, whichever member recorded them.
+            for recorded_type, candidate in acc.fixture_candidates.items():
+                best = target.fixture_candidates.get(recorded_type)
+                if best is None or candidate[0] < best[0]:
+                    target.fixture_candidates[recorded_type] = candidate
             target.dropped_headers |= acc.dropped_headers
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost

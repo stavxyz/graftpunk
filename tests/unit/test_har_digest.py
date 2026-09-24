@@ -1155,23 +1155,44 @@ class TestEndpointExamples:
         (endpoint,) = result.endpoints
         assert endpoint.fixture_content_type == "text/html"
 
-    def test_the_fixture_recording_s_content_type_is_recorded(self, tmp_path: Path) -> None:
-        """An HTML page first, then two JSON answers: the fixture is the first
-        recording, so its type is text/html while the endpoint's majority is JSON."""
+    def test_the_fixture_recording_is_of_the_endpoint_s_main_content_type(
+        self, tmp_path: Path
+    ) -> None:
+        """/v1/cart answered an HTML page first, then JSON twice: the endpoint is JSON,
+        so its fixture is its first JSON recording, and its falsy value is that one's."""
         entries = [
             _entry(
                 "GET",
-                "https://api.myshop.example.com/ack",
+                "https://api.myshop.example.com/v1/cart",
                 content_type="text/html",
-                body="<p>ok</p>",
+                body="<p>sign in</p>",
             ),
-            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
-            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+            _entry("GET", "https://api.myshop.example.com/v1/cart", body="{}"),
+            _entry("GET", "https://api.myshop.example.com/v1/cart", body='{"items": [1]}'),
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (endpoint,) = result.endpoints
         assert endpoint.content_type == "application/json"
+        assert endpoint.fixture_content_type == "application/json"
+        assert endpoint.falsy_first_response == "{}"
+
+    def test_with_no_written_recording_of_the_main_type_the_fixture_is_another(
+        self, tmp_path: Path
+    ) -> None:
+        """The JSON recordings kept no text, so fixtures writes only the HTML one."""
+        no_text = []
+        for _ in range(2):
+            entry = _entry("GET", "https://api.myshop.example.com/v1/cart")
+            entry["response"]["content"] = {"mimeType": "application/json", "size": 0}
+            no_text.append(entry)
+        html = _entry(
+            "GET", "https://api.myshop.example.com/v1/cart", content_type="text/html", body="<p/>"
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [*no_text, html])))
+        (endpoint,) = result.endpoints
+        assert endpoint.content_type == "application/json"
         assert endpoint.fixture_content_type == "text/html"
+        assert endpoint.fixture_written is True
 
     @pytest.mark.parametrize("body", ["0", "false", "{}"])
     def test_a_text_response_has_no_falsy_json_value(self, tmp_path: Path, body: str) -> None:
@@ -1452,7 +1473,10 @@ class TestCollapseMergeCarriesShapeAndBodyKind:
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         (merged,) = [e for e in result.endpoints if e.template == "/products/{product_id}"]
-        assert merged.fixture_content_type == "text/html"
+        # The family is mostly JSON: its fixture is its first JSON recording with a
+        # body, the third member's, never the earlier HTML page.
+        assert merged.content_type == "application/json"
+        assert merged.fixture_content_type == "application/json"
 
     def test_members_that_type_a_parameter_differently_merge_to_str(self, tmp_path: Path) -> None:
         """The family merge applies the same rule a single endpoint's requests do."""

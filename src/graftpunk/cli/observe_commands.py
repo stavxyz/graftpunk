@@ -47,7 +47,7 @@ from graftpunk.har.naming import (
     capture_filename,
     capture_slug,
     capture_text,
-    fixture_rank,
+    fixture_order,
     parse_endpoint,
 )
 from graftpunk.har.parser import HAREntry, parse_har_file
@@ -359,9 +359,24 @@ def fixtures_cmd(
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
     matched: set[tuple[str, str]] = set()
-    # A template's first recording with a body is written first, so it takes the
-    # unsuffixed name a generated test reads (fixture_rank); the sort is stable.
-    for entry in sorted(entries, key=lambda e: fixture_rank(_capture_text(e))):
+    # Each template's fixture recording is written first, so it takes the unsuffixed
+    # name a generated test reads (fixture_order); the sort is stable.
+    fixture_types = {
+        (method, endpoint.template): endpoint.fixture_content_type
+        for endpoint in run_digest.endpoints
+        for method in endpoint.methods
+    }
+
+    def written_first(entry: HAREntry) -> tuple[int, int]:
+        try:
+            path = urlparse(entry.request.url).path or "/"
+        except ValueError:
+            path = "/"
+        key = (entry.request.method.upper(), endpoint_template(run_digest, path))
+        recorded_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
+        return fixture_order(_capture_text(entry), recorded_type, fixture_types.get(key, ""))
+
+    for entry in sorted(entries, key=written_first):
         try:
             path = urlparse(entry.request.url).path or "/"
         except ValueError:

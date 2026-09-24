@@ -634,8 +634,9 @@ class TestGeneratedProjectPassesItsOwnGate:
     def test_a_mixed_content_type_endpoint_s_generated_test_passes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An HTML answer first, then two JSON ones: the fixture is the HTML, and the
-        stub reads text, so the generated test passes on it."""
+        """/v1/cart-shaped: an HTML answer first, then two JSON ones. The endpoint is
+        JSON, so the stub reads JSON and the unsuffixed fixture is the first JSON
+        answer, and the generated test passes on it."""
         entries = [
             _entry(
                 "GET",
@@ -651,7 +652,11 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
-        assert (target / "tests" / "fixtures" / "get_ack.html").read_text() == "<p>ok</p>"
+        fixtures = target / "tests" / "fixtures"
+        assert (fixtures / "get_ack.json").read_text() == '{"ok": true}'
+        assert not (fixtures / "get_ack.html").exists()
+        plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "return ctx.request_json(" in plugin
 
     @pytest.mark.parametrize(
         "statuses_and_texts",

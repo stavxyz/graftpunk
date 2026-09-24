@@ -1080,6 +1080,26 @@ class TestResponsesRecordedWithNoText:
         assert (out_dir / "get_orders_{order_id}.json").read_text() == '{"id": 1}'
         assert (out_dir / "get_orders_{order_id}#1.json").read_text() == ""
 
+    def test_the_unsuffixed_fixture_is_of_the_endpoint_s_main_content_type(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An HTML answer, then two JSON ones: the endpoint is JSON, so the first JSON
+        answer takes the unsuffixed name, and the HTML one a suffix."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        url = "https://api.myshop.example.com/orders/1001"
+        entries = [
+            _entry("GET", url, content_type="text/html", body="<p>sign in</p>"),
+            _entry("GET", url, body='{"id": 1}'),
+            _entry("GET", url, body='{"id": 2}'),
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        assert (out_dir / "get_orders_{order_id}.json").read_text() == '{"id": 1}'
+        assert (out_dir / "get_orders_{order_id}#2.html").read_text() == "<p>sign in</p>"
+
     @pytest.mark.parametrize("status", [302, 204])
     def test_a_bodyless_redirect_or_no_content_writes_an_empty_fixture(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int
