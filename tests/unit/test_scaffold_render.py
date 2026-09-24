@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from graftpunk.devtools.scaffold import policy
+from graftpunk.devtools.scaffold.policy import module_name_for
 from graftpunk.devtools.scaffold.pysrc import (
     GENERATED_LINE_LENGTH,
     literal_dict_entry_lines,
@@ -33,7 +34,6 @@ from graftpunk.devtools.scaffold.render import (
     _param_identifier,
     class_name_for,
     fixture_paths,
-    module_name_for,
     render,
     validate_plugin_name,
 )
@@ -3328,3 +3328,23 @@ def test_the_stub_and_its_fixture_follow_the_fixture_recording_s_content_type() 
     plugin = render(spec)["src/graftpunk_myshop/plugin.py"]
     assert "return ctx.request_text(" in plugin[plugin.index("def ack(") :]
     assert [path.rsplit("/", 1)[-1] for path in fixture_paths(spec)] == ["get_ack.html"]
+
+
+def test_the_renderer_spells_the_marker_only_through_the_policy() -> None:
+    """One spelling of GP-FILL: the reader and the lint find what the renderer
+    wrote because all three take it from policy."""
+    import graftpunk.devtools.scaffold.render as render_module
+    from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER
+
+    assert render_module.__file__ is not None
+    tree = ast.parse(Path(render_module.__file__).read_text(encoding="utf-8"))
+    docstrings = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Expr)}
+    literals = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+        and GP_FILL_MARKER in node.value
+    ]
+    assert literals == []

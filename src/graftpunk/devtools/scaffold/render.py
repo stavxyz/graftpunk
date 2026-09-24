@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.scaffold import policy
+from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER
 from graftpunk.devtools.scaffold.pysrc import (
     GENERATED_LINE_LENGTH,
     INDENT_STEP,
@@ -64,7 +65,6 @@ __all__ = [
     "class_name_for",
     "fixture_paths",
     "fixtures_root_for",
-    "module_name_for",
     "render",
     "validate_plugin_name",
 ]
@@ -153,17 +153,6 @@ def validate_plugin_name(name: str) -> None:
             f"letters, digits, hyphens, and underscores, and be at most "
             f"{_MAX_PLUGIN_NAME} characters"
         )
-
-
-def module_name_for(name: str) -> str:
-    """*name*, lowercased with every run of non-alphanumeric characters collapsed to one
-    underscore: the Python module fragment (``graftpunk_{module_name_for(name)}``).
-
-    Total: never raises. A name reaching here through ``ScaffoldSpec`` is
-    already validated by ``validate_plugin_name``, but the function makes no
-    assumption of that on its own.
-    """
-    return re.sub(r"[^a-z0-9]+", "_", name.lower())
 
 
 @dataclass(frozen=True)
@@ -424,7 +413,7 @@ def _password_login_form(d: RunDigest) -> LoginForm | None:
 def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     if spec.digest is None:
         return [
-            "    # GP-FILL: no run digest available.",
+            f"    # {GP_FILL_MARKER}: no run digest available.",
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])',
         ]
     form = _password_login_form(spec.digest)
@@ -460,7 +449,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         # opens, so the hint is a comment and the field stays unset.
         lines.extend(
             wrapped_comment_lines(
-                "GP-FILL: url, the path of the login page. "
+                f"{GP_FILL_MARKER}: url, the path of the login page. "
                 + (
                     "The recorded login page path holds an account value."
                     if form.source.startswith(("http://", "https://"))
@@ -471,7 +460,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         )
     else:
         lines.extend(literal_lines(login_url, indent=len(L2), prefix="url="))
-    lines.append('        failure="GP-FILL: text on the page indicating login failure",')
+    lines.append(f'        failure="{GP_FILL_MARKER}: text on the page indicating login failure",')
     # Nothing observed says which element marks the landing page, and a GP-FILL
     # literal here would be a configured signal: the engine would poll for that
     # selector until the timeout and fail naming it, as a GP-FILL success_url
@@ -480,7 +469,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     # the intended state.
     lines.extend(
         wrapped_comment_lines(
-            "GP-FILL: success, a CSS selector for an element that is on the page this "
+            f"{GP_FILL_MARKER}: success, a CSS selector for an element that is on the page this "
             "login lands on and not on the login form itself.",
             indent=len(L2),
         )
@@ -496,7 +485,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         # success instead. The hint is a comment, and the field stays unset.
         lines.extend(
             wrapped_comment_lines(
-                "GP-FILL: success_url, a glob matched against the whole URL this login "
+                f"{GP_FILL_MARKER}: success_url, a glob matched against the whole URL this login "
                 "lands on, e.g. */dashboard*. "
                 + (
                     "The redirect this run observed after the credential post has no "
@@ -548,13 +537,13 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
         )
     if spec.digest.token_names_dropped_as_ids:
         text = (
-            f"GP-FILL: {spec.digest.token_names_dropped_as_ids} token candidate(s) were left out "
-            "because their names held an account value; configure any this plugin needs "
-            "by hand."
+            f"{GP_FILL_MARKER}: {spec.digest.token_names_dropped_as_ids} token candidate(s) were "
+            "left out because their names held an account value; configure any this plugin "
+            "needs by hand."
         )
         lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     for candidate in unpaired:
-        text = f"GP-FILL: unpaired token candidate: {candidate.kind} '{candidate.name}'"
+        text = f"{GP_FILL_MARKER}: unpaired token candidate: {candidate.kind} '{candidate.name}'"
         lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     return lines
 
@@ -612,8 +601,11 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     holds an id, and a ``GP-FILL`` where one cannot be."""
     pad = " " * indent
     fields, submit = printable_selectors(form)
-    submit_value = submit or "GP-FILL: submit selector"
-    entries = [(role, selector or f"GP-FILL: {role} selector") for role, selector in fields.items()]
+    submit_value = submit or f"{GP_FILL_MARKER}: submit selector"
+    entries = [
+        (role, selector or f"{GP_FILL_MARKER}: {role} selector")
+        for role, selector in fields.items()
+    ]
     lines: list[str] = []
     for role in form.neutral_roles:
         if role not in form.fields:
@@ -625,15 +617,16 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
         )
         lines.extend(
             wrapped_comment_lines(
-                f"GP-FILL: {role} is a placeholder role: {cause}; rename it to the field it is.",
+                f"{GP_FILL_MARKER}: {role} is a placeholder role: {cause}; rename it to the "
+                "field it is.",
                 indent=indent,
             )
         )
     for role in printable_unresolved_roles(form):
         if role in form.absent_roles:
             text = (
-                f"GP-FILL: {role} is not on the recorded form: a multi-step login asks for "
-                "it on another page; add a LoginStep for that page by hand."
+                f"{GP_FILL_MARKER}: {role} is not on the recorded form: a multi-step login asks "
+                "for it on another page; add a LoginStep for that page by hand."
             )
         else:
             reason = (
@@ -642,7 +635,7 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
                 else "the form's action holds an id, and without it none picks one input "
                 "of the recorded page"
             )
-            text = f"GP-FILL: {role} has no selector: {reason}; write one by hand."
+            text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
         lines.extend(wrapped_comment_lines(text, indent=indent))
     lines.append(f"{pad}LoginStep(")
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
@@ -903,7 +896,9 @@ def _decorator_lines(name: str, endpoint_literal: str, param_specs: list[str]) -
     one string. Each *param_specs* entry is an expression placed at ``L3`` (see
     ``_param_spec``)."""
     lines = [f"{L1}@command("]
-    lines.extend(literal_lines(f"GP-FILL: describe {name}", indent=len(L2), prefix="help="))
+    lines.extend(
+        literal_lines(f"{GP_FILL_MARKER}: describe {name}", indent=len(L2), prefix="help=")
+    )
     if param_specs:
         lines.append(f"{L2}params=[")
         lines.extend(f"{L3}{spec}," for spec in param_specs)
@@ -946,8 +941,8 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
             if "/" not in flag:
                 positive = flag.removeprefix("--")
                 flag_notes.append(
-                    f'GP-FILL: "{extra}" can send true but not false: --no-{positive} and '
-                    f"--{positive}-false are both other options of this command."
+                    f'{GP_FILL_MARKER}: "{extra}" can send true but not false: --no-{positive} '
+                    f"and --{positive}-false are both other options of this command."
                 )
         param_specs.append(
             _param_spec(identifier_for[extra], declaration.keywords, click_kwargs=click_kwargs)
@@ -972,7 +967,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
             # rather than sent as null.
             call_lines.extend(given_entries_dict_lines("json", entries))
     if endpoint.custom_headers:
-        entries = [(h, '"GP-FILL"') for h in endpoint.custom_headers]
+        entries = [(h, f'"{GP_FILL_MARKER}"') for h in endpoint.custom_headers]
         call_lines.extend(exploded_dict_lines("headers", entries))
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
@@ -1003,8 +998,8 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
             wrapped_comment_lines(
-                f'GP-FILL: body field "{field_name}" is not an option: the recording sent '
-                f"{reason}, which no command-line option sends as recorded. Add it to the "
+                f'{GP_FILL_MARKER}: body field "{field_name}" is not an option: the recording '
+                f"sent {reason}, which no command-line option sends as recorded. Add it to the "
                 "body by hand if this command needs it.",
                 indent=len(L2),
             )
@@ -1047,22 +1042,23 @@ def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
     ids = (endpoint.query_keys_dropped_as_ids, endpoint.body_keys_dropped_as_ids)
     if any(ids):
         notes.append(
-            f"GP-FILL: {ids[0]} recorded query field(s) and {ids[1]} body field(s) were left "
-            "out because their names held an account value; add any this command needs "
+            f"{GP_FILL_MARKER}: {ids[0]} recorded query field(s) and {ids[1]} body field(s) were "
+            "left out because their names held an account value; add any this command needs "
             "by hand."
         )
     non_names = (endpoint.query_keys_dropped_as_non_names, endpoint.body_keys_dropped_as_non_names)
     if any(non_names):
         notes.append(
-            f"GP-FILL: {non_names[0]} recorded query field(s) and {non_names[1]} body field(s) "
-            "were left out because their names are not field names (a name starting with "
-            "a digit, holding a character a field name does not, or longer than 64 "
+            f"{GP_FILL_MARKER}: {non_names[0]} recorded query field(s) and {non_names[1]} body "
+            "field(s) were left out because their names are not field names (a name starting "
+            "with a digit, holding a character a field name does not, or longer than 64 "
             "characters); add any this command needs by hand."
         )
     if endpoint.header_names_dropped_as_ids:
         notes.append(
-            f"GP-FILL: {endpoint.header_names_dropped_as_ids} recorded header name(s) were left "
-            "out because they held an account value; add any this command needs by hand."
+            f"{GP_FILL_MARKER}: {endpoint.header_names_dropped_as_ids} recorded header name(s) "
+            "were left out because they held an account value; add any this command needs "
+            "by hand."
         )
     return notes
 
@@ -1071,10 +1067,10 @@ def _render_command_stubs(spec: ScaffoldSpec) -> list[str]:
     endpoints = _stub_endpoints(spec)
     if spec.digest is None or not endpoints:
         return [
-            '    @command(help="GP-FILL: describe this command")',
+            f'    @command(help="{GP_FILL_MARKER}: describe this command")',
             "    def example(self, ctx: CommandContext) -> dict:",
-            '        """GP-FILL: what this command does."""',
-            '        return ctx.request_json("GET", "/GP-FILL/path")',
+            f'        """{GP_FILL_MARKER}: what this command does."""',
+            f'        return ctx.request_json("GET", "/{GP_FILL_MARKER}/path")',
         ]
     seen_names: set[str] = set(_TAKEN_COMMAND_NAMES)
     lines: list[str] = []
@@ -1123,7 +1119,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
     if needs_token_import:
         lines.append("from graftpunk.tokens import Token, TokenConfig")
     lines += ["", "", f"class {klass}(SitePlugin):"]
-    class_docstring = f"Commands for {spec.base_url or 'GP-FILL: base_url'}."
+    class_docstring = f"Commands for {spec.base_url or f'{GP_FILL_MARKER}: base_url'}."
     lines.extend(wrapped_docstring_block(class_docstring, indent=len(L1)))
     lines.append("")
     lines.append(f'    site_name = "{spec.name}"')
@@ -1137,7 +1133,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         # GP-FILL, but the attribute the author has to edit carried no marker,
         # so a grep for GP-FILL missed the one line that matters (final fix
         # wave, 2026-09-12).
-        base_url_lines[-1] += "  # GP-FILL: base URL"
+        base_url_lines[-1] += f"  # {GP_FILL_MARKER}: base URL"
     lines.extend(base_url_lines)
     lines.append(f'    backend = "{spec.backend}"')
     lines.append("    api_version = 1")
@@ -1151,7 +1147,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
 
 
 def _render_pyproject(spec: ScaffoldSpec) -> str:
-    package = f"graftpunk_{module_name_for(spec.name)}"
+    package = f"graftpunk_{policy.module_name_for(spec.name)}"
     klass = class_name_for(spec.name)
     floor = spec.graftpunk_version or "0.0.0"
     return (
@@ -1207,7 +1203,7 @@ def fixtures_root_for(spec: ScaffoldSpec) -> str:
     """Where *spec*'s generated tests look for fixtures: the policy's rule, from the
     spec's two facts. Also the directory ``gp plugin new``'s ``Next:`` line names."""
     return policy.fixtures_root(
-        suite_member=spec.mode == "add_to_suite", module_name=module_name_for(spec.name)
+        suite_member=spec.mode == "add_to_suite", module_name=policy.module_name_for(spec.name)
     )
 
 
@@ -1291,7 +1287,8 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     ]
     if not has_endpoint_tests:
         marker = (
-            f"# GP-FILL: add a test per command, against a fixture in {fixtures_root_for(spec)}"
+            f"# {GP_FILL_MARKER}: add a test per command, against a fixture in "
+            f"{fixtures_root_for(spec)}"
         )
         lines.append(marker)
         return "\n".join(lines).rstrip() + "\n"
@@ -1303,9 +1300,10 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         method = endpoint.methods[0]
         if _no_fixture_is_written(endpoint):
             note = (
-                f"GP-FILL: no test for {name} ({method} {endpoint.template}): no recording "
-                "kept any text, and none was a redirect or a 204, so gp observe fixtures "
-                "writes no fixture for it; write its test against a fixture of your own."
+                f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): no "
+                "recording kept any text, and none was a redirect or a 204, so gp observe "
+                "fixtures writes no fixture for it; write its test against a fixture of your "
+                "own."
             )
             lines.extend(wrapped_comment_lines(note, indent=0))
             lines.append("")
@@ -1316,9 +1314,9 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
             # FixtureSession looks a fixture up by stem, so this endpoint's test
             # would read the other endpoint's fixture.
             note = (
-                f"GP-FILL: no test for {name} ({method} {endpoint.template}): its fixture "
-                f"would share the stem {stem} with {stems[stem.casefold()]}; write its test "
-                "against a fixture of its own."
+                f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): its "
+                f"fixture would share the stem {stem} with {stems[stem.casefold()]}; write its "
+                "test against a fixture of its own."
             )
             lines.extend(wrapped_comment_lines(note, indent=0))
             lines.append("")
@@ -1359,8 +1357,8 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
             # The fixture is empty, and the command reads it as text.
             lines.extend(
                 wrapped_comment_lines(
-                    "GP-FILL: every recorded response had no body (a redirect or a 204): "
-                    "assert on what the call should return.",
+                    f"{GP_FILL_MARKER}: every recorded response had no body (a redirect or a "
+                    "204): assert on what the call should return.",
                     indent=len(L1),
                 )
             )
@@ -1369,14 +1367,14 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
             # The fixture holds this falsy value, which `assert result` would fail on.
             lines.extend(
                 wrapped_comment_lines(
-                    f"GP-FILL: the recorded response was the falsy JSON value {falsy}: "
+                    f"{GP_FILL_MARKER}: the recorded response was the falsy JSON value {falsy}: "
                     "assert on the shape you expect.",
                     indent=len(L1),
                 )
             )
             lines.append(f"    assert {_falsy_assertion(falsy)}")
         else:
-            lines.append("    assert result  # GP-FILL: assert on the shape you expect")
+            lines.append(f"    assert result  # {GP_FILL_MARKER}: assert on the shape you expect")
         lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -1417,7 +1415,7 @@ def _render_readme(spec: ScaffoldSpec) -> str:
 
 def render(spec: ScaffoldSpec) -> dict[str, str]:
     """Render *spec* into relative-path -> file-content, per its ``mode``."""
-    package = f"graftpunk_{module_name_for(spec.name)}"
+    package = f"graftpunk_{policy.module_name_for(spec.name)}"
     plugin_module = _render_plugin_module(spec)
     if spec.mode == "new_project":
         return {
@@ -1433,7 +1431,7 @@ def render(spec: ScaffoldSpec) -> dict[str, str]:
     return {
         f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
         f"src/{package}/plugin.py": plugin_module,
-        f"{policy.TESTS_DIR}test_{module_name_for(spec.name)}.py": _render_test_module(
+        f"{policy.TESTS_DIR}test_{policy.module_name_for(spec.name)}.py": _render_test_module(
             spec, package=package
         ),
         f"{fixtures_root_for(spec)}{policy.FIXTURES_PLACEHOLDER}": "",

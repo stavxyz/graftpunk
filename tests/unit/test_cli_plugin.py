@@ -9,6 +9,7 @@ import click
 import click.testing
 import pytest
 
+from graftpunk.har.naming import to_cli_name
 from graftpunk.plugins.cli_plugin import (
     SUPPORTED_API_VERSIONS,
     CommandContext,
@@ -21,7 +22,6 @@ from graftpunk.plugins.cli_plugin import (
     PluginConfig,
     PluginParamSpec,
     SitePlugin,
-    _to_cli_name,
     command,
 )
 
@@ -1036,31 +1036,31 @@ class TestPluginConfigMetadata:
 
 
 class TestToCliName:
-    """Tests for _to_cli_name helper converting Python names to CLI names."""
+    """Tests for to_cli_name helper converting Python names to CLI names."""
 
     def test_camel_case(self) -> None:
         """CamelCase becomes kebab-case."""
-        assert _to_cli_name("AccountStatements") == "account-statements"
+        assert to_cli_name("AccountStatements") == "account-statements"
 
     def test_underscores(self) -> None:
         """Underscores become hyphens."""
-        assert _to_cli_name("account_statements") == "account-statements"
+        assert to_cli_name("account_statements") == "account-statements"
 
     def test_single_word_lower(self) -> None:
         """Single lowercase word is unchanged."""
-        assert _to_cli_name("accounts") == "accounts"
+        assert to_cli_name("accounts") == "accounts"
 
     def test_single_word_upper(self) -> None:
         """Single uppercase word becomes lowercase."""
-        assert _to_cli_name("Accounts") == "accounts"
+        assert to_cli_name("Accounts") == "accounts"
 
     def test_mixed_case_with_numbers(self) -> None:
         """Numbers followed by uppercase get a hyphen."""
-        assert _to_cli_name("v2Accounts") == "v2-accounts"
+        assert to_cli_name("v2Accounts") == "v2-accounts"
 
     def test_already_kebab(self) -> None:
         """Already kebab-case is unchanged."""
-        assert _to_cli_name("account-statements") == "account-statements"
+        assert to_cli_name("account-statements") == "account-statements"
 
 
 class TestCommandGroupMeta:
@@ -1657,3 +1657,14 @@ class TestCommandEndpoint:
         assert result.exit_code == 0, result.output
         assert "List orders" in result.output
         assert "/api/orders" not in result.output
+
+
+class TestToCliNameLivesInNaming:
+    def test_the_rule_has_one_public_home_and_no_alias(self) -> None:
+        from graftpunk.har import naming
+        from graftpunk.plugins import cli_plugin
+
+        assert naming.to_cli_name("AccountStatements") == "account-statements"
+        assert cli_plugin.to_cli_name is naming.to_cli_name
+        assert cli_plugin.registered_name is naming.registered_name
+        assert not hasattr(cli_plugin, "_to_cli_name")

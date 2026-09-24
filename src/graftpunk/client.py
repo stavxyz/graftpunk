@@ -32,6 +32,7 @@ import requests
 
 from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
 from graftpunk.exceptions import GraftpunkError, PluginError
+from graftpunk.har.naming import to_cli_name
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext
 from graftpunk.plugins import get_plugin
@@ -40,7 +41,6 @@ from graftpunk.plugins.cli_plugin import (
     CommandContext,
     CommandResult,
     CommandSpec,
-    _to_cli_name,
 )
 from graftpunk.session_identity import (
     compute_operating_session_name,
@@ -341,7 +341,7 @@ class GraftpunkClient:
             raise AttributeError(name)
         # Commands are registered under their CLI (kebab-case) name; attribute access
         # necessarily uses the Python spelling, so normalise before looking up.
-        key = _to_cli_name(name)
+        key = to_cli_name(name)
         if key in self._top_commands:
             return _CommandCallable(self, self._top_commands[key])
         if key in self._groups:
@@ -382,18 +382,18 @@ class GraftpunkClient:
         # Either spelling resolves: "by_parcel" and "by-parcel" name the same command.
         if len(args) == 1:
             name = args[0]
-            key = _to_cli_name(name)
+            key = to_cli_name(name)
             if key in self._top_commands:
                 return self._top_commands[key]
             raise AttributeError(f"Plugin '{self._plugin.site_name}' has no command '{name}'")
         if len(args) == 2:
             group_name, cmd_name = args
-            group = self._groups.get(_to_cli_name(group_name))
+            group = self._groups.get(to_cli_name(group_name))
             if group is None:
                 raise AttributeError(
                     f"Plugin '{self._plugin.site_name}' has no group '{group_name}'"
                 )
-            spec = group.get(_to_cli_name(cmd_name))
+            spec = group.get(to_cli_name(cmd_name))
             if spec is None:
                 raise AttributeError(f"Group '{group_name}' has no command '{cmd_name}'")
             return spec
@@ -626,7 +626,7 @@ class _GroupProxy:
         Raises:
             AttributeError: If *name* is not a command in this group.
         """
-        spec = self._commands.get(_to_cli_name(name))
+        spec = self._commands.get(to_cli_name(name))
         if spec is None:
             raise AttributeError(
                 f"Group has no command '{name}'. Available: {', '.join(sorted(self._commands))}"
