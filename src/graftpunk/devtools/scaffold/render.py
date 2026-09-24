@@ -350,7 +350,14 @@ def _matches_the_login_page(pattern: str, form: LoginForm) -> bool:
     from or the page the login opens at (``opened_from``), as the engine matches it
     against a whole URL: a failed login that returns there would pass it. A landing
     on the login page itself (``/login/``) and a prefix of it (``/account`` for a
-    login at ``/account/login``) both do."""
+    login at ``/account/login``) both do.
+
+    fnmatch has no notion of a query string: ``?`` is one of its own wildcards
+    (any single character), not an anchor for the one that starts a query, so a
+    pattern or a page holding a literal ``?`` is compared by fnmatch's ordinary
+    rules, never as a query-string boundary. A wrong call this produces has the
+    generated ``GP-FILL`` failure text as its backstop.
+    """
     return any(
         fnmatch.fnmatchcase(page, pattern)
         for page in (form.source, form.opened_from)

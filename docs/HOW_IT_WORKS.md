@@ -635,7 +635,11 @@ starts over, so a later post never brings back a landing an earlier post's chain
 refused. A landing whose glob would match the login page takes none either,
 since a failed login returns there: a later attempt redirecting back to
 `/login`, or a landing on `/account` for a login at `/account/login`, whose
-`*/account*` matches `/account/login?error=1`.
+`*/account*` matches `/account/login?error=1`. The match is fnmatch, which has
+no notion of a query string: `?` is its own wildcard (any single character),
+not an anchor for the one that starts a query, so a pattern or a page holding a
+literal `?` follows fnmatch's ordinary rules there, and the generated `GP-FILL`
+failure text is the backstop for a wrong call this produces.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
