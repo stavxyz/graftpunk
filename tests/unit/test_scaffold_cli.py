@@ -533,6 +533,61 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
 
+    def test_a_recorder_redirect_hop_s_fixture_passes_the_generated_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """graftpunk's recorder writes "text": null for a redirect hop: gp observe
+        fixtures writes its empty fixture, and the generated test passes on it."""
+        from graftpunk.cli.observe_commands import observe_app
+
+        monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entry = _entry("GET", "https://api.myshop.example.com/go", content_type="text/html")
+        entry["response"]["status"] = 302
+        entry["response"]["headers"].append({"name": "Location", "value": "/app"})
+        entry["response"]["content"] = {"mimeType": "text/html", "text": None, "size": 0}
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": [entry]}})
+        )
+        app = _build_app()
+        app.add_typer(observe_app)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        fixtures_dir = target / "tests" / "fixtures"
+        result = runner.invoke(
+            app,
+            ["observe", "fixtures", "myshop", "--match", "GET /go", "--out", str(fixtures_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        assert (fixtures_dir / "get_go.html").read_text() == ""
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+
     @pytest.mark.parametrize(
         ("status", "body"),
         [(204, ""), (200, "{}")],

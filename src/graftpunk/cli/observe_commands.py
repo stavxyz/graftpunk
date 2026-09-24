@@ -212,6 +212,17 @@ def _parsed_matches(patterns: list[str]) -> list[tuple[str, str]]:
     return parsed
 
 
+def _capture_text(entry: HAREntry) -> str | None:
+    """The text a fixture for *entry* holds: its body; an empty string for a 3xx or
+    a 204 recorded with no text (graftpunk's own recorder writes ``"text": null``
+    for a redirect hop), which has no body by definition; None for any other
+    response recorded with no text (a binary one), which gets no fixture."""
+    if entry.response.body is not None:
+        return entry.response.body
+    status = entry.response.status
+    return "" if 300 <= status < 400 or status == 204 else None
+
+
 def _colliding_file_names(
     entries: list[HAREntry], run_digest: RunDigest, endpoints: list[tuple[str, str]]
 ) -> dict[str, set[str]]:
@@ -228,7 +239,7 @@ def _colliding_file_names(
             continue
         template = endpoint_template(run_digest, path)
         method = entry.request.method.upper()
-        if entry.response.body is None or not any(
+        if _capture_text(entry) is None or not any(
             _matches_template(method, template, e) for e in endpoints
         ):
             continue
@@ -367,7 +378,8 @@ def fixtures_cmd(
             continue
         matched.update(hits)
         content_type = entry.response.content_type or "application/octet-stream"
-        if entry.response.body is None:
+        text = _capture_text(entry)
+        if text is None:
             # A capture holds no text for a binary response, and writing
             # `body or ""` put a zero-byte file on disk that reads as a real
             # (empty) fixture.
@@ -391,7 +403,7 @@ def fixtures_cmd(
             filename = f"{stem}#{seen}.{ext}"
         file_path = target_dir / filename
         try:
-            file_path.write_text(entry.response.body, encoding="utf-8")
+            file_path.write_text(text, encoding="utf-8")
             write_sidecar(
                 file_path,
                 status=entry.response.status,

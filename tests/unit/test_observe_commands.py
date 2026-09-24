@@ -501,6 +501,26 @@ class TestFixturesCommand:
         assert "get_a_b" in output and "GET /a/b" in output and "GET /a_b" in output
         assert not out_dir.exists() or not any(out_dir.iterdir())
 
+    def test_a_bodyless_redirect_s_stem_collides_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A redirect recorded with "text": null gets a fixture, so its stem counts."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        hop = _entry("GET", "https://api.myshop.example.com/a/b", content_type="text/html")
+        hop["response"]["status"] = 302
+        hop["response"]["content"] = {"mimeType": "text/html", "text": None, "size": 0}
+        entries = [_entry("GET", "https://api.myshop.example.com/a_b", body='{"x": 1}'), hop]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /*", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert "get_a_b" in output and "GET /a/b" in output and "GET /a_b" in output
+
     def test_stems_that_differ_only_in_case_are_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1012,7 +1032,7 @@ class TestMatchPatternValidation:
         assert f"--match: {caught.value}" in " ".join(strip_ansi(result.output).split())
 
 
-class TestBinaryBodiesAreSkipped:
+class TestResponsesRecordedWithNoText:
     def test_an_entry_with_no_text_body_writes_no_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1041,6 +1061,29 @@ class TestBinaryBodiesAreSkipped:
         assert result.exit_code == 0, result.output
         assert "image/png" in result.output
         assert list(out_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("status", [302, 204])
+    def test_a_bodyless_redirect_or_no_content_writes_an_empty_fixture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        """graftpunk's recorder writes "text": null for a redirect hop; a 3xx or 204
+        has no body by definition, so its fixture is empty, with its sidecar."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        hop = _entry("GET", "https://api.myshop.example.com/orders/1001", content_type="text/html")
+        hop["response"]["status"] = status
+        hop["response"]["headers"].append({"name": "Location", "value": "/app"})
+        hop["response"]["content"] = {"mimeType": "text/html", "text": None, "size": 0}
+        _write_run(observe_base, "myshop", "run-1", [hop])
+        out_dir = tmp_path / "out"
+
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        fixture = out_dir / "get_orders_{order_id}.html"
+        assert fixture.read_text() == ""
+        sidecars = [p for p in out_dir.iterdir() if p != fixture]
+        assert len(sidecars) == 1
+        assert json.loads(sidecars[0].read_text())["status"] == status
 
 
 @contextmanager
