@@ -675,7 +675,8 @@ into the URL (`_quote_path(order_id, safe="")`, `urllib.parse.quote` imported
 under a private name so a site parameter called `quote` cannot shadow it), so a
 `/`, `?`, or `#` in it stays in its segment. A command's name is a Python
 identifier (`import` becomes `import_`, a leading digit gains `n_`) and never
-one of `SitePlugin`'s own attributes (`setup` becomes `setup_2`).
+one of `SitePlugin`'s own attributes (`setup` becomes `setup_2`) or a root
+command graftpunk adds itself (`login` becomes `login_2`).
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
