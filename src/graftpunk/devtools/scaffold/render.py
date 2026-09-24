@@ -344,6 +344,22 @@ def _login_landing_path(d: RunDigest) -> tuple[str, str]:
     return "", "This run observed no redirect after the credential post."
 
 
+def _is_the_login_page(landing_path: str, form: LoginForm) -> bool:
+    """True when *landing_path*, templated, is the path of the page *form* was read
+    from or of the page the login opens at (``opened_from``), templated the same
+    way, a trailing slash aside."""
+
+    def templated(path: str) -> str:
+        return template_path(path.rstrip("/") or "/")[0]
+
+    pages = [
+        urlsplit(page).path
+        for page in (form.source, form.opened_from)
+        if page.startswith(("http://", "https://"))
+    ]
+    return templated(landing_path) in {templated(page) for page in pages}
+
+
 def _success_url_pattern(redirect_path: str) -> str | None:
     """*redirect_path* as a ``success_url`` glob, or None when it says nothing useful.
 
@@ -413,6 +429,12 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         )
         return lines
     landing_path, no_landing = _login_landing_path(spec.digest)
+    if landing_path and _is_the_login_page(landing_path, form):
+        # A failed login lands there too, so the pattern would pass it.
+        landing_path = ""
+        no_landing = (
+            "The recorded landing is the login page itself, which a failed login reaches too."
+        )
     pattern = _success_url_pattern(landing_path) if landing_path else None
     lines = ["    login_config = LoginConfig(", "        steps=["]
     lines.extend(_render_login_step(form, indent=len(L3)))

@@ -2919,6 +2919,47 @@ class TestLoginFlowFlag:
         assert "This run observed no redirect after the credential post." in comments
         assert "answered 200" not in comments
 
+    def test_a_landing_on_the_login_page_itself_is_no_success_url(self, tmp_path: Path) -> None:
+        """A later failed attempt redirects back to /login: a failed login matches
+        */login*, so no pattern is written, and the GP-FILL says why."""
+        failed = _entry(
+            "POST",
+            "https://api.myshop.example.com/session",
+            status=302,
+            response_headers={"Location": "/login/"},
+            post_data=json.dumps({"email": "alice@example.com", "password": "wrong"}),
+        )
+        entries = [*self._login_entries(), failed]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert "success_url=" not in code
+        assert "The recorded landing is the login page itself" in self._comments(code)
+
+    def test_a_landing_on_the_page_the_login_opens_at_is_no_success_url(
+        self, tmp_path: Path
+    ) -> None:
+        """The provider's login redirects back to the app's /login, the page the login
+        opens at: no pattern."""
+        entries = self._provider_login("/login")
+        entries[-1]["response"]["headers"] = [
+            {"name": "Content-Type", "value": "application/json"},
+            {"name": "Location", "value": "https://api.myshop.example.com/login"},
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert "success_url=" not in code
+        assert "The recorded landing is the login page itself" in self._comments(code)
+
+    def test_a_root_landing_is_not_mistaken_for_the_login_page(self, tmp_path: Path) -> None:
+        """No page the login opens at was recorded, so nothing names /: a landing on
+        the root keeps its own reason."""
+        result = digest(
+            DigestSource.from_har(_write_har(tmp_path, self._login_entries(landing="/")))
+        )
+        comments = self._comments(self._plugin(result))
+        assert "has no literal path segment to match on" in comments
+        assert "login page itself" not in comments
+
     def test_a_later_post_s_own_redirect_is_the_landing(self, tmp_path: Path) -> None:
         """The first post's landing was refused; the second post redirects to /app,
         and its own chain decides."""
