@@ -88,14 +88,12 @@ _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 # before the first navigation holds the browser's own new-tab page: chrome://,
 # chrome-untrusted://, and a data: URL, each of which parses with a netloc that
 # is not a host at all (new-tab-page, resources, theme, and an empty string),
-# and each of which was counted as a host in the digest (polish round 2,
-# 2026-09-12).
+# and each of which was counted as a host in the digest.
 _HTTP_SCHEMES = frozenset({"http", "https"})
 
 # Exclusion is three rules against three parts of the URL, never one substring
 # search over the whole of it: matched anywhere, "analytics" dropped the primary
-# host's own /api/analytics/summary and "static." dropped /static-report
-# (polish round 1, 2026-09-12).
+# host's own /api/analytics/summary and "static." dropped /static-report.
 _ASSET_EXTENSION_RE = re.compile(
     r"\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|map)$", re.IGNORECASE
 )
@@ -122,7 +120,7 @@ _STATIC_MAIN_TYPES = frozenset({"image", "font", "audio", "video"})
 # application/* both carry documents and data), so each is listed whole. An
 # extension list alone missed a hashed asset with an unusual extension:
 # /vendor/custom.<hash>._hs, served as text/hyperscript, became an endpoint, a
-# command stub, and a generated test (polish round 2, 2026-09-12).
+# command stub, and a generated test.
 _STATIC_CONTENT_TYPES = frozenset(
     {
         "text/css",
@@ -155,7 +153,7 @@ _AUTH_URL_PATTERNS = [
     r"/sso",
 ]
 # Each pattern ends at a segment boundary: as bare substrings they labelled
-# /api/tokens/list an auth endpoint (polish round 1, 2026-09-12). Every pattern
+# /api/tokens/list an auth endpoint. Every pattern
 # already begins with "/", which anchors the left side.
 _AUTH_URL_REGEX = re.compile(
     "|".join(f"(?:{pattern})(?=/|$)" for pattern in _AUTH_URL_PATTERNS), re.IGNORECASE
@@ -187,7 +185,7 @@ _FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
 _MAX_FIELD_NAME_LEN = 64  # a form field name past this is not a field name
 # The character class carries no whitespace, "<", or "{" by construction, so a
 # body that is really XML, JSON, or prose cannot present itself as one enormous
-# field name (polish round 1, 2026-09-12). A key in the alphabet can still be
+# field name. A key in the alphabet can still be
 # data: _plausible_field_name also refuses one graftpunk.har.paths.holds_an_id
 # says carries an account value, the one rule every path segment and name meets.
 # "$" is admitted, leading and inner: OData spells query keys $filter and $top,
@@ -242,8 +240,7 @@ SHAPE_UNAVAILABLE = ShapeNode(kind="unavailable")
 """A JSON response too large to have been captured whole: its shape is unknown.
 
 Reporting it as non-JSON would be a false claim about the endpoint, and the
-generated docstring said ``Shape: non-JSON.`` for every one of them (polish
-round 1, 2026-09-12)."""
+generated docstring said ``Shape: non-JSON.`` for every one of them."""
 
 
 @dataclass(frozen=True)
@@ -345,7 +342,7 @@ def _scope_root(primary_host: str) -> str:
     Taking the last two labels instead needs a public suffix list to be
     correct, and without one a site under a two-label public suffix (a
     country-code second-level domain) made every host sharing that suffix a
-    first party (polish round 1, 2026-09-12). The parent rule needs no list.
+    first party. The parent rule needs no list.
     The residual it accepts: a primary host of the form ``name.<two-label
     public suffix>`` (``mybank.co.uk``) has three labels, so it scopes to the
     bare suffix and every host under that suffix counts as first party for
@@ -367,7 +364,7 @@ def _primary_host(non_static_hosts: dict[str, int], document_hosts: set[str]) ->
     as assets, while a third-party telemetry endpoint answers a handful of
     non-static POSTs; on a real recording the site served three documents and
     an error-reporting host four beacons, so count alone made the beacon host
-    primary and the site third party (polish round 2, 2026-09-12). A capture
+    primary and the site third party. A capture
     with no HTML in it at all (an API-only run) falls back to the count, which
     is what it always was. Ties keep the first host seen, so the run's own
     first request still wins one.
@@ -616,7 +613,7 @@ def _parse_body_keys(entry: HAREntry) -> tuple[dict[str, str], BodyKind, set[str
     whole text as a single key for anything else, so falling through to it put
     an XML credential post's entire body (values included) into
     ``Endpoint.body_params``, the rendered digest, the fixtures sidecar, and
-    generated plugin source (polish round 1, 2026-09-12).
+    generated plugin source.
 
     A JSON array or scalar is still a JSON body; it just has no field names.
     """
@@ -711,7 +708,7 @@ def _response_shape(entry: HAREntry) -> ShapeNode | None:
 
     The body is parsed whole; it is already in memory. Parsing a fixed-size
     prefix of it could never succeed, so every large body reported non-JSON and
-    the generated docstring said so (polish round 1, 2026-09-12).
+    the generated docstring said so.
     """
     content_type = (entry.response.content_type or "").lower()
     if "json" not in content_type or not entry.response.body:
@@ -1134,8 +1131,7 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
     belonging to that family, whose own segment there is eligible, is
     re-templated. Keyed by segment count alone, one slug family turned every
     sibling route of the same depth into a parameter (``/account/profile`` and
-    ``/account/settings`` merged into ``/account/{account_id}``) (polish round
-    1, 2026-09-12).
+    ``/account/settings`` merged into ``/account/{account_id}``).
     """
     by_count: dict[int, list[list[str]]] = {}
     for template in templates:
@@ -1180,7 +1176,7 @@ def _collapse_high_cardinality(templates: list[str]) -> dict[str, str]:
             new_segments[position] = "{" + param_name_for_segment(prev) + "}"
         # A trailing slash is preserved the way paths.template_path preserves
         # it, so a collapsed template still names the same route as the one
-        # the accumulator was keyed on (polish round 1, 2026-09-12).
+        # the accumulator was keyed on.
         trailing = "/" if len(template) > 1 and template.endswith("/") else ""
         new_template = "/" + "/".join(new_segments) + trailing
         if new_template != template:
@@ -1580,8 +1576,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.dropped_headers |= acc.dropped_headers
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost
-            # the merged endpoint its response shape or its request body kind
-            # (final fix wave, 2026-09-12).
+            # the merged endpoint its response shape or its request body kind.
             if (
                 target.shape is None or target.shape == SHAPE_UNAVAILABLE
             ) and acc.shape is not None:

@@ -217,8 +217,7 @@ def plugin_new(
     console.print(f"[green]{result.mode.replace('_', ' ').title()}:[/green]")
     for path in result.written:
         # soft_wrap: Console.print's default wrapping breaks a path mid-word at
-        # 80 columns, so a listing meant to be copied could not be (polish round
-        # 1, 2026-09-12).
+        # 80 columns, so a listing meant to be copied could not be.
         console.print(f"  {escape(str(path))}", soft_wrap=True)
     if result.gitignore_updated:
         console.print(f"[dim]Added {escape(CAPTURES_DIR)}/ to .gitignore[/dim]")
@@ -229,7 +228,7 @@ def _print_next_steps(spec: ScaffoldSpec) -> None:
     """Name the fixture each generated endpoint test looks for.
 
     A ``--from-run`` project's suite fails on its first run until those files
-    exist, and nothing in the output said so (polish round 1, 2026-09-12). The
+    exist, and nothing in the output said so. The
     paths come from the same rule the generated tests use, so this list is what
     ``FixtureSession`` will go looking for.
     """

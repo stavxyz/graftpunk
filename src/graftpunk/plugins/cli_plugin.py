@@ -614,7 +614,7 @@ class LoginConfig:
         # Validate the post-submit poll budget and the settle pause. The type check
         # comes first: a string reached the comparison below as a raw TypeError from
         # the interpreter, and True passed it as the number 1, which is a one second
-        # budget nobody asked for (polish round 2).
+        # budget nobody asked for.
         for name in ("timeout", "settle"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):

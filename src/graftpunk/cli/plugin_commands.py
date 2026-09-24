@@ -378,8 +378,7 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
                 # Skip only this plugin. Raising here would abort the whole
                 # loop and main.py's handler would then register nothing, so a
                 # user who installed a plugin named after a top-level command
-                # (http, config) would lose every other plugin on upgrade
-                # (final fix wave, 2026-09-12).
+                # (http, config) would lose every other plugin on upgrade.
                 message = (
                     f"Plugin name collision: '{site_name}' is a reserved top-level "
                     "command name. Rename the plugin."

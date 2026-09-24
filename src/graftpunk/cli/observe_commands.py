@@ -108,7 +108,7 @@ def _refuse_write(path: Path, exc: OSError) -> NoReturn:
     """Report an unwritable *path* as a refusal, not as a Rich traceback.
 
     Every CLI refusal is a red line and exit 1: an unwritable ``--output`` or
-    ``--out`` directory is the user's to correct (final fix wave, 2026-09-12).
+    ``--out`` directory is the user's to correct.
     """
     target = exc.filename or str(path)
     reason = exc.strerror or str(exc)
@@ -291,7 +291,7 @@ def fixtures_cmd(
 
     # Below the tracked-path check: the ignore line exists to protect files
     # this command is about to write, so a refusal must not leave an edited
-    # .gitignore behind (polish round 1, 2026-09-12).
+    # .gitignore behind.
     repo_root = find_repo_root(target_dir)
     if repo_root is not None:
         try:
@@ -370,7 +370,7 @@ def fixtures_cmd(
         if entry.response.body is None:
             # A capture holds no text for a binary response, and writing
             # `body or ""` put a zero-byte file on disk that reads as a real
-            # (empty) fixture (final fix wave, 2026-09-12).
+            # (empty) fixture.
             console.print(
                 f"[dim]Skipped {escape(method)} {escape(template)}: "
                 f"no text body ({escape(content_type)})[/dim]"
@@ -404,7 +404,7 @@ def fixtures_cmd(
             _refuse_write(file_path, exc)
         written.append(file_path)
         # soft_wrap: see digest_cmd. A path listing that breaks mid-word at 80
-        # columns cannot be copied (polish round 1, 2026-09-12).
+        # columns cannot be copied.
         console.print(f"[green]Wrote:[/green] {escape(str(file_path))}", soft_wrap=True)
 
     for pattern in endpoints:

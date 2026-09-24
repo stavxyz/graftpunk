@@ -111,7 +111,7 @@ class TestPrimaryHostAndHosts:
     def test_a_document_host_outranks_a_busier_beacon_host(self, tmp_path: Path) -> None:
         """A page-driven site answers its own pages and serves the rest as
         assets, so a telemetry endpoint can out-count it on non-static requests
-        alone (polish round 2, 2026-09-12)."""
+        alone."""
         entries = [
             _entry(
                 "GET",
@@ -204,7 +204,7 @@ class TestStaticAndThirdPartyExclusion:
     def test_a_hashed_asset_with_an_unlisted_extension_is_static(self, tmp_path: Path) -> None:
         """The extension list caught .js and .css but not ._hs, so a hashed
         hyperscript asset became an endpoint, a command stub, and a generated
-        test (polish round 2, 2026-09-12)."""
+        test."""
         entries = [
             _entry("GET", "https://api.myshop.example.com/orders"),
             _entry(
@@ -362,8 +362,7 @@ class TestStaticAndThirdPartyExclusion:
 
 class TestNonHttpSchemes:
     """A capture taken before the first navigation holds the browser's own
-    new-tab page, whose entries are not HTTP at all (polish round 2,
-    2026-09-12)."""
+    new-tab page, whose entries are not HTTP at all."""
 
     def _mixed_har(self, tmp_path: Path) -> Path:
         entries = [
@@ -828,7 +827,7 @@ class TestCustomHeaders:
 class TestLoginObservations:
     def test_form_page_observation(self, tmp_path: Path) -> None:
         """A page carrying a login form is the form page when a credential post
-        follows it (J3, round 9)."""
+        follows it."""
         entries = [
             _entry(
                 "GET",

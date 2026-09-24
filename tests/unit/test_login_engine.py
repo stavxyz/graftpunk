@@ -716,7 +716,7 @@ class TestNodriverLoginValidationPaths:
 
         It used to propagate out of login() while the selenium twin failed cleanly.
         Every unreadable tick is pending now, and a wait that never got an answer
-        reports the page as unreadable (polish round 2).
+        reports the page as unreadable.
         """
         from graftpunk.plugins.login_engine import generate_login_method
 

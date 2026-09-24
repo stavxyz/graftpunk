@@ -1100,8 +1100,7 @@ def _render_conftest(spec: ScaffoldSpec) -> str:
     # it reports as a PytestAssertRewriteWarning on every run of the generated
     # suite. graftpunk.testing.plugin defines no hooks or fixtures of its own, so
     # loading it as a plugin buys nothing: site_env_scrubber returns the fixture
-    # object, and the assignment below is what registers it (final fix wave,
-    # 2026-09-12).
+    # object, and the assignment below is what registers it.
     return (
         "from graftpunk.testing.plugin import site_env_scrubber\n"
         "\n"

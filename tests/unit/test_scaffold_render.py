@@ -456,7 +456,7 @@ class TestWrappedCommentLines:
 
 class TestDocstringWrappingKeepsHyphenatedFactsWhole:
     """A hyphen in this text belongs to a captured fact, never to a word the
-    wrapper may break (polish round 2, 2026-09-12)."""
+    wrapper may break."""
 
     # Long enough to leave room for "myshop-" but not for the whole label, so
     # a hyphen-breaking wrapper would split it exactly there.
@@ -1256,8 +1256,7 @@ class TestPluginModuleCommandStubs:
         assert '"author": author,' in plugin_code
 
     def test_a_camel_case_site_parameter_is_declared_in_snake_case(self) -> None:
-        """The identifier is this project's own; the dict key stays the site's
-        (polish round 2, 2026-09-12)."""
+        """The identifier is this project's own; the dict key stays the site's."""
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
@@ -2505,7 +2504,7 @@ class TestRenderedTreeIsRuffClean:
         """Every line of every generated Python file fits the width the generated
         project's own pyproject.toml declares. The property the per-shape wrapping and
         the identifier caps exist to hold, asserted for every tree this class renders
-        rather than one patched site at a time (validation fix round 4, 2026-09-12)."""
+        rather than one patched site at a time."""
         for relative_path, content in sorted(files.items()):
             if not relative_path.endswith(".py"):
                 continue
@@ -2663,8 +2662,7 @@ class TestRenderedTreeIsRuffClean:
         # renders), a long observation URL (a path, no query), an unpaired
         # token candidate with a long name, and a long base_url (which the
         # class docstring, and the base_url attribute itself, both
-        # interpolate): the shapes the round-3 re-review reproduced its
-        # failures with (validation fix round 3, 2026-09-12).
+        # interpolate): the shapes that once overflowed the generated width.
         long_path = "/".join(f"segment-{i}" for i in range(12))
         long_url = f"https://api.myshop.example.com/{long_path}"
         assert 140 <= len(long_url) <= 180
@@ -2785,8 +2783,8 @@ class TestRenderedTreeIsRuffClean:
         self._assert_tree_is_clean(tree)
 
     def test_maximal_name_deep_paths_and_wide_parameter_names_project(self, tmp_path: Path) -> None:
-        # Every width-relevant input at once, each at or past the bar the round-4
-        # audit found: the longest name validate_plugin_name accepts (so the class,
+        # Every width-relevant input at once, each at or past the width it can reach:
+        # the longest name validate_plugin_name accepts (so the class,
         # module, env prefix, import line and assert are all at their maximum), a
         # deeply nested template, a template past the width on its own with two
         # placeholders, parameter names longer than a dict entry can hold, a header

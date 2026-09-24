@@ -439,7 +439,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         # A scaffolded project's first run is clean: no warnings summary at all.
         # The generated conftest used to both import graftpunk.testing.plugin and
         # list it in pytest_plugins, which pytest reports as a
-        # PytestAssertRewriteWarning (final fix wave, 2026-09-12).
+        # PytestAssertRewriteWarning.
         assert "warnings summary" not in pytest_result.stdout.lower(), pytest_result.stdout
 
     def test_a_generated_test_passes_with_a_query_parameter_named_quote(

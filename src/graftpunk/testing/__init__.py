@@ -94,7 +94,7 @@ class FixtureSession(GraftpunkSession):
     wins and the rest follow in sorted order: an endpoint whose fixture
     directory holds both a ``.html`` and a ``.json`` for one stem is a JSON
     endpoint with an error page beside it, and plain sorted order served the
-    error page (polish round 1, 2026-09-12).
+    error page.
     """
 
     def __init__(self, fixtures_dir: Path | str, **kwargs: Any) -> None:

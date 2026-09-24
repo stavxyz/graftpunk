@@ -19,8 +19,7 @@ _ENTRY_POINT_TABLE_RE = re.compile(
 )
 # The span between the wheel table's header and its packages key stops only at
 # a line-initial table header. "[^\[]*?" stopped at any "[", so an array before
-# packages (exclude = ["docs"]) made a known shape unlocatable (polish round 1,
-# 2026-09-12).
+# packages (exclude = ["docs"]) made a known shape unlocatable.
 _WHEEL_PACKAGES_RE = re.compile(
     r"(\[tool\.hatch\.build\.targets\.wheel\](?:(?!\n\s*\[)[\s\S])*?packages\s*=\s*)(\[[^\]]*\])"
 )
@@ -102,7 +101,7 @@ def _body_with_entry(body: str, name: str, target: str) -> str:
 
     The pattern's body runs to the next table header, so it carries that
     separator. Appending past it glued the new entry to the next header, and a
-    second add then read as part of that table (polish round 2, 2026-09-12).
+    second add then read as part of that table.
     """
     entry = f'{name} = "{target}"\n'
     entries = body.rstrip("\n")

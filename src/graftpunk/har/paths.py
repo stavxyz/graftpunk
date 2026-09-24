@@ -20,7 +20,7 @@ _MIN_BASE64_LEN = 24
 # A trailing "s" after one of these is part of the word, not a plural: naive
 # stripping turned status/address/analysis/bus into statu_id, addres_id,
 # analysi_id, bu_id. Not a general inflector, just the three letters that
-# cover the shapes a URL path actually carries (final fix wave, 2026-09-12).
+# cover the shapes a URL path actually carries.
 _SINGULAR_BEFORE_FINAL_S = frozenset("sui")
 
 # An email address, matched against the percent-decoded segment: account data,

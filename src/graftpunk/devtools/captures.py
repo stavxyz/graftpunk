@@ -46,7 +46,7 @@ def _nearest_existing(start: Path) -> Path:
     default target (``./tests/captures``) does not exist on a first run, and
     running git there raises ``FileNotFoundError``, which read as "not inside a
     git work tree" and let the command write unscrubbed bodies into a repo with
-    nothing ignoring them (polish round 1, 2026-09-12).
+    nothing ignoring them.
     """
     probe = start
     while not probe.exists() and probe != probe.parent:

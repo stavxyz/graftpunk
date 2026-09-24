@@ -63,9 +63,9 @@ class NotAPluginSuiteError(ValueError):
     """*target_dir* holds a ``pyproject.toml`` that is a different kind of project.
 
     Its own class so the CLI can tell it apart from the ``ValueError`` an
-    invalid plugin name raises: both used to log ``reason="invalid_name"``
-    (polish round 1, 2026-09-12). A ``ValueError`` subclass, so a caller that
-    only cares that the call refused still catches it.
+    invalid plugin name raises: both used to log ``reason="invalid_name"``. A
+    ``ValueError`` subclass, so a caller that only cares that the call refused still
+    catches it.
     """
 
 
@@ -155,8 +155,7 @@ def write_scaffold(
     # A .gitkeep only exists to put an empty directory in git, so one whose
     # directory is already there is nothing to write. render() stays pure and
     # does not know the filesystem; this module does. Without it, adding a
-    # second plugin to a suite refused on the .gitkeep the first add created
-    # (polish round 1, 2026-09-12).
+    # second plugin to a suite refused on the .gitkeep the first add created.
     if mode == "add_to_suite":
         files = {
             relative: content
