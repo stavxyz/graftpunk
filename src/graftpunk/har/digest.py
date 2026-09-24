@@ -899,33 +899,41 @@ class _CredentialPost:
     by_field_names: bool = False
 
 
-def _has_a_script_driven_form(entry: HAREntry, forms: tuple[LoginForm, ...]) -> bool:
-    """True when one of *forms*, served by *entry*, has no target of its own: an
-    empty, ``#``, or ``javascript:`` action, or one resolving to the page itself.
-    Script decides where such a form is sent, so a credential post found by its
-    field names alone may be its post."""
+def _script_driven_forms(entry: HAREntry, forms: tuple[LoginForm, ...]) -> list[LoginForm]:
+    """Those of *forms*, served by *entry*, with no target of their own: an empty,
+    ``#``, or ``javascript:`` action, or one resolving to the page itself. Script
+    decides where such a form is sent, so a credential post found by its field names
+    alone may be its post."""
     page = _request_target(entry.request.url)
-    return any(
-        form.action_target == page or form.action.lower().startswith("javascript:")
+    return [
+        form
         for form in forms
-    )
+        if form.action_target == page or form.action.lower().startswith("javascript:")
+    ]
 
 
 def _used_forms_first(
-    forms: list[LoginForm], page_of: dict[int, int], posts: list[_CredentialPost]
+    forms: list[LoginForm],
+    page_of: dict[int, int],
+    posts: list[_CredentialPost],
+    script_driven: set[int],
 ) -> list[LoginForm]:
     """*forms* in the order the generator should prefer them:
 
     1. one on the page that a credential post it went to promoted;
     2. the one the earliest credential post went to (a form no post went to ranks
-       after every form one did);
+       after every form one did); a post found by its field names alone went to
+       the script-driven form (:func:`_script_driven_forms`) on the page it
+       promoted, so a script login ranks its form ahead of a later form posting to
+       its own page (a change-email form);
     3. the one whose control names cover the most of that post's body;
     4. one that sits on no page a credential post did not promote (not a site-wide
        header form);
     5. the one with fewer unresolved roles;
     6. document order.
 
-    *page_of* maps a form's ``id`` to its page's step."""
+    *page_of* maps a form's ``id`` to its page's step; *script_driven* holds the
+    ``id`` of each script-driven form."""
     promoted = {post.page_step for post in posts if post.page_step is not None}
     pages_of_key: dict[tuple[object, ...], set[int]] = {}
     for form in forms:
@@ -933,12 +941,14 @@ def _used_forms_first(
             pages_of_key.setdefault(_form_key(form), set()).add(page_of[id(form)])
 
     def rank(form: LoginForm) -> tuple[bool, int, int, bool, int]:
+        page = page_of.get(id(form))
         matching = [
             (order, post)
             for order, post in enumerate(posts)
             if _target_matches(form.action_target, post.target)
+            or (post.by_field_names and id(form) in script_driven and page == post.page_step)
         ]
-        on_its_page = any(page_of.get(id(form)) == post.page_step for _o, post in matching)
+        on_its_page = any(page == post.page_step for _o, post in matching)
         # A login precedes a password change: the form the earliest post went to wins
         # over a change-password form that covers more of its own post's body.
         earliest = min((order for order, _post in matching), default=len(posts))
@@ -1359,6 +1369,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # found by its field names alone (no recorded form's target matched it).
     posts: list[tuple[int, tuple[str, str], frozenset[str], bool]] = []
     page_of: dict[int, int] = {}
+    # The id of each recorded form with no target of its own (_script_driven_forms).
+    script_driven: set[int] = set()
     credential_post_steps: list[int] = []
     # The credential post a redirect or set-cookie observation followed, by step:
     # only a hop that continues that post's redirect chain.
@@ -1436,6 +1448,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
             login_forms.extend(forms_in_entry)
             page_of.update((id(form), step) for form in forms_in_entry)
+            script_driven.update(id(form) for form in _script_driven_forms(entry, forms_in_entry))
             for candidate in extract_token_candidates(entry.response.body, source=document_source):
                 token_key = (candidate.kind, candidate.name)
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
@@ -1508,7 +1521,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                         redirect_to=_redirect_target_path(entry),
                     ),
                     {form.action_target for form in forms_in_entry},
-                    _has_a_script_driven_form(entry, forms_in_entry),
+                    bool(_script_driven_forms(entry, forms_in_entry)),
                 )
             )
             if kind == "credential_post":
@@ -1584,7 +1597,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         for candidate in extract_token_candidates(page_html, source=page_label):
             token_seen.setdefault((candidate.kind, candidate.name), []).extend(candidate.seen_on)
 
-    ranked_forms = _unique_forms(_used_forms_first(login_forms, page_of, credential_posts))
+    ranked_forms = _unique_forms(
+        _used_forms_first(login_forms, page_of, credential_posts, script_driven)
+    )
     owned_posts, owned_pages = _used_login(
         ranked_forms, login_forms, page_of, [step for step, *_rest in posts], credential_posts
     )

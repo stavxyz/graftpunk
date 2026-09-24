@@ -2923,6 +2923,119 @@ class TestLoginFlowFlag:
         assert flags[("POST", "/api/account/delete")] is False
         assert 'success_url="*/app*",' in self._plugin(result)
 
+    def test_a_script_login_from_an_actionless_form_beats_a_later_self_posting_form(
+        self, tmp_path: Path
+    ) -> None:
+        """The login page's form has no action and script posts /api/login; a later
+        change-email form posts to its own page. The earliest post is the login's,
+        so login_config is the login page's form, and the change-email post keeps
+        its command."""
+        login = (
+            '<form><input type="email" name="email" id="email">'
+            '<input type="password" name="password" id="pass"><button>Sign in</button></form>'
+        )
+        change_email = (
+            '<form method="post"><input type="email" name="new_email" id="new-email">'
+            '<input type="email" name="confirm_email" id="confirm-email">'
+            '<input type="password" name="password" id="confirm-pass"><button>Save</button></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=login
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/login",
+                content_type="application/json",
+                body='{"ok": true}',
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/account/email",
+                content_type="text/html",
+                body=change_email,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/account/email",
+                status=302,
+                response_headers={"Location": "/account"},
+                post_data=json.dumps(
+                    {
+                        "new_email": "bob@example.com",
+                        "confirm_email": "bob@example.com",
+                        "password": "x",
+                    }
+                ),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert selected.source == "https://api.myshop.example.com/login"
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/api/login")] is True
+        assert flags[("POST", "/account/email")] is False
+        code = self._plugin(result)
+        assert 'url="/login",' in code
+        assert "def account_email(" in code
+
+    def test_a_form_with_its_own_target_is_not_the_script_login_s_form(
+        self, tmp_path: Path
+    ) -> None:
+        """The login page holds a form posting to /auth/legacy and an actionless form;
+        script posts /api/login from the page. The actionless form is the one script
+        sent, so login_config is built from it."""
+        page = (
+            '<form action="/auth/legacy" method="post"><input type="email" name="email" '
+            'id="legacy-email"><input type="password" name="password" id="legacy-pass"></form>'
+            '<form><input type="email" name="email" id="email">'
+            '<input type="password" name="password" id="pass"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=page
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/login",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert selected.fields["username"] == "#email"
+
+    def test_a_post_to_a_form_s_target_is_not_an_actionless_form_s_post(
+        self, tmp_path: Path
+    ) -> None:
+        """The login page holds an actionless form before the form posting to
+        /session; a POST to /session is that form's, so login_config is built from
+        it."""
+        page = (
+            '<form class="mini"><input type="email" name="email" id="mini-email">'
+            '<input type="password" name="password" id="mini-pass"></form>'
+            '<form action="/session" method="post"><input type="email" name="email" id="email">'
+            '<input type="password" name="password" id="pass"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=page
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        selected = next(f for f in result.login_forms if "password" in f.fields)
+        assert selected.fields["username"] == "#email"
+
     def test_a_script_post_to_a_recorded_unselected_form_is_not_owned(self, tmp_path: Path) -> None:
         """A field-name-only post to a recorded form's action is not a script login,
         even when that form is not the one login_config uses."""
