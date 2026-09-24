@@ -456,7 +456,7 @@ class TestFixturesCommand:
     def test_two_templates_that_name_one_file_are_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """G4: /a_b and /a/b both slug to get_a_b; nothing is written."""
+        """/a_b and /a/b both slug to get_a_b; nothing is written."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         entries = [
@@ -477,7 +477,8 @@ class TestFixturesCommand:
     def test_two_templates_that_share_a_stem_across_extensions_are_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """M3: get_a_b.json and get_a_b.html share the stem FixtureSession looks up."""
+        """The files get_a_b.json and get_a_b.html share the stem FixtureSession
+        looks up."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         entries = [
@@ -503,7 +504,7 @@ class TestFixturesCommand:
     def test_stems_that_differ_only_in_case_are_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A3: one would overwrite the other on a case-insensitive filesystem."""
+        """One would overwrite the other on a case-insensitive filesystem."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         entries = [
@@ -519,7 +520,7 @@ class TestFixturesCommand:
         assert result.exit_code == 1, result.output
         output = strip_ansi(result.output).replace("\n", "")
         assert "GET /Users" in output and "GET /users" in output
-        # M3: the refusal names a real stem, the first one seen, not its folded key.
+        # The refusal names a real stem, the first one seen, not its folded key.
         assert "Refusing to write get_Users:" in output
 
     def test_the_sidecar_is_committable_and_records_the_capture(
@@ -554,7 +555,7 @@ class TestFixturesCommand:
     def test_the_sidecar_counts_an_id_cookie_name_and_holds_no_trace_of_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """M4: a cookie name that holds an id is counted in redacted_names and
+        """A cookie name that holds an id is counted in redacted_names and
         written in no form (plain, hashed, or as its digits)."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
@@ -786,7 +787,7 @@ class TestFixturesGitignore:
     def test_a_gitignore_that_is_a_directory_is_refused_as_a_directory(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """W5: its own refusal, not a read error."""
+        """Its own refusal, not a read error."""
         repo = self._repo_with_a_run(tmp_path, monkeypatch)
         (repo / ".gitignore").mkdir()
         out_dir = repo / "tests" / "captures"

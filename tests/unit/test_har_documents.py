@@ -325,7 +325,7 @@ def test_a_brace_in_the_stripped_query_does_not_hide_a_masked_email() -> None:
 
 
 class TestLoginFormNamesGoThroughTheIdRule:
-    """F1 and F2: a login form's element ids and input names are names like any
+    """A login form's element ids and input names are names like any
     other, and one that holds an account value is never printed."""
 
     def test_an_element_id_holding_an_id_falls_back_to_the_name(self) -> None:
@@ -792,7 +792,7 @@ class TestLoginSemanticsRound8:
 
 class TestLoginSemanticsRound9:
     def test_a_lone_registration_form_with_a_confirmation_is_not_a_login_form(self) -> None:
-        """J1: only a lone form with one password (new-password misused) is kept."""
+        """Only a lone form with one password (new-password misused) is kept."""
         html = (
             '<form action="/register"><input type="email" name="email">'
             '<input type="password" name="password">'
@@ -802,7 +802,7 @@ class TestLoginSemanticsRound9:
         assert is_login_document(html)
 
     def test_a_scoped_name_shared_within_the_form_falls_back(self) -> None:
-        """J6: a name selector must pick one input of its form."""
+        """A name selector must pick one input of its form."""
         html = (
             '<form action="/login"><input type="text" name="user" id="u1" class="first">'
             '<input type="password" name="password">'
@@ -840,7 +840,7 @@ class TestLoginSemanticsRound9:
     def test_a_control_outside_its_form_is_selected_by_its_form_attribute(
         self, control: str, expected: str, check: dict
     ) -> None:
-        """I3: a descendant selector would match nothing for a control outside its form."""
+        """A descendant selector would match nothing for a control outside its form."""
         html = (
             '<form id="signin" action="/login"><input name="username">'
             '<input type="password" name="password"></form>'
@@ -855,7 +855,7 @@ class TestLoginSemanticsRound9:
 
 class TestRound10Selectors:
     def test_a_name_counted_on_what_the_form_physically_holds(self) -> None:
-        """A4: a control inside the form but owned by another still matches a
+        """A control inside the form but owned by another still matches a
         descendant selector, so it counts against the name's uniqueness."""
         html = (
             '<form id="search" action="/search"></form>'
@@ -871,7 +871,7 @@ class TestRound10Selectors:
 
 
 class TestTwoFormsPostingToOneAction:
-    """I1: a scoped selector matches every form with the same action, so a name is
+    """A scoped selector matches every form with the same action, so a name is
     unique only across all of them."""
 
     _PAGE = (
@@ -921,7 +921,8 @@ class TestChangePasswordForms:
 
 
 def test_a_new_password_named_but_not_marked_is_a_change_password_form() -> None:
-    """R4 (_is_change_password's name and id checks)."""
+    """A password input named for a new password, with no autocomplete mark, still
+    makes a current-password form a change-password form."""
     html = (
         '<form action="/account/password"><input type="password" name="current_password" '
         'autocomplete="current-password"><input type="password" name="new_password"></form>'
@@ -930,7 +931,7 @@ def test_a_new_password_named_but_not_marked_is_a_change_password_form() -> None
 
 
 def test_a_new_password_id_but_no_mark_is_a_change_password_form() -> None:
-    """R4 (_is_change_password's id check)."""
+    """A password input whose id names a new password does the same."""
     html = (
         '<form action="/account/password"><input type="password" name="current" '
         'autocomplete="current-password"><input type="password" name="pw2" '

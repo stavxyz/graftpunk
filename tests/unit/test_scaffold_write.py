@@ -763,7 +763,7 @@ def test_the_disk_call_scan_tells_a_path_rename_from_a_string_replace(
 
 class TestRound8WriteDiscipline:
     def test_two_paths_that_differ_only_in_case_are_refused(self, tmp_path: Path) -> None:
-        """W3: refused on every filesystem, before any write."""
+        """Refused on every filesystem, before any write."""
         root = _project_root(tmp_path)
         with pytest.raises(ChangeConflictError) as caught:
             apply_changes(
@@ -778,7 +778,7 @@ class TestRound8WriteDiscipline:
     def test_an_interrupt_during_the_second_change_restores_the_first(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """W4: one handler spans the whole write loop."""
+        """One handler spans the whole write loop."""
         root = _project_root(tmp_path)
         calls = {"n": 0}
         real = write._missing_parents

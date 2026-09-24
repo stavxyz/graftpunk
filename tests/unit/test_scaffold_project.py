@@ -389,7 +389,7 @@ class TestTheWritersOwnConflictCheck:
     def test_a_gitignore_that_is_a_directory_is_refused_as_a_directory(
         self, tmp_path: Path
     ) -> None:
-        """W5: its own refusal, before anything is written."""
+        """Its own refusal, before anything is written."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(_SUITE_PYPROJECT)
         (tmp_path / ".gitignore").mkdir()

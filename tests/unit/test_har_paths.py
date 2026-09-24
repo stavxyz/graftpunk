@@ -478,5 +478,5 @@ class TestKeysAreIds:
         ids=["address-lines", "custom-fields", "street-lines"],
     )
     def test_a_numbered_field_group_is_not_ids(self, keys: list[str]) -> None:
-        """M4: keys that differ only in a trailing digit run are one field, numbered."""
+        """Keys that differ only in a trailing digit run are one field, numbered."""
         assert not keys_are_ids(keys)

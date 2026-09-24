@@ -1385,7 +1385,7 @@ class TestLoginFlowFlag:
     def test_a_header_login_form_on_every_page_does_not_claim_other_posts(
         self, tmp_path: Path
     ) -> None:
-        """K1: a login form in a site-wide header marks only a POST to its own action;
+        """A login form in a site-wide header marks only a POST to its own action;
         a POST whose HTML response carries that form is still an ordinary command."""
         header = (
             '<form action="/login" method="post"><input type="email" name="email">'
@@ -1469,7 +1469,7 @@ class TestLoginFlowFlag:
     def test_a_self_posting_header_form_does_not_claim_the_post_that_served_it(
         self, tmp_path: Path, form_open: str
     ) -> None:
-        """I1: targets come only from forms a GET served, and an entry is classified
+        """Targets come only from forms a GET served, and an entry is classified
         before its own forms are recorded."""
         header = (
             f'{form_open}<input type="email" name="email">'
@@ -1496,7 +1496,7 @@ class TestLoginFlowFlag:
     def test_a_page_with_a_login_form_is_the_form_page_only_before_a_credential_post(
         self, tmp_path: Path
     ) -> None:
-        """J3: an ordinary page carrying a site-wide login form keeps its stub."""
+        """An ordinary page carrying a site-wide login form keeps its stub."""
         form = (
             '<form action="/session" method="post"><input type="email" name="email">'
             '<input type="password" name="password"></form>'
@@ -1544,7 +1544,7 @@ class TestLoginFlowFlag:
     def test_a_form_target_resolves_against_the_unmasked_page(
         self, tmp_path: Path, action: str, post_path: str
     ) -> None:
-        """M1: the page path holds an email; the target is resolved against the page
+        """The page path holds an email; the target is resolved against the page
         as requested, not as the digest masks it for printing."""
         form = (
             f'<form {action} method="post"><input type="email" name="email">'
@@ -1570,7 +1570,7 @@ class TestLoginFlowFlag:
     def test_the_same_empty_action_form_on_several_pages_is_listed_once(
         self, tmp_path: Path
     ) -> None:
-        """M2: the target, which differs per page, is not part of the identity."""
+        """The target, which differs per page, is not part of the identity."""
         header = (
             '<form method="post"><input type="email" name="email">'
             '<input type="password" name="password"></form>'
@@ -1588,7 +1588,7 @@ class TestLoginFlowFlag:
         assert len(result.login_forms) == 1
 
     def test_the_form_a_credential_post_went_to_is_listed_first(self, tmp_path: Path) -> None:
-        """J2: the generator takes the first form, which is the one that was used."""
+        """The generator takes the first form, which is the one that was used."""
         page = (
             '<form action="/a/login" method="post"><input type="email" name="email">'
             '<input type="password" name="password"></form>'
@@ -1611,7 +1611,7 @@ class TestLoginFlowFlag:
     def test_assets_between_the_login_page_and_the_post_do_not_demote_the_page(
         self, tmp_path: Path
     ) -> None:
-        """A1: the form page is found by the post's target, not by distance."""
+        """The form page is found by the post's target, not by distance."""
         form = (
             '<form action="/session" method="post"><input type="email" name="email">'
             '<input type="password" name="password"></form>'
@@ -1651,7 +1651,7 @@ class TestLoginFlowFlag:
     def test_a_relative_action_in_a_saved_page_source_marks_the_post(
         self, tmp_path: Path, action: str
     ) -> None:
-        """A5: a page source file has no URL to resolve against."""
+        """A page source file has no URL to resolve against."""
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         (run_dir / "page-source.html").write_text(
@@ -1674,7 +1674,7 @@ class TestLoginFlowFlag:
     def test_the_form_on_the_promoted_page_is_first_among_forms_posting_there(
         self, tmp_path: Path
     ) -> None:
-        """A8: two pages carry forms posting to /session; the one the post followed
+        """Two pages carry forms posting to /session; the one the post followed
         wins, then the form whose names cover the post body."""
         header = (
             '<form action="/session" method="post"><input type="email" name="email">'
@@ -1702,7 +1702,7 @@ class TestLoginFlowFlag:
         assert result.login_forms[0].source == "https://api.myshop.example.com/signin"
 
     def test_a_site_wide_header_form_ranks_below_the_main_form(self, tmp_path: Path) -> None:
-        """I1: both post to /session and both sit on the promoted page; the header
+        """Both post to /session and both sit on the promoted page; the header
         form also sits on a page no post promoted, so the main form lists first."""
         header = (
             '<form action="/session" method="post" class="mini">'
@@ -1771,7 +1771,7 @@ class TestLoginFlowFlag:
         assert result.login_forms[0].fields["username"] == "#u2"
 
     def test_on_one_page_the_form_covering_more_of_the_body_wins(self, tmp_path: Path) -> None:
-        """M4 (body-name coverage): two forms on the promoted page, the second one
+        """Body-name coverage: two forms on the promoted page, the second one
         carrying the hidden field the post sent."""
         page = (
             '<form action="/session" method="post"><input type="text" name="username" id="u1">'
@@ -1794,7 +1794,7 @@ class TestLoginFlowFlag:
     def test_a_post_found_by_its_field_names_promotes_no_page_with_a_real_target(
         self, tmp_path: Path
     ) -> None:
-        """M1: a change-password XHR long after a page with a header login form."""
+        """A change-password XHR long after a page with a header login form."""
         header = (
             '<form action="/login" method="post"><input type="email" name="email">'
             '<input type="password" name="passcode"></form>'
@@ -1818,7 +1818,7 @@ class TestLoginFlowFlag:
     def test_a_post_found_by_its_field_names_promotes_a_js_driven_form_page(
         self, tmp_path: Path
     ) -> None:
-        """M1: a form with no action of its own posts by script."""
+        """A form with no action of its own posts by script."""
         form = (
             '<form><input type="email" name="email"><input type="password" name="password"></form>'
         )
@@ -1868,7 +1868,7 @@ class TestLoginFlowFlag:
     def test_a_site_wide_form_with_ids_on_every_page_ranks_below_the_main_form(
         self, tmp_path: Path
     ) -> None:
-        """F1, F2 (site-wide term): the header form is one form on both pages."""
+        """Site-wide term: the header form is one form on both pages."""
         entries = self._magento_run(tmp_path, self._MAGENTO_HEADER)
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert result.login_forms[0].fields == {"username": "#email", "password": "#pass"}
@@ -1877,7 +1877,7 @@ class TestLoginFlowFlag:
     def test_the_same_form_alone_and_beside_another_is_listed_once_at_its_best(
         self, tmp_path: Path
     ) -> None:
-        """F1: without ids the header resolves by name alone on /, and not beside the
+        """Without ids the header resolves by name alone on /, and not beside the
         main form on /login; it is one form, kept as its best copy."""
         header = (
             '<form action="/session" method="post" class="mini">'
@@ -1951,7 +1951,7 @@ class TestLoginFlowFlag:
     def test_among_equal_forms_the_one_with_fewer_unresolved_roles_wins(
         self, tmp_path: Path
     ) -> None:
-        """F2 (unresolved term): same page, same coverage, neither site-wide."""
+        """Unresolved term: same page, same coverage, neither site-wide."""
         page = (
             '<form action="/session" method="post"><input type="text">'
             '<input type="password" name="password" id="p1"></form>'
@@ -1972,7 +1972,7 @@ class TestLoginFlowFlag:
         assert result.login_forms[0].fields["username"] == "#u2"
 
     def test_the_login_form_outranks_a_later_change_password_form(self, tmp_path: Path) -> None:
-        """F3: a login precedes a password change, so the earliest post's form wins
+        """A login precedes a password change, so the earliest post's form wins
         even though the change-password form covers more of its body."""
         login = (
             '<form action="/session" method="post"><input type="email" name="email" id="e1">'
@@ -2020,7 +2020,7 @@ class TestLoginFlowFlag:
     def test_a_post_matched_by_a_page_source_target_takes_no_scripted_fallback(
         self, tmp_path: Path
     ) -> None:
-        """F4: only a post found by its field names alone falls back to a page whose
+        """Only a post found by its field names alone falls back to a page whose
         form posts by script."""
         run_dir = tmp_path / "run"
         run_dir.mkdir()
@@ -2055,7 +2055,7 @@ class TestLoginFlowFlag:
     def test_a_change_password_post_is_not_a_credential_post_by_field_names(
         self, tmp_path: Path
     ) -> None:
-        """F5: a new-password-shaped body name rules out the field-name match."""
+        """A new-password-shaped body name rules out the field-name match."""
         scripted = (
             '<form><input type="email" name="email"><input type="password" name="password"></form>'
         )
@@ -2085,7 +2085,7 @@ class TestLoginFlowFlag:
         assert flags[("GET", "/products")] is False
 
     def test_a_javascript_action_is_a_script_driven_form(self, tmp_path: Path) -> None:
-        """F6: the javascript: branch of the scripted-form test."""
+        """The javascript: branch of the scripted-form test."""
         form = (
             '<form action="javascript:void(0)"><input type="email" name="email">'
             '<input type="password" name="password"></form>'
@@ -2257,7 +2257,7 @@ class TestLoginFlowFlag:
     def test_a_later_post_answering_a_redirect_is_not_the_login_s_landing(
         self, tmp_path: Path
     ) -> None:
-        """R1: a change-password POST after the login answers 302; the login still
+        """A change-password POST after the login answers 302; the login still
         lands on /dashboard."""
         change = (
             '<form action="/account/password" method="post">'
@@ -2285,7 +2285,7 @@ class TestLoginFlowFlag:
         assert 'success_url="*/dashboard*",' in self._plugin(result)
 
     def test_a_later_post_off_the_chain_is_not_a_hop(self, tmp_path: Path) -> None:
-        """R1 (chain): a POST with no password field answering 302 soon after the
+        """Chain: a POST with no password field answering 302 soon after the
         login does not continue its chain, so the landing stays /dashboard."""
         entries = [
             *self._login_entries(),
@@ -2326,7 +2326,7 @@ class TestLoginFlowFlag:
         assert session and not any("not part of the login" in line for line in session)
 
     def test_a_password_post_on_the_login_s_next_hop_is_not_a_hop(self, tmp_path: Path) -> None:
-        """R1: a POST with a password field is never a redirect hop of another post,
+        """A POST with a password field is never a redirect hop of another post,
         even when its path is where the login redirected."""
         entries = [
             *self._login_entries(landing="/account/security"),
@@ -2459,7 +2459,7 @@ class TestLoginFlowFlag:
         assert flags[("GET", "/catalog")] is False
 
     def test_a_script_posted_login_to_another_action_is_owned(self, tmp_path: Path) -> None:
-        """R2: the form says /auth/login, script posts /api/v1/sessions."""
+        """The form says /auth/login, script posts /api/v1/sessions."""
         form = (
             '<form action="/auth/login" method="post"><input type="email" name="email" id="email">'
             '<input type="password" name="password" id="pass"></form>'
@@ -2583,7 +2583,7 @@ class TestLoginFlowFlag:
         assert flags[("POST", "/api/other")] is False
 
     def test_a_login_with_no_form_owns_every_credential_post(self, tmp_path: Path) -> None:
-        """R4 (no-form fallback)."""
+        """With no login form captured, every credential post is the login's."""
         entries = [
             _entry(
                 "POST",
@@ -2598,7 +2598,7 @@ class TestLoginFlowFlag:
     def test_the_login_page_beats_a_nearer_page_with_only_the_header_form(
         self, tmp_path: Path
     ) -> None:
-        """R3: prefer the page whose matching form is page-specific, then the nearest."""
+        """Prefer the page whose matching form is page-specific, then the nearest."""
         header = (
             '<form action="/session" method="post" class="mini">'
             '<input type="email" name="login[username]" id="mini-user">'
@@ -2787,7 +2787,7 @@ class TestFlaggedNamesOf:
 
 
 class TestEveryNamePositionGoesThroughTheIdRule:
-    """S2 and S3: response keys, header names, and cookie names go through
+    """Response keys, header names, and cookie names go through
     holds_an_id like path segments and parameter keys, and a dropped key is
     counted, never lost silently."""
 
@@ -2857,7 +2857,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         assert (endpoint.query_keys_dropped_as_ids, endpoint.body_keys_dropped_as_ids) == (2, 2)
 
     def test_an_id_cookie_name_is_left_out_and_counted(self, tmp_path: Path) -> None:
-        """H1: an id-bearing name is written in no form, not even hashed."""
+        """An id-bearing name is written in no form, not even hashed."""
         entries = [
             _entry(
                 "GET",
@@ -2876,7 +2876,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         assert "sess_40912873" not in text and "sha256:" not in text
 
     def test_the_redacted_count_is_never_below_the_digests_own_count(self, tmp_path: Path) -> None:
-        """M3: called without the run's entries, the count still holds the id cookie
+        """Called without the run's entries, the count still holds the id cookie
         names the digest dropped."""
         entries = [
             _entry(
@@ -2901,7 +2901,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
         assert result.token_names_dropped_as_ids == 1
 
     def test_keys_that_are_not_field_names_are_counted_apart_from_ids(self, tmp_path: Path) -> None:
-        """P2: the two drop causes are counted and worded separately. A name that
+        """The two drop causes are counted and worded separately. A name that
         holds an id counts as an id whether or not it is also outside the field-name
         alphabet (an email address is both)."""
         entries = [
@@ -2923,7 +2923,7 @@ class TestEveryNamePositionGoesThroughTheIdRule:
 
 
 class TestDollarNames:
-    """P3: OData and ASP.NET WebForms spell field names with a "$"."""
+    """OData and ASP.NET WebForms spell field names with a "$"."""
 
     def test_odata_query_keys_are_field_names(self, tmp_path: Path) -> None:
         entries = [_entry("GET", "https://api.myshop.example.com/orders?$filter=x&$top=5")]

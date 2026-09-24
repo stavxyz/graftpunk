@@ -662,7 +662,7 @@ class TestRenderAddToSuite:
 
 
 class TestGeneratedLoginHoldsNoAccountValue:
-    """G2: the generated LoginConfig opens the login page, and nothing in it spells
+    """The generated LoginConfig opens the login page, and nothing in it spells
     an id the recording's URLs carried."""
 
     @staticmethod
@@ -799,7 +799,7 @@ class TestGeneratedLoginHoldsNoAccountValue:
             "GP-FILL: submit has no selector: none picks one input of the recorded form; "
             "write one by hand."
         ) in comments
-        # L4: the rename comment names only a neutral role the step declares.
+        # The rename comment names only a neutral role the step declares.
         assert "field_2 is a placeholder role" not in comments
 
     def test_each_gp_fill_names_its_own_cause(self) -> None:
@@ -1705,7 +1705,7 @@ class TestPluginModuleCommandStubs:
     def test_a_json_field_no_option_can_send_is_not_declared(
         self, monkeypatch: pytest.MonkeyPatch, label: str, reason: str
     ) -> None:
-        """G1: a value of another type is never sent; the stub names the field instead."""
+        """A value of another type is never sent; the stub names the field instead."""
         endpoint = self._endpoint(
             "/profile", "POST", body={"extra": label, "name": "str"}, body_kind="json"
         )
@@ -1983,7 +1983,7 @@ class TestPluginModuleCommandStubs:
         assert prepared.url == "https://myshop.example.com/export?format=csv&help=1&output=x"
 
     def test_names_dropped_as_ids_are_counted_in_a_gp_fill(self) -> None:
-        """S3: nothing the digest dropped as an id is lost silently."""
+        """Nothing the digest dropped as an id is lost silently."""
         endpoint = dataclasses.replace(
             self._endpoint("/orders", "POST", query={"page": "int"}, body_kind="json"),
             query_keys_dropped_as_ids=2,
@@ -2964,7 +2964,7 @@ class TestGeneratedNamesAreSafe:
         ],
     )
     def test_a_command_name_is_an_identifier(self, template: str, name: str) -> None:
-        """G1: through one helper, for the command and its test alike."""
+        """Through one helper, for the command and its test alike."""
         files = _render_endpoints(_single_endpoint(template))
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
         test_code = files["tests/test_plugin.py"]
@@ -2976,7 +2976,7 @@ class TestGeneratedNamesAreSafe:
 
     @pytest.mark.parametrize("template", ["/setup", "/backend", "/login_config"])
     def test_a_command_never_shadows_a_site_plugin_attribute(self, template: str) -> None:
-        """G2: the names are seeded from SitePlugin itself."""
+        """The names are seeded from SitePlugin itself."""
         from graftpunk.plugins.cli_plugin import SitePlugin
 
         files = _render_endpoints(_single_endpoint(template))
@@ -2987,7 +2987,7 @@ class TestGeneratedNamesAreSafe:
         assert f"def {attribute}_2(" in plugin_code
 
     def test_a_generated_test_name_never_repeats_a_fixed_test(self) -> None:
-        """G3: a command named plugin_instantiates gets a test of its own name."""
+        """A command named plugin_instantiates gets a test of its own name."""
         files = _render_endpoints(_single_endpoint("/plugin/instantiates"))
         test_code = files["tests/test_plugin.py"]
         assert test_code.count("def test_plugin_instantiates(") == 1
@@ -2995,7 +2995,7 @@ class TestGeneratedNamesAreSafe:
         compile(test_code, "test_plugin.py", "exec")
 
     def test_a_path_parameter_is_percent_encoded_into_its_segment(self) -> None:
-        """G6: a value holding a slash, a query, or a fragment stays in its segment."""
+        """A value holding a slash, a query, or a fragment stays in its segment."""
         plugin_code = _render_endpoints(_single_endpoint("/orders/{order_id}"))[
             "src/graftpunk_myshop/plugin.py"
         ]
@@ -3015,7 +3015,7 @@ class TestGeneratedNamesAreSafe:
 
 class TestRound9Generator:
     def test_a_parameter_named_quote_does_not_shadow_the_encoder(self) -> None:
-        """I2: the encoder is imported under a private alias."""
+        """The encoder is imported under a private alias."""
         endpoint = dataclasses.replace(
             _single_endpoint("/orders/{order_id}"), query_params={"quote": "str"}
         )
@@ -3034,7 +3034,7 @@ class TestRound9Generator:
         assert urls == ["/orders/a%2Fb"]
 
     def test_two_endpoints_sharing_a_fixture_stem_get_one_test_and_a_gp_fill(self) -> None:
-        """M3: /api/c_d and /api/c/d both name the stem get_api_c_d."""
+        """/api/c_d and /api/c/d both name the stem get_api_c_d."""
         first = _single_endpoint("/api/c_d")
         second = dataclasses.replace(_single_endpoint("/api/c/d"), content_type="text/html")
         files = _render_endpoints(first, second)
@@ -3055,7 +3055,7 @@ class TestRound9Generator:
 
 
 def test_stems_that_differ_only_in_case_get_one_test() -> None:
-    """A3: fixture_paths and the test module compare case-folded stems."""
+    """The fixture_paths list and the test module compare case-folded stems."""
     files = _render_endpoints(_single_endpoint("/Users"), _single_endpoint("/users"))
     test_code = files["tests/test_plugin.py"]
     assert test_code.count("def test_users") == 1

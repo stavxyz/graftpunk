@@ -245,7 +245,7 @@ class TestRedactedNames:
 
 
 class TestEveryParseFailureIsASidecarError:
-    """W1: a sidecar that breaks the JSON parser in any way is a SidecarError."""
+    """A sidecar that breaks the JSON parser in any way is a SidecarError."""
 
     @pytest.mark.parametrize(
         "text",
@@ -263,7 +263,7 @@ class TestEveryParseFailureIsASidecarError:
 
 
 class TestASidecarBuiltAnywhereIsFitToSerialize:
-    """W2: Sidecar refuses at construction what the loader refuses on disk."""
+    """Sidecar refuses at construction what the loader refuses on disk."""
 
     @pytest.mark.parametrize(
         "kwargs",
@@ -301,6 +301,6 @@ class TestASidecarBuiltAnywhereIsFitToSerialize:
     ids=["string", "set", "none"],
 )
 def test_the_name_fields_must_be_a_tuple_or_list(kwargs: dict) -> None:
-    """J5: a string is iterable but is not a list of names."""
+    """A string is iterable but is not a list of names."""
     with pytest.raises(SidecarError):
         Sidecar(status=200, content_type="application/json", **kwargs)

@@ -445,7 +445,7 @@ class TestGeneratedProjectPassesItsOwnGate:
     def test_a_generated_test_passes_with_a_query_parameter_named_quote(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """I2: the stub and its generated test run with a parameter named quote."""
+        """The stub and its generated test run with a parameter named quote."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         run_dir = observe_base / "myshop" / "run-1"
