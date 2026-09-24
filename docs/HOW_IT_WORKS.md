@@ -632,7 +632,10 @@ on the landing page) may or may not continue past it; and a chain whose last hop
 is a `form_post` submission answering without a redirect leaves the client on a
 URL no redirect named; so none of these takes a landing. Each credential post
 starts over, so a later post never brings back a landing an earlier post's chain
-refused.
+refused. A landing whose glob would match the login page takes none either,
+since a failed login returns there: a later attempt redirecting back to
+`/login`, or a landing on `/account` for a login at `/account/login`, whose
+`*/account*` matches `/account/login?error=1`.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
