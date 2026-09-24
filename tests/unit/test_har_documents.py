@@ -658,8 +658,8 @@ class TestLoginSelectorsPickTheIntendedElement:
             assert matches[0].getparent().get("action") == "/login", role
 
 
-class TestLoginSemanticsRound8:
-    """Round 8: autocomplete hints by position, registration only against a login
+class TestLoginRolesFromAutocompleteAndControls:
+    """Autocomplete hints by position, registration only against a login
     form on the same page, image submits, fragment actions, a username after the
     password, and a button outside its form."""
 
@@ -791,7 +791,7 @@ class TestLoginSemanticsRound8:
         assert form.nameless_roles == ("field_1",)
 
 
-class TestLoginSemanticsRound9:
+class TestRegistrationFormsAndControlsOutsideTheirForm:
     def test_a_lone_registration_form_with_a_confirmation_is_not_a_login_form(self) -> None:
         """Only a lone form with one password (new-password misused) is kept."""
         html = (
@@ -854,7 +854,7 @@ class TestLoginSemanticsRound9:
         assert submit == expected
 
 
-class TestRound10Selectors:
+class TestSelectorsCountTheControlsInsideTheForm:
     def test_a_name_counted_on_what_the_form_physically_holds(self) -> None:
         """A control inside the form but owned by another still matches a
         descendant selector, so it counts against the name's uniqueness."""

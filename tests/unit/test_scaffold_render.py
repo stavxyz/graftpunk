@@ -3013,7 +3013,7 @@ class TestGeneratedNamesAreSafe:
         assert urls == ["/orders/..%2F..%2Fadmin%3Fx%3D1%23"]
 
 
-class TestRound9Generator:
+class TestGeneratedPathEncoderAndFixtureStems:
     def test_a_parameter_named_quote_does_not_shadow_the_encoder(self) -> None:
         """The encoder is imported under a private alias."""
         endpoint = dataclasses.replace(

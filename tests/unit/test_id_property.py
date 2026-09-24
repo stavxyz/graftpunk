@@ -1,11 +1,11 @@
 """The id rule end to end: every must-be-id value in every position a recording
 carries a name or a path segment in, and every must-be-kept name surviving.
 
-G2: no account value from a recording reaches a generated file, the
+No account value from a recording reaches a generated file, the
 ``--endpoints-json`` projection, or a fixture sidecar. ``--json`` and the markdown
 digest keep real URL paths by design (the example paths, the login observations'
 URLs, the form's action and page, the redirect target), with only an email masked
-there, so they are held to G2 for the name positions and for emails alone.
+there, so they are held to that rule for the name positions and for emails alone.
 """
 
 from __future__ import annotations

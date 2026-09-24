@@ -761,7 +761,7 @@ def test_the_disk_call_scan_tells_a_path_rename_from_a_string_replace(
     assert ([call.func.attr] if _is_disk_call(call) else []) == flagged
 
 
-class TestRound8WriteDiscipline:
+class TestCaseOnlyDuplicatesAndInterruptedWrites:
     def test_two_paths_that_differ_only_in_case_are_refused(self, tmp_path: Path) -> None:
         """Refused on every filesystem, before any write."""
         root = _project_root(tmp_path)
