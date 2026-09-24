@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -51,13 +52,9 @@ def _declare_fixtures(fixtures_dir: Path) -> None:
     capture hash): the tests that call this exercise ``gp observe fixtures`` itself,
     against a fixture that is never hand-edited afterwards, and
     ``fixtures_are_sanitised`` otherwise fails it as an unchanged copy of its
-    capture. Status and content type, which the generated test's own fixture
-    answers with, are kept exactly as ``gp observe fixtures`` wrote them."""
+    capture. Every other field is kept exactly as ``gp observe fixtures`` wrote it."""
     for meta in fixtures_dir.glob("*.meta.json"):
-        sidecar = load_sidecar(meta)
-        meta.write_text(
-            sidecar_text(Sidecar(status=sidecar.status, content_type=sidecar.content_type))
-        )
+        meta.write_text(sidecar_text(replace(load_sidecar(meta), capture_sha256=None)))
 
 
 class TestPluginNewHappyPath:
