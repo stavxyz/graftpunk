@@ -3,9 +3,15 @@
 ``gp observe fixtures``, :mod:`graftpunk.testing`'s ``FixtureSession``, and
 the scaffold's generated tests all name a file the same way, so this module
 depends on ``paths.py`` and nothing else (plugin tooling spec, 2026-09-11).
+
+It also owns the kebab-case rule a command's CLI name follows (``to_cli_name``)
+and the name a command registers (``registered_name``), which the plugin
+runtime and the devtools read from here.
 """
 
 from __future__ import annotations
+
+import re
 
 from graftpunk.har.paths import template_path
 
@@ -21,6 +27,8 @@ __all__ = [
     "normalize_media_type",
     "parse_command_spec",
     "parse_endpoint",
+    "registered_name",
+    "to_cli_name",
 ]
 
 _EXTENSION_BY_MIME: dict[str, str] = {
@@ -204,3 +212,24 @@ def parse_command_spec(value: str) -> tuple[str, str, str]:
         )
     method, template = parse_endpoint(endpoint)
     return name, method, template
+
+
+def to_cli_name(name: str) -> str:
+    """Convert PythonName to cli-name (CamelCase to kebab-case, underscores to hyphens).
+
+    Args:
+        name: Python identifier (e.g. "AccountStatements" or "account_statements").
+
+    Returns:
+        CLI-friendly name (e.g. "account-statements").
+    """
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", name)
+    return s.lower().replace("_", "-")
+
+
+def registered_name(name_pin: str | None, identifier: str) -> str:
+    """The name the CLI registers for a command: its ``name=`` pin, else
+    *identifier* kebab-cased. The ``command`` decorator, the project reader's
+    ``CommandView.cli_name``, and the scaffold's ``PlannedCommand`` all ask this,
+    so a stub's name and a hand-written command's name cannot be decided twice."""
+    return name_pin or to_cli_name(identifier)

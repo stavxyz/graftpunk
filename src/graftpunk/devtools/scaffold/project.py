@@ -14,13 +14,13 @@ from pathlib import Path
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER
+from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, module_name_for
 from graftpunk.devtools.scaffold.pyproject_edit import (
     PyprojectEditError,
     with_entry_point,
     with_wheel_package,
 )
-from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, module_name_for, render
+from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, render
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
     InvalidChangeError,

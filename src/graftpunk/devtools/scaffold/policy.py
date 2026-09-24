@@ -8,6 +8,7 @@ from the writer").
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Final
 
@@ -17,10 +18,12 @@ __all__ = [
     "CONFTEST_PATH",
     "FIXTURES_PLACEHOLDER",
     "FIXTURES_TREE",
+    "GP_FILL_MARKER",
     "PROJECT_REQUIREMENTS",
     "TESTS_DIR",
     "ProjectRequirement",
     "fixtures_root",
+    "module_name_for",
 ]
 
 TESTS_DIR: Final = "tests/"
@@ -99,3 +102,20 @@ PROJECT_REQUIREMENTS: Final[tuple[ProjectRequirement, ...]] = (
     ),
 )
 """What every generated project's files must bind, in the order they are applied."""
+
+
+def module_name_for(name: str) -> str:
+    """*name*, lowercased with every run of non-alphanumeric characters collapsed to one
+    underscore: the Python module fragment (``graftpunk_{module_name_for(name)}``).
+
+    Total: never raises. A name reaching here through ``ScaffoldSpec`` is
+    already validated by ``validate_plugin_name``, but the function makes no
+    assumption of that on its own.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", name.lower())
+
+
+GP_FILL_MARKER: Final = "GP-FILL"
+"""The marker the generator writes wherever the digest could not decide a value.
+The renderer writes it, the project reader finds it, and ``gp plugin check``
+reports every one left; all three take it from here."""

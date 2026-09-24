@@ -11,10 +11,12 @@ from graftpunk.devtools.scaffold.policy import (
     CONFTEST_PATH,
     FIXTURES_PLACEHOLDER,
     FIXTURES_TREE,
+    GP_FILL_MARKER,
     PROJECT_REQUIREMENTS,
     TESTS_DIR,
     ProjectRequirement,
     fixtures_root,
+    module_name_for,
 )
 
 
@@ -126,6 +128,17 @@ def _group_literals(tree: ast.Module, group: str) -> list[int]:
             keys += [k.value for k in node.keywords if k.arg == "group"]
             lines += [k.lineno for k in keys if isinstance(k, ast.Constant) and k.value == group]
     return lines
+
+
+def test_the_marker_and_the_module_name_rule_live_here() -> None:
+    """Policy is the rule's one home: the renderer calls it through policy and
+    re-exports nothing, so no importer can reach it by a second route."""
+    import graftpunk.devtools.scaffold.render as render_module
+
+    assert GP_FILL_MARKER == "GP-FILL"
+    assert module_name_for("My-Shop.v2") == "my_shop_v2"
+    assert "module_name_for" not in render_module.__all__
+    assert not hasattr(render_module, "module_name_for")
 
 
 def test_the_entry_point_group_is_spelled_in_one_module() -> None:
