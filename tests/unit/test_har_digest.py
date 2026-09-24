@@ -1831,6 +1831,266 @@ class TestLoginFlowFlag:
         flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
         assert flags[("GET", "/signin")] is True
 
+    _MAGENTO_HEADER = (
+        '<form action="/session" method="post" class="mini">'
+        '<input type="email" name="login[username]" id="customer-email">'
+        '<input type="password" name="login[password]" id="customer-pass">'
+        '<button id="mini-go">Go</button></form>'
+    )
+    _MAGENTO_MAIN = (
+        '<form action="/session" method="post" class="main">'
+        '<input type="email" name="login[username]" id="email">'
+        '<input type="password" name="login[password]" id="pass">'
+        '<button id="send2">Sign in</button></form>'
+    )
+
+    def _magento_run(self, tmp_path: Path, home: str) -> list[dict]:
+        return [
+            _entry("GET", "https://api.myshop.example.com/", content_type="text/html", body=home),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=self._MAGENTO_HEADER + self._MAGENTO_MAIN,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"login[username]": "alice", "login[password]": "x"}),
+            ),
+        ]
+
+    def test_a_site_wide_form_with_ids_on_every_page_ranks_below_the_main_form(
+        self, tmp_path: Path
+    ) -> None:
+        """F1, F2 (site-wide term): the header form is one form on both pages."""
+        entries = self._magento_run(tmp_path, self._MAGENTO_HEADER)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.login_forms[0].fields == {"username": "#email", "password": "#pass"}
+        assert len(result.login_forms) == 2
+
+    def test_the_same_form_alone_and_beside_another_is_listed_once_at_its_best(
+        self, tmp_path: Path
+    ) -> None:
+        """F1: without ids the header resolves by name alone on /, and not beside the
+        main form on /login; it is one form, kept as its best copy."""
+        header = (
+            '<form action="/session" method="post" class="mini">'
+            '<input type="email" name="login[username]">'
+            '<input type="password" name="login[password]"><button>Go</button></form>'
+        )
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/", content_type="text/html", body=header),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=header + self._MAGENTO_MAIN,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"login[username]": "alice", "login[password]": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert len(result.login_forms) == 2
+        (header_form,) = [f for f in result.login_forms if f.fields.get("username") != "#email"]
+        assert header_form.unresolved_roles == ()
+
+    def test_the_form_on_the_page_its_own_post_promoted_beats_one_elsewhere(
+        self, tmp_path: Path
+    ) -> None:
+        """F2 (on-its-page term): /a is promoted, but by another post; /b by this one."""
+        page_a = (
+            '<form action="/session" method="post"><input type="text" name="username" id="u1">'
+            '<input type="password" name="password" id="p1"><input type="hidden" name="otp">'
+            "</form>"
+            '<form action="/other" method="post"><input type="text" name="user" id="u3">'
+            '<input type="password" name="pw" id="p3"></form>'
+        )
+        page_b = (
+            '<form action="/session" method="post"><input type="text" name="username" id="u2">'
+            '<input type="password" name="password" id="p2"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/a", content_type="text/html", body=page_a
+            ),
+            _entry(
+                "GET", "https://api.myshop.example.com/b", content_type="text/html", body=page_b
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/other",
+                post_data=json.dumps({"user": "alice", "pw": "x"}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"username": "alice", "password": "x", "otp": "1"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        order = [form.fields.get("username") for form in result.login_forms]
+        assert order.index("#u2") < order.index("#u1")
+
+    def test_among_equal_forms_the_one_with_fewer_unresolved_roles_wins(
+        self, tmp_path: Path
+    ) -> None:
+        """F2 (unresolved term): same page, same coverage, neither site-wide."""
+        page = (
+            '<form action="/session" method="post"><input type="text">'
+            '<input type="password" name="password" id="p1"></form>'
+            '<form action="/session" method="post"><input type="text" name="username" id="u2">'
+            '<input type="password" name="password" id="p2"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=page
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.login_forms[0].fields["username"] == "#u2"
+
+    def test_the_login_form_outranks_a_later_change_password_form(self, tmp_path: Path) -> None:
+        """F3: a login precedes a password change, so the earliest post's form wins
+        even though the change-password form covers more of its body."""
+        login = (
+            '<form action="/session" method="post"><input type="email" name="email" id="e1">'
+            '<input type="password" name="password" id="p1"></form>'
+        )
+        change = (
+            '<form action="/account/password" method="post">'
+            '<input type="text" name="username" id="u9" autocomplete="username">'
+            '<input type="password" name="current_password" id="c9" '
+            'autocomplete="current-password">'
+            '<input type="password" name="new_password" autocomplete="new-password">'
+            '<input type="password" name="confirm_password" autocomplete="new-password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=login
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/account",
+                content_type="text/html",
+                body=change,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/account/password",
+                post_data=json.dumps(
+                    {
+                        "username": "alice",
+                        "current_password": "x",
+                        "new_password": "y",
+                        "confirm_password": "y",
+                    }
+                ),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.login_forms[0].fields["password"] == "#p1"  # noqa: S105
+
+    def test_a_post_matched_by_a_page_source_target_takes_no_scripted_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """F4: only a post found by its field names alone falls back to a page whose
+        form posts by script."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "page-source.html").write_text(
+            '<form action="session" method="post"><input type="email" name="email">'
+            '<input type="password" name="passcode"></form>'
+        )
+        scripted = (
+            '<form><input type="email" name="email"><input type="password" name="password"></form>'
+        )
+        _write_har(
+            run_dir,
+            [
+                _entry(
+                    "GET",
+                    "https://api.myshop.example.com/products",
+                    content_type="text/html",
+                    body=scripted,
+                ),
+                _entry(
+                    "POST",
+                    "https://api.myshop.example.com/account/session",
+                    post_data=json.dumps({"email": "alice@example.com", "passcode": "x"}),
+                ),
+            ],
+        )
+        result = digest(DigestSource.from_run_dir(run_dir, session="myshop", run_id="run"))
+        assert [o.kind for o in result.login if o.method == "POST"] == ["credential_post"]
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/products")] is False
+
+    def test_a_change_password_post_is_not_a_credential_post_by_field_names(
+        self, tmp_path: Path
+    ) -> None:
+        """F5: a new-password-shaped body name rules out the field-name match."""
+        scripted = (
+            '<form><input type="email" name="email"><input type="password" name="password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/account",
+                content_type="text/html",
+                body=scripted,
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/products",
+                content_type="text/html",
+                body=scripted,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/account/password",
+                post_data=json.dumps({"current_password": "x", "new_password": "y"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert not any(o.kind == "credential_post" for o in result.login)
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/account")] is False
+        assert flags[("GET", "/products")] is False
+
+    def test_a_javascript_action_is_a_script_driven_form(self, tmp_path: Path) -> None:
+        """F6: the javascript: branch of the scripted-form test."""
+        form = (
+            '<form action="javascript:void(0)"><input type="email" name="email">'
+            '<input type="password" name="password"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/signin", content_type="text/html", body=form
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/auth",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/signin")] is True
+
     def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
         """The form's type="password" input names the field, so a name outside the
         password hints (passcode) still marks the POST to its action."""

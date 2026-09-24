@@ -35,6 +35,7 @@ __all__ = [
     "extract_login_forms",
     "extract_token_candidates",
     "is_login_document",
+    "looks_like_new_password_name",
     "looks_like_token_name",
     "printable_selectors",
     "printable_unresolved_roles",
@@ -94,6 +95,10 @@ class LoginForm:
     # The name of every control of the form, so the digest can tell which of two
     # forms posting to one place a POST's body came from. Internal like the above.
     input_names: tuple[str, ...] = field(default=(), metadata={"internal": True})
+    # The form's structure: its element id and each control's (tag, type, name,
+    # element id) in order. The same form on several pages has one signature even
+    # when its selectors differ by page, so the digest lists it once. Internal.
+    signature: tuple[object, ...] = field(default=(), metadata={"internal": True})
 
 
 @dataclass(frozen=True)
@@ -469,6 +474,19 @@ def _has_username_hint(raw: _RawInput) -> bool:
 
 _LITERAL_USERNAME_NAMES = frozenset({"username", "email", "login", "user"})
 _CONFIRMATION_HINTS = ("confirm", "repeat", "verify", "again", "retype")
+# A password field's name that asks for a new password, not the current one.
+_NEW_PASSWORD_HINTS = ("new", *_CONFIRMATION_HINTS)
+_PASSWORD_NAME_HINTS = ("password", "passwd", "pwd")
+
+
+def looks_like_new_password_name(name: str) -> bool:
+    """True when *name* is a password field's name that asks for a new or repeated
+    password (``new_password``, ``password_confirm``): the hints a registration
+    form's confirmation input is recognised by, plus ``new``."""
+    lowered = name.lower()
+    return any(hint in lowered for hint in _PASSWORD_NAME_HINTS) and any(
+        hint in lowered for hint in _NEW_PASSWORD_HINTS
+    )
 
 
 def _password_inputs(inputs: list[_RawInput]) -> list[_RawInput]:
@@ -721,6 +739,10 @@ def extract_login_forms(
                 absent_roles=tuple(absent),
                 action_target=_action_target(raw.action, base or source),
                 input_names=tuple(i.name for i in inputs if i.name),
+                signature=(
+                    raw.element_id,
+                    tuple((i.tag, i.input_type, i.name, i.element_id) for i in inputs),
+                ),
             )
         )
     return tuple(forms)

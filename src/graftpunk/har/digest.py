@@ -22,6 +22,7 @@ from graftpunk.har.documents import (
     TokenKind,
     extract_login_forms,
     extract_token_candidates,
+    looks_like_new_password_name,
     looks_like_token_name,
 )
 from graftpunk.har.parser import HAREntry, parse_har_file
@@ -846,52 +847,65 @@ def _used_forms_first(
 ) -> list[LoginForm]:
     """*forms* in the order the generator should prefer them: a form a credential
     post went to first; among those, one on the page that same post promoted; then
-    the one whose control names cover the most of the post's body; then one that
-    appears on no page a post did not promote (not a site-wide header form); then
-    the one with fewer unresolved roles; then document order. *page_of* maps a
-    form's ``id`` to its page's step."""
+    the one the earliest credential post went to; then the one whose control names
+    cover the most of the post's body; then one that sits on no page a credential
+    post did not promote (not a site-wide header form); then the one with fewer
+    unresolved roles; then document order. *page_of* maps a form's ``id`` to its
+    page's step."""
     promoted = {post.page_step for post in posts if post.page_step is not None}
     pages_of_key: dict[tuple[object, ...], set[int]] = {}
     for form in forms:
         if id(form) in page_of:
             pages_of_key.setdefault(_form_key(form), set()).add(page_of[id(form)])
 
-    def rank(form: LoginForm) -> tuple[bool, bool, int, bool, int]:
-        matching = [post for post in posts if _target_matches(form.action_target, post.target)]
-        on_its_page = any(page_of.get(id(form)) == post.page_step for post in matching)
+    def rank(form: LoginForm) -> tuple[bool, bool, int, int, bool, int]:
+        matching = [
+            (order, post)
+            for order, post in enumerate(posts)
+            if _target_matches(form.action_target, post.target)
+        ]
+        on_its_page = any(page_of.get(id(form)) == post.page_step for _o, post in matching)
+        # A login precedes a password change: the form the earliest post went to wins
+        # over a change-password form that covers more of its own post's body.
+        earliest = min((order for order, _post in matching), default=len(posts))
         coverage = max(
-            (len(set(form.input_names) & post.body_names) for post in matching), default=0
+            (len(set(form.input_names) & post.body_names) for _o, post in matching), default=0
         )
         site_wide = bool(pages_of_key.get(_form_key(form), set()) - promoted)
-        return (not matching, not on_its_page, -coverage, site_wide, len(form.unresolved_roles))
+        return (
+            not matching,
+            not on_its_page,
+            earliest,
+            -coverage,
+            site_wide,
+            len(form.unresolved_roles),
+        )
 
     return sorted(forms, key=rank)
 
 
 def _form_key(form: LoginForm) -> tuple[object, ...]:
-    """What makes two recorded forms the same form. Not action_target: an
-    empty-action form resolves to each page it is on, and the same site-wide form
-    must still be one form."""
-    return (
-        form.action,
-        form.method,
-        tuple(sorted(form.fields.items())),
-        form.submit,
-        form.hidden,
-    )
+    """What makes two recorded forms the same form: its structure, never its
+    selectors, which depend on the page (a name unique on one page is shared with a
+    same-action form on another). Not action_target either: an empty-action form
+    resolves to each page it is on."""
+    return (form.action, form.method, form.signature, form.hidden)
 
 
 def _unique_forms(forms: list[LoginForm]) -> list[LoginForm]:
     """*forms* with a form recorded again (the same site-wide form on several pages)
-    kept once, the first seen."""
-    seen: set[tuple[object, ...]] = set()
-    unique: list[LoginForm] = []
+    kept once, at its first position, as the copy whose selectors resolve best
+    (fewest unresolved roles; the first of those)."""
+    best: dict[tuple[object, ...], LoginForm] = {}
+    order: list[tuple[object, ...]] = []
     for form in forms:
         key = _form_key(form)
-        if key not in seen:
-            seen.add(key)
-            unique.append(form)
-    return unique
+        if key not in best:
+            order.append(key)
+            best[key] = form
+        elif len(form.unresolved_roles) < len(best[key].unresolved_roles):
+            best[key] = form
+    return [best[key] for key in order]
 
 
 def _has_password_field(entry: HAREntry) -> list[str]:
@@ -1204,7 +1218,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     pending: list[
         tuple[int, ObservationKind | None, LoginObservation, set[tuple[str, str]], bool]
     ] = []
-    posts: list[tuple[int, tuple[str, str], frozenset[str]]] = []
+    # Each credential post: its step, its target, its body names, and whether it was
+    # found by its field names alone (no recorded form's target matched it).
+    posts: list[tuple[int, tuple[str, str], frozenset[str], bool]] = []
     page_of: dict[int, int] = {}
     credential_post_steps: list[int] = []
     # Counts only the entries that reach classification: static and out-of-scope
@@ -1279,14 +1295,17 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
 
         credential_hint_fields = _has_password_field(entry) if method == "POST" else []
+        # A body asking for a new password is a password change or a sign-up, never
+        # a login found by its field names.
+        if any(looks_like_new_password_name(name) for name in credential_hint_fields):
+            credential_hint_fields = []
+        post_target = _request_target(entry.request.url) if method == "POST" else ("", "")
+        by_target = method == "POST" and _posts_to_a_login_form(post_target, login_action_targets)
         kind: ObservationKind | None = None
         fields: tuple[str, ...] = ()
         if method == "GET" and forms_in_entry:
             kind = "form_page"
-        elif method == "POST" and (
-            credential_hint_fields
-            or _posts_to_a_login_form(_request_target(entry.request.url), login_action_targets)
-        ):
+        elif method == "POST" and (credential_hint_fields or by_target):
             # Report every body field name, not only the password-hinted
             # ones: a credential post's username/email field is part of the
             # observation too, and the field's own tests require it
@@ -1323,9 +1342,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
             if kind == "credential_post":
                 credential_post_steps.append(step)
-                posts.append(
-                    (step, _request_target(entry.request.url), frozenset(body_params(entry)))
-                )
+                posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
         # not make that POST, or a later one to the same page, the credential post.
@@ -1345,11 +1362,13 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         (at, targets, scripted) for at, _f, o, targets, scripted in pending if o.kind == "form_page"
     ]
     credential_posts: list[_CredentialPost] = []
-    for post_step, target, body_names in posts:
+    for post_step, target, body_names, by_field_names in posts:
         earlier = [page for page in form_pages if page[0] < post_step]
         matching = [at for at, targets, _s in earlier if _posts_to_a_login_form(target, targets)]
         scripted = [at for at, _targets, is_scripted in earlier if is_scripted]
-        chosen = max(matching or scripted, default=None)
+        # Only a post found by its field names alone falls back to a scripted page;
+        # one matched by a recorded form (a saved page source's included) does not.
+        chosen = max(matching or (scripted if by_field_names else []), default=None)
         credential_posts.append(_CredentialPost(target, body_names, chosen))
     promoted = {post.page_step for post in credential_posts}
     for at, fallback, observation, _targets, _scripted in pending:
