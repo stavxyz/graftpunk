@@ -2,15 +2,15 @@
 them: payment, source hosting, cloud (PascalCase with an acronym and a digit),
 commerce, CRM, crypto, and container orchestration names.
 
-Written before round 7 (2026-09-23) as a held-out corpus; the round-7b thresholds
-of the name rule were then set against it, so it is held out no longer. The fresh
-corpus (``field_names_fresh.py``) took its place. ``test_id_miss_rates.py`` holds
-the share read as ids under its own ceiling.
+The tuned corpus: written as a held-out corpus before the name rule's thresholds
+were set, and then set against it, so it is held out no longer. The fresh corpus
+(``field_names_fresh.py``) took its place. ``test_id_miss_rates.py`` holds the
+share read as ids under its own ceiling.
 """
 
 from __future__ import annotations
 
-ROUND7_NAMES = (
+TUNED_NAMES = (
     # Payment APIs
     "payment_intent",
     "payment_method_types",

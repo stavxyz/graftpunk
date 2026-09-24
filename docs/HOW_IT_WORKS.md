@@ -617,20 +617,21 @@ Each rule is measured in the position it guards
 those shapes must be caught as a name, and each sub-rule of the name rule must
 be the only catch of one entry. The share of ordinary names read as ids is held
 under a ceiling on three corpora: the regression corpus (the names reviewers
-raised), the round-7 corpus of public SDK and API names (written before round 7
-as a held-out corpus; the round-7b thresholds were set against it), and a fresh
-corpus of 229 field, header, and cookie names written in round 8 and not tuned
-against. When the rule last changed they read 0 of 482, 0 of 259, and 0 of 229
-as ids. Random tokens are covered where they occur, in paths: the path rule's
-miss rate on seeded random tokens of each shape is held under a ceiling (8.2% of
-eight-character lower-case base36 tokens, most of them letters only). The name
-rule's known limit: a short random token used as a field name (`kqzpwmab47`,
-`x7Kq29Lp`, `usr_8fk2x9qa`) is kept, and so is any account value in a shape it
-does not list. From the path rule: `login_config.url` is the page the login form
-was on, or a `GP-FILL` comment when that page's path holds an id; and one in
-`success_url`'s landing path is a `*`. A missed id is kept, so read what a
-digest prints before you commit it; a name read as an id is templated or
-dropped, which fails safe, and the `GP-FILL` counts make it visible.
+raised), a tuned corpus of public SDK and API names (written as a held-out
+corpus, and then the name rule's thresholds were set against it), and a fresh
+corpus of 229 field, header, and cookie names written after those thresholds
+were set and not tuned against. When the rule last changed they read 0 of 482, 0
+of 259, and 0 of 229 as ids. Random tokens are covered where they occur, in
+paths: the path rule's miss rate on seeded random tokens of each shape is held
+under a ceiling (8.2% of eight-character lower-case base36 tokens, most of them
+letters only). The name rule's known limit: a short random token used as a field
+name (`kqzpwmab47`, `x7Kq29Lp`, `usr_8fk2x9qa`) is kept, and so is any account
+value in a shape it does not list. From the path rule: `login_config.url` is the
+page the login form was on, or a `GP-FILL` comment when that page's path holds
+an id; and one in `success_url`'s landing path is a `*`. A missed id is kept, so
+read what a digest prints before you commit it; a name read as an id is
+templated or dropped, which fails safe, and the `GP-FILL` counts make it
+visible.
 
 `graftpunk.testing` (pytest-free) supplies `make_context()` for building a
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`

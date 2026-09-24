@@ -155,7 +155,7 @@ def _base64_token(text: str) -> bool:
     """The whole or a part is a base64-like token of 24 or more characters switching
     between letters and digits at least 5 times. The ruling's floor was 3; at 3 a
     long WebForms name (``ctl00_ContentPlaceHolder1_txtUserName``, 4 switches)
-    reads as an id, and 5 changed no measured random-token rate (round 7b)."""
+    reads as an id, and 5 changed no measured random-token rate."""
     return any(
         _BASE64_RE.fullmatch(candidate)
         and _letter_digit_switches(candidate) >= _MIN_BASE64_SWITCHES
@@ -166,7 +166,7 @@ def _base64_token(text: str) -> bool:
 # The name rule's sub-rules, each the only catch of at least one entry of the
 # key-position id table (tests/unit/test_id_miss_rates.py drops each in turn). A
 # UUID needs no rule of its own: its last group is 12 hex characters, caught as
-# mixed hex, or as a digit run when it is all digits (round 7b).
+# mixed hex, or as a digit run when it is all digits.
 _NAME_ID_RULES: tuple[tuple[str, Callable[[str], bool]], ...] = (
     ("email", _email),
     ("digit run", _long_digit_run),

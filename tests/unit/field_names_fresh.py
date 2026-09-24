@@ -1,6 +1,6 @@
 """A fresh corpus of real field, header, and cookie names, written on 2026-09-23
-(round 8) after the name rule's round-7b thresholds were set, and not used to set
-any threshold since: analytics, consent, CDN, and load-balancer cookie names;
+after the name rule's thresholds were set against the tuned corpus, and not used to
+set any threshold since: analytics, consent, CDN, and load-balancer cookie names;
 security and caching headers; and request and response field names from public
 web APIs. None holds an account value, so ``holds_an_id`` should read each as a
 name. ``test_id_miss_rates.py`` holds the share read as ids under its own ceiling.
