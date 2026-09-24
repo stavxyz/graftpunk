@@ -23,6 +23,7 @@ from graftpunk.har.documents import (
     TokenKind,
     extract_login_forms,
     extract_token_candidates,
+    form_action_targets,
     looks_like_new_password_name,
     looks_like_token_name,
 )
@@ -763,6 +764,38 @@ def _response_cookie_names(entry: HAREntry) -> list[str]:
     return names
 
 
+def _redirect_target(entry: HAREntry) -> tuple[str, str]:
+    """The host and path a 3xx response sent the client to, as
+    :func:`_redirect_target_path` spells the path; both empty when it names none."""
+    path = _redirect_target_path(entry)
+    if not path:
+        return "", ""
+    try:
+        return urlparse(
+            bare_url(urljoin(entry.request.url, entry.response.redirect_url))
+        ).netloc, path
+    except ValueError:
+        return "", path
+
+
+def _hop_form_targets(entry: HAREntry) -> set[tuple[str, str]]:
+    """Where the forms on *entry*'s HTML response post, when it answered 200 with a
+    page: a POST to one continues the redirect chain *entry* is part of."""
+    content_type = (entry.response.content_type or "").lower()
+    if entry.response.status != 200 or "html" not in content_type or not entry.response.body:
+        return set()
+    return form_action_targets(entry.response.body, _unmasked_page(entry))
+
+
+def _continues_chain(host: str, path: str, expected: tuple[str, str]) -> bool:
+    """True when a request to *host* and *path* is where the chain was sent: the same
+    path, and the same host when both are known."""
+    want_host, want_path = expected
+    return (
+        bool(want_path) and path == want_path and (not host or not want_host or host == want_host)
+    )
+
+
 def _redirect_target_path(entry: HAREntry) -> str:
     """The path a 3xx response sent the client to, query stripped.
 
@@ -1290,8 +1323,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # The credential post a redirect or set-cookie observation followed, by step:
     # only a hop that continues that post's redirect chain.
     follows_post: dict[int, int] = {}
-    # For each credential post, the path its redirect chain goes to next.
-    chain_next: dict[int, str] = {}
+    # For each credential post, the host and path its redirect chain goes to next,
+    # and the targets of the forms on its last hop's page (an OAuth form_post page
+    # whose form a script submits to the app's callback).
+    chain_next: dict[int, tuple[str, str]] = {}
+    chain_forms: dict[int, set[tuple[str, str]]] = {}
     # Counts only the entries that reach classification: static and out-of-scope
     # entries between a credential post and its redirect do not use up the window.
     step = 0
@@ -1393,9 +1429,14 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # is where the previous hop sent the client. Anything else in the window
             # (a later POST answering 302, say) is observed but not the login's.
             last_post = credential_post_steps[-1]
-            if chain_next.get(last_post) and path == chain_next[last_post]:
+            host = urlparse(url).netloc
+            if _continues_chain(host, path, chain_next.get(last_post, ("", ""))) or (
+                method == "POST"
+                and _posts_to_a_login_form(post_target, chain_forms.get(last_post, set()))
+            ):
                 follows_post[step] = last_post
-                chain_next[last_post] = _redirect_target_path(entry)
+                chain_next[last_post] = _redirect_target(entry)
+                chain_forms[last_post] = _hop_form_targets(entry)
             if entry.response.status in _REDIRECT_STATUSES:
                 kind = "redirect"
             elif _response_cookie_names(entry):
@@ -1425,7 +1466,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
             if kind == "credential_post":
                 credential_post_steps.append(step)
-                chain_next[step] = _redirect_target_path(entry)
+                chain_next[step] = _redirect_target(entry)
+                chain_forms[step] = _hop_form_targets(entry)
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must

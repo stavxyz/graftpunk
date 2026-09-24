@@ -2331,12 +2331,20 @@ class TestLoginFlowFlag:
         assert "security/done" not in self._plugin(result)
 
     def test_each_hop_of_the_login_s_redirect_chain_belongs_to_it(self, tmp_path: Path) -> None:
-        """R4 (redirect ownership): the chain /step1 then /app ends at /app."""
+        """The chain /step1, /step2, then /app ends at /app: each hop continues it."""
         entries = [
             *self._login_entries(landing="/step1"),
             _entry(
                 "GET",
                 "https://api.myshop.example.com/step1",
+                status=302,
+                response_headers={"Location": "/step2"},
+                content_type="text/html",
+                body="",
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/step2",
                 status=302,
                 response_headers={"Location": "/app"},
                 content_type="text/html",
@@ -2345,6 +2353,66 @@ class TestLoginFlowFlag:
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'success_url="*/app*",' in self._plugin(result)
+
+    def test_an_oauth_form_post_chain_ends_at_the_app(self, tmp_path: Path) -> None:
+        """An IdP answers 200 with a form that posts the code to the app's callback:
+        the chain continues through that POST."""
+        login = (
+            '<form action="/u/login" method="post"><input type="email" name="username" id="u">'
+            '<input type="password" name="password" id="p"></form>'
+        )
+        resume = (
+            '<form method="post" action="https://api.myshop.example.com/callback">'
+            '<input type="hidden" name="code" value="c"><input type="hidden" name="state" '
+            'value="s"></form><script>document.forms[0].submit()</script>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://auth.myshop.example.com/u/login",
+                content_type="text/html",
+                body=login,
+            ),
+            _entry(
+                "POST",
+                "https://auth.myshop.example.com/u/login",
+                status=302,
+                response_headers={"Location": "/authorize/resume"},
+                post_data=json.dumps({"username": "alice", "password": "x"}),
+            ),
+            _entry(
+                "GET",
+                "https://auth.myshop.example.com/authorize/resume",
+                content_type="text/html",
+                body=resume,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/callback",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"code": "c", "state": "s"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/app*",' in self._plugin(result)
+
+    def test_a_hop_must_be_on_the_host_the_chain_went_to(self, tmp_path: Path) -> None:
+        """The login redirects to auth's /step1; a request to /step1 on another host
+        is not a hop."""
+        entries = [
+            *self._login_entries(landing="https://auth.myshop.example.com/step1"),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/step1",
+                status=302,
+                response_headers={"Location": "/elsewhere"},
+                content_type="text/html",
+                body="",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/step1*",' in self._plugin(result)
 
     def test_a_script_posted_login_to_another_action_is_owned(self, tmp_path: Path) -> None:
         """R2: the form says /auth/login, script posts /api/v1/sessions."""

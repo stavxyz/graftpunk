@@ -35,6 +35,7 @@ __all__ = [
     "TokenKind",
     "extract_login_forms",
     "extract_token_candidates",
+    "form_action_targets",
     "is_login_document",
     "looks_like_new_password_name",
     "looks_like_token_name",
@@ -602,6 +603,15 @@ def _action_target(raw_action: str, source: str) -> tuple[str, str]:
         return bare_host(parts.netloc), path.removeprefix("./")
     except ValueError:
         return "", ""
+
+
+def form_action_targets(html: str, base: str) -> set[tuple[str, str]]:
+    """Where every ``<form>`` in *html* posts, login form or not, as host and path
+    resolved against *base* (the unmasked URL of the page). The digest follows a
+    login's redirect chain through a page whose form a script submits (an OAuth
+    ``form_post`` response)."""
+    targets = {_action_target(raw.action, base) for raw in _parse(html).forms}
+    return {target for target in targets if target[1]}
 
 
 def extract_login_forms(
