@@ -1515,9 +1515,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         elif method == "POST" and (credential_hint_fields or by_target):
             # Report every body field name, not only the password-hinted
             # ones: a credential post's username/email field is part of the
-            # observation too, and the field's own tests require it
-            # (deviation from the brief's credential_fields-only draft,
-            # documented in task-3-report.md).
+            # observation too.
             kind, fields = "credential_post", tuple(sorted(body_params(entry)))
         elif (
             credential_post_steps

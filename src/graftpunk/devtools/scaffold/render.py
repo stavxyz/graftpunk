@@ -286,16 +286,16 @@ def _login_landing_path(d: RunDigest) -> str:
     credential post and each hop that continues its chain, a request to where the
     previous hop sent the client, or a POST submitting an OAuth ``form_post`` page's
     form (hidden inputs only, carrying only those names, to another host than the
-    page's). The last such target is
-    the end of the chain, and a later POST answering with a redirect is never part
-    of it. A credential post that answers 200 (a script login) starts no chain,
-    whatever its page holds, so no landing is taken and ``success_url`` gets a
+    page's). The last such target is the end of the chain, and a later POST
+    answering with a redirect is never part of it.
+
+    When the landing is ambiguous, none is taken, and ``success_url`` gets a
     ``GP-FILL``: a missing success signal is visible, and a wrong one would fail
-    every login. The same holds when the chain rests on a 200 page holding a
+    every login. A credential post that answers 200 (a script login) starts no
+    chain, whatever its page holds. A chain that rests on a 200 page holding a
     ``form_post``-shaped form it did not follow (a same-host identity provider's,
     or a hidden-only logout form on the landing page;
-    ``LoginObservation.landing_unresolved``): where the login lands is ambiguous,
-    so none is taken.
+    ``LoginObservation.landing_unresolved``) may continue past it or not.
 
     The digest follows a chain only within its ``_LOGIN_WINDOW`` of classified
     entries after the credential post, so a chain longer than that ends with an
@@ -360,7 +360,7 @@ def _password_login_form(d: RunDigest) -> LoginForm | None:
     The one place that decides "did we capture a usable login form":
     ``_render_login_config`` and the plugin module's import list
     (``_needs_login_import``) both call this instead of repeating the same
-    ``"password" in f.fields`` scan (validation Important 1, 2026-09-12).
+    ``"password" in f.fields`` scan, so the two cannot disagree.
     """
     return next((f for f in d.login_forms if "password" in f.fields), None)
 
@@ -1167,7 +1167,7 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     klass = class_name_for(spec.name)
     # fixture_context is only used by the per-endpoint tests below: importing
     # it when there is nothing to call it with is an unused import in the
-    # generated file's own ruff run (F401; validation Important 2, 2026-09-12).
+    # generated file's own ruff run (F401).
     endpoints = _stub_endpoints(spec)
     has_endpoint_tests = bool(endpoints)
     lines = [

@@ -2497,7 +2497,7 @@ class TestGeneratedPluginModuleParses:
 class TestRenderedTreeIsRuffClean:
     """The generated project is a real ruff target: its own pyproject.toml declares
     the config, so running ruff against the written-out tree is the actual gate a
-    freshly scaffolded plugin's own CI would run (validation Important 2, 2026-09-12).
+    freshly scaffolded plugin's own CI would run.
     """
 
     def _assert_within_the_generated_width(self, files: dict[str, str]) -> None:
