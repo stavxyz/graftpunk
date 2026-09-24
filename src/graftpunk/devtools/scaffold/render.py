@@ -36,7 +36,14 @@ from graftpunk.devtools.scaffold.pysrc import (
     wrapped_docstring_block,
     wrapped_docstring_lines,
 )
-from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDigest, TokenCandidate
+from graftpunk.har.digest import (
+    SHAPE_UNAVAILABLE,
+    Endpoint,
+    LoginForm,
+    LoginObservation,
+    RunDigest,
+    TokenCandidate,
+)
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
 from graftpunk.har.naming import capture_filename, capture_slug
 from graftpunk.har.paths import (
@@ -310,23 +317,31 @@ def _login_landing_path(d: RunDigest) -> tuple[str, str]:
     login has come close to that limit, so this is stated rather than bounded.
     """
     landing = ""
-    posted = False
+    last_post: LoginObservation | None = None
     unresolved = ""
     # Only the login the generator uses: a password change's redirect is not it.
     for observation in (o for o in d.login if o.login_flow):
         if observation.kind == "credential_post":
             # Each post starts over: only the last post's own chain decides, so a
             # later post never brings back a landing an earlier one's chain refused.
-            posted = True
+            last_post = observation
             landing = ""
             unresolved = observation.landing_unresolved
-        if posted and observation.redirect_to:
+        if last_post is not None and observation.redirect_to:
             landing = observation.redirect_to
     if unresolved:
         return "", f"The login's redirect chain {unresolved}, so where it lands is ambiguous."
-    if not landing:
-        return "", "This run observed no redirect after the credential post."
-    return landing, ""
+    if landing:
+        return landing, ""
+    # No landing and no refusal: the last post named no redirect target. It
+    # answered a page (a SAML POST binding's, say), or a 3xx with no Location, and
+    # seeds no chain even when a redirect followed it, so "no redirect" is said
+    # only when none did.
+    if last_post is not None and any(o.order > last_post.order and o.redirect_to for o in d.login):
+        return "", (
+            f"The credential post answered {last_post.status}, so no redirect chain follows it."
+        )
+    return "", "This run observed no redirect after the credential post."
 
 
 def _success_url_pattern(redirect_path: str) -> str | None:

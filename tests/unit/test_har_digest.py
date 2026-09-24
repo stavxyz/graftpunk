@@ -2866,6 +2866,59 @@ class TestLoginFlowFlag:
         assert "success_url=" not in code
         assert "observed no redirect after the credential post" in self._comments(code)
 
+    def _saml_entries(self, *, acs: bool) -> list[dict]:
+        """A SAML POST-binding login: the credential post answers 200 with a form the
+        browser posts to the app's /acs, which redirects to /app (when *acs*)."""
+        binding = (
+            '<form method="post" action="https://api.myshop.example.com/acs">'
+            '<input type="hidden" name="SAMLResponse" value="r"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://idp.myshop.example.com/login",
+                content_type="text/html",
+                body=self._LOGIN_PAGE,
+            ),
+            _entry(
+                "POST",
+                "https://idp.myshop.example.com/session",
+                content_type="text/html",
+                body=binding,
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        if acs:
+            entries.append(
+                _entry(
+                    "POST",
+                    "https://api.myshop.example.com/acs",
+                    status=302,
+                    response_headers={"Location": "/app"},
+                    post_data=json.dumps({"SAMLResponse": "r"}),
+                )
+            )
+        return entries
+
+    def test_a_200_credential_post_followed_by_a_redirect_says_so(self, tmp_path: Path) -> None:
+        """The redirect after a SAML POST binding is observed, but no chain follows a
+        200: the GP-FILL says the post answered 200, never that no redirect was
+        observed."""
+        entries = self._saml_entries(acs=True)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        comments = self._comments(self._plugin(result))
+        assert "The credential post answered 200, so no redirect chain follows it." in comments
+        assert "observed no redirect" not in comments
+
+    def test_a_200_credential_post_followed_by_nothing_says_no_redirect(
+        self, tmp_path: Path
+    ) -> None:
+        entries = self._saml_entries(acs=False)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        comments = self._comments(self._plugin(result))
+        assert "This run observed no redirect after the credential post." in comments
+        assert "answered 200" not in comments
+
     def test_a_later_post_s_own_redirect_is_the_landing(self, tmp_path: Path) -> None:
         """The first post's landing was refused; the second post redirects to /app,
         and its own chain decides."""
