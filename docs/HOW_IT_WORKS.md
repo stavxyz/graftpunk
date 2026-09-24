@@ -579,28 +579,32 @@ the credential post whatever its password field is named; a form in a POST's own
 response never marks that POST, and a slash-less action from a saved page source
 (`session`, `./session`), which has no page URL to resolve against, matches any
 POST path ending in `/session`, a wider match than a resolved action gets. Each
-credential post makes one earlier page the login form's page: the nearest one
-whose form posts where the post went, however many assets lie between; a post
-found by its field names alone (no recorded form, a saved page source's
-included, posts where it went) promotes only the nearest page whose form does
-not post where the credential post went (an empty, `#`, or `javascript:` action,
-or one naming the page itself), and no page when every earlier form posts
-somewhere real. A POST whose body asks for a new password (`new_password`,
-`password_confirm`) is never a credential post by its field names. Every other
-page carrying a login form is an ordinary page and keeps its stub. The same form
-on several pages is one form, told by its structure (its element id and each
-control's tag, type, name, and id), and is kept as the copy whose selectors
-resolve best. Among the forms, one a credential post went to is listed first;
-among those, the one on the page that post promoted, then the one the earliest
-credential post went to (a login precedes a password change), then the one whose
-control names cover the most of the post's body, then one that sits on no page a
-credential post did not promote (a site-wide header form ranks below the main
-form), then the one with fewer unresolved roles, so the generator's
-`login_config` is built from the form the recording used. Only that login is the
-login flow: its promoted page, the credential posts that went to its form, and
-the redirects and cookies that followed them. A password change or account edit
-recorded in the same run keeps its commands, and its redirect is not the login's
-landing page.
+credential post makes one earlier page the login form's page: among the pages
+whose form posts where the post went, the one whose matching form sits on the
+fewest recorded pages (a dedicated login page's form, not a site-wide header
+form), then the nearest, however many assets lie between; a post found by its
+field names alone (no recorded form, a saved page source's included, posts where
+it went) promotes only the nearest page whose form does not post where the
+credential post went (an empty, `#`, or `javascript:` action, or one naming the
+page itself), and no page when every earlier form posts somewhere real. A POST
+whose body asks for a new password (`new_password`, `password_confirm`) is never
+a credential post by its field names. Every other page carrying a login form is
+an ordinary page and keeps its stub. The same form on several pages is one form,
+told by its structure (its element id and each control's tag, type, name, and
+id), and is kept as the copy whose selectors resolve best. Among the forms, one
+a credential post went to is listed first; among those, the one on the page that
+post promoted, then the one the earliest credential post went to (a login
+precedes a password change), then the one whose control names cover the most of
+the post's body, then one that sits on no page a credential post did not promote
+(a site-wide header form ranks below the main form), then the one with fewer
+unresolved roles, so the generator's `login_config` is built from the form the
+recording used. Only that login is the login flow: its promoted page; the
+credential posts that went to its form, and a post found by its field names
+alone that went to no recorded form's action (a script posting elsewhere than
+the form says); and each hop of those posts' redirect chains, a request to where
+the previous hop sent the client. A POST carrying a password field is never such
+a hop. A password change, an account edit, or any later POST answering with a
+redirect keeps its commands, and its redirect is not the login's landing page.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
