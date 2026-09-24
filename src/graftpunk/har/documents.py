@@ -153,7 +153,8 @@ class _DocumentParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.forms: list[_RawForm] = []
         self.metas: list[tuple[str, str]] = []
-        # Every input and button on the page, in a form or not, in document order.
+        # Every input, button, select, and textarea on the page, in a form or not, in
+        # document order.
         self.inputs: list[_RawInput] = []
         self._current: _RawForm | None = None
         self._noscript = 0
@@ -168,12 +169,16 @@ class _DocumentParser(HTMLParser):
                 method=(values.get("method") or "GET").upper(),
                 element_id=values.get("id", ""),
             )
-        elif tag in ("input", "button"):
+        elif tag in ("input", "button", "select", "textarea"):
+            # A select or a textarea takes no type attribute: its tag is its type, and
+            # it is always a visible control.
+            if tag in ("select", "textarea"):
+                input_type = tag
+            else:
+                input_type = values.get("type") or ("submit" if tag == "button" else "text")
             raw_input = _RawInput(
                 tag=tag,
-                input_type=(
-                    values.get("type") or ("submit" if tag == "button" else "text")
-                ).lower(),
+                input_type=input_type.lower(),
                 name=values.get("name", ""),
                 element_id=values.get("id", ""),
                 typed=bool(values.get("type")),
@@ -624,11 +629,14 @@ def form_action_targets(html: str, base: str) -> dict[tuple[str, str], frozenset
 
     A form has that shape when it posts (``method="post"``), holds at least one
     hidden input, and every other control is hidden too, a submit control inside
-    ``<noscript>`` (the fallback shown when script is off) excepted. A cart form
-    with a visible field, a logout form with a visible button, and a GET search form
-    do not. The digest follows a login's redirect chain through such a page when a
-    POST to one of these targets, on another host than the page's, carries only its
-    hidden names.
+    ``<noscript>`` (the fallback shown when script is off) excepted; a ``<select>``
+    and a ``<textarea>`` are visible controls. A cart form with a visible field, a
+    logout form with a visible button, and a GET search form do not. Two such forms
+    posting to one target give it the union of their hidden names. The digest
+    follows a login's redirect chain through such a page when a POST to one of these
+    targets, on another host than the page's, carries only its hidden names; a chain
+    resting on a page with such a form it did not follow gives the login no
+    landing.
     """
     targets: dict[tuple[str, str], frozenset[str]] = {}
     for raw in _parse(html).forms:
@@ -643,7 +651,8 @@ def form_action_targets(html: str, base: str) -> dict[tuple[str, str], frozenset
         ]
         target = _action_target(raw.action, base)
         if hidden and not visible and target[1]:
-            targets[target] = frozenset(i.name for i in hidden if i.name)
+            names = frozenset(i.name for i in hidden if i.name)
+            targets[target] = targets.get(target, frozenset()) | names
     return targets
 
 

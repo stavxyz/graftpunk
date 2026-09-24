@@ -62,6 +62,16 @@ class TestExtractLoginForms:
         (form,) = extract_login_forms(_LOGIN_PAGE, source="s")
         assert form.hidden == ("_token",)
 
+    def test_a_select_and_a_textarea_are_controls_not_hidden_inputs(self) -> None:
+        html = _LOGIN_PAGE.replace(
+            "</form>",
+            '<select name="region"><option>us</option></select>'
+            '<textarea name="note"></textarea></form>',
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.hidden == ("_token",)
+        assert {"region", "note"} <= set(form.input_names)
+
     def test_submit_selector(self) -> None:
         (form,) = extract_login_forms(_LOGIN_PAGE, source="s")
         assert form.submit == "#login-btn"
@@ -961,6 +971,15 @@ class TestFormActionTargets:
             ("api.myshop.example.com", "/authorize/resume"): frozenset({"code"})
         }
 
+    def test_two_forms_posting_to_one_target_keep_every_hidden_name(self) -> None:
+        html = (
+            '<form method="post" action="/callback"><input type="hidden" name="code"></form>'
+            '<form method="post" action="/callback"><input type="hidden" name="state"></form>'
+        )
+        assert form_action_targets(html, self._BASE) == {
+            ("api.myshop.example.com", "/callback"): frozenset({"code", "state"})
+        }
+
     def test_the_target_host_is_lower_case_without_a_default_port(self) -> None:
         html = (
             '<form method="post" action="https://API.MyShop.example.com:443/callback">'
@@ -981,8 +1000,20 @@ class TestFormActionTargets:
             '<form method="post" action="/logout"><input type="hidden" name="csrf">'
             '<input type="submit" value="Log out"></form>',
             '<form method="post" action="/empty"></form>',
+            '<form method="post" action="/cart"><input type="hidden" name="sku">'
+            '<select name="qty"><option>1</option></select></form>',
+            '<form method="post" action="/review"><input type="hidden" name="sku">'
+            '<textarea name="note"></textarea></form>',
         ],
-        ids=["get", "visible-input", "visible-button", "visible-submit", "no-hidden"],
+        ids=[
+            "get",
+            "visible-input",
+            "visible-button",
+            "visible-submit",
+            "no-hidden",
+            "select",
+            "textarea",
+        ],
     )
     def test_a_form_that_is_not_form_post_shaped_is_left_out(self, html: str) -> None:
         assert form_action_targets(html, self._BASE) == {}
