@@ -8,9 +8,20 @@ from the writer").
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Final
 
-__all__ = ["FIXTURES_TREE", "TESTS_DIR", "fixtures_root"]
+from graftpunk.testing.sidecar import FIXTURES_PLACEHOLDER
+
+__all__ = [
+    "CONFTEST_PATH",
+    "FIXTURES_PLACEHOLDER",
+    "FIXTURES_TREE",
+    "PROJECT_REQUIREMENTS",
+    "TESTS_DIR",
+    "ProjectRequirement",
+    "fixtures_root",
+]
 
 TESTS_DIR: Final = "tests/"
 """The directory a generated project's tests live in, project-relative: the one
@@ -36,3 +47,55 @@ def fixtures_root(*, suite_member: bool, module_name: str) -> str:
     if suite_member:
         return f"{FIXTURES_TREE}{module_name}/"
     return FIXTURES_TREE
+
+
+CONFTEST_PATH: Final = f"{TESTS_DIR}conftest.py"
+"""The generated project's shared conftest, project-relative. Written once, for the
+first plugin of a project; a suite member added later shares it."""
+
+
+@dataclass(frozen=True)
+class ProjectRequirement:
+    """A module-level name a project file must bind, and the statement that binds it.
+
+    Presence is decided structurally by the project reader, with
+    ``pysrc.binds_name``: the file binds the name at module level. The renderer
+    emits every requirement in a new project, ``gp plugin upgrade`` applies the
+    ones a project lacks, and ``gp plugin check`` reports them; the renderer and
+    the migrator both add the statement through ``pysrc.with_bindings``.
+
+    Only a Python file and a module-level binding. A ``pyproject.toml`` key is not
+    this format's business (it needs a TOML edit through ``pyproject_edit.py``),
+    and neither is a gate entry (that is the README regenerated from the gate).
+    """
+
+    path: str
+    name: str
+    statement: str
+    # (module, name) pairs the statement reads, merged into the file's imports.
+    imports: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def key(self) -> str:
+        """``"<path>:<name>"``: how the project view reports this requirement."""
+        return f"{self.path}:{self.name}"
+
+
+# The fixtures tree as the conftest sees it: the conftest lives in TESTS_DIR.
+_TREE_FROM_CONFTEST = FIXTURES_TREE.removeprefix(TESTS_DIR).strip("/")
+
+PROJECT_REQUIREMENTS: Final[tuple[ProjectRequirement, ...]] = (
+    ProjectRequirement(
+        path=CONFTEST_PATH,
+        name="FIXTURES_TREE",
+        statement=f'FIXTURES_TREE = Path(__file__).parent / "{_TREE_FROM_CONFTEST}"',
+        imports=(("pathlib", "Path"),),
+    ),
+    ProjectRequirement(
+        path=CONFTEST_PATH,
+        name="sanitised_fixtures",
+        statement="sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)",
+        imports=(("graftpunk.testing.plugin", "fixtures_are_sanitised"),),
+    ),
+)
+"""What every generated project's files must bind, in the order they are applied."""

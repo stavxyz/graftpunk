@@ -33,6 +33,7 @@ from graftpunk.devtools.scaffold.pysrc import (
     literal_lines,
     quoted_literal,
     url_expr_lines,
+    with_bindings,
     wrapped_comment_lines,
     wrapped_docstring_block,
     wrapped_docstring_lines,
@@ -54,6 +55,7 @@ from graftpunk.har.paths import (
     templates_a_segment,
 )
 from graftpunk.har.report import summarize_shape
+from graftpunk.plugins import PLUGINS_GROUP
 from graftpunk.plugins.cli_plugin import SitePlugin
 
 __all__ = [
@@ -97,6 +99,11 @@ _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]
 
 # The methods whose stub carries a JSON body dict.
 _MUTATING_METHODS = ("POST", "PUT", "PATCH")
+
+# The package a generated plugin imports its API from: an import path. It is the
+# same text as the entry-point group (graftpunk.plugins.PLUGINS_GROUP), but a
+# different fact, and the group test counts only the group's own uses.
+_PLUGINS_MODULE = "graftpunk.plugins"
 
 # The observed types an explicit PluginParamSpec entry carries, each with the
 # keywords its entry adds after the name. A stub with a parameter of one of these
@@ -1111,7 +1118,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         "",
         # Under a private alias: a site parameter may be named quote.
         *(["from urllib.parse import quote as _quote_path", ""] if needs_quote else []),
-        *import_lines("graftpunk.plugins", *plugins_names),
+        *import_lines(_PLUGINS_MODULE, *plugins_names),
     ]
     if needs_token_import:
         lines.append("from graftpunk.tokens import Token, TokenConfig")
@@ -1163,7 +1170,7 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
         "[project.optional-dependencies]\n"
         'dev = ["pytest>=8.0.0", "ruff>=0.5.0"]\n'
         "\n"
-        '[project.entry-points."graftpunk.plugins"]\n'
+        f'[project.entry-points."{PLUGINS_GROUP}"]\n'
         f'{spec.name} = "{package}.plugin:{klass}"\n'
         "\n"
         "[tool.hatch.build.targets.wheel]\n"
@@ -1178,17 +1185,22 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
 
 
 def _render_conftest(spec: ScaffoldSpec) -> str:
-    # The import alone: naming the module in pytest_plugins as well makes pytest
-    # try to rewrite assertions in a module the import has already loaded, which
-    # it reports as a PytestAssertRewriteWarning on every run of the generated
-    # suite. graftpunk.testing.plugin defines no hooks or fixtures of its own, so
-    # loading it as a plugin buys nothing: site_env_scrubber returns the fixture
-    # object, and the assignment below is what registers it.
-    return (
-        "from graftpunk.testing.plugin import site_env_scrubber\n"
-        "\n"
-        f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")\n'
-    )
+    """The site-environment scrubber, then every ``PROJECT_REQUIREMENTS`` statement for
+    the conftest, added by ``pysrc.with_bindings`` exactly as ``gp plugin upgrade``
+    adds them to an existing conftest, so the two outputs are byte-identical.
+
+    The imports alone plus assignments: naming the module in ``pytest_plugins`` as
+    well would make pytest try to rewrite assertions in a module the import has
+    already loaded, which it reports as a warning on every run (final fix wave,
+    2026-09-12). Each assignment is what registers its fixture.
+    """
+    scrubber = [
+        *import_lines("graftpunk.testing.plugin", "site_env_scrubber"),
+        "",
+        f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")',
+    ]
+    requirements = [r for r in policy.PROJECT_REQUIREMENTS if r.path == policy.CONFTEST_PATH]
+    return with_bindings("\n".join(scrubber) + "\n", requirements)
 
 
 def fixtures_root_for(spec: ScaffoldSpec) -> str:
@@ -1412,9 +1424,9 @@ def render(spec: ScaffoldSpec) -> dict[str, str]:
             "pyproject.toml": _render_pyproject(spec),
             f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
             f"src/{package}/plugin.py": plugin_module,
-            f"{policy.TESTS_DIR}conftest.py": _render_conftest(spec),
+            policy.CONFTEST_PATH: _render_conftest(spec),
             f"{policy.TESTS_DIR}test_plugin.py": _render_test_module(spec, package=package),
-            f"{fixtures_root_for(spec)}.gitkeep": "",
+            f"{fixtures_root_for(spec)}{policy.FIXTURES_PLACEHOLDER}": "",
             ".gitignore": _render_gitignore(),
             "README.md": _render_readme(spec),
         }
@@ -1424,5 +1436,5 @@ def render(spec: ScaffoldSpec) -> dict[str, str]:
         f"{policy.TESTS_DIR}test_{module_name_for(spec.name)}.py": _render_test_module(
             spec, package=package
         ),
-        f"{fixtures_root_for(spec)}.gitkeep": "",
+        f"{fixtures_root_for(spec)}{policy.FIXTURES_PLACEHOLDER}": "",
     }

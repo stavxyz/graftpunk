@@ -577,6 +577,10 @@ def test_every_self_contained_python_block_executes(line_no: int, source: str) -
     a ``SitePlugin`` subclass defined by a snippet cannot reach plugin discovery.
     Names the snippet expects its reader to supply are bound to inert
     stand-ins, which is what lets a fragment run without inventing a parser.
+    ``__file__`` is one of ``_free_names``' own free names (a block reads it
+    without binding it) but is already seeded below with a real path, which a
+    snippet building ``Path(__file__)`` needs; ``setdefault`` keeps that seed
+    rather than overwriting it with a stand-in.
     """
     tree = ast.parse(source)
     namespace: dict[str, Any] = {
@@ -585,7 +589,7 @@ def test_every_self_contained_python_block_executes(line_no: int, source: str) -
         "__builtins__": builtins,
     }
     for name in _free_names(tree):
-        namespace[name] = _Inert()
+        namespace.setdefault(name, _Inert())
     first_line = source.strip().splitlines()[0]
     try:
         exec(compile(source, f"{GUIDE.name}:{line_no}", "exec"), namespace)  # noqa: S102
