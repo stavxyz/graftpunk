@@ -3490,7 +3490,7 @@ Expected: PASS, including the ruff-clean tree tests.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/graftpunk/devtools/scaffold/selection.py src/graftpunk/devtools/scaffold/render.py src/graftpunk/cli/scaffold_commands.py docs/PLUGIN_DEVELOPMENT.md tests/unit/test_scaffold_selection.py tests/unit/test_scaffold_render.py tests/unit/test_scaffold_cli.py tests/unit/test_devtools_errors.py
+git add src/graftpunk/devtools/scaffold/selection.py src/graftpunk/devtools/scaffold/policy.py src/graftpunk/devtools/scaffold/render.py src/graftpunk/cli/scaffold_commands.py docs/PLUGIN_DEVELOPMENT.md tests/unit/test_scaffold_selection.py tests/unit/test_scaffold_render.py tests/unit/test_scaffold_cli.py tests/unit/test_devtools_errors.py
 git commit -m "feat(scaffold): gp plugin new --command selects and names the stubs through one single-command renderer"
 ```
 
@@ -3502,7 +3502,7 @@ git commit -m "feat(scaffold): gp plugin new --command selects and names the stu
 - Create: `src/graftpunk/devtools/scaffold/insert.py`
 - Modify: `src/graftpunk/devtools/scaffold/__init__.py:1-6` (`CLI-only`) (module docstring: this task adds the second `gp plugin` command that calls into the package, so "`gp plugin new` is the only caller" stops being true here)
 - Modify: `src/graftpunk/cli/scaffold_commands.py` (new `plugin_add_command`)
-- Test: `tests/unit/test_plugin_project_cli.py`
+- Test: `tests/unit/test_plugin_project_cli.py`, `tests/unit/test_devtools_errors.py`
 
 **Interfaces:**
 - Consumes: `require_plugin_project`, `PluginView` (with `entry_point`), `PluginDefect`, `ProjectView.plugin`, `ProjectView.defects`, `CommandView.cli_name` (Task 3); `DevtoolsRefusal` and `ScaffoldWriteError` (foundations Task 10); `pysrc.with_import` and `ImportPlacementError` (Task 2); `plan_command`, `PlannedCommand.registered_name`, `CommandSelection` (Task 5, `selection.py`); `render_command`, `RenderedCommand.imports` (Task 5, `render.py`); `policy.RESERVED_COMMAND_NAMES` (Task 5, `policy.py`); `_command_selections` (Task 5); `apply_changes`, `PlannedChange`, `read_original`, `validate_python` (foundations Task 10); `resolve_run` (existing, `src/graftpunk/cli/observe_commands.py`).
@@ -3977,7 +3977,7 @@ git commit -m "feat(scaffold): gp plugin add-command inserts one generated stub 
 **Files:**
 - Create: `src/graftpunk/devtools/scaffold/upgrade.py`
 - Modify: `src/graftpunk/cli/scaffold_commands.py` (new `plugin_upgrade`)
-- Test: `tests/unit/test_scaffold_upgrade.py`, `tests/unit/test_plugin_project_cli.py`
+- Test: `tests/unit/test_scaffold_upgrade.py`, `tests/unit/test_plugin_project_cli.py`, `tests/unit/test_devtools_errors.py`
 
 **Interfaces:**
 - Consumes: `require_plugin_project`, `NotAPluginProjectError`, `ProjectView.missing_requirements()`, and `ProjectView.unreadable_files()` (Task 3); `ProjectRequirement` (Task 2); `pysrc.with_bindings` (Task 2), the same assembler the renderer uses for a new conftest; `apply_changes`, `PlannedChange`, `read_original`, `validate_python`, `DevtoolsRefusal`, and `ScaffoldWriteError` (foundations Task 10).
