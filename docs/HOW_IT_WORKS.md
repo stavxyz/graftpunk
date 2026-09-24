@@ -569,60 +569,66 @@ it picks one input of the form, and is never printed without the form scope:
 when the form's action holds an id the printed selectors drop the scope, so only
 an id selector, or a name no other input on the page shares, is printed. A form
 whose action is empty or only a fragment (`#`, `#login`) is scoped to match
-that. A role left without a selector is listed in `LoginForm.unresolved_roles`
-and the projection's `unresolved_roles`, and the generated `LoginStep` carries a
-`GP-FILL` naming it and why; a username the form has no input for (the password
-page of a multi-step login) gets its own `GP-FILL` saying so. A POST to where a
-login form a GET served posts (the same host and path, the action resolved
-against the page as requested and compared before any email in it is masked) is
-the credential post whatever its password field is named; a form in a POST's own
-response never marks that POST, and a slash-less action from a saved page source
-(`session`, `./session`), which has no page URL to resolve against, matches any
-POST path ending in `/session`, a wider match than a resolved action gets. Each
-credential post makes one earlier page the login form's page: among the pages
-whose form posts where the post went, the one whose matching form sits on the
-fewest recorded pages (a dedicated login page's form, not a site-wide header
-form), then the one whose form covers more of the post's body names, then the
-nearest, however many assets lie between; a post found by its field names alone
-(no recorded form, a saved page source's included, posts where it went) promotes
-only the nearest page whose form does not post where the credential post went
-(an empty, `#`, or `javascript:` action, or one naming the page itself), and no
-page when every earlier form posts somewhere real. A POST whose body asks for a
-new password (`new_password`, `password_confirm`) is never a credential post by
-its field names. Every other page carrying a login form is an ordinary page and
-keeps its stub. The same form on several pages is one form, told by its
-structure (its element id and each control's tag, type, name, and id), and is
-kept as the copy whose selectors resolve best. Among the forms, one a credential
-post went to is listed first; among those, the one on the page that post
-promoted, then the one the earliest credential post went to (a login precedes a
-password change; a post found by its field names alone went to the form with no
-target of its own on the page it promoted, so a script login's form ranks ahead
-of a later form posting to its own page, such as a change-email form), then the one whose control names cover the most of the post's
-body, then one that sits on no page a credential post did not promote (a
-site-wide header form ranks below the main form), then the one with fewer
-unresolved roles, so the generator's `login_config` is built from the form the
-recording used. Only that login is the login flow: its promoted page; the
-credential posts that went to its form, or, when none did, the posts found by
-their field names alone to the first target no recorded form posts to (a script
-posting elsewhere than the form says); and each hop of those posts' redirect
-chains, a request to where the previous hop sent the client (on the same host)
-or a POST that submits an OAuth `form_post` page's form (a post form of hidden
-inputs only, a `<noscript>` submit button aside and a `<select>` or `<textarea>`
-counted as visible, on the previous hop's page, carrying only the hidden names
-of that page's forms posting there, to another host than the page's, hosts
-compared without case or a default port, as an identity provider's page posts to
-the app; a cart or logout form on a landing page is not one, and neither is a
-same-site form a script submits). A POST
-carrying a password field is never such a hop. A password change, an account
-edit, a later password-confirmed action (whatever the login form's action, its
-own page's or none), or any later POST answering with a redirect keeps its
-commands, and its redirect is not the login's landing page. When the landing is
-ambiguous, none is taken and `success_url` gets a `GP-FILL`: a missing success
-signal is visible, and a wrong one would fail every login. A credential post
-answering 200 (a script login) starts no chain, whatever its page holds, and a
-chain that rests on a 200 page holding a `form_post`-shaped form it did not
-follow (a same-host identity provider's, or a hidden-only logout form on the
-landing page) may or may not continue past it, so neither takes a landing.
+that, and one whose action names another scheme than `http` or `https`
+(`javascript:void(0)`) holds no path to template, so it keeps its scope and is
+printed as written. A role left without a selector is listed in
+`LoginForm.unresolved_roles` and the projection's `unresolved_roles`, and the
+generated `LoginStep` carries a `GP-FILL` naming it and why; a username the form
+has no input for (the password page of a multi-step login) gets its own
+`GP-FILL` saying so. A POST to where a login form a GET served posts (the same
+host and path, the action resolved against the page as requested and compared
+before any email in it is masked) is the credential post whatever its password
+field is named; a form in a POST's own response never marks that POST, and a
+slash-less action from a saved page source (`session`, `./session`), which has
+no page URL to resolve against, matches any POST path ending in `/session`, a
+wider match than a resolved action gets. Each credential post makes one earlier
+page the login form's page: among the pages whose form posts where the post
+went, the one whose matching form sits on the fewest recorded pages (a dedicated
+login page's form, not a site-wide header form), then the one whose form covers
+more of the post's body names, then the nearest, however many assets lie
+between; a post found by its field names alone (no recorded form, a saved page
+source's included, posts where it went) promotes only the nearest page whose
+form does not post where the credential post went (an empty, `#`, or
+`javascript:` action, or one naming the page itself), and no page when every
+earlier form posts somewhere real. A POST whose body asks for a new password
+(`new_password`, `password_confirm`) is never a credential post by its field
+names. Every other page carrying a login form is an ordinary page and keeps its
+stub. The same form on several pages is one form, told by its structure (its
+element id and each control's tag, type, name, and id), and is kept as the copy
+whose selectors resolve best. Among the forms, one a credential post went to is
+listed first; among those, the one on the page that post promoted, then the one
+the earliest credential post went to (a login precedes a password change; a post
+found by its field names alone went to the form with no target of its own on the
+page it promoted, so a script login's form ranks ahead of a later form posting
+to its own page, such as a change-email form), then the one whose control names
+cover the most of the post's body, then one that sits on no page a credential
+post did not promote (a site-wide header form ranks below the main form), then
+the one with fewer unresolved roles, so the generator's `login_config` is built
+from the form the recording used. Only that login is the login flow: its
+promoted page; the credential posts that went to its form, or, when none did,
+the posts found by their field names alone to the first target no recorded form
+posts to (a script posting elsewhere than the form says); and each hop of those
+posts' redirect chains, a request to where the previous hop sent the client (on
+the same host) or a POST that submits an OAuth `form_post` page's form (a post
+form of hidden inputs only, a `<noscript>` submit button aside and a `<select>`
+or `<textarea>` counted as visible, on the previous hop's page, carrying only
+the hidden names of that page's forms posting there, to another host than the
+page's, hosts compared without case or a default port, as an identity provider's
+page posts to the app; a cart or logout form on a landing page is not one, and
+neither is a same-site form a script submits). A POST carrying a password field
+is never such a hop. A password change, an account edit, a later
+password-confirmed action (whatever the login form's action, its own page's or
+none), or any later POST answering with a redirect keeps its commands, and its
+redirect is not the login's landing page. When the landing is ambiguous, none is
+taken and `success_url` gets a `GP-FILL` saying why: a missing success signal is
+visible, and a wrong one would fail every login. A credential post answering 200
+(a script login) starts no chain, whatever its page holds; a chain that rests on
+a 200 page holding a `form_post`-shaped form it did not follow (a same-host
+identity provider's, or a hidden-only logout form on the landing page) may or
+may not continue past it; and a chain whose last hop is a `form_post` submission
+answering without a redirect leaves the client on a URL no redirect named; so
+none of these takes a landing. Each credential post starts over, so a later post
+never brings back a landing an earlier post's chain refused.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of

@@ -332,60 +332,66 @@ it picks one input of the form, and is never printed without the form scope:
 when the form's action holds an id the printed selectors drop the scope, so only
 an id selector, or a name no other input on the page shares, is printed. A form
 whose action is empty or only a fragment (`#`, `#login`) is scoped to match
-that. A role left without a selector is listed in `LoginForm.unresolved_roles`
-and the projection's `unresolved_roles`, and the generated `LoginStep` carries a
-`GP-FILL` naming it and why; a username the form has no input for (the password
-page of a multi-step login) gets its own `GP-FILL` saying so. A POST to where a
-login form a GET served posts (the same host and path, the action resolved
-against the page as requested and compared before any email in it is masked) is
-the credential post whatever its password field is named; a form in a POST's own
-response never marks that POST, and a slash-less action from a saved page source
-(`session`, `./session`), which has no page URL to resolve against, matches any
-POST path ending in `/session`, a wider match than a resolved action gets. Each
-credential post makes one earlier page the login form's page: among the pages
-whose form posts where the post went, the one whose matching form sits on the
-fewest recorded pages (a dedicated login page's form, not a site-wide header
-form), then the one whose form covers more of the post's body names, then the
-nearest, however many assets lie between; a post found by its field names alone
-(no recorded form, a saved page source's included, posts where it went) promotes
-only the nearest page whose form does not post where the credential post went
-(an empty, `#`, or `javascript:` action, or one naming the page itself), and no
-page when every earlier form posts somewhere real. A POST whose body asks for a
-new password (`new_password`, `password_confirm`) is never a credential post by
-its field names. Every other page carrying a login form is an ordinary page and
-keeps its stub. The same form on several pages is one form, told by its
-structure (its element id and each control's tag, type, name, and id), and is
-kept as the copy whose selectors resolve best. Among the forms, one a credential
-post went to is listed first; among those, the one on the page that post
-promoted, then the one the earliest credential post went to (a login precedes a
-password change; a post found by its field names alone went to the form with no
-target of its own on the page it promoted, so a script login's form ranks ahead
-of a later form posting to its own page, such as a change-email form), then the one whose control names cover the most of the post's
-body, then one that sits on no page a credential post did not promote (a
-site-wide header form ranks below the main form), then the one with fewer
-unresolved roles, so the generator's `login_config` is built from the form the
-recording used. Only that login is the login flow: its promoted page; the
-credential posts that went to its form, or, when none did, the posts found by
-their field names alone to the first target no recorded form posts to (a script
-posting elsewhere than the form says); and each hop of those posts' redirect
-chains, a request to where the previous hop sent the client (on the same host)
-or a POST that submits an OAuth `form_post` page's form (a post form of hidden
-inputs only, a `<noscript>` submit button aside and a `<select>` or `<textarea>`
-counted as visible, on the previous hop's page, carrying only the hidden names
-of that page's forms posting there, to another host than the page's, hosts
-compared without case or a default port, as an identity provider's page posts to
-the app; a cart or logout form on a landing page is not one, and neither is a
-same-site form a script submits). A POST
-carrying a password field is never such a hop. A password change, an account
-edit, a later password-confirmed action (whatever the login form's action, its
-own page's or none), or any later POST answering with a redirect keeps its
-commands, and its redirect is not the login's landing page. When the landing is
-ambiguous, none is taken and `success_url` gets a `GP-FILL`: a missing success
-signal is visible, and a wrong one would fail every login. A credential post
-answering 200 (a script login) starts no chain, whatever its page holds, and a
-chain that rests on a 200 page holding a `form_post`-shaped form it did not
-follow (a same-host identity provider's, or a hidden-only logout form on the
-landing page) may or may not continue past it, so neither takes a landing.
+that, and one whose action names another scheme than `http` or `https`
+(`javascript:void(0)`) holds no path to template, so it keeps its scope and is
+printed as written. A role left without a selector is listed in
+`LoginForm.unresolved_roles` and the projection's `unresolved_roles`, and the
+generated `LoginStep` carries a `GP-FILL` naming it and why; a username the form
+has no input for (the password page of a multi-step login) gets its own
+`GP-FILL` saying so. A POST to where a login form a GET served posts (the same
+host and path, the action resolved against the page as requested and compared
+before any email in it is masked) is the credential post whatever its password
+field is named; a form in a POST's own response never marks that POST, and a
+slash-less action from a saved page source (`session`, `./session`), which has
+no page URL to resolve against, matches any POST path ending in `/session`, a
+wider match than a resolved action gets. Each credential post makes one earlier
+page the login form's page: among the pages whose form posts where the post
+went, the one whose matching form sits on the fewest recorded pages (a dedicated
+login page's form, not a site-wide header form), then the one whose form covers
+more of the post's body names, then the nearest, however many assets lie
+between; a post found by its field names alone (no recorded form, a saved page
+source's included, posts where it went) promotes only the nearest page whose
+form does not post where the credential post went (an empty, `#`, or
+`javascript:` action, or one naming the page itself), and no page when every
+earlier form posts somewhere real. A POST whose body asks for a new password
+(`new_password`, `password_confirm`) is never a credential post by its field
+names. Every other page carrying a login form is an ordinary page and keeps its
+stub. The same form on several pages is one form, told by its structure (its
+element id and each control's tag, type, name, and id), and is kept as the copy
+whose selectors resolve best. Among the forms, one a credential post went to is
+listed first; among those, the one on the page that post promoted, then the one
+the earliest credential post went to (a login precedes a password change; a post
+found by its field names alone went to the form with no target of its own on the
+page it promoted, so a script login's form ranks ahead of a later form posting
+to its own page, such as a change-email form), then the one whose control names
+cover the most of the post's body, then one that sits on no page a credential
+post did not promote (a site-wide header form ranks below the main form), then
+the one with fewer unresolved roles, so the generator's `login_config` is built
+from the form the recording used. Only that login is the login flow: its
+promoted page; the credential posts that went to its form, or, when none did,
+the posts found by their field names alone to the first target no recorded form
+posts to (a script posting elsewhere than the form says); and each hop of those
+posts' redirect chains, a request to where the previous hop sent the client (on
+the same host) or a POST that submits an OAuth `form_post` page's form (a post
+form of hidden inputs only, a `<noscript>` submit button aside and a `<select>`
+or `<textarea>` counted as visible, on the previous hop's page, carrying only
+the hidden names of that page's forms posting there, to another host than the
+page's, hosts compared without case or a default port, as an identity provider's
+page posts to the app; a cart or logout form on a landing page is not one, and
+neither is a same-site form a script submits). A POST carrying a password field
+is never such a hop. A password change, an account edit, a later
+password-confirmed action (whatever the login form's action, its own page's or
+none), or any later POST answering with a redirect keeps its commands, and its
+redirect is not the login's landing page. When the landing is ambiguous, none is
+taken and `success_url` gets a `GP-FILL` saying why: a missing success signal is
+visible, and a wrong one would fail every login. A credential post answering 200
+(a script login) starts no chain, whatever its page holds; a chain that rests on
+a 200 page holding a `form_post`-shaped form it did not follow (a same-host
+identity provider's, or a hidden-only logout form on the landing page) may or
+may not continue past it; and a chain whose last hop is a `form_post` submission
+answering without a redirect leaves the client on a URL no redirect named; so
+none of these takes a landing. Each credential post starts over, so a later post
+never brings back a landing an earlier post's chain refused.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
@@ -685,32 +691,33 @@ page the engine opens, not the `/session` the form posts to), or, for an
 identity provider's form page that an app GET on another host redirected to,
 that app GET, since the provider's page opened directly lacks the state the
 redirect carried; `success_url` from the redirect the credential post answered
-with; one command stub per endpoint,
-the login flow's own endpoints excluded, JSON endpoints first, up to twelve,
-each with the observed query parameters as typed keyword arguments (and, for a
-`POST`, `PUT`, or `PATCH`, the observed body fields too, sent as `data=` when
-the recording posted a form and as `json=` otherwise, either way with only the
-fields the caller gave, and a body field no option can send as recorded, such as
-a JSON object, left out with a `GP-FILL` comment naming it), an explicit
-`params=` list whenever one of them is an `int`, a `float`, a `bool`, or a list
-(see [CLI parameter types](#cli-parameter-types)), the observed custom headers,
-and the endpoint it calls declared as `endpoint=` on its decorator; a docstring
-recording the method, the path, how many times it was seen, which run it came
-from, and the response shape. Each path value is percent-encoded before it goes
-into the URL (`_quote_path(order_id, safe="")`, `urllib.parse.quote` imported
-under a private name so a site parameter called `quote` cannot shadow it), so a
-`/`, `?`, or `#` in it stays in its segment. A command's name is a Python
-identifier (`import` becomes `import_`, a leading digit gains `n_`) and never
-one of `SitePlugin`'s own attributes (`setup` becomes `setup_2`) or a root
-command graftpunk adds itself (`login` becomes `login_2`). A generated test for
-an endpoint the recording saw answer with no body (a redirect, say) asserts the
-call completed, with a `GP-FILL` saying to assert on the page the redirect leads
-to, since an empty body is falsy. One whose first recorded response (the one
-`gp observe fixtures` writes without a suffix) is a falsy JSON value asserts
-that value (`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or
-`is None`), with a `GP-FILL` saying to assert on the shape you expect. A JSON endpoint that
-answered with no body every time it was recorded (a 204) reads its response as
-text, since there is no JSON to parse.
+with; one command stub per endpoint, the login flow's own endpoints excluded,
+JSON endpoints first, up to twelve, each with the observed query parameters as
+typed keyword arguments (and, for a `POST`, `PUT`, or `PATCH`, the observed body
+fields too, sent as `data=` when the recording posted a form and as `json=`
+otherwise, either way with only the fields the caller gave, and a body field no
+option can send as recorded, such as a JSON object, left out with a `GP-FILL`
+comment naming it), an explicit `params=` list whenever one of them is an `int`,
+a `float`, a `bool`, or a list (see [CLI parameter
+types](#cli-parameter-types)), the observed custom headers, and the endpoint it
+calls declared as `endpoint=` on its decorator; a docstring recording the
+method, the path, how many times it was seen, which run it came from, and the
+response shape. Each path value is percent-encoded before it goes into the URL
+(`_quote_path(order_id, safe="")`, `urllib.parse.quote` imported under a private
+name so a site parameter called `quote` cannot shadow it), so a `/`, `?`, or `#`
+in it stays in its segment. A command's name is a Python identifier (`import`
+becomes `import_`, a leading digit gains `n_`) and never one of `SitePlugin`'s
+own attributes (`setup` becomes `setup_2`) or a root command graftpunk adds
+itself (`login` becomes `login_2`). A generated test reads the fixture `gp
+observe fixtures` writes without a suffix: a template's first recording with a
+body, when any has one. For an endpoint every recording of which had no body (a
+redirect or a 204), the test asserts `result == ""`, with a `GP-FILL` saying to
+assert on what the call should return, and a JSON endpoint recorded that way
+reads its response as text, since there is no JSON to parse. When the fixture's
+recording is JSON and parses to a falsy value, the test asserts that value
+(`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or `is None`),
+with a `GP-FILL` saying to assert on the shape you expect; a text response is
+never read as JSON, so a `text/plain` `0` keeps `assert result`.
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
@@ -1270,19 +1277,20 @@ tests pass `"1"`); a real slug would be looked up as
 `get_products_alpha-widget-2024.json` and answer 404. `--out PATH` chooses where
 to write (`./tests/captures` by default), `--limit N` caps how many files are
 written per matched template (5 by default), and `--allow-tracked` overrides the
-refusal to write onto a git-tracked path. Repeated captures of one template get
-`#1`, `#2` suffixes (a `#` cannot occur in a path, so a repeat never takes the
-name of a numeric segment), and two templates that would share a fixture stem
-(`/a_b` and `/a/b`, or `/Users` and `/users`, whatever their extensions, since
-`FixtureSession` looks a fixture up by stem and a case-insensitive filesystem
-holds one of them) are refused before anything is written, as `gp plugin new`
-writes one test and a `GP-FILL` for such a pair; `FixtureSession` serves only a
-file that is the stem plus one extension (`get_api_users.json`, never
-`get_api_users.csv.txt`), so those extras are there for you to read, not for a
-test to load. A 3xx or 204 response recorded with no text (graftpunk's own
-recorder keeps none for a redirect hop) has no body by definition and gets an
-empty fixture and its sidecar; any other response recorded with no text (a
-binary one) is skipped and named.
+refusal to write onto a git-tracked path. A template's first recording with a
+body is written first and takes the unsuffixed name a generated test reads; the
+others, an empty one included, get `#1`, `#2` suffixes (a `#` cannot occur in a
+path, so a repeat never takes the name of a numeric segment), and two templates
+that would share a fixture stem (`/a_b` and `/a/b`, or `/Users` and `/users`,
+whatever their extensions, since `FixtureSession` looks a fixture up by stem and
+a case-insensitive filesystem holds one of them) are refused before anything is
+written, as `gp plugin new` writes one test and a `GP-FILL` for such a pair;
+`FixtureSession` serves only a file that is the stem plus one extension
+(`get_api_users.json`, never `get_api_users.csv.txt`), so those extras are there
+for you to read, not for a test to load. A 3xx or 204 response recorded with no
+text (graftpunk's own recorder keeps none for a redirect hop) has no body by
+definition and gets an empty fixture and its sidecar; any other response
+recorded with no text (a binary one) is skipped and named.
 
 Then do the work by hand. **A fixture copies the real structure and invents the
 content. No captured page is committed.** Open the capture, keep the shape of
