@@ -833,6 +833,8 @@ class _CredentialPost:
     target: tuple[str, str]
     body_names: frozenset[str]
     page_step: int | None
+    # Found by its field names alone: no recorded login form's target matched it.
+    by_field_names: bool = False
 
 
 def _has_a_script_driven_form(entry: HAREntry, forms: tuple[LoginForm, ...]) -> bool:
@@ -913,8 +915,9 @@ def _used_login(
     """The steps of the credential posts and the form pages of the login the
     generator uses: the first ranked form with a password field (the one
     ``login_config`` is built from), the posts that went to its target or promoted
-    a page it is on, and the pages those posts promoted. With no such form, every
-    credential post and its page."""
+    a page it is on, a post found by its field names alone that went to no recorded
+    form's action (a script posting elsewhere than the form says), and the pages
+    those posts promoted. With no such form, every credential post and its page."""
     selected = next((form for form in ranked if "password" in form.fields), None)
     if selected is None:
         owned = set(post_steps)
@@ -926,7 +929,14 @@ def _used_login(
         owned = {
             step
             for step, post in zip(post_steps, posts, strict=True)
-            if _target_matches(selected.action_target, post.target) or post.page_step in pages
+            if _target_matches(selected.action_target, post.target)
+            or post.page_step in pages
+            # A login script posts elsewhere than its form's action: a post found by
+            # its field names alone, to no recorded form's action, is the login's.
+            or (
+                post.by_field_names
+                and not any(_target_matches(form.action_target, post.target) for form in recorded)
+            )
         }
     owned_pages = {
         post.page_step
@@ -1268,8 +1278,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     posts: list[tuple[int, tuple[str, str], frozenset[str], bool]] = []
     page_of: dict[int, int] = {}
     credential_post_steps: list[int] = []
-    # The credential post a redirect or set-cookie observation followed, by step.
+    # The credential post a redirect or set-cookie observation followed, by step:
+    # only a hop that continues that post's redirect chain.
     follows_post: dict[int, int] = {}
+    # For each credential post, the path its redirect chain goes to next.
+    chain_next: dict[int, str] = {}
     # Counts only the entries that reach classification: static and out-of-scope
     # entries between a credential post and its redirect do not use up the window.
     step = 0
@@ -1342,6 +1355,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 token_seen.setdefault(token_key, []).extend(candidate.seen_on)
 
         credential_hint_fields = _has_password_field(entry) if method == "POST" else []
+        # Kept before the new-password exclusion below: a POST carrying any password
+        # field is never a redirect hop of another post.
+        carries_a_password = bool(credential_hint_fields)
         # A body asking for a new password is a password change or a sign-up, never
         # a login found by its field names.
         if any(looks_like_new_password_name(name) for name in credential_hint_fields):
@@ -1359,8 +1375,18 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # (deviation from the brief's credential_fields-only draft,
             # documented in task-3-report.md).
             kind, fields = "credential_post", tuple(sorted(body_params(entry)))
-        elif credential_post_steps and step - credential_post_steps[-1] <= _LOGIN_WINDOW:
-            follows_post[step] = credential_post_steps[-1]
+        elif (
+            credential_post_steps
+            and step - credential_post_steps[-1] <= _LOGIN_WINDOW
+            and not carries_a_password
+        ):
+            # A hop of the login's redirect chain only when it continues it: its path
+            # is where the previous hop sent the client. Anything else in the window
+            # (a later POST answering 302, say) is observed but not the login's.
+            last_post = credential_post_steps[-1]
+            if chain_next.get(last_post) and path == chain_next[last_post]:
+                follows_post[step] = last_post
+                chain_next[last_post] = _redirect_target_path(entry)
             if entry.response.status in _REDIRECT_STATUSES:
                 kind = "redirect"
             elif _response_cookie_names(entry):
@@ -1390,6 +1416,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
             if kind == "credential_post":
                 credential_post_steps.append(step)
+                chain_next[step] = _redirect_target_path(entry)
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
@@ -1411,14 +1438,41 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         (at, targets, scripted) for at, _f, o, targets, scripted in pending if o.kind == "form_page"
     ]
     credential_posts: list[_CredentialPost] = []
-    for post_step, target, body_names, by_field_names in posts:
+    pages_of_key: dict[tuple[object, ...], set[int]] = {}
+    forms_on_page: dict[int, list[LoginForm]] = {}
+    for form in login_forms:
+        if id(form) in page_of:
+            pages_of_key.setdefault(_form_key(form), set()).add(page_of[id(form)])
+            forms_on_page.setdefault(page_of[id(form)], []).append(form)
+
+    def specificity(at: int, target: tuple[str, str]) -> int:
+        """How many recorded pages the page's form posting to *target* is on: a
+        dedicated login page's form is on fewer than a site-wide header form."""
+        return min(
+            (
+                len(pages_of_key[_form_key(form)])
+                for form in forms_on_page.get(at, [])
+                if _target_matches(form.action_target, target)
+            ),
+            default=len(pages_of_key) + 1,
+        )
+
+    for post_step, went_to, body_names, by_field_names in posts:
         earlier = [page for page in form_pages if page[0] < post_step]
-        matching = [at for at, targets, _s in earlier if _posts_to_a_login_form(target, targets)]
+        matching = [at for at, targets, _s in earlier if _posts_to_a_login_form(went_to, targets)]
         scripted = [at for at, _targets, is_scripted in earlier if is_scripted]
-        # Only a post found by its field names alone falls back to a scripted page;
-        # one matched by a recorded form (a saved page source's included) does not.
-        chosen = max(matching or (scripted if by_field_names else []), default=None)
-        credential_posts.append(_CredentialPost(target, body_names, chosen))
+        # Among pages whose form posts where the post went, the page-specific form's
+        # page wins over a nearer page with only a site-wide header form; then the
+        # nearest. Only a post found by its field names alone falls back to a
+        # scripted page; one matched by a recorded form (a saved page source's
+        # included) does not.
+        if matching:
+            chosen: int | None = min(
+                matching, key=lambda at, to=went_to: (specificity(at, to), -at)
+            )
+        else:
+            chosen = max(scripted if by_field_names else [], default=None)
+        credential_posts.append(_CredentialPost(went_to, body_names, chosen, by_field_names))
     promoted = {post.page_step for post in credential_posts}
 
     if source.page_source is not None and source.page_source.is_file():

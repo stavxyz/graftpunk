@@ -2208,6 +2208,193 @@ class TestLoginFlowFlag:
         assert flags[("GET", "/login")] is True
         assert flags[("POST", "/session")] is True
 
+    @staticmethod
+    def _plugin(result) -> str:  # noqa: ANN001
+        return render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://api.myshop.example.com",
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+
+    _LOGIN_PAGE = (
+        '<form action="/session" method="post"><input type="email" name="email" id="email">'
+        '<input type="password" name="password" id="pass"></form>'
+    )
+
+    def _login_entries(self, landing: str = "/dashboard") -> list[dict]:
+        return [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=self._LOGIN_PAGE,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                status=302,
+                response_headers={"Location": landing},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+
+    def test_a_later_post_answering_a_redirect_is_not_the_login_s_landing(
+        self, tmp_path: Path
+    ) -> None:
+        """R1: a change-password POST after the login answers 302; the login still
+        lands on /dashboard."""
+        change = (
+            '<form action="/account/password" method="post">'
+            '<input type="password" name="current_password" autocomplete="current-password">'
+            '<input type="password" name="new_password" autocomplete="new-password"></form>'
+        )
+        entries = [
+            *self._login_entries(),
+            _entry("GET", "https://api.myshop.example.com/dashboard", set_cookies=["s=v; Path=/"]),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/account/password",
+                content_type="text/html",
+                body=change,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/account/password",
+                status=302,
+                response_headers={"Location": "/account/password/done"},
+                post_data=json.dumps({"current_password": "x", "new_password": "y"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/dashboard*",' in self._plugin(result)
+
+    def test_a_later_post_off_the_chain_is_not_a_hop(self, tmp_path: Path) -> None:
+        """R1 (chain): a POST with no password field answering 302 soon after the
+        login does not continue its chain, so the landing stays /dashboard."""
+        entries = [
+            *self._login_entries(),
+            _entry("GET", "https://api.myshop.example.com/dashboard", set_cookies=["s=v; Path=/"]),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/cart/add",
+                status=302,
+                response_headers={"Location": "/cart"},
+                post_data=json.dumps({"sku": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/dashboard*",' in self._plugin(result)
+
+    def test_a_password_post_on_the_login_s_next_hop_is_not_a_hop(self, tmp_path: Path) -> None:
+        """R1: a POST with a password field is never a redirect hop of another post,
+        even when its path is where the login redirected."""
+        entries = [
+            *self._login_entries(landing="/account/security"),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/account/security",
+                status=302,
+                response_headers={"Location": "/account/security/done"},
+                post_data=json.dumps({"current_password": "x", "new_password": "y"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/account/security*",' in self._plugin(result)
+        assert "security/done" not in self._plugin(result)
+
+    def test_each_hop_of_the_login_s_redirect_chain_belongs_to_it(self, tmp_path: Path) -> None:
+        """R4 (redirect ownership): the chain /step1 then /app ends at /app."""
+        entries = [
+            *self._login_entries(landing="/step1"),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/step1",
+                status=302,
+                response_headers={"Location": "/app"},
+                content_type="text/html",
+                body="",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/app*",' in self._plugin(result)
+
+    def test_a_script_posted_login_to_another_action_is_owned(self, tmp_path: Path) -> None:
+        """R2: the form says /auth/login, script posts /api/v1/sessions."""
+        form = (
+            '<form action="/auth/login" method="post"><input type="email" name="email" id="email">'
+            '<input type="password" name="password" id="pass"></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=form
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/v1/sessions",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/api/v1/sessions")] is True
+        code = self._plugin(result)
+        assert 'success_url="*/app*",' in code
+        assert "def api_v1_sessions(" not in code
+
+    def test_a_login_with_no_form_owns_every_credential_post(self, tmp_path: Path) -> None:
+        """R4 (no-form fallback)."""
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/api/v1/sessions",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("POST", "/api/v1/sessions")] is True
+
+    def test_the_login_page_beats_a_nearer_page_with_only_the_header_form(
+        self, tmp_path: Path
+    ) -> None:
+        """R3: prefer the page whose matching form is page-specific, then the nearest."""
+        header = (
+            '<form action="/session" method="post" class="mini">'
+            '<input type="email" name="login[username]" id="mini-user">'
+            '<input type="password" name="login[password]" id="mini-pass"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=header + self._LOGIN_PAGE,
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/catalog",
+                content_type="text/html",
+                body=header,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/login")] is True
+        assert flags[("GET", "/catalog")] is False
+        assert result.login_forms[0].fields == {"username": "#email", "password": "#pass"}
+        assert 'url="/login",' in self._plugin(result)
+
     def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
         """The form's type="password" input names the field, so a name outside the
         password hints (passcode) still marks the POST to its action."""

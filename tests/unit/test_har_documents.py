@@ -918,3 +918,22 @@ class TestChangePasswordForms:
         )
         (form,) = extract_login_forms(html, source="s")
         assert form.action == "/account"
+
+
+def test_a_new_password_named_but_not_marked_is_a_change_password_form() -> None:
+    """R4 (_is_change_password's name and id checks)."""
+    html = (
+        '<form action="/account/password"><input type="password" name="current_password" '
+        'autocomplete="current-password"><input type="password" name="new_password"></form>'
+    )
+    assert extract_login_forms(html, source="s") == ()
+
+
+def test_a_new_password_id_but_no_mark_is_a_change_password_form() -> None:
+    """R4 (_is_change_password's id check)."""
+    html = (
+        '<form action="/account/password"><input type="password" name="current" '
+        'autocomplete="current-password"><input type="password" name="pw2" '
+        'id="new_password"></form>'
+    )
+    assert extract_login_forms(html, source="s") == ()
