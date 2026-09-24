@@ -276,6 +276,9 @@ class Endpoint:
     body_keys_dropped_as_ids: int = 0
     body_keys_dropped_as_non_names: int = 0
     header_names_dropped_as_ids: int = 0
+    # Every recorded response to this endpoint had no body (a redirect, a 204): a
+    # generated test asserts the call completed, since an empty body is falsy.
+    response_body_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -1059,6 +1062,8 @@ class _EndpointAccumulator:
         self.body_params: dict[str, str] = {}
         self.body_kind: BodyKind = "none"
         self.shape: ShapeNode | None = None
+        # Whether any recorded response carried a body.
+        self.bodied = False
         self.custom_headers: set[str] = set()
         self.examples: list[str] = []
         # Dropped names, held only to count them distinctly; never kept past finish.
@@ -1084,6 +1089,8 @@ class _EndpointAccumulator:
             self.body_kind = body_kind
         # A real shape supersedes an unavailable one: within a family the first
         # member that was captured whole answers for the rest.
+        if entry.response.body:
+            self.bodied = True
         if self.shape is None or self.shape == SHAPE_UNAVAILABLE:
             observed = _response_shape(entry)
             if observed is not None:
@@ -1117,6 +1124,7 @@ class _EndpointAccumulator:
             body_keys_dropped_as_ids=_count_ids(self.dropped_body),
             body_keys_dropped_as_non_names=len(self.dropped_body) - _count_ids(self.dropped_body),
             header_names_dropped_as_ids=len(self.dropped_headers),
+            response_body_empty=not self.bodied,
         )
 
 
@@ -1606,6 +1614,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.custom_headers.update(acc.custom_headers)
             target.dropped_query |= acc.dropped_query
             target.dropped_body |= acc.dropped_body
+            target.bodied = target.bodied or acc.bodied
             target.dropped_headers |= acc.dropped_headers
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost

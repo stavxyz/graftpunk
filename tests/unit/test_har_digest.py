@@ -1033,6 +1033,22 @@ class TestDigestSourceFromHar:
 
 
 class TestEndpointExamples:
+    def test_an_endpoint_that_answered_with_no_body_says_so(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/go",
+                status=302,
+                content_type="text/html",
+                body="",
+                response_headers={"Location": "/app"},
+            ),
+            _entry("GET", "https://api.myshop.example.com/orders", body='{"orders": []}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        empty = {e.template: e.response_body_empty for e in result.endpoints}
+        assert empty == {"/go": True, "/orders": False}
+
     def test_examples_stop_at_the_cap(self, tmp_path: Path) -> None:
         entries = [
             _entry("GET", f"https://api.myshop.example.com/orders/{1000 + i}")

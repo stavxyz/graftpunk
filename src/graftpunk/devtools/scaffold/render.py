@@ -1233,7 +1233,18 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
                 indent=len(L1),
             )
         )
-        lines.append("    assert result  # GP-FILL: assert on the shape you expect")
+        if endpoint.response_body_empty:
+            # An empty body is falsy, so `assert result` would fail out of the box.
+            lines.extend(
+                wrapped_comment_lines(
+                    "GP-FILL: the recorded response had no body (a redirect, say): assert "
+                    "on the page the redirect leads to.",
+                    indent=len(L1),
+                )
+            )
+            lines.append("    assert result is not None")
+        else:
+            lines.append("    assert result  # GP-FILL: assert on the shape you expect")
         lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

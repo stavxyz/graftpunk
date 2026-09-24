@@ -488,6 +488,51 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert check.returncode == 0, check.stdout + check.stderr
 
+    def test_a_generated_test_passes_for_an_endpoint_recorded_with_no_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 302 with no body: the generated test passes against an empty fixture."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entry = _entry("GET", "https://api.myshop.example.com/go", body="")
+        entry["response"]["status"] = 302
+        entry["response"]["headers"] = [
+            {"name": "Content-Type", "value": "text/html"},
+            {"name": "Location", "value": "/app"},
+        ]
+        entry["response"]["content"] = {"mimeType": "text/html", "text": "", "size": 0}
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": [entry]}})
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        (target / "tests" / "fixtures" / "get_go.html").write_text("")
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+
     def test_a_project_with_login_and_token_blocks_imports_and_instantiates(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

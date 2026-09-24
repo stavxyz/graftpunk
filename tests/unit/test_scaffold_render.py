@@ -3109,3 +3109,23 @@ def test_the_reserved_command_names_are_the_root_commands_registration_adds() ->
     from graftpunk.devtools.scaffold.render import _AUTO_ROOT_COMMAND_NAMES
 
     assert set(_AUTO_ROOT_COMMAND_NAMES) == set(AUTO_ROOT_COMMAND_NAMES)
+
+
+def test_an_endpoint_recorded_with_no_body_gets_a_test_that_can_pass() -> None:
+    """An empty body is falsy, so the generated test asserts the call completed and
+    says to assert on the page the redirect leads to; one with a body keeps
+    ``assert result``."""
+    bodyless = dataclasses.replace(
+        _single_endpoint("/go"),
+        statuses=(302,),
+        content_type="text/html",
+        shape=None,
+        response_body_empty=True,
+    )
+    test_code = _render_endpoints(bodyless, _single_endpoint("/orders"))["tests/test_plugin.py"]
+    go = test_code[test_code.index("def test_go(") :]
+    go = go[: go.index("\n\n\n")] if "\n\n\n" in go else go
+    assert "assert result is not None" in go
+    assert "GP-FILL: the recorded response had no body" in go
+    orders = test_code[test_code.index("def test_orders(") :]
+    assert "assert result  # GP-FILL" in orders
