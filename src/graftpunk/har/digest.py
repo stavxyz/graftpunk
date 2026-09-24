@@ -298,9 +298,11 @@ class LoginObservation:
     # this is the only record of where a login ended up.
     redirect_to: str = ""
     # Part of the login the generator uses: the promoted page of the selected login
-    # form, the credential posts that went to it, and the redirects and set-cookie
-    # responses that followed those posts. A change-password flow recorded in the
-    # same run is observed but not part of it.
+    # form; the credential posts that went to its action (or, when none did, the
+    # script posts to the first target no recorded form posts to); and each redirect
+    # or set-cookie response that continues those posts' redirect chains. A password
+    # change, an account edit, or a later POST answering with a redirect recorded in
+    # the same run is observed but not part of it.
     login_flow: bool = True
 
 
@@ -1477,14 +1479,15 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 form.action_target for form in forms_in_entry if form.action_target[1]
             )
 
-    # Each credential post promotes one form page: the nearest earlier one whose form
-    # posts where it went; else, for a post found by its field names alone, the
-    # nearest earlier one whose form has no target of its own (an empty, #, or
-    # javascript: action, or one naming the page itself), and none when every
-    # earlier form posts somewhere real. Every other page
-    # carrying a login form is an ordinary page (a site-wide header form) and keeps
-    # its stub. By target, not distance, so the assets a login page loads cannot
-    # push it out of reach.
+    # Each credential post promotes one form page. Among the earlier pages whose form
+    # posts where it went: the one whose matching form is on the fewest recorded
+    # pages, then the one whose form covers more of the post's body names, then the
+    # nearest. Else, for a post found by its field names alone, the nearest earlier
+    # page whose form has no target of its own (an empty, #, or javascript: action,
+    # or one naming the page itself), and none when every earlier form posts
+    # somewhere real. Every other page carrying a login form is an ordinary page (a
+    # site-wide header form) and keeps its stub. By target, not distance, so the
+    # assets a login page loads cannot push it out of reach.
     form_pages = [
         (at, targets, scripted) for at, _f, o, targets, scripted in pending if o.kind == "form_page"
     ]
