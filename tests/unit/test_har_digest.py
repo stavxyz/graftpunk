@@ -2393,7 +2393,8 @@ class TestLoginFlowFlag:
         assert flags[("POST", "/customer/account/loginPost/")] is True
         assert flags[("GET", "/customer/account/edit/")] is False
         assert flags[("POST", "/customer/account/editPost/")] is False
-        # The success_url comes from the login's landing, not the edit post's.
+        # The landing is the login's (/customer/account/), never the edit post's; its
+        # glob */customer/account* would match the login page, so none is written.
         plugin_code = render(
             ScaffoldSpec(
                 name="myshop",
@@ -2403,7 +2404,9 @@ class TestLoginFlowFlag:
                 digest=result,
             )
         )["src/graftpunk_myshop/plugin.py"]
-        assert 'success_url="*/customer/account*",' in plugin_code
+        assert "success_url=" not in plugin_code
+        assert "edit/saved" not in plugin_code
+        assert "glob would match the login page" in self._comments(plugin_code)
 
     def test_a_change_password_form_is_not_a_login_form(self, tmp_path: Path) -> None:
         """Current and new password, no username: a change-password form."""
@@ -3062,22 +3065,66 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         code = self._plugin(result)
         assert "success_url=" not in code
-        assert "The recorded landing is the login page itself" in self._comments(code)
+        assert "glob would match the login page" in self._comments(code)
 
     def test_a_landing_on_the_page_the_login_opens_at_is_no_success_url(
         self, tmp_path: Path
     ) -> None:
-        """The provider's login redirects back to the app's /login, the page the login
-        opens at: no pattern."""
-        entries = self._provider_login("/login")
+        """The provider's login redirects back to the app's /signin, the page the login
+        opens at (its own form page is /u/login): no pattern."""
+        entries = self._provider_login("/signin")
         entries[-1]["response"]["headers"] = [
             {"name": "Content-Type", "value": "application/json"},
-            {"name": "Location", "value": "https://api.myshop.example.com/login"},
+            {"name": "Location", "value": "https://api.myshop.example.com/signin"},
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         code = self._plugin(result)
         assert "success_url=" not in code
-        assert "The recorded landing is the login page itself" in self._comments(code)
+        assert "glob would match the login page" in self._comments(code)
+
+    def test_a_glob_that_would_match_the_login_page_is_no_success_url(self, tmp_path: Path) -> None:
+        """A login at /account/login lands on /account: */account* matches
+        /account/login?error=1, so a failed login would pass it."""
+        page = self._LOGIN_PAGE.replace('action="/session"', 'action="/account/session"')
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/account/login",
+                content_type="text/html",
+                body=page,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/account/session",
+                status=302,
+                response_headers={"Location": "/account"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert "success_url=" not in code
+        assert "would match the login page" in self._comments(code)
+
+    def test_a_saved_page_source_s_file_path_is_not_a_login_page(self, tmp_path: Path) -> None:
+        """The form came from a saved page source under an account/ directory: its
+        file path is no URL the login returns to, so */account* is kept."""
+        saved = tmp_path / "account" / "page-source.html"
+        saved.parent.mkdir()
+        saved.write_text(self._LOGIN_PAGE)
+        entries = [
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                status=302,
+                response_headers={"Location": "/account"},
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            )
+        ]
+        source = DigestSource(har_path=_write_har(tmp_path, entries), page_source=saved)
+        result = digest(source)
+        assert result.login_forms[0].source == str(saved)
+        assert 'success_url="*/account*",' in self._plugin(result)
 
     def test_a_root_landing_is_not_mistaken_for_the_login_page(self, tmp_path: Path) -> None:
         """No page the login opens at was recorded, so nothing names /: a landing on
@@ -3087,7 +3134,7 @@ class TestLoginFlowFlag:
         )
         comments = self._comments(self._plugin(result))
         assert "has no literal path segment to match on" in comments
-        assert "login page itself" not in comments
+        assert "would match the login page" not in comments
 
     def test_a_later_post_s_own_redirect_is_the_landing(self, tmp_path: Path) -> None:
         """The first post's landing was refused; the second post redirects to /app,
