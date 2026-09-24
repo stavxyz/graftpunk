@@ -2376,7 +2376,8 @@ class TestLoginFlowFlag:
         resume = (
             '<form method="post" action="https://api.myshop.example.com/callback">'
             '<input type="hidden" name="code" value="c"><input type="hidden" name="state" '
-            'value="s"></form><script>document.forms[0].submit()</script>'
+            'value="s"><noscript><input type="submit" value="Continue"></noscript></form>'
+            "<script>document.forms[0].submit()</script>"
         )
         entries = [
             _entry(
@@ -2408,6 +2409,102 @@ class TestLoginFlowFlag:
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'success_url="*/app*",' in self._plugin(result)
+
+    def test_forms_on_the_landing_page_do_not_continue_the_chain(self, tmp_path: Path) -> None:
+        """Only an OAuth form_post-shaped page continues the chain: a cart form with a
+        visible field and a logout form with a visible button do not."""
+        dashboard = (
+            '<form method="post" action="/cart/add"><input type="hidden" name="sku" value="1">'
+            '<input type="number" name="qty"></form>'
+            '<form method="post" action="/logout"><input type="hidden" name="csrf" value="t">'
+            "<button>Log out</button></form>"
+            '<form method="get" action="/search"><input type="hidden" name="q"></form>'
+        )
+        entries = [
+            *self._login_entries(),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/dashboard",
+                content_type="text/html",
+                body=dashboard,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/logout",
+                status=302,
+                response_headers={"Location": "/login"},
+                post_data=json.dumps({"csrf": "t"}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/cart/add",
+                status=302,
+                response_headers={"Location": "/cart"},
+                post_data=json.dumps({"sku": "1", "qty": 2}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/dashboard*",' in self._plugin(result)
+
+    def test_a_post_carrying_more_than_the_form_s_hidden_names_is_not_its_submission(
+        self, tmp_path: Path
+    ) -> None:
+        """A form_post-shaped form on the landing page, then a POST to its target that
+        carries a name the form does not hold: not that form's submission."""
+        dashboard = '<form method="post" action="/track"><input type="hidden" name="event"></form>'
+        entries = [
+            *self._login_entries(),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/dashboard",
+                content_type="text/html",
+                body=dashboard,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/track",
+                status=302,
+                response_headers={"Location": "/elsewhere"},
+                post_data=json.dumps({"event": "e", "note": "n"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/dashboard*",' in self._plugin(result)
+
+    def test_a_200_login_takes_no_landing_even_through_an_auto_submit_form(
+        self, tmp_path: Path
+    ) -> None:
+        """A credential post answering 200 starts no chain, whatever its body holds."""
+        auto_submit = (
+            '<form method="post" action="https://api.myshop.example.com/callback">'
+            '<input type="hidden" name="code" value="c"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=self._LOGIN_PAGE,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                content_type="text/html",
+                body=auto_submit,
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/callback",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"code": "c"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert "success_url=" not in code
+        assert "GP-FILL: success_url" in code
 
     def test_a_hop_must_be_on_the_host_the_chain_went_to(self, tmp_path: Path) -> None:
         """The login redirects to auth's /step1; a request to /step1 on another host

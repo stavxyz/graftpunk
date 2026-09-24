@@ -8,6 +8,7 @@ import pytest
 from graftpunk.har.documents import (
     extract_login_forms,
     extract_token_candidates,
+    form_action_targets,
     is_login_document,
     looks_like_token_name,
     printable_selectors,
@@ -938,3 +939,42 @@ def test_a_new_password_id_but_no_mark_is_a_change_password_form() -> None:
         'id="new_password"></form>'
     )
     assert extract_login_forms(html, source="s") == ()
+
+
+class TestFormActionTargets:
+    """The form_post-shaped forms on a page, each with its hidden input names."""
+
+    _BASE = "https://api.myshop.example.com/authorize/resume"
+
+    def test_a_hidden_only_post_form_resolves_against_the_base(self) -> None:
+        html = (
+            '<form method="post" action="../callback"><input type="hidden" name="code">'
+            '<input type="hidden" name="state"><noscript><input type="submit"></noscript>'
+            "</form>"
+        )
+        assert form_action_targets(html, self._BASE) == {
+            ("api.myshop.example.com", "/callback"): frozenset({"code", "state"})
+        }
+
+    def test_an_empty_action_posts_to_the_page_itself(self) -> None:
+        html = '<form method="post"><input type="hidden" name="code"></form>'
+        assert form_action_targets(html, self._BASE) == {
+            ("api.myshop.example.com", "/authorize/resume"): frozenset({"code"})
+        }
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            '<form method="get" action="/search"><input type="hidden" name="q"></form>',
+            '<form method="post" action="/cart"><input type="hidden" name="sku">'
+            '<input type="number" name="qty"></form>',
+            '<form method="post" action="/logout"><input type="hidden" name="csrf">'
+            "<button>Log out</button></form>",
+            '<form method="post" action="/logout"><input type="hidden" name="csrf">'
+            '<input type="submit" value="Log out"></form>',
+            '<form method="post" action="/empty"></form>',
+        ],
+        ids=["get", "visible-input", "visible-button", "visible-submit", "no-hidden"],
+    )
+    def test_a_form_that_is_not_form_post_shaped_is_left_out(self, html: str) -> None:
+        assert form_action_targets(html, self._BASE) == {}

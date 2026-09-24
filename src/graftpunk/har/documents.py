@@ -132,6 +132,9 @@ class _RawInput:
     # The form this control sits inside in the document, whatever form= says: what
     # a descendant selector scoped to that form matches.
     container: _RawForm | None = field(default=None, repr=False, compare=False)
+    # Inside a <noscript> element: shown only when script is off, as an OAuth
+    # form_post page's fallback submit button is.
+    in_noscript: bool = False
 
 
 @dataclass
@@ -152,9 +155,12 @@ class _DocumentParser(HTMLParser):
         # Every input and button on the page, in a form or not, in document order.
         self.inputs: list[_RawInput] = []
         self._current: _RawForm | None = None
+        self._noscript = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {k: (v or "") for k, v in attrs}
+        if tag == "noscript":
+            self._noscript += 1
         if tag == "form":
             self._current = _RawForm(
                 action=values.get("action", ""),
@@ -175,6 +181,7 @@ class _DocumentParser(HTMLParser):
                 order=len(self.inputs),
             )
             raw_input.container = self._current
+            raw_input.in_noscript = self._noscript > 0
             inside = self._current.element_id if self._current is not None else ""
             raw_input.outside_form = bool(raw_input.form_owner) and raw_input.form_owner != inside
             self.inputs.append(raw_input)
@@ -186,6 +193,8 @@ class _DocumentParser(HTMLParser):
                 self.metas.append((name, content))
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "noscript" and self._noscript:
+            self._noscript -= 1
         if tag == "form" and self._current is not None:
             self.forms.append(self._current)
             self._current = None
@@ -605,13 +614,33 @@ def _action_target(raw_action: str, source: str) -> tuple[str, str]:
         return "", ""
 
 
-def form_action_targets(html: str, base: str) -> set[tuple[str, str]]:
-    """Where every ``<form>`` in *html* posts, login form or not, as host and path
-    resolved against *base* (the unmasked URL of the page). The digest follows a
-    login's redirect chain through a page whose form a script submits (an OAuth
-    ``form_post`` response)."""
-    targets = {_action_target(raw.action, base) for raw in _parse(html).forms}
-    return {target for target in targets if target[1]}
+def form_action_targets(html: str, base: str) -> dict[tuple[str, str], frozenset[str]]:
+    """The OAuth ``form_post``-shaped forms in *html*, each as its target (host and
+    path, resolved against *base*, the unmasked URL of the page) and its hidden
+    input names.
+
+    A form has that shape when it posts (``method="post"``), holds at least one
+    hidden input, and every other control is hidden too, a submit control inside
+    ``<noscript>`` (the fallback shown when script is off) excepted. A cart form
+    with a visible field, a logout form with a visible button, and a GET search form
+    do not. The digest follows a login's redirect chain through such a page when the
+    next POST goes to one of these targets carrying only its hidden names.
+    """
+    targets: dict[tuple[str, str], frozenset[str]] = {}
+    for raw in _parse(html).forms:
+        if raw.method != "POST":
+            continue
+        hidden = [i for i in raw.inputs if i.tag == "input" and i.input_type == "hidden"]
+        visible = [
+            i
+            for i in raw.inputs
+            if not (i.tag == "input" and i.input_type == "hidden")
+            and not (i.in_noscript and i.input_type == "submit")
+        ]
+        target = _action_target(raw.action, base)
+        if hidden and not visible and target[1]:
+            targets[target] = frozenset(i.name for i in hidden if i.name)
+    return targets
 
 
 def extract_login_forms(

@@ -777,13 +777,28 @@ def _redirect_target(entry: HAREntry) -> tuple[str, str]:
         return "", path
 
 
-def _hop_form_targets(entry: HAREntry) -> set[tuple[str, str]]:
-    """Where the forms on *entry*'s HTML response post, when it answered 200 with a
-    page: a POST to one continues the redirect chain *entry* is part of."""
+def _hop_form_targets(entry: HAREntry) -> dict[tuple[str, str], frozenset[str]]:
+    """The OAuth ``form_post``-shaped forms on *entry*'s page, when it answered 200
+    with HTML (:func:`graftpunk.har.documents.form_action_targets`): a POST to one,
+    carrying only its hidden names, continues the redirect chain *entry* is part
+    of."""
     content_type = (entry.response.content_type or "").lower()
     if entry.response.status != 200 or "html" not in content_type or not entry.response.body:
-        return set()
+        return {}
     return form_action_targets(entry.response.body, _unmasked_page(entry))
+
+
+def _submits_a_chain_form(
+    target: tuple[str, str],
+    body_names: frozenset[str],
+    forms: dict[tuple[str, str], frozenset[str]],
+) -> bool:
+    """True when a POST to *target* carrying *body_names* is the submission of one
+    of *forms*: it goes to that form's target and carries only its hidden names."""
+    return any(
+        _target_matches(form_target, target) and body_names <= hidden
+        for form_target, hidden in forms.items()
+    )
 
 
 def _continues_chain(host: str, path: str, expected: tuple[str, str]) -> bool:
@@ -1325,7 +1340,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # and the targets of the forms on its last hop's page (an OAuth form_post page
     # whose form a script submits to the app's callback).
     chain_next: dict[int, tuple[str, str]] = {}
-    chain_forms: dict[int, set[tuple[str, str]]] = {}
+    chain_forms: dict[int, dict[tuple[str, str], frozenset[str]]] = {}
     # Counts only the entries that reach classification: static and out-of-scope
     # entries between a credential post and its redirect do not use up the window.
     step = 0
@@ -1430,7 +1445,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             host = urlparse(url).netloc
             if _continues_chain(host, path, chain_next.get(last_post, ("", ""))) or (
                 method == "POST"
-                and _posts_to_a_login_form(post_target, chain_forms.get(last_post, set()))
+                and _submits_a_chain_form(
+                    post_target, frozenset(body_params(entry)), chain_forms.get(last_post, {})
+                )
             ):
                 follows_post[step] = last_post
                 chain_next[last_post] = _redirect_target(entry)
@@ -1464,8 +1481,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             )
             if kind == "credential_post":
                 credential_post_steps.append(step)
+                # Seeded from the post's redirect only: a credential post answering
+                # 200 starts no chain, whatever its page holds.
                 chain_next[step] = _redirect_target(entry)
-                chain_forms[step] = _hop_form_targets(entry)
                 posts.append((step, post_target, frozenset(body_params(entry)), not by_target))
         # Recorded after this entry is classified, and only from a page a GET
         # served: a form in a POST's own response (a site-wide header form) must
