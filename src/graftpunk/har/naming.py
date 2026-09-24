@@ -18,6 +18,7 @@ __all__ = [
     "capture_text",
     "fixture_order",
     "fixture_rank",
+    "normalize_media_type",
     "parse_command_spec",
     "parse_endpoint",
 ]
@@ -51,8 +52,22 @@ def capture_slug(method: str, path: str) -> str:
     return f"{method.lower()}_{body or 'root'}"
 
 
-def _extension_for_content_type(content_type: str) -> str:
+# The content type a capture is named by when its response named none: gp observe
+# fixtures and the digest's record of the fixture recording both use it.
+UNNAMED_CONTENT_TYPE = "application/octet-stream"
+
+
+def normalize_media_type(content_type: str) -> str:
+    """*content_type* with its parameters stripped and lowercased, :data:`UNNAMED_CONTENT_TYPE`
+    when it named none. The one comparison every media type in this module and the
+    digest's fixture choice use, so ``application/json`` and ``application/json;
+    charset=utf-8`` count as the same type."""
     mime = content_type.split(";", 1)[0].strip().lower()
+    return mime or UNNAMED_CONTENT_TYPE
+
+
+def _extension_for_content_type(content_type: str) -> str:
+    mime = normalize_media_type(content_type)
     if mime in _EXTENSION_BY_MIME:
         return _EXTENSION_BY_MIME[mime]
     if any(keyword in mime for keyword in _TEXT_MIME_KEYWORDS):
@@ -63,11 +78,6 @@ def _extension_for_content_type(content_type: str) -> str:
 def capture_filename(method: str, path: str, content_type: str) -> str:
     """``<method>_<slug>.<ext>``, the one name a capture, fixture, and test share."""
     return f"{capture_slug(method, path)}.{_extension_for_content_type(content_type)}"
-
-
-# The content type a capture is named by when its response named none: gp observe
-# fixtures and the digest's record of the fixture recording both use it.
-UNNAMED_CONTENT_TYPE = "application/octet-stream"
 
 
 def capture_text(body: str | None, status: int) -> str | None:
@@ -95,12 +105,25 @@ def fixture_rank(body: str | None) -> int:
 def fixture_order(text: str | None, content_type: str, fixture_type: str) -> tuple[int, int]:
     """Where a recording of a template stands for ``gp observe fixtures``, which
     writes a template's recordings in this order, stably, so the first takes the
-    unsuffixed name a generated test reads: first those of *fixture_type*, the
-    endpoint's ``Endpoint.fixture_content_type`` (its main content type when that
-    type has a written recording), then by :func:`fixture_rank`. *content_type* is
-    the recording's own, :data:`UNNAMED_CONTENT_TYPE` when it named none. The digest
-    chooses the same recording."""
-    return (0 if content_type == fixture_type else 1, fixture_rank(text))
+    unsuffixed name a generated test reads: those of *fixture_type* first, then by
+    :func:`fixture_rank`. *content_type* and *fixture_type* are compared normalised
+    (:func:`normalize_media_type`), so a charset-suffixed content type still counts
+    as *fixture_type*; an empty *fixture_type* (no endpoint to read one from) never
+    matches, so every recording ranks by :func:`fixture_rank` alone.
+
+    *fixture_type* is the digest's own choice of which media type an endpoint's
+    fixture is (``Endpoint.fixture_content_type``): the most-recorded type among
+    those with a recording that carries a body, a count tie going to a JSON type
+    and then to the type whose winning recording came first, or, only when no type
+    has a body at all, the same rule over every recorded type. Within that type,
+    the fixture recording is the first with a body, or its first recording when
+    the type is empty-only. ``gp observe fixtures`` also matches the digest's own
+    record of that exact recording (``Endpoint.fixture_entry_index``) as the
+    authority: this function alone would pick a same-ranked entry the digest never
+    saw (an out-of-scope or a static one) by raw file order instead."""
+    fixture = normalize_media_type(fixture_type) if fixture_type else None
+    matches = fixture is not None and normalize_media_type(content_type) == fixture
+    return (0 if matches else 1, fixture_rank(text))
 
 
 HTTP_METHODS: frozenset[str] = frozenset(

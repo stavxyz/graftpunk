@@ -962,9 +962,12 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
         call_lines.extend(exploded_dict_lines("headers", entries))
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
-    # An unavailable shape is not a fact about the site, so the docstring says
-    # nothing rather than guessing.
-    shape_known = endpoint.shape is None or endpoint.shape != SHAPE_UNAVAILABLE
+    # endpoint.shape is the fixture recording's own shape (None when that
+    # recording is not JSON), so the line only ever describes what the
+    # generated test's fixture actually holds. An unavailable shape (a JSON
+    # body too large to have been captured whole) is not a fact about the site
+    # either, so the docstring says nothing rather than guessing.
+    shape_known = endpoint.shape is not None and endpoint.shape != SHAPE_UNAVAILABLE
 
     lines = _decorator_lines(
         name,

@@ -360,23 +360,37 @@ def fixtures_cmd(
     written: list[Path] = []
     matched: set[tuple[str, str]] = set()
     # Each template's fixture recording is written first, so it takes the unsuffixed
-    # name a generated test reads (fixture_order); the sort is stable.
+    # name a generated test reads. fixture_order (content type, then body) orders
+    # the rest; fixture_index names the digest's own choice by its exact HAR entry,
+    # ahead of that, so an out-of-scope or a static entry sharing the same method
+    # and template (fixture_order alone cannot tell those apart from an entry the
+    # digest actually kept) never outranks it. The sort is stable.
     fixture_types = {
         (method, endpoint.template): endpoint.fixture_content_type
         for endpoint in run_digest.endpoints
         for method in endpoint.methods
     }
+    fixture_index = {
+        (method, endpoint.template): endpoint.fixture_entry_index
+        for endpoint in run_digest.endpoints
+        for method in endpoint.methods
+        if endpoint.fixture_entry_index is not None
+    }
 
-    def written_first(entry: HAREntry) -> tuple[int, int]:
+    def written_first(indexed: tuple[int, HAREntry]) -> tuple[int, int, int, int]:
+        entry_index, entry = indexed
         try:
             path = urlparse(entry.request.url).path or "/"
         except ValueError:
             path = "/"
         key = (entry.request.method.upper(), endpoint_template(run_digest, path))
-        recorded_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
-        return fixture_order(_capture_text(entry), recorded_type, fixture_types.get(key, ""))
+        is_the_fixture = entry_index == fixture_index.get(key)
+        type_rank, body_rank = fixture_order(
+            _capture_text(entry), entry.response.content_type or "", fixture_types.get(key, "")
+        )
+        return (0 if is_the_fixture else 1, type_rank, body_rank, entry_index)
 
-    for entry in sorted(entries, key=written_first):
+    for _entry_index, entry in sorted(enumerate(entries), key=written_first):
         try:
             path = urlparse(entry.request.url).path or "/"
         except ValueError:

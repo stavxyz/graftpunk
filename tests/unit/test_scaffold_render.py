@@ -2391,6 +2391,23 @@ class TestUnavailableShapeIsOmittedFromTheDocstring:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "Shape: object{id}." in plugin_code
 
+    def test_no_shape_line_for_a_non_json_endpoint(self) -> None:
+        """X1 (polish #212 round 21): the shape line is printed only when the
+        fixture recording is JSON (endpoint.shape is the fixture's own shape,
+        None for anything else); it used to print "Shape: non-JSON." instead."""
+        text_endpoint = dataclasses.replace(
+            _single_endpoint("/robots"), content_type="text/plain", shape=None
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(text_endpoint,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "Shape:" not in plugin_code
+
 
 class TestGeneratedPluginModuleParses:
     def test_ast_parses_with_and_without_a_digest(self) -> None:
@@ -3224,25 +3241,55 @@ def test_a_bodyless_endpoint_whose_fixture_is_never_written_gets_no_test() -> No
     assert any("get_orders" in path for path in fixture_paths(spec))
 
 
-@pytest.mark.parametrize("statuses", [(302,), (204,), (200,), (200, 302)])
+def _har_entry(status: int, text: str | None) -> dict[str, Any]:
+    """One GET /go response, *text* as ``response.content.text`` (absent when
+    None, matching how a capture with no text is recorded)."""
+    content: dict[str, Any] = {"mimeType": "text/html", "size": 0}
+    if text is not None:
+        content["text"] = text
+    return {
+        "startedDateTime": "2026-09-10T10:00:00.000Z",
+        "time": 1,
+        "request": {
+            "method": "GET",
+            "url": "https://api.myshop.example.com/go",
+            "headers": [],
+            "cookies": [],
+            "queryString": [],
+        },
+        "response": {
+            "status": status,
+            "statusText": "",
+            "headers": [{"name": "Content-Type", "value": "text/html"}],
+            "cookies": [],
+            "content": content,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "statuses_and_texts",
+    [[(302, None)], [(204, None)], [(200, "")], [(200, None), (302, None)]],
+    ids=["3xx-no-text", "204-no-text", "200-empty-text", "no-text-then-302"],
+)
 def test_a_bodyless_endpoint_whose_fixture_is_written_keeps_its_test(
-    statuses: tuple[int, ...],
+    tmp_path: Path, statuses_and_texts: list[tuple[int, str | None]]
 ) -> None:
     """A 200 recorded with empty text, or a 3xx or 204 with none: gp observe
-    fixtures writes an empty fixture, so the endpoint keeps its test."""
-    bodyless = dataclasses.replace(
-        _single_endpoint("/go"),
-        statuses=statuses,
-        content_type="text/html",
-        shape=None,
-        response_body_empty=True,
-    )
+    fixtures writes an empty fixture, so the endpoint keeps its test. Built through
+    the digest (graftpunk.har.naming.capture_text), so each status/text pair is
+    the one gp observe fixtures itself would see, not a hand-set fixture_written."""
+    har = tmp_path / "network.har"
+    entries = [_har_entry(status, text) for status, text in statuses_and_texts]
+    har.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
+    (endpoint,) = digest(DigestSource.from_har(har)).endpoints
+    assert endpoint.fixture_written is True
     spec = ScaffoldSpec(
         name="myshop",
         mode="new_project",
         backend="nodriver",
         base_url="https://myshop.example.com",
-        digest=_digest(endpoints=(bodyless,)),
+        digest=_digest(endpoints=(endpoint,)),
     )
     assert "def test_go(" in render(spec)["tests/test_plugin.py"]
     assert any("get_go" in path for path in fixture_paths(spec))

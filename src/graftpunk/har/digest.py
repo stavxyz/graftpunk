@@ -27,7 +27,7 @@ from graftpunk.har.documents import (
     looks_like_new_password_name,
     looks_like_token_name,
 )
-from graftpunk.har.naming import UNNAMED_CONTENT_TYPE, capture_text, fixture_rank
+from graftpunk.har.naming import capture_text, fixture_rank, normalize_media_type
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
@@ -259,10 +259,19 @@ class Endpoint:
     methods: tuple[str, ...]
     count: int
     statuses: tuple[int, ...]
+    # The most-recorded response media type across every recording the digest kept
+    # for this endpoint (graftpunk.har.naming.normalize_media_type), whatever its
+    # body: the docstring's summary, and the stub's JSON/text fallback for an
+    # endpoint with no fixture recording at all (fixture_content_type empty). Not
+    # necessarily the fixture's own type: fixture_content_type is that.
     content_type: str
     query_params: dict[str, str]
     body_params: dict[str, str]
     body_kind: BodyKind
+    # The fixture recording's own JSON shape (fixture_content_type's recording,
+    # graftpunk.har.naming.fixture_order's rule): None when that recording is not
+    # JSON, or there is no fixture. The docstring's "Shape:" line reads this, so it
+    # never claims a shape from a recording the generated test does not read.
     shape: ShapeNode | None
     custom_headers: tuple[str, ...]
     examples: tuple[str, ...]
@@ -284,23 +293,34 @@ class Endpoint:
     # Every recorded response to this endpoint had no body (a redirect, a 204): a
     # generated test asserts the call completed, since an empty body is falsy.
     response_body_empty: bool = False
-    # The fixture recording's body (the one gp observe fixtures writes without a
-    # suffix, graftpunk.har.naming.fixture_order: the first written recording of
-    # the endpoint's main content type, a body preferred, or of any type when the
-    # main one has none) when it is JSON parsing to a falsy value ({}, [], "", 0,
-    # false, or null), spelled as canonical JSON; None otherwise, an empty body
-    # included. The generated test reads that fixture, so it asserts this value.
+    # The fixture recording's body when it is JSON parsing to a falsy value ({},
+    # [], "", 0, false, or null), spelled as canonical JSON; None otherwise, an
+    # empty body included. The generated test reads that fixture, so it asserts
+    # this value.
     falsy_first_response: str | None = None
-    # The fixture recording's content type (application/octet-stream when it named
-    # none, as gp observe fixtures writes it): the main content type whenever that
-    # type has a written recording. The stub's request method, the fixture's file
-    # name, and the falsy decision all read this one recording. A lookup for the
-    # generator, so render_json leaves it out.
+    # The fixture recording's own media type, normalised
+    # (graftpunk.har.naming.normalize_media_type; UNNAMED_CONTENT_TYPE when it
+    # named none): among the media types of the recordings the digest kept for
+    # this endpoint (in scope, not static, and graftpunk.har.naming.capture_text
+    # not None), the most-recorded one that has a recording with a body, a count
+    # tie going to a JSON type and then to the type whose winning recording came
+    # first; only when no type has a body at all does the same rule run over
+    # every recorded type. Empty when fixture_written is False (no such
+    # recording). The stub's request method, the fixture's file name, and the
+    # falsy decision all read this one recording. A lookup for the generator, so
+    # render_json leaves it out.
     fixture_content_type: str = field(default="", metadata={INTERNAL: True})
     # Whether gp observe fixtures writes a fixture for any recording
     # (graftpunk.har.naming.capture_text): the generator writes no test for an
     # endpoint it writes none for. Internal.
     fixture_written: bool = field(default=True, metadata={INTERNAL: True})
+    # The fixture recording's position in the run's HAR entries (parse_har_file's
+    # own order), the stable reference gp observe fixtures matches against its own
+    # entries to write exactly that recording unsuffixed, rather than re-deriving
+    # "which recording is first" by content type and risking a pick the digest
+    # never made (an out-of-scope or a static entry sharing the same method and
+    # template). None when fixture_written is False.
+    fixture_entry_index: int | None = field(default=None, metadata={INTERNAL: True})
 
 
 @dataclass(frozen=True)
@@ -1106,6 +1126,48 @@ def _count_ids(names: set[str]) -> int:
     return sum(1 for name in names if holds_an_id(name))
 
 
+# One fixture candidate: the best (lowest) (rank, entry_index) key seen for its
+# media type so far (graftpunk.har.naming.fixture_rank, then HAR entry order), the
+# falsy JSON value of that recording's body when the type reads as JSON, its JSON
+# shape under the same condition, and the raw index (parse_har_file's own order)
+# of the HAR entry that recording came from.
+_FixtureCandidate = tuple[tuple[int, int], str | None, ShapeNode | None, int]
+
+
+def _is_json_media_type(media_type: str) -> bool:
+    """True when *media_type* (already normalised: lower case, no parameters) is a
+    JSON type: matches every other JSON check in this module
+    (:func:`_response_shape`, ``devtools/scaffold/render.py``'s
+    ``_is_json_endpoint``)."""
+    return "json" in media_type
+
+
+def _fixture_type_of(
+    candidates: dict[str, _FixtureCandidate], content_types: dict[str, int]
+) -> str | None:
+    """Which of *candidates*' normalised media types is the endpoint's fixture type
+    (:func:`graftpunk.har.naming.fixture_order`'s rule, run once per endpoint): the
+    most-recorded type (*content_types*, every recording of that type, body or not)
+    among those with a recording that carries a body (a candidate of rank 0); a
+    count tie goes to a JSON type, then to the type whose winning candidate came
+    first. Only when no candidate type has a body at all does the same rule run
+    over every candidate type instead. None when there are no candidates (the
+    endpoint's fixture_written is False)."""
+    if not candidates:
+        return None
+    body_types = {media_type for media_type, (key, *_rest) in candidates.items() if key[0] == 0}
+    pool = body_types or set(candidates)
+
+    def rank(media_type: str) -> tuple[int, bool, int]:
+        return (
+            -content_types.get(media_type, 0),
+            not _is_json_media_type(media_type),
+            candidates[media_type][0][1],
+        )
+
+    return min(pool, key=rank)
+
+
 class _EndpointAccumulator:
     def __init__(self, host: str) -> None:
         self.host = host
@@ -1116,14 +1178,12 @@ class _EndpointAccumulator:
         self.query_params: dict[str, str] = {}
         self.body_params: dict[str, str] = {}
         self.body_kind: BodyKind = "none"
-        self.shape: ShapeNode | None = None
-        # Whether any recorded response carried a body. Per content type (keyed as
-        # content_types is), the recording gp observe fixtures would write first of
-        # that type's (graftpunk.har.naming.fixture_rank, then the order recorded):
-        # its (rank, step) key and its falsy JSON value (_falsy_value). finish
-        # picks the main type's, as graftpunk.har.naming.fixture_order does.
+        # Whether any recorded response carried a body: equivalent to "no candidate
+        # type has a body" (a candidate's text is the response body itself whenever
+        # the body is not None), so response_body_empty also says whether the
+        # fixture recording finish() picks has one.
         self.bodied = False
-        self.fixture_candidates: dict[str, tuple[tuple[int, int], str | None]] = {}
+        self.fixture_candidates: dict[str, _FixtureCandidate] = {}
         self.custom_headers: set[str] = set()
         self.examples: list[str] = []
         # Dropped names, held only to count them distinctly; never kept past finish.
@@ -1131,23 +1191,24 @@ class _EndpointAccumulator:
         self.dropped_body: set[str] = set()
         self.dropped_headers: set[str] = set()
 
-    def record(self, entry: HAREntry, path: str, step: int) -> None:
+    def record(self, entry: HAREntry, path: str, step: int, entry_index: int) -> None:
         text = capture_text(entry.response.body, entry.response.status)
         # A recording gp observe fixtures writes nothing for is never the fixture.
         if text is not None:
-            recorded_type = entry.response.content_type or ""
+            recorded_type = normalize_media_type(entry.response.content_type or "")
             key = (fixture_rank(text), step)
             best = self.fixture_candidates.get(recorded_type)
             if best is None or key < best[0]:
-                is_json = "json" in recorded_type.lower()
+                is_json = _is_json_media_type(recorded_type)
                 falsy = _falsy_value(text) if is_json else None
-                self.fixture_candidates[recorded_type] = (key, falsy)
+                shape = _response_shape(entry) if is_json else None
+                self.fixture_candidates[recorded_type] = (key, falsy, shape, entry_index)
         method = entry.request.method.upper()
         if method not in self.methods:
             self.methods.append(method)
         self.count += 1
         self.statuses.append(entry.response.status)
-        content_type = entry.response.content_type or ""
+        content_type = normalize_media_type(entry.response.content_type or "")
         self.content_types[content_type] = self.content_types.get(content_type, 0) + 1
         query_types, query_dropped = _query_param_types(entry.request.url)
         _merged_types(self.query_params, query_types, json_body=False)
@@ -1157,14 +1218,8 @@ class _EndpointAccumulator:
         self.dropped_body |= body_dropped
         if body_kind != "none":
             self.body_kind = body_kind
-        # A real shape supersedes an unavailable one: within a family the first
-        # member that was captured whole answers for the rest.
         if entry.response.body:
             self.bodied = True
-        if self.shape is None or self.shape == SHAPE_UNAVAILABLE:
-            observed = _response_shape(entry)
-            if observed is not None:
-                self.shape = observed
         header_names, headers_dropped = _custom_headers(entry)
         self.custom_headers.update(header_names)
         self.dropped_headers |= headers_dropped
@@ -1175,14 +1230,8 @@ class _EndpointAccumulator:
         primary_content_type = max(
             self.content_types, key=lambda ct: self.content_types[ct], default=""
         )
-        # The fixture is the main type's first written recording; with none of that
-        # type, the first written recording of any type.
         candidates = self.fixture_candidates
-        fixture_type = (
-            primary_content_type
-            if primary_content_type in candidates
-            else min(candidates, key=lambda ct: candidates[ct][0], default=None)
-        )
+        fixture_type = _fixture_type_of(candidates, self.content_types)
         return Endpoint(
             host=self.host,
             template=template,
@@ -1193,7 +1242,7 @@ class _EndpointAccumulator:
             query_params=dict(self.query_params),
             body_params=dict(self.body_params),
             body_kind=self.body_kind,
-            shape=self.shape,
+            shape=None if fixture_type is None else candidates[fixture_type][2],
             custom_headers=tuple(sorted(self.custom_headers)),
             examples=tuple(self.examples),
             query_keys_dropped_as_ids=_count_ids(self.dropped_query),
@@ -1204,10 +1253,9 @@ class _EndpointAccumulator:
             header_names_dropped_as_ids=len(self.dropped_headers),
             response_body_empty=not self.bodied,
             falsy_first_response=None if fixture_type is None else candidates[fixture_type][1],
-            fixture_content_type=(
-                "" if fixture_type is None else fixture_type or UNNAMED_CONTENT_TYPE
-            ),
+            fixture_content_type="" if fixture_type is None else fixture_type,
             fixture_written=bool(candidates),
+            fixture_entry_index=None if fixture_type is None else candidates[fixture_type][3],
         )
 
 
@@ -1404,7 +1452,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     hosts: dict[str, int] = {}
     non_static_hosts: dict[str, int] = {}
     document_hosts: set[str] = set()
-    classified: list[tuple[HAREntry, str, bool]] = []
+    classified: list[tuple[HAREntry, str, bool, int]] = []
     for index, entry in enumerate(entries):
         try:
             parsed_url = urlparse(entry.request.url)
@@ -1433,7 +1481,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             served_html = "html" in (entry.response.content_type or "").lower()
             if served_html and 200 <= entry.response.status < 300:
                 document_hosts.add(host)
-        classified.append((entry, host, static))
+        classified.append((entry, host, static, index))
 
     primary_host = _primary_host(non_static_hosts, document_hosts)
     scope_root = _scope_root(primary_host) if primary_host else ""
@@ -1488,7 +1536,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # comprehension binds in this function and rebound the loop's `path` below.
     login_action_targets = {form.action_target for form in page_forms if form.action_target[1]}
 
-    for entry, host, static in classified:
+    for entry, host, static, entry_index in classified:
         if static:
             dropped["static"] += 1
             continue
@@ -1513,7 +1561,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         raw_template, _ = template_path(path)
         key = (method, raw_template)
         acc = accumulators.setdefault(key, _EndpointAccumulator(host=host))
-        acc.record(entry, path, step)
+        acc.record(entry, path, step, entry_index)
 
         for name in entry.request.headers:
             if looks_like_token_name(name):
@@ -1780,13 +1828,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 if best is None or candidate[0] < best[0]:
                     target.fixture_candidates[recorded_type] = candidate
             target.dropped_headers |= acc.dropped_headers
-            # The first member of a collapsed family answers for the family, so
-            # a member that happened to redirect or return HTML must not cost
-            # the merged endpoint its response shape or its request body kind.
-            if (
-                target.shape is None or target.shape == SHAPE_UNAVAILABLE
-            ) and acc.shape is not None:
-                target.shape = acc.shape
+            # The first member of a collapsed family answers for the family, so a
+            # member that happened to redirect or return HTML must not cost the
+            # merged endpoint its request body kind. Its fixture recording (shape
+            # included, merged into fixture_candidates above) is decided the same
+            # way as any other endpoint's, from the family's combined candidates.
             if target.body_kind == "none" and acc.body_kind != "none":
                 target.body_kind = acc.body_kind
             for example in acc.examples:

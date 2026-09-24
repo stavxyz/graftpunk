@@ -7,10 +7,14 @@ import re
 import pytest
 
 from graftpunk.har.naming import (
+    UNNAMED_CONTENT_TYPE,
     EndpointSpecError,
     capture_filename,
     capture_slug,
     capture_text,
+    fixture_order,
+    fixture_rank,
+    normalize_media_type,
     parse_command_spec,
     parse_endpoint,
 )
@@ -47,6 +51,43 @@ class TestCaptureFilename:
 
     def test_post_method_lowercased(self) -> None:
         assert capture_filename("POST", "/login", "application/json") == "post_login.json"
+
+
+class TestNormalizeMediaType:
+    def test_parameters_are_stripped(self) -> None:
+        assert normalize_media_type("application/json; charset=utf-8") == "application/json"
+
+    def test_lowercased(self) -> None:
+        assert normalize_media_type("Application/JSON") == "application/json"
+
+    def test_whitespace_around_the_parameter_is_not_kept(self) -> None:
+        assert normalize_media_type("text/html ;charset=UTF-8") == "text/html"
+
+    def test_an_empty_type_is_unnamed(self) -> None:
+        assert normalize_media_type("") == UNNAMED_CONTENT_TYPE
+
+
+class TestFixtureOrder:
+    def test_a_recording_of_the_fixture_type_sorts_ahead_of_another_type(self) -> None:
+        winner = fixture_order("{}", "application/json", "application/json")
+        loser = fixture_order("<p/>", "text/html", "application/json")
+        assert winner < loser
+
+    def test_the_comparison_is_normalised(self) -> None:
+        """A charset-suffixed content type still counts as the plain fixture type."""
+        assert fixture_order("{}", "application/json; charset=utf-8", "application/json") == (
+            fixture_order("{}", "application/json", "application/json")
+        )
+
+    def test_an_empty_fixture_type_matches_nothing(self) -> None:
+        """No endpoint to read a fixture type from: every recording ranks by
+        fixture_rank alone, never as though it matched an unnamed type."""
+        assert fixture_order("", "", "") == (1, fixture_rank(""))
+
+    def test_within_a_type_a_body_sorts_first(self) -> None:
+        with_body = fixture_order("{}", "application/json", "application/json")
+        without_body = fixture_order("", "application/json", "application/json")
+        assert with_body < without_body
 
 
 class TestParseEndpoint:

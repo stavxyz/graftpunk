@@ -797,6 +797,124 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
 
+    def test_two_204s_then_a_200_json_writes_a_passing_json_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A round-20 regression: two 204s used to outvote the one recording with a
+        body, and the generated stub and test read text instead of JSON."""
+        first = _entry("POST", "https://api.myshop.example.com/ack", body="")
+        first["response"]["status"] = 204
+        second = _entry("POST", "https://api.myshop.example.com/ack", body="")
+        second["response"]["status"] = 204
+        third = _entry("POST", "https://api.myshop.example.com/ack", body='{"ok": true}')
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second, third], "POST /ack"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "post_ack.json").read_text() == '{"ok": true}'
+        plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "return ctx.request_json(" in plugin
+
+    def test_204_json_then_204_then_200_html_writes_a_passing_text_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neither 204 has a body, whatever type it declares: the one recording
+        with a body is the fixture, and the stub reads text."""
+        first = _entry(
+            "PUT", "https://api.myshop.example.com/cart", content_type="application/json", body=""
+        )
+        first["response"]["status"] = 204
+        second = _entry("PUT", "https://api.myshop.example.com/cart", body="")
+        second["response"]["status"] = 204
+        third = _entry(
+            "PUT",
+            "https://api.myshop.example.com/cart",
+            content_type="text/html",
+            body="<p>ok</p>",
+        )
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second, third], "PUT /cart"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "put_cart.html").read_text() == "<p>ok</p>"
+        plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "return ctx.request_text(" in plugin
+
+    def test_a_204_then_an_empty_array_writes_a_passing_falsy_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        first = _entry("DELETE", "https://api.myshop.example.com/items/1001", body="")
+        first["response"]["status"] = 204
+        second = _entry("DELETE", "https://api.myshop.example.com/items/1001", body="[]")
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second], "DELETE /items/{item_id}"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "delete_items_{item_id}.json").read_text() == "[]"
+        test_code = (target / "tests" / "test_plugin.py").read_text()
+        assert "assert result == []" in test_code
+
+    def test_an_out_of_scope_vendor_host_recorded_first_never_becomes_the_fixture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A third-party host answering the same path first, with a body, is not
+        an entry gp plugin new's digest ever saw: gp observe fixtures --match
+        must not pick it either, just because it sorts earliest by content type
+        and body alone."""
+        vendor = _entry("GET", "https://vendor.example.net/cart", body='{"vendor": true}')
+        real_a = _entry("GET", "https://api.myshop.example.com/cart", body='{"n": 1}')
+        real_b = _entry("GET", "https://api.myshop.example.com/cart", body='{"n": 1}')
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [vendor, real_a, real_b], "GET /cart"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
+
+    def test_a_charset_suffixed_json_majority_writes_a_passing_json_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two JSON recordings, each with a different charset parameter, outvote
+        one HTML recording only once the types are compared normalised."""
+        first = _entry(
+            "GET",
+            "https://api.myshop.example.com/profile",
+            content_type="application/json;charset=UTF-8",
+            body='{"a": 1}',
+        )
+        second = _entry(
+            "GET",
+            "https://api.myshop.example.com/profile",
+            content_type="application/json; charset=utf-8",
+            body='{"a": 2}',
+        )
+        third = _entry(
+            "GET", "https://api.myshop.example.com/profile", content_type="text/html", body="<p/>"
+        )
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second, third], "GET /profile"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_profile.json").read_text() == '{"a": 1}'
+
+    def test_a_one_to_one_html_and_json_tie_writes_a_passing_json_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        first = _entry(
+            "GET", "https://api.myshop.example.com/ping", content_type="text/html", body="<p/>"
+        )
+        second = _entry("GET", "https://api.myshop.example.com/ping", body='{"ok": true}')
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second], "GET /ping"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_ping.json").read_text() == '{"ok": true}'
+
     def test_a_project_with_login_and_token_blocks_imports_and_instantiates(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

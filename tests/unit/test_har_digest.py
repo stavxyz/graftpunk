@@ -1216,6 +1216,187 @@ class TestEndpointExamples:
         assert len(endpoint.examples) == _MAX_ENDPOINT_EXAMPLES
 
 
+class TestTheFixtureRecordingIsOneOwner:
+    """X1 (polish #212 round 21): the digest decides which recording is the
+    fixture by one rule, over the recordings it kept (in scope, not static,
+    capture_text not None), media types compared normalised."""
+
+    @staticmethod
+    def _no_body(method: str, url: str, *, status: int, content_type: str = "") -> dict:
+        entry = _entry(method, url, status=status, content_type=content_type, body="")
+        entry["response"]["content"] = {"mimeType": content_type, "size": 0}
+        return entry
+
+    def test_two_204s_then_a_200_json_writes_the_json_fixture(self, tmp_path: Path) -> None:
+        """A round-20 regression: the fixture used to prefer the 204s' type just
+        because two of them outnumbered the one JSON response."""
+        entries = [
+            self._no_body("POST", "https://api.myshop.example.com/ack", status=204),
+            self._no_body("POST", "https://api.myshop.example.com/ack", status=204),
+            _entry("POST", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_content_type == "application/json"
+        assert endpoint.falsy_first_response is None
+
+    def test_204_json_then_204_then_200_html_writes_the_html_fixture(self, tmp_path: Path) -> None:
+        """Neither 204 has a body, whatever type either declares: the one
+        recording with a body wins, however it is typed."""
+        entries = [
+            self._no_body(
+                "PUT",
+                "https://api.myshop.example.com/cart",
+                status=204,
+                content_type="application/json",
+            ),
+            self._no_body("PUT", "https://api.myshop.example.com/cart", status=204),
+            _entry(
+                "PUT",
+                "https://api.myshop.example.com/cart",
+                content_type="text/html",
+                body="<p>ok</p>",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_content_type == "text/html"
+
+    def test_a_204_then_an_empty_array_writes_the_array_fixture(self, tmp_path: Path) -> None:
+        entries = [
+            self._no_body("DELETE", "https://api.myshop.example.com/items/1", status=204),
+            _entry("DELETE", "https://api.myshop.example.com/items/1", body="[]"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_content_type == "application/json"
+        assert endpoint.falsy_first_response == "[]"
+
+    def test_an_out_of_scope_host_recorded_first_is_never_the_fixture(self, tmp_path: Path) -> None:
+        """A third-party host answering the same path first, with a body: the
+        digest never saw it (dropped as third_party), so it is never a
+        candidate, whatever order the HAR recorded it in."""
+        entries = [
+            _entry("GET", "https://vendor.example.net/cart", body='{"vendor": true}'),
+            _entry("GET", "https://api.myshop.example.com/", content_type="text/html", body="<p/>"),
+            _entry("GET", "https://api.myshop.example.com/other"),
+            _entry("GET", "https://api.myshop.example.com/cart", body='{"n": 1}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert result.primary_host == "api.myshop.example.com"
+        (endpoint,) = [e for e in result.endpoints if e.template == "/cart"]
+        assert endpoint.count == 1
+        assert endpoint.host == "api.myshop.example.com"
+        assert endpoint.falsy_first_response is None
+
+    def test_a_charset_suffixed_json_majority_still_wins_the_vote(self, tmp_path: Path) -> None:
+        """Two JSON recordings, spelled with two different charset parameters, and
+        one HTML: normalised, JSON is 2 and HTML is 1."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/profile",
+                content_type="application/json;charset=UTF-8",
+                body='{"a": 1}',
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/profile",
+                content_type="application/json; charset=utf-8",
+                body='{"a": 2}',
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/profile",
+                content_type="text/html",
+                body="<p/>",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_content_type == "application/json"
+        assert endpoint.falsy_first_response is None
+
+    def test_a_one_to_one_html_and_json_tie_goes_to_json(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/ping", content_type="text/html", body="<p/>"
+            ),
+            _entry("GET", "https://api.myshop.example.com/ping", body='{"ok": true}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_content_type == "application/json"
+
+    def test_a_one_to_one_tie_with_neither_type_json_goes_to_the_earliest(
+        self, tmp_path: Path
+    ) -> None:
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/feed", content_type="text/xml", body="<a/>"
+            ),
+            _entry(
+                "GET", "https://api.myshop.example.com/feed", content_type="text/html", body="<p/>"
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_content_type == "text/xml"
+
+    def test_shape_reflects_the_fixture_recording_not_a_losing_type(self, tmp_path: Path) -> None:
+        """One JSON response, then two HTML: HTML wins the vote (2 to 1), so the
+        docstring must not print the JSON response's shape, which the generated
+        test's fixture never holds."""
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/mixed", body='{"a": 1}'),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/mixed",
+                content_type="text/html",
+                body="<p>1</p>",
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/mixed",
+                content_type="text/html",
+                body="<p>2</p>",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_content_type == "text/html"
+        assert endpoint.shape is None
+
+    def test_fixture_entry_index_names_the_single_recording(self, tmp_path: Path) -> None:
+        entries = [_entry("GET", "https://api.myshop.example.com/solo", body='{"n": 1}')]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_entry_index == 0
+
+    def test_fixture_entry_index_names_the_winning_recording_not_the_first_seen(
+        self, tmp_path: Path
+    ) -> None:
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/mix", content_type="text/html", body="<p/>"
+            ),
+            _entry("GET", "https://api.myshop.example.com/mix", body='{"n": 1}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_entry_index == 1
+
+    def test_no_candidates_leaves_the_entry_index_unset(self, tmp_path: Path) -> None:
+        bodyless = _entry(
+            "GET", "https://api.myshop.example.com/report", status=500, content_type="text/html"
+        )
+        bodyless["response"]["content"] = {"mimeType": "text/html", "size": 0}
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [bodyless])))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_written is False
+        assert endpoint.fixture_entry_index is None
+
+
 class TestEveryEndpointPresent:
     def test_low_and_high_count_endpoints_both_appear(self, tmp_path: Path) -> None:
         entries = [_entry("GET", "https://api.myshop.example.com/rare")]
