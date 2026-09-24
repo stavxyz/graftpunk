@@ -148,11 +148,34 @@ class TestTemplatedUrl:
 
     @pytest.mark.parametrize(
         "url",
-        [f"javascript:login('{TOKEN}')", "javascript:go(12345678)", "javascript:go(12345)"],
+        [
+            f"javascript:login('{TOKEN}')",
+            "javascript:go(12345678)",
+            "javascript:go(12345)",
+            "javascript:go('alice.secret@realuser-account.example', 'ref')",
+            "javascript:go('alice.secret%40realuser-account.example', 'ref')",
+            f"javascript:go('alice.secret@realuser-account.example', '{TOKEN}')",
+        ],
     )
     def test_a_url_of_another_scheme_holding_an_id_is_templated(self, url: str) -> None:
         """A token or an id in a javascript: action is never printed."""
         assert templated_url(url) == "javascript:{id}"
+
+
+class TestAnEmailInAnOpaqueUrlIsMasked:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "javascript:go('alice.secret@realuser-account.example', 'ref')",
+            "javascript:go('alice.secret%40realuser-account.example', 'ref')",
+        ],
+    )
+    def test_bare_url_masks_the_whole_action(self, url: str) -> None:
+        """An email anywhere after the scheme, however many arguments surround it."""
+        assert bare_url(url) == "javascript:{id}"
+
+    def test_an_action_with_no_email_is_kept(self) -> None:
+        assert bare_url("javascript:go('ref', 2)") == "javascript:go('ref', 2)"
 
 
 class TestTemplatesASegment:
@@ -171,6 +194,8 @@ class TestTemplatesASegment:
             (f"javascript:login('{TOKEN}')", True),
             ("javascript:go(12345678)", True),
             ("javascript:submitLogin(12345)", True),
+            ("javascript:go('alice.secret@realuser-account.example', 'ref')", True),
+            ("javascript:go('alice.secret%40realuser-account.example', 'ref')", True),
             ("HTTPS://myshop.example.com/accounts/12345/session", True),
         ],
     )

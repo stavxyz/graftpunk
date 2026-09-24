@@ -334,8 +334,9 @@ an id selector, or a name no other input on the page shares, is printed. A form
 whose action is empty or only a fragment (`#`, `#login`) is scoped to match
 that, and one whose action names another scheme than `http` or `https` has no
 path to template: it keeps its scope and is printed as written
-(`javascript:void(0)`), unless its text holds an id or a token by the path
-rule (`javascript:go(12345678)`), when it is printed as
+(`javascript:void(0)`), unless its text holds an id or a token by the path rule
+(`javascript:go(12345678)`) or an email anywhere
+(`javascript:go('alice@example.com', 'ref')`), when it is printed as
 `javascript:{id}` and its selectors lose the scope. A role left without a
 selector is listed in `LoginForm.unresolved_roles` and the projection's
 `unresolved_roles`, and the generated `LoginStep` carries a `GP-FILL` naming it

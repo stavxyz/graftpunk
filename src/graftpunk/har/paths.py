@@ -24,8 +24,12 @@ _MIN_BASE64_LEN = 24
 _SINGULAR_BEFORE_FINAL_S = frozenset("sui")
 
 # An email address, matched against the percent-decoded segment: account data,
-# so it collapses like an id and is masked in every URL the digest keeps.
-_EMAIL_RE = re.compile(r"^[^@\s/]+@[^@\s/]+\.[^@\s/.]+$")
+# so it collapses like an id and is masked in every URL the digest keeps. One
+# shape, matched whole against a path segment or a name (_EMAIL_RE) and searched
+# for anywhere in the text of a URL of another scheme (_EMAIL_SEARCH_RE).
+_EMAIL_SHAPE = r"[^@\s/]+@[^@\s/]+\.[^@\s/.]+"
+_EMAIL_RE = re.compile(rf"^{_EMAIL_SHAPE}$")
+_EMAIL_SEARCH_RE = re.compile(_EMAIL_SHAPE)
 
 __all__ = [
     "bare_host",
@@ -369,6 +373,10 @@ def bare_url(url: str) -> str:
     one that was only a query or ``;params`` comes back empty.
     """
     parts = urlsplit(url)
+    if _other_scheme(parts.scheme) and _opaque_holds_an_email(url):
+        # A URL of another scheme has no segments to mask one by one, and an email
+        # anywhere in it (one argument of several) would be printed whole.
+        return f"{parts.scheme}:{{id}}"
     path = _masked_emails(bare_path(parts.path))
     return urlunsplit((parts.scheme, bare_host(parts.netloc), path, "", ""))
 
@@ -471,9 +479,19 @@ def _opaque_holds_an_id(url: str) -> bool:
     of 200,000 random runs found none the name rule (:func:`holds_an_id`) reads as
     an id that it does not, so the name rule is not consulted.
     ``javascript:login('f3a9c2e1b7d4a6f0e2c8b1d9')`` and ``javascript:go(12345678)``
-    do; ``javascript:void(0)`` does not."""
+    do; ``javascript:void(0)`` does not. The runs split an email at its ``@``, so the
+    whole text is also searched for one (:func:`_opaque_holds_an_email`)."""
     opaque = url.partition(":")[2]
-    return any(looks_dynamic(run) for run in _OPAQUE_RUN_RE.findall(opaque))
+    return _opaque_holds_an_email(url) or any(
+        looks_dynamic(run) for run in _OPAQUE_RUN_RE.findall(opaque)
+    )
+
+
+def _opaque_holds_an_email(url: str) -> bool:
+    """True when the text after the scheme of *url*, percent-decoded, holds an email
+    anywhere (``javascript:go('alice@example.com', 'ref')``), by the one email shape
+    a path segment is judged by."""
+    return bool(_EMAIL_SEARCH_RE.search(unquote(url.partition(":")[2])))
 
 
 def templates_a_segment(url: str) -> bool:

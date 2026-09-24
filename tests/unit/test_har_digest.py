@@ -2679,6 +2679,45 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'url="/login",' in self._plugin(result)
 
+    @pytest.mark.parametrize(
+        "action",
+        [
+            "javascript:go('alice.secret@realuser-account.example', 'ref')",
+            "javascript:go('alice.secret@realuser-account.example', 'f3a9c2e1b7d4a6f0e2c8b1d9')",
+        ],
+        ids=["email", "email-and-token"],
+    )
+    def test_an_email_in_a_multi_argument_action_reaches_no_output(
+        self, tmp_path: Path, action: str
+    ) -> None:
+        """Neither the email nor the token is in the markdown, the JSON, the
+        projection, or any file of the generated project."""
+        page = (
+            f'<form action="{action}"><input name="email">'
+            '<input type="password" name="password"><button>Go</button></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=page
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        files = render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://api.myshop.example.com",
+                digest=result,
+            )
+        )
+        assert "login_config = LoginConfig(" in files["src/graftpunk_myshop/plugin.py"]
+        outputs = [render_markdown(result), render_json(result), render_endpoints_json(result)]
+        outputs += list(files.values())
+        for text in outputs:
+            for planted in ("alice.secret", "realuser-account", "f3a9c2e1b7d4a6f0e2c8b1d9"):
+                assert planted not in text, planted
+
     def test_a_token_in_a_javascript_action_never_reaches_the_generated_plugin(
         self, tmp_path: Path
     ) -> None:
