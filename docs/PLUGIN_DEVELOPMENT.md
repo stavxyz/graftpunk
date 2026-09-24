@@ -708,11 +708,11 @@ name so a site parameter called `quote` cannot shadow it), so a `/`, `?`, or `#`
 in it stays in its segment. A command's name is a Python identifier (`import`
 becomes `import_`, a leading digit gains `n_`) and never one of `SitePlugin`'s
 own attributes (`setup` becomes `setup_2`) or a root command graftpunk adds
-itself (`login` becomes `login_2`). A generated test reads the fixture `gp
-observe fixtures` writes without a suffix: a template's first recording with a
-body, when any has one. For an endpoint every recording of which had no body (a
-redirect or a 204), the test asserts `result == ""`, with a `GP-FILL` saying to
-assert on what the call should return, and a JSON endpoint recorded that way
+itself (`login` becomes `login_2`). A generated test reads the fixture
+`gp observe fixtures` writes without a suffix: a template's first recording with
+a body, when any has one. For an endpoint every recording of which had no body
+(a redirect or a 204), the test asserts `result == ""`, with a `GP-FILL` saying
+to assert on what the call should return, and a JSON endpoint recorded that way
 reads its response as text, since there is no JSON to parse. When the fixture's
 recording is JSON and parses to a falsy value, the test asserts that value
 (`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or `is None`),
