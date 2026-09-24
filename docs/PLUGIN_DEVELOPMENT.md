@@ -1201,12 +1201,16 @@ verify once by logging in.
 
 ### Keep the developer's own environment out of the tests
 
-A generated `tests/conftest.py` is an import and an assignment:
+A generated `tests/conftest.py` is two imports and three assignments:
 
 ```python
-from graftpunk.testing.plugin import site_env_scrubber
+from pathlib import Path
+
+from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber
 
 scrub_site_env = site_env_scrubber("MYSHOP_")
+FIXTURES_TREE = Path(__file__).parent / "fixtures"
+sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)
 ```
 
 `site_env_scrubber(prefix)` returns an autouse pytest fixture that removes every
@@ -1215,7 +1219,10 @@ restores them afterwards. Assigning it to a module-level name is what registers
 it. Without it, a developer who has `MYSHOP_PASSWORD` in their environment gets
 a green suite on code that fails for everybody else. Adding a plugin to an
 existing suite does not update this file: add a line for the new prefix
-yourself.
+yourself. The last two lines wire in the fixtures check described in
+[Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture).
+`FIXTURES_TREE` is the whole fixtures directory, so a plugin added to the suite
+later is covered without editing this file.
 
 ## Harden
 

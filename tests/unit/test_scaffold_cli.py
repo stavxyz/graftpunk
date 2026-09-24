@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 from graftpunk.cli.scaffold_commands import plugin_app
 from graftpunk.logging import configure_logging
+from graftpunk.testing.sidecar import Sidecar, load_sidecar, sidecar_text
 from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
@@ -43,6 +44,20 @@ def _entry(
             "content": {"mimeType": content_type, "text": body, "size": len(body)},
         },
     }
+
+
+def _declare_fixtures(fixtures_dir: Path) -> None:
+    """Every sidecar ``gp observe fixtures`` just wrote, rewritten as declared (no
+    capture hash): the tests that call this exercise ``gp observe fixtures`` itself,
+    against a fixture that is never hand-edited afterwards, and
+    ``fixtures_are_sanitised`` otherwise fails it as an unchanged copy of its
+    capture. Status and content type, which the generated test's own fixture
+    answers with, are kept exactly as ``gp observe fixtures`` wrote them."""
+    for meta in fixtures_dir.glob("*.meta.json"):
+        sidecar = load_sidecar(meta)
+        meta.write_text(
+            sidecar_text(Sidecar(status=sidecar.status, content_type=sidecar.content_type))
+        )
 
 
 class TestPluginNewHappyPath:
@@ -468,6 +483,11 @@ class TestGeneratedProjectPassesItsOwnGate:
         fixtures_dir = target / "tests" / "fixtures"
         (fixtures_dir / "get_orders_{order_id}.json").write_text('{"id": 1}')
 
+        # A hand-derived fixture with no capture behind it: its sidecar declares so.
+        (fixtures_dir / "get_orders_{order_id}.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        )
+
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -482,6 +502,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         # list it in pytest_plugins, which pytest reports as a
         # PytestAssertRewriteWarning.
         assert "warnings summary" not in pytest_result.stdout.lower(), pytest_result.stdout
+        assert "1 accepted on declaration" in pytest_result.stdout, pytest_result.stdout
 
     def test_a_generated_test_passes_with_a_query_parameter_named_quote(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -515,6 +536,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert result.exit_code == 0, result.output
         assert "quote: str | None = None" in (target / "src/graftpunk_myshop/plugin.py").read_text()
         (target / "tests" / "fixtures" / "get_orders_{order_id}.json").write_text('{"id": 1}')
+        (target / "tests" / "fixtures" / "get_orders_{order_id}.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -564,6 +588,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert result.exit_code == 0, result.output
         (target / "tests" / "fixtures" / "get_go.html").write_text("")
+        (target / "tests" / "fixtures" / "get_go.html.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="text/html"))
+        )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -601,6 +628,7 @@ class TestGeneratedProjectPassesItsOwnGate:
             app, ["observe", "fixtures", "myshop", "--match", match, "--out", str(fixtures_dir)]
         )
         assert result.exit_code == 0, result.output
+        _declare_fixtures(fixtures_dir)
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -769,6 +797,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert result.exit_code == 0, result.output
         assert (fixtures_dir / "get_go.html").read_text() == ""
+        _declare_fixtures(fixtures_dir)
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -827,6 +856,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert result.exit_code == 0, result.output
         assert f"    {assertion}\n" in (target / "tests" / "test_plugin.py").read_text()
         (target / "tests" / "fixtures" / "get_ack.json").write_text(body)
+        (target / "tests" / "fixtures" / "get_ack.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=status, content_type="application/json"))
+        )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],

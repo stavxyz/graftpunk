@@ -11,17 +11,24 @@ module.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
+import sys
 import textwrap
+from collections.abc import Iterable, Sequence
+from typing import Protocol
 
 __all__ = [
+    "Binding",
     "GENERATED_LINE_LENGTH",
     "INDENT_STEP",
+    "ImportPlacementError",
     "L1",
     "L2",
     "L3",
     "URL_PLACEHOLDER_RE",
+    "binds_name",
     "call_expression_lines",
     "exploded_dict_lines",
     "given_entries_dict_lines",
@@ -30,6 +37,8 @@ __all__ = [
     "literal_lines",
     "quoted_literal",
     "url_expr_lines",
+    "with_bindings",
+    "with_import",
     "wrapped_comment_lines",
     "wrapped_docstring_block",
     "wrapped_docstring_lines",
@@ -416,3 +425,217 @@ def import_lines(module: str, *names: str) -> list[str]:
     if len(single_line) <= GENERATED_LINE_LENGTH:
         return [single_line]
     return [f"from {module} import (", *(f"{L1}{name}," for name in names), ")"]
+
+
+def _is_stdlib(module: str) -> bool:
+    """Whether *module* is in the standard library, the first isort section."""
+    return module.split(".")[0] in sys.stdlib_module_names
+
+
+def _isort_name_key(name: str) -> tuple[int, str]:
+    """isort's order-by-type within one import: CONSTANTS, then Classes, then the rest.
+    An aliased name (``a as b``) sorts by the imported name."""
+    bare = name.split(" as ")[0]
+    if bare.isupper():
+        return (0, bare)
+    if bare[:1].isupper():
+        return (1, bare)
+    return (2, bare)
+
+
+def _import_block_lines(imports: Iterable[tuple[str, str]]) -> list[str]:
+    """``from module import names`` lines for (module, name) pairs, grouped the way isort
+    groups them: the standard library first, then the rest, a blank line between
+    the two, modules sorted and each module's names in isort's order."""
+    by_module: dict[str, set[str]] = {}
+    for module, name in imports:
+        by_module.setdefault(module, set()).add(name)
+    sections = (
+        sorted(m for m in by_module if _is_stdlib(m)),
+        sorted(m for m in by_module if not _is_stdlib(m)),
+    )
+    lines: list[str] = []
+    for section in sections:
+        if not section:
+            continue
+        if lines:
+            lines.append("")
+        for module in section:
+            lines.extend(import_lines(module, *sorted(by_module[module], key=_isort_name_key)))
+    return lines
+
+
+def _target_names(target: ast.expr) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*(_target_names(e) for e in target.elts))
+    return set()
+
+
+def binds_name(tree: ast.Module, name: str) -> bool:
+    """Whether *tree* binds *name* at module level: the one binding predicate.
+
+    A plain import, an aliased import, an assignment (tuple targets included), an
+    annotated assignment with a value, a ``def``, and a ``class`` bind; a line
+    wrapped in parentheses binds like any other. A star import does not, and
+    neither does a conditional import or anything inside an ``if``, a ``try``,
+    or a function: only the module's top-level statements count.
+    """
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name != "*" and (alias.asname or alias.name.split(".")[0]) == name:
+                    return True
+        elif isinstance(node, ast.Assign):
+            if any(name in _target_names(t) for t in node.targets):
+                return True
+        elif isinstance(node, ast.AnnAssign):
+            if node.value is not None and name in _target_names(node.target):
+                return True
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and (
+            node.name == name
+        ):
+            return True
+    return False
+
+
+def _imported_module(node: ast.Import | ast.ImportFrom) -> str:
+    if isinstance(node, ast.ImportFrom):
+        return node.module or ""
+    return node.names[0].name
+
+
+def _joined(lines: list[str]) -> str:
+    return "\n".join(lines) + "\n"
+
+
+class ImportPlacementError(ValueError):
+    """An import :func:`with_import` will not place: the module's imports are not in a
+    shape it knows. Nothing is changed; the message says what to do instead."""
+
+
+def with_import(text: str, module: str, name: str) -> str:
+    """*text* with ``from {module} import {name}`` in its module-level imports, placed
+    the way isort places a from-import.
+
+    Its contract is the shapes generated files have and nothing wider: the merge
+    below, which a hand-written module reaches too (a test runs the project's own
+    ruff over one), and a new line in the layout ``gp plugin new`` writes. It is
+    not a general import sorter. Widening the shapes it places into is the point
+    to stop placing imports here and run ``ruff check --fix --select I`` over the
+    edited text instead.
+
+    Unchanged when :func:`binds_name` says the module already binds *name*.
+    Otherwise merged into an existing ``from {module} import ...``, re-rendered in
+    isort's name order, whatever the rest of the module looks like. Failing that,
+    placed only into the shapes generated files have: module-level imports
+    contiguous at the top (after a docstring and any ``__future__`` import) and in
+    at most two isort sections, the standard library and then everything else.
+    The line goes among its section's imports in module order, or, for a module
+    with no imports, after its docstring. A project whose own code forms a third
+    section (a first-party package isort sorts apart) gets the line in the second
+    section, which its ``ruff check --fix`` then moves.
+
+    Raises:
+        ImportPlacementError: An import follows other code, or a relative import
+            is present; the message says to add the import by hand and run
+            ``ruff check --fix``.
+    """
+    tree = ast.parse(text)
+    if binds_name(tree, name):
+        return text
+    lines = text.splitlines()
+    imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+    for node in imports:
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == module
+            and all(alias.name != "*" for alias in node.names)
+        ):
+            names = [
+                alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
+                for alias in node.names
+            ]
+            merged = import_lines(module, *sorted([*names, name], key=_isort_name_key))
+            return _joined(
+                lines[: node.lineno - 1] + merged + lines[node.end_lineno or node.lineno :]
+            )
+    new_line = f"from {module} import {name}"
+    first = next(
+        (i for i, n in enumerate(tree.body) if isinstance(n, (ast.Import, ast.ImportFrom))), 0
+    )
+    # At the top: nothing but a docstring before the first import, and no other
+    # statement between the imports.
+    at_top = first <= 1 and all(
+        isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) for n in tree.body[:first]
+    )
+    contiguous = tree.body[first : first + len(imports)] == imports
+    relative = any(isinstance(n, ast.ImportFrom) and n.level for n in imports)
+    if not (at_top and contiguous) or relative:
+        raise ImportPlacementError(
+            f"cannot place {new_line!r}: the module's imports are not all at its top in "
+            f"the shape generated files have. Add the line by hand, then run "
+            f"`ruff check --fix` to sort it."
+        )
+    body = [n for n in imports if _imported_module(n) != "__future__"]
+    same_section = [n for n in body if _is_stdlib(_imported_module(n)) == _is_stdlib(module)]
+    later = [n for n in same_section if _imported_module(n) > module]
+    if later:
+        at, insert = later[0].lineno - 1, [new_line]
+    elif same_section:
+        at, insert = same_section[-1].end_lineno or same_section[-1].lineno, [new_line]
+    elif body and _is_stdlib(module):
+        at, insert = body[0].lineno - 1, [new_line, ""]
+    elif body:
+        at, insert = body[-1].end_lineno or body[-1].lineno, ["", new_line]
+    else:
+        leading = [
+            n
+            for n in tree.body[:2]
+            if (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))
+            or (isinstance(n, ast.ImportFrom) and n.module == "__future__")
+        ]
+        at = (leading[-1].end_lineno or leading[-1].lineno) if leading else 0
+        insert = ["", new_line] if at else [new_line, ""]
+    return _joined(lines[:at] + insert + lines[at:])
+
+
+class Binding(Protocol):
+    """A module-level statement and the ``(module, name)`` imports it reads.
+
+    ``policy.ProjectRequirement`` is one; this module imports nothing from
+    graftpunk, so it names the shape rather than the class."""
+
+    @property
+    def statement(self) -> str: ...
+
+    @property
+    def imports(self) -> tuple[tuple[str, str], ...]: ...
+
+
+def with_bindings(text: str, bindings: Sequence[Binding]) -> str:
+    """*text* with each binding's imports merged and its statement appended, in order.
+
+    The one assembler for statements a generator or a migrator adds to a module,
+    so the two cannot disagree about layout. The blank-line rule, stated once: a
+    statement follows the one before it on the next line, and follows a ``def``
+    or a ``class`` after two blank lines, which is what ``ruff format`` keeps. Text
+    with nothing in it gets the imports as one isort block, a blank line, and then
+    the statements.
+    """
+    if not text.strip():
+        imports = [pair for binding in bindings for pair in binding.imports]
+        head = [*_import_block_lines(imports), ""] if imports else []
+        return _joined([*head, *(binding.statement for binding in bindings)])
+    for binding in bindings:
+        for module, name in binding.imports:
+            text = with_import(text, module, name)
+        body = ast.parse(text).body
+        after_definition = bool(body) and isinstance(
+            body[-1], (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        )
+        separator = "\n\n\n" if after_definition else "\n"
+        text = text.rstrip("\n") + separator + binding.statement + "\n"
+    return text

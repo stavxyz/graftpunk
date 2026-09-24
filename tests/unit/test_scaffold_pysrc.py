@@ -4,17 +4,26 @@ per-artifact renderers (graft skill spec, 2026-09-21; issue #201, item 2)."""
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 import graftpunk.devtools.scaffold.pysrc as pysrc
 import graftpunk.devtools.scaffold.render as render
 from graftpunk.devtools.scaffold.pysrc import (
     _DOCSTRING_WRAP_WIDTH,
     GENERATED_LINE_LENGTH,
+    ImportPlacementError,
     _dict_entry_lines,
     _url_chunks,
+    binds_name,
+    with_bindings,
+    with_import,
     wrapped_docstring_block,
     wrapped_docstring_lines,
 )
@@ -253,3 +262,168 @@ class TestDocstringEscaping:
         klass = module.body[0]
         assert isinstance(klass, ast.ClassDef)
         assert ast.get_docstring(klass) == text
+
+
+class TestBindsName:
+    """The one binding predicate: the project reader decides a requirement's presence
+    with it, and with_import decides whether an import is needed."""
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from pathlib import Path\n",
+            "from elsewhere import thing as Path\n",
+            "import Path\n",
+            "Path = 1\n",
+            "Path, other = 1, 2\n",
+            "Path: type = object\n",
+            "Path = (\n    object\n)\n",
+            "def Path() -> None:\n    pass\n",
+            "class Path:\n    pass\n",
+        ],
+    )
+    def test_a_module_level_binding_binds(self, source: str) -> None:
+        assert binds_name(ast.parse(source), "Path")
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "",
+            "from pathlib import *\n",
+            "import pathlib.Path\n",
+            "Path: type\n",
+            "if True:\n    from pathlib import Path\n",
+            "try:\n    from pathlib import Path\nexcept ImportError:\n    pass\n",
+            "def f() -> None:\n    Path = 1\n",
+            "class C:\n    Path = 1\n",
+        ],
+    )
+    def test_a_star_a_conditional_or_a_nested_binding_does_not(self, source: str) -> None:
+        assert not binds_name(ast.parse(source), "Path")
+
+
+_OLD_CONFTEST = (
+    "from graftpunk.testing.plugin import site_env_scrubber\n"
+    "\n"
+    'scrub_site_env = site_env_scrubber("MYSHOP_")\n'
+)
+
+
+class TestWithImport:
+    def test_a_name_merges_into_the_same_modules_import(self) -> None:
+        result = with_import(_OLD_CONFTEST, "graftpunk.testing.plugin", "fixtures_are_sanitised")
+        assert result.splitlines()[0] == (
+            "from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber"
+        )
+
+    def test_a_stdlib_import_goes_first_with_a_blank_line_after(self) -> None:
+        result = with_import(_OLD_CONFTEST, "pathlib", "Path")
+        assert result.splitlines()[:3] == [
+            "from pathlib import Path",
+            "",
+            "from graftpunk.testing.plugin import site_env_scrubber",
+        ]
+
+    def test_a_name_already_bound_leaves_the_text_alone(self) -> None:
+        assert (
+            with_import(_OLD_CONFTEST, "graftpunk.testing.plugin", "site_env_scrubber")
+            == _OLD_CONFTEST
+        )
+        aliased = "from elsewhere import thing as Path\n"
+        assert with_import(aliased, "pathlib", "Path") == aliased
+
+    def test_a_module_with_no_imports_gets_one_after_its_docstring(self) -> None:
+        result = with_import('"""Doc."""\n\nx = 1\n', "pathlib", "Path")
+        assert result == '"""Doc."""\n\nfrom pathlib import Path\n\nx = 1\n'
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "x = 1\nfrom os import sep\n",
+            "from . import sibling\n",
+        ],
+    )
+    def test_a_shape_it_does_not_place_into_is_refused_with_the_ruff_hint(self, text: str) -> None:
+        with pytest.raises(ImportPlacementError, match="ruff check --fix"):
+            with_import(text, "pathlib", "Path")
+
+    def test_a_merge_needs_no_known_shape(self) -> None:
+        """Merging into an existing same-module import is always safe, so an odd
+        layout elsewhere does not stop it."""
+        text = "from pathlib import PurePath\nx = 1\nfrom os import sep\n"
+        assert with_import(text, "pathlib", "Path").splitlines()[0] == (
+            "from pathlib import Path, PurePath"
+        )
+
+
+_HAND_WRITTEN_PLUGIN = '''\
+"""myshop plugin, written by hand."""
+
+from __future__ import annotations
+
+from graftpunk.plugins import SitePlugin, command
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+
+    @command(help="List orders", params=[PluginParamSpec.option("page", type=int)])
+    def orders(self, ctx: CommandContext, page: int | None = None) -> dict:
+        return ctx.request_json("GET", "/api/orders", params={"page": page})
+'''
+
+# The lint a generated project's own pyproject.toml declares.
+_PROJECT_RUFF = (
+    '[tool.ruff]\nline-length = 100\n\n[tool.ruff.lint]\nselect = ["E", "F", "I", "UP", "B"]\n'
+)
+
+
+def test_a_merge_into_a_hand_written_module_passes_the_projects_ruff(tmp_path: Path) -> None:
+    """The merge path re-renders an existing from-import in isort's order, and a
+    hand-written module reaches it through gp plugin add-command; the project's
+    own ruff has to agree with the result."""
+    text = with_import(_HAND_WRITTEN_PLUGIN, "graftpunk.plugins", "CommandContext")
+    text = with_import(text, "graftpunk.plugins", "PluginParamSpec")
+    (tmp_path / "pyproject.toml").write_text(_PROJECT_RUFF)
+    (tmp_path / "plugin.py").write_text(text)
+    for argv in (["check", "plugin.py"], ["format", "--check", "plugin.py"]):
+        result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", *argv], cwd=tmp_path, capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+@dataclass(frozen=True)
+class _Statement:
+    statement: str
+    imports: tuple[tuple[str, str], ...] = ()
+
+
+class TestWithBindings:
+    """The one assembler: the renderer and gp plugin upgrade both add statements
+    through it, so there is one blank-line rule."""
+
+    def test_empty_text_gets_one_import_block_then_the_statements(self) -> None:
+        result = with_bindings(
+            "", [_Statement("x = Path()", (("pathlib", "Path"),)), _Statement("y = 1")]
+        )
+        assert result == "from pathlib import Path\n\nx = Path()\ny = 1\n"
+
+    def test_empty_text_and_no_imports_is_just_the_statements(self) -> None:
+        assert with_bindings("", [_Statement("y = 1")]) == "y = 1\n"
+
+    def test_a_statement_after_a_definition_gets_two_blank_lines(self) -> None:
+        result = with_bindings(
+            "def f() -> int:\n    return 1\n", [_Statement("y = 1"), _Statement("z = 2")]
+        )
+        assert result == "def f() -> int:\n    return 1\n\n\ny = 1\nz = 2\n"
+
+    def test_imports_merge_into_the_existing_block(self) -> None:
+        pair = ("graftpunk.testing.plugin", "fixtures_are_sanitised")
+        result = with_bindings(_OLD_CONFTEST, [_Statement("x = fixtures_are_sanitised", (pair,))])
+        assert result.splitlines()[0] == (
+            "from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber"
+        )
+        assert result.endswith(
+            'scrub_site_env = site_env_scrubber("MYSHOP_")\nx = fixtures_are_sanitised\n'
+        )

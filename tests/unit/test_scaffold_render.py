@@ -586,20 +586,22 @@ class TestRenderNewProject:
         )
         assert "tests/captures/" in render(spec)[".gitignore"]
 
-    def test_conftest_is_two_declarations(self) -> None:
+    def test_the_conftest_carries_the_scrubber_and_every_requirement(self) -> None:
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
             backend="nodriver",
             base_url="https://myshop.example.com",
         )
-        conftest = render(spec)["tests/conftest.py"]
-        assert "from graftpunk.testing.plugin import site_env_scrubber" in conftest
-        assert 'site_env_scrubber("MYSHOP_")' in conftest
-        # Naming the module in pytest_plugins as well asks pytest to rewrite
-        # assertions in a module the import already loaded, which it warns
-        # about on every run of the generated suite.
-        assert "pytest_plugins" not in conftest
+        assert render(spec)["tests/conftest.py"] == (
+            "from pathlib import Path\n"
+            "\n"
+            "from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber\n"
+            "\n"
+            'scrub_site_env = site_env_scrubber("MYSHOP_")\n'
+            'FIXTURES_TREE = Path(__file__).parent / "fixtures"\n'
+            "sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)\n"
+        )
 
 
 class TestRenderAddToSuite:
