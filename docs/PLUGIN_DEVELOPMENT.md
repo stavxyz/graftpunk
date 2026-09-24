@@ -317,47 +317,52 @@ no type. A registration form (no input marked `current-password`, and either one
 marked `new-password` or a second password input named as a confirmation) is
 left out, and so is a lone one with a confirmation password; a lone form with
 one password marked `new-password` is kept (the attribute misused on a login
-form), and a password-plus-PIN form is a login form; a stale-session check still
-counts any form with a password input as a login page. Each input is selected by
-its id, else its name (when no other control inside any form with the same
-action shares it: a header mini-login and the main form can post to one action),
-else its type (the same way) (`input:not([type])` for a typeless input), and an
-id or a name that holds an account value is never used; a name that holds one,
-or no name, gets a neutral role key (`field_1`, never a name another input of
-the form has) and a `GP-FILL` naming which of the two it was. A selector by type
-is used only when it picks one input of the form, and is never printed without
-the form scope: when the form's action holds an id the printed selectors drop
-the scope, so only an id selector, or a name no other input on the page shares,
-is printed. A form whose action is empty or only a fragment (`#`, `#login`) is
-scoped to match that. A role left without a selector is listed in
-`LoginForm.unresolved_roles` and the projection's `unresolved_roles`, and the
-generated `LoginStep` carries a `GP-FILL` naming it and why; a username the form
-has no input for (the password page of a multi-step login) gets its own
-`GP-FILL` saying so. A POST to where a login form a GET served posts (the same
-host and path, the action resolved against the page as requested and compared
-before any email in it is masked) is the credential post whatever its password
-field is named; a form in a POST's own response never marks that POST, and a
-slash-less action from a saved page source (`session`, `./session`), which has
-no page URL to resolve against, matches any POST path ending in `/session`, a
-wider match than a resolved action gets. Each credential post makes one earlier
-page the login form's page: the nearest one whose form posts where the post
-went, however many assets lie between; a post found by its field names alone (no
-recorded form, a saved page source's included, posts where it went) promotes
-only the nearest page whose form does not post where the credential post went
-(an empty, `#`, or `javascript:` action, or one naming the page itself), and no
-page when every earlier form posts somewhere real. A POST whose body asks for a
-new password (`new_password`, `password_confirm`) is never a credential post by
-its field names. Every other page carrying a login form is an ordinary page and
-keeps its stub. The same form on several pages is one form, told by its
-structure (its element id and each control's tag, type, name, and id), and is
-kept as the copy whose selectors resolve best. Among the forms, one a credential
-post went to is listed first; among those, the one on the page that post
-promoted, then the one the earliest credential post went to (a login precedes a
-password change), then the one whose control names cover the most of the post's
-body, then one that sits on no page a credential post did not promote (a
-site-wide header form ranks below the main form), then the one with fewer
-unresolved roles, so the generator's `login_config` is built from the form the
-recording used.
+form), and a password-plus-PIN form is a login form; a change-password form (a
+`current-password` input, a new password, and no username-like input) is not a
+login form at all; a stale-session check still counts any form with a password
+input as a login page. Each input is selected by its id, else its name (when no
+other control inside any form with the same action shares it: a header
+mini-login and the main form can post to one action), else its type (the same
+way) (`input:not([type])` for a typeless input), and an id or a name that holds
+an account value is never used; a name that holds one, or no name, gets a
+neutral role key (`field_1`, never a name another input of the form has) and a
+`GP-FILL` naming which of the two it was. A selector by type is used only when
+it picks one input of the form, and is never printed without the form scope:
+when the form's action holds an id the printed selectors drop the scope, so only
+an id selector, or a name no other input on the page shares, is printed. A form
+whose action is empty or only a fragment (`#`, `#login`) is scoped to match
+that. A role left without a selector is listed in `LoginForm.unresolved_roles`
+and the projection's `unresolved_roles`, and the generated `LoginStep` carries a
+`GP-FILL` naming it and why; a username the form has no input for (the password
+page of a multi-step login) gets its own `GP-FILL` saying so. A POST to where a
+login form a GET served posts (the same host and path, the action resolved
+against the page as requested and compared before any email in it is masked) is
+the credential post whatever its password field is named; a form in a POST's own
+response never marks that POST, and a slash-less action from a saved page source
+(`session`, `./session`), which has no page URL to resolve against, matches any
+POST path ending in `/session`, a wider match than a resolved action gets. Each
+credential post makes one earlier page the login form's page: the nearest one
+whose form posts where the post went, however many assets lie between; a post
+found by its field names alone (no recorded form, a saved page source's
+included, posts where it went) promotes only the nearest page whose form does
+not post where the credential post went (an empty, `#`, or `javascript:` action,
+or one naming the page itself), and no page when every earlier form posts
+somewhere real. A POST whose body asks for a new password (`new_password`,
+`password_confirm`) is never a credential post by its field names. Every other
+page carrying a login form is an ordinary page and keeps its stub. The same form
+on several pages is one form, told by its structure (its element id and each
+control's tag, type, name, and id), and is kept as the copy whose selectors
+resolve best. Among the forms, one a credential post went to is listed first;
+among those, the one on the page that post promoted, then the one the earliest
+credential post went to (a login precedes a password change), then the one whose
+control names cover the most of the post's body, then one that sits on no page a
+credential post did not promote (a site-wide header form ranks below the main
+form), then the one with fewer unresolved roles, so the generator's
+`login_config` is built from the form the recording used. Only that login is the
+login flow: its promoted page, the credential posts that went to its form, and
+the redirects and cookies that followed them. A password change or account edit
+recorded in the same run keeps its commands, and its redirect is not the login's
+landing page.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
