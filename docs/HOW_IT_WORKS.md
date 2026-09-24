@@ -604,13 +604,17 @@ credential posts that went to its form, or, when none did, the posts found by
 their field names alone to the first target no recorded form posts to (a script
 posting elsewhere than the form says); and each hop of those posts' redirect
 chains, a request to where the previous hop sent the client (on the same host)
-or a POST to a form on the previous hop's page (an OAuth `form_post`). A POST
-carrying a password field is never such a hop. A password change, an account
-edit, a later password-confirmed action, or any later POST answering with a
-redirect keeps its commands, and its redirect is not the login's landing page. A
-credential post answering 200 (a script login) starts no chain, so the next
-redirect is not taken as the landing and `success_url` gets a `GP-FILL`: a
-missing success signal is visible, and a wrong one would fail every login.
+or a POST that submits an OAuth `form_post` page's form (a post form of hidden
+inputs only, a `<noscript>` submit button aside, on the previous hop's page,
+carrying only those hidden names; a cart or logout form on a landing page is not
+one). A POST carrying a password field is never such a hop. A password change,
+an account edit, a later password-confirmed action (whatever the login form's
+action, its own page's or none), or any later POST answering with a redirect
+keeps its commands, and its redirect is not the login's landing page. A
+credential post answering 200 (a script login) starts no chain, whatever its
+page holds, so the next redirect is not taken as the landing and `success_url`
+gets a `GP-FILL`: a missing success signal is visible, and a wrong one would
+fail every login.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of

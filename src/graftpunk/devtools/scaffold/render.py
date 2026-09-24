@@ -284,12 +284,13 @@ def _login_landing_path(d: RunDigest) -> str:
     own URL would name the page that redirected rather than the landing page. Only
     the login's own observations count (``LoginObservation.login_flow``): the
     credential post and each hop that continues its chain, a request to where the
-    previous hop sent the client or a POST to a form on the previous hop's page (an
-    OAuth ``form_post``). The last such target is the end of the chain, and a later
-    POST answering with a redirect is never part of it. A credential post that
-    answers 200 (a script login) starts no chain, so no landing is taken and
-    ``success_url`` gets a ``GP-FILL``: a missing success signal is visible, and a
-    wrong one would fail every login.
+    previous hop sent the client, or a POST submitting an OAuth ``form_post`` page's
+    form (hidden inputs only, carrying only those names). The last such target is
+    the end of the chain, and a later POST answering with a redirect is never part
+    of it. A credential post that answers 200 (a script login) starts no chain,
+    whatever its page holds, so no landing is taken and ``success_url`` gets a
+    ``GP-FILL``: a missing success signal is visible, and a wrong one would fail
+    every login.
 
     The digest follows a chain only within its ``_LOGIN_WINDOW`` of classified
     entries after the credential post, so a chain longer than that ends with an

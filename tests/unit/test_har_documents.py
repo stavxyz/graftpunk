@@ -659,9 +659,8 @@ class TestLoginSelectorsPickTheIntendedElement:
 
 
 class TestLoginRolesFromAutocompleteAndControls:
-    """Autocomplete hints by position, registration only against a login
-    form on the same page, image submits, fragment actions, a username after the
-    password, and a button outside its form."""
+    """Autocomplete hints by position, registration forms, image submits, fragment
+    actions, a username after the password, and a button outside its form."""
 
     def test_a_footer_newsletter_email_hint_does_not_take_the_username(self) -> None:
         page = _WEBFORMS_PAGE.replace(

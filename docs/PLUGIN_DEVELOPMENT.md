@@ -366,13 +366,17 @@ credential posts that went to its form, or, when none did, the posts found by
 their field names alone to the first target no recorded form posts to (a script
 posting elsewhere than the form says); and each hop of those posts' redirect
 chains, a request to where the previous hop sent the client (on the same host)
-or a POST to a form on the previous hop's page (an OAuth `form_post`). A POST
-carrying a password field is never such a hop. A password change, an account
-edit, a later password-confirmed action, or any later POST answering with a
-redirect keeps its commands, and its redirect is not the login's landing page. A
-credential post answering 200 (a script login) starts no chain, so the next
-redirect is not taken as the landing and `success_url` gets a `GP-FILL`: a
-missing success signal is visible, and a wrong one would fail every login.
+or a POST that submits an OAuth `form_post` page's form (a post form of hidden
+inputs only, a `<noscript>` submit button aside, on the previous hop's page,
+carrying only those hidden names; a cart or logout form on a landing page is not
+one). A POST carrying a password field is never such a hop. A password change,
+an account edit, a later password-confirmed action (whatever the login form's
+action, its own page's or none), or any later POST answering with a redirect
+keeps its commands, and its redirect is not the login's landing page. A
+credential post answering 200 (a script login) starts no chain, whatever its
+page holds, so the next redirect is not taken as the landing and `success_url`
+gets a `GP-FILL`: a missing success signal is visible, and a wrong one would
+fail every login.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
@@ -686,7 +690,10 @@ under a private name so a site parameter called `quote` cannot shadow it), so a
 `/`, `?`, or `#` in it stays in its segment. A command's name is a Python
 identifier (`import` becomes `import_`, a leading digit gains `n_`) and never
 one of `SitePlugin`'s own attributes (`setup` becomes `setup_2`) or a root
-command graftpunk adds itself (`login` becomes `login_2`).
+command graftpunk adds itself (`login` becomes `login_2`). A generated test for
+an endpoint the recording saw answer with no body (a redirect, say) asserts the
+call completed, with a `GP-FILL` saying to assert on the page the redirect leads
+to, since an empty body is falsy.
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
