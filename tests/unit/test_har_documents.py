@@ -84,6 +84,24 @@ class TestExtractLoginForms:
         assert submit is not None
         assert printable_unresolved_roles(form) == ()
 
+    def test_a_javascript_action_holding_a_token_is_printed_without_its_scope(self) -> None:
+        """The scope would spell the token, so each selector is printed unscoped, or
+        left unresolved when that would not pick one input."""
+        token = "f3a9c2e1b7d4a6f0e2c8b1d9"  # noqa: S105 - a planted token, not a secret
+        html = (
+            f'<form action="javascript:login(\'{token}\')"><input name="username">'
+            '<input type="password" name="password"><button>Sign in</button></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert token in form.fields["username"]
+        fields, submit = printable_selectors(form)
+        assert fields == {
+            "password": 'input[name="password"]',
+            "username": 'input[name="username"]',
+        }
+        assert submit is None
+        assert printable_unresolved_roles(form) == ("submit",)
+
     def test_submit_selector(self) -> None:
         (form,) = extract_login_forms(_LOGIN_PAGE, source="s")
         assert form.submit == "#login-btn"

@@ -545,6 +545,25 @@ class TestEndpointsProjection:
         assert form["submit"] is not None
         assert form["unresolved_roles"] == []
 
+    def test_a_token_in_a_javascript_action_is_never_printed(self, tmp_path: Path) -> None:
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/login",
+            content_type="text/html",
+            body=(
+                "<form action=\"javascript:login('f3a9c2e1b7d4a6f0e2c8b1d9')\">"
+                '<input name="username"><input type="password" name="password">'
+                "<button>Sign in</button></form>"
+            ),
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [page])))
+        # The digest's own form holds it, so the assertions below are not vacuous.
+        assert "f3a9c2e1b7d4a6f0e2c8b1d9" in result.login_forms[0].action
+        payload = endpoints_projection(result)
+        (form,) = payload["login"]["forms"]
+        assert form["action"] == "javascript:{id}"
+        assert "f3a9c2e1b7d4a6f0e2c8b1d9" not in render_endpoints_json(result)
+
     def test_login_flow_and_shape_come_through(self, tmp_path: Path) -> None:
         payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))
         order = next(e for e in payload["endpoints"] if e["template"] == "/api/orders/{order_id}")

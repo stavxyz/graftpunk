@@ -120,6 +120,9 @@ def test_bare_host_drops_userinfo_and_keeps_the_port() -> None:
     assert bare_host("myshop.example.com") == "myshop.example.com"
 
 
+TOKEN = "f3a9c2e1b7d4a6f0e2c8b1d9"  # noqa: S105 - a planted token, not a secret
+
+
 class TestTemplatedUrl:
     def test_the_path_is_templated_and_the_rest_kept(self) -> None:
         segment = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
@@ -138,10 +141,18 @@ class TestTemplatedUrl:
         """An empty form action submits to the page itself; "/" would be a claim."""
         assert templated_url("") == ""
 
-    @pytest.mark.parametrize("url", ["javascript:void(0)", "javascript:submitLogin(12345)"])
-    def test_a_url_of_another_scheme_is_left_alone(self, url: str) -> None:
-        """A javascript: action has no path to template."""
+    @pytest.mark.parametrize("url", ["javascript:void(0)", "javascript:doLogin()"])
+    def test_a_url_of_another_scheme_holding_no_id_is_left_alone(self, url: str) -> None:
+        """A javascript: action has no path, and this one holds no id."""
         assert templated_url(url) == url
+
+    @pytest.mark.parametrize(
+        "url",
+        [f"javascript:login('{TOKEN}')", "javascript:go(12345678)", "javascript:go(12345)"],
+    )
+    def test_a_url_of_another_scheme_holding_an_id_is_templated(self, url: str) -> None:
+        """A token or an id in a javascript: action is never printed."""
+        assert templated_url(url) == "javascript:{id}"
 
 
 class TestTemplatesASegment:
@@ -156,7 +167,10 @@ class TestTemplatesASegment:
             ("/orders/", False),
             ("", False),
             ("javascript:void(0)", False),
-            ("javascript:submitLogin(12345)", False),
+            ("javascript:doLogin()", False),
+            (f"javascript:login('{TOKEN}')", True),
+            ("javascript:go(12345678)", True),
+            ("javascript:submitLogin(12345)", True),
             ("HTTPS://myshop.example.com/accounts/12345/session", True),
         ],
     )

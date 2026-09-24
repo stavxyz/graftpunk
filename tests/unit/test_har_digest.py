@@ -2635,6 +2635,25 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'url="/login",' in self._plugin(result)
 
+    def test_a_token_in_a_javascript_action_never_reaches_the_generated_plugin(
+        self, tmp_path: Path
+    ) -> None:
+        token = "f3a9c2e1b7d4a6f0e2c8b1d9"  # noqa: S105 - a planted token, not a secret
+        page = (
+            f'<form action="javascript:login(\'{token}\')"><input name="email">'
+            '<input type="password" name="password"><button>Go</button></form>'
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=page
+            )
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert token in result.login_forms[0].action
+        code = self._plugin(result)
+        assert "login_config = LoginConfig(" in code
+        assert token not in code
+
     def test_a_logout_that_redirected_to_the_provider_is_not_the_login_url(
         self, tmp_path: Path
     ) -> None:

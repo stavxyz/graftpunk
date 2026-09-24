@@ -461,6 +461,19 @@ def _other_scheme(scheme: str) -> bool:
     return bool(scheme) and scheme not in ("http", "https")
 
 
+_OPAQUE_RUN_RE = re.compile(r"[\w.-]+")
+
+
+def _opaque_holds_an_id(url: str) -> bool:
+    """True when the text after the scheme of *url*, a URL of another scheme than
+    ``http`` or ``https``, holds an id or a token: some ``[\\w.-]+`` run of it reads
+    as one to the name rule (:func:`holds_an_id`) or the path rule
+    (:func:`looks_dynamic`). ``javascript:login('f3a9c2e1b7d4a6f0e2c8b1d9')`` and
+    ``javascript:go(12345678)`` do; ``javascript:void(0)`` does not."""
+    opaque = url.partition(":")[2]
+    return any(holds_an_id(run) or looks_dynamic(run) for run in _OPAQUE_RUN_RE.findall(opaque))
+
+
 def templates_a_segment(url: str) -> bool:
     """True when :func:`template_path` turns a segment of *url*'s path into a
     parameter, so the path holds an id or a token.
@@ -469,11 +482,13 @@ def templates_a_segment(url: str) -> bool:
     strings: :func:`templated_url` gives a URL with no path a ``/``, which is not an
     account value. A segment :func:`bare_url` already masked (an email, now
     ``{user_id}``) counts too. A URL of another scheme than ``http`` or ``https``
-    (``javascript:void(0)``) has no path to template, so it never does.
+    has no path to template, so it counts only when its text holds an id or a
+    token (:func:`_opaque_holds_an_id`): ``javascript:go(12345678)`` does, and
+    ``javascript:void(0)`` does not.
     """
     parts = urlsplit(url)
     if _other_scheme(parts.scheme):
-        return False
+        return _opaque_holds_an_id(url)
     path = bare_path(parts.path)
     if any(is_placeholder(segment) for segment in path.split("/")):
         return True
@@ -488,12 +503,14 @@ def templated_url(url: str) -> str:
     and a projection or generated file then prints: its path can hold an account
     id or a one-time token. An absolute URL with no path gets ``/``; a relative
     one stays relative, and an empty one stays empty (an empty form action posts
-    to the page itself). A URL of another scheme than ``http`` or ``https``
-    (``javascript:void(0)``) has no path to template and is returned unchanged.
+    to the page itself). A URL of another scheme than ``http`` or ``https`` has no
+    path to template: it is returned unchanged (``javascript:void(0)``), or as its
+    scheme and ``{id}`` when its text holds an id or a token
+    (:func:`_opaque_holds_an_id`), which is never printed.
     """
     parts = urlsplit(url)
     if _other_scheme(parts.scheme):
-        return url
+        return f"{parts.scheme}:{{id}}" if _opaque_holds_an_id(url) else url
     path = parts.path or ("/" if parts.netloc else "")
     template = template_path(path)[0] if path else ""
     return urlunsplit((parts.scheme, bare_host(parts.netloc), template, "", ""))
