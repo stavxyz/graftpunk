@@ -724,7 +724,7 @@ def _declared_extras(endpoint: Endpoint) -> dict[str, _Declaration]:
 
 
 def _undeclared_body_fields(endpoint: Endpoint) -> dict[str, str]:
-    """The body fields the stub leaves out, each with why (G1: a command sends the
+    """The body fields the stub leaves out, each with why (a command sends the
     recorded type and shape, or does not declare the field). A field whose query
     namesake is declared says so, since that option sends the query value only."""
     undeclared: dict[str, str] = {}
