@@ -2752,6 +2752,28 @@ class TestLoginFlowFlag:
         assert "success_url=" not in code
         assert "GP-FILL: success_url" in code
 
+    @pytest.mark.parametrize(
+        "base_url",
+        ["https://API.myshop.example.com", "https://api.myshop.example.com:443"],
+        ids=["upper-case", "default-port"],
+    )
+    def test_the_login_page_is_a_path_on_the_base_url_s_host_however_spelled(
+        self, tmp_path: Path, base_url: str
+    ) -> None:
+        """The login page is on the base URL's host, spelled differently: url is the
+        path, not the absolute URL."""
+        result = digest(DigestSource.from_har(_write_har(tmp_path, self._login_entries())))
+        code = render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url=base_url,
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+        assert 'url="/login",' in code
+
     def test_a_later_post_answering_200_does_not_bring_back_a_refused_landing(
         self, tmp_path: Path
     ) -> None:

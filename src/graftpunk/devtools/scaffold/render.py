@@ -40,6 +40,7 @@ from graftpunk.har.digest import SHAPE_UNAVAILABLE, Endpoint, LoginForm, RunDige
 from graftpunk.har.documents import printable_selectors, printable_unresolved_roles
 from graftpunk.har.naming import capture_filename, capture_slug
 from graftpunk.har.paths import (
+    normal_host,
     template_path,
     templated_url,
     templates_a_segment,
@@ -535,14 +536,16 @@ def _login_page_url(form: LoginForm, base_url: str) -> str | None:
     ``source``), or, for an identity provider's form page an app GET on another host
     redirected to (``opened_from``), that app GET, since the provider's page opened
     directly lacks the state the redirect gave it. A path when it is on *base_url*'s
-    host and absolute otherwise. None when there is no such page to name (the form
+    host (compared through ``normal_host``, so case and a default port do not
+    matter) and absolute otherwise. None when there is no such page to name (the form
     came from a saved page source) or when its path holds an id or a token
     (``templates_a_segment``)."""
     page = form.opened_from or form.source
     parts = urlsplit(page)
     if parts.scheme not in ("http", "https") or templates_a_segment(page):
         return None
-    if parts.netloc == urlsplit(base_url).netloc:
+    base = urlsplit(base_url)
+    if normal_host(parts.scheme, parts.netloc) == normal_host(base.scheme, base.netloc):
         return parts.path or "/"
     return page
 
