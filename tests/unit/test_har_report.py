@@ -312,7 +312,14 @@ def _planted_run(tmp_path: Path) -> Path:
             '<input type="password" name="password"></form>'
         ),
     )
-    return _write_har(tmp_path, [account, order, signin, reset])
+    # Its form's post, so the token-bearing page is the login's form page and the
+    # projection lists it.
+    reset_post = _entry("POST", "https://myshop.example.com/password/reset")
+    reset_post["request"]["postData"] = {
+        "mimeType": "application/json",
+        "text": json.dumps({"password": "x"}),
+    }
+    return _write_har(tmp_path, [account, order, signin, reset, reset_post])
 
 
 class TestEndpointsProjection:
@@ -481,6 +488,46 @@ class TestEndpointsProjection:
             "unresolved_roles": [],
         }
         assert _PLANTED_RESET_SEGMENT not in render_endpoints_json(result)
+
+    def test_auth_urls_list_only_the_login_s_own_observations(self, tmp_path: Path) -> None:
+        """A logout and a cart redirect recorded right after the login are observed,
+        and the projection lists only the login's own URLs."""
+
+        def redirected(entry: dict, location: str) -> dict:
+            entry["response"]["status"] = 302
+            entry["response"]["headers"].append({"name": "Location", "value": location})
+            return entry
+
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/login",
+            content_type="text/html",
+            body=(
+                '<form action="/session" method="post"><input type="email" name="email" '
+                'id="email"><input type="password" name="password" id="pass"></form>'
+            ),
+        )
+        post = redirected(_entry("POST", "https://myshop.example.com/session"), "/dashboard")
+        post["request"]["postData"] = {
+            "mimeType": "application/json",
+            "text": json.dumps({"email": "alice@example.com", "password": "x"}),
+        }
+        entries = [
+            page,
+            post,
+            _entry("GET", "https://myshop.example.com/dashboard", content_type="text/html"),
+            redirected(_entry("GET", "https://myshop.example.com/logout"), "/login"),
+            redirected(_entry("GET", "https://myshop.example.com/cart"), "/cart/view"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        # The digest observed both, so the assertion below is not vacuous.
+        observed = {o.url for o in result.login}
+        assert {"https://myshop.example.com/logout", "https://myshop.example.com/cart"} <= observed
+        payload = endpoints_projection(result)
+        assert {(o["method"], o["url"]) for o in payload["login"]["auth_urls"]} == {
+            ("GET", "https://myshop.example.com/login"),
+            ("POST", "https://myshop.example.com/session"),
+        }
 
     def test_login_flow_and_shape_come_through(self, tmp_path: Path) -> None:
         payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))

@@ -259,8 +259,12 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
             for method in endpoint.methods
         ],
         "login": {
+            # The login's own observations only (LoginObservation.login_flow): a
+            # logout or a cart redirect recorded in the same window is not its URL.
             "auth_urls": [
-                {"method": o.method, "url": templated_url(o.url), "kind": o.kind} for o in d.login
+                {"method": o.method, "url": templated_url(o.url), "kind": o.kind}
+                for o in d.login
+                if o.login_flow
             ],
             "forms": [_projected_form(form) for form in d.login_forms],
         },
