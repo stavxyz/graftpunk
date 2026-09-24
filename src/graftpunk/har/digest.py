@@ -1496,16 +1496,20 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             pages_of_key.setdefault(_form_key(form), set()).add(page_of[id(form)])
             forms_on_page.setdefault(page_of[id(form)], []).append(form)
 
-    def specificity(at: int, target: tuple[str, str]) -> int:
-        """How many recorded pages the page's form posting to *target* is on: a
-        dedicated login page's form is on fewer than a site-wide header form."""
-        return min(
-            (
-                len(pages_of_key[_form_key(form)])
-                for form in forms_on_page.get(at, [])
-                if _target_matches(form.action_target, target)
-            ),
-            default=len(pages_of_key) + 1,
+    def page_rank(at: int, target: tuple[str, str], body_names: frozenset[str]) -> tuple[int, int]:
+        """How a page whose form posts to *target* ranks for a post carrying
+        *body_names*: first by how many recorded pages that form is on (a dedicated
+        login page's form is on fewer than a site-wide header form), then by how many
+        of the body names it covers (more first). *at* is a page ``matching`` found
+        by one of its forms' targets, so it always has at least one such form."""
+        forms = [
+            form
+            for form in forms_on_page.get(at, [])
+            if _target_matches(form.action_target, target)
+        ]
+        return (
+            min(len(pages_of_key[_form_key(form)]) for form in forms),
+            -max(len(set(form.input_names) & body_names) for form in forms),
         )
 
     for post_step, went_to, body_names, by_field_names in posts:
@@ -1514,12 +1518,13 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         scripted = [at for at, _targets, is_scripted in earlier if is_scripted]
         # Among pages whose form posts where the post went, the page-specific form's
         # page wins over a nearer page with only a site-wide header form; then the
-        # nearest. Only a post found by its field names alone falls back to a
-        # scripted page; one matched by a recorded form (a saved page source's
-        # included) does not.
+        # page whose form covers more of the post's body names; then the nearest.
+        # Only a post found by its field names alone falls back to a scripted page;
+        # one matched by a recorded form (a saved page source's included) does not.
         if matching:
             chosen: int | None = min(
-                matching, key=lambda at, to=went_to: (specificity(at, to), -at)
+                matching,
+                key=lambda at, to=went_to, names=body_names: (*page_rank(at, to, names), -at),
             )
         else:
             chosen = max(scripted if by_field_names else [], default=None)

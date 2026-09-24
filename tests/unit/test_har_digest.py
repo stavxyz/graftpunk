@@ -1739,8 +1739,8 @@ class TestLoginFlowFlag:
     def test_a_form_on_the_promoted_page_beats_one_covering_more_of_the_body(
         self, tmp_path: Path
     ) -> None:
-        """M4 (promoted-page preference): the form on the page the post followed wins
-        over a form elsewhere whose names cover more of the body."""
+        """Promoted-page preference: the form on the page the post followed wins over
+        a form on two other pages whose names cover more of the body."""
         elsewhere = (
             '<form action="/session" method="post"><input type="text" name="username" id="u1">'
             '<input type="password" name="password" id="p1"><input type="hidden" name="otp">'
@@ -1753,6 +1753,11 @@ class TestLoginFlowFlag:
         entries = [
             _entry(
                 "GET", "https://api.myshop.example.com/a", content_type="text/html", body=elsewhere
+            ),
+            # The covering form sits on two pages, so the page-specific form's page
+            # is the one the post promotes.
+            _entry(
+                "GET", "https://api.myshop.example.com/c", content_type="text/html", body=elsewhere
             ),
             _entry(
                 "GET", "https://api.myshop.example.com/b", content_type="text/html", body=promoted
@@ -1902,7 +1907,7 @@ class TestLoginFlowFlag:
     def test_the_form_on_the_page_its_own_post_promoted_beats_one_elsewhere(
         self, tmp_path: Path
     ) -> None:
-        """F2 (on-its-page term): /a is promoted, but by another post; /b by this one."""
+        """On-its-page term: /a is promoted, but by another post; /b by this one."""
         page_a = (
             '<form action="/session" method="post"><input type="text" name="username" id="u1">'
             '<input type="password" name="password" id="p1"><input type="hidden" name="otp">'
@@ -1917,6 +1922,14 @@ class TestLoginFlowFlag:
         entries = [
             _entry(
                 "GET", "https://api.myshop.example.com/a", content_type="text/html", body=page_a
+            ),
+            # The /session form of /a sits on /c too, so /b's page-specific form's
+            # page is the one the /session post promotes.
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/c",
+                content_type="text/html",
+                body=page_a.split("</form>")[0] + "</form>",
             ),
             _entry(
                 "GET", "https://api.myshop.example.com/b", content_type="text/html", body=page_b
@@ -2413,6 +2426,38 @@ class TestLoginFlowFlag:
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'success_url="*/step1*",' in self._plugin(result)
+
+    def test_a_tie_on_specificity_goes_to_the_form_covering_the_post(self, tmp_path: Path) -> None:
+        """The header form is hidden on the login page, so each page's matching form
+        is on one page; the one covering the post's body names wins over nearness."""
+        header = (
+            '<form action="/session" method="post" class="mini">'
+            '<input type="email" name="login[username]" id="mini-user">'
+            '<input type="password" name="login[password]" id="mini-pass"></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                content_type="text/html",
+                body=self._LOGIN_PAGE,
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/catalog",
+                content_type="text/html",
+                body=header,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/login")] is True
+        assert flags[("GET", "/catalog")] is False
 
     def test_a_script_posted_login_to_another_action_is_owned(self, tmp_path: Path) -> None:
         """R2: the form says /auth/login, script posts /api/v1/sessions."""
