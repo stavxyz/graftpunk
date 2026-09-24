@@ -3129,3 +3129,37 @@ def test_an_endpoint_recorded_with_no_body_gets_a_test_that_can_pass() -> None:
     assert "GP-FILL: the recorded response had no body" in go
     orders = test_code[test_code.index("def test_orders(") :]
     assert "assert result  # GP-FILL" in orders
+
+
+def test_a_json_endpoint_recorded_with_no_body_is_requested_as_text() -> None:
+    """A 204 answering application/json has no JSON to parse, so its command reads
+    the response as text and its test asserts the call completed."""
+    no_content = dataclasses.replace(
+        _single_endpoint("/cart/clear", method="POST"),
+        statuses=(204,),
+        content_type="application/json",
+        shape=None,
+        response_body_empty=True,
+        response_body_falsy=True,
+    )
+    files = _render_endpoints(no_content)
+    plugin = files["src/graftpunk_myshop/plugin.py"]
+    stub = plugin[plugin.index("def cart_clear(") :]
+    assert "return ctx.request_text(" in stub
+    assert "request_json" not in stub
+    test_code = files["tests/test_plugin.py"]
+    assert "assert result is not None" in test_code[test_code.index("def test_cart_clear(") :]
+
+
+def test_an_endpoint_recorded_with_a_falsy_json_body_gets_a_test_that_can_pass() -> None:
+    """An ack answering {} parses to a falsy value, so the generated test asserts
+    the call completed and says to assert on the value expected."""
+    ack = dataclasses.replace(
+        _single_endpoint("/ack"), content_type="application/json", response_body_falsy=True
+    )
+    test_code = _render_endpoints(ack, _single_endpoint("/orders"))["tests/test_plugin.py"]
+    ack_test = test_code[test_code.index("def test_ack(") : test_code.index("def test_orders(")]
+    assert "assert result is not None" in ack_test
+    assert "GP-FILL: the recorded response was a falsy JSON value" in ack_test
+    orders = test_code[test_code.index("def test_orders(") :]
+    assert "assert result  # GP-FILL" in orders

@@ -280,6 +280,10 @@ class Endpoint:
     # Every recorded response to this endpoint had no body (a redirect, a 204): a
     # generated test asserts the call completed, since an empty body is falsy.
     response_body_empty: bool = False
+    # Some recorded response had no body, or a JSON body that parses to a falsy
+    # value ({}, [], "", 0, false): the fixture a generated test reads may be that
+    # one, so the test asserts the call completed rather than a truthy result.
+    response_body_falsy: bool = False
 
 
 @dataclass(frozen=True)
@@ -1085,8 +1089,10 @@ class _EndpointAccumulator:
         self.body_params: dict[str, str] = {}
         self.body_kind: BodyKind = "none"
         self.shape: ShapeNode | None = None
-        # Whether any recorded response carried a body.
+        # Whether any recorded response carried a body, and whether any had none or
+        # a falsy JSON one (_falsy_body).
         self.bodied = False
+        self.falsy = False
         self.custom_headers: set[str] = set()
         self.examples: list[str] = []
         # Dropped names, held only to count them distinctly; never kept past finish.
@@ -1114,6 +1120,8 @@ class _EndpointAccumulator:
         # member that was captured whole answers for the rest.
         if entry.response.body:
             self.bodied = True
+        if _falsy_body(entry.response.body):
+            self.falsy = True
         if self.shape is None or self.shape == SHAPE_UNAVAILABLE:
             observed = _response_shape(entry)
             if observed is not None:
@@ -1148,7 +1156,21 @@ class _EndpointAccumulator:
             body_keys_dropped_as_non_names=len(self.dropped_body) - _count_ids(self.dropped_body),
             header_names_dropped_as_ids=len(self.dropped_headers),
             response_body_empty=not self.bodied,
+            response_body_falsy=self.falsy,
         )
+
+
+def _falsy_body(body: str | None) -> bool:
+    """True when *body* is empty or is JSON parsing to a falsy value other than
+    ``null`` (``{}``, ``[]``, ``""``, ``0``, ``false``): what a generated test's
+    ``assert result`` would fail on."""
+    if not body:
+        return True
+    try:
+        value = json.loads(body)
+    except ValueError:
+        return False
+    return value is not None and not value
 
 
 def _collapse_eligible(segment: str) -> bool:
@@ -1671,6 +1693,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             target.dropped_query |= acc.dropped_query
             target.dropped_body |= acc.dropped_body
             target.bodied = target.bodied or acc.bodied
+            target.falsy = target.falsy or acc.falsy
             target.dropped_headers |= acc.dropped_headers
             # The first member of a collapsed family answers for the family, so
             # a member that happened to redirect or return HTML must not cost

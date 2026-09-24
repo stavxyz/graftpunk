@@ -1049,6 +1049,52 @@ class TestEndpointExamples:
         empty = {e.template: e.response_body_empty for e in result.endpoints}
         assert empty == {"/go": True, "/orders": False}
 
+    @pytest.mark.parametrize(
+        ("body", "falsy"),
+        [
+            ("{}", True),
+            ("[]", True),
+            ('""', True),
+            ("0", True),
+            ("false", True),
+            ("", True),
+            ('{"ok": true}', False),
+            ("[1]", False),
+            ("not json", False),
+            ("null", False),
+        ],
+        ids=[
+            "object",
+            "array",
+            "string",
+            "zero",
+            "false",
+            "empty",
+            "truthy",
+            "list",
+            "text",
+            "null",
+        ],
+    )
+    def test_a_falsy_json_or_empty_body_is_recorded(
+        self, tmp_path: Path, body: str, falsy: bool
+    ) -> None:
+        entries = [_entry("POST", "https://api.myshop.example.com/ack", body=body)]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.response_body_falsy is falsy
+
+    def test_one_falsy_recording_marks_the_endpoint(self, tmp_path: Path) -> None:
+        """The fixture a generated test reads may be any recording, so one falsy
+        body among truthy ones is enough."""
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+            _entry("GET", "https://api.myshop.example.com/ack", body="{}"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.response_body_falsy is True
+
     def test_examples_stop_at_the_cap(self, tmp_path: Path) -> None:
         entries = [
             _entry("GET", f"https://api.myshop.example.com/orders/{1000 + i}")
@@ -1240,6 +1286,24 @@ class TestCollapseMergeCarriesShapeAndBodyKind:
         assert merged[0].shape is not None
         assert merged[0].body_kind == "json"
         assert "sku" in merged[0].body_params
+
+    def test_a_later_member_s_falsy_body_survives_the_merge(self, tmp_path: Path) -> None:
+        """One member of a collapsed family answered {}: the family's fixture may be
+        that one, so the merged endpoint records it."""
+        count = _HIGH_CARDINALITY_THRESHOLD + 1
+        entries = [
+            _entry(
+                "GET",
+                # A letter and one digit: each path is its own raw template, so the
+                # family is merged by the high-cardinality collapse.
+                f"https://api.myshop.example.com/products/widget-{chr(ord('a') + i)}1",
+                body="{}" if i == count - 1 else '{"id": 1}',
+            )
+            for i in range(count)
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (merged,) = [e for e in result.endpoints if e.template == "/products/{product_id}"]
+        assert merged.response_body_falsy is True
 
     def test_members_that_type_a_parameter_differently_merge_to_str(self, tmp_path: Path) -> None:
         """The family merge applies the same rule a single endpoint's requests do."""

@@ -533,6 +533,53 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
 
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [(204, ""), (200, "{}")],
+        ids=["no-content", "empty-object"],
+    )
+    def test_a_generated_test_passes_for_a_json_endpoint_with_an_empty_or_falsy_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int, body: str
+    ) -> None:
+        """A JSON endpoint answering 204, or an ack answering {}: the generated
+        command and test pass against the recorded body."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entry = _entry("GET", "https://api.myshop.example.com/ack", body=body)
+        entry["response"]["status"] = status
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": [entry]}})
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        (target / "tests" / "fixtures" / "get_ack.json").write_text(body)
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+
     def test_a_project_with_login_and_token_blocks_imports_and_instantiates(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

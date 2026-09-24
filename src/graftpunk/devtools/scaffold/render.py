@@ -496,6 +496,11 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
 
 
 def _is_json_endpoint(endpoint: Endpoint) -> bool:
+    """True when *endpoint* answers JSON its command parses: never when every
+    recorded response had no body (a 204 declaring ``application/json``), which
+    ``request_json`` could not parse."""
+    if endpoint.response_body_empty:
+        return False
     return endpoint.shape is not None or "json" in endpoint.content_type.lower()
 
 
@@ -1245,15 +1250,16 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
                 indent=len(L1),
             )
         )
-        if endpoint.response_body_empty:
-            # An empty body is falsy, so `assert result` would fail out of the box.
-            lines.extend(
-                wrapped_comment_lines(
-                    "GP-FILL: the recorded response had no body (a redirect, say): assert "
-                    "on the page the redirect leads to.",
-                    indent=len(L1),
-                )
+        if endpoint.response_body_empty or endpoint.response_body_falsy:
+            # An empty body or a falsy JSON value fails `assert result` out of the box.
+            note = (
+                "GP-FILL: the recorded response had no body (a redirect, say): assert "
+                "on the page the redirect leads to."
+                if endpoint.response_body_empty
+                else 'GP-FILL: the recorded response was a falsy JSON value ({}, [], "", '
+                "0, or false): assert on the value you expect."
             )
+            lines.extend(wrapped_comment_lines(note, indent=len(L1)))
             lines.append("    assert result is not None")
         else:
             lines.append("    assert result  # GP-FILL: assert on the shape you expect")
