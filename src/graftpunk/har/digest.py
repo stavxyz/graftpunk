@@ -847,6 +847,13 @@ def _redirect_target_path(entry: HAREntry) -> str:
         return ""
 
 
+def _host_of(url: str) -> str:
+    """*url*'s host, spelled by :func:`graftpunk.har.paths.normal_host`. *url* is one
+    the digest already split, so this cannot raise."""
+    parts = urlparse(url)
+    return normal_host(parts.scheme, parts.netloc)
+
+
 def _request_target(url: str) -> tuple[str, str]:
     """Where a request to *url* goes, as host and path (``;params`` dropped, never
     email-masked), the way a form's ``action_target`` is spelled: the host through
@@ -1374,6 +1381,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     page_of: dict[int, int] = {}
     # The id of each recorded form with no target of its own (_script_driven_forms).
     script_driven: set[int] = set()
+    # Where a GET's redirect sent the client (host and path), to the URLs of the GETs
+    # of that redirect chain so far, in order.
+    redirected_via: dict[tuple[str, str], tuple[str, ...]] = {}
     credential_post_steps: list[int] = []
     # The credential post a redirect or set-cookie observation followed, by step:
     # only a hop that continues that post's redirect chain.
@@ -1442,6 +1452,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
                 continue
             cookies_seen.setdefault(cookie_name, None)
 
+        here = urlparse(url)
+        here_host = normal_host(here.scheme, here.netloc)
+        via = redirected_via.get((here_host, path), ()) if method == "GET" else ()
+        if method == "GET" and entry.response.status in _REDIRECT_STATUSES:
+            redirected_via[_redirect_target(entry)] = (*via, url)
         content_type = (entry.response.content_type or "").lower()
         forms_in_entry: tuple[LoginForm, ...] = ()
         if "html" in content_type and entry.response.body:
@@ -1449,6 +1464,11 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             forms_in_entry = extract_login_forms(
                 entry.response.body, source=document_source, base=_unmasked_page(entry)
             )
+            opened_from = next((hop for hop in reversed(via) if _host_of(hop) != here_host), "")
+            if opened_from:
+                forms_in_entry = tuple(
+                    replace(form, opened_from=opened_from) for form in forms_in_entry
+                )
             login_forms.extend(forms_in_entry)
             page_of.update((id(form), step) for form in forms_in_entry)
             script_driven.update(id(form) for form in _script_driven_forms(entry, forms_in_entry))

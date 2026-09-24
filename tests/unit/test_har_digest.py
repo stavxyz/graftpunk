@@ -2426,6 +2426,91 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'success_url="*/app*",' in self._plugin(result)
 
+    def _provider_login(self, first_hop: str) -> list[dict]:
+        """An app GET to *first_hop* on api. redirects to the identity provider,
+        which redirects to its login form page on auth.; the login posts there."""
+        login = (
+            '<form action="/u/login" method="post"><input type="email" name="username" id="u">'
+            '<input type="password" name="password" id="p"></form>'
+        )
+        return [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com{first_hop}",
+                status=302,
+                response_headers={"Location": "https://auth.myshop.example.com/authorize?state=s"},
+                content_type="text/html",
+                body="",
+            ),
+            _entry(
+                "GET",
+                "https://auth.myshop.example.com/authorize?state=s",
+                status=302,
+                response_headers={"Location": "/u/login?state=s"},
+                content_type="text/html",
+                body="",
+            ),
+            _entry(
+                "GET",
+                "https://auth.myshop.example.com/u/login?state=s",
+                content_type="text/html",
+                body=login,
+            ),
+            _entry(
+                "POST",
+                "https://auth.myshop.example.com/u/login",
+                status=302,
+                response_headers={"Location": "https://api.myshop.example.com/app"},
+                post_data=json.dumps({"username": "alice", "password": "x"}),
+            ),
+        ]
+
+    def test_a_provider_s_form_page_is_opened_through_the_app_get_that_led_to_it(
+        self, tmp_path: Path
+    ) -> None:
+        """The provider's form page needs the state the app's redirect gave it, so
+        LoginConfig.url is the app GET that redirected there."""
+        result = digest(DigestSource.from_har(_write_har(tmp_path, self._provider_login("/login"))))
+        code = self._plugin(result)
+        assert 'url="/login",' in code
+        assert "auth.myshop.example.com/u/login" not in code
+
+    def test_the_last_app_get_of_the_chain_is_the_login_url(self, tmp_path: Path) -> None:
+        """/account redirects to /login, which redirects to the provider: the login
+        starts at /login, the app GET that left for the provider."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/account",
+                status=302,
+                response_headers={"Location": "/login"},
+                content_type="text/html",
+                body="",
+            ),
+            *self._provider_login("/login"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'url="/login",' in self._plugin(result)
+
+    def test_a_same_host_redirect_to_the_login_page_keeps_the_page_as_the_url(
+        self, tmp_path: Path
+    ) -> None:
+        """/account redirects to /login on the same host: the form page opens on its
+        own, so LoginConfig.url stays /login."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/account",
+                status=302,
+                response_headers={"Location": "/login"},
+                content_type="text/html",
+                body="",
+            ),
+            *self._login_entries(),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'url="/login",' in self._plugin(result)
+
     def test_forms_on_the_landing_page_do_not_continue_the_chain(self, tmp_path: Path) -> None:
         """Only an OAuth form_post-shaped page continues the chain: a cart form with a
         visible field and a logout form with a visible button do not."""

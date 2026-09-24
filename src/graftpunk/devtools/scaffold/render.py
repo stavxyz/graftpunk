@@ -515,15 +515,19 @@ def _exploded_literal_dict_lines(entries: list[tuple[str, str]], *, indent: int)
 
 def _login_page_url(form: LoginForm, base_url: str) -> str | None:
     """What ``LoginConfig.url`` is set to: the page *form* was read from (its
-    ``source``), as a path when it is on *base_url*'s host and absolute otherwise.
-    None when there is no such page to name (the form came from a saved page source)
-    or when its path holds an id or a token (``templates_a_segment``)."""
-    parts = urlsplit(form.source)
-    if parts.scheme not in ("http", "https") or templates_a_segment(form.source):
+    ``source``), or, for an identity provider's form page an app GET on another host
+    redirected to (``opened_from``), that app GET, since the provider's page opened
+    directly lacks the state the redirect gave it. A path when it is on *base_url*'s
+    host and absolute otherwise. None when there is no such page to name (the form
+    came from a saved page source) or when its path holds an id or a token
+    (``templates_a_segment``)."""
+    page = form.opened_from or form.source
+    parts = urlsplit(page)
+    if parts.scheme not in ("http", "https") or templates_a_segment(page):
         return None
     if parts.netloc == urlsplit(base_url).netloc:
         return parts.path or "/"
-    return form.source
+    return page
 
 
 def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
