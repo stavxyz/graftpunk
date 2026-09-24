@@ -840,8 +840,8 @@ class _CredentialPost:
 def _has_a_script_driven_form(entry: HAREntry, forms: tuple[LoginForm, ...]) -> bool:
     """True when one of *forms*, served by *entry*, has no target of its own: an
     empty, ``#``, or ``javascript:`` action, or one resolving to the page itself.
-    Such a form does not post where a credential post found by its field names alone
-    went, so that post may still be its credential post."""
+    Script decides where such a form is sent, so a credential post found by its
+    field names alone may be its post."""
     page = _request_target(entry.request.url)
     return any(
         form.action_target == page or form.action.lower().startswith("javascript:")

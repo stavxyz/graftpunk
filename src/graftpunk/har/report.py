@@ -118,9 +118,16 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
         for obs in d.login:
             field_note = f" ({', '.join(obs.fields)})" if obs.fields else ""
             redirect_note = f" -> {obs.redirect_to}" if obs.redirect_to else ""
+            # A login-shaped observation outside the login the generator uses (a
+            # password change, a later redirect) says so.
+            outside = (
+                " (not part of the login)"
+                if not obs.login_flow and obs.kind in _LOGIN_SHAPED_KINDS
+                else ""
+            )
             lines.append(
                 f"{obs.order}. {obs.method} {obs.url} [{obs.status}] "
-                f"{obs.kind}{field_note}{redirect_note}"
+                f"{obs.kind}{field_note}{redirect_note}{outside}"
             )
     else:
         lines.append("(no login observations)")
@@ -184,6 +191,9 @@ def render_json(d: RunDigest) -> str:
     marked :data:`graftpunk.har.digest.INTERNAL` is a lookup for code and is left
     out."""
     return json.dumps(_jsonable(d), indent=2, sort_keys=True)
+
+
+_LOGIN_SHAPED_KINDS = frozenset({"form_page", "credential_post", "redirect", "set_cookie"})
 
 
 def _projected_form(form: LoginForm) -> dict[str, Any]:

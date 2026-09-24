@@ -35,7 +35,7 @@ from graftpunk.har.digest import (
     redacted_names_of,
 )
 from graftpunk.har.parser import parse_har_file
-from graftpunk.har.report import render_endpoints_json, render_json
+from graftpunk.har.report import render_endpoints_json, render_json, render_markdown
 
 
 def _entry(
@@ -2093,7 +2093,7 @@ class TestLoginFlowFlag:
         assert flags[("GET", "/signin")] is True
 
     def test_a_magento_account_edit_flow_is_not_the_login_flow(self, tmp_path: Path) -> None:
-        """C1: the edit form holds an email input, so it stays a login-shaped form, but
+        """The edit form holds an email input, so it stays a login-shaped form, but
         login_flow narrows to the login the generator uses."""
         login = (
             '<form action="/customer/account/loginPost/" method="post">'
@@ -2165,7 +2165,7 @@ class TestLoginFlowFlag:
         assert 'success_url="*/customer/account*",' in plugin_code
 
     def test_a_change_password_form_is_not_a_login_form(self, tmp_path: Path) -> None:
-        """C1: current and new password, no username: a change-password form."""
+        """Current and new password, no username: a change-password form."""
         login = (
             '<form action="/session" method="post"><input type="email" name="email">'
             '<input type="password" name="password"></form>'
@@ -2288,6 +2288,30 @@ class TestLoginFlowFlag:
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'success_url="*/dashboard*",' in self._plugin(result)
+
+    def test_the_markdown_marks_an_observation_outside_the_login(self, tmp_path: Path) -> None:
+        """A later POST's redirect is listed, and says it is not part of the login."""
+        entries = [
+            *self._login_entries(),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/cart",
+                status=302,
+                response_headers={"Location": "/cart/view"},
+                content_type="text/html",
+                body="",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        observations = [
+            line
+            for line in render_markdown(result).splitlines()
+            if "] redirect" in line or "] credential_post" in line
+        ]
+        cart = [line for line in observations if "/cart" in line]
+        session = [line for line in observations if "/session" in line]
+        assert cart and all(line.endswith("(not part of the login)") for line in cart)
+        assert session and not any("not part of the login" in line for line in session)
 
     def test_a_password_post_on_the_login_s_next_hop_is_not_a_hop(self, tmp_path: Path) -> None:
         """R1: a POST with a password field is never a redirect hop of another post,

@@ -76,7 +76,7 @@ _SCAFFOLD_SHAPE_DEPTH = 1
 # line inside the generated width when the line is one identifier (a def, a
 # call, an assignment target): ruff format never splits an identifier and
 # E501 still applies, so the identifiers are bounded at the point they are
-# derived instead (validation fix round 4, Finding 4, 2026-09-12).
+# derived instead.
 _MAX_PLUGIN_NAME = 40
 _MAX_COMMAND_NAME = 40
 _MAX_PARAM_NAME = 40
@@ -193,15 +193,14 @@ def _command_name(template: str, seen: set[str]) -> str:
     sibling endpoints read as what they are: ``/api/orders`` is ``api_orders``,
     ``/api/orders/{order_id}`` is ``api_orders_by_order_id``, and
     ``/a/{x}/b/{y}`` is ``a_by_x_b_by_y``. Dropping them named the second
-    sibling ``api_orders_2``, which says nothing about what it fetches (polish
-    round 1, 2026-09-12). The counter is left for a true collision: the same
+    sibling ``api_orders_2``, which says nothing about what it fetches. The
+    counter is left for a true collision: the same
     template under another method, or two names equal after truncation.
 
     Truncated to ``_MAX_COMMAND_NAME`` before the uniqueness counter is applied: the
     name lands in a ``def``, a decorator, and the generated test's own ``def`` and
     call, none of which any wrapping helper can split, so a deep captured path must
-    not be able to push those past the generated width (validation fix round 4,
-    2026-09-12).
+    not be able to push those past the generated width.
     """
     parts = [
         f"by_{segment[1:-1]}" if segment.startswith("{") and segment.endswith("}") else segment
@@ -266,7 +265,7 @@ def _param_identifier(site_name: str, seen: set[str]) -> str:
 
     Keeping the site's spelling verbatim put ``keywordSearch`` and
     ``recordedDateRange`` in a Python signature and on the command line, where
-    neither reads as this project's own code (polish round 2, 2026-09-12).
+    neither reads as this project's own code.
     """
     # Stripped of leading and trailing underscores, so $filter gives filter and
     # __VIEWSTATE gives viewstate, not an option spelled with leading hyphens.
@@ -282,16 +281,18 @@ def _login_landing_path(d: RunDigest) -> str:
     Every observation whose own status is a 3xx carries the path it sent the
     client to, the credential post included: a login whose POST answers 302 is
     one observation, not a post plus a redirect, so reading a later observation's
-    own URL would name the page that redirected rather than the landing page
-    (controller finding, fix round 1). The last target in the window is the end of
-    the chain.
+    own URL would name the page that redirected rather than the landing page. Only
+    the login's own observations count (``LoginObservation.login_flow``): the
+    credential post and each hop that continues its chain, a request to where the
+    previous hop sent the client. The last such target is the end of the chain,
+    and a later POST answering with a redirect is never part of it.
 
     "The window" is the digest's: it classifies the entries after a credential post
     up to its own ``_LOGIN_WINDOW`` limit, so a login whose redirect chain runs
     longer than that ends with an intermediate hop as its last classified target,
     and the pattern rendered from it names a page the login passes through rather
     than the one it rests on. No captured login has come close to that limit, so
-    this is stated rather than bounded (polish round 2).
+    this is stated rather than bounded.
     """
     landing = ""
     posted = False
@@ -398,10 +399,10 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     lines.append('        failure="GP-FILL: text on the page indicating login failure",')
     # Nothing observed says which element marks the landing page, and a GP-FILL
     # literal here would be a configured signal: the engine would poll for that
-    # selector until the timeout and fail naming it, which is what round 1 removed
-    # for success_url. The hint is a comment and the field stays unset, so a fresh
+    # selector until the timeout and fail naming it, as a GP-FILL success_url
+    # literal once did. The hint is a comment and the field stays unset, so a fresh
     # scaffold whose success_url was pre-filled has exactly one signal, which is
-    # the intended state (polish round 2).
+    # the intended state.
     lines.extend(
         wrapped_comment_lines(
             "GP-FILL: success, a CSS selector for an element that is on the page this "
@@ -886,7 +887,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
     # An unavailable shape is not a fact about the site, so the docstring says
-    # nothing rather than guessing (polish round 1, 2026-09-12).
+    # nothing rather than guessing.
     shape_known = endpoint.shape is None or endpoint.shape != SHAPE_UNAVAILABLE
 
     lines = _decorator_lines(

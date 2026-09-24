@@ -497,12 +497,14 @@ def _password_inputs(inputs: list[_RawInput]) -> list[_RawInput]:
 
 
 def _is_registration(inputs: list[_RawInput]) -> bool:
-    """A sign-up or change-password form: no input marked ``current-password``, and
-    either a password marked ``new-password`` or a second password input whose name
-    or id asks for a confirmation (``password_confirm``). A form with a
-    ``current-password`` input is a login form whatever else it holds (a page-wide
-    form with both login and register fields), and a second password input with no
-    confirmation hint (a PIN) does not make a form a registration form.
+    """A sign-up form without ``current-password``: a password marked
+    ``new-password``, or a second password input whose name or id asks for a
+    confirmation (``password_confirm``). A form with a ``current-password`` input is
+    never a registration form: it is a change-password form when it also asks for a
+    new password and holds no username-like input (:func:`_is_change_password`),
+    and a login form otherwise (a page-wide form with both login and register
+    fields). A second password input with no confirmation hint (a PIN) does not make
+    a form a registration form.
     :func:`extract_login_forms` leaves a registration form out, except a lone form
     with one password (``new-password`` misused on a login form);
     ``is_login_document`` ignores the test."""
@@ -605,7 +607,8 @@ def _action_target(raw_action: str, source: str) -> tuple[str, str]:
 def extract_login_forms(
     html: str, source: str, *, base: str | None = None
 ) -> tuple[LoginForm, ...]:
-    """Every login ``<form>`` in *html*: one with a password input that is not a
+    """Every login ``<form>`` in *html*: one with a password input that is neither a
+    change-password form (:func:`_is_change_password`, never kept) nor a
     registration form (:func:`_is_registration`). When the page has no such form, a
     form with exactly one password input is kept (``new-password`` misused on a
     login form); a registration form with a confirmation password never is.
@@ -801,7 +804,8 @@ def is_login_document(html: str) -> bool:
 
     Used by :mod:`graftpunk.plugins.site_requests` to tell a real login page
     (a stale session gets one back as a 200) apart from any other
-    unexpectedly non-JSON response. Any password input counts, a registration
-    form's included: the registration exclusion is the digest's, not this test's.
+    unexpectedly non-JSON response. Any password input counts, a registration or a
+    change-password form's included: those exclusions are the digest's, not this
+    test's.
     """
     return any(_password_index(raw.inputs) is not None for raw in _parse(html).forms)

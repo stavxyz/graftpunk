@@ -323,9 +323,9 @@ def derive_reserved_cli_names(app: typer.Typer) -> frozenset[str]:
     return frozenset(names)
 
 
-# The root command registration adds to a plugin with a login capability, and every
-# root command it adds itself: a plugin's own command may not take one of these
-# names (the scaffold keeps a copy it is tested against).
+# The root commands registration adds to a plugin by itself: login, for a plugin
+# with a login capability. A plugin's own command may not take one of these names.
+# The scaffold keeps its own copy, which a test holds equal to this one.
 LOGIN_COMMAND = "login"
 AUTO_ROOT_COMMAND_NAMES = (LOGIN_COMMAND,)
 

@@ -2305,7 +2305,7 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         other_method = dataclasses.replace(_LOGIN_PAGE_ENDPOINT, methods=("DELETE",))
         files = render(self._spec(other_method))
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
-        # C2 (round 13): "login" is the root login command's name, so the stub is login_2.
+        # "login" is the root login command's name, so the stub is login_2.
         assert "def login_2(" in plugin_code
         ast.parse(plugin_code)
 
@@ -3073,7 +3073,7 @@ def test_stems_that_differ_only_in_case_get_one_test() -> None:
 
 
 def test_a_stub_named_login_never_takes_the_root_login_command(monkeypatch) -> None:
-    """C2: a non-flow GET /login beside a login_config registers as login_2."""
+    """A non-flow GET /login beside a login_config registers as login_2."""
     from tests.unit.cli_harness import invoke_plugin_app
 
     form = LoginForm(
