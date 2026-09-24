@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 
-from graftpunk.har.digest import SHAPE_UNAVAILABLE, DigestSource, digest
+from graftpunk.har.digest import SHAPE_UNAVAILABLE, DigestSource, Endpoint, digest
+from graftpunk.har.documents import LoginForm
 from graftpunk.har.report import (
     SHAPE_UNAVAILABLE_SUMMARY,
+    endpoints_projection,
+    render_endpoints_json,
     render_json,
     render_markdown,
     summarize_shape,
@@ -213,6 +217,8 @@ class TestRenderJson:
             "tokens",
             "cookies",
             "dropped",
+            "cookie_names_dropped_as_ids",
+            "token_names_dropped_as_ids",
         }
 
     def test_dropped_carries_every_reason(self, tmp_path: Path) -> None:
@@ -241,3 +247,482 @@ class TestRenderJson:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         parsed = json.loads(render_json(result))
         assert len(parsed["endpoints"]) == len(result.endpoints) == 80
+
+
+_SAMPLE_HAR = Path(__file__).resolve().parents[1] / "fixtures" / "sample.har"
+
+# The projection's field set at schema 1, frozen here so a rename fails the suite.
+_PROJECTION_V1 = {"schema", "source", "primary_host", "endpoints", "login"}
+_SOURCE_V1 = {"session", "run_id", "har"}
+_ENDPOINT_V1 = {
+    "method",
+    "template",
+    "login_flow",
+    "content_type",
+    "shape",
+    "query_params",
+    "body_params",
+    "custom_headers",
+}
+_LOGIN_V1 = {"auth_urls", "forms"}
+_AUTH_URL_V1 = {"method", "url", "kind"}
+_FORM_V1 = {"action", "fields", "submit", "neutral_roles", "unresolved_roles"}
+
+
+_PLANTED_RESET_SEGMENT = "reset-7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+
+
+def _planted_run(tmp_path: Path) -> Path:
+    """A run holding a cookie name, a token candidate, an example path, and a body."""
+    account = _entry(
+        "GET",
+        "https://myshop.example.com/account",
+        content_type="text/html",
+        body=(
+            '<html><head><meta name="csrf-token" content="planted-token-value"></head>'
+            '<form action="/session" method="post"><input type="email" id="email" name="email">'
+            '<input type="password" id="password" name="password"></form></html>'
+        ),
+    )
+    order = _entry(
+        "GET",
+        "https://myshop.example.com/api/orders/12345",
+        body='{"id": "planted-body-value"}',
+    )
+    order["response"]["cookies"] = [{"name": "shop_session_cookie", "value": "planted-cookie"}]
+    # A form whose action carries a session id and a query token, with inputs that
+    # have no id, so every selector is built from the action.
+    signin = _entry(
+        "GET",
+        "https://myshop.example.com/signin",
+        content_type="text/html",
+        body=(
+            '<form action="/login;jsessionid=SECRETSESSION123?t=tok999" method="post">'
+            '<input type="text" name="username"><input type="password" name="password">'
+            "</form>"
+        ),
+    )
+    # A form page served at a token-bearing path.
+    reset = _entry(
+        "GET",
+        f"https://myshop.example.com/signin/{_PLANTED_RESET_SEGMENT}",
+        content_type="text/html",
+        body=(
+            '<form action="/password/reset" method="post">'
+            '<input type="password" name="password"></form>'
+        ),
+    )
+    # Its form's post, so the token-bearing page is the login's form page and the
+    # projection lists it.
+    reset_post = _entry("POST", "https://myshop.example.com/password/reset")
+    reset_post["request"]["postData"] = {
+        "mimeType": "application/json",
+        "text": json.dumps({"password": "x"}),
+    }
+    return _write_har(tmp_path, [account, order, signin, reset, reset_post])
+
+
+class TestEndpointsProjection:
+    def test_schema_one_and_its_field_set(self, tmp_path: Path) -> None:
+        payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))
+        assert payload["schema"] == 1
+        assert set(payload) == _PROJECTION_V1
+        assert set(payload["source"]) == _SOURCE_V1
+        assert payload["endpoints"]
+        for entry in payload["endpoints"]:
+            assert set(entry) == _ENDPOINT_V1
+        assert set(payload["login"]) == _LOGIN_V1
+        for url in payload["login"]["auth_urls"]:
+            assert set(url) == _AUTH_URL_V1
+        assert payload["login"]["forms"]
+        for form in payload["login"]["forms"]:
+            assert set(form) == _FORM_V1
+
+    def test_no_cookie_name_token_candidate_example_path_or_body(self, tmp_path: Path) -> None:
+        result = digest(DigestSource.from_har(_planted_run(tmp_path)))
+        # The digest itself holds all four, so the assertions below are not vacuous.
+        assert "shop_session_cookie" in result.cookies
+        assert any(token.name == "csrf-token" for token in result.tokens)
+        assert any("/api/orders/12345" in e.examples for e in result.endpoints)
+        text = render_endpoints_json(result)
+        for planted in (
+            "shop_session_cookie",
+            "planted-cookie",
+            "csrf-token",
+            "planted-token-value",
+            "/api/orders/12345",
+            "planted-body-value",
+            "SECRETSESSION123",
+            "jsessionid",
+            "tok999",
+            _PLANTED_RESET_SEGMENT,
+        ):
+            assert planted not in text, planted
+
+    def test_a_raw_form_action_and_a_token_bearing_form_page_path_are_not_printed(
+        self, tmp_path: Path
+    ) -> None:
+        result = digest(DigestSource.from_har(_planted_run(tmp_path)))
+        # The run observed both, so the assertions below are not vacuous.
+        assert any(_PLANTED_RESET_SEGMENT in o.url for o in result.login)
+        payload = endpoints_projection(result)
+        urls = [o["url"] for o in payload["login"]["auth_urls"]]
+        assert "https://myshop.example.com/signin/{signin_id}" in urls
+        login_form = next(f for f in payload["login"]["forms"] if f["action"] == "/login")
+        assert login_form["fields"]["username"] == (
+            'form[action="/login"] input[name="username"], '
+            'form[action^="/login;"] input[name="username"], '
+            'form[action^="/login?"] input[name="username"], '
+            'form[action^="/login#"] input[name="username"]'
+        )
+
+    def test_the_sample_har_leaks_no_cookie_name_or_example_path(self) -> None:
+        result = digest(DigestSource.from_har(_SAMPLE_HAR))
+        assert "sessionId" in result.cookies
+        text = render_endpoints_json(result)
+        assert "sessionId" not in text
+        assert "/api/users/123/posts" not in text
+
+    def test_the_projection_is_uncapped(self, tmp_path: Path) -> None:
+        # Letters only: a segment with a digit is eligible for the high-cardinality
+        # collapse, which would fold these seventy routes into one.
+        words = [f"{chr(97 + i // 26)}{chr(97 + i % 26)}route" for i in range(70)]
+        entries = [
+            _entry("GET", f"https://myshop.example.com/api/{word}", body='{"id": 1}')
+            for word in words
+        ]
+        payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, entries))))
+        assert len(payload["endpoints"]) == 70
+
+    def test_a_pathless_form_action_is_printed_as_it_is_and_stays_scoped(
+        self, tmp_path: Path
+    ) -> None:
+        """templated_url gives a pathless URL a "/", which is not an account value."""
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [])))
+        scoped = 'form[action="https://myshop.example.com"] input[name="username"]'
+        form = LoginForm(
+            action="https://myshop.example.com",
+            method="POST",
+            fields={"username": scoped},
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        payload = endpoints_projection(dataclasses.replace(result, login_forms=(form,)))
+        assert payload["login"]["forms"] == [
+            {
+                "action": "https://myshop.example.com",
+                "fields": {"username": scoped},
+                "submit": None,
+                "neutral_roles": [],
+                "unresolved_roles": [],
+            }
+        ]
+
+    def test_a_selector_that_cannot_be_unscoped_is_left_out(self, tmp_path: Path) -> None:
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [])))
+        form = LoginForm(
+            action="/accounts/12345/session",
+            method="POST",
+            fields={
+                "username": 'form[action="/accounts/12345/session"] input.odd',
+                "password": "#pw",
+            },
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        payload = endpoints_projection(dataclasses.replace(result, login_forms=(form,)))
+        assert payload["login"]["forms"] == [
+            {
+                "action": "/accounts/{account_id}/session",
+                "fields": {"password": "#pw"},
+                "submit": None,
+                "neutral_roles": [],
+                "unresolved_roles": ["username"],
+            }
+        ]
+
+    def test_a_form_carries_its_submit_neutral_and_unresolved_roles(self, tmp_path: Path) -> None:
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/signin",
+            content_type="text/html",
+            body=(
+                '<form action="/session" method="post"><input type="text" name="username">'
+                '<input type="text" name="otp_40912873"><input type="text" name="fld_a8f3c9e2b1d4">'
+                '<input type="password" name="password"><button id="signin">Sign in</button>'
+                "</form>"
+            ),
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [page])))
+        (form,) = endpoints_projection(result)["login"]["forms"]
+        assert form["submit"] == "#signin"
+        assert form["neutral_roles"] == ["field_1", "field_2"]
+        assert form["unresolved_roles"] == ["field_1", "field_2"]
+        assert "otp_40912873" not in render_endpoints_json(result)
+
+    def test_a_form_action_holding_an_id_is_templated_and_its_selectors_unscoped(
+        self, tmp_path: Path
+    ) -> None:
+        """The action is printed through the auth URLs' templating. A selector
+        scoped to the templated action would match no live form, and one scoped to
+        the literal action would print the id, so each prints its input part."""
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/signin",
+            content_type="text/html",
+            body=(
+                f'<form action="/accounts/{_PLANTED_RESET_SEGMENT}/session" method="post">'
+                '<input type="text" name="username"><input type="password" id="pw" '
+                'name="password"></form>'
+            ),
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [page])))
+        (form,) = endpoints_projection(result)["login"]["forms"]
+        assert form == {
+            "action": "/accounts/{account_id}/session",
+            "fields": {"password": "#pw", "username": 'input[name="username"]'},
+            "submit": None,
+            "neutral_roles": [],
+            "unresolved_roles": [],
+        }
+        assert _PLANTED_RESET_SEGMENT not in render_endpoints_json(result)
+
+    def test_auth_urls_list_only_the_login_s_own_observations(self, tmp_path: Path) -> None:
+        """A logout and a cart redirect recorded right after the login are observed,
+        and the projection lists only the login's own URLs."""
+
+        def redirected(entry: dict, location: str) -> dict:
+            entry["response"]["status"] = 302
+            entry["response"]["headers"].append({"name": "Location", "value": location})
+            return entry
+
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/login",
+            content_type="text/html",
+            body=(
+                '<form action="/session" method="post"><input type="email" name="email" '
+                'id="email"><input type="password" name="password" id="pass"></form>'
+            ),
+        )
+        post = redirected(_entry("POST", "https://myshop.example.com/session"), "/dashboard")
+        post["request"]["postData"] = {
+            "mimeType": "application/json",
+            "text": json.dumps({"email": "alice@example.com", "password": "x"}),
+        }
+        entries = [
+            page,
+            post,
+            _entry("GET", "https://myshop.example.com/dashboard", content_type="text/html"),
+            redirected(_entry("GET", "https://myshop.example.com/logout"), "/login"),
+            redirected(_entry("GET", "https://myshop.example.com/cart"), "/cart/view"),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        # The digest observed both, so the assertion below is not vacuous.
+        observed = {o.url for o in result.login}
+        assert {"https://myshop.example.com/logout", "https://myshop.example.com/cart"} <= observed
+        payload = endpoints_projection(result)
+        assert {(o["method"], o["url"]) for o in payload["login"]["auth_urls"]} == {
+            ("GET", "https://myshop.example.com/login"),
+            ("POST", "https://myshop.example.com/session"),
+        }
+
+    def test_a_javascript_action_is_printed_as_written(self, tmp_path: Path) -> None:
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/login",
+            content_type="text/html",
+            body=(
+                '<form action="javascript:void(0)"><input name="username">'
+                '<input type="password" name="password"><button>Sign in</button></form>'
+            ),
+        )
+        payload = endpoints_projection(digest(DigestSource.from_har(_write_har(tmp_path, [page]))))
+        (form,) = payload["login"]["forms"]
+        assert form["action"] == "javascript:void(0)"
+        assert form["submit"] is not None
+        assert form["unresolved_roles"] == []
+
+    def test_a_token_in_a_javascript_action_is_never_printed(self, tmp_path: Path) -> None:
+        page = _entry(
+            "GET",
+            "https://myshop.example.com/login",
+            content_type="text/html",
+            body=(
+                "<form action=\"javascript:login('f3a9c2e1b7d4a6f0e2c8b1d9')\">"
+                '<input name="username"><input type="password" name="password">'
+                "<button>Sign in</button></form>"
+            ),
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [page])))
+        # The digest's own form holds it, so the assertions below are not vacuous.
+        assert "f3a9c2e1b7d4a6f0e2c8b1d9" in result.login_forms[0].action
+        payload = endpoints_projection(result)
+        (form,) = payload["login"]["forms"]
+        assert form["action"] == "javascript:{id}"
+        assert "f3a9c2e1b7d4a6f0e2c8b1d9" not in render_endpoints_json(result)
+
+    def test_login_flow_and_shape_come_through(self, tmp_path: Path) -> None:
+        payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))
+        order = next(e for e in payload["endpoints"] if e["template"] == "/api/orders/{order_id}")
+        assert order["method"] == "GET"
+        assert order["login_flow"] is False
+        assert order["shape"] == "object{id}"
+
+    def test_the_projection_survives_a_rename_of_an_internal_endpoint_field(
+        self, tmp_path: Path
+    ) -> None:
+        """Built by an explicit function, not by reflection: renaming a field the
+        projection does not carry changes render_json and leaves this unchanged."""
+        result = digest(DigestSource.from_har(_planted_run(tmp_path)))
+        renames = {"examples": "example_paths", "statuses": "status_codes"}
+        fields = dataclasses.fields(Endpoint)
+        renamed_cls = dataclasses.make_dataclass(
+            "Endpoint", [(renames.get(f.name, f.name), f.type) for f in fields], frozen=True
+        )
+        renamed = tuple(
+            renamed_cls(**{renames.get(f.name, f.name): getattr(e, f.name) for f in fields})
+            for e in result.endpoints
+        )
+        patched = dataclasses.replace(result, endpoints=renamed)
+        assert endpoints_projection(patched) == endpoints_projection(result)
+        assert render_json(patched) != render_json(result)
+
+
+# A distinct marker in the query, the fragment, a ;param, and the userinfo of
+# every URL a digest reads: none of them is a path, so none may be retained.
+_URL_MARKERS = (
+    "QVALUEPAGE",
+    "FRAGPAGE",
+    "SEMIPAGE",
+    "USERINFOPW",
+    "QVALUEACTION",
+    "FRAGACTION",
+    "SEMIACTION",
+    "QVALUEPOST",
+    "SEMIPOST",
+    "QVALUEREDIR",
+    "FRAGREDIR",
+    "SEMIREDIR",
+    "QVALUEORDERS",
+    "SEMIMIDDLE",
+)
+
+
+def _url_planted_run(tmp_path: Path) -> Path:
+    page = _entry(
+        "GET",
+        "https://alice:USERINFOPW@myshop.example.com/signin;s=SEMIPAGE/page?q=QVALUEPAGE#FRAGPAGE",
+        content_type="text/html",
+        body=(
+            '<html><head><meta name="csrf-token" content="t"></head>'
+            '<form action="/login;jsessionid=SEMIACTION?q=QVALUEACTION#FRAGACTION" method="post">'
+            '<input type="hidden" name="authenticity_token" value="t">'
+            '<input name="username"><input type="password" name="password"></form></html>'
+        ),
+    )
+    post = _entry(
+        "POST",
+        "https://myshop.example.com/login;s=SEMIPOST?q=QVALUEPOST",
+        content_type="text/html",
+        body="",
+    )
+    post["request"]["postData"] = {
+        "mimeType": "application/x-www-form-urlencoded",
+        "text": "username=a&password=b",
+    }
+    post["response"]["status"] = 302
+    redirect = "/dashboard;s=SEMIREDIR?q=QVALUEREDIR#FRAGREDIR"
+    post["response"]["redirectURL"] = redirect
+    post["response"]["headers"].append({"name": "Location", "value": redirect})
+    orders = _entry(
+        "GET",
+        "https://myshop.example.com/api;s=SEMIMIDDLE/orders?q=QVALUEORDERS",
+        body='{"id": 1}',
+    )
+    return _write_har(tmp_path, [page, post, orders])
+
+
+_EMAILS = ("alice@example.com", "alice%40example.com")
+
+
+def _email_planted_run(tmp_path: Path) -> Path:
+    """An email in an API path, a login page path, a form action, and a redirect."""
+    page = _entry(
+        "GET",
+        "https://myshop.example.com/signin/alice%40example.com",
+        content_type="text/html",
+        body=(
+            '<form action="/users/alice@example.com/session" method="post">'
+            '<input name="username"><input type="password" name="password"></form>'
+        ),
+    )
+    post = _entry(
+        "POST",
+        "https://myshop.example.com/users/alice@example.com/session",
+        content_type="text/html",
+        body="",
+    )
+    post["request"]["postData"] = {
+        "mimeType": "application/x-www-form-urlencoded",
+        "text": "username=a&password=b",
+    }
+    post["response"]["status"] = 302
+    redirect = "/users/alice%40example.com/dashboard"
+    post["response"]["redirectURL"] = redirect
+    post["response"]["headers"].append({"name": "Location", "value": redirect})
+    orders = _entry(
+        "GET", "https://myshop.example.com/api/users/alice@example.com/orders", body='{"id": 1}'
+    )
+    return _write_har(tmp_path, [page, post, orders])
+
+
+def test_no_output_carries_an_email_from_a_recorded_path(tmp_path: Path) -> None:
+    result = digest(DigestSource.from_har(_email_planted_run(tmp_path)))
+    # The digest saw the page, the form, the login, and the endpoint.
+    assert result.login_forms
+    assert any(o.kind == "credential_post" for o in result.login)
+    assert "/api/users/{user_id}/orders" in {e.template for e in result.endpoints}
+    for text in (render_json(result), render_endpoints_json(result), render_markdown(result)):
+        for email in _EMAILS:
+            assert email not in text, email
+
+
+class TestNoUrlPartBeyondThePathIsRetained:
+    def test_neither_json_output_carries_a_query_fragment_param_or_userinfo(
+        self, tmp_path: Path
+    ) -> None:
+        result = digest(DigestSource.from_har(_url_planted_run(tmp_path)))
+        # The digest saw the form, the login, the redirect, and the token, so the
+        # absence below is not vacuous.
+        assert result.login_forms
+        assert any(o.kind == "credential_post" for o in result.login)
+        assert any(t.name == "csrf-token" for t in result.tokens)
+        for text in (render_json(result), render_endpoints_json(result), render_markdown(result)):
+            for marker in _URL_MARKERS:
+                assert marker not in text, marker
+
+    def test_a_middle_segment_param_leaves_the_endpoint_template(self, tmp_path: Path) -> None:
+        payload = endpoints_projection(digest(DigestSource.from_har(_url_planted_run(tmp_path))))
+        assert "/api/orders" in {e["template"] for e in payload["endpoints"]}
+
+
+def test_render_json_carries_no_collapsed_member_beyond_the_capped_examples(
+    tmp_path: Path,
+) -> None:
+    words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+    words += ["golf", "hotel", "india", "juliet", "kilo", "lima"]
+    entries = [
+        _entry("GET", f"https://myshop.example.com/products/{word}-widget-2024") for word in words
+    ]
+    result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+    (endpoint,) = result.endpoints
+    assert endpoint.template == "/products/{product_id}"
+    text = render_json(result)
+    assert "collapsed_templates" not in json.loads(text)
+    retained = [w for w in words if any(w in example for example in endpoint.examples)]
+    assert len(retained) == len(endpoint.examples) < len(words)
+    for word in words:
+        assert (word in text) == (word in retained), word

@@ -1,0 +1,414 @@
+"""The one way ``graftpunk.devtools.scaffold`` writes to a developer's project.
+
+A change is planned against the text on disk, refused with a reason if it
+conflicts, rendered in full, validated before anything is written by the
+validator the change carries, written atomically, and restored from the
+original text if any later write of the same operation fails. The writer never
+switches on file type: a Python module's change carries :func:`validate_python`,
+a ``pyproject.toml``'s carries :func:`validate_toml`, and a file with no grammar
+(a README, a ``.gitkeep``) carries none (graft skill spec, 2026-09-21).
+
+Imported by the writers only (the scaffold, the stub inserter, the migrator);
+the project reader and the lint never import it.
+"""
+
+from __future__ import annotations
+
+import ast
+import contextlib
+import errno
+import os
+import secrets
+import stat
+import tomllib
+from collections.abc import Callable, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass
+from pathlib import Path
+
+from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
+
+__all__ = [
+    "ChangeConflictError",
+    "InvalidChangeError",
+    "PlannedChange",
+    "Validator",
+    "apply_changes",
+    "find_conflicts",
+    "read_original",
+    "validate_python",
+    "validate_toml",
+]
+
+Validator = Callable[[str], None]
+
+_PARTIAL_SUFFIX = ".gp-partial"
+
+# The temp files the running apply_changes has created and not yet moved into
+# place or removed. Only these are its to remove or to report as left changed; a
+# temp file left by an earlier run is neither.
+_OPEN_PARTIALS: ContextVar[list[Path] | None] = ContextVar("_OPEN_PARTIALS", default=None)
+
+
+def validate_python(text: str) -> None:
+    """Raise ``ValueError`` unless *text* parses as a Python module."""
+    try:
+        ast.parse(text)
+    except SyntaxError as exc:
+        raise ValueError(f"does not parse as Python: {exc.msg} (line {exc.lineno})") from exc
+
+
+def validate_toml(text: str) -> None:
+    """Raise ``ValueError`` unless *text* loads as TOML."""
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"does not load as TOML: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class PlannedChange:
+    """One file's full new content, planned against what the file held.
+
+    ``original`` is ``None`` for a create, which conflicts with any file already
+    at ``path``; for an edit it is the text the plan was made from, read with
+    :func:`read_original`, and the change conflicts if the file no longer holds
+    exactly that.
+    """
+
+    path: Path
+    content: str
+    original: str | None = None
+    validate: Validator | None = None
+
+
+_EXISTING = "Refusing to overwrite existing file(s)"
+_CHANGED = "Refusing to edit file(s) changed since they were read"
+_DUPLICATED = "Refusing to change a file more than once in one operation"
+_UNREADABLE = "Refusing to edit file(s) that could not be read"
+
+
+class ChangeConflictError(DevtoolsRefusal):
+    """One or more planned changes conflict with the disk, or with each other;
+    nothing was written.
+
+    ``conflicts`` is every refused path. ``changed`` is the subset that are edits
+    whose file no longer holds the text they were planned from, ``unreadable``
+    the subset that are edits whose file could not be read to check, and
+    ``duplicates`` the subset that a batch changes more than once; the rest are
+    creates over a file that exists. The message gives each kind its own clause.
+    """
+
+    def __init__(
+        self,
+        conflicts: Sequence[Path],
+        changed: Sequence[Path] = (),
+        duplicates: Sequence[Path] = (),
+        unreadable: Sequence[Path] = (),
+    ) -> None:
+        self.conflicts = list(conflicts)
+        self.changed = tuple(changed)
+        self.duplicates = tuple(duplicates)
+        self.unreadable = tuple(unreadable)
+        super().__init__(
+            "; ".join(
+                f"{header}: {', '.join(str(p) for p in paths)}" for header, paths in self.kinds
+            )
+        )
+
+    @property
+    def kinds(self) -> tuple[tuple[str, tuple[Path, ...]], ...]:
+        """Each kind of conflict present, as (header, paths), creates first."""
+        named = set(self.changed) | set(self.duplicates) | set(self.unreadable)
+        existing = tuple(p for p in self.conflicts if p not in named)
+        return tuple(
+            (header, paths)
+            for header, paths in (
+                (_EXISTING, existing),
+                (_CHANGED, self.changed),
+                (_UNREADABLE, self.unreadable),
+                (_DUPLICATED, self.duplicates),
+            )
+            if paths
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type[ChangeConflictError],
+        tuple[list[Path], tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]],
+    ]:
+        return type(self), (self.conflicts, self.changed, self.duplicates, self.unreadable)
+
+
+class InvalidChangeError(DevtoolsRefusal, ValueError):
+    """A planned change's content, or the file it was planned from, is not text the
+    writer can use; nothing was written. *reason* is a clause with its own subject
+    ("the result does not parse ...", "it is not UTF-8 text")."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"Refusing to write {path}: {reason}")
+
+    def __reduce__(self) -> tuple[type[InvalidChangeError], tuple[Path, str]]:
+        return type(self), (self.path, self.reason)
+
+
+def read_original(path: Path) -> str:
+    """*path*'s text exactly as it is on disk, for a :class:`PlannedChange`'s
+    ``original``. Decoded from bytes, so no line ending is translated: a CRLF file
+    is compared and restored as CRLF.
+
+    Raises:
+        InvalidChangeError: The file is not UTF-8 text.
+        OSError: The file cannot be read.
+    """
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise InvalidChangeError(path, "it is not UTF-8 text") from exc
+
+
+def _holds(path: Path, text: str) -> bool:
+    """True when *path* is a file whose text is exactly *text*; False when it is
+    not, or cannot be read."""
+    try:
+        return path.read_bytes().decode("utf-8") == text
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _unreadable(change: PlannedChange) -> bool:
+    """True when *change* is an edit whose file exists and cannot be read, so
+    whether it still holds its original cannot be checked."""
+    if change.original is None or not os.path.lexists(change.path):
+        return False
+    try:
+        change.path.read_bytes()
+    except OSError:
+        return True
+    return False
+
+
+def _conflicts(change: PlannedChange) -> bool:
+    if change.original is None:
+        # lexists, not Path.exists: it never raises (an unreadable parent is the
+        # write's failure to report, with its own OS error), and a dangling
+        # symlink at the path is a conflict, not a free slot.
+        return os.path.lexists(change.path)
+    return not _holds(change.path, change.original)
+
+
+def find_conflicts(changes: Sequence[PlannedChange]) -> list[Path]:
+    """The paths among *changes* that conflict with the disk, sorted."""
+    return sorted(change.path for change in changes if _conflicts(change))
+
+
+def _missing_parents(directory: Path) -> list[Path]:
+    """The ancestors of *directory*, *directory* included, that do not exist yet,
+    deepest last: the order ``mkdir(parents=True)`` creates them. A dangling
+    symlink counts as existing: ``mkdir`` then fails on it, and the restore must
+    not list a path this operation never created."""
+    missing: list[Path] = []
+    current = directory
+    while not os.path.lexists(current) and current != current.parent:
+        missing.append(current)
+        current = current.parent
+    return list(reversed(missing))
+
+
+def _new_partial(target: Path, open_partials: list[Path] | None) -> Path:
+    """A temp file beside *target*, created empty by this call. The name is random
+    and the create is exclusive, so a temp file an earlier run left behind is never
+    written over.
+
+    Each candidate name goes into *open_partials* before its create and comes out
+    only when the create finds the name taken, so an exception at any point after
+    the file exists leaves it tracked for :func:`_restore`. A name registered but
+    never created is harmless there: only paths on disk are removed or reported.
+    """
+    while True:
+        partial = target.with_name(f".{target.name}.{secrets.token_hex(4)}{_PARTIAL_SUFFIX}")
+        if open_partials is not None:
+            open_partials.append(partial)
+        try:
+            with partial.open("x", encoding="utf-8"):
+                pass
+        except FileExistsError:
+            _forget(open_partials, partial)
+            continue
+        return partial
+
+
+def _forget(open_partials: list[Path] | None, partial: Path) -> None:
+    if open_partials is not None and partial in open_partials:
+        open_partials.remove(partial)
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Write *text* to a sibling temp file and move it over *path*, so a reader never
+    sees a half-written module. The temp file is removed if either step fails. It
+    has a random name and is created exclusively (see :func:`_new_partial`), so a
+    temp file an earlier run left behind is never written over or removed.
+
+    A symlinked *path* is written through, so the link survives, and an existing
+    file keeps its permission bits; ``os.replace`` alone would swap in a new
+    regular file with the umask's mode. What the rename cannot keep: a hard link
+    to the old file is broken (the other name keeps the old text), and the file's
+    owner and group become the writer's.
+    """
+    target = Path(os.path.realpath(path))
+    open_partials = _OPEN_PARTIALS.get()
+    partial: Path | None = None
+    try:
+        try:
+            mode: int | None = stat.S_IMODE(target.stat().st_mode)
+        except FileNotFoundError:
+            mode = None
+        partial = _new_partial(target, open_partials)
+        # newline="": the text is written as given, so an original read by
+        # read_original comes back byte for byte.
+        partial.write_text(text, encoding="utf-8", newline="")
+        if mode is not None:
+            partial.chmod(mode)
+        os.replace(partial, target)
+        _forget(open_partials, partial)
+    except BaseException:
+        # Any exception, KeyboardInterrupt included: the partial is this
+        # function's own, and nothing else knows to remove it. One it could not
+        # remove stays in open_partials for _restore to report.
+        if partial is not None:
+            with contextlib.suppress(OSError):
+                partial.unlink()
+                _forget(open_partials, partial)
+        raise
+
+
+def _restore(started: list[PlannedChange], created_dirs: list[Path]) -> list[Path]:
+    """Put back what this operation changed, best effort, and return every path it
+    could not put back: each edited file's original text, each created file
+    removed, then each directory this operation created, deepest first and only
+    while empty. *started* ends with the change whose write failed, which may or
+    may not have reached the disk.
+
+    An edit is put back atomically, and only when the file no longer holds its
+    original text: rewriting it in place would truncate a file the failed write
+    left intact, on the same full disk that made it fail. Every step is guarded,
+    because unwinding runs in the conditions that caused the failure and the
+    original error is the one the caller must see; a step that fails is reported
+    in the return value instead.
+    """
+    unrestored: list[Path] = []
+    for change in reversed(started):
+        try:
+            if change.original is None:
+                change.path.unlink(missing_ok=True)
+            elif not _holds(change.path, change.original):
+                _write_atomically(change.path, change.original)
+        except OSError:
+            if change.original is not None or os.path.lexists(change.path):
+                unrestored.append(change.path)
+    # A temp file this operation created and has not removed is removed here, or
+    # is left changed too; one an earlier run left is not this operation's.
+    for partial in _OPEN_PARTIALS.get() or ():
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            if os.path.lexists(partial):
+                unrestored.append(partial)
+    for directory in reversed(created_dirs):
+        try:
+            directory.rmdir()
+        except OSError:
+            if os.path.lexists(directory):
+                unrestored.append(directory)
+    return unrestored
+
+
+def apply_changes(changes: Sequence[PlannedChange]) -> tuple[Path, ...]:
+    """Apply *changes* in order, all or nothing.
+
+    Raises:
+        ChangeConflictError: Two changes name the same file (compared after
+            resolving symlinks), a create's path exists, or an edit's file
+            changed since it was planned or cannot be read to check. Raised
+            before anything is touched.
+        InvalidChangeError: A change's content cannot be encoded as UTF-8 or
+            fails its validator. Raised before anything is touched.
+        ScaffoldWriteError: An edit's file is not writable (raised before
+            anything is touched, with ``EACCES``), or a write failed. Every
+            change already applied is undone first where it can be; the error
+            names the path, carries the ``OSError``, and lists in
+            ``unrestored`` anything left changed.
+
+    Any other exception raised mid-write (``KeyboardInterrupt`` included) is
+    re-raised as itself after the same restore, with a note naming any path
+    left changed.
+    """
+    seen: set[str] = set()
+    duplicates: list[Path] = []
+    for change in changes:
+        # Case-folded, so Plugin.py and plugin.py in one batch are refused on every
+        # filesystem, a case-insensitive one included.
+        resolved = os.path.realpath(change.path).casefold()
+        if resolved in seen:
+            duplicates.append(change.path)
+        seen.add(resolved)
+    if duplicates:
+        raise ChangeConflictError(duplicates, duplicates=duplicates)
+    conflicts = find_conflicts(changes)
+    if conflicts:
+        unreadable = sorted(c.path for c in changes if c.path in conflicts and _unreadable(c))
+        changed = sorted(
+            c.path
+            for c in changes
+            if c.original is not None and c.path in conflicts and c.path not in unreadable
+        )
+        raise ChangeConflictError(conflicts, changed=changed, unreadable=unreadable)
+    for change in changes:
+        try:
+            change.content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise InvalidChangeError(
+                change.path,
+                f"the result cannot be encoded as UTF-8: {exc.reason} at position {exc.start}",
+            ) from exc
+        if change.validate is not None:
+            try:
+                change.validate(change.content)
+            except ValueError as exc:
+                raise InvalidChangeError(change.path, f"the result {exc}") from exc
+    for change in changes:
+        # The rename in _write_atomically needs only the directory to be
+        # writable, so without this a read-only file would be replaced silently.
+        if change.original is not None and not os.access(os.path.realpath(change.path), os.W_OK):
+            denied = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(change.path))
+            raise ScaffoldWriteError(change.path, denied, before_first_write=True)
+    started: list[PlannedChange] = []
+    created_dirs: list[Path] = []
+    open_partials = _OPEN_PARTIALS.set([])
+    current: Path | None = None
+    try:
+        # One handler spans the whole loop, so an interrupt that lands between two
+        # writes restores as surely as one that lands inside a write.
+        for change in changes:
+            current = change.path
+            created_dirs.extend(_missing_parents(change.path.parent))
+            change.path.parent.mkdir(parents=True, exist_ok=True)
+            started.append(change)
+            _write_atomically(change.path, change.content)
+    except OSError as exc:
+        unrestored = _restore(started, created_dirs)
+        raise ScaffoldWriteError(current or changes[0].path, exc, unrestored) from exc
+    except BaseException as exc:
+        # Not a write failure (a bug, or KeyboardInterrupt): restore all the same,
+        # then let the exception itself reach the caller.
+        unrestored = _restore(started, created_dirs)
+        if unrestored:
+            listing = ", ".join(str(p) for p in unrestored)
+            exc.add_note(f"These paths could not be restored and are left changed: {listing}.")
+        raise
+    finally:
+        _OPEN_PARTIALS.reset(open_partials)
+    return tuple(change.path for change in changes)

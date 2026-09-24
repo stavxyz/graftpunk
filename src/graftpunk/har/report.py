@@ -15,11 +15,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-from graftpunk.har.digest import Endpoint, RunDigest, ShapeNode
+from graftpunk.contracts import current_schema
+from graftpunk.har.digest import INTERNAL, Endpoint, RunDigest, ShapeNode
+from graftpunk.har.documents import LoginForm, printable_selectors, printable_unresolved_roles
+from graftpunk.har.paths import templated_url, templates_a_segment
 
 __all__ = [
     "DEFAULT_ENDPOINT_LIMIT",
     "SHAPE_UNAVAILABLE_SUMMARY",
+    "endpoints_projection",
+    "render_endpoints_json",
     "render_json",
     "render_markdown",
     "summarize_shape",
@@ -113,9 +118,16 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
         for obs in d.login:
             field_note = f" ({', '.join(obs.fields)})" if obs.fields else ""
             redirect_note = f" -> {obs.redirect_to}" if obs.redirect_to else ""
+            # A login-shaped observation outside the login the generator uses (a
+            # password change, a later redirect) says so.
+            outside = (
+                " (not part of the login)"
+                if not obs.login_flow and obs.kind in _LOGIN_SHAPED_KINDS
+                else ""
+            )
             lines.append(
                 f"{obs.order}. {obs.method} {obs.url} [{obs.status}] "
-                f"{obs.kind}{field_note}{redirect_note}"
+                f"{obs.kind}{field_note}{redirect_note}{outside}"
             )
     else:
         lines.append("(no login observations)")
@@ -160,7 +172,11 @@ def render_markdown(d: RunDigest, *, limit: int = DEFAULT_ENDPOINT_LIMIT) -> str
 
 def _jsonable(value: Any) -> Any:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _jsonable(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        return {
+            f.name: _jsonable(getattr(value, f.name))
+            for f in dataclasses.fields(value)
+            if not f.metadata.get(INTERNAL)
+        }
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, dict):
@@ -171,5 +187,90 @@ def _jsonable(value: Any) -> Any:
 
 
 def render_json(d: RunDigest) -> str:
-    """The complete digest as JSON: nothing capped, nothing summarised."""
+    """The complete digest as JSON: nothing capped, nothing summarised. A field
+    marked :data:`graftpunk.har.digest.INTERNAL` is a lookup for code and is left
+    out."""
     return json.dumps(_jsonable(d), indent=2, sort_keys=True)
+
+
+_LOGIN_SHAPED_KINDS = frozenset({"form_page", "credential_post", "redirect", "set_cookie"})
+
+
+def _projected_form(form: LoginForm) -> dict[str, Any]:
+    """*form* as the projection prints it. When the action's path holds an id or a
+    token (:func:`graftpunk.har.paths.templates_a_segment`), the action is printed
+    through :func:`templated_url`, as the auth URLs are, and each field selector
+    without its form scope (:func:`graftpunk.har.documents.printable_selectors`,
+    the rule the generator applies too); one that cannot be unscoped is left out.
+    Otherwise both are printed as recorded. The submit selector follows the same
+    rule; ``neutral_roles`` are the placeholder role keys (``field_N``), and
+    ``unresolved_roles`` the roles the printed step has no selector for
+    (:func:`graftpunk.har.documents.printable_unresolved_roles`)."""
+    action = templated_url(form.action) if templates_a_segment(form.action) else form.action
+    selectors, submit = printable_selectors(form)
+    # A selector that cannot be unscoped is left out, never printed scoped.
+    fields = {role: selector for role, selector in selectors.items() if selector is not None}
+    return {
+        "action": action,
+        "fields": fields,
+        "submit": submit,
+        "neutral_roles": list(form.neutral_roles),
+        "unresolved_roles": list(printable_unresolved_roles(form)),
+    }
+
+
+def endpoints_projection(d: RunDigest) -> dict[str, Any]:
+    """The declared projection ``gp observe digest --endpoints-json`` prints.
+
+    An explicit field list, never a reflection over the digest's dataclasses, so
+    renaming an internal field touches this function and no contract. It carries
+    only what a command proposal consumes, and by construction no cookie name, no
+    token candidate, no example path, no body, no untemplated login URL or form
+    action path, and no form action query string or ``;params``. Its field set is pinned per
+    schema version; fields are added and never renamed or removed within one
+    (:mod:`graftpunk.contracts`). ``render_json`` stays an unversioned dump.
+
+    Each ``query_params`` and ``body_params`` value is one of schema 1's type
+    labels: ``str``, ``int``, ``float``, ``bool``, ``object``, ``mixed``, or
+    ``list[<element>]``, the element one of those, ``list``, or ``unknown`` (see
+    ``graftpunk.har.digest``).
+    """
+    source = d.source
+    return {
+        "schema": current_schema("endpoints"),
+        "source": {
+            "session": source.session,
+            "run_id": source.run_id,
+            "har": None if source.session else str(source.har_path),
+        },
+        "primary_host": d.primary_host,
+        "endpoints": [
+            {
+                "method": method,
+                "template": endpoint.template,
+                "login_flow": endpoint.login_flow,
+                "content_type": endpoint.content_type,
+                "shape": summarize_shape(endpoint.shape),
+                "query_params": dict(sorted(endpoint.query_params.items())),
+                "body_params": dict(sorted(endpoint.body_params.items())),
+                "custom_headers": list(endpoint.custom_headers),
+            }
+            for endpoint in sorted(d.endpoints, key=_endpoint_sort_key)
+            for method in endpoint.methods
+        ],
+        "login": {
+            # The login's own observations only (LoginObservation.login_flow): a
+            # logout or a cart redirect recorded in the same window is not its URL.
+            "auth_urls": [
+                {"method": o.method, "url": templated_url(o.url), "kind": o.kind}
+                for o in d.login
+                if o.login_flow
+            ],
+            "forms": [_projected_form(form) for form in d.login_forms],
+        },
+    }
+
+
+def render_endpoints_json(d: RunDigest) -> str:
+    """:func:`endpoints_projection` as indented JSON with sorted keys."""
+    return json.dumps(endpoints_projection(d), indent=2, sort_keys=True)

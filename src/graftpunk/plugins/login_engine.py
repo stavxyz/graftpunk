@@ -701,7 +701,7 @@ async def _run_nodriver_steps(
     # "no submit was clicked", where the URL at the start of the wait is the right
     # baseline, from "the read at click time came back empty", where re-reading
     # after the steps would take the post-login URL as the baseline and no later
-    # URL could ever differ from it (polish round 1).
+    # URL could ever differ from it.
     pre_submit_url = ""
     submit_clicked = False
     # Execute each step in sequence: wait_for -> fill fields -> submit -> delay

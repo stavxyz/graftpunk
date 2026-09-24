@@ -4,11 +4,13 @@ Manage encrypted browser sessions from the terminal.
 """
 
 import enum
+import json
 import os
 from collections.abc import Mapping
 from typing import Annotated
 
 import typer
+from packaging.version import InvalidVersion, Version
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -30,6 +32,7 @@ from graftpunk.cli.observe_commands import observe_app
 from graftpunk.cli.session_commands import session_app
 from graftpunk.config import get_settings
 from graftpunk.console import err_console
+from graftpunk.contracts import contract_mismatch, installation_facts
 from graftpunk.logging import (
     configure_logging,
     configured_by_consumer,
@@ -167,19 +170,69 @@ def main_callback(
 
 
 @app.command("version")
-def version() -> None:
+def version(
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the installation facts as JSON")
+    ] = False,
+    at_least: Annotated[
+        str | None,
+        typer.Option(
+            "--at-least",
+            metavar="VERSION",
+            help="Exit 0 when the installed graftpunk is at least VERSION, 1 otherwise",
+        ),
+    ] = None,
+    contract: Annotated[
+        list[str],
+        typer.Option(
+            "--contract",
+            metavar="SURFACE=N",
+            help="Exit 3 unless this graftpunk writes SURFACE at schema N (repeatable)",
+        ),
+    ] = [],  # noqa: B006 - Typer reads this default at decoration time, never mutated per-call
+) -> None:
     """Show graftpunk version and installation info."""
-    settings = get_settings()
-    console.print(
-        Panel(
-            f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n"
-            f"{escape(graftpunk.DESCRIPTION)}\n\n"
-            f"[dim]Config:[/dim]  {escape(str(settings.config_dir))}\n"
-            f"[dim]Storage:[/dim] {escape(str(settings.storage_backend))}",
-            title="graftpunk",
-            border_style="cyan",
+    floor: Version | None = None
+    if at_least is not None:
+        try:
+            floor = Version(at_least)
+        except InvalidVersion:
+            typer.echo(f"--at-least: {at_least!r} is not a version graftpunk can order.", err=True)
+            raise typer.Exit(1) from None
+    expected: list[tuple[str, int]] = []
+    for value in contract:
+        surface, separator, number = value.partition("=")
+        if not surface or not separator or not (number.isascii() and number.isdigit()):
+            typer.echo(f"--contract: {value!r} is not SURFACE=N, as in endpoints=1.", err=True)
+            raise typer.Exit(1)
+        expected.append((surface, int(number)))
+    if as_json:
+        typer.echo(json.dumps(installation_facts(), sort_keys=True))
+    elif floor is None and not expected:
+        # A caller passing --at-least or --contract without --json wants the
+        # exit status, not the panel.
+        settings = get_settings()
+        console.print(
+            Panel(
+                f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n"
+                f"{escape(graftpunk.DESCRIPTION)}\n\n"
+                f"[dim]Config:[/dim]  {escape(str(settings.config_dir))}\n"
+                f"[dim]Storage:[/dim] {escape(str(settings.storage_backend))}",
+                title="graftpunk",
+                border_style="cyan",
+            )
         )
-    )
+    if floor is not None and Version(graftpunk.__version__) < floor:
+        raise typer.Exit(1)
+    mismatches = [
+        message
+        for surface, reads in expected
+        if (message := contract_mismatch(surface, reads)) is not None
+    ]
+    for message in mismatches:
+        typer.echo(message, err=True)
+    if mismatches:
+        raise typer.Exit(3)
 
 
 # Observe subcommand group (defined in observe_commands.py)

@@ -1620,3 +1620,40 @@ class TestCommandResultOutputConfig:
 
         result = CommandResult(data={"items": []})
         assert result.output_config is None
+
+
+class TestCommandEndpoint:
+    """@command(endpoint=...) is tooling provenance: stored, never consulted at
+    runtime, never shown in help (graft skill spec, 2026-09-21)."""
+
+    def test_the_endpoint_is_stored_on_the_metadata(self) -> None:
+        @command(help="List orders", endpoint="GET /api/orders")
+        def orders(self: object, ctx: object) -> dict:
+            return {}
+
+        assert orders._command_meta.endpoint == "GET /api/orders"
+
+    def test_a_command_without_one_stores_none(self) -> None:
+        @command(help="List orders")
+        def orders(self: object, ctx: object) -> dict:
+            return {}
+
+        assert orders._command_meta.endpoint is None
+
+    def test_the_endpoint_is_absent_from_help(self) -> None:
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        class _EndpointPlugin(SitePlugin):
+            site_name = "myshop"
+            session_name = "myshop"
+            base_url = "https://myshop.example.com"
+            requires_session = False
+
+            @command(help="List orders", endpoint="GET /api/orders")
+            def orders(self, ctx: CommandContext) -> dict:
+                return {}
+
+        result = invoke_plugin_app(_EndpointPlugin(), ["myshop", "orders", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "List orders" in result.output
+        assert "/api/orders" not in result.output

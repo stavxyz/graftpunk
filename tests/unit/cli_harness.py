@@ -2,16 +2,31 @@
 """Shared CLI harness: register one plugin on a fresh app and invoke it.
 
 Used by test_plugin_runtime_session.py, test_login_identity.py and
-test_multi_account_e2e.py — one copy, so the harness cannot drift.
+test_multi_account_e2e.py: one copy, so the harness cannot drift.
+``strip_ansi`` is the one ANSI stripper every CLI test module uses.
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 if TYPE_CHECKING:
     from graftpunk.session import BrowserSession
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    """*text* without ANSI escape sequences.
+
+    Rich colours output when a terminal or ``FORCE_COLOR`` is detected, and the
+    codes land inside the words a test looks for (an option name, a path, a
+    session name). CI sets ``FORCE_COLOR``; a local run usually does not.
+    Assert on ``strip_ansi(result.output)``.
+    """
+    return _ANSI_ESCAPE.sub("", text)
 
 
 def echo_loaded_session(session: Any = None) -> Any:

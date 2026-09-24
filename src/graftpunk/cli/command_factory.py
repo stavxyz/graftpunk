@@ -28,7 +28,17 @@ from graftpunk.plugins.cli_plugin import PluginParamSpec
 # The supported click_kwargs surface (the RFC's documented contract).
 # Anything outside these sets fails loudly at registration -- no silent drift.
 OPTION_KEYS = frozenset(
-    {"type", "required", "default", "help", "is_flag", "show_default", "envvar", "flag"}
+    {
+        "type",
+        "required",
+        "default",
+        "help",
+        "is_flag",
+        "show_default",
+        "envvar",
+        "flag",
+        "multiple",
+    }
 )
 ARGUMENT_KEYS = frozenset({"type", "required", "default", "nargs"})
 
@@ -85,10 +95,17 @@ def map_param_spec(
                 "(is_flag=False or unset) has no Typer-native equivalent; use a str/int "
                 "option or a plain flag."
             )
-        # Explicit positive-only decl: bare flag for bools (no --no-* pair),
-        # and immune to typer-version differences in derived flag names.
-        # "flag" overrides the derived name for the cases a Python parameter
-        # name cannot spell (login's --as: "as" is a reserved keyword).
+        multiple = bool(kw.get("multiple"))
+        if multiple and kw.get("is_flag"):
+            raise PluginError(
+                f"plugin '{plugin_name}', command '{command_name}', param '{spec.name}': "
+                "a flag cannot also be multiple; a repeated option takes a value each time."
+            )
+        # The default declaration is explicit and positive-only (a bool gets a bare
+        # flag, no --no-* pair), and immune to typer-version differences in derived
+        # flag names. "flag" overrides it: for a name a Python parameter cannot spell
+        # (login's --as: "as" is a reserved keyword), or to declare a bool's
+        # --x/--no-x pair.
         flag = kw.get("flag") or f"--{spec.name.replace('_', '-')}"
         info = typer.Option(
             ... if required else default,
@@ -97,7 +114,9 @@ def map_param_spec(
             show_default=kw.get("show_default", False),
             envvar=kw.get("envvar") or None,
         )
-        annotation: Any = base_type
+        # "multiple": repeatable, collected into a list of base_type; None when
+        # the option is not given at all.
+        annotation: Any = types.GenericAlias(list, (base_type,)) if multiple else base_type
         param = inspect.Parameter(
             spec.name,
             inspect.Parameter.KEYWORD_ONLY,
