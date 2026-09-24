@@ -227,6 +227,32 @@ class TestAnEmailSegmentIsAnAccountValue:
         assert templates_a_segment("https://myshop.example.com/users/{user_id}/signin")
 
 
+class TestASegmentHoldingAnEmailAmongOtherTextIsMasked:
+    """X2 (polish #212 round 21): _email and _is_email used to require the whole
+    segment to be one email; both now search, so an email anywhere in the segment
+    is caught."""
+
+    def test_two_digit_free_emails_in_one_segment_are_masked(self) -> None:
+        # A comma, not a ";": bare_url strips a ";..." tail as a matrix
+        # parameter before any email check runs, which would leave only the
+        # first email in the segment and defeat this case.
+        segment = "alice@example.com,bob@example.net"
+        assert holds_an_id(segment)
+        assert (
+            bare_url(f"https://myshop.example.com/contacts/{segment}")
+            == "https://myshop.example.com/contacts/{contact_id}"
+        )
+
+    def test_a_display_name_form_is_masked(self) -> None:
+        """A mailto-style "Name <email>" contact, percent-encoded as a URL segment."""
+        segment = "Zq%20Planted%20%3Czq.planted@realmail.example%3E"
+        assert holds_an_id(segment)
+        masked = bare_url(f"https://myshop.example.com/contacts/{segment}")
+        assert masked == "https://myshop.example.com/contacts/{contact_id}"
+        assert "zq.planted" not in masked
+        assert "realmail.example" not in masked
+
+
 # The name rule's key-position id table (graftpunk.har.paths.holds_an_id): the
 # strong-evidence shapes an account value takes as a key, header, input, cookie, or
 # token name. Every entry must be caught; tests/unit/test_id_property.py plants

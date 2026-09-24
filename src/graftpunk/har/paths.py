@@ -25,10 +25,10 @@ _SINGULAR_BEFORE_FINAL_S = frozenset("sui")
 
 # An email address, matched against the percent-decoded segment: account data,
 # so it collapses like an id and is masked in every URL the digest keeps. One
-# shape, matched whole against a path segment or a name (_EMAIL_RE) and searched
-# for anywhere in the text of a URL of another scheme (_EMAIL_SEARCH_RE).
+# shape, searched for rather than matched whole, so a segment or a name holding
+# an email anywhere in it (a display-name form, two emails joined by a
+# separator) is caught the same as a segment that is only an email.
 _EMAIL_SHAPE = r"[^@\s/]+@[^@\s/]+\.[^@\s/.]+"
-_EMAIL_RE = re.compile(rf"^{_EMAIL_SHAPE}$")
 _EMAIL_SEARCH_RE = re.compile(_EMAIL_SHAPE)
 
 __all__ = [
@@ -125,7 +125,7 @@ def _parts(text: str) -> list[str]:
 
 
 def _email(text: str) -> bool:
-    return bool(_EMAIL_RE.match(text))
+    return bool(_EMAIL_SEARCH_RE.search(text))
 
 
 def _long_digit_run(text: str) -> bool:
@@ -207,7 +207,9 @@ def holds_an_id(text: str) -> bool:
     id when it, or a part of it (split on ``_ . - ~ $``, so a file extension splits
     off), is:
 
-    - an email, or a UUID (by its 12-character hex group);
+    - an email anywhere in the text (searched, not matched whole: a display-name
+      form or two emails joined by a separator both count), or a UUID (by its
+      12-character hex group);
     - a run of 6 or more digits (``user_40912873``);
     - hex of 12 or more characters mixing digits and letters (``a3f9c2d1e0b4``);
     - 3 or more all-digit parts totalling 7 or more digits (``4111-1111-1111-1111``,
@@ -347,7 +349,7 @@ def is_placeholder(segment: str) -> bool:
 
 
 def _is_email(segment: str) -> bool:
-    return bool(_EMAIL_RE.match(unquote(segment)))
+    return bool(_EMAIL_SEARCH_RE.search(unquote(segment)))
 
 
 def _masked_emails(path: str) -> str:

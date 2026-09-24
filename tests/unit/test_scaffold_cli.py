@@ -366,6 +366,47 @@ class TestNextStepsNamesTheFixtures:
         assert "Next:" not in result.output
 
 
+class TestEmailSegmentsAmongOtherTextNeverReachGeneratedOutput:
+    """X2 (polish #212 round 21): a segment that holds an email but is not only
+    one email used to pass through unmasked."""
+
+    @pytest.mark.parametrize(
+        "segment",
+        [
+            "alice@example.com,bob@example.net",
+            "Zq%20Planted%20%3Czq.planted@realmail.example%3E",
+        ],
+        ids=["two-emails", "display-name"],
+    )
+    def test_the_segment_is_absent_from_every_generated_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, segment: str
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            url=f"https://api.myshop.example.com/contacts/{segment}",
+            body='{"ok": true}',
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "example.com" not in strip_ansi(result.output)
+        assert "realmail.example" not in strip_ansi(result.output)
+        for path in target.rglob("*"):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            assert "alice@example.com" not in text
+            assert "zq.planted" not in text
+            assert "realmail.example" not in text
+
+
 class TestGeneratedProjectPassesItsOwnGate:
     def test_new_project_is_ruff_clean(self, tmp_path: Path) -> None:
         result = runner.invoke(
