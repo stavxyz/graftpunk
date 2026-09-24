@@ -536,6 +536,15 @@ def _username_index(inputs: list[_RawInput], password_index: int) -> int | None:
     )
 
 
+def _bare_action(raw: _RawForm) -> str | None:
+    """*raw*'s action as a scope spells it (:func:`graftpunk.har.paths.bare_url`), or
+    None when it cannot be parsed."""
+    try:
+        return bare_url(raw.action)
+    except ValueError:
+        return None
+
+
 def _action_target(raw_action: str, source: str) -> tuple[str, str]:
     """Where a form posts, as host and path (``;params``, query, and fragment
     dropped, never email-masked), resolved against its page when *source* is a URL;
@@ -666,7 +675,17 @@ def extract_login_forms(
         unscoped_fields: dict[str, str] = {}
         absent: list[str] = [] if username_index is not None else ["username"]
         unresolved: list[str] = list(absent)
-        contained = [control for control in parsed.inputs if control.container is raw]
+        # A scoped selector matches every form with this action (a header mini-login
+        # and the main form can share one), so uniqueness is counted across the
+        # controls inside all of them.
+        same_scope = {
+            id(other) for other in parsed.forms if other is raw or _bare_action(other) == action
+        }
+        contained = [
+            control
+            for control in parsed.inputs
+            if control.container is not None and id(control.container) in same_scope
+        ]
         for role, raw_input in roles:
             if role in fields or role in unresolved:
                 continue

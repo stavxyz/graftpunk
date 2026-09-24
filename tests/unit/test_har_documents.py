@@ -868,3 +868,33 @@ class TestRound10Selectors:
         _assert_first_match(html, selector, name="username")
         first = lxml.html.fromstring(f"<html><body>{html}</body></html>").cssselect(selector)[0]
         assert first.get("type") is None
+
+
+class TestTwoFormsPostingToOneAction:
+    """I1: a scoped selector matches every form with the same action, so a name is
+    unique only across all of them."""
+
+    _PAGE = (
+        '<form action="/session" method="post" class="mini">'
+        '<input type="email" name="login[username]">'
+        '<input type="password" name="login[password]">'
+        "<button>Go</button>"
+        "</form>"
+        '<form action="/session" method="post" class="main">'
+        '<input type="email" name="login[username]" id="email">'
+        '<input type="password" name="login[password]" id="pass">'
+        '<button id="send2">Sign in</button>'
+        "</form>"
+    )
+
+    def test_the_main_form_is_selected_by_its_ids(self) -> None:
+        header, main = extract_login_forms(self._PAGE, source="s")
+        assert main.fields == {"username": "#email", "password": "#pass"}
+        assert main.submit == "#send2"
+        for selector, id_ in (("#email", "email"), ("#pass", "pass"), ("#send2", "send2")):
+            _assert_first_match(self._PAGE, selector, id_=id_)
+
+    def test_the_header_form_s_shared_names_are_unresolved(self) -> None:
+        header, _main = extract_login_forms(self._PAGE, source="s")
+        assert header.fields == {}
+        assert header.unresolved_roles == ("username", "password", "submit")
