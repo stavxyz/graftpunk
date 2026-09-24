@@ -224,10 +224,17 @@ def _safe_identifier(base: str, *, digit_prefix: str) -> str:
     return base
 
 
+# The root commands graftpunk.cli.plugin_commands adds to a plugin itself (login, for
+# a plugin with login_config). A copy, since devtools does not import graftpunk.cli;
+# a test holds it equal to AUTO_ROOT_COMMAND_NAMES.
+_AUTO_ROOT_COMMAND_NAMES = ("login",)
 # The names a generated command may not take: every public attribute of
 # SitePlugin, the class the generated plugin subclasses, read from the class itself
-# so a new framework attribute is covered without an edit here.
-_TAKEN_COMMAND_NAMES = frozenset(name for name in dir(SitePlugin) if not name.startswith("_"))
+# so a new framework attribute is covered without an edit here, and those root
+# commands.
+_TAKEN_COMMAND_NAMES = frozenset(
+    {name for name in dir(SitePlugin) if not name.startswith("_")} | set(_AUTO_ROOT_COMMAND_NAMES)
+)
 # The generated test module's fixed tests, whose names a per-command test may not take.
 _FIXED_TEST_NAMES = frozenset({"plugin_instantiates"})
 

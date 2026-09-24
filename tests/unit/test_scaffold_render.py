@@ -2305,7 +2305,8 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         other_method = dataclasses.replace(_LOGIN_PAGE_ENDPOINT, methods=("DELETE",))
         files = render(self._spec(other_method))
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
-        assert "def login(" in plugin_code
+        # C2 (round 13): "login" is the root login command's name, so the stub is login_2.
+        assert "def login_2(" in plugin_code
         ast.parse(plugin_code)
 
     def test_a_login_path_inside_a_collapsed_family_is_still_owned(self) -> None:
@@ -3069,3 +3070,44 @@ def test_stems_that_differ_only_in_case_get_one_test() -> None:
         digest=_digest(endpoints=(_single_endpoint("/Users"), _single_endpoint("/users"))),
     )
     assert len(fixture_paths(spec)) == 1
+
+
+def test_a_stub_named_login_never_takes_the_root_login_command(monkeypatch) -> None:
+    """C2: a non-flow GET /login beside a login_config registers as login_2."""
+    from tests.unit.cli_harness import invoke_plugin_app
+
+    form = LoginForm(
+        action="/session",
+        method="POST",
+        fields={"username": "#user", "password": "#pw"},
+        submit="#go",
+        hidden=(),
+        source="https://myshop.example.com/signin",
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(_single_endpoint("/login"),), login_forms=(form,)),
+    )
+    plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+    assert "def login_2(" in plugin_code
+    namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+    exec(plugin_code, namespace)  # noqa: S102
+
+    class _SessionlessPlugin(namespace["MyshopPlugin"]):
+        requires_session = False
+
+    result = invoke_plugin_app(_SessionlessPlugin(), ["myshop", "--help"])
+    assert result.exit_code == 0, result.output
+    output = strip_ansi(result.output)
+    assert "login-2" in output and "login " in output
+
+
+def test_the_reserved_command_names_are_the_root_commands_registration_adds() -> None:
+    """devtools does not import graftpunk.cli, so render keeps its own copy."""
+    from graftpunk.cli.plugin_commands import AUTO_ROOT_COMMAND_NAMES
+    from graftpunk.devtools.scaffold.render import _AUTO_ROOT_COMMAND_NAMES
+
+    assert set(_AUTO_ROOT_COMMAND_NAMES) == set(AUTO_ROOT_COMMAND_NAMES)

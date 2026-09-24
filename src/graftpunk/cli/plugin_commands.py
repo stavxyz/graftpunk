@@ -261,15 +261,15 @@ def _build_site_app(plugin: CLIPluginProtocol, result: PluginDiscoveryResult) ->
         if login_callable is not None:
             from graftpunk.cli.login_commands import create_login_fn
 
-            if "login" in registered_names[""]:
+            if LOGIN_COMMAND in registered_names[""]:
                 raise PluginError(
                     f"plugin '{plugin.site_name}': login command collides with an "
                     f"existing root command named 'login'"
                 )
             login_fields = resolve_login_fields(plugin)
             login_fn = create_login_fn(plugin, login_callable, login_fields)
-            site_app.command(name="login", help=login_fn.__doc__)(login_fn)
-            registered_names[""].add("login")
+            site_app.command(name=LOGIN_COMMAND, help=login_fn.__doc__)(login_fn)
+            registered_names[""].add(LOGIN_COMMAND)
             LOG.debug("login_command_registered", plugin=plugin.site_name)
     except PluginError:
         raise  # contract violation -- loud, escapes (see docstring policy)
@@ -321,6 +321,13 @@ def derive_reserved_cli_names(app: typer.Typer) -> frozenset[str]:
         if name:
             names.add(name)
     return frozenset(names)
+
+
+# The root command registration adds to a plugin with a login capability, and every
+# root command it adds itself: a plugin's own command may not take one of these
+# names (the scaffold keeps a copy it is tested against).
+LOGIN_COMMAND = "login"
+AUTO_ROOT_COMMAND_NAMES = (LOGIN_COMMAND,)
 
 
 def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) -> dict[str, str]:
