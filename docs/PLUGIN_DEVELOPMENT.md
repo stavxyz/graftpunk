@@ -213,7 +213,8 @@ It takes the recording's name and, optionally, a run id; without one it reads
 the newest run. `--har PATH` digests a bare HAR file from any tool instead of a
 run. `--json` prints the complete model rather than the markdown summary,
 `--endpoints-json` prints the versioned projection a program reads (uncapped,
-and not combinable with `--json`), `--all-hosts` models every host instead of
+not combinable with `--json`, and listing as the login's URLs only the login's
+own observations, never a logout or a cart redirect recorded beside it), `--all-hosts` models every host instead of
 just the primary one, `--limit N` raises the cap on how many endpoints the
 markdown form lists (60 by default), and `--output PATH` writes to a file.
 
@@ -357,7 +358,9 @@ structure (its element id and each control's tag, type, name, and id), and is
 kept as the copy whose selectors resolve best. Among the forms, one a credential
 post went to is listed first; among those, the one on the page that post
 promoted, then the one the earliest credential post went to (a login precedes a
-password change), then the one whose control names cover the most of the post's
+password change; a post found by its field names alone went to the form with no
+target of its own on the page it promoted, so a script login's form ranks ahead
+of a later form posting to its own page, such as a change-email form), then the one whose control names cover the most of the post's
 body, then one that sits on no page a credential post did not promote (a
 site-wide header form ranks below the main form), then the one with fewer
 unresolved roles, so the generator's `login_config` is built from the form the
@@ -367,17 +370,22 @@ their field names alone to the first target no recorded form posts to (a script
 posting elsewhere than the form says); and each hop of those posts' redirect
 chains, a request to where the previous hop sent the client (on the same host)
 or a POST that submits an OAuth `form_post` page's form (a post form of hidden
-inputs only, a `<noscript>` submit button aside, on the previous hop's page,
-carrying only those hidden names, to another host than the page's, as an
-identity provider's page posts to the app; a cart or logout form on a landing
-page is not one, and neither is a same-site form a script submits). A POST
+inputs only, a `<noscript>` submit button aside and a `<select>` or `<textarea>`
+counted as visible, on the previous hop's page, carrying only the hidden names
+of that page's forms posting there, to another host than the page's, hosts
+compared without case or a default port, as an identity provider's page posts to
+the app; a cart or logout form on a landing page is not one, and neither is a
+same-site form a script submits). A POST
 carrying a password field is never such a hop. A password change, an account
 edit, a later password-confirmed action (whatever the login form's action, its
 own page's or none), or any later POST answering with a redirect keeps its
-commands, and its redirect is not the login's landing page. A credential post
-answering 200 (a script login) starts no chain, whatever its page holds, so the
-next redirect is not taken as the landing and `success_url` gets a `GP-FILL`: a
-missing success signal is visible, and a wrong one would fail every login.
+commands, and its redirect is not the login's landing page. When the landing is
+ambiguous, none is taken and `success_url` gets a `GP-FILL`: a missing success
+signal is visible, and a wrong one would fail every login. A credential post
+answering 200 (a script login) starts no chain, whatever its page holds, and a
+chain that rests on a 200 page holding a `form_post`-shaped form it did not
+follow (a same-host identity provider's, or a hidden-only logout form on the
+landing page) may or may not continue past it, so neither takes a landing.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
@@ -673,8 +681,11 @@ class MyshopPlugin(SitePlugin):
 What came from the digest: `base_url` from the primary host; the `LoginStep`
 selectors from the captured login page, the submit selector too, which the
 digest's markdown form does not print; `url` from the page the form was on (the
-page the engine opens, not the `/session` the form posts to); `success_url` from
-the redirect the credential post answered with; one command stub per endpoint,
+page the engine opens, not the `/session` the form posts to), or, for an
+identity provider's form page that an app GET on another host redirected to,
+that app GET, since the provider's page opened directly lacks the state the
+redirect carried; `success_url` from the redirect the credential post answered
+with; one command stub per endpoint,
 the login flow's own endpoints excluded, JSON endpoints first, up to twelve,
 each with the observed query parameters as typed keyword arguments (and, for a
 `POST`, `PUT`, or `PATCH`, the observed body fields too, sent as `data=` when
@@ -694,7 +705,11 @@ one of `SitePlugin`'s own attributes (`setup` becomes `setup_2`) or a root
 command graftpunk adds itself (`login` becomes `login_2`). A generated test for
 an endpoint the recording saw answer with no body (a redirect, say) asserts the
 call completed, with a `GP-FILL` saying to assert on the page the redirect leads
-to, since an empty body is falsy.
+to, since an empty body is falsy; so does one for an endpoint the recording saw
+answer with a falsy JSON value (`{}`, `[]`, `""`, `0`, or `false`), with a
+`GP-FILL` saying to assert on the value you expect. A JSON endpoint that
+answered with no body every time it was recorded (a 204) reads its response as
+text, since there is no JSON to parse.
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
@@ -1263,7 +1278,10 @@ holds one of them) are refused before anything is written, as `gp plugin new`
 writes one test and a `GP-FILL` for such a pair; `FixtureSession` serves only a
 file that is the stem plus one extension (`get_api_users.json`, never
 `get_api_users.csv.txt`), so those extras are there for you to read, not for a
-test to load.
+test to load. A 3xx or 204 response recorded with no text (graftpunk's own
+recorder keeps none for a redirect hop) has no body by definition and gets an
+empty fixture and its sidecar; any other response recorded with no text (a
+binary one) is skipped and named.
 
 Then do the work by hand. **A fixture copies the real structure and invents the
 content. No captured page is committed.** Open the capture, keep the shape of

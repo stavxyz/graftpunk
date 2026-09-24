@@ -595,7 +595,9 @@ structure (its element id and each control's tag, type, name, and id), and is
 kept as the copy whose selectors resolve best. Among the forms, one a credential
 post went to is listed first; among those, the one on the page that post
 promoted, then the one the earliest credential post went to (a login precedes a
-password change), then the one whose control names cover the most of the post's
+password change; a post found by its field names alone went to the form with no
+target of its own on the page it promoted, so a script login's form ranks ahead
+of a later form posting to its own page, such as a change-email form), then the one whose control names cover the most of the post's
 body, then one that sits on no page a credential post did not promote (a
 site-wide header form ranks below the main form), then the one with fewer
 unresolved roles, so the generator's `login_config` is built from the form the
@@ -605,17 +607,22 @@ their field names alone to the first target no recorded form posts to (a script
 posting elsewhere than the form says); and each hop of those posts' redirect
 chains, a request to where the previous hop sent the client (on the same host)
 or a POST that submits an OAuth `form_post` page's form (a post form of hidden
-inputs only, a `<noscript>` submit button aside, on the previous hop's page,
-carrying only those hidden names, to another host than the page's, as an
-identity provider's page posts to the app; a cart or logout form on a landing
-page is not one, and neither is a same-site form a script submits). A POST
+inputs only, a `<noscript>` submit button aside and a `<select>` or `<textarea>`
+counted as visible, on the previous hop's page, carrying only the hidden names
+of that page's forms posting there, to another host than the page's, hosts
+compared without case or a default port, as an identity provider's page posts to
+the app; a cart or logout form on a landing page is not one, and neither is a
+same-site form a script submits). A POST
 carrying a password field is never such a hop. A password change, an account
 edit, a later password-confirmed action (whatever the login form's action, its
 own page's or none), or any later POST answering with a redirect keeps its
-commands, and its redirect is not the login's landing page. A credential post
-answering 200 (a script login) starts no chain, whatever its page holds, so the
-next redirect is not taken as the landing and `success_url` gets a `GP-FILL`: a
-missing success signal is visible, and a wrong one would fail every login.
+commands, and its redirect is not the login's landing page. When the landing is
+ambiguous, none is taken and `success_url` gets a `GP-FILL`: a missing success
+signal is visible, and a wrong one would fail every login. A credential post
+answering 200 (a script login) starts no chain, whatever its page holds, and a
+chain that rests on a 200 page holding a `form_post`-shaped form it did not
+follow (a same-host identity provider's, or a hidden-only logout form on the
+landing page) may or may not continue past it, so neither takes a landing.
 
 Each rule is measured in the position it guards
 (`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
