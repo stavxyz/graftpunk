@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from structlog.testing import capture_logs
 
+from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
 from graftpunk.har.digest import (
     _BODY_SAMPLE_THRESHOLD,
     _DYNAMIC_MAJORITY,
@@ -2090,6 +2091,122 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
         assert flags[("GET", "/signin")] is True
+
+    def test_a_magento_account_edit_flow_is_not_the_login_flow(self, tmp_path: Path) -> None:
+        """C1: the edit form holds an email input, so it stays a login-shaped form, but
+        login_flow narrows to the login the generator uses."""
+        login = (
+            '<form action="/customer/account/loginPost/" method="post">'
+            '<input type="email" name="login[username]" id="email">'
+            '<input type="password" name="login[password]" id="pass"></form>'
+        )
+        edit = (
+            '<form action="/customer/account/editPost/" method="post">'
+            '<input type="text" name="firstname" id="firstname">'
+            '<input type="email" name="email" id="email-edit">'
+            '<input type="password" name="current_password" id="current-password" '
+            'autocomplete="current-password">'
+            '<input type="password" name="password" id="password" autocomplete="new-password">'
+            '<input type="password" name="password_confirmation" autocomplete="new-password">'
+            "</form>"
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/customer/account/login/",
+                content_type="text/html",
+                body=login,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/customer/account/loginPost/",
+                status=302,
+                response_headers={"Location": "/customer/account/"},
+                post_data=json.dumps({"login[username]": "alice", "login[password]": "x"}),
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/customer/account/edit/",
+                content_type="text/html",
+                body=edit,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/customer/account/editPost/",
+                status=302,
+                response_headers={"Location": "/customer/account/edit/saved"},
+                post_data=json.dumps(
+                    {
+                        "firstname": "Alice",
+                        "email": "alice@example.com",
+                        "current_password": "x",
+                        "password": "y",
+                        "password_confirmation": "y",
+                    }
+                ),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/customer/account/login/")] is True
+        assert flags[("POST", "/customer/account/loginPost/")] is True
+        assert flags[("GET", "/customer/account/edit/")] is False
+        assert flags[("POST", "/customer/account/editPost/")] is False
+        # The success_url comes from the login's landing, not the edit post's.
+        plugin_code = render(
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://api.myshop.example.com",
+                digest=result,
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+        assert 'success_url="*/customer/account*",' in plugin_code
+
+    def test_a_change_password_form_is_not_a_login_form(self, tmp_path: Path) -> None:
+        """C1: current and new password, no username: a change-password form."""
+        login = (
+            '<form action="/session" method="post"><input type="email" name="email">'
+            '<input type="password" name="password"></form>'
+        )
+        change = (
+            '<form action="/account/password" method="post">'
+            '<input type="password" name="current_password" autocomplete="current-password">'
+            '<input type="password" name="new_password" autocomplete="new-password">'
+            '<input type="password" name="new_password_confirm" autocomplete="new-password">'
+            "</form>"
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/login", content_type="text/html", body=login
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/account/password",
+                content_type="text/html",
+                body=change,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/account/password",
+                post_data=json.dumps(
+                    {"current_password": "x", "new_password": "y", "new_password_confirm": "y"}
+                ),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert [form.action for form in result.login_forms] == ["/session"]
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/account/password")] is False
+        assert flags[("POST", "/account/password")] is False
+        assert flags[("GET", "/login")] is True
+        assert flags[("POST", "/session")] is True
 
     def test_a_post_to_a_login_form_action_is_the_credential_post(self, tmp_path: Path) -> None:
         """The form's type="password" input names the field, so a name outside the

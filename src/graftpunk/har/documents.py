@@ -29,6 +29,7 @@ LOG = get_logger(__name__)
 TokenKind = Literal["header", "meta", "hidden_input", "cookie"]
 
 __all__ = [
+    "PASSWORD_NAME_HINTS",
     "LoginForm",
     "TokenCandidate",
     "TokenKind",
@@ -476,7 +477,9 @@ _LITERAL_USERNAME_NAMES = frozenset({"username", "email", "login", "user"})
 _CONFIRMATION_HINTS = ("confirm", "repeat", "verify", "again", "retype")
 # A password field's name that asks for a new password, not the current one.
 _NEW_PASSWORD_HINTS = ("new", *_CONFIRMATION_HINTS)
-_PASSWORD_NAME_HINTS = ("password", "passwd", "pwd")
+# The one owner of the password-field hints: the digest reads a credential post's
+# body names through it too.
+PASSWORD_NAME_HINTS = ("password", "passwd", "pwd")
 
 
 def looks_like_new_password_name(name: str) -> bool:
@@ -484,7 +487,7 @@ def looks_like_new_password_name(name: str) -> bool:
     password (``new_password``, ``password_confirm``): the hints a registration
     form's confirmation input is recognised by, plus ``new``."""
     lowered = name.lower()
-    return any(hint in lowered for hint in _PASSWORD_NAME_HINTS) and any(
+    return any(hint in lowered for hint in PASSWORD_NAME_HINTS) and any(
         hint in lowered for hint in _NEW_PASSWORD_HINTS
     )
 
@@ -514,6 +517,24 @@ def _is_registration(inputs: list[_RawInput]) -> bool:
         if any(hint in f"{i.name} {i.element_id}".lower() for hint in _CONFIRMATION_HINTS)
     ]
     return bool(confirmations)
+
+
+def _is_change_password(inputs: list[_RawInput]) -> bool:
+    """A change-password form: an input marked ``current-password``, a new password
+    (a password input marked ``new-password``, or one whose name or id asks for a new
+    or repeated password), and no username-like text input. It is not a login form.
+    A page-wide form that also holds a username-like input (a combined login and
+    register form) stays a login form."""
+    if not any(i.autocomplete == "current-password" for i in inputs):
+        return False
+    new_password = any(
+        i.autocomplete == "new-password"
+        or looks_like_new_password_name(i.name)
+        or looks_like_new_password_name(i.element_id)
+        for i in _password_inputs(inputs)
+    )
+    username_like = any(_is_text_like(i) and _has_username_hint(i) for i in inputs)
+    return new_password and not username_like
 
 
 def _password_index(inputs: list[_RawInput]) -> int | None:
@@ -606,7 +627,11 @@ def extract_login_forms(
     digest prints), and the form's ``action_target`` resolves against it.
     """
     parsed = _parse(html)
-    candidates = [raw for raw in parsed.forms if _password_index(raw.inputs) is not None]
+    candidates = [
+        raw
+        for raw in parsed.forms
+        if _password_index(raw.inputs) is not None and not _is_change_password(raw.inputs)
+    ]
     # A registration form is left out only beside a login form: a lone form marked
     # new-password is still the page's login form.
     logins = [raw for raw in candidates if not _is_registration(raw.inputs)]

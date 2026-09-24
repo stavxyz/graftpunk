@@ -898,3 +898,23 @@ class TestTwoFormsPostingToOneAction:
         header, _main = extract_login_forms(self._PAGE, source="s")
         assert header.fields == {}
         assert header.unresolved_roles == ("username", "password", "submit")
+
+
+class TestChangePasswordForms:
+    def test_current_and_new_password_with_no_username_is_not_a_login_form(self) -> None:
+        html = (
+            '<form action="/account/password"><input type="password" name="current_password" '
+            'autocomplete="current-password"><input type="password" name="new_password" '
+            'autocomplete="new-password"></form>'
+        )
+        assert extract_login_forms(html, source="s") == ()
+        assert is_login_document(html)
+
+    def test_a_page_wide_form_with_a_username_stays_a_login_form(self) -> None:
+        html = (
+            '<form action="/account"><input type="email" name="login_email">'
+            '<input type="password" name="login_password" autocomplete="current-password">'
+            '<input type="password" name="new_password" autocomplete="new-password"></form>'
+        )
+        (form,) = extract_login_forms(html, source="s")
+        assert form.action == "/account"

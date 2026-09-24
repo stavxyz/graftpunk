@@ -288,7 +288,8 @@ def _login_landing_path(d: RunDigest) -> str:
     """
     landing = ""
     posted = False
-    for observation in d.login:
+    # Only the login the generator uses: a password change's redirect is not it.
+    for observation in (o for o in d.login if o.login_flow):
         if observation.kind == "credential_post":
             posted = True
         if posted and observation.redirect_to:
