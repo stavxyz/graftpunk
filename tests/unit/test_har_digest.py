@@ -2555,6 +2555,51 @@ class TestLoginFlowFlag:
         assert flags[("GET", "/login")] is True
         assert flags[("GET", "/catalog")] is False
 
+    def test_a_page_ranks_by_its_best_single_form(self, tmp_path: Path) -> None:
+        """A page's rank is one form's (pages, coverage), never the fewest pages of
+        one form with the best coverage of another: /a's page-specific form covers
+        one body name and its site-wide form two; /b's page-specific form covers two."""
+        site_wide = (
+            '<form action="/session" method="post" class="mini">'
+            '<input type="email" name="email" id="mini-e">'
+            '<input type="password" name="password" id="mini-p"></form>'
+        )
+        specific_a = (
+            '<form action="/session" method="post"><input type="text" name="user_x" id="ax">'
+            '<input type="password" name="password" id="ap"></form>'
+        )
+        specific_b = (
+            '<form action="/session" method="post"><input type="email" name="email" id="be">'
+            '<input type="password" name="password" id="bp"><input type="hidden" name="t">'
+            "</form>"
+        )
+        entries = [
+            _entry(
+                "GET", "https://api.myshop.example.com/c", content_type="text/html", body=site_wide
+            ),
+            _entry(
+                "GET", "https://api.myshop.example.com/d", content_type="text/html", body=site_wide
+            ),
+            _entry(
+                "GET", "https://api.myshop.example.com/b", content_type="text/html", body=specific_b
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/a",
+                content_type="text/html",
+                body=site_wide + specific_a,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/session",
+                post_data=json.dumps({"email": "alice@example.com", "password": "x"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        flags = {(e.methods[0], e.template): e.login_flow for e in result.endpoints}
+        assert flags[("GET", "/b")] is True
+        assert flags[("GET", "/a")] is False
+
     def test_a_script_posted_login_to_another_action_is_owned(self, tmp_path: Path) -> None:
         """The form says /auth/login, script posts /api/v1/sessions."""
         form = (

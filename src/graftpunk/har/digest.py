@@ -1522,18 +1522,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
 
     def page_rank(at: int, target: tuple[str, str], body_names: frozenset[str]) -> tuple[int, int]:
         """How a page whose form posts to *target* ranks for a post carrying
-        *body_names*: first by how many recorded pages that form is on (a dedicated
-        login page's form is on fewer than a site-wide header form), then by how many
-        of the body names it covers (more first). *at* is a page ``matching`` found
-        by one of its forms' targets, so it always has at least one such form."""
-        forms = [
-            form
+        *body_names*: by its best matching form, each form ranked whole, first by how
+        many recorded pages it is on (a dedicated login page's form is on fewer than
+        a site-wide header form), then by how many of the body names it covers (more
+        first). One form's page count is never paired with another form's coverage.
+        *at* is a page ``matching`` found by one of its forms' targets, so it always
+        has at least one such form."""
+        return min(
+            (len(pages_of_key[_form_key(form)]), -len(set(form.input_names) & body_names))
             for form in forms_on_page.get(at, [])
             if _target_matches(form.action_target, target)
-        ]
-        return (
-            min(len(pages_of_key[_form_key(form)]) for form in forms),
-            -max(len(set(form.input_names) & body_names) for form in forms),
         )
 
     for post_step, went_to, body_names, by_field_names in posts:
