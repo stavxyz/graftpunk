@@ -46,6 +46,7 @@ from graftpunk.har.naming import (
     EndpointSpecError,
     capture_filename,
     capture_slug,
+    capture_text,
     fixture_rank,
     parse_endpoint,
 )
@@ -215,14 +216,8 @@ def _parsed_matches(patterns: list[str]) -> list[tuple[str, str]]:
 
 
 def _capture_text(entry: HAREntry) -> str | None:
-    """The text a fixture for *entry* holds: its body; an empty string for a 3xx or
-    a 204 recorded with no text (graftpunk's own recorder writes ``"text": null``
-    for a redirect hop), which has no body by definition; None for any other
-    response recorded with no text (a binary one), which gets no fixture."""
-    if entry.response.body is not None:
-        return entry.response.body
-    status = entry.response.status
-    return "" if 300 <= status < 400 or status == 204 else None
+    """*entry*'s fixture text, by :func:`graftpunk.har.naming.capture_text`."""
+    return capture_text(entry.response.body, entry.response.status)
 
 
 def _colliding_file_names(

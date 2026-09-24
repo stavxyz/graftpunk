@@ -3196,19 +3196,17 @@ def test_a_text_endpoint_never_gets_a_falsy_json_assertion(falsy: str) -> None:
     assert "falsy JSON value" not in count
 
 
-@pytest.mark.parametrize("statuses", [(200,), (204, 200), (302, 500)])
-def test_a_bodyless_endpoint_whose_fixture_is_never_written_gets_no_test(
-    statuses: tuple[int, ...],
-) -> None:
-    """No recording had text, and not every one was a 3xx or a 204, so gp observe
-    fixtures writes no fixture: no test, a GP-FILL in its place, and no fixture
+def test_a_bodyless_endpoint_whose_fixture_is_never_written_gets_no_test() -> None:
+    """gp observe fixtures writes no fixture for any recording (none kept text, and
+    none was a 3xx or a 204): no test, a GP-FILL in its place, and no fixture
     listed."""
     bodyless = dataclasses.replace(
         _single_endpoint("/report"),
-        statuses=statuses,
+        statuses=(200,),
         content_type="text/html",
         shape=None,
         response_body_empty=True,
+        fixture_written=False,
     )
     spec = ScaffoldSpec(
         name="myshop",
@@ -3220,16 +3218,18 @@ def test_a_bodyless_endpoint_whose_fixture_is_never_written_gets_no_test(
     test_code = render(spec)["tests/test_plugin.py"]
     assert "def test_report(" not in test_code
     note = re.sub(r"\s*\n#\s*", " ", test_code)
-    assert "GP-FILL: no test for report (GET /report): no recording had a body" in note
+    assert "GP-FILL: no test for report (GET /report): no recording kept any text" in note
     assert "def test_orders(" in test_code
     assert not any("get_report" in path for path in fixture_paths(spec))
     assert any("get_orders" in path for path in fixture_paths(spec))
 
 
-@pytest.mark.parametrize("statuses", [(302,), (204,), (204, 301)])
-def test_a_bodyless_redirect_or_no_content_endpoint_keeps_its_test(
+@pytest.mark.parametrize("statuses", [(302,), (204,), (200,), (200, 302)])
+def test_a_bodyless_endpoint_whose_fixture_is_written_keeps_its_test(
     statuses: tuple[int, ...],
 ) -> None:
+    """A 200 recorded with empty text, or a 3xx or 204 with none: gp observe
+    fixtures writes an empty fixture, so the endpoint keeps its test."""
     bodyless = dataclasses.replace(
         _single_endpoint("/go"),
         statuses=statuses,
@@ -3256,6 +3256,7 @@ def test_a_project_whose_only_endpoint_gets_no_test_imports_no_fixture_context()
         content_type="text/html",
         shape=None,
         response_body_empty=True,
+        fixture_written=False,
     )
     test_code = _render_endpoints(bodyless)["tests/test_plugin.py"]
     assert "fixture_context" not in test_code

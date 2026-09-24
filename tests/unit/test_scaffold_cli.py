@@ -653,6 +653,32 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert "2 passed" in pytest_result.stdout, pytest_result.stdout
         assert (target / "tests" / "fixtures" / "get_ack.html").read_text() == "<p>ok</p>"
 
+    @pytest.mark.parametrize(
+        "statuses_and_texts",
+        [[(200, "")], [(200, None), (302, None)]],
+        ids=["empty-text", "no-text-then-302"],
+    )
+    def test_a_bodyless_endpoint_with_a_written_fixture_keeps_a_passing_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, statuses_and_texts: list
+    ) -> None:
+        """A 200 recorded with "text": "" (what graftpunk's own recorders write), or a
+        200 with no text beside a 302: gp observe fixtures writes an empty fixture, and
+        the generated test passes on it."""
+        entries = []
+        for status, text in statuses_and_texts:
+            entry = _entry("GET", "https://api.myshop.example.com/ping", content_type="text/html")
+            entry["response"]["status"] = status
+            entry["response"]["content"] = {"mimeType": "text/html", "size": 0}
+            if text is not None:
+                entry["response"]["content"]["text"] = text
+            entries.append(entry)
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, entries, "GET /ping"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert "def test_ping(" in (target / "tests" / "test_plugin.py").read_text()
+
     def test_a_recorder_redirect_hop_s_fixture_passes_the_generated_test(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

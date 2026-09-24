@@ -27,7 +27,7 @@ from graftpunk.har.documents import (
     looks_like_new_password_name,
     looks_like_token_name,
 )
-from graftpunk.har.naming import UNNAMED_CONTENT_TYPE, fixture_rank
+from graftpunk.har.naming import UNNAMED_CONTENT_TYPE, capture_text, fixture_rank
 from graftpunk.har.parser import HAREntry, parse_har_file
 from graftpunk.har.paths import (
     bare_host,
@@ -295,6 +295,10 @@ class Endpoint:
     # fixture's file name, and the falsy decision all read this one recording. A
     # lookup for the generator, so render_json leaves it out.
     fixture_content_type: str = field(default="", metadata={INTERNAL: True})
+    # Whether gp observe fixtures writes a fixture for any recording
+    # (graftpunk.har.naming.capture_text): the generator writes no test for an
+    # endpoint it writes none for. Internal.
+    fixture_written: bool = field(default=True, metadata={INTERNAL: True})
 
 
 @dataclass(frozen=True)
@@ -1127,11 +1131,13 @@ class _EndpointAccumulator:
         self.dropped_headers: set[str] = set()
 
     def record(self, entry: HAREntry, path: str, step: int) -> None:
-        key = (fixture_rank(entry.response.body), step)
-        if self.fixture_key is None or key < self.fixture_key:
+        text = capture_text(entry.response.body, entry.response.status)
+        # A recording gp observe fixtures writes nothing for is never the fixture.
+        key = (fixture_rank(text), step)
+        if text is not None and (self.fixture_key is None or key < self.fixture_key):
             self.fixture_key = key
             is_json = "json" in (entry.response.content_type or "").lower()
-            self.falsy_first = _falsy_value(entry.response.body) if is_json else None
+            self.falsy_first = _falsy_value(text) if is_json else None
             self.fixture_content_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
         method = entry.request.method.upper()
         if method not in self.methods:
@@ -1188,6 +1194,7 @@ class _EndpointAccumulator:
             response_body_empty=not self.bodied,
             falsy_first_response=self.falsy_first,
             fixture_content_type=self.fixture_content_type,
+            fixture_written=self.fixture_key is not None,
         )
 
 

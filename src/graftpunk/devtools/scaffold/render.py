@@ -1191,11 +1191,10 @@ def fixtures_root_for(spec: ScaffoldSpec) -> str:
 
 def _no_fixture_is_written(endpoint: Endpoint) -> bool:
     """True when ``gp observe fixtures`` writes no fixture for *endpoint*: no
-    recording had a body, and not every one was a 3xx or a 204, the only responses
-    it writes an empty fixture for. Such an endpoint gets no generated test."""
-    return endpoint.response_body_empty and any(
-        not (300 <= status < 400 or status == 204) for status in endpoint.statuses
-    )
+    recording kept any text, and none was a 3xx or a 204
+    (``Endpoint.fixture_written``, by :func:`graftpunk.har.naming.capture_text`).
+    Such an endpoint gets no generated test."""
+    return not endpoint.fixture_written
 
 
 def _fixture_type(endpoint: Endpoint) -> str:
@@ -1283,9 +1282,8 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
         if _no_fixture_is_written(endpoint):
             note = (
                 f"GP-FILL: no test for {name} ({method} {endpoint.template}): no recording "
-                "had a body, and not every one was a redirect or a 204, so gp observe "
-                "fixtures writes no fixture for it; write its test against a fixture of "
-                "your own."
+                "kept any text, and none was a redirect or a 204, so gp observe fixtures "
+                "writes no fixture for it; write its test against a fixture of your own."
             )
             lines.extend(wrapped_comment_lines(note, indent=0))
             lines.append("")

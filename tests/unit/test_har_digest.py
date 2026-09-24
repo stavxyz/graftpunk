@@ -1109,6 +1109,52 @@ class TestEndpointExamples:
         (endpoint,) = result.endpoints
         assert endpoint.falsy_first_response == falsy
 
+    @staticmethod
+    def _no_text(entry: dict) -> dict:
+        entry["response"]["content"] = {"mimeType": "text/html", "size": 0}
+        return entry
+
+    @pytest.mark.parametrize(
+        ("statuses_and_texts", "written"),
+        [
+            ([(200, "")], True),
+            ([(200, None)], False),
+            ([(500, None)], False),
+            ([(200, None), (302, None)], True),
+        ],
+        ids=["empty-text", "no-text", "no-text-500", "no-text-then-302"],
+    )
+    def test_whether_a_fixture_is_written_follows_gp_observe_fixtures(
+        self, tmp_path: Path, statuses_and_texts: list, written: bool
+    ) -> None:
+        entries = []
+        for status, text in statuses_and_texts:
+            entry = _entry(
+                "GET", "https://api.myshop.example.com/go", status=status, content_type="text/html"
+            )
+            entry["response"]["content"] = {"mimeType": "text/html", "size": 0}
+            if text is not None:
+                entry["response"]["content"]["text"] = text
+            entries.append(entry)
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_written is written
+
+    def test_a_recording_fixtures_skips_is_never_the_fixture_recording(
+        self, tmp_path: Path
+    ) -> None:
+        """A 200 with no text (fixtures skips it), then a 302 with none: the fixture
+        is the 302's, so its content type is the fixture's."""
+        first = _entry("GET", "https://api.myshop.example.com/go", content_type="application/json")
+        first["response"]["content"] = {"mimeType": "application/json", "size": 0}
+        second = _entry(
+            "GET", "https://api.myshop.example.com/go", status=302, content_type="text/html"
+        )
+        second["response"]["content"] = {"mimeType": "text/html", "size": 0}
+        result = digest(DigestSource.from_har(_write_har(tmp_path, [first, second])))
+        (endpoint,) = result.endpoints
+        assert endpoint.fixture_content_type == "text/html"
+
     def test_the_fixture_recording_s_content_type_is_recorded(self, tmp_path: Path) -> None:
         """An HTML page first, then two JSON answers: the fixture is the first
         recording, so its type is text/html while the endpoint's majority is JSON."""

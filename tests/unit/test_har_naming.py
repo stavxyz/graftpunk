@@ -10,6 +10,7 @@ from graftpunk.har.naming import (
     EndpointSpecError,
     capture_filename,
     capture_slug,
+    capture_text,
     parse_command_spec,
     parse_endpoint,
 )
@@ -116,3 +117,25 @@ class TestParseCommandSpec:
     def test_a_malformed_endpoint_half_is_refused_by_parse_endpoint(self) -> None:
         with pytest.raises(EndpointSpecError, match="METHOD template"):
             parse_command_spec("orders=get /api/orders")
+
+
+class TestCaptureText:
+    """What gp observe fixtures writes for a recording, and the generator's own
+    reading of whether a fixture is written."""
+
+    @pytest.mark.parametrize(
+        ("body", "status", "text"),
+        [
+            ("x", 200, "x"),
+            ("", 200, ""),
+            (None, 302, ""),
+            (None, 204, ""),
+            (None, 200, None),
+            (None, 500, None),
+        ],
+        ids=["body", "empty-text", "null-302", "null-204", "null-200", "null-500"],
+    )
+    def test_a_recording_s_capture_text(
+        self, body: str | None, status: int, text: str | None
+    ) -> None:
+        assert capture_text(body, status) == text

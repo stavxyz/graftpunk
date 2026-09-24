@@ -717,15 +717,17 @@ itself (`login` becomes `login_2`). A generated test reads the fixture
 a body, when any has one. For an endpoint every recording of which had no body
 (a redirect or a 204), the test asserts `result == ""`, with a `GP-FILL` saying
 to assert on what the call should return, and a JSON endpoint recorded that way
-reads its response as text, since there is no JSON to parse. An endpoint no
-recording of which had a body, where not every recording was a redirect or a 204
-(a third-party HAR that kept no text for a 200, say), gets no test:
-`gp observe fixtures` writes no fixture for it, so a `GP-FILL` stands in its
-place and its fixture is not in the list `gp plugin new` prints. When the
-fixture's recording is JSON and parses to a falsy value, the test asserts that
-value (`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or
-`is None`), with a `GP-FILL` saying to assert on the shape you expect; a text
-response is never read as JSON, so a `text/plain` `0` keeps `assert result`.
+reads its response as text, since there is no JSON to parse. An endpoint
+`gp observe fixtures` writes no fixture for, because no recording kept any text
+and none was a redirect or a 204 (a third-party HAR that kept no text for a 200,
+say), gets no test: a `GP-FILL` stands in its place, and its fixture is not in
+the list `gp plugin new` prints. A recording with empty text, which graftpunk's
+own recorders keep for a body-less response, is written, so its endpoint keeps
+its test. When the fixture's recording is JSON and parses to a falsy value, the
+test asserts that value (`assert result == {}`, `== []`, `== ""`, `== 0`,
+`is False`, or `is None`), with a `GP-FILL` saying to assert on the shape you
+expect; a text response is never read as JSON, so a `text/plain` `0` keeps
+`assert result`.
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for

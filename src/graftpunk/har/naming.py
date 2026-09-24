@@ -15,6 +15,7 @@ __all__ = [
     "UNNAMED_CONTENT_TYPE",
     "capture_filename",
     "capture_slug",
+    "capture_text",
     "fixture_rank",
     "parse_command_spec",
     "parse_endpoint",
@@ -66,6 +67,19 @@ def capture_filename(method: str, path: str, content_type: str) -> str:
 # The content type a capture is named by when its response named none: gp observe
 # fixtures and the digest's record of the fixture recording both use it.
 UNNAMED_CONTENT_TYPE = "application/octet-stream"
+
+
+def capture_text(body: str | None, status: int) -> str | None:
+    """The text ``gp observe fixtures`` writes for a recording answering *status*
+    with *body*: the body, an empty one included; an empty string for a 3xx or a
+    204 recorded with no text (graftpunk's own recorder keeps none for a redirect
+    hop), which has no body by definition; and None, no fixture at all, for any
+    other response recorded with no text (a binary one). The digest's choice of
+    fixture recording and the generator's "no fixture" decision read the same
+    rule."""
+    if body is not None:
+        return body
+    return "" if 300 <= status < 400 or status == 204 else None
 
 
 def fixture_rank(body: str | None) -> int:
