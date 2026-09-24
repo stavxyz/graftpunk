@@ -2465,9 +2465,36 @@ class TestLoginFlowFlag:
     def test_a_post_carrying_more_than_the_form_s_hidden_names_is_not_its_submission(
         self, tmp_path: Path
     ) -> None:
-        """A form_post-shaped form on the landing page, then a POST to its target that
-        carries a name the form does not hold: not that form's submission."""
-        dashboard = '<form method="post" action="/track"><input type="hidden" name="event"></form>'
+        """A form_post-shaped form on the identity provider's page, then a POST to the
+        app carrying a name the form does not hold: not that form's submission."""
+        consent = (
+            '<form method="post" action="https://api.myshop.example.com/callback">'
+            '<input type="hidden" name="code"></form>'
+        )
+        entries = [
+            *self._login_entries(landing="https://auth.myshop.example.com/consent"),
+            _entry(
+                "GET",
+                "https://auth.myshop.example.com/consent",
+                content_type="text/html",
+                body=consent,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/callback",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"code": "c", "note": "n"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/consent*",' in self._plugin(result)
+
+    def test_a_same_host_hidden_only_form_does_not_continue_the_chain(self, tmp_path: Path) -> None:
+        """A logout form of hidden inputs only, submitted by script right after the
+        login's last hop, posts to the host that served it: not an OAuth form_post,
+        which crosses from the identity provider to the app."""
+        dashboard = '<form method="post" action="/logout"><input type="hidden" name="csrf"></form>'
         entries = [
             *self._login_entries(),
             _entry(
@@ -2478,10 +2505,10 @@ class TestLoginFlowFlag:
             ),
             _entry(
                 "POST",
-                "https://api.myshop.example.com/track",
+                "https://api.myshop.example.com/logout",
                 status=302,
-                response_headers={"Location": "/elsewhere"},
-                post_data=json.dumps({"event": "e", "note": "n"}),
+                response_headers={"Location": "/login"},
+                post_data=json.dumps({"csrf": "t"}),
             ),
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))

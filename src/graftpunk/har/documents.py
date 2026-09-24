@@ -623,8 +623,9 @@ def form_action_targets(html: str, base: str) -> dict[tuple[str, str], frozenset
     hidden input, and every other control is hidden too, a submit control inside
     ``<noscript>`` (the fallback shown when script is off) excepted. A cart form
     with a visible field, a logout form with a visible button, and a GET search form
-    do not. The digest follows a login's redirect chain through such a page when the
-    next POST goes to one of these targets carrying only its hidden names.
+    do not. The digest follows a login's redirect chain through such a page when a
+    POST to one of these targets, on another host than the page's, carries only its
+    hidden names.
     """
     targets: dict[tuple[str, str], frozenset[str]] = {}
     for raw in _parse(html).forms:

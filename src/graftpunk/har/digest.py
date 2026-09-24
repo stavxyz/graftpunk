@@ -801,13 +801,18 @@ def _hop_form_targets(entry: HAREntry) -> dict[tuple[str, str], frozenset[str]]:
 
 
 def _submits_a_chain_form(
+    post_host: str,
     target: tuple[str, str],
     body_names: frozenset[str],
-    forms: dict[tuple[str, str], frozenset[str]],
+    page: tuple[str, dict[tuple[str, str], frozenset[str]]],
 ) -> bool:
-    """True when a POST to *target* carrying *body_names* is the submission of one
-    of *forms*: it goes to that form's target and carries only its hidden names."""
-    return any(
+    """True when a POST sent to *post_host* and *target* carrying *body_names* is the
+    submission of an OAuth ``form_post`` form on *page* (the host that served it,
+    and its forms): it goes to that form's target, carries only its hidden names,
+    and crosses hosts (the identity provider's page posts to the app), which a
+    same-site logout or cart form submitted by script never does."""
+    page_host, forms = page
+    return post_host != page_host and any(
         _target_matches(form_target, target) and body_names <= hidden
         for form_target, hidden in forms.items()
     )
@@ -1364,7 +1369,8 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
     # and the targets of the forms on its last hop's page (an OAuth form_post page
     # whose form a script submits to the app's callback).
     chain_next: dict[int, tuple[str, str]] = {}
-    chain_forms: dict[int, dict[tuple[str, str], frozenset[str]]] = {}
+    # With the host of the page that served them: an OAuth form_post crosses hosts.
+    chain_forms: dict[int, tuple[str, dict[tuple[str, str], frozenset[str]]]] = {}
     # Counts only the entries that reach classification: static and out-of-scope
     # entries between a credential post and its redirect do not use up the window.
     step = 0
@@ -1471,12 +1477,15 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             if _continues_chain(hop_host, path, chain_next.get(last_post, ("", ""))) or (
                 method == "POST"
                 and _submits_a_chain_form(
-                    post_target, frozenset(body_params(entry)), chain_forms.get(last_post, {})
+                    hop_host,
+                    post_target,
+                    frozenset(body_params(entry)),
+                    chain_forms.get(last_post, ("", {})),
                 )
             ):
                 follows_post[step] = last_post
                 chain_next[last_post] = _redirect_target(entry)
-                chain_forms[last_post] = _hop_form_targets(entry)
+                chain_forms[last_post] = (hop_host, _hop_form_targets(entry))
             if entry.response.status in _REDIRECT_STATUSES:
                 kind = "redirect"
             elif _response_cookie_names(entry):

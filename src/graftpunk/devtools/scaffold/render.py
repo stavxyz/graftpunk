@@ -285,7 +285,8 @@ def _login_landing_path(d: RunDigest) -> str:
     the login's own observations count (``LoginObservation.login_flow``): the
     credential post and each hop that continues its chain, a request to where the
     previous hop sent the client, or a POST submitting an OAuth ``form_post`` page's
-    form (hidden inputs only, carrying only those names). The last such target is
+    form (hidden inputs only, carrying only those names, to another host than the
+    page's). The last such target is
     the end of the chain, and a later POST answering with a redirect is never part
     of it. A credential post that answers 200 (a script login) starts no chain,
     whatever its page holds, so no landing is taken and ``success_url`` gets a
