@@ -160,6 +160,9 @@ _AUTH_URL_PATTERNS = [
 _AUTH_URL_REGEX = re.compile(
     "|".join(f"(?:{pattern})(?=/|$)" for pattern in _AUTH_URL_PATTERNS), re.IGNORECASE
 )
+# A logout's path, on the same segment-boundary rule: a redirect chain through one
+# never names the page a login opens at (LoginForm.opened_from).
+_LOGOUT_URL_REGEX = re.compile(r"/(?:log[-_]?out|sign[-_]?out|log[-_]?off)(?=/|$)", re.IGNORECASE)
 
 _STANDARD_REQUEST_HEADERS = frozenset(
     {
@@ -1504,7 +1507,16 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             forms_in_entry = extract_login_forms(
                 entry.response.body, source=document_source, base=_unmasked_page(entry)
             )
-            opened_from = next((hop for hop in reversed(via) if _host_of(hop) != here_host), "")
+            # A logout in the chain is skipped: opening it would log out.
+            opened_from = next(
+                (
+                    hop
+                    for hop in reversed(via)
+                    if _host_of(hop) != here_host
+                    and not _LOGOUT_URL_REGEX.search(urlparse(hop).path)
+                ),
+                "",
+            )
             if opened_from:
                 forms_in_entry = tuple(
                     replace(form, opened_from=opened_from) for form in forms_in_entry

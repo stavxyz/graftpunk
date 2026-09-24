@@ -105,8 +105,8 @@ class LoginForm:
     # The URL (graftpunk.har.paths.bare_url) of the in-scope GET on another host
     # whose redirect chain led to this form's page: an identity provider's form page
     # opened directly lacks the state the app's redirect gave it, so the login is
-    # opened there. The last such GET of the chain; empty when none. Set by the
-    # digest. Internal.
+    # opened there. The last such GET of the chain that is not a logout (opening one
+    # would log out); empty when none. Set by the digest. Internal.
     opened_from: str = field(default="", metadata={"internal": True})
 
 

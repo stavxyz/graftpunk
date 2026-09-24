@@ -2635,6 +2635,46 @@ class TestLoginFlowFlag:
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
         assert 'url="/login",' in self._plugin(result)
 
+    def test_a_logout_that_redirected_to_the_provider_is_not_the_login_url(
+        self, tmp_path: Path
+    ) -> None:
+        """Logging out redirected to the provider's login form page: opening /logout
+        would log out, so the login keeps the provider's page."""
+        entries = self._provider_login("/login")
+        entries[0]["request"]["url"] = "https://api.myshop.example.com/logout"
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert 'url="/logout",' not in code
+        assert (
+            "/logout"
+            not in next(f for f in result.login_forms if "password" in f.fields).opened_from
+        )
+
+    def test_the_last_app_get_before_a_logout_hop_is_skipped_past(self, tmp_path: Path) -> None:
+        """/login redirects to /sign-out on the app's host, which redirects to the
+        provider: the logout hop is skipped, and /login is the login URL."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/login",
+                status=302,
+                response_headers={"Location": "https://api.myshop.example.com/sign-out"},
+                content_type="text/html",
+                body="",
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/sign-out",
+                status=302,
+                response_headers={"Location": "https://auth.myshop.example.com/authorize?state=s"},
+                content_type="text/html",
+                body="",
+            ),
+            *self._provider_login("/unused")[1:],
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'url="/login",' in self._plugin(result)
+
     def test_a_same_host_redirect_to_the_login_page_keeps_the_page_as_the_url(
         self, tmp_path: Path
     ) -> None:
