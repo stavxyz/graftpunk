@@ -2792,6 +2792,23 @@ class TestLoginFlowFlag:
         assert "success_url=" not in code
         assert "GP-FILL: success_url" in code
 
+    def test_observation_urls_spell_the_host_as_endpoints_do(self, tmp_path: Path) -> None:
+        """A login recorded at API.MYSHOP...:443: each observation, the form's source,
+        and the endpoint all name api.myshop.example.com."""
+        entries = self._login_entries()
+        for entry in entries:
+            entry["request"]["url"] = entry["request"]["url"].replace(
+                "https://api.myshop.example.com", "https://API.MYSHOP.example.com:443"
+            )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert {o.url for o in result.login} == {
+            "https://api.myshop.example.com/login",
+            "https://api.myshop.example.com/session",
+        }
+        assert {e.host for e in result.endpoints} == {"api.myshop.example.com"}
+        assert result.login_forms[0].source == "https://api.myshop.example.com/login"
+        assert "API.MYSHOP" not in render_markdown(result)
+
     @pytest.mark.parametrize(
         "base_url",
         ["https://API.myshop.example.com", "https://api.myshop.example.com:443"],

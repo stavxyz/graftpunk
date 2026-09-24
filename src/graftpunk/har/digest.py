@@ -860,6 +860,14 @@ def _redirect_target_path(entry: HAREntry) -> str:
         return ""
 
 
+def _normal_url(url: str) -> str:
+    """*url*, one :func:`graftpunk.har.paths.bare_url` gave, with its host spelled by
+    :func:`graftpunk.har.paths.normal_host`. The digest already split it, so this
+    cannot raise."""
+    parts = urlparse(url)
+    return urlunparse(parts._replace(netloc=normal_host(parts.scheme, parts.netloc)))
+
+
 def _host_of(url: str) -> str:
     """*url*'s host, spelled by :func:`graftpunk.har.paths.normal_host`. *url* is one
     the digest already split, so this cannot raise."""
@@ -1468,8 +1476,10 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
         step += 1
         # Path only: every URL the digest keeps goes through paths.bare_url, so
         # no query, fragment, ;params, or userinfo reaches an example, a
-        # template, a login observation, a form source, or a token's seen_on.
-        url = bare_url(entry.request.url)
+        # template, a login observation, a form source, or a token's seen_on. Its
+        # host is spelled as the endpoint's (normal_host), so a login observation
+        # and the endpoint it belongs to name one host.
+        url = _normal_url(bare_url(entry.request.url))
         path = urlparse(url).path or "/"
         method = entry.request.method.upper()
         raw_template, _ = template_path(path)
