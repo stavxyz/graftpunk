@@ -2466,7 +2466,9 @@ class TestLoginFlowFlag:
         self, tmp_path: Path
     ) -> None:
         """A form_post-shaped form on the identity provider's page, then a POST to the
-        app carrying a name the form does not hold: not that form's submission."""
+        app carrying a name the form does not hold: not that form's submission, so
+        the chain rests on a page holding a form it did not follow, and the login
+        takes no landing."""
         consent = (
             '<form method="post" action="https://api.myshop.example.com/callback">'
             '<input type="hidden" name="code"></form>'
@@ -2488,12 +2490,17 @@ class TestLoginFlowFlag:
             ),
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
-        assert 'success_url="*/consent*",' in self._plugin(result)
+        code = self._plugin(result)
+        assert "*/app*" not in code
+        assert "success_url=" not in code
+        assert "GP-FILL: success_url" in code
 
     def test_a_same_host_hidden_only_form_does_not_continue_the_chain(self, tmp_path: Path) -> None:
         """A logout form of hidden inputs only, submitted by script right after the
         login's last hop, posts to the host that served it: not an OAuth form_post,
-        which crosses from the identity provider to the app."""
+        which crosses from the identity provider to the app. The chain rests on a page
+        holding that unfollowed form, so the login takes no landing, and never
+        /login."""
         dashboard = '<form method="post" action="/logout"><input type="hidden" name="csrf"></form>'
         entries = [
             *self._login_entries(),
@@ -2512,7 +2519,120 @@ class TestLoginFlowFlag:
             ),
         ]
         result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
-        assert 'success_url="*/dashboard*",' in self._plugin(result)
+        code = self._plugin(result)
+        assert "*/login*" not in code
+        assert "success_url=" not in code
+        assert "GP-FILL: success_url" in code
+
+    def test_a_same_host_identity_provider_s_form_post_takes_no_landing(
+        self, tmp_path: Path
+    ) -> None:
+        """An identity provider under /auth on the app's own host answers 200 with a
+        form_post form to /callback. Its submission stays on one host, so the chain
+        does not follow it, and the login takes no landing rather than the
+        provider's intermediate page."""
+        login = (
+            '<form action="/auth/login" method="post"><input type="email" name="username" '
+            'id="u"><input type="password" name="password" id="p"></form>'
+        )
+        resume = (
+            '<form method="post" action="/callback">'
+            '<input type="hidden" name="code" value="c"><input type="hidden" name="state" '
+            'value="s"><noscript><input type="submit" value="Continue"></noscript></form>'
+        )
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/auth/login",
+                content_type="text/html",
+                body=login,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/auth/login",
+                status=302,
+                response_headers={"Location": "/auth/resume"},
+                post_data=json.dumps({"username": "alice", "password": "x"}),
+            ),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/auth/resume",
+                content_type="text/html",
+                body=resume,
+            ),
+            _entry(
+                "POST",
+                "https://api.myshop.example.com/callback",
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"code": "c", "state": "s"}),
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        code = self._plugin(result)
+        assert "*/auth/resume*" not in code
+        assert "success_url=" not in code
+        assert "GP-FILL: success_url" in code
+
+    def _form_post_chain(self, form_action: str, callback_url: str) -> list[dict]:
+        """An identity provider's login on auth., whose resume page's form_post form
+        posts to *form_action*; the browser's POST went to *callback_url*."""
+        login = (
+            '<form action="/u/login" method="post"><input type="email" name="username" id="u">'
+            '<input type="password" name="password" id="p"></form>'
+        )
+        resume = (
+            f'<form method="post" action="{form_action}">'
+            '<input type="hidden" name="code" value="c"></form>'
+        )
+        return [
+            _entry(
+                "GET",
+                "https://auth.myshop.example.com/u/login",
+                content_type="text/html",
+                body=login,
+            ),
+            _entry(
+                "POST",
+                "https://auth.myshop.example.com/u/login",
+                status=302,
+                response_headers={"Location": "/authorize/resume"},
+                post_data=json.dumps({"username": "alice", "password": "x"}),
+            ),
+            _entry(
+                "GET",
+                "https://auth.myshop.example.com/authorize/resume",
+                content_type="text/html",
+                body=resume,
+            ),
+            _entry(
+                "POST",
+                callback_url,
+                status=302,
+                response_headers={"Location": "/app"},
+                post_data=json.dumps({"code": "c"}),
+            ),
+        ]
+
+    def test_a_form_post_action_s_host_is_compared_without_case_or_a_default_port(
+        self, tmp_path: Path
+    ) -> None:
+        """The form posts to API.myshop...:443/callback; the POST to
+        api.myshop.../callback is its submission."""
+        entries = self._form_post_chain(
+            "https://API.myshop.example.com:443/callback", "https://api.myshop.example.com/callback"
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/app*",' in self._plugin(result)
+
+    def test_a_form_post_submission_s_host_is_compared_without_case(self, tmp_path: Path) -> None:
+        """The form posts to api.myshop.../callback; the recorded POST went to
+        API.MYSHOP.../callback, and is its submission."""
+        entries = self._form_post_chain(
+            "https://api.myshop.example.com/callback", "https://API.MYSHOP.example.com/callback"
+        )
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/app*",' in self._plugin(result)
 
     def test_a_200_login_takes_no_landing_even_through_an_auto_submit_form(
         self, tmp_path: Path

@@ -961,6 +961,15 @@ class TestFormActionTargets:
             ("api.myshop.example.com", "/authorize/resume"): frozenset({"code"})
         }
 
+    def test_the_target_host_is_lower_case_without_a_default_port(self) -> None:
+        html = (
+            '<form method="post" action="https://API.MyShop.example.com:443/callback">'
+            '<input type="hidden" name="code"></form>'
+        )
+        assert form_action_targets(html, self._BASE) == {
+            ("api.myshop.example.com", "/callback"): frozenset({"code"})
+        }
+
     @pytest.mark.parametrize(
         "html",
         [

@@ -20,6 +20,7 @@ from graftpunk.har.paths import (
     bare_url,
     holds_an_id,
     is_placeholder,
+    normal_host,
     templates_a_segment,
 )
 from graftpunk.logging import get_logger
@@ -599,17 +600,19 @@ def _bare_action(raw: _RawForm) -> str | None:
 def _action_target(raw_action: str, source: str) -> tuple[str, str]:
     """Where a form posts, as host and path (``;params``, query, and fragment
     dropped, never email-masked), resolved against its page when *source* is a URL;
-    the host is empty when neither names one."""
+    the host is empty when neither names one, and otherwise spelled by
+    :func:`graftpunk.har.paths.normal_host`, as the digest spells a request's."""
     try:
         parts = urlsplit(raw_action)
         action = urlunsplit((parts.scheme, bare_host(parts.netloc), bare_path(parts.path), "", ""))
         if source.startswith(("http://", "https://")):
             resolved = urlsplit(urljoin(source, action))
-            return bare_host(resolved.netloc), unquote(bare_path(resolved.path)) or "/"
+            host = normal_host(resolved.scheme, resolved.netloc)
+            return host, unquote(bare_path(resolved.path)) or "/"
         path = unquote(bare_path(parts.path))
         # A document-relative action with no page URL to resolve it against stays
         # relative, without its "./", and matches a POST path ending in it.
-        return bare_host(parts.netloc), path.removeprefix("./")
+        return normal_host(parts.scheme, parts.netloc), path.removeprefix("./")
     except ValueError:
         return "", ""
 

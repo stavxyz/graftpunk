@@ -35,6 +35,7 @@ __all__ = [
     "is_placeholder",
     "keys_are_ids",
     "looks_dynamic",
+    "normal_host",
     "param_name_for_segment",
     "template_path",
     "templated_url",
@@ -58,6 +59,19 @@ def bare_host(netloc: str) -> str:
     """*netloc* without its ``user:password@``: a credential, not part of the host.
     The port stays."""
     return netloc.rpartition("@")[2]
+
+
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+
+def normal_host(scheme: str, netloc: str) -> str:
+    """*netloc* as :func:`bare_host` spells it, in lower case, without the default
+    port of *scheme*: two spellings of one host compare equal."""
+    host = bare_host(netloc).lower()
+    port = _DEFAULT_PORTS.get(scheme.lower())
+    if port and host.endswith(f":{port}"):
+        host = host[: -len(port) - 1]
+    return host
 
 
 # holds_an_id's shapes: strong evidence only. A name read as an id is dropped from

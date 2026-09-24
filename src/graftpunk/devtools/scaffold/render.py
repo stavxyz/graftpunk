@@ -291,7 +291,11 @@ def _login_landing_path(d: RunDigest) -> str:
     of it. A credential post that answers 200 (a script login) starts no chain,
     whatever its page holds, so no landing is taken and ``success_url`` gets a
     ``GP-FILL``: a missing success signal is visible, and a wrong one would fail
-    every login.
+    every login. The same holds when the chain rests on a 200 page holding a
+    ``form_post``-shaped form it did not follow (a same-host identity provider's,
+    or a hidden-only logout form on the landing page;
+    ``LoginObservation.landing_unresolved``): where the login lands is ambiguous,
+    so none is taken.
 
     The digest follows a chain only within its ``_LOGIN_WINDOW`` of classified
     entries after the credential post, so a chain longer than that ends with an
@@ -301,13 +305,15 @@ def _login_landing_path(d: RunDigest) -> str:
     """
     landing = ""
     posted = False
+    unresolved = False
     # Only the login the generator uses: a password change's redirect is not it.
     for observation in (o for o in d.login if o.login_flow):
         if observation.kind == "credential_post":
             posted = True
+            unresolved = observation.landing_unresolved
         if posted and observation.redirect_to:
             landing = observation.redirect_to
-    return landing
+    return "" if unresolved else landing
 
 
 def _success_url_pattern(redirect_path: str) -> str | None:

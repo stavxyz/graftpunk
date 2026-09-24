@@ -35,6 +35,7 @@ from graftpunk.har.paths import (
     holds_an_id,
     keys_are_ids,
     looks_dynamic,
+    normal_host,
     param_name_for_segment,
     template_path,
 )
@@ -304,6 +305,12 @@ class LoginObservation:
     # change, an account edit, or a later POST answering with a redirect recorded in
     # the same run is observed but not part of it.
     login_flow: bool = True
+    # On a credential post only: its redirect chain came to rest on a 200 page
+    # holding an OAuth form_post-shaped form the chain did not follow (a same-host
+    # identity provider's, or a hidden-only logout form on the landing page), so
+    # where the login lands is ambiguous and the generator takes no landing. A
+    # lookup for the generator, so render_json leaves it out.
+    landing_unresolved: bool = field(default=False, metadata={INTERNAL: True})
 
 
 @dataclass(frozen=True)
@@ -774,19 +781,7 @@ def _redirect_target(entry: HAREntry) -> tuple[str, str]:
         return "", ""
     # _redirect_target_path already split this same URL, so this cannot raise.
     target = urlparse(bare_url(urljoin(entry.request.url, entry.response.redirect_url)))
-    return _normal_host(target.scheme, target.netloc), path
-
-
-_DEFAULT_PORTS = {"http": "80", "https": "443"}
-
-
-def _normal_host(scheme: str, netloc: str) -> str:
-    """*netloc* in lower case, without the default port of *scheme*."""
-    host = netloc.lower()
-    port = _DEFAULT_PORTS.get(scheme.lower())
-    if port and host.endswith(f":{port}"):
-        host = host[: -len(port) - 1]
-    return host
+    return normal_host(target.scheme, target.netloc), path
 
 
 def _hop_form_targets(entry: HAREntry) -> dict[tuple[str, str], frozenset[str]]:
@@ -810,7 +805,9 @@ def _submits_a_chain_form(
     submission of an OAuth ``form_post`` form on *page* (the host that served it,
     and its forms): it goes to that form's target, carries only its hidden names,
     and crosses hosts (the identity provider's page posts to the app), which a
-    same-site logout or cart form submitted by script never does."""
+    same-site logout or cart form submitted by script never does. Every host here
+    is spelled by :func:`graftpunk.har.paths.normal_host`, so case and a default
+    port do not tell two hosts apart."""
     page_host, forms = page
     return post_host != page_host and any(
         _target_matches(form_target, target) and body_names <= hidden
@@ -820,7 +817,7 @@ def _submits_a_chain_form(
 
 def _continues_chain(host: str, path: str, expected: tuple[str, str]) -> bool:
     """True when a request to *host* and *path* is where the chain was sent: the same
-    path on the same host, both hosts normalised (:func:`_normal_host`). Both are
+    path on the same host, both hosts normalised (:func:`normal_host`). Both are
     always known: a request URL the digest reaches has a host, and so does a
     redirect target resolved against it."""
     want_host, want_path = expected
@@ -852,12 +849,13 @@ def _redirect_target_path(entry: HAREntry) -> str:
 
 def _request_target(url: str) -> tuple[str, str]:
     """Where a request to *url* goes, as host and path (``;params`` dropped, never
-    email-masked), the way a form's ``action_target`` is spelled."""
+    email-masked), the way a form's ``action_target`` is spelled: the host through
+    :func:`graftpunk.har.paths.normal_host`."""
     try:
         parts = urlparse(url)
     except ValueError:
         return "", ""
-    return bare_host(parts.netloc), unquote(bare_path(parts.path)) or "/"
+    return normal_host(parts.scheme, parts.netloc), unquote(bare_path(parts.path)) or "/"
 
 
 def _unmasked_page(entry: HAREntry) -> str:
@@ -1473,7 +1471,7 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # (a later POST answering 302, say) is observed but not the login's.
             last_post = credential_post_steps[-1]
             hop_url = urlparse(url)
-            hop_host = _normal_host(hop_url.scheme, hop_url.netloc)
+            hop_host = normal_host(hop_url.scheme, hop_url.netloc)
             if _continues_chain(hop_host, path, chain_next.get(last_post, ("", ""))) or (
                 method == "POST"
                 and _submits_a_chain_form(
@@ -1602,7 +1600,18 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             or (kind == "credential_post" and at in owned_posts)
             or (kind in ("redirect", "set_cookie") and follows_post.get(at) in owned_posts)
         )
-        login.append(replace(observation, order=order, kind=kind, login_flow=in_login))
+        # The chain's last hop is a 200 page whose form_post-shaped forms it did not
+        # follow: that hop's forms are still the chain's own.
+        unresolved = kind == "credential_post" and bool(chain_forms.get(at, ("", {}))[1])
+        login.append(
+            replace(
+                observation,
+                order=order,
+                kind=kind,
+                login_flow=in_login,
+                landing_unresolved=unresolved,
+            )
+        )
 
     collapse_map = _collapse_high_cardinality([template for _method, template in accumulators])
     merged: dict[tuple[str, str], _EndpointAccumulator] = {}
