@@ -2506,6 +2506,23 @@ class TestLoginFlowFlag:
         assert "success_url=" not in code
         assert "GP-FILL: success_url" in code
 
+    def test_a_hop_s_host_is_compared_without_case_or_a_default_port(self, tmp_path: Path) -> None:
+        """The login redirects to API.MYSHOP...:443/step1; the hop to api.myshop.../step1
+        continues the chain."""
+        entries = [
+            *self._login_entries(landing="https://API.myshop.example.com:443/step1"),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/step1",
+                status=302,
+                response_headers={"Location": "/app"},
+                content_type="text/html",
+                body="",
+            ),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        assert 'success_url="*/app*",' in self._plugin(result)
+
     def test_a_hop_must_be_on_the_host_the_chain_went_to(self, tmp_path: Path) -> None:
         """The login redirects to auth's /step1; a request to /step1 on another host
         is not a hop."""

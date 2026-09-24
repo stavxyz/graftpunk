@@ -769,12 +769,21 @@ def _redirect_target(entry: HAREntry) -> tuple[str, str]:
     path = _redirect_target_path(entry)
     if not path:
         return "", ""
-    try:
-        return urlparse(
-            bare_url(urljoin(entry.request.url, entry.response.redirect_url))
-        ).netloc, path
-    except ValueError:
-        return "", path
+    # _redirect_target_path already split this same URL, so this cannot raise.
+    target = urlparse(bare_url(urljoin(entry.request.url, entry.response.redirect_url)))
+    return _normal_host(target.scheme, target.netloc), path
+
+
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+
+def _normal_host(scheme: str, netloc: str) -> str:
+    """*netloc* in lower case, without the default port of *scheme*."""
+    host = netloc.lower()
+    port = _DEFAULT_PORTS.get(scheme.lower())
+    if port and host.endswith(f":{port}"):
+        host = host[: -len(port) - 1]
+    return host
 
 
 def _hop_form_targets(entry: HAREntry) -> dict[tuple[str, str], frozenset[str]]:
@@ -803,11 +812,11 @@ def _submits_a_chain_form(
 
 def _continues_chain(host: str, path: str, expected: tuple[str, str]) -> bool:
     """True when a request to *host* and *path* is where the chain was sent: the same
-    path, and the same host when both are known."""
+    path on the same host, both hosts normalised (:func:`_normal_host`). Both are
+    always known: a request URL the digest reaches has a host, and so does a
+    redirect target resolved against it."""
     want_host, want_path = expected
-    return (
-        bool(want_path) and path == want_path and (not host or not want_host or host == want_host)
-    )
+    return bool(want_path) and path == want_path and host == want_host
 
 
 def _redirect_target_path(entry: HAREntry) -> str:
@@ -1449,8 +1458,9 @@ def digest(source: DigestSource, *, all_hosts: bool = False) -> RunDigest:
             # is where the previous hop sent the client. Anything else in the window
             # (a later POST answering 302, say) is observed but not the login's.
             last_post = credential_post_steps[-1]
-            host = urlparse(url).netloc
-            if _continues_chain(host, path, chain_next.get(last_post, ("", ""))) or (
+            hop_url = urlparse(url)
+            hop_host = _normal_host(hop_url.scheme, hop_url.netloc)
+            if _continues_chain(hop_host, path, chain_next.get(last_post, ("", ""))) or (
                 method == "POST"
                 and _submits_a_chain_form(
                     post_target, frozenset(body_params(entry)), chain_forms.get(last_post, {})
