@@ -28,6 +28,7 @@ from graftpunk.devtools.scaffold.project import (
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths, validate_plugin_name
 from graftpunk.devtools.scaffold.selection import CommandSelection, CommandSelectionError
+from graftpunk.devtools.scaffold.upgrade import upgrade_project
 from graftpunk.devtools.scaffold.write import InvalidChangeError
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.naming import EndpointSpecError, parse_command_spec
@@ -335,3 +336,23 @@ def plugin_add_command(
         soft_wrap=True,
     )
     console.print(f"[bold]Next:[/bold] its test looks for {escape(added.fixture)}", soft_wrap=True)
+
+
+@plugin_app.command("upgrade")
+def plugin_upgrade(
+    dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
+) -> None:
+    """Bring a plugin project up to the current generated shape, changing nothing it has."""
+    try:
+        applied = upgrade_project(dir_)
+    except DevtoolsRefusal as exc:
+        LOG.debug("upgrade_refused", reason=type(exc).__name__)
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
+    if not applied:
+        console.print("Nothing to upgrade: the project already has every requirement.")
+        return
+    for requirement in applied:
+        console.print(
+            f"{escape(requirement.path)}: added {escape(requirement.name)}", soft_wrap=True
+        )

@@ -495,3 +495,57 @@ class TestAddCommand:
         result = _add(recorded, "myshop", "orders=GET /api/orders")
         assert result.exit_code == 1
         assert "not a graftpunk plugin project (empty)" in " ".join(_plain(result.output).split())
+
+
+def _project_lacking_the_wiring(root: Path) -> Path:
+    """A generated project whose conftest predates the sanitisation wiring."""
+    from graftpunk.devtools.scaffold.project import write_scaffold
+    from graftpunk.devtools.scaffold.render import ScaffoldSpec
+
+    write_scaffold(
+        root,
+        ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example",
+        ),
+    )
+    conftest = root / "tests" / "conftest.py"
+    conftest.write_text(
+        "from graftpunk.testing.plugin import site_env_scrubber\n\n"
+        'scrub_site_env = site_env_scrubber("MYSHOP_")\n'
+    )
+    return conftest
+
+
+@pytest.mark.usefixtures("gp_logging")
+class TestPluginUpgrade:
+    def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.devtools.scaffold import write
+
+        conftest = _project_lacking_the_wiring(tmp_path)
+        before = conftest.read_bytes()
+
+        def failing(path: Path, text: str) -> None:
+            raise OSError(28, "No space left on device", str(path))
+
+        monkeypatch.setattr(write, "_write_atomically", failing)
+        result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line.startswith("Could not write ")
+        assert "No space left on device" in line
+        assert conftest.read_bytes() == before
+
+    def test_prints_what_it_added_and_then_nothing(self, tmp_path: Path) -> None:
+        _project_lacking_the_wiring(tmp_path)
+        first = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
+        assert first.exit_code == 0, first.output
+        assert "tests/conftest.py: added FIXTURES_TREE" in _plain(first.output)
+        assert "tests/conftest.py: added sanitised_fixtures" in _plain(first.output)
+        second = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
+        assert second.exit_code == 0
+        assert "Nothing to upgrade" in _plain(second.output)
