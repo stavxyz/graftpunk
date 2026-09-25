@@ -115,6 +115,14 @@ class TestUpgrade:
         assert str(refused.value).count("tests/conftest.py") == 1, "one line per file"
         assert conftest.read_text() == broken
 
+    def test_a_conftest_path_that_is_a_directory_is_refused(self, tmp_path: Path) -> None:
+        conftest = _project(tmp_path, None)
+        conftest.mkdir()
+        with pytest.raises(UpgradeRefusedError, match="not a regular file"):
+            upgrade_project(tmp_path)
+        assert conftest.is_dir()
+        assert list(conftest.iterdir()) == []
+
     def test_a_conftest_whose_imports_follow_code_is_refused_and_left_alone(
         self, tmp_path: Path
     ) -> None:
