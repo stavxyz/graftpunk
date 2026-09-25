@@ -337,6 +337,21 @@ class TestAddCommand:
         }
         assert {"CommandContext", "PluginParamSpec", "SitePlugin", "command"} <= imported
 
+    def test_an_import_it_cannot_place_is_refused_and_nothing_changes(self, recorded: Path) -> None:
+        module = _hand_written_project(recorded)
+        module.write_text(
+            module.read_text().replace(
+                "import functools\n", "import functools\n\nTIMEOUT = 30\n", 1
+            )
+        )
+        before = _snapshot(recorded, skip=recorded / "nothing")
+        result = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "from urllib.parse import quote as _quote_path" in line
+        assert "ruff check --fix" in line
+        assert _snapshot(recorded, skip=recorded / "nothing") == before
+
     def test_a_duplicate_name_is_refused_and_nothing_changes(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
         before = _snapshot(recorded, skip=recorded / "nothing")
