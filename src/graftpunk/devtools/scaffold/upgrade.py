@@ -27,16 +27,17 @@ __all__ = ["UpgradeRefusedError", "upgrade_project"]
 
 
 class UpgradeRefusedError(DevtoolsRefusal, ValueError):
-    """A requirement's file does not parse, or its imports are not in a shape the
-    migrator places into; nothing was written."""
+    """A requirement's file does not parse, is not a regular file, or its imports
+    are not in a shape the migrator places into; nothing was written."""
 
 
 def upgrade_project(root: Path) -> tuple[ProjectRequirement, ...]:
     """Apply every requirement *root*'s project lacks, and return them.
 
     Raises:
-        UpgradeRefusedError: A requirement's file does not parse, or its imports
-            are not in a shape ``pysrc.with_import`` places into.
+        UpgradeRefusedError: A requirement's file does not parse, is not a regular
+            file, or its imports are not in a shape ``pysrc.with_import`` places
+            into.
         NotAPluginProjectError: *root* is not a plugin project.
         PluginProjectError: See :func:`read_project`.
         ScaffoldWriteError: A write failed; every file was restored first, or the
@@ -57,6 +58,11 @@ def upgrade_project(root: Path) -> tuple[ProjectRequirement, ...]:
     changes: list[PlannedChange] = []
     for relative, requirements in by_path.items():
         path = root / relative
+        if path.exists() and not path.is_file():
+            raise UpgradeRefusedError(
+                f"{relative}: exists but is not a regular file. gp plugin upgrade writes "
+                f"a Python module there; move it aside, then run it again."
+            )
         original = read_original(path) if path.is_file() else None
         try:
             content = with_bindings(original or "", requirements)
