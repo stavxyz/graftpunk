@@ -894,8 +894,11 @@ def _param_spec(
 
 
 def _decorator_lines(command: PlannedCommand, param_specs: list[str]) -> list[str]:
-    """A stub's ``@command(...)``, always exploded one keyword per line so the
-    ``endpoint=`` declaration sits on a line of its own."""
+    """A stub's ``@command(...)``, always exploded one keyword per line. The
+    ``endpoint=`` keyword starts a line of its own; a value too wide for that line
+    wraps as a parenthesised implicit concatenation, which Python reads back as
+    one string. ``name=`` appears only when *command* carries a pin. Each
+    *param_specs* entry is an expression placed at ``L3`` (see ``_param_spec``)."""
     lines = [f"{L1}@command("]
     lines.extend(
         literal_lines(
