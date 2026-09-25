@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from types import MappingProxyType
 
@@ -13,7 +16,7 @@ from typer.testing import CliRunner
 
 from graftpunk.cli.main import app
 from graftpunk.devtools.plugin_info import PluginDefectRefusal, info_payload
-from graftpunk.devtools.plugin_project import PluginDefect, ProjectView
+from graftpunk.devtools.plugin_project import PluginDefect, ProjectView, read_project
 from graftpunk.devtools.scaffold.policy import PROJECT_REQUIREMENTS
 
 runner = CliRunner()
@@ -211,3 +214,269 @@ def test_info_payload_refuses_a_view_with_a_defect_and_names_every_one() -> None
         "entry point 'widgets': widgets is broken",
     ]
     assert caught.value.defects == defects
+
+
+def _add(project: Path, plugin: str, command: str) -> object:
+    return runner.invoke(
+        app,
+        [
+            "plugin",
+            "add-command",
+            plugin,
+            "--from-run",
+            "myshop",
+            "--command",
+            command,
+            "--dir",
+            str(project),
+        ],
+    )
+
+
+def _snapshot(root: Path, *, skip: Path) -> dict[str, bytes]:
+    return {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in root.rglob("*")
+        if p.is_file() and p != skip
+    }
+
+
+def _ruff_clean(project: Path) -> None:
+    for argv in (["check", "."], ["format", "--check", "."]):
+        result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", *argv], cwd=project, capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+_HAND_WRITTEN = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+import functools
+
+from graftpunk.plugins import SitePlugin
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+
+
+@functools.cache
+def _helper() -> int:
+    return 1
+
+
+if __name__ == "__main__":
+    print(_helper())
+"""
+
+
+def _hand_written_project(root: Path, entry_point: str = "myshop") -> Path:
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "graftpunk-myshop"\n\n'
+        '[project.entry-points."graftpunk.plugins"]\n'
+        f'{entry_point} = "graftpunk_myshop.plugin:MyshopPlugin"\n\n'
+        "[tool.ruff]\nline-length = 100\n\n"
+        '[tool.ruff.lint]\nselect = ["E", "F", "I", "UP", "B"]\n'
+    )
+    package = root / "src" / "graftpunk_myshop"
+    package.mkdir(parents=True)
+    module = package / "plugin.py"
+    module.write_text(_HAND_WRITTEN)
+    return module
+
+
+@pytest.mark.usefixtures("gp_logging")
+class TestAddCommand:
+    def test_the_stub_goes_after_the_last_command(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        result = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        assert result.exit_code == 0, result.output
+        (plugin,) = read_project(recorded).plugins
+        assert [c.method for c in plugin.commands] == ["orders", "order"]
+        assert plugin.commands[-1].endpoint == "GET /api/orders/{order_id}"
+        _ruff_clean(recorded)
+
+    def test_a_first_command_goes_after_the_class_bodys_last_statement(
+        self, recorded: Path
+    ) -> None:
+        module = _hand_written_project(recorded)
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        (plugin,) = read_project(recorded).plugins
+        (command,) = plugin.commands
+        assert command.span.start > module.read_text().splitlines().index(
+            '    base_url = "https://myshop.example"'
+        )
+
+    def test_a_decorated_helper_and_a_main_block_below_the_class_stay_below_it(
+        self, recorded: Path
+    ) -> None:
+        module = _hand_written_project(recorded)
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        tree = ast.parse(module.read_text())
+        (klass,) = [n for n in tree.body if isinstance(n, ast.ClassDef)]
+        helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef))
+        assert any(isinstance(n, ast.FunctionDef) and n.name == "orders" for n in klass.body)
+        assert klass.end_lineno is not None and klass.end_lineno < helper.lineno
+        _ruff_clean(recorded)
+
+    def test_a_typed_stub_imports_what_it_uses(self, recorded: Path) -> None:
+        module = _hand_written_project(recorded)
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        imported = {
+            alias.name
+            for node in ast.parse(module.read_text()).body
+            if isinstance(node, ast.ImportFrom) and node.module == "graftpunk.plugins"
+            for alias in node.names
+        }
+        assert {"CommandContext", "PluginParamSpec", "SitePlugin", "command"} <= imported
+
+    def test_a_duplicate_name_is_refused_and_nothing_changes(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        before = _snapshot(recorded, skip=recorded / "nothing")
+        result = _add(recorded, "myshop", "orders=GET /api/orders/{order_id}")
+        assert result.exit_code == 1
+        assert "already has a command named 'orders'" in _plain(result.output)
+        assert _snapshot(recorded, skip=recorded / "nothing") == before
+
+    def test_a_hyphen_underscore_collision_is_refused(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "order_list=GET /api/orders")
+        result = _add(recorded, "myshop", "order-list=GET /api/orders/{order_id}")
+        assert result.exit_code == 1
+        assert "already has a command" in _plain(result.output)
+
+    def test_a_login_flow_endpoint_is_refused(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        result = _add(recorded, "myshop", "session=POST /session")
+        assert result.exit_code == 1
+        assert "login flow" in _plain(result.output)
+
+    def test_a_reserved_name_is_refused(self, recorded: Path) -> None:
+        """login is the root command registration adds for every plugin."""
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        result = _add(recorded, "myshop", "login=GET /api/orders/{order_id}")
+        assert result.exit_code == 1
+        assert "reserved" in _plain(result.output)
+
+    def test_nothing_but_the_module_is_touched(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
+        before = _snapshot(recorded, skip=module)
+        assert _add(recorded, "myshop", "invoices=GET /api/invoices").exit_code == 0
+        assert _snapshot(recorded, skip=module) == before
+
+    def test_the_fixture_path_for_a_standalone_project(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        result = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        assert "tests/fixtures/get_api_orders_{order_id}.json" in _plain(result.output)
+
+    def test_the_fixture_path_for_a_suite_member(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        _new(recorded, "widgets", "orders=GET /api/orders")
+        result = _add(recorded, "widgets", "order=GET /api/orders/{order_id}")
+        assert result.exit_code == 0, result.output
+        assert "tests/fixtures/widgets/get_api_orders_{order_id}.json" in _plain(result.output)
+
+    def test_a_defective_target_is_refused_and_another_plugins_defect_is_not(
+        self, recorded: Path
+    ) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        _new(recorded, "widgets", "orders=GET /api/orders")
+        widgets = recorded / "src" / "graftpunk_widgets" / "plugin.py"
+        widgets.write_text(widgets.read_text() + "\n\nclass Other(SitePlugin):\n    pass\n")
+        refused = _add(recorded, "widgets", "order=GET /api/orders/{order_id}")
+        assert refused.exit_code == 1
+        assert "exactly one SitePlugin subclass" in " ".join(_plain(refused.output).split())
+        assert _add(recorded, "myshop", "order=GET /api/orders/{order_id}").exit_code == 0
+
+    def test_an_unknown_plugin_is_refused(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        result = _add(recorded, "elsewhere", "order=GET /api/orders/{order_id}")
+        assert result.exit_code == 1
+        assert "myshop" in _plain(result.output)
+
+    def test_the_plugin_is_addressed_by_its_entry_point_name(self, recorded: Path) -> None:
+        """A hand-written project whose entry-point name is not its site_name: the
+        entry point is the identity gp plugin info reports and add-command takes."""
+        module = _hand_written_project(recorded, entry_point="shop")
+        by_site_name = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert by_site_name.exit_code == 1
+        assert "its entry points are: shop." in " ".join(_plain(by_site_name.output).split())
+        assert module.read_text() == _HAND_WRITTEN
+        added = _add(recorded, "shop", "orders=GET /api/orders")
+        assert added.exit_code == 0, added.output
+        (plugin,) = read_project(recorded).plugins
+        assert (plugin.entry_point, plugin.site_name) == ("shop", "myshop")
+        assert [c.method for c in plugin.commands] == ["orders"]
+
+    def test_a_defect_on_a_plugin_addressed_by_its_entry_point_is_refused(
+        self, recorded: Path
+    ) -> None:
+        module = _hand_written_project(recorded, entry_point="shop")
+        module.write_text(_HAND_WRITTEN + "\n\nclass Other(SitePlugin):\n    pass\n")
+        before = module.read_bytes()
+        refused = _add(recorded, "shop", "orders=GET /api/orders")
+        assert refused.exit_code == 1
+        assert "exactly one SitePlugin subclass" in " ".join(_plain(refused.output).split())
+        assert module.read_bytes() == before
+
+    def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
+        self, recorded: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.devtools.scaffold import write
+
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        before = _snapshot(recorded, skip=recorded / "nothing")
+
+        def failing(path: Path, text: str) -> None:
+            raise OSError(28, "No space left on device", str(path))
+
+        monkeypatch.setattr(write, "_write_atomically", failing)
+        result = _add(recorded, "myshop", "invoices=GET /api/invoices")
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line.startswith("Could not write ")
+        assert "No space left on device" in line
+        assert _snapshot(recorded, skip=recorded / "nothing") == before
+
+    @pytest.mark.parametrize("value", ["orders GET /api/orders", "=GET /api/orders", "orders="])
+    def test_both_entry_points_refuse_a_malformed_value_with_the_same_text(
+        self, recorded: Path, value: str
+    ) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        added = _add(recorded, "myshop", value)
+        created = runner.invoke(
+            app,
+            [
+                "plugin",
+                "new",
+                "other",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(recorded / "other"),
+                "--command",
+                value,
+            ],
+        )
+        assert added.exit_code == created.exit_code == 1
+        assert _plain(added.output) == _plain(created.output)
+
+    def test_a_conftest_that_does_not_parse_does_not_stop_it(self, recorded: Path) -> None:
+        """add-command edits the plugin module and never reads the conftest."""
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        (recorded / "tests" / "conftest.py").write_text("def (:\n")
+        result = _add(recorded, "myshop", "invoices=GET /api/invoices")
+        assert result.exit_code == 0, result.output
+
+    def test_a_directory_that_is_not_a_plugin_project_is_refused(self, recorded: Path) -> None:
+        """The recording exists and the project directory is empty."""
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        assert "not a graftpunk plugin project (empty)" in " ".join(_plain(result.output).split())
