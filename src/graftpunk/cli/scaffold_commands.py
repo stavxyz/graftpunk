@@ -17,6 +17,7 @@ from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.plugin_commands import derive_reserved_cli_names
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
+from graftpunk.devtools.plugin_check import check_project
 from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold.insert import add_command
@@ -356,3 +357,17 @@ def plugin_upgrade(
         console.print(
             f"{escape(requirement.path)}: added {escape(requirement.name)}", soft_wrap=True
         )
+
+
+@plugin_app.command("check")
+def plugin_check(
+    dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
+) -> None:
+    """Lint a plugin project: markers left, one plugin class per module, project wiring."""
+    findings = check_project(dir_)
+    for finding in findings:
+        console.print(escape(str(finding)), soft_wrap=True, highlight=False)
+    if findings:
+        console.print(f"[red]gp plugin check: {len(findings)} finding(s).[/red]")
+        raise typer.Exit(1)
+    console.print("[green]gp plugin check: no findings.[/green]")
