@@ -1075,6 +1075,11 @@ def render_command(command: PlannedCommand, d: RunDigest) -> RenderedCommand:
     imports = [(_PLUGINS_MODULE, "CommandContext"), (_PLUGINS_MODULE, "command")]
     if _needs_param_specs(command.endpoint):
         imports.append((_PLUGINS_MODULE, "PluginParamSpec"))
+    if URL_PLACEHOLDER_RE.search(command.endpoint.template):
+        # Under a private alias, the same reason _render_plugin_module gives one:
+        # a site parameter may be named quote. The stub always calls it when the
+        # endpoint templates a path segment (see _render_command_stub above).
+        imports.append(("urllib.parse", "quote as _quote_path"))
     return RenderedCommand(
         lines=tuple(lines[:-1] if lines[-1] == "" else lines),
         imports=tuple(imports),

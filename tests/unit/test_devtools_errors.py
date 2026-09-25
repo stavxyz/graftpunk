@@ -9,6 +9,7 @@ from typing import TypeVar
 from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
 from graftpunk.devtools.plugin_info import PluginDefectRefusal
 from graftpunk.devtools.plugin_project import NotAPluginProjectError, PluginProjectError
+from graftpunk.devtools.scaffold.insert import CommandInsertError
 from graftpunk.devtools.scaffold.selection import CommandSelectionError
 from graftpunk.devtools.scaffold.write import ChangeConflictError, InvalidChangeError
 
@@ -22,6 +23,7 @@ def test_the_refusals_share_one_base_and_keep_their_own() -> None:
         NotAPluginProjectError,
         PluginDefectRefusal,
         CommandSelectionError,
+        CommandInsertError,
     ):
         assert issubclass(error, DevtoolsRefusal), error
     assert issubclass(InvalidChangeError, ValueError)

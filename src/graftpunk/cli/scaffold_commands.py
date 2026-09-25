@@ -19,6 +19,7 @@ from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
 from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
+from graftpunk.devtools.scaffold.insert import add_command
 from graftpunk.devtools.scaffold.project import (
     NotAPluginSuiteError,
     ScaffoldConflictError,
@@ -300,3 +301,37 @@ def plugin_info(
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
     typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+
+
+@plugin_app.command("add-command")
+def plugin_add_command(
+    plugin: Annotated[
+        str,
+        typer.Argument(help="The plugin's entry-point name, as gp plugin info --json reports it"),
+    ],
+    from_run: Annotated[
+        str, typer.Option("--from-run", help="SESSION: take the endpoint from its newest run")
+    ],
+    command: Annotated[
+        str, typer.Option("--command", help='"NAME=METHOD template": the command to add')
+    ],
+    run: Annotated[
+        str | None, typer.Option("--run", help="RUN_ID: use this run instead of the newest one")
+    ] = None,
+    dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
+) -> None:
+    """Add one command stub to a plugin, in the shape gp plugin new writes."""
+    (selection,) = _command_selections([command])
+    run_dir = resolve_run(from_run, run)
+    run_digest = digest(DigestSource.from_run_dir(run_dir, session=from_run, run_id=run_dir.name))
+    try:
+        added = add_command(dir_, plugin, run_digest, selection)
+    except DevtoolsRefusal as exc:
+        LOG.debug("add_command_refused", reason=type(exc).__name__)
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
+    console.print(
+        f"[green]Added[/green] {escape(added.cli_name)} to {escape(str(added.module))}",
+        soft_wrap=True,
+    )
+    console.print(f"[bold]Next:[/bold] its test looks for {escape(added.fixture)}", soft_wrap=True)
