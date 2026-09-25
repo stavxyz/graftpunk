@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
+from graftpunk.plugins.cli_plugin import SitePlugin
 from graftpunk.testing.sidecar import FIXTURES_PLACEHOLDER
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "FIXTURES_TREE",
     "GP_FILL_MARKER",
     "PROJECT_REQUIREMENTS",
+    "RESERVED_COMMAND_NAMES",
     "TESTS_DIR",
     "ProjectRequirement",
     "fixtures_root",
@@ -119,3 +121,16 @@ GP_FILL_MARKER: Final = "GP-FILL"
 """The marker the generator writes wherever the digest could not decide a value.
 The renderer writes it, the project reader finds it, and ``gp plugin check``
 reports every one left; all three take it from here."""
+
+_AUTO_ROOT_COMMAND_NAMES = ("login",)
+"""The root commands graftpunk.cli.plugin_commands adds to a plugin itself (login,
+for a plugin with login_config). A copy, since devtools does not import
+graftpunk.cli; a test holds it equal to AUTO_ROOT_COMMAND_NAMES."""
+
+RESERVED_COMMAND_NAMES: Final[frozenset[str]] = frozenset(
+    {name for name in dir(SitePlugin) if not name.startswith("_")} | set(_AUTO_ROOT_COMMAND_NAMES)
+)
+"""The names a generated or inserted command may not take: every public attribute of
+SitePlugin, the class every plugin subclasses, read from the class itself so a new
+framework attribute is covered without an edit here, and the root commands
+registration adds. render.py, selection.py, and insert.py all read it."""

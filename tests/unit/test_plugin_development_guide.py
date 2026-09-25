@@ -273,7 +273,7 @@ def test_the_generated_plugin_example_matches_the_generator_output() -> None:
     from graftpunk.har.documents import LoginForm, TokenCandidate
 
     (_line_no, block) = next(
-        pair for pair in _blocks(GUIDE_TEXT, "python") if "GP-FILL: describe api_orders" in pair[1]
+        pair for pair in _blocks(GUIDE_TEXT, "python") if "GP-FILL: describe api-orders" in pair[1]
     )
     orders = Endpoint(
         host="myshop.example",

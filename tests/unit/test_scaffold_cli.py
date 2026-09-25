@@ -1500,3 +1500,138 @@ class TestAConflictSaysWhichKind:
         reasons = [e.get("reason") for e in events if e.get("event") == "scaffold_refused"]
         assert reasons == ["invalid_change"]
         assert not target.exists()
+
+
+class TestPluginNewCommand:
+    """--command selects and names the stubs (graft skill spec, 2026-09-21)."""
+
+    @staticmethod
+    def _record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entries = [
+            _entry("GET", "https://myshop.example/api/orders", body='{"orders": []}'),
+            _entry("GET", "https://myshop.example/api/orders/1001", body='{"id": 1}'),
+        ]
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+
+    def test_writes_only_the_selected_stubs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record(tmp_path, monkeypatch)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(target),
+                "--command",
+                "order=GET /api/orders/{order_id}",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "def order(" in plugin_code
+        assert "def api_orders(" not in plugin_code
+        assert "tests/fixtures/get_api_orders_{order_id}.json" in strip_ansi(result.output)
+
+    @pytest.mark.parametrize(
+        "value", ["orders GET /api/orders", "=GET /api/orders", "orders=", "orders=get /api/orders"]
+    )
+    def test_a_malformed_value_is_refused_with_the_parsers_own_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        from graftpunk.har.naming import EndpointSpecError, parse_command_spec
+
+        self._record(tmp_path, monkeypatch)
+        with pytest.raises(EndpointSpecError) as caught:
+            parse_command_spec(value)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(target),
+                "--command",
+                value,
+            ],
+        )
+        assert result.exit_code == 1
+        assert f"--command: {caught.value}" in " ".join(strip_ansi(result.output).split())
+        assert not target.exists()
+
+    def test_a_colliding_name_is_refused_and_nothing_is_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record(tmp_path, monkeypatch)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(target),
+                "--command",
+                "orders=GET /api/orders",
+                "--command",
+                "orders=GET /api/orders/{order_id}",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "given twice" in strip_ansi(result.output)
+        assert not target.exists()
+
+    def test_an_endpoint_the_digest_lacks_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record(tmp_path, monkeypatch)
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(tmp_path / "out"),
+                "--command",
+                "x=GET /api/nowhere",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "not an endpoint in this run" in strip_ansi(result.output)
+
+    def test_command_without_from_run_is_refused(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--dir",
+                str(tmp_path),
+                "--command",
+                "orders=GET /api/orders",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "--command requires --from-run" in strip_ansi(result.output)

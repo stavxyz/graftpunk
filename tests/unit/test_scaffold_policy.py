@@ -157,3 +157,10 @@ def test_the_entry_point_group_is_spelled_in_one_module() -> None:
         for line in _group_literals(ast.parse(path.read_text(encoding="utf-8")), PLUGINS_GROUP)
     ]
     assert spelled == []
+
+
+def test_the_reserved_command_names_are_the_root_commands_registration_adds() -> None:
+    """devtools does not import graftpunk.cli, so policy keeps its own copy."""
+    from graftpunk.cli.plugin_commands import AUTO_ROOT_COMMAND_NAMES
+
+    assert set(policy._AUTO_ROOT_COMMAND_NAMES) == set(AUTO_ROOT_COMMAND_NAMES)
