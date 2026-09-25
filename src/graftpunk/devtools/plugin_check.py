@@ -1,0 +1,78 @@
+"""``gp plugin check``: a lint over the project reader's view. It never edits.
+
+Reports a remaining ``GP-FILL`` marker, a module without exactly one
+``SitePlugin`` subclass (the reader's per-plugin defect, listed with the other
+findings), a requirement's file that does not parse, and a
+``PROJECT_REQUIREMENTS`` entry the project lacks, which ``gp plugin upgrade``
+fixes. It does not compare a declared endpoint
+against the request call: the declaration is authoritative by design, and a
+check that could only ever be weak would give an author a reason to drop the
+keyword. It does not restate the fixtures check, which the generated suite runs
+(graft skill spec, 2026-09-21). A reader: never imports ``write.py``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from graftpunk.devtools.plugin_project import (
+    NotAPluginProjectError,
+    PluginProjectError,
+    require_plugin_project,
+)
+from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER
+
+__all__ = ["Finding", "check_project"]
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One thing the lint found, at a project-relative path and, when it has one, a line."""
+
+    path: str
+    line: int | None
+    message: str
+
+    def __str__(self) -> str:
+        where = f"{self.path}:{self.line}" if self.line is not None else self.path
+        return f"{where}: {self.message}"
+
+
+def check_project(root: Path) -> list[Finding]:
+    """Every finding in *root*'s plugin project: markers in file order, then plugin
+    defects, then requirement files that do not parse, then missing requirements.
+    A refusal from the reader (not a plugin project, or not readable at all) is
+    the one finding."""
+    try:
+        view = require_plugin_project(root)
+    except (NotAPluginProjectError, PluginProjectError) as exc:
+        return [Finding(path=".", line=None, message=str(exc))]
+    findings = [
+        Finding(
+            path=plugin.module_path, line=line, message=f"{GP_FILL_MARKER} marker left to fill in."
+        )
+        for plugin in view.plugins
+        for line in plugin.markers
+    ]
+    findings.extend(
+        Finding(path=defect.module_path, line=None, message=defect.message)
+        for defect in view.defects
+    )
+    findings.extend(
+        Finding(
+            path=path,
+            line=None,
+            message=f"{reason}; gp plugin upgrade can add its wiring once it parses.",
+        )
+        for path, reason in view.unreadable_files()
+    )
+    findings.extend(
+        Finding(
+            path=requirement.path,
+            line=None,
+            message=f"does not bind {requirement.name}; gp plugin upgrade adds it.",
+        )
+        for requirement in view.missing_requirements()
+    )
+    return findings
