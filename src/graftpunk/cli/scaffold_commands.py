@@ -26,8 +26,10 @@ from graftpunk.devtools.scaffold.project import (
 )
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths, validate_plugin_name
+from graftpunk.devtools.scaffold.selection import CommandSelection, CommandSelectionError
 from graftpunk.devtools.scaffold.write import InvalidChangeError
 from graftpunk.har.digest import DigestSource, digest
+from graftpunk.har.naming import EndpointSpecError, parse_command_spec
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -100,6 +102,22 @@ def _name_refusal(name: str) -> tuple[str, str] | None:
     return None
 
 
+def _command_selections(values: list[str]) -> tuple[CommandSelection, ...]:
+    """Every ``--command`` value as a selection, refusing the first that does not parse
+    with :func:`parse_command_spec`'s own text. Both scaffold commands call this, and
+    neither splits a value itself."""
+    selections: list[CommandSelection] = []
+    for value in values:
+        try:
+            name, method, template = parse_command_spec(value)
+        except EndpointSpecError as exc:
+            LOG.debug("scaffold_refused", reason="bad_command")
+            console.print(f"[red]--command: {escape(str(exc))}[/red]")
+            raise typer.Exit(1) from None
+        selections.append(CommandSelection(name=name, method=method, template=template))
+    return tuple(selections)
+
+
 @plugin_app.command("new")
 def plugin_new(
     name: Annotated[str, typer.Argument(help="Plugin name: site_name, and the package suffix")],
@@ -125,6 +143,14 @@ def plugin_new(
         bool,
         typer.Option("--check-name", help="Check NAME the way this command would, write nothing"),
     ] = False,
+    command: Annotated[
+        list[str],
+        typer.Option(
+            "--command",
+            help='"NAME=METHOD template": stub only these endpoints, under these names '
+            "(repeatable; needs --from-run)",
+        ),
+    ] = [],  # noqa: B006 - Typer reads this default at decoration time, never mutated per-call
 ) -> None:
     """Scaffold a new plugin: a fresh project, or a member of the suite in --dir."""
     refusal = _name_refusal(name)
@@ -153,6 +179,12 @@ def plugin_new(
         console.print("[red]--run requires --from-run.[/red]")
         raise typer.Exit(1)
 
+    selections = _command_selections(command)
+    if selections and from_run is None:
+        LOG.debug("scaffold_refused", reason="command_without_from_run")
+        console.print("[red]--command requires --from-run.[/red]")
+        raise typer.Exit(1)
+
     digest_result = None
     base_url = url
     if from_run is not None:
@@ -169,6 +201,7 @@ def plugin_new(
             base_url=base_url,
             digest=digest_result,
             graftpunk_version=_graftpunk_version_floor(),
+            commands=selections,
         )
         result = write_scaffold(dir_, spec, force_new=new)
     except ScaffoldConflictError as exc:
@@ -197,6 +230,10 @@ def plugin_new(
         target = exc.filename or str(dir_)
         reason = exc.strerror or str(exc)
         console.print(f"[red]Could not write {escape(str(target))}: {escape(reason)}[/red]")
+        raise typer.Exit(1) from None
+    except CommandSelectionError as exc:
+        LOG.debug("scaffold_refused", reason="bad_command")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
     except NotAPluginSuiteError as exc:
         # Before the ValueError arm below: it is a ValueError subclass, and the

@@ -35,7 +35,13 @@ from graftpunk.devtools.scaffold.render import (
     class_name_for,
     fixture_paths,
     render,
+    render_command,
     validate_plugin_name,
+)
+from graftpunk.devtools.scaffold.selection import (
+    CommandSelection,
+    CommandSelectionError,
+    plan_command,
 )
 from graftpunk.har.digest import (
     SHAPE_UNAVAILABLE,
@@ -3123,14 +3129,6 @@ def test_a_stub_named_login_never_takes_the_root_login_command(monkeypatch) -> N
     assert "login-2" in output and "login " in output
 
 
-def test_the_reserved_command_names_are_the_root_commands_registration_adds() -> None:
-    """devtools does not import graftpunk.cli, so render keeps its own copy."""
-    from graftpunk.cli.plugin_commands import AUTO_ROOT_COMMAND_NAMES
-    from graftpunk.devtools.scaffold.render import _AUTO_ROOT_COMMAND_NAMES
-
-    assert set(_AUTO_ROOT_COMMAND_NAMES) == set(AUTO_ROOT_COMMAND_NAMES)
-
-
 def test_an_endpoint_recorded_with_no_body_gets_a_test_that_can_pass() -> None:
     """An empty body is falsy, so the generated test asserts the call completed and
     says to assert on the page the redirect leads to; one with a body keeps
@@ -3348,3 +3346,130 @@ def test_the_renderer_spells_the_marker_only_through_the_policy() -> None:
         and GP_FILL_MARKER in node.value
     ]
     assert literals == []
+
+
+class TestExplicitSelection:
+    @staticmethod
+    def _spec(*selections: CommandSelection, endpoints: tuple[Endpoint, ...]) -> ScaffoldSpec:
+        return ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=endpoints),
+            commands=selections,
+        )
+
+    def test_only_the_selected_stubs_under_the_given_names(self) -> None:
+        files = render(
+            self._spec(
+                CommandSelection("order", "GET", "/orders/{order_id}"),
+                endpoints=(_ORDERS_ENDPOINT, _SEARCH_ENDPOINT),
+            )
+        )
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        assert "def order(" in plugin_code
+        assert "def search(" not in plugin_code
+        assert "def test_order(" in files["tests/test_plugin.py"]
+
+    def test_a_hyphenated_name_becomes_an_identifier_with_no_pin(self) -> None:
+        plugin_code = render(
+            self._spec(
+                CommandSelection("order-detail", "GET", "/orders/{order_id}"),
+                endpoints=(_ORDERS_ENDPOINT,),
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+        assert "def order_detail(" in plugin_code
+        # Not "name=" anywhere in the file: the boilerplate token_config comment
+        # always spells out Token.from_meta_tag(name="...", header="...") when the
+        # digest holds no paired token, independent of any command selection.
+        assert '        name="' not in plugin_code
+        assert 'help="GP-FILL: describe order-detail",' in plugin_code
+
+    def test_a_name_kebab_case_cannot_reach_is_pinned(self) -> None:
+        plugin_code = render(
+            self._spec(
+                CommandSelection("Orders", "GET", "/orders/{order_id}"),
+                endpoints=(_ORDERS_ENDPOINT,),
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+        assert "def Orders(" in plugin_code
+        assert '        name="Orders",' in plugin_code.splitlines()
+
+    def test_explicit_selection_ignores_the_stub_cap(self) -> None:
+        words = [
+            f"{chr(97 + i // 26)}{chr(97 + i % 26)}route"
+            for i in range(_MAX_SCAFFOLD_ENDPOINTS + 1)
+        ]
+        endpoints = tuple(dataclasses.replace(_SEARCH_ENDPOINT, template=f"/{w}") for w in words)
+        selections = tuple(CommandSelection(w, "GET", f"/{w}") for w in words)
+        plugin_code = render(self._spec(*selections, endpoints=endpoints))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        assert plugin_code.count("@command(") == _MAX_SCAFFOLD_ENDPOINTS + 1
+
+    def test_a_name_given_twice_is_refused(self) -> None:
+        spec = self._spec(
+            CommandSelection("order", "GET", "/orders/{order_id}"),
+            CommandSelection("order", "GET", "/search"),
+            endpoints=(_ORDERS_ENDPOINT, _SEARCH_ENDPOINT),
+        )
+        with pytest.raises(CommandSelectionError, match="given twice"):
+            render(spec)
+
+    def test_an_endpoint_the_digest_lacks_is_refused(self) -> None:
+        spec = self._spec(CommandSelection("x", "GET", "/nowhere"), endpoints=(_ORDERS_ENDPOINT,))
+        with pytest.raises(CommandSelectionError, match="not an endpoint in this run"):
+            render(spec)
+
+    def test_a_login_flow_endpoint_is_refused(self) -> None:
+        flagged = dataclasses.replace(_ORDERS_ENDPOINT, login_flow=True)
+        spec = self._spec(CommandSelection("x", "GET", "/orders/{order_id}"), endpoints=(flagged,))
+        with pytest.raises(CommandSelectionError, match="login flow"):
+            render(spec)
+
+    @pytest.mark.parametrize("name", ["class", "type", "match", "2fa", "has space", "a" * 41])
+    def test_a_keyword_name_is_refused(self, name: str) -> None:
+        """Soft keywords included, on every interpreter: "type" is refused on 3.11
+        too, whose keyword module does not list it."""
+        spec = self._spec(CommandSelection(name, "GET", "/search"), endpoints=(_SEARCH_ENDPOINT,))
+        with pytest.raises(CommandSelectionError, match=repr(name)):
+            render(spec)
+
+    def test_a_reserved_name_is_refused(self) -> None:
+        """login is the root command graftpunk.cli.plugin_commands registers for
+        every plugin with login_config; site_name is a SitePlugin attribute."""
+        spec = self._spec(
+            CommandSelection("login", "GET", "/search"), endpoints=(_SEARCH_ENDPOINT,)
+        )
+        with pytest.raises(CommandSelectionError, match="reserved"):
+            render(spec)
+
+    def test_building_the_spec_checks_only_its_shape(self) -> None:
+        """Planning happens once, at render; building a spec does not plan."""
+        with pytest.raises(CommandSelectionError, match="needs a digest"):
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example.com",
+                commands=(CommandSelection("x", "GET", "/nowhere"),),
+            )
+        self._spec(CommandSelection("x", "GET", "/nowhere"), endpoints=(_ORDERS_ENDPOINT,))
+
+    def test_render_command_matches_the_stub_new_writes(self) -> None:
+        d = _digest(endpoints=(_ORDERS_ENDPOINT,))
+        command = plan_command(d, CommandSelection("order", "GET", "/orders/{order_id}"))
+        rendered = render_command(command, d)
+        plugin_code = render(
+            self._spec(
+                CommandSelection("order", "GET", "/orders/{order_id}"),
+                endpoints=(_ORDERS_ENDPOINT,),
+            )
+        )["src/graftpunk_myshop/plugin.py"]
+        assert "\n".join(rendered.lines) in plugin_code
+        assert ("graftpunk.plugins", "PluginParamSpec") in rendered.imports
+        assert {("graftpunk.plugins", "CommandContext"), ("graftpunk.plugins", "command")} <= set(
+            rendered.imports
+        )
+        assert rendered.fixture == "get_orders_{order_id}.json"

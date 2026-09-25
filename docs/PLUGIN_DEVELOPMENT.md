@@ -651,7 +651,7 @@ class MyshopPlugin(SitePlugin):
     # GP-FILL: unpaired token candidate: header 'X-Csrf-Token'
 
     @command(
-        help="GP-FILL: describe api_orders",
+        help="GP-FILL: describe api-orders",
         params=[
             PluginParamSpec.option(
                 "archived",
