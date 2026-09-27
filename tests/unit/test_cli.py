@@ -1,6 +1,5 @@
 """Tests for CLI module."""
 
-import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,13 +8,9 @@ from typer.testing import CliRunner
 from graftpunk.cli.main import app
 from graftpunk.exceptions import GraftpunkError, SessionExpiredError, SessionNotFoundError
 from graftpunk.plugins import infer_site_name
+from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
-
-
-def strip_ansi(text: str) -> str:
-    """Remove ANSI escape codes from text."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 class TestVersionCommand:
@@ -436,8 +431,8 @@ class TestExportCommand:
         result = runner.invoke(app, ["session", "export", "test-session"])
 
         assert result.exit_code == 0
-        assert "Exported to" in result.output
-        assert "/home/user/.httpie/sessions/test.json" in result.output
+        assert "Exported to" in strip_ansi(result.output)
+        assert "/home/user/.httpie/sessions/test.json" in strip_ansi(result.output)
         mock_session.save_httpie_session.assert_called_once_with("test-session")
 
     @patch("graftpunk.cli.session_commands.load_session")
@@ -617,13 +612,11 @@ class TestConfigCommand:
 class TestVerbosity:
     """Tests for CLI verbosity flags."""
 
+    @pytest.mark.usefixtures("gp_logging")
     def test_default_log_level_is_warning(self) -> None:
         """Test that default log level is WARNING (minimal output)."""
         import structlog
 
-        from graftpunk.logging import configure_logging
-
-        configure_logging(level="WARNING")
         logger = structlog.get_logger("test")
         assert logger is not None
 
@@ -1472,12 +1465,13 @@ class TestObserveNamesAreNotMarkup:
 
         result = runner.invoke(cli_main.app, ["observe", "list"])
         assert result.exit_code == 0, result.output
-        assert "evil [bold]" in result.output
+        assert "evil [bold]" in strip_ansi(result.output)
 
         result = runner.invoke(cli_main.app, ["observe", "show", "evil [bold]"])
         assert result.exit_code == 0, result.output
-        assert "run [red]" in result.output and "network [dim].har" in result.output
+        output = strip_ansi(result.output)
+        assert "run [red]" in output and "network [dim].har" in output
 
         result = runner.invoke(cli_main.app, ["observe", "show", "evil [bold]", "nope [/z]"])
         assert result.exit_code != 0
-        assert "nope [/z]" in result.output
+        assert "nope [/z]" in strip_ansi(result.output)

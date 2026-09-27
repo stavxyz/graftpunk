@@ -9,7 +9,19 @@ from __future__ import annotations
 
 from graftpunk.har.paths import template_path
 
-__all__ = ["capture_filename", "capture_slug"]
+__all__ = [
+    "EndpointSpecError",
+    "HTTP_METHODS",
+    "UNNAMED_CONTENT_TYPE",
+    "capture_filename",
+    "capture_slug",
+    "capture_text",
+    "fixture_order",
+    "fixture_rank",
+    "normalize_media_type",
+    "parse_command_spec",
+    "parse_endpoint",
+]
 
 _EXTENSION_BY_MIME: dict[str, str] = {
     "application/json": "json",
@@ -29,14 +41,33 @@ _TEXT_MIME_KEYWORDS = ("text", "xml")
 
 
 def capture_slug(method: str, path: str) -> str:
-    """The method+templated-path stem shared by a capture, a fixture, and its sidecar."""
+    """The method+templated-path stem shared by a capture, a fixture, and its sidecar.
+
+    *path* may already be a template, such as the digest's collapsed
+    ``/products/{product_id}``; its ``{placeholder}`` segments pass through as
+    written.
+    """
     template, _ = template_path(path)
     body = template.strip("/").replace("/", "_")
     return f"{method.lower()}_{body or 'root'}"
 
 
-def _extension_for_content_type(content_type: str) -> str:
+# The content type a capture is named by when its response named none: gp observe
+# fixtures and the digest's record of the fixture recording both use it.
+UNNAMED_CONTENT_TYPE = "application/octet-stream"
+
+
+def normalize_media_type(content_type: str) -> str:
+    """*content_type* with its parameters stripped and lowercased, :data:`UNNAMED_CONTENT_TYPE`
+    when it named none. The one comparison every media type in this module and the
+    digest's fixture choice use, so ``application/json`` and ``application/json;
+    charset=utf-8`` count as the same type."""
     mime = content_type.split(";", 1)[0].strip().lower()
+    return mime or UNNAMED_CONTENT_TYPE
+
+
+def _extension_for_content_type(content_type: str) -> str:
+    mime = normalize_media_type(content_type)
     if mime in _EXTENSION_BY_MIME:
         return _EXTENSION_BY_MIME[mime]
     if any(keyword in mime for keyword in _TEXT_MIME_KEYWORDS):
@@ -47,3 +78,129 @@ def _extension_for_content_type(content_type: str) -> str:
 def capture_filename(method: str, path: str, content_type: str) -> str:
     """``<method>_<slug>.<ext>``, the one name a capture, fixture, and test share."""
     return f"{capture_slug(method, path)}.{_extension_for_content_type(content_type)}"
+
+
+def capture_text(body: str | None, status: int) -> str | None:
+    """The text ``gp observe fixtures`` writes for a recording answering *status*
+    with *body*: the body, an empty one included; an empty string for a 3xx or a
+    204 recorded with no text (graftpunk's own recorder keeps none for a redirect
+    hop), which has no body by definition; and None, no fixture at all, for any
+    other response recorded with no text (a binary one). The digest's choice of
+    fixture recording and the generator's "no fixture" decision read the same
+    rule."""
+    if body is not None:
+        return body
+    return "" if 300 <= status < 400 or status == 204 else None
+
+
+def fixture_rank(body: str | None) -> int:
+    """Where a recording of a template stands for ``gp observe fixtures``: 0 when it
+    carries a body, 1 when it does not. The fixtures are written in this order,
+    stably, so the unsuffixed fixture a generated test reads is the first recording
+    with a body when any has one; the digest reads the same recording
+    (``Endpoint.falsy_first_response``)."""
+    return 0 if body else 1
+
+
+def fixture_order(text: str | None, content_type: str, fixture_type: str) -> tuple[int, int]:
+    """Where a recording of a template stands for ``gp observe fixtures``, which
+    writes a template's recordings in this order, stably, so the first takes the
+    unsuffixed name a generated test reads: those of *fixture_type* first, then by
+    :func:`fixture_rank`. *content_type* and *fixture_type* are compared normalised
+    (:func:`normalize_media_type`), so a charset-suffixed content type still counts
+    as *fixture_type*; an empty *fixture_type* (no endpoint to read one from) never
+    matches, so every recording ranks by :func:`fixture_rank` alone.
+
+    *fixture_type* is the digest's own choice of which media type an endpoint's
+    fixture is (``Endpoint.fixture_content_type``): the most-recorded type among
+    those with a recording that carries a body, a count tie going to a JSON type
+    and then to the type whose winning recording came first, or, only when no type
+    has a body at all, the same rule over every recorded type. Within that type,
+    the fixture recording is the first with a body, or its first recording when
+    the type is empty-only. ``gp observe fixtures`` also matches the digest's own
+    record of that exact recording (``Endpoint.fixture_entry_index``) as the
+    authority: this function alone would pick a same-ranked entry the digest never
+    saw (an out-of-scope or a static one) by raw file order instead."""
+    fixture = normalize_media_type(fixture_type) if fixture_type else None
+    matches = fixture is not None and normalize_media_type(content_type) == fixture
+    return (0 if matches else 1, fixture_rank(text))
+
+
+HTTP_METHODS: frozenset[str] = frozenset(
+    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
+)
+
+_ENDPOINT_EXAMPLE = '"GET /orders/{order_id}"'
+_COMMAND_EXAMPLE = '"order=GET /orders/{order_id}"'
+
+
+class EndpointSpecError(ValueError):
+    """A value that does not read as an endpoint or a command spec. The message says
+    how to write one, and every consumer prints it unchanged."""
+
+
+def parse_endpoint(value: str) -> tuple[str, str]:
+    """``"<METHOD> <template>"``, the way the digest prints an endpoint, as its pair.
+
+    The one reader of the grammar: ``gp observe fixtures --match``, both
+    ``--command`` options, and the skill's own composition all take the halves
+    from here. The method is one of :data:`HTTP_METHODS`, in capitals; the
+    template is everything after the first space, stripped, and may be a glob
+    where the consumer accepts one. A value that splits wrong would match nothing
+    and look like an empty result, so it is refused instead.
+
+    Raises:
+        EndpointSpecError: No space, a method that is not a capitalised HTTP
+            method, an empty template, a template with whitespace inside it, or
+            one that starts with neither ``/`` nor ``*`` (a path always starts
+            with ``/``, so such a template could only ever match nothing).
+    """
+    method, separator, template = value.strip().partition(" ")
+    template = template.strip()
+    if not separator or not template or method not in HTTP_METHODS:
+        raise EndpointSpecError(
+            f'{value!r} is not a "METHOD template" pair. Write the method in capitals, '
+            f"a space, then the template, as in {_ENDPOINT_EXAMPLE}."
+        )
+    if any(character.isspace() for character in template):
+        raise EndpointSpecError(
+            f"{value!r}: the template {template!r} has whitespace inside it. Write one "
+            f"method and one path, as in {_ENDPOINT_EXAMPLE}."
+        )
+    if not template.startswith(("/", "*")):
+        raise EndpointSpecError(
+            f"{value!r}: the template {template!r} starts with neither '/' nor '*'. "
+            f"Write the path as the digest prints it, as in {_ENDPOINT_EXAMPLE}."
+        )
+    return method, template
+
+
+def parse_command_spec(value: str) -> tuple[str, str, str]:
+    """``"<name>=<METHOD> <template>"`` as its (name, method, template) triple.
+
+    A command name cannot contain ``=``, so the split on the first one is
+    unambiguous; the endpoint half goes through :func:`parse_endpoint`. Whether
+    the name is a usable command name is the generator's rule, not this one's.
+
+    Raises:
+        EndpointSpecError: No ``=``, an empty name, nothing after the ``=``, or
+            an endpoint half :func:`parse_endpoint` refuses.
+    """
+    name, separator, endpoint = value.partition("=")
+    name = name.strip()
+    if not separator:
+        raise EndpointSpecError(
+            f"{value!r} has no '='. Write the command name, '=', then the endpoint, "
+            f"as in {_COMMAND_EXAMPLE}."
+        )
+    if not name:
+        raise EndpointSpecError(
+            f"{value!r} has no command name before '='. Write one, as in {_COMMAND_EXAMPLE}."
+        )
+    if not endpoint.strip():
+        raise EndpointSpecError(
+            f"{value!r} has nothing after '='. Write the endpoint the way the digest "
+            f"prints it, as in {_COMMAND_EXAMPLE}."
+        )
+    method, template = parse_endpoint(endpoint)
+    return name, method, template

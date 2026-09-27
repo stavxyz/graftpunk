@@ -74,7 +74,12 @@ class PluginParamSpec:
     into Typer-native parameters.
 
     For options, supported keys are: ``type``, ``required``, ``default``, ``help``,
-    ``is_flag``, ``show_default``, ``envvar``.
+    ``is_flag``, ``show_default``, ``envvar``, ``flag``, ``multiple``. ``flag``
+    replaces the option's declared name, e.g. ``"--archived/--no-archived"`` for a
+    bool flag with a negative, which passes ``True``, ``False``, or ``None`` when
+    neither is given. ``multiple`` makes the option repeatable (``--id 1 --id 2``)
+    and passes a list of ``type``, or ``None`` when it is not given; a flag cannot
+    be multiple.
     For arguments, supported keys are: ``type``, ``required``, ``default``, ``nargs``.
     Unsupported keys raise ``PluginError`` at registration.
 
@@ -110,7 +115,8 @@ class PluginParamSpec:
         ``graftpunk.cli.command_factory`` into Typer-native parameters.
 
         Supported ``click_kwargs`` keys: ``type``, ``required``, ``default``, ``help``,
-        ``is_flag``, ``show_default``, ``envvar``.
+        ``is_flag``, ``show_default``, ``envvar``, ``flag``, ``multiple`` (see the
+        class docstring).
         Unsupported keys raise ``PluginError`` at registration.
 
         When *type* is ``bool`` and *default* is ``False``, ``is_flag``
@@ -221,6 +227,12 @@ class CommandMetadata:
     requires_session: bool | None = None
     saves_session: bool = False
     click_kwargs: dict[str, Any] = field(default_factory=dict)
+    # Tooling provenance, not behaviour: the "<METHOD> <template>" this command
+    # implements, as gp plugin new declares it. Never consulted at runtime and
+    # never shown in help; devtools read it from the plugin's source, never from
+    # this object. A recorded exception to the devtools placement rule (graft
+    # skill spec, 2026-09-21).
+    endpoint: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -602,7 +614,7 @@ class LoginConfig:
         # Validate the post-submit poll budget and the settle pause. The type check
         # comes first: a string reached the comparison below as a raw TypeError from
         # the interpreter, and True passed it as the number 1, which is a one second
-        # budget nobody asked for (polish round 2).
+        # budget nobody asked for.
         for name in ("timeout", "settle"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -792,6 +804,7 @@ def command(
     requires_session: bool | None = None,
     saves_session: bool = False,
     name: str | None = None,
+    endpoint: str | None = None,
 ) -> Callable[..., Any]:
     """Decorator to mark a function as a CLI command or a class as a command group.
 
@@ -812,6 +825,13 @@ def command(
             ``account-statements``); pass ``name="by_parcel"`` to pin a
             different spelling. ``GraftpunkClient`` accepts either spelling
             (``client.by_parcel()`` and ``execute("by-parcel")`` both work).
+        endpoint: Tooling provenance (functions only): the ``"<METHOD> <template>"``
+            this command implements, as ``gp plugin new`` writes it. Stored on the
+            metadata, never consulted at runtime, and never shown in help. It is a
+            claim the author keeps true by hand: change it with the request. This
+            is the one recorded exception to the rule that tooling state stays in
+            ``graftpunk.devtools``: tooling provenance carried on a runtime object
+            (graft skill spec, 2026-09-21).
 
     Returns:
         Decorated function or class with _command_meta or _command_group_meta attached.
@@ -872,6 +892,7 @@ def command(
                 requires_session=requires_session,
                 saves_session=saves_session,
                 click_kwargs=click_kw,
+                endpoint=endpoint,
             )
             return target
 

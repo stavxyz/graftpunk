@@ -429,7 +429,7 @@ def parse_yaml_plugin(
 
         # The text keys have the same hole the numbers do: LoginConfig checks them
         # with .strip(), which a number or a list answers with an AttributeError
-        # naming neither the file nor the key (polish round 1).
+        # naming neither the file nor the key.
         for key in ("url", "failure", "success", "success_url", "wait_for"):
             if key in login_block and not isinstance(login_block[key], str):
                 raise PluginError(

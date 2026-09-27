@@ -261,15 +261,15 @@ def _build_site_app(plugin: CLIPluginProtocol, result: PluginDiscoveryResult) ->
         if login_callable is not None:
             from graftpunk.cli.login_commands import create_login_fn
 
-            if "login" in registered_names[""]:
+            if LOGIN_COMMAND in registered_names[""]:
                 raise PluginError(
                     f"plugin '{plugin.site_name}': login command collides with an "
                     f"existing root command named 'login'"
                 )
             login_fields = resolve_login_fields(plugin)
             login_fn = create_login_fn(plugin, login_callable, login_fields)
-            site_app.command(name="login", help=login_fn.__doc__)(login_fn)
-            registered_names[""].add("login")
+            site_app.command(name=LOGIN_COMMAND, help=login_fn.__doc__)(login_fn)
+            registered_names[""].add(LOGIN_COMMAND)
             LOG.debug("login_command_registered", plugin=plugin.site_name)
     except PluginError:
         raise  # contract violation -- loud, escapes (see docstring policy)
@@ -323,6 +323,13 @@ def derive_reserved_cli_names(app: typer.Typer) -> frozenset[str]:
     return frozenset(names)
 
 
+# The root commands registration adds to a plugin by itself: login, for a plugin
+# with a login capability. A plugin's own command may not take one of these names.
+# The scaffold keeps its own copy, which a test holds equal to this one.
+LOGIN_COMMAND = "login"
+AUTO_ROOT_COMMAND_NAMES = (LOGIN_COMMAND,)
+
+
 def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) -> dict[str, str]:
     """Discover and register all plugin commands with a Typer app.
 
@@ -371,8 +378,7 @@ def register_plugin_commands(app: typer.Typer, *, notify_errors: bool = True) ->
                 # Skip only this plugin. Raising here would abort the whole
                 # loop and main.py's handler would then register nothing, so a
                 # user who installed a plugin named after a top-level command
-                # (http, config) would lose every other plugin on upgrade
-                # (final fix wave, 2026-09-12).
+                # (http, config) would lose every other plugin on upgrade.
                 message = (
                     f"Plugin name collision: '{site_name}' is a reserved top-level "
                     "command name. Rename the plugin."

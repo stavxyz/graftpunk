@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
-import json as jsonlib
 import shutil
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -24,12 +23,40 @@ from rich.table import Table
 
 from graftpunk.cli.observe_browser import run_observe_go, run_observe_interactive
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
-from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored, find_repo_root, is_tracked
-from graftpunk.har.digest import DigestSource, body_params, digest
-from graftpunk.har.naming import capture_filename
-from graftpunk.har.parser import parse_har_file
-from graftpunk.har.paths import template_path
-from graftpunk.har.report import DEFAULT_ENDPOINT_LIMIT, render_json, render_markdown
+from graftpunk.console import err_console
+from graftpunk.devtools.captures import (
+    IgnoreFileReadError,
+    ensure_ignored,
+    find_repo_root,
+    is_tracked,
+    write_sidecar,
+)
+from graftpunk.devtools.captures_rule import CAPTURES_DIR
+from graftpunk.har.digest import (
+    DigestSource,
+    RunDigest,
+    body_params,
+    digest,
+    endpoint_template,
+    flagged_names_of,
+    redacted_names_of,
+)
+from graftpunk.har.naming import (
+    UNNAMED_CONTENT_TYPE,
+    EndpointSpecError,
+    capture_filename,
+    capture_slug,
+    capture_text,
+    fixture_order,
+    parse_endpoint,
+)
+from graftpunk.har.parser import HAREntry, parse_har_file
+from graftpunk.har.report import (
+    DEFAULT_ENDPOINT_LIMIT,
+    render_endpoints_json,
+    render_json,
+    render_markdown,
+)
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.storage import session_dirname
@@ -40,9 +67,6 @@ console = Console()
 LOG = get_logger(__name__)
 
 _DEFAULT_FIXTURE_LIMIT = 5
-_HTTP_METHODS = frozenset(
-    {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"}
-)
 
 observe_app = typer.Typer(
     name="observe",
@@ -87,7 +111,7 @@ def _refuse_write(path: Path, exc: OSError) -> NoReturn:
     """Report an unwritable *path* as a refusal, not as a Rich traceback.
 
     Every CLI refusal is a red line and exit 1: an unwritable ``--output`` or
-    ``--out`` directory is the user's to correct (final fix wave, 2026-09-12).
+    ``--out`` directory is the user's to correct.
     """
     target = exc.filename or str(path)
     reason = exc.strerror or str(exc)
@@ -123,6 +147,13 @@ def digest_cmd(
     as_json: Annotated[
         bool, typer.Option("--json", help="Print the complete digest as JSON")
     ] = False,
+    endpoints_json: Annotated[
+        bool,
+        typer.Option(
+            "--endpoints-json",
+            help="Print the versioned endpoint projection a program reads (uncapped)",
+        ),
+    ] = False,
     all_hosts: Annotated[
         bool, typer.Option("--all-hosts", help="Model every host, not just the primary one")
     ] = False,
@@ -135,9 +166,18 @@ def digest_cmd(
 ) -> None:
     """Read a HAR (a run or a bare file) into a readable digest of hosts, endpoints, login, and
     tokens."""
+    if as_json and endpoints_json:
+        # On stderr: a caller asking for JSON reads stdout as JSON.
+        err_console.print("[red]Pass --json or --endpoints-json, not both.[/red]")
+        raise typer.Exit(1)
     source = _digest_source(session, run, har)
     result = digest(source, all_hosts=all_hosts)
-    text = render_json(result) if as_json else render_markdown(result, limit=limit)
+    if endpoints_json:
+        text = render_endpoints_json(result)
+    elif as_json:
+        text = render_json(result)
+    else:
+        text = render_markdown(result, limit=limit)
     if output is not None:
         try:
             output.write_text(text, encoding="utf-8")
@@ -153,30 +193,60 @@ def digest_cmd(
         console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
-def _matches_template(entry_method: str, entry_template: str, pattern: str) -> bool:
-    method_part, _, path_part = pattern.strip().partition(" ")
-    if method_part.upper() != entry_method:
+def _matches_template(entry_method: str, entry_template: str, endpoint: tuple[str, str]) -> bool:
+    """True when the entry is *endpoint*: the same method, and a template equal to the
+    pattern's or matching it as a glob. *endpoint* is :func:`parse_endpoint`'s pair;
+    this function never splits a pattern itself."""
+    method, template = endpoint
+    if method != entry_method:
         return False
-    return entry_template == path_part or fnmatch.fnmatch(entry_template, path_part)
+    return entry_template == template or fnmatch.fnmatch(entry_template, template)
 
 
-def _validate_match_patterns(patterns: list[str]) -> None:
-    """Refuse a ``--match`` value that cannot match anything.
-
-    The matcher partitions on a space, so ``--match "/orders"`` reads as the
-    method ``/orders`` against an empty template and silently matches nothing:
-    the user sees "No entries matched" and no way to tell a typo from an empty
-    run (final fix wave, 2026-09-12).
-    """
+def _parsed_matches(patterns: list[str]) -> list[tuple[str, str]]:
+    """Every ``--match`` value as its pair, refusing the first that does not parse."""
+    parsed: list[tuple[str, str]] = []
     for pattern in patterns:
-        method_part, separator, path_part = pattern.strip().partition(" ")
-        if not separator or not path_part.strip() or method_part.upper() not in _HTTP_METHODS:
-            console.print(
-                f"[red]--match '{escape(pattern)}' is not a \"METHOD template\" pair. "
-                f"Write the method, a space, then the template, as in "
-                f'"GET /orders/{{order_id}}".[/red]'
-            )
-            raise typer.Exit(1)
+        try:
+            parsed.append(parse_endpoint(pattern))
+        except EndpointSpecError as exc:
+            console.print(f"[red]--match: {escape(str(exc))}[/red]")
+            raise typer.Exit(1) from None
+    return parsed
+
+
+def _capture_text(entry: HAREntry) -> str | None:
+    """*entry*'s fixture text, by :func:`graftpunk.har.naming.capture_text`."""
+    return capture_text(entry.response.body, entry.response.status)
+
+
+def _colliding_file_names(
+    entries: list[HAREntry], run_digest: RunDigest, endpoints: list[tuple[str, str]]
+) -> dict[str, set[str]]:
+    """The capture stems two or more matched endpoints would share (``/a_b`` and
+    ``/a/b`` both name ``get_a_b``, whatever each one's extension), each with those
+    endpoints: ``FixtureSession`` looks a fixture up by stem."""
+    keys_by_name: dict[str, set[str]] = {}
+    # Keyed on the folded stem, printed as the first real stem seen under it.
+    shown: dict[str, str] = {}
+    for entry in entries:
+        try:
+            path = urlparse(entry.request.url).path or "/"
+        except ValueError:
+            continue
+        template = endpoint_template(run_digest, path)
+        method = entry.request.method.upper()
+        if _capture_text(entry) is None or not any(
+            _matches_template(method, template, e) for e in endpoints
+        ):
+            continue
+        # Case-folded: on a case-insensitive filesystem get_Users and get_users
+        # are one file.
+        stem = capture_slug(method, template)
+        name = stem.casefold()
+        shown.setdefault(name, stem)
+        keys_by_name.setdefault(name, set()).add(f"{method} {template}")
+    return {shown[name]: keys for name, keys in keys_by_name.items() if len(keys) > 1}
 
 
 def fixtures_cmd(
@@ -201,7 +271,7 @@ def fixtures_cmd(
     if not match:
         console.print("[red]--match is required (repeatable).[/red]")
         raise typer.Exit(1)
-    _validate_match_patterns(match)
+    endpoints = _parsed_matches(match)
 
     run_dir = resolve_run(session, run)
     har_path = run_dir / "network.har"
@@ -210,6 +280,13 @@ def fixtures_cmd(
         raise typer.Exit(1)
 
     target_dir = out if out is not None else Path.cwd() / CAPTURES_DIR
+
+    # Everything read from the run comes before any write: a digest that fails
+    # must not leave an edited .gitignore or an empty target behind.
+    entries = parse_har_file(har_path).entries
+    run_digest = digest(DigestSource.from_run_dir(run_dir, session=session, run_id=run_dir.name))
+    flagged = flagged_names_of(run_digest, entries)
+    redacted = redacted_names_of(run_digest, entries)
 
     if not allow_tracked and target_dir.exists():
         tracked = [p for p in sorted(target_dir.rglob("*")) if p.is_file() and is_tracked(p)]
@@ -222,14 +299,40 @@ def fixtures_cmd(
 
     # Below the tracked-path check: the ignore line exists to protect files
     # this command is about to write, so a refusal must not leave an edited
-    # .gitignore behind (polish round 1, 2026-09-12).
+    # .gitignore behind.
     repo_root = find_repo_root(target_dir)
     if repo_root is not None:
         try:
             relative = str(target_dir.resolve().relative_to(repo_root))
         except ValueError:
             relative = CAPTURES_DIR
-        if ensure_ignored(repo_root, relative):
+        gitignore = repo_root / ".gitignore"
+        try:
+            added = ensure_ignored(repo_root, relative)
+        except IsADirectoryError:
+            console.print(
+                f"[red]Refusing to write {escape(str(gitignore))}: it is a directory, "
+                "not a file[/red]",
+                soft_wrap=True,
+            )
+            raise typer.Exit(1) from None
+        except UnicodeDecodeError:
+            # The same refusal gp plugin new gives this file.
+            console.print(
+                f"[red]Refusing to write {escape(str(gitignore))}: it is not UTF-8 text[/red]",
+                soft_wrap=True,
+            )
+            raise typer.Exit(1) from None
+        except OSError as exc:
+            # Which step failed: a read never changed the file; an append may have.
+            step = "read" if isinstance(exc, IgnoreFileReadError) else "write"
+            reason = exc.strerror or str(exc)
+            console.print(
+                f"[red]Could not {step} {escape(str(gitignore))}: {escape(reason)}[/red]",
+                soft_wrap=True,
+            )
+            raise typer.Exit(1) from None
+        if added:
             console.print(f"[dim]Added '{escape(relative)}/' to .gitignore[/dim]")
     else:
         console.print(
@@ -237,24 +340,77 @@ def fixtures_cmd(
             "from being committed.[/yellow]"
         )
 
+    collisions = _colliding_file_names(entries, run_digest, endpoints)
+    if collisions:
+        for filename, keys in sorted(collisions.items()):
+            console.print(
+                f"[red]Refusing to write {escape(filename)}: "
+                f"{escape(' and '.join(sorted(keys)))} would share that fixture name. "
+                "Narrow --match to one of them.[/red]",
+                soft_wrap=True,
+                highlight=False,
+            )
+        raise typer.Exit(1)
+
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         _refuse_write(target_dir, exc)
-    entries = parse_har_file(har_path).entries
     per_template_count: dict[str, int] = {}
     written: list[Path] = []
-    for entry in entries:
-        path = urlparse(entry.request.url).path or "/"
-        template, _ = template_path(path)
-        method = entry.request.method.upper()
-        if not any(_matches_template(method, template, pattern) for pattern in match):
+    matched: set[tuple[str, str]] = set()
+    # Each template's fixture recording is written first, so it takes the unsuffixed
+    # name a generated test reads. fixture_order (content type, then body) orders
+    # the rest; fixture_index names the digest's own choice by its exact HAR entry,
+    # ahead of that, so an out-of-scope or a static entry sharing the same method
+    # and template (fixture_order alone cannot tell those apart from an entry the
+    # digest actually kept) never outranks it. The sort is stable.
+    fixture_types = {
+        (method, endpoint.template): endpoint.fixture_content_type
+        for endpoint in run_digest.endpoints
+        for method in endpoint.methods
+    }
+    fixture_index = {
+        (method, endpoint.template): endpoint.fixture_entry_index
+        for endpoint in run_digest.endpoints
+        for method in endpoint.methods
+        if endpoint.fixture_entry_index is not None
+    }
+
+    def written_first(indexed: tuple[int, HAREntry]) -> tuple[int, int, int, int]:
+        entry_index, entry = indexed
+        try:
+            path = urlparse(entry.request.url).path or "/"
+        except ValueError:
+            path = "/"
+        key = (entry.request.method.upper(), endpoint_template(run_digest, path))
+        is_the_fixture = entry_index == fixture_index.get(key)
+        type_rank, body_rank = fixture_order(
+            _capture_text(entry), entry.response.content_type or "", fixture_types.get(key, "")
+        )
+        return (0 if is_the_fixture else 1, type_rank, body_rank, entry_index)
+
+    for _entry_index, entry in sorted(enumerate(entries), key=written_first):
+        try:
+            path = urlparse(entry.request.url).path or "/"
+        except ValueError:
+            # A URL urlparse cannot split: the digest dropped it as an error too.
             continue
-        content_type = entry.response.content_type or "application/octet-stream"
-        if entry.response.body is None:
+        # The digest's own template, collapse included: --match takes the
+        # template the digest printed, and a generated test looks for the file
+        # named after it.
+        template = endpoint_template(run_digest, path)
+        method = entry.request.method.upper()
+        hits = [e for e in endpoints if _matches_template(method, template, e)]
+        if not hits:
+            continue
+        matched.update(hits)
+        content_type = entry.response.content_type or UNNAMED_CONTENT_TYPE
+        text = _capture_text(entry)
+        if text is None:
             # A capture holds no text for a binary response, and writing
             # `body or ""` put a zero-byte file on disk that reads as a real
-            # (empty) fixture (final fix wave, 2026-09-12).
+            # (empty) fixture.
             console.print(
                 f"[dim]Skipped {escape(method)} {escape(template)}: "
                 f"no text body ({escape(content_type)})[/dim]"
@@ -267,36 +423,38 @@ def fixtures_cmd(
             continue
         per_template_count[key] = seen + 1
 
-        filename = capture_filename(method, path, content_type)
+        filename = capture_filename(method, template, content_type)
         if seen > 0:
+            # "#" never occurs in a path (it starts the fragment), so a repeat
+            # cannot take the name of a template with a numeric last segment.
             stem, _, ext = filename.rpartition(".")
-            filename = f"{stem}_{seen}.{ext}"
+            filename = f"{stem}#{seen}.{ext}"
         file_path = target_dir / filename
-        meta_path = target_dir / f"{filename}.meta.json"
         try:
-            file_path.write_text(entry.response.body, encoding="utf-8")
-            meta_path.write_text(
-                jsonlib.dumps(
-                    {
-                        "url": entry.request.url,
-                        "status": entry.response.status,
-                        "content_type": content_type,
-                        "body_params": sorted(body_params(entry)),
-                        "captured_at": entry.timestamp.isoformat(),
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
+            file_path.write_text(text, encoding="utf-8")
+            write_sidecar(
+                file_path,
+                status=entry.response.status,
+                content_type=content_type,
+                body_params=body_params(entry),
+                flagged_names=flagged,
+                redacted_names=redacted,
             )
         except OSError as exc:
             _refuse_write(file_path, exc)
         written.append(file_path)
         # soft_wrap: see digest_cmd. A path listing that breaks mid-word at 80
-        # columns cannot be copied (polish round 1, 2026-09-12).
+        # columns cannot be copied.
         console.print(f"[green]Wrote:[/green] {escape(str(file_path))}", soft_wrap=True)
 
-    if not written:
-        console.print("[yellow]No entries matched --match.[/yellow]")
+    for pattern in endpoints:
+        if pattern not in matched:
+            method, template = pattern
+            console.print(
+                f"[yellow]No entries matched --match {escape(method)} {escape(template)}.[/yellow]",
+                soft_wrap=True,
+                highlight=False,
+            )
 
 
 # Attached here, above the decorated commands below, because Typer lists

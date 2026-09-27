@@ -1,11 +1,26 @@
-"""The single owner of 'captures never enter git' (plugin tooling spec, 2026-09-11)."""
+"""The writing side of 'captures never enter git' (plugin tooling spec, 2026-09-11).
+
+captures.py applies the rule to disk; the pure rule, the directory and the
+.gitignore text edit, is owned by captures_rule.py and tested at the end of
+this module."""
 
 from __future__ import annotations
 
+import ast
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 
-from graftpunk.devtools.captures import CAPTURES_DIR, ensure_ignored, find_repo_root, is_tracked
+import graftpunk.devtools.captures_rule as captures_rule
+from graftpunk.devtools.captures import (
+    ensure_ignored,
+    find_repo_root,
+    is_tracked,
+    write_sidecar,
+)
+from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
+from graftpunk.testing.sidecar import load_sidecar, sidecar_path
 
 
 def _git(argv: list[str], cwd: Path) -> None:
@@ -86,3 +101,52 @@ class TestIsTracked:
         untracked = tmp_path / "scratch.txt"
         untracked.write_text("hi")
         assert is_tracked(untracked) is False
+
+
+class TestWriteSidecar:
+    def test_writes_the_schema_keys_and_the_hash_of_the_file_on_disk(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "get_orders.json"
+        fixture.write_text('{"orders": []}', encoding="utf-8")
+        path = write_sidecar(
+            fixture,
+            status=200,
+            content_type="application/json",
+            body_params=["page", "archived"],
+            flagged_names=["shop_session", "csrf-token", "shop_session"],
+        )
+        assert path == sidecar_path(fixture)
+        sidecar = load_sidecar(path)
+        assert sidecar.capture_sha256 == hashlib.sha256(fixture.read_bytes()).hexdigest()
+        assert sidecar.body_params == ("archived", "page")
+        assert sidecar.flagged_names == ("csrf-token", "shop_session")
+        assert "url" not in json.loads(path.read_text())
+        assert "captured_at" not in json.loads(path.read_text())
+
+
+class TestWithIgnored:
+    def test_the_line_is_added_once(self) -> None:
+        assert with_ignored("", "tests/captures") == "tests/captures/\n"
+        assert with_ignored("dist/", "tests/captures") == "dist/\ntests/captures/\n"
+        assert with_ignored("tests/captures\n", "tests/captures/") == "tests/captures\n"
+
+    def test_a_crlf_file_gets_a_crlf_line(self) -> None:
+        assert with_ignored("dist/\r\n", "tests/captures") == "dist/\r\ntests/captures/\r\n"
+        assert with_ignored("dist/", "tests/captures") == "dist/\ntests/captures/\n"
+        assert with_ignored("a\r\ndist/", "tests/captures") == "a\r\ndist/\r\ntests/captures/\r\n"
+
+
+def test_ensure_ignored_appends_a_crlf_line_to_a_crlf_gitignore(tmp_path: Path) -> None:
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_bytes(b"*.pyc\r\ndist/\r\n")
+    assert ensure_ignored(tmp_path, CAPTURES_DIR)
+    assert gitignore.read_bytes() == b"*.pyc\r\ndist/\r\ntests/captures/\r\n"
+
+
+def test_the_rule_module_imports_nothing_that_touches_the_filesystem() -> None:
+    """Scaffold modules import the rule from here, so it stays pure text."""
+    assert captures_rule.__file__ is not None
+    tree = ast.parse(Path(captures_rule.__file__).read_text(encoding="utf-8"))
+    imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | {
+        a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+    }
+    assert imported <= {"__future__"}

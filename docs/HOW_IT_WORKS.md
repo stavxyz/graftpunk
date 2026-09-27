@@ -473,6 +473,195 @@ entirely. That second rule is what makes a generated stub's
 `keyword_search: bool | None = None` mean "omit this parameter unless the
 caller asked for it".
 
+A generated stub declares an option for a parameter only when that option can
+send the type and shape the recording shows; a field that cannot be sent as
+recorded is left undeclared, with a `GP-FILL` comment naming it. A recorded form
+body goes out as `data=`, a JSON body as `json=` holding only the fields the
+caller gave, a bool is a `--x/--no-x` flag, and a list (a repeated query or form
+key, or a JSON array) is a repeatable option sent as repeated keys or a JSON
+array. The JSON body fields left undeclared are an object, a `mixed` value, or
+an array of objects, booleans, arrays, mixed elements, or only empty arrays. A
+body field typed apart from a query parameter of the same name gets its own
+`--body-<name>` option.
+
+Path segments and names are judged apart, because they cost different things: a
+name read as an id costs a field the site expects, and a path segment read as an
+id costs only an extra placeholder, while a path segment missed keeps its value
+in every generated file. A path segment fails closed. One that holds a digit
+stays literal only when every part of it (split on `_`, `.`, `-`, `~`, and `$`)
+holds no digit, is a word spelled with the consonant pairs English uses and no
+run of four or more capitals followed by a digit run of at most two (`address2`,
+`windows10`, `ec2`), is a version of at most two digits (`v2`, `v1beta1`;
+`v40912` is not), or is a digit run of at most two standing alone, and a lone
+digit run is the only part holding a digit (`/page/2` and `step-2` stay literal;
+`03-14-87`, `10.0.0.1`, and `acct-12-34` do not). Every other segment holding a
+digit becomes a placeholder: a date, a card, phone, or national id number
+written in digit groups, a long number, a short random token (`kqzpwmab47`,
+`x7Kq29Lp`), or three or more short letter-and-digit parts (`ab12-cd34-ef56`). A
+segment the name rule below reads as an id (an email, for one) becomes one too.
+The path rule's known limits: a letters-only segment that holds no id stays
+literal, and so does a word with one or two digits after it (`smith42`,
+`mary12`). A family of many sibling segments that each carry a digit
+(`red-widget-1`, `red-widget-2`, ...) collapses by count.
+
+A name is dropped only on strong evidence. Every name position goes through one
+rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
+response keys; request header names; cookie and token candidate names; and a
+login form's element ids, input names, and hidden input names. A name holds an
+id when, percent-decoded, it or one of its parts (split on `_`, `.`, `-`, `~`,
+and `$`, so a file extension splits off) is an email; a run of six or more
+digits (`user_40912873`); hex of twelve or more characters mixing digits and
+letters (`a3f9c2d1e0b4`, which also catches a UUID by its last group), or `0x`
+and twelve or more hex digits; three or more all-digit parts totalling seven or
+more digits (`4111-1111-1111-1111`, `123-45-6789`; a date such as `2024-01-15`
+as a whole is a name), or a phone number with its area code in parentheses
+(`(555)123-4567`); a prefixed id whose tail is twelve or more characters mixing
+upper case, lower case, and digits (`cus_NffrFeUfNV2Hib`), at the start of the
+name or of any `_`/`-` part (`otp_cus_NffrFeUfNV2Hib`); or a base64-like token
+of twenty-four or more characters switching between letters and digits at least
+five times. A response object whose keys are ids as a group (three or more keys
+of one length of twelve or more, each an alphanumeric run mixing letters and
+digits that does not read as a word with a short number, and not one name with
+different trailing numbers such as `addressLine1` to `addressLine3`; push ids
+and record ids are such groups) has every key replaced by `{key}`.
+
+A path segment that holds an id becomes a placeholder; a query, body, or form
+key or a header name that holds one is dropped and counted, and so is a key that
+is not a field name at all (one starting with a digit, holding a character
+outside the field-name alphabet, or longer than 64 characters; `$` is inside it,
+so OData's `$filter` and WebForms' `ctl00$Main$txtSearch` are field names), each
+cause counted apart and stated in its own `GP-FILL` comment in the generated
+stub; a response key that holds one becomes `{key}` in the shape; a cookie or
+token name that holds one is left out and counted, written in no form (not even
+hashed: a hash of a short id is reversed by brute force); and a hidden login
+input whose name holds one is dropped and counted.
+
+A login form's roles follow HTML semantics, anchored on its password input: the
+one marked `autocomplete="current-password"`, else the first password input. The
+username is the input `autocomplete="username"` names anywhere in the form; else
+the one `autocomplete="email"` names nearest before the password; else the
+text-like input nearest before the password with a username hint (an `email`
+type, or a name holding user, email, login, or account); else the text-like
+input nearest before it; else, when nothing text-like precedes the password, the
+first input after it named exactly `username`, `email`, `login`, or `user`. The
+submit is the first submit control after the password (an image input counts),
+and a control whose `form` attribute names the form belongs to it wherever it
+sits; one outside its form is selected by its id, else by `tag[form="id"]` with
+its name or type when that picks it alone on the page, else it is unresolved.
+Each other text-like input between the username and that submit is a role keyed
+by its name. A checkbox, radio, file, image, reset, range, or hidden input is
+never a field role, each role is assigned once, and an empty `type=""` counts as
+no type. A registration form (no input marked `current-password`, and either one
+marked `new-password` or a second password input named as a confirmation) is
+left out, and so is a lone one with a confirmation password; a lone form with
+one password marked `new-password` is kept (the attribute misused on a login
+form), and a password-plus-PIN form is a login form; a change-password form (a
+`current-password` input, a new password, and no username-like input) is not a
+login form at all; a stale-session check still counts any form with a password
+input as a login page. Each input is selected by its id, else its name (when no
+other control inside any form with the same action shares it: a header
+mini-login and the main form can post to one action), else its type (the same
+way) (`input:not([type])` for a typeless input), and an id or a name that holds
+an account value is never used; a name that holds one, or no name, gets a
+neutral role key (`field_1`, never a name another input of the form has) and a
+`GP-FILL` naming which of the two it was. A selector by type is used only when
+it picks one input of the form, and is never printed without the form scope:
+when the form's action holds an id the printed selectors drop the scope, so only
+an id selector, or a name no other input on the page shares, is printed. A form
+whose action is empty or only a fragment (`#`, `#login`) is scoped to match
+that, and one whose action names another scheme than `http` or `https` has no
+path to template: it keeps its scope and is printed as written
+(`javascript:void(0)`), unless its text holds an id or a token by the path rule
+(`javascript:go(12345678)`) or an email anywhere
+(`javascript:go('alice@example.com', 'ref')`), when it is printed as
+`javascript:{id}` and its selectors lose the scope. A role left without a
+selector is listed in `LoginForm.unresolved_roles` and the projection's
+`unresolved_roles`, and the generated `LoginStep` carries a `GP-FILL` naming it
+and why; a username the form has no input for (the password page of a multi-step
+login) gets its own `GP-FILL` saying so. A POST to where a login form a GET
+served posts (the same host and path, the action resolved against the page as
+requested and compared before any email in it is masked) is the credential post
+whatever its password field is named; a form in a POST's own response never
+marks that POST, and a slash-less action from a saved page source (`session`,
+`./session`), which has no page URL to resolve against, matches any POST path
+ending in `/session`, a wider match than a resolved action gets. Each credential
+post makes one earlier page the login form's page: among the pages whose form
+posts where the post went, the one whose matching form sits on the fewest
+recorded pages (a dedicated login page's form, not a site-wide header form),
+then the one whose form covers more of the post's body names, then the nearest,
+however many assets lie between; a post found by its field names alone (no
+recorded form, a saved page source's included, posts where it went) promotes
+only the nearest page whose form does not post where the credential post went
+(an empty, `#`, or `javascript:` action, or one naming the page itself), and no
+page when every earlier form posts somewhere real. A POST whose body asks for a
+new password (`new_password`, `password_confirm`) is never a credential post by
+its field names. Every other page carrying a login form is an ordinary page and
+keeps its stub. The same form on several pages is one form, told by its
+structure (its element id and each control's tag, type, name, and id), and is
+kept as the copy whose selectors resolve best. Among the forms, one a credential
+post went to is listed first; among those, the one on the page that post
+promoted, then the one the earliest credential post went to (a login precedes a
+password change; a post found by its field names alone went to the form with no
+target of its own on the page it promoted, so a script login's form ranks ahead
+of a later form posting to its own page, such as a change-email form), then the
+one whose control names cover the most of the post's body, then one that sits on
+no page a credential post did not promote (a site-wide header form ranks below
+the main form), then the one with fewer unresolved roles, so the generator's
+`login_config` is built from the form the recording used. Only that login is the
+login flow: its promoted page; the credential posts that went to its form, or,
+when none did, the posts found by their field names alone to the first target no
+recorded form posts to (a script posting elsewhere than the form says); and each
+hop of those posts' redirect chains, a request to where the previous hop sent
+the client (on the same host) or a POST that submits an OAuth `form_post` page's
+form (a post form of hidden inputs only, a `<noscript>` submit button aside and
+a `<select>` or `<textarea>` counted as visible, on the previous hop's page,
+carrying only the hidden names of that page's forms posting there, to another
+host than the page's, hosts compared without case or a default port, as an
+identity provider's page posts to the app; a cart or logout form on a landing
+page is not one, and neither is a same-site form a script submits). A POST
+carrying a password field is never such a hop. A password change, an account
+edit, a later password-confirmed action (whatever the login form's action, its
+own page's or none), or any later POST answering with a redirect keeps its
+commands, and its redirect is not the login's landing page. When the landing is
+ambiguous, none is taken and `success_url` gets a `GP-FILL` saying why: a
+missing success signal is visible, and a wrong one would fail every login. A
+credential post answering 200 (a script login) starts no chain, whatever its
+page holds; a chain that rests on a 200 page holding a `form_post`-shaped form
+it did not follow (a same-host identity provider's, or a hidden-only logout form
+on the landing page) may or may not continue past it; and a chain whose last hop
+is a `form_post` submission answering without a redirect leaves the client on a
+URL no redirect named; so none of these takes a landing. Each credential post
+starts over, so a later post never brings back a landing an earlier post's chain
+refused. A landing whose glob would match the login page takes none either,
+since a failed login returns there: a later attempt redirecting back to
+`/login`, or a landing on `/account` for a login at `/account/login`, whose
+`*/account*` matches `/account/login?error=1`. The match is fnmatch, which has
+no notion of a query string: `?` is its own wildcard (any single character),
+not an anchor for the one that starts a query, so a pattern or a page holding a
+literal `?` follows fnmatch's ordinary rules there, and the generated `GP-FILL`
+failure text is the backstop for a wrong call this produces.
+
+Each rule is measured in the position it guards
+(`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
+those shapes must be caught as a name, and each sub-rule of the name rule must
+be the only catch of one entry. The share of ordinary names read as ids is held
+under a ceiling on three corpora: the regression corpus (the names reviewers
+raised), a tuned corpus of public SDK and API names (written as a held-out
+corpus, and then the name rule's thresholds were set against it), and a fresh
+corpus of 229 field, header, and cookie names written after those thresholds
+were set and not tuned against. When the rule last changed they read 0 of 482, 0
+of 259, and 0 of 229 as ids. Random tokens are covered where they occur, in
+paths: the path rule's miss rate on seeded random tokens of each shape is held
+under a ceiling (8.2% of eight-character lower-case base36 tokens, most of them
+letters only). The name rule's known limit: a short random token used as a field
+name (`kqzpwmab47`, `x7Kq29Lp`, `usr_8fk2x9qa`) is kept, and so is any account
+value in a shape it does not list. From the path rule: `login_config.url` is the
+page the login form was on, or a `GP-FILL` comment when that page's path holds
+an id; and one in `success_url`'s landing path is a `*`. A missed id is kept, so
+read what a digest prints before you commit it; a name read as an id is
+templated or dropped, which fails safe, and the `GP-FILL` counts make it
+visible.
+
 `graftpunk.testing` (pytest-free) supplies `make_context()` for building a
 `CommandContext` directly in a test, and `FixtureSession`/`fixture_context()`
 for answering `ctx.request_json`/`request_text` from a file under
@@ -480,10 +669,18 @@ for answering `ctx.request_json`/`request_text` from a file under
 fixtures` names captures. A plugin added to an existing suite gets
 `tests/fixtures/<module>/` of its own, since fixture names are per endpoint
 and two plugins in one suite can share an endpoint path. `gp observe
-fixtures` writes a `<file>.meta.json` sidecar beside every capture (url,
-status, content type, body parameter names, capture time); `FixtureSession`
-reads the same sidecar for status and content type, so a fixture copied from
-a capture keeps its recorded status.
+fixtures` writes a `<file>.meta.json` sidecar beside every capture (a `schema`
+number, the status, the content type, the body parameter names, the hash of the
+captured body, every cookie name the recording set, and the token names the
+run's digest recorded, a name that holds an id left out and counted in
+`redacted_names`, but never the URL or the capture time), written to be
+committed beside the fixture derived from it once you have read its body
+parameter names and its `flagged_names`: a body key that does not read as a
+field name or holds an id is dropped, but the rule is lexical, so an account
+value in a shape it does not read as an id is kept, and some sites put account
+data in a cookie's name. `FixtureSession` reads the sidecar through
+`graftpunk.testing.sidecar` for status and content type, so a fixture copied
+from a capture keeps its recorded status.
 `graftpunk.testing.plugin.site_env_scrubber(prefix)` returns a pytest
 fixture that removes prefixed environment variables for the duration of each
 test; a generated `conftest.py` imports it and assigns the result to a

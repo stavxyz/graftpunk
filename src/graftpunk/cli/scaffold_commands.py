@@ -14,14 +14,16 @@ from rich.markup import escape
 import graftpunk
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.plugin_commands import derive_reserved_cli_names
-from graftpunk.devtools.captures import CAPTURES_DIR
+from graftpunk.devtools.captures_rule import CAPTURES_DIR
+from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold.project import (
     NotAPluginSuiteError,
     ScaffoldConflictError,
     write_scaffold,
 )
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
-from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths
+from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths, validate_plugin_name
+from graftpunk.devtools.scaffold.write import InvalidChangeError
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.logging import get_logger
 
@@ -79,6 +81,22 @@ def _graftpunk_version_floor() -> str:
     return f"{parts[0]}.{parts[1]}.0"
 
 
+def _name_refusal(name: str) -> tuple[str, str] | None:
+    """The refusal ``gp plugin new`` gives for *name*, as (log reason, message), or None.
+
+    One owner for the two name checks: the reserved top-level names snapshotted
+    at attach time, then the name rule ``ScaffoldSpec`` enforces. ``--check-name``
+    and the real run both call this, so their refusals cannot differ.
+    """
+    if name in reserved_cli_names():
+        return "reserved_name", f"'{name}' is a reserved command name and cannot be a plugin name."
+    try:
+        validate_plugin_name(name)
+    except ValueError as exc:
+        return "invalid_name", str(exc)
+    return None
+
+
 @plugin_app.command("new")
 def plugin_new(
     name: Annotated[str, typer.Argument(help="Plugin name: site_name, and the package suffix")],
@@ -100,8 +118,19 @@ def plugin_new(
     dir_: Annotated[Path, typer.Option("--dir", help="Target directory")] = Path("."),
     backend: Annotated[str, typer.Option("--backend", help="nodriver or selenium")] = "nodriver",
     new: Annotated[bool, typer.Option("--new", help="Force a new project in --dir")] = False,
+    check_name: Annotated[
+        bool,
+        typer.Option("--check-name", help="Check NAME the way this command would, write nothing"),
+    ] = False,
 ) -> None:
     """Scaffold a new plugin: a fresh project, or a member of the suite in --dir."""
+    refusal = _name_refusal(name)
+    if check_name:
+        if refusal is not None:
+            console.print(f"[red]{escape(refusal[1])}[/red]")
+            raise typer.Exit(1)
+        console.print(f"'{escape(name)}' is an acceptable plugin name.")
+        return
     if backend not in _SUPPORTED_BACKENDS:
         LOG.debug("scaffold_refused", reason="bad_backend", backend=backend)
         console.print(
@@ -111,11 +140,9 @@ def plugin_new(
     # ty narrows `backend: str` to `_BackendName` from the membership check
     # above (against a tuple typed `tuple[_BackendName, ...]`): no cast needed.
 
-    if name in reserved_cli_names():
-        LOG.debug("scaffold_refused", reason="reserved_name", name=name)
-        console.print(
-            f"[red]'{escape(name)}' is a reserved command name and cannot be a plugin name.[/red]"
-        )
+    if refusal is not None:
+        LOG.debug("scaffold_refused", reason=refusal[0], name=name)
+        console.print(f"[red]{escape(refusal[1])}[/red]")
         raise typer.Exit(1)
 
     if run is not None and from_run is None:
@@ -143,18 +170,26 @@ def plugin_new(
         result = write_scaffold(dir_, spec, force_new=new)
     except ScaffoldConflictError as exc:
         LOG.debug("scaffold_refused", reason="conflict", conflicts=len(exc.conflicts))
-        console.print("[red]Refusing to overwrite existing file(s):[/red]")
-        for path in exc.conflicts:
-            console.print(f"  {escape(str(path))}", soft_wrap=True)
+        for header, paths in exc.kinds:
+            console.print(f"[red]{escape(header)}:[/red]")
+            for path in paths:
+                console.print(f"  {escape(str(path))}", soft_wrap=True)
         raise typer.Exit(1) from None
     except PyprojectEditError as exc:
         LOG.debug("scaffold_refused", reason="pyproject_edit_error")
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
+    except ScaffoldWriteError as exc:
+        # The writer restored what it could before raising, and its message is
+        # the whole refusal on one line: the path, the OS error, and any path
+        # it could not put back.
+        LOG.debug("scaffold_refused", reason="os_error", error=str(exc.error))
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
     except OSError as exc:
-        # A CLI refusal is a red line and exit 1, never a Rich traceback: an
-        # unwritable --dir is the user's mistake to correct, not a crash.
-        # write_scaffold has already removed whatever it wrote before failing.
+        # A read before anything was written failed (the suite's pyproject.toml
+        # or .gitignore): a red line and exit 1, never a Rich traceback. A failed
+        # write is the ScaffoldWriteError arm above.
         LOG.debug("scaffold_refused", reason="os_error", error=str(exc))
         target = exc.filename or str(dir_)
         reason = exc.strerror or str(exc)
@@ -167,6 +202,12 @@ def plugin_new(
         LOG.debug("scaffold_refused", reason="not_a_plugin_suite")
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
+    except InvalidChangeError as exc:
+        # Also before the ValueError arm: a rendered file that fails its own
+        # grammar check is the generator's fault, not an invalid name.
+        LOG.debug("scaffold_refused", reason="invalid_change")
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(1) from None
     except ValueError as exc:
         LOG.debug("scaffold_refused", reason="invalid_name")
         console.print(f"[red]{escape(str(exc))}[/red]")
@@ -176,8 +217,7 @@ def plugin_new(
     console.print(f"[green]{result.mode.replace('_', ' ').title()}:[/green]")
     for path in result.written:
         # soft_wrap: Console.print's default wrapping breaks a path mid-word at
-        # 80 columns, so a listing meant to be copied could not be (polish round
-        # 1, 2026-09-12).
+        # 80 columns, so a listing meant to be copied could not be.
         console.print(f"  {escape(str(path))}", soft_wrap=True)
     if result.gitignore_updated:
         console.print(f"[dim]Added {escape(CAPTURES_DIR)}/ to .gitignore[/dim]")
@@ -188,7 +228,7 @@ def _print_next_steps(spec: ScaffoldSpec) -> None:
     """Name the fixture each generated endpoint test looks for.
 
     A ``--from-run`` project's suite fails on its first run until those files
-    exist, and nothing in the output said so (polish round 1, 2026-09-12). The
+    exist, and nothing in the output said so. The
     paths come from the same rule the generated tests use, so this list is what
     ``FixtureSession`` will go looking for.
     """

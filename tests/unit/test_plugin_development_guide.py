@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import json
 import re
 import shlex
 import sys
@@ -23,6 +24,7 @@ import pytest
 import typer.main
 
 from graftpunk.cli.main import app
+from graftpunk.testing.sidecar import Sidecar, sidecar_text
 
 
 def _repo_root() -> Path:
@@ -230,6 +232,116 @@ def _check_invocation(invocation: str, where: str) -> None:
             f"{where}: {name} is not an option of `{command.name}`, "
             f"nor of a group it sits under at that position"
         )
+
+
+def test_the_sidecar_json_example_matches_sidecar_text_byte_for_byte() -> None:
+    """The guide's sidecar example is hand-written prose, and ``sidecar_text``'s
+    exact layout (``indent=2`` puts every list item on its own line) is not: a
+    doc edit that reflows the example without running it would drift from what
+    `gp observe fixtures` actually writes. Round-trips the example's own values
+    through ``Sidecar``/``sidecar_text`` rather than comparing against a second
+    hand-written copy, so there is exactly one place the layout is spelled."""
+    (_line_no, block) = next(
+        pair for pair in _blocks(GUIDE_TEXT, "json") if "capture_sha256" in pair[1]
+    )
+    doc_json = json.loads(block)
+    sidecar = Sidecar(
+        status=doc_json["status"],
+        content_type=doc_json["content_type"],
+        body_params=tuple(doc_json["body_params"]),
+        capture_sha256=doc_json["capture_sha256"],
+        flagged_names=tuple(doc_json["flagged_names"]),
+        redacted_names=doc_json["redacted_names"],
+    )
+    assert block.strip() == sidecar_text(sidecar).strip()
+
+
+def test_the_generated_plugin_example_matches_the_generator_output() -> None:
+    """The guide's "What gets filled in" block is what ``gp plugin new`` writes for
+    the digest shown above it, minus the elided stubs. Rendering that digest's
+    facts here (the one ``/api/orders`` endpoint the example keeps) and comparing
+    whole text means a generator change that the guide does not follow fails
+    here, rather than showing a reader a stub the tool no longer writes."""
+    from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
+    from graftpunk.har.digest import (
+        DigestSource,
+        Endpoint,
+        LoginObservation,
+        RunDigest,
+        ShapeNode,
+    )
+    from graftpunk.har.documents import LoginForm, TokenCandidate
+
+    (_line_no, block) = next(
+        pair for pair in _blocks(GUIDE_TEXT, "python") if "GP-FILL: describe api_orders" in pair[1]
+    )
+    orders = Endpoint(
+        host="myshop.example",
+        template="/api/orders",
+        methods=("GET",),
+        count=2,
+        statuses=(200,),
+        content_type="application/json",
+        query_params={"archived": "bool", "page": "int", "per_page": "int"},
+        body_params={},
+        body_kind="none",
+        shape=ShapeNode(
+            kind="object",
+            children={
+                "orders": ShapeNode(kind="array"),
+                "page": ShapeNode(kind="number"),
+                "total": ShapeNode(kind="number"),
+            },
+        ),
+        custom_headers=("X-Csrf-Token",),
+        examples=("/api/orders",),
+    )
+    digest = RunDigest(
+        source=DigestSource(
+            har_path=Path("network.har"), session="myshop", run_id="20260915-100000-1"
+        ),
+        primary_host="myshop.example",
+        hosts={"myshop.example": 5},
+        endpoints=(orders,),
+        login=(
+            LoginObservation(
+                order=2,
+                method="POST",
+                url="https://myshop.example/session",
+                status=302,
+                kind="credential_post",
+                fields=("email", "password"),
+                redirect_to="/dashboard",
+            ),
+        ),
+        login_forms=(
+            LoginForm(
+                action="/session",
+                method="POST",
+                fields={"password": "#password", "username": "#email"},
+                submit="#sign-in",
+                hidden=(),
+                source="https://myshop.example/login",
+            ),
+        ),
+        tokens=(
+            TokenCandidate(
+                kind="header",
+                name="X-Csrf-Token",
+                seen_on=("GET /api/orders", "GET /api/orders/{order_id}"),
+            ),
+        ),
+        cookies=("myshop_session",),
+        dropped={"static": 2, "third_party": 0, "error": 0},
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example",
+        digest=digest,
+    )
+    assert block == render(spec)["src/graftpunk_myshop/plugin.py"]
 
 
 def test_the_guide_has_commands_links_and_python_to_check() -> None:

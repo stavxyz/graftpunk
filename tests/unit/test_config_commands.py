@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from graftpunk import workstation_env
 from graftpunk.cli.main import app
+from tests.unit.cli_harness import strip_ansi
 
 # Plain CliRunner: click 8.2+ removed mix_stderr — stderr is always captured
 # separately and result.stderr works (verified against the venv's typer 0.21.1
@@ -253,4 +254,4 @@ def test_get_missing_key_message_keeps_name_verbatim(_isolated):
     """The key name is user input, not markup (#166)."""
     got = runner.invoke(app, ["config", "get", "WEIRD [/x]"])
     assert got.exit_code == 1
-    assert "WEIRD [/x] is not set" in got.output
+    assert "WEIRD [/x] is not set" in strip_ansi(got.output)

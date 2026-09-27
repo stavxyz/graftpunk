@@ -1,24 +1,42 @@
-"""The single owner of the 'captures never enter git' rule.
+"""The writing side of the "captures never enter git" rule.
 
-The fixtures command, the scaffold's generated ``.gitignore``, and the
-scaffold's suite mode all use this module, so the default directory and the
-ignore line cannot disagree (plugin tooling spec, 2026-09-11).
+The ``.gitignore`` edit applied to disk, the git queries, and the committable
+sidecar written beside each capture through the format
+:mod:`graftpunk.testing.sidecar` owns. The rule itself, the directory and the
+text edit, lives in :mod:`graftpunk.devtools.captures_rule`, which touches no
+file.
 """
 
 from __future__ import annotations
 
+import errno
+import hashlib
+import os
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 
+from graftpunk.devtools.captures_rule import with_ignored
 from graftpunk.logging import get_logger
+from graftpunk.testing.sidecar import Sidecar, sidecar_path, sidecar_text
 
 LOG = get_logger(__name__)
 
-CAPTURES_DIR = "tests/captures"
-
-__all__ = ["CAPTURES_DIR", "ensure_ignored", "find_repo_root", "is_tracked"]
+__all__ = [
+    "IgnoreFileReadError",
+    "ensure_ignored",
+    "find_repo_root",
+    "is_tracked",
+    "write_sidecar",
+]
 
 _GIT_TIMEOUT_SECONDS = 10
+
+
+class IgnoreFileReadError(OSError):
+    """The ``.gitignore`` could not be read, as opposed to appended to (a bare
+    ``OSError`` from :func:`ensure_ignored`). Carries the read's ``errno``,
+    ``strerror``, and ``filename``."""
 
 
 def _nearest_existing(start: Path) -> Path:
@@ -28,7 +46,7 @@ def _nearest_existing(start: Path) -> Path:
     default target (``./tests/captures``) does not exist on a first run, and
     running git there raises ``FileNotFoundError``, which read as "not inside a
     git work tree" and let the command write unscrubbed bodies into a repo with
-    nothing ignoring them (polish round 1, 2026-09-12).
+    nothing ignoring them.
     """
     probe = start
     while not probe.exists() and probe != probe.parent:
@@ -61,27 +79,40 @@ def find_repo_root(start: Path) -> Path | None:
 
 
 def ensure_ignored(repo_root: Path, relative: str) -> bool:
-    """Add ``<relative>/`` to the root ``.gitignore`` unless that exact line is there.
+    """Add ``<relative>/`` to the root ``.gitignore`` unless a line already names it.
 
-    The check is exact-line only, against each line stripped of whitespace and
-    of a trailing slash. It does not ask git whether the path is already
+    The check is :func:`~graftpunk.devtools.captures_rule.with_ignored`'s: each
+    line stripped of whitespace and then of trailing slashes, compared with
+    *relative* stripped of trailing slashes. It does not ask git whether the path is already
     ignored, so a pattern that covers *relative* some other way (a parent
     directory, a glob, an exclude file) still gets the explicit line.
 
     Returns:
         True when the line was added, False when it was already present.
+
+    Raises:
+        UnicodeDecodeError: The ``.gitignore`` is not UTF-8 text.
+        IsADirectoryError: The ``.gitignore`` is a directory.
+        IgnoreFileReadError: The ``.gitignore`` cannot be read.
+        OSError: The ``.gitignore`` cannot be appended to.
     """
     gitignore = repo_root / ".gitignore"
-    line = relative.rstrip("/") + "/"
-    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    existing_lines = {entry.strip().rstrip("/") for entry in existing.splitlines()}
-    if relative.rstrip("/") in existing_lines:
+    if gitignore.is_dir():
+        raise IsADirectoryError(errno.EISDIR, os.strerror(errno.EISDIR), str(gitignore))
+    # Read as bytes so a CRLF file's text is what is on disk; the append below
+    # then leaves every existing byte as it was.
+    try:
+        raw = gitignore.read_bytes() if gitignore.exists() else b""
+    except OSError as exc:
+        raise IgnoreFileReadError(exc.errno, exc.strerror, exc.filename) from exc
+    existing = raw.decode("utf-8")
+    updated = with_ignored(existing, relative)
+    if updated == existing:
         return False
-    with gitignore.open("a", encoding="utf-8") as handle:
-        if existing and not existing.endswith("\n"):
-            handle.write("\n")
-        handle.write(line + "\n")
-    LOG.info("captures_gitignore_updated", path=str(gitignore), line=line)
+    # Binary append: the line ending with_ignored chose reaches the disk as written.
+    with gitignore.open("ab") as handle:
+        handle.write(updated[len(existing) :].encode("utf-8"))
+    LOG.info("captures_gitignore_updated", path=str(gitignore), line=relative.rstrip("/") + "/")
     return True
 
 
@@ -100,3 +131,32 @@ def is_tracked(path: Path) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
+
+
+def write_sidecar(
+    fixture: Path,
+    *,
+    status: int,
+    content_type: str,
+    body_params: Iterable[str],
+    flagged_names: Iterable[str],
+    redacted_names: int = 0,
+) -> Path:
+    """Write *fixture*'s committable sidecar beside it and return its path.
+
+    *fixture* must already be on disk: ``capture_sha256`` is the hash of its bytes
+    as written, which is what the in-suite check compares a derived fixture to.
+    The sort and dedupe of ``body_params`` and ``flagged_names`` is
+    ``Sidecar``'s own job, not this writer's.
+    """
+    sidecar = Sidecar(
+        status=status,
+        content_type=content_type,
+        body_params=tuple(body_params),
+        capture_sha256=hashlib.sha256(fixture.read_bytes()).hexdigest(),
+        flagged_names=tuple(flagged_names),
+        redacted_names=redacted_names,
+    )
+    path = sidecar_path(fixture)
+    path.write_text(sidecar_text(sidecar), encoding="utf-8")
+    return path

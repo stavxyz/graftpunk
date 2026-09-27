@@ -28,7 +28,7 @@ _ROLES_WARNED_ATTR = "_gp_roles_unavailable_warned"
 _NORMALISED_ARGUMENTS = ("params", "data")
 # What a site means by a boolean. ``requests`` serialises a Python bool with
 # str(), which sends "True"/"False": a site that recorded "keywordSearch=false"
-# does not recognise either (polish round 2, 2026-09-12).
+# does not recognise either.
 _BOOLEAN_TEXT = {True: "true", False: "false"}
 
 __all__ = ["SiteRequests"]
@@ -133,8 +133,7 @@ class SiteRequests:
         except ValueError:
             # A declared content type is not a guarantee. An escaping
             # JSONDecodeError reached the CLI as a traceback rather than as the
-            # one refusal line every other failure gets (polish round 1,
-            # 2026-09-12).
+            # one refusal line every other failure gets.
             raise UnexpectedResponseError(method, _path_of(response.url), content_type) from None
 
     def text(self, method: str, url: str, *, role: str = "navigation", **kwargs: Any) -> str:

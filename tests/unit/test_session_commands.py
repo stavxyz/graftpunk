@@ -1,20 +1,15 @@
 """Tests for session command Backend/Location display."""
 
 import json
-import re
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
 from graftpunk.cli.session_commands import session_app
 from graftpunk.exceptions import StorageError
+from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
-
-
-def strip_ansi(text: str) -> str:
-    """Remove ANSI escape codes from text."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _make_session(
@@ -379,7 +374,7 @@ class TestNamesAreNotMarkup:
     def test_show_not_found_message_keeps_name_verbatim(self, _mock_resolve, _mock_get) -> None:
         result = runner.invoke(session_app, ["show", "nope [/z]"])
         assert result.exit_code != 0
-        assert "nope [/z]" in result.output
+        assert "nope [/z]" in strip_ansi(result.output)
 
     @patch("graftpunk.cli.session_commands.clear_session_cache", return_value=True)
     @patch("graftpunk.cli.session_commands.list_sessions_with_metadata")
@@ -387,7 +382,8 @@ class TestNamesAreNotMarkup:
         mock_list.return_value = [_make_session(name="evil [/x]", domain="[red]x.example")]
         result = runner.invoke(session_app, ["clear", "--all", "--force"])
         assert result.exit_code == 0, result.output
-        assert "evil [/x]" in result.output and "[red]x.example" in result.output
+        output = strip_ansi(result.output)
+        assert "evil [/x]" in output and "[red]x.example" in output
 
     @patch("graftpunk.cli.session_commands.load_session")
     @patch(
@@ -398,7 +394,7 @@ class TestNamesAreNotMarkup:
         mock_load.return_value.save_httpie_session.return_value = "x.json"
         result = runner.invoke(session_app, ["export", "evil [/x]"])
         assert result.exit_code == 0, result.output
-        assert "http --session=evil [/x]" in result.output
+        assert "http --session=evil [/x]" in strip_ansi(result.output)
 
 
 class TestAccountColumn:

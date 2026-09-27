@@ -16,6 +16,7 @@ import requests
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
 from graftpunk.testing import FixtureSession, fixture_context, make_context
+from graftpunk.testing.sidecar import Sidecar, SidecarError, sidecar_text
 
 
 class TestMakeContext:
@@ -55,7 +56,7 @@ class TestFixtureSession:
     def test_templated_path_matches_any_id(self, tmp_path: Path) -> None:
         (tmp_path / "get_orders_{order_id}.json").write_text('{"id": 1}')
         session = FixtureSession(tmp_path)
-        assert session.get("https://myshop.example.com/orders/1").json() == {"id": 1}
+        assert session.get("https://myshop.example.com/orders/1001").json() == {"id": 1}
         assert session.get("https://myshop.example.com/orders/999").json() == {"id": 1}
 
     def test_unmatched_request_returns_404(self, tmp_path: Path) -> None:
@@ -66,7 +67,7 @@ class TestFixtureSession:
     def test_sidecar_supplies_status_and_content_type(self, tmp_path: Path) -> None:
         (tmp_path / "get_orders.json").write_text("Forbidden")
         (tmp_path / "get_orders.json.meta.json").write_text(
-            json.dumps({"status": 403, "content_type": "text/plain"})
+            sidecar_text(Sidecar(status=403, content_type="text/plain"))
         )
         session = FixtureSession(tmp_path)
         response = session.get("https://myshop.example.com/orders")
@@ -107,6 +108,26 @@ class TestFixtureSession:
         session = FixtureSession(tmp_path)
         response = session.get("http://192.0.2.1/nonexistent")
         assert response.status_code == 404
+
+    def test_a_sidecar_with_no_schema_is_refused_not_half_read(self, tmp_path: Path) -> None:
+        (tmp_path / "get_orders.json").write_text("{}")
+        (tmp_path / "get_orders.json.meta.json").write_text(json.dumps({"status": 403}))
+        session = FixtureSession(tmp_path)
+        with pytest.raises(SidecarError, match="get_orders.json.meta.json"):
+            session.get("https://myshop.example.com/orders")
+
+    def test_a_malformed_sidecar_is_not_caught_by_except_value_error(self, tmp_path: Path) -> None:
+        """Plugin command code routinely wraps a fixture-backed request in
+        ``except ValueError`` (around ``.json()``, say); SidecarError must not be
+        a ValueError or a malformed sidecar would be silently swallowed there."""
+        (tmp_path / "get_orders.json").write_text("{}")
+        (tmp_path / "get_orders.json.meta.json").write_text(json.dumps({"status": 403}))
+        session = FixtureSession(tmp_path)
+        with pytest.raises(SidecarError):
+            try:
+                session.get("https://myshop.example.com/orders")
+            except ValueError:
+                pytest.fail("SidecarError was caught by except ValueError")
 
 
 class TestFixtureContext:
@@ -175,3 +196,30 @@ class TestImportableWithoutPytest:
         )
         assert result.returncode == 0, result.stderr
         assert "OK" in result.stdout
+
+
+def test_a_stem_holding_glob_characters_is_matched_literally(tmp_path: Path) -> None:
+    """The stem is escaped before globbing."""
+    (tmp_path / "get_items_[x].json").write_text('{"id": 1}')
+    (tmp_path / "get_items_x.json").write_text('{"id": 2}')
+    session = FixtureSession(tmp_path)
+    assert session.get("https://myshop.example.com/items/[x]").json() == {"id": 1}
+
+
+def test_a_repeat_capture_is_never_the_fixture_for_a_numeric_segment(tmp_path: Path) -> None:
+    """A repeat suffix cannot read as a path segment."""
+    (tmp_path / "get_orders_{order_id}#1.json").write_text('{"repeat": true}')
+    session = FixtureSession(tmp_path)
+    assert session.get("https://myshop.example.com/orders/1").status_code == 404
+
+
+def test_a_fixture_is_its_stem_plus_one_extension(tmp_path: Path) -> None:
+    """A file named get_api_users.csv.txt is another endpoint's fixture, not the
+    fixture for /api/users."""
+    (tmp_path / "get_api_users.csv.txt").write_text("a,b")
+    (tmp_path / "get_feed.xml.xml").write_text("<feed/>")
+    session = FixtureSession(tmp_path)
+    assert session.get("https://myshop.example.com/api/users").status_code == 404
+    assert session.get("https://myshop.example.com/feed").status_code == 404
+    (tmp_path / "get_api_users.json").write_text('{"users": []}')
+    assert session.get("https://myshop.example.com/api/users").json() == {"users": []}

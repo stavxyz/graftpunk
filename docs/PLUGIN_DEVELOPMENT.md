@@ -90,6 +90,9 @@ The path it prints must be the project you are editing. If it points into a
 `site-packages` copy, the editable install did not take and your edits are not
 the code being run.
 
+For a tool that drives `gp`, `gp version --json` prints the installed graftpunk
+version and the schema number of each payload it reads through `gp`.
+
 ## The six steps at a glance
 
 1. [Frame](#frame): pick the name, the commands, the account, and the login shape.
@@ -113,7 +116,8 @@ underscores, and is at most 40 characters. It cannot be a reserved top-level
 `keepalive`, `observe`, `version`, and anything else registered by the time
 plugins attach). A hyphenated name maps to an importable package: `my-shop` becomes the
 package `graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key
-`my-shop`, and the CLI command `gp my-shop`.
+`my-shop`, and the CLI command `gp my-shop`. `gp plugin new NAME --check-name`
+checks a name against these rules and writes nothing.
 
 **The commands.** Write down what you want to get out of the site, in the words
 you would use at the shell: `gp myshop orders`, `gp myshop order --order-id
@@ -208,16 +212,209 @@ gp observe digest myshop
 It takes the recording's name and, optionally, a run id; without one it reads
 the newest run. `--har PATH` digests a bare HAR file from any tool instead of a
 run. `--json` prints the complete model rather than the markdown summary,
-`--all-hosts` models every host instead of just the primary one, `--limit N`
-raises the cap on how many endpoints the markdown form lists (60 by default),
-and `--output PATH` writes to a file.
+`--endpoints-json` prints the versioned projection a program reads (uncapped,
+not combinable with `--json`, and listing as the login's URLs only the login's
+own observations, never a logout or a cart redirect recorded beside it), `--all-hosts` models every host instead of
+just the primary one, `--limit N` raises the cap on how many endpoints the
+markdown form lists (60 by default), and `--output PATH` writes to a file.
 
 The digest is redacted by construction. It records header names, cookie names,
-form field names, query parameter names and observed types, and response
-shapes. It never retains a header value, a cookie value, a query value, or a
-body value. Path segments are the exception: the example paths under each
-endpoint are real, so a digest of a site whose URLs carry account or document
-identifiers is not safe to paste anywhere a capture would not be.
+form field names, query parameter names and observed types, and response shapes.
+It never retains a header value, a cookie value, a query value, or a body value,
+and every URL it keeps is scheme, host, and path only, with no query string,
+fragment, userinfo, or `;params` in any segment, and with a segment that holds
+an email address replaced by its placeholder (`/users/{user_id}`). The markdown
+digest and `--json` print other path segments as recorded in six places: the
+example paths under each endpoint, the URL and redirect target of each login
+step, each login form's action line, the login form selectors scoped to that
+action, each login form's `source` (the page it was on), and each token's `seen
+on` (the page a meta tag or hidden input token was on). A digest of a site whose
+URLs carry account or document identifiers is not safe to paste anywhere a
+capture would not be. `--endpoints-json` and every generated file print those
+paths templated.
+
+An observed type is `str`, `int`, `float`, `bool`, `object` (a JSON object),
+`mixed` (JSON values no one type sends), or `list[<element>]` for a query or
+form key repeated in one request or a JSON array, where the element is one of
+those, `list` (an array inside an array), or `unknown` (only empty arrays were
+seen). A query or form value gets a type only when the typed value is sent back
+spelled exactly as recorded, so `07030` is a `str` (as an `int` it would go out
+as `7030`), and `bool` means the lowercase `true` or `false`; a query or form
+parameter that two requests to the same endpoint type differently is a `str`,
+which re-sends each value as recorded. A JSON body field keeps its JSON type: a
+`null` is not an observation, `int` and `float` together are `float`, two arrays
+merge their element types the same way (`list[int]` and `list[float]` give
+`list[float]`, and elements of two other types give `list[mixed]`), and any other
+disagreement is `mixed`.
+
+Path segments and names are judged apart, because they cost different things: a
+name read as an id costs a field the site expects, and a path segment read as an
+id costs only an extra placeholder, while a path segment missed keeps its value
+in every generated file. A path segment fails closed. One that holds a digit
+stays literal only when every part of it (split on `_`, `.`, `-`, `~`, and `$`)
+holds no digit, is a word spelled with the consonant pairs English uses and no
+run of four or more capitals followed by a digit run of at most two (`address2`,
+`windows10`, `ec2`), is a version of at most two digits (`v2`, `v1beta1`;
+`v40912` is not), or is a digit run of at most two standing alone, and a lone
+digit run is the only part holding a digit (`/page/2` and `step-2` stay literal;
+`03-14-87`, `10.0.0.1`, and `acct-12-34` do not). Every other segment holding a
+digit becomes a placeholder: a date, a card, phone, or national id number
+written in digit groups, a long number, a short random token (`kqzpwmab47`,
+`x7Kq29Lp`), or three or more short letter-and-digit parts (`ab12-cd34-ef56`). A
+segment the name rule below reads as an id (an email, for one) becomes one too.
+The path rule's known limits: a letters-only segment that holds no id stays
+literal, and so does a word with one or two digits after it (`smith42`,
+`mary12`). A family of many sibling segments that each carry a digit
+(`red-widget-1`, `red-widget-2`, ...) collapses by count.
+
+A name is dropped only on strong evidence. Every name position goes through one
+rule, `graftpunk.har.paths.holds_an_id`: query, JSON body, and form keys;
+response keys; request header names; cookie and token candidate names; and a
+login form's element ids, input names, and hidden input names. A name holds an
+id when, percent-decoded, it or one of its parts (split on `_`, `.`, `-`, `~`,
+and `$`, so a file extension splits off) is an email; a run of six or more
+digits (`user_40912873`); hex of twelve or more characters mixing digits and
+letters (`a3f9c2d1e0b4`, which also catches a UUID by its last group), or `0x`
+and twelve or more hex digits; three or more all-digit parts totalling seven or
+more digits (`4111-1111-1111-1111`, `123-45-6789`; a date such as `2024-01-15`
+as a whole is a name), or a phone number with its area code in parentheses
+(`(555)123-4567`); a prefixed id whose tail is twelve or more characters mixing
+upper case, lower case, and digits (`cus_NffrFeUfNV2Hib`), at the start of the
+name or of any `_`/`-` part (`otp_cus_NffrFeUfNV2Hib`); or a base64-like token
+of twenty-four or more characters switching between letters and digits at least
+five times. A response object whose keys are ids as a group (three or more keys
+of one length of twelve or more, each an alphanumeric run mixing letters and
+digits that does not read as a word with a short number, and not one name with
+different trailing numbers such as `addressLine1` to `addressLine3`; push ids
+and record ids are such groups) has every key replaced by `{key}`.
+
+A path segment that holds an id becomes a placeholder; a query, body, or form
+key or a header name that holds one is dropped and counted, and so is a key that
+is not a field name at all (one starting with a digit, holding a character
+outside the field-name alphabet, or longer than 64 characters; `$` is inside it,
+so OData's `$filter` and WebForms' `ctl00$Main$txtSearch` are field names), each
+cause counted apart and stated in its own `GP-FILL` comment in the generated
+stub; a response key that holds one becomes `{key}` in the shape; a cookie or
+token name that holds one is left out and counted, written in no form (not even
+hashed: a hash of a short id is reversed by brute force); and a hidden login
+input whose name holds one is dropped and counted.
+
+A login form's roles follow HTML semantics, anchored on its password input: the
+one marked `autocomplete="current-password"`, else the first password input. The
+username is the input `autocomplete="username"` names anywhere in the form; else
+the one `autocomplete="email"` names nearest before the password; else the
+text-like input nearest before the password with a username hint (an `email`
+type, or a name holding user, email, login, or account); else the text-like
+input nearest before it; else, when nothing text-like precedes the password, the
+first input after it named exactly `username`, `email`, `login`, or `user`. The
+submit is the first submit control after the password (an image input counts),
+and a control whose `form` attribute names the form belongs to it wherever it
+sits; one outside its form is selected by its id, else by `tag[form="id"]` with
+its name or type when that picks it alone on the page, else it is unresolved.
+Each other text-like input between the username and that submit is a role keyed
+by its name. A checkbox, radio, file, image, reset, range, or hidden input is
+never a field role, each role is assigned once, and an empty `type=""` counts as
+no type. A registration form (no input marked `current-password`, and either one
+marked `new-password` or a second password input named as a confirmation) is
+left out, and so is a lone one with a confirmation password; a lone form with
+one password marked `new-password` is kept (the attribute misused on a login
+form), and a password-plus-PIN form is a login form; a change-password form (a
+`current-password` input, a new password, and no username-like input) is not a
+login form at all; a stale-session check still counts any form with a password
+input as a login page. Each input is selected by its id, else its name (when no
+other control inside any form with the same action shares it: a header
+mini-login and the main form can post to one action), else its type (the same
+way) (`input:not([type])` for a typeless input), and an id or a name that holds
+an account value is never used; a name that holds one, or no name, gets a
+neutral role key (`field_1`, never a name another input of the form has) and a
+`GP-FILL` naming which of the two it was. A selector by type is used only when
+it picks one input of the form, and is never printed without the form scope:
+when the form's action holds an id the printed selectors drop the scope, so only
+an id selector, or a name no other input on the page shares, is printed. A form
+whose action is empty or only a fragment (`#`, `#login`) is scoped to match
+that, and one whose action names another scheme than `http` or `https` has no
+path to template: it keeps its scope and is printed as written
+(`javascript:void(0)`), unless its text holds an id or a token by the path rule
+(`javascript:go(12345678)`) or an email anywhere
+(`javascript:go('alice@example.com', 'ref')`), when it is printed as
+`javascript:{id}` and its selectors lose the scope. A role left without a
+selector is listed in `LoginForm.unresolved_roles` and the projection's
+`unresolved_roles`, and the generated `LoginStep` carries a `GP-FILL` naming it
+and why; a username the form has no input for (the password page of a multi-step
+login) gets its own `GP-FILL` saying so. A POST to where a login form a GET
+served posts (the same host and path, the action resolved against the page as
+requested and compared before any email in it is masked) is the credential post
+whatever its password field is named; a form in a POST's own response never
+marks that POST, and a slash-less action from a saved page source (`session`,
+`./session`), which has no page URL to resolve against, matches any POST path
+ending in `/session`, a wider match than a resolved action gets. Each credential
+post makes one earlier page the login form's page: among the pages whose form
+posts where the post went, the one whose matching form sits on the fewest
+recorded pages (a dedicated login page's form, not a site-wide header form),
+then the one whose form covers more of the post's body names, then the nearest,
+however many assets lie between; a post found by its field names alone (no
+recorded form, a saved page source's included, posts where it went) promotes
+only the nearest page whose form does not post where the credential post went
+(an empty, `#`, or `javascript:` action, or one naming the page itself), and no
+page when every earlier form posts somewhere real. A POST whose body asks for a
+new password (`new_password`, `password_confirm`) is never a credential post by
+its field names. Every other page carrying a login form is an ordinary page and
+keeps its stub. The same form on several pages is one form, told by its
+structure (its element id and each control's tag, type, name, and id), and is
+kept as the copy whose selectors resolve best. Among the forms, one a credential
+post went to is listed first; among those, the one on the page that post
+promoted, then the one the earliest credential post went to (a login precedes a
+password change; a post found by its field names alone went to the form with no
+target of its own on the page it promoted, so a script login's form ranks ahead
+of a later form posting to its own page, such as a change-email form), then the
+one whose control names cover the most of the post's body, then one that sits on
+no page a credential post did not promote (a site-wide header form ranks below
+the main form), then the one with fewer unresolved roles, so the generator's
+`login_config` is built from the form the recording used. Only that login is the
+login flow: its promoted page; the credential posts that went to its form, or,
+when none did, the posts found by their field names alone to the first target no
+recorded form posts to (a script posting elsewhere than the form says); and each
+hop of those posts' redirect chains, a request to where the previous hop sent
+the client (on the same host) or a POST that submits an OAuth `form_post` page's
+form (a post form of hidden inputs only, a `<noscript>` submit button aside and
+a `<select>` or `<textarea>` counted as visible, on the previous hop's page,
+carrying only the hidden names of that page's forms posting there, to another
+host than the page's, hosts compared without case or a default port, as an
+identity provider's page posts to the app; a cart or logout form on a landing
+page is not one, and neither is a same-site form a script submits). A POST
+carrying a password field is never such a hop. A password change, an account
+edit, a later password-confirmed action (whatever the login form's action, its
+own page's or none), or any later POST answering with a redirect keeps its
+commands, and its redirect is not the login's landing page. When the landing is
+ambiguous, none is taken and `success_url` gets a `GP-FILL` saying why: a
+missing success signal is visible, and a wrong one would fail every login. A
+credential post answering 200 (a script login) starts no chain, whatever its
+page holds; a chain that rests on a 200 page holding a `form_post`-shaped form
+it did not follow (a same-host identity provider's, or a hidden-only logout form
+on the landing page) may or may not continue past it; and a chain whose last hop
+is a `form_post` submission answering without a redirect leaves the client on a
+URL no redirect named; so none of these takes a landing. Each credential post
+starts over, so a later post never brings back a landing an earlier post's chain
+refused. A landing whose glob would match the login page takes none either,
+since a failed login returns there: a later attempt redirecting back to
+`/login`, or a landing on `/account` for a login at `/account/login`, whose
+`*/account*` matches `/account/login?error=1`.
+
+Each rule is measured in the position it guards
+(`tests/unit/test_id_miss_rates.py`). Every entry of a key-position table of
+those shapes must be caught as a name, and each sub-rule of the name rule must
+be the only catch of one entry. The share of ordinary names read as ids is held
+under a ceiling on three corpora: the regression corpus (the names reviewers
+raised), a tuned corpus of public SDK and API names (written as a held-out
+corpus, and then the name rule's thresholds were set against it), and a fresh
+corpus of 229 field, header, and cookie names written after those thresholds
+were set and not tuned against. When the rule last changed they read 0 of 482, 0
+of 259, and 0 of 229 as ids. Random tokens are covered where they occur, in
+paths: the path rule's miss rate on seeded random tokens of each shape is held
+under a ceiling (8.2% of eight-character lower-case base36 tokens, most of them
+letters only). The name rule's known limit: a short random token used as a field
+name (`kqzpwmab47`, `x7Kq29Lp`, `usr_8fk2x9qa`) is kept, and so is any account
+value in a shape it does not list.
 
 Here is the output from a recording of `myshop`, with three non-JSON endpoint
 blocks elided:
@@ -288,12 +485,20 @@ tokens, and the endpoints each was seen on. A candidate is a name, not a value,
 and not yet a decision: see [How graftpunk Works](HOW_IT_WORKS.md#token-and-csrf-support)
 for turning one into a `Token`.
 
-**Cookies** lists the cookie names the recording saw on the primary host, names
-only.
+**Cookies** lists the cookie names set by every host the digest kept (the
+primary host's domain, or every host with `--all-hosts`), names only.
 
 **Endpoints** is one block per method and templated path. Path segments that
-look like opaque identifiers collapse into named parameters, so five requests
-for five order ids become one `GET /api/orders/{order_id}` with a count of five.
+look like identifiers collapse into named parameters, so five requests for
+five order ids become one `GET /api/orders/{order_id}` with a count of five. The
+rule is the path rule above: a segment collapses when it holds a digit outside
+the literal shapes (`/orders/1001`, `/products/red-widget-2024`, `2026-09-23`,
+`4111-1111-1111-1111`), when the name rule reads it as an id (a UUID, a hex or
+random token, a prefixed id such as `cus_NffrFeUfNV2Hib`), or when it holds an email
+address (percent-encoded or not); `/page/2` and `/api/v2` stay literal. It errs
+toward collapsing: a route segment that carries a digit beyond a short trailing
+run (`html5player1`) becomes a parameter too, which costs a readable name and
+never commits an id.
 Each block carries the observed statuses, the content type, the query and body
 parameter names with the types the recording showed, the names of any
 non-standard request headers, a summary of the JSON response shape, and up to
@@ -405,7 +610,14 @@ Verified against a real account on: (none yet)
 
 from __future__ import annotations
 
-from graftpunk.plugins import CommandContext, LoginConfig, LoginStep, SitePlugin, command
+from graftpunk.plugins import (
+    CommandContext,
+    LoginConfig,
+    LoginStep,
+    PluginParamSpec,
+    SitePlugin,
+    command,
+)
 
 
 class MyshopPlugin(SitePlugin):
@@ -428,7 +640,7 @@ class MyshopPlugin(SitePlugin):
                 submit="#sign-in",
             ),
         ],
-        url="/session",
+        url="/login",
         failure="GP-FILL: text on the page indicating login failure",
         # GP-FILL: success, a CSS selector for an element that is on the page this login lands on
         #   and not on the login form itself.
@@ -438,7 +650,19 @@ class MyshopPlugin(SitePlugin):
     # token_config = TokenConfig(tokens=[Token.from_meta_tag(name="...", header="...")])
     # GP-FILL: unpaired token candidate: header 'X-Csrf-Token'
 
-    @command(help="GP-FILL: describe api_orders")
+    @command(
+        help="GP-FILL: describe api_orders",
+        params=[
+            PluginParamSpec.option(
+                "archived",
+                type=bool,
+                click_kwargs={"is_flag": True, "flag": "--archived/--no-archived"},
+            ),
+            PluginParamSpec.option("page", type=int),
+            PluginParamSpec.option("per_page", type=int),
+        ],
+        endpoint="GET /api/orders",
+    )
     def api_orders(
         self,
         ctx: CommandContext,
@@ -451,6 +675,7 @@ class MyshopPlugin(SitePlugin):
 
         Shape: object{orders, page, total}.
         """
+        # This request is the endpoint= declared on @command above: change both together.
         return ctx.request_json(
             "GET",
             "/api/orders",
@@ -467,13 +692,55 @@ class MyshopPlugin(SitePlugin):
 ```
 
 What came from the digest: `base_url` from the primary host; the `LoginStep`
-selectors and the form's action URL from the captured login page, the submit
-selector too, which the digest's markdown form does not print; `success_url`
-from the redirect the credential post answered with; one command stub per
-endpoint, the login flow's own endpoints excluded, JSON endpoints first, up to
-twelve, each with the observed query parameters as typed keyword arguments and
-the observed custom headers; a docstring recording the method, the path, how
-many times it was seen, which run it came from, and the response shape.
+selectors from the captured login page, the submit selector too, which the
+digest's markdown form does not print; `url` from the page the form was on (the
+page the engine opens, not the `/session` the form posts to), or, for an
+identity provider's form page that an app GET on another host redirected to,
+that app GET, since the provider's page opened directly lacks the state the
+redirect carried; `success_url` from the redirect the credential post answered
+with; one command stub per endpoint, the login flow's own endpoints excluded,
+JSON endpoints first, up to twelve, each with the observed query parameters as
+typed keyword arguments (and, for a `POST`, `PUT`, or `PATCH`, the observed body
+fields too, sent as `data=` when the recording posted a form and as `json=`
+otherwise, either way with only the fields the caller gave, and a body field no
+option can send as recorded, such as a JSON object, left out with a `GP-FILL`
+comment naming it), an explicit `params=` list whenever one of them is an `int`,
+a `float`, a `bool`, or a list (see [CLI parameter
+types](#cli-parameter-types)), the observed custom headers, and the endpoint it
+calls declared as `endpoint=` on its decorator; a docstring recording the
+method, the path, how many times it was seen, which run it came from, and the
+response shape. Each path value is percent-encoded before it goes into the URL
+(`_quote_path(order_id, safe="")`, `urllib.parse.quote` imported under a private
+name so a site parameter called `quote` cannot shadow it), so a `/`, `?`, or `#`
+in it stays in its segment. A command's name is a Python identifier (`import`
+becomes `import_`, a leading digit gains `n_`) and never one of `SitePlugin`'s
+own attributes (`setup` becomes `setup_2`) or a root command graftpunk adds
+itself (`login` becomes `login_2`). A generated test reads the fixture
+`gp observe fixtures` writes without a suffix: the endpoint's one fixture
+recording, decided over the recordings the digest kept (in scope, not static,
+and with text to write), media types compared normalised (parameters stripped,
+case-insensitive). Its type is the most-recorded one among the types with a
+recording that carries a body, a count tie going to a JSON type and then to the
+type whose winning recording came first; only when no type has a body at all
+does the same rule run over every recorded type instead. Within that type, the
+fixture is the first recording with a body, or its first recording when the
+type is empty-only. The stub's request method and return type, the test's
+assertion, the fixture name `gp plugin new` lists, and the docstring's response
+shape (shown only when the fixture recording is JSON) all read that one
+recording. For an endpoint whose fixture recording has no body (every
+recording answered with a redirect or a 204), the test asserts `result == ""`,
+with a `GP-FILL` saying to assert on what the call should return, and a JSON
+endpoint recorded that way reads its response as text, since there is no JSON
+to parse. An endpoint `gp observe fixtures` writes no fixture for, because no
+recording kept any text and none was a redirect or a 204 (a third-party HAR
+that kept no text for a 200, say), gets no test: a `GP-FILL` stands in its
+place, and its fixture is not in the list `gp plugin new` prints. A recording
+with empty text, which graftpunk's own recorders keep for a body-less
+response, is written, so its endpoint keeps its test. When the fixture's
+recording is JSON and parses to a falsy value, the test asserts that value
+(`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or `is None`),
+with a `GP-FILL` saying to assert on the shape you expect; a text response is
+never read as JSON, so a `text/plain` `0` keeps `assert result`.
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
@@ -483,6 +750,11 @@ they are usually wrong for a human to type: see [Check the CLI surface you
 shipped](#check-the-cli-surface-you-shipped). A token candidate that could not
 be paired with a source is left as a commented `GP-FILL` line rather than a
 guess. Search for `GP-FILL` and you have your to-do list.
+
+The `endpoint=` keyword is a declaration, not a check: nothing compares it with
+the request below it, and it is never used when the command runs. Tooling that
+reads the plugin's source takes the endpoint from it, so when you change the
+request, change the declaration with it.
 
 The command also prints the fixtures the generated tests will look for:
 
@@ -578,7 +850,38 @@ or without that import. That is harmless when the value goes straight into
 `params` (the site reads it as text anyway), and wrong as soon as you do
 arithmetic on it. To get a real type, declare it explicitly: an explicit
 `params=` list replaces introspection entirely, so it works in a generated
-module as written.
+module as written. `gp plugin new` writes that explicit list itself for every
+stub with an `int`, `float`, or `bool` parameter. A `bool` option that is not a
+flag is refused when the command is registered, so it writes a `bool` parameter
+as a flag with a negative: `click_kwargs={"is_flag": True, "flag":
+"--archived/--no-archived"}`, where the `flag` key replaces the option's
+declared name. `--archived` passes `True`, `--no-archived` passes `False`, and
+with neither the handler receives `None`. `ctx.request_json` sends those as
+`archived=true`, `archived=false`, and no `archived` at all; the digest types a
+parameter as `bool` only when the site sent that lowercase spelling, so the
+request matches the recording. In a JSON body the stub sends a JSON boolean, and
+leaves the field out when neither flag is given. When `--no-archived` is already
+another option of the same command (the site also takes a `no_archived`), the
+negative is `--archived-false` instead, so each option keeps its own value. When
+that is taken too, the flag is `--archived` alone, which sends `true` or nothing,
+and a `GP-FILL` comment in the stub says why `false` cannot be sent.
+
+A `list[...]` parameter is a repeatable option, `click_kwargs={"multiple": True}`
+(`--id 1 --id 2`), typed by its element when that is `int` or `float`; the
+handler receives a list, or `None` when the option is not given. `requests`
+sends a list in `params` or `data` as repeated keys (`id=1&id=2`), the way the
+site sent it, and a JSON body gets a JSON array. A JSON body field no option can
+send as recorded (an `object`, a `mixed` value, or an array of objects,
+booleans, arrays, mixed elements, or only empty arrays) is not declared: the stub
+says so in a `GP-FILL` comment, so you add it to the body by hand if the command
+needs it, rather than getting an option that sends the wrong type. A body field
+recorded with a different type from a query parameter of the same name gets its
+own option, `--body-<name>` (with a numeric suffix when the site also has a
+parameter of that name), so each is sent as recorded.
+
+A site parameter named `format`, `output`, `session`, `view`, or `help` would
+collide with an option every command already has, so its option gets a suffix
+(`--format-2`); the request still sends it under the site's own name.
 
 ```python
 from graftpunk.plugins import CommandContext, PluginParamSpec, command
@@ -698,7 +1001,7 @@ login_config = LoginConfig(
             submit="#sign-in",
         ),
     ],
-    url="/session",
+    url="/login",
     failure="Your email or password was incorrect.",
     success="#account-menu",
     success_url="*/dashboard*",
@@ -948,22 +1251,37 @@ reads `get_api_orders.json`; `GET /api/orders/1001` reads
 `get_api_orders_{order_id}.json`. No matching file answers 404.
 
 A `<filename>.meta.json` sidecar beside a fixture supplies its status and
-content type. `gp observe fixtures` writes one for every capture:
+content type. `gp observe fixtures` writes one for every capture to commit
+beside the fixture. It holds no URL, no time, and no header, cookie, or query
+value: only the status, the content type, the hash of the captured body, the
+request's body parameter names, every cookie name the recording set, and the
+token names the digest found. A body key that does not read as a field name,
+or that holds an id by the digest's rule, is dropped from `body_params`, and a
+cookie or token name that holds an id is left out of `flagged_names`, in any
+form; `redacted_names` counts those cookie and token names (a dropped body
+key is not in the count). The rule is lexical, so an
+account value in a shape it does not read as an id is kept: read both lists
+before you commit a sidecar.
 
 ```json
 {
-  "url": "https://myshop.example/api/orders?page=1&per_page=25&archived=false",
-  "status": 200,
-  "content_type": "application/json",
   "body_params": [],
-  "captured_at": "2026-09-15T10:00:00+00:00"
+  "capture_sha256": "4f6c1e0a9d2b7c3e8f5a1d6b0c9e2f7a3b8d4c1e6f0a5b9c2d7e3f8a1b6c0d4e",
+  "content_type": "application/json",
+  "flagged_names": [
+    "X-Csrf-Token",
+    "myshop_session"
+  ],
+  "redacted_names": 0,
+  "schema": 1,
+  "status": 200
 }
 ```
 
 Without a sidecar the status is 200 and the content type is guessed from the
-extension. A sidecar is how you test an error path: copy a fixture, set the
-sidecar's status to 403, and assert that the command raises
-`SessionRejectedError`.
+extension. A sidecar is how you test an error path: copy a fixture together with
+its sidecar, set the copied sidecar's `status` to 403, and assert that the
+command raises `SessionRejectedError`.
 
 ### Deriving a fixture from a capture
 
@@ -971,14 +1289,35 @@ sidecar's status to 403, and assert that the command raises
 gp observe fixtures myshop --match "GET /api/orders" --match "GET /api/orders/{order_id}"
 ```
 
-The first argument is the recording's name. `--match` takes a `"METHOD
-template"` pair, is required, is repeatable, and accepts a glob in the template.
-`--out PATH` chooses where to write (`./tests/captures` by
-default), `--limit N` caps how many files are written per matched template (5 by
-default), and `--allow-tracked` overrides the refusal to write onto a
-git-tracked path. Repeated captures of one template get `_1`, `_2` suffixes;
-`FixtureSession` looks only at the base name, so those extras are there for you
-to read, not for a test to load.
+The first argument is the recording's name. `--match` takes a
+`"METHOD template"` pair, is required, is repeatable, and accepts a glob in the
+template. The template is the one `gp observe digest` prints, a collapsed family
+included: a dozen product pages the digest shows as `GET /products/{product_id}`
+are matched by that template and written as `get_products_{product_id}.json`.
+`FixtureSession` names a request by the path alone and does not know about the
+collapse, so a test reaches that fixture with an id-shaped value (the generated
+tests pass `"1"`); a real slug would be looked up as
+`get_products_alpha-widget-2024.json` and answer 404. `--out PATH` chooses where
+to write (`./tests/captures` by default), `--limit N` caps how many files are
+written per matched template (5 by default), and `--allow-tracked` overrides the
+refusal to write onto a git-tracked path. A template's fixture recording, the
+one `gp plugin new`'s digest chose (see above: the most-recorded type with a
+body, ties going to JSON and then to the earliest, or, with no type having a
+body, the same rule over every type; the first recording of that type with a
+body, or its first recording when the type is empty-only), is written first and
+takes the unsuffixed name a generated test reads; the others, an empty
+one included, get `#1`, `#2` suffixes (a `#` cannot occur in a path, so a repeat
+never takes the name of a numeric segment), and two templates that would share a
+fixture stem (`/a_b` and `/a/b`, or `/Users` and `/users`, whatever their
+extensions, since `FixtureSession` looks a fixture up by stem and a
+case-insensitive filesystem holds one of them) are refused before anything is
+written, as `gp plugin new` writes one test and a `GP-FILL` for such a pair;
+`FixtureSession` serves only a file that is the stem plus one extension
+(`get_api_users.json`, never `get_api_users.csv.txt`), so those extras are there
+for you to read, not for a test to load. A 3xx or 204 response recorded with no
+text (graftpunk's own recorder keeps none for a redirect hop) has no body by
+definition and gets an empty fixture and its sidecar; any other response
+recorded with no text (a binary one) is skipped and named.
 
 Then do the work by hand. **A fixture copies the real structure and invents the
 content. No captured page is committed.** Open the capture, keep the shape of

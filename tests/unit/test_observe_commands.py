@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import re
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -23,15 +23,9 @@ from graftpunk.cli.observe_commands import (  # noqa: F401
     observe_app,
     resolve_run,
 )
+from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
-
-
-def _plain(text: str) -> str:
-    """*text* without ANSI escapes. Rich colours paths and usage errors when a
-    terminal or FORCE_COLOR is detected, and the codes land inside the words
-    these tests look for; CI and local runs differ on that, the words do not."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _git(argv: list[str], cwd: Path) -> None:
@@ -133,33 +127,13 @@ class TestDigestCommand:
         assert result.exit_code == 0, result.output
         assert "## Summary" in result.output
 
+    @pytest.mark.usefixtures("gp_logging")
     def test_digest_json_flag(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", tmp_path)
         _write_run(
             tmp_path, "myshop", "run-1", [_entry("GET", "https://api.myshop.example.com/orders")]
         )
         app = _build_app()
-        # graftpunk.logging's own docstring: "a later structlog.reset_defaults()
-        # restores structlog's stdout builtins and graftpunk does not
-        # re-arm the default." Several other test modules call
-        # reset_defaults() (test_chrome_orphans.py, test_site_requests.py,
-        # and others), which is process-global structlog state; whichever
-        # of those tests happens to run earlier in this worker leaves
-        # structlog back on its unconfigured default (an unfiltered
-        # PrintLogger dynamically bound to sys.stdout), so
-        # parse_har_file's INFO "har_file_parsed" event prints straight
-        # onto stdout ahead of the JSON and breaks json.loads (found
-        # running this test after TestResolveRun's tests: reproduces
-        # deterministically in that order, passes in isolation). Real `gp`
-        # usage never hits this: main.py's bootstrap always calls
-        # configure_logging() before a command runs. This test bypasses
-        # that bootstrap (it builds the Typer app directly from
-        # observe_commands.observe_app), so it restores the same guarantee
-        # explicitly. Deviation from the brief, which asserted on
-        # result.output without this.
-        from graftpunk.logging import configure_logging
-
-        configure_logging(level="WARNING")
         result = runner.invoke(app, ["observe", "digest", "myshop", "--json"])
         assert result.exit_code == 0
         assert json.loads(result.stdout)["primary_host"] == "api.myshop.example.com"
@@ -200,6 +174,35 @@ class TestDigestCommand:
         result = runner.invoke(app, ["observe", "digest"])
         assert result.exit_code == 1
 
+    @pytest.mark.usefixtures("gp_logging")
+    def test_endpoints_json_prints_the_projection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
+        )
+        result = runner.invoke(_build_app(), ["observe", "digest", "myshop", "--endpoints-json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["schema"] == 1
+        assert payload["source"] == {"session": "myshop", "run_id": "run-1", "har": None}
+
+    def test_json_and_endpoints_json_together_is_an_error(self, tmp_path: Path) -> None:
+        har = tmp_path / "network.har"
+        har.write_text(json.dumps({"log": {"version": "1.2", "entries": []}}))
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "digest", "--har", str(har), "--json", "--endpoints-json"],
+        )
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "not both" in strip_ansi(result.stderr)
+
 
 class TestFixturesCommand:
     def test_writes_matching_files_with_sidecars(
@@ -211,7 +214,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         out_dir = tmp_path / "out"
         app = _build_app()
@@ -283,7 +286,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001")],
         )
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -330,7 +333,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -370,7 +373,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         # No git init here: out_dir is a plain tmp_path directory, not part
         # of this worktree's tree (find_repo_root walks from out_dir, not
@@ -411,7 +414,7 @@ class TestFixturesCommand:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001")],
         )
         out_dir = tmp_path / "out"
 
@@ -429,8 +432,295 @@ class TestFixturesCommand:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "no entries matched --match." in result.output.lower()
+        assert "no entries matched --match post /nothing-here." in strip_ansi(result.output).lower()
         assert not out_dir.exists() or not list(out_dir.iterdir())
+
+    def test_each_pattern_that_matched_nothing_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
+        )
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir, "--match", "GET /carts/{cart_id}")
+        assert result.exit_code == 0, result.output
+        assert "No entries matched --match GET /carts/{cart_id}." in strip_ansi(result.output)
+        assert "--match GET /orders/{order_id}." not in strip_ansi(result.output)
+        assert list(out_dir.glob("get_orders_*.json"))
+
+    def test_two_templates_that_name_one_file_are_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """/a_b and /a/b both slug to get_a_b; nothing is written."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/a_b", body='{"x": 1}'),
+            _entry("GET", "https://api.myshop.example.com/a/b", body='{"x": 2}'),
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /*", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert "get_a_b" in output and "GET /a/b" in output and "GET /a_b" in output
+        assert not out_dir.exists() or not list(out_dir.glob("*.json"))
+
+    def test_two_templates_that_share_a_stem_across_extensions_are_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The files get_a_b.json and get_a_b.html share the stem FixtureSession
+        looks up."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/a_b", body='{"x": 1}'),
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/a/b",
+                content_type="text/html",
+                body="<p>b</p>",
+            ),
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /*", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert "get_a_b" in output and "GET /a/b" in output and "GET /a_b" in output
+        assert not out_dir.exists() or not any(out_dir.iterdir())
+
+    def test_a_bodyless_redirect_s_stem_collides_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A redirect recorded with "text": null gets a fixture, so its stem counts."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        hop = _entry("GET", "https://api.myshop.example.com/a/b", content_type="text/html")
+        hop["response"]["status"] = 302
+        hop["response"]["content"] = {"mimeType": "text/html", "text": None, "size": 0}
+        entries = [_entry("GET", "https://api.myshop.example.com/a_b", body='{"x": 1}'), hop]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /*", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert "get_a_b" in output and "GET /a/b" in output and "GET /a_b" in output
+
+    def test_stems_that_differ_only_in_case_are_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One would overwrite the other on a case-insensitive filesystem."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/Users", body='{"x": 1}'),
+            _entry("GET", "https://api.myshop.example.com/users", body='{"x": 2}'),
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "GET /*", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert "GET /Users" in output and "GET /users" in output
+        # The refusal names a real stem, the first one seen, not its folded key.
+        assert "Refusing to write get_Users:" in output
+
+    def test_the_sidecar_is_committable_and_records_the_capture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001?page=2", body='{"id": 1}')
+        order["response"]["cookies"] = [{"name": "shop_session", "value": "planted"}]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (fixture,) = [
+            p for p in out_dir.glob("get_orders_*.json") if not p.name.endswith(".meta.json")
+        ]
+        sidecar = json.loads((out_dir / f"{fixture.name}.meta.json").read_text())
+        assert set(sidecar) == {
+            "schema",
+            "status",
+            "content_type",
+            "body_params",
+            "capture_sha256",
+            "flagged_names",
+            "redacted_names",
+        }
+        assert sidecar["schema"] == 1
+        assert sidecar["capture_sha256"] == hashlib.sha256(fixture.read_bytes()).hexdigest()
+        assert sidecar["flagged_names"] == ["shop_session"]
+        assert "page=2" not in json.dumps(sidecar)
+
+    def test_the_sidecar_counts_an_id_cookie_name_and_holds_no_trace_of_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cookie name that holds an id is counted in redacted_names and
+        written in no form (plain, hashed, or as its digits)."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        order["response"]["cookies"] = [
+            {"name": "shop_session", "value": "planted"},
+            {"name": "sess_40912873", "value": "planted"},
+        ]
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (meta,) = out_dir.glob("*.meta.json")
+        text = meta.read_text()
+        sidecar = json.loads(text)
+        assert sidecar["redacted_names"] == 1
+        assert sidecar["flagged_names"] == ["shop_session"]
+        digest_of_name = hashlib.sha256(b"sess_40912873").hexdigest()
+        for trace in ("sess_40912873", "40912873", digest_of_name):
+            assert trace not in text
+            assert trace not in result.output
+
+    def test_a_collapsed_family_is_matched_and_named_by_the_digests_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Twelve slugs under /products/ are one endpoint in the digest,
+        GET /products/{product_id}; --match takes that template as the digest
+        prints it, and the files carry the name the generated tests look for."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+        words += ["golf", "hotel", "india", "juliet", "kilo", "lima"]
+        entries = [
+            _entry(
+                "GET",
+                f"https://api.myshop.example.com/products/{word}-widget-2024",
+                body=json.dumps({"id": word}),
+            )
+            for word in words
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "GET /products/{product_id}",
+                "--limit",
+                "2",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        written = sorted(p.name for p in out_dir.iterdir() if not p.name.endswith(".meta.json"))
+        assert written == ["get_products_{product_id}#1.json", "get_products_{product_id}.json"]
+
+    def test_flagged_names_cover_cookies_set_on_a_static_response_and_by_another_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The digest leaves static and out-of-scope entries out of its cookie list,
+        but a --match glob can still write a capture from either, so the sidecar's
+        safety-net list names every cookie the recording set."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        orders = [
+            _entry("GET", f"https://api.myshop.example.com/orders/{i}", body='{"id": 1}')
+            for i in (1001, 1002)
+        ]
+        asset = _entry(
+            "GET",
+            "https://api.myshop.example.com/assets/app.js",
+            content_type="application/javascript",
+            body="var a = 1;",
+        )
+        asset["response"]["cookies"] = [{"name": "asset_cookie", "value": "planted"}]
+        other_host = _entry("GET", "https://tracker.example.net/orders/1003", body='{"id": 3}')
+        other_host["response"]["cookies"] = [{"name": "other_host_cookie", "value": "planted"}]
+        _write_run(observe_base, "myshop", "run-1", [*orders, asset, other_host])
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir, "--limit", "1")
+        assert result.exit_code == 0, result.output
+        sidecar = json.loads((out_dir / "get_orders_{order_id}.json.meta.json").read_text())
+        assert sidecar["flagged_names"] == ["asset_cookie", "other_host_cookie"]
+
+    def test_a_json_body_key_that_is_not_a_field_name_is_not_written_to_the_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A JSON object keyed by data (an email address) is not a field name;
+        the digest's own filter (_plausible_field_name) applies here too, so
+        the data never reaches the committed sidecar."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        order = _entry("POST", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        order["request"]["postData"] = {
+            "mimeType": "application/json",
+            "text": json.dumps({"quantity": 2, "alice@example.com": {"role": "owner"}}),
+        }
+        _write_run(observe_base, "myshop", "run-1", [order])
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "observe",
+                "fixtures",
+                "myshop",
+                "--match",
+                "POST /orders/{order_id}",
+                "--out",
+                str(out_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        (fixture,) = [
+            p for p in out_dir.glob("post_orders_*.json") if not p.name.endswith(".meta.json")
+        ]
+        sidecar = json.loads((out_dir / f"{fixture.name}.meta.json").read_text())
+        assert sidecar["body_params"] == ["quantity"]
+        assert "alice@example.com" not in json.dumps(sidecar)
+
+    def test_an_entry_whose_url_cannot_be_split_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The digest drops it as an error; the fixtures loop must not crash on it."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [
+                _entry("GET", "http://[bad/orders/2", body='{"id": 2}'),
+                _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}'),
+            ],
+        )
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        (fixture,) = [
+            p for p in out_dir.glob("get_orders_*.json") if not p.name.endswith(".meta.json")
+        ]
+        assert json.loads(fixture.read_text()) == {"id": 1}
 
 
 class TestFixturesGitignore:
@@ -446,7 +736,7 @@ class TestFixturesGitignore:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -496,6 +786,93 @@ class TestFixturesGitignore:
         assert result.exit_code == 1, result.output
         assert not (repo / ".gitignore").exists()
 
+    def test_a_gitignore_that_is_not_utf8_is_refused_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        gitignore = repo / ".gitignore"
+        gitignore.write_bytes(b"\xff\xfe not utf-8\n")
+        out_dir = repo / "tests" / "captures"
+
+        result = _invoke_fixtures(out_dir)
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        output = strip_ansi(result.output)
+        assert str(gitignore) in output.replace("\n", "")
+        assert "not UTF-8 text" in output
+        assert gitignore.read_bytes() == b"\xff\xfe not utf-8\n"
+        assert not out_dir.exists()
+
+    def test_a_gitignore_that_is_a_directory_is_refused_as_a_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its own refusal, not a read error."""
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        (repo / ".gitignore").mkdir()
+        out_dir = repo / "tests" / "captures"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert f"Refusing to write {repo / '.gitignore'}: it is a directory, not a file" in output
+        assert not out_dir.exists()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
+    def test_an_unreadable_gitignore_is_refused_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        gitignore = repo / ".gitignore"
+        gitignore.write_text("node_modules/\n")
+        gitignore.chmod(0)
+        out_dir = repo / "tests" / "captures"
+        try:
+            result = _invoke_fixtures(out_dir)
+        finally:
+            gitignore.chmod(0o644)
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        output = strip_ansi(result.output).replace("\n", "")
+        assert f"Could not read {gitignore}: Permission denied" in output
+        assert not out_dir.exists()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
+    def test_a_read_only_gitignore_is_refused_as_a_failed_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        gitignore = repo / ".gitignore"
+        gitignore.write_text("node_modules/\n")
+        gitignore.chmod(0o444)
+        out_dir = repo / "tests" / "captures"
+        try:
+            result = _invoke_fixtures(out_dir)
+        finally:
+            gitignore.chmod(0o644)
+
+        assert result.exit_code == 1, result.output
+        output = strip_ansi(result.output).replace("\n", "")
+        assert f"Could not write {gitignore}: Permission denied" in output
+        assert gitignore.read_text() == "node_modules/\n"
+
+    def test_a_digest_failure_leaves_gitignore_and_the_target_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The digest is computed before any write, so a failure there edits nothing."""
+        repo = self._repo_with_a_run(tmp_path, monkeypatch)
+        out_dir = repo / "tests" / "captures"
+
+        def fail(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("digest failed")
+
+        monkeypatch.setattr("graftpunk.cli.observe_commands.digest", fail)
+        result = _invoke_fixtures(out_dir)
+
+        assert isinstance(result.exception, RuntimeError)
+        assert not (repo / ".gitignore").exists()
+        assert not out_dir.exists()
+
 
 class TestWroteListingDoesNotWrapMidWord:
     def test_a_long_written_path_appears_whole(
@@ -509,7 +886,7 @@ class TestWroteListingDoesNotWrapMidWord:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         out_dir = tmp_path / "a-fairly-long-directory-name" / "and-another-one-here" / "captures"
 
@@ -518,7 +895,7 @@ class TestWroteListingDoesNotWrapMidWord:
         assert result.exit_code == 0, result.output
         expected = str(out_dir / "get_orders_{order_id}.json")
         assert len(expected) > 80
-        assert expected in _plain(result.output)
+        assert expected in strip_ansi(result.output)
 
 
 class TestLimitMustBePositive:
@@ -541,7 +918,7 @@ class TestLimitMustBePositive:
             _build_app(), ["observe", "digest", "--har", str(har_path), "--limit", "0"]
         )
         assert result.exit_code != 0
-        assert "--limit" in _plain(result.output)
+        assert "--limit" in strip_ansi(result.output)
 
     def test_fixtures_refuses_a_negative_limit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -552,7 +929,7 @@ class TestLimitMustBePositive:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001")],
         )
         out_dir = tmp_path / "out"
         result = _invoke_fixtures(out_dir, "--limit", "-1")
@@ -561,7 +938,9 @@ class TestLimitMustBePositive:
 
 
 class TestMatchPatternValidation:
-    @pytest.mark.parametrize("pattern", ["/orders", "ORDERS /orders", "GET", "GET   "])
+    @pytest.mark.parametrize(
+        "pattern", ["/orders", "ORDERS /orders", "GET", "GET   ", "get /orders/{order_id}"]
+    )
     def test_a_pattern_that_is_not_method_plus_template_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str
     ) -> None:
@@ -573,7 +952,7 @@ class TestMatchPatternValidation:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1")],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001")],
         )
         out_dir = tmp_path / "out"
         result = runner.invoke(
@@ -593,7 +972,7 @@ class TestMatchPatternValidation:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         out_dir = tmp_path / "out"
         result = runner.invoke(
@@ -603,15 +982,57 @@ class TestMatchPatternValidation:
                 "fixtures",
                 "myshop",
                 "--match",
-                "get /orders/{order_id}",
+                "GET /orders/{order_id}",
                 "--out",
                 str(out_dir),
             ],
         )
         assert result.exit_code == 0, result.output
 
+    def test_the_matcher_takes_its_halves_from_parse_endpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A grammar change made in parse_endpoint alone reaches the matcher: the
+        matcher never splits a pattern itself."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            [_entry("GET", "https://api.myshop.example.com/synthetic/1", body='{"id": 1}')],
+        )
+        monkeypatch.setattr(
+            "graftpunk.cli.observe_commands.parse_endpoint",
+            lambda value: ("GET", "/synthetic/*"),
+        )
+        out_dir = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["observe", "fixtures", "myshop", "--match", "PUT /whatever", "--out", str(out_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        written = [p for p in out_dir.glob("get_synthetic_*") if not p.name.endswith(".meta.json")]
+        assert len(written) == 1
 
-class TestBinaryBodiesAreSkipped:
+    def test_the_refusal_is_parse_endpoints_own_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.har.naming import EndpointSpecError, parse_endpoint
+
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base, "myshop", "run-1", [_entry("GET", "https://api.myshop.example.com/a")]
+        )
+        with pytest.raises(EndpointSpecError) as caught:
+            parse_endpoint("get /a")
+        result = runner.invoke(_build_app(), ["observe", "fixtures", "myshop", "--match", "get /a"])
+        assert result.exit_code == 1
+        assert f"--match: {caught.value}" in " ".join(strip_ansi(result.output).split())
+
+
+class TestResponsesRecordedWithNoText:
     def test_an_entry_with_no_text_body_writes_no_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -619,7 +1040,7 @@ class TestBinaryBodiesAreSkipped:
         real but empty fixture."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
-        binary = _entry("GET", "https://api.myshop.example.com/orders/1/photo")
+        binary = _entry("GET", "https://api.myshop.example.com/orders/1001/photo")
         binary["response"]["headers"] = [{"name": "Content-Type", "value": "image/png"}]
         binary["response"]["content"] = {"mimeType": "image/png", "size": 2048}
         _write_run(observe_base, "myshop", "run-1", [binary])
@@ -641,6 +1062,67 @@ class TestBinaryBodiesAreSkipped:
         assert "image/png" in result.output
         assert list(out_dir.iterdir()) == []
 
+    def test_the_unsuffixed_fixture_is_the_first_recording_with_a_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 204 then a 200: the generated test reads the unsuffixed file, so it holds
+        the 200's body, and the empty 204 takes the suffix."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        empty = _entry("GET", "https://api.myshop.example.com/orders/1001", body="")
+        empty["response"]["status"] = 204
+        bodied = _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')
+        _write_run(observe_base, "myshop", "run-1", [empty, bodied])
+        out_dir = tmp_path / "out"
+
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        assert (out_dir / "get_orders_{order_id}.json").read_text() == '{"id": 1}'
+        assert (out_dir / "get_orders_{order_id}#1.json").read_text() == ""
+
+    def test_the_unsuffixed_fixture_is_of_the_endpoint_s_main_content_type(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An HTML answer, then two JSON ones: the endpoint is JSON, so the first JSON
+        answer takes the unsuffixed name, and the HTML one a suffix."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        url = "https://api.myshop.example.com/orders/1001"
+        entries = [
+            _entry("GET", url, content_type="text/html", body="<p>sign in</p>"),
+            _entry("GET", url, body='{"id": 1}'),
+            _entry("GET", url, body='{"id": 2}'),
+        ]
+        _write_run(observe_base, "myshop", "run-1", entries)
+        out_dir = tmp_path / "out"
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        assert (out_dir / "get_orders_{order_id}.json").read_text() == '{"id": 1}'
+        assert (out_dir / "get_orders_{order_id}#2.html").read_text() == "<p>sign in</p>"
+
+    @pytest.mark.parametrize("status", [302, 204])
+    def test_a_bodyless_redirect_or_no_content_writes_an_empty_fixture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        """graftpunk's recorder writes "text": null for a redirect hop; a 3xx or 204
+        has no body by definition, so its fixture is empty, with its sidecar."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        hop = _entry("GET", "https://api.myshop.example.com/orders/1001", content_type="text/html")
+        hop["response"]["status"] = status
+        hop["response"]["headers"].append({"name": "Location", "value": "/app"})
+        hop["response"]["content"] = {"mimeType": "text/html", "text": None, "size": 0}
+        _write_run(observe_base, "myshop", "run-1", [hop])
+        out_dir = tmp_path / "out"
+
+        result = _invoke_fixtures(out_dir)
+        assert result.exit_code == 0, result.output
+        fixture = out_dir / "get_orders_{order_id}.html"
+        assert fixture.read_text() == ""
+        sidecars = [p for p in out_dir.iterdir() if p != fixture]
+        assert len(sidecars) == 1
+        assert json.loads(sidecars[0].read_text())["status"] == status
+
 
 @contextmanager
 def _unwritable_dir(parent: Path, name: str = "readonly") -> Iterator[Path]:
@@ -661,7 +1143,7 @@ class TestUnwritableTargetIsARefusal:
 
     def test_digest_output_into_an_unwritable_directory(self, tmp_path: Path) -> None:
         har_path = tmp_path / "network.har"
-        entries = [_entry("GET", "https://api.myshop.example.com/orders/1")]
+        entries = [_entry("GET", "https://api.myshop.example.com/orders/1001")]
         har_path.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
         with _unwritable_dir(tmp_path) as readonly:
             result = runner.invoke(
@@ -689,7 +1171,7 @@ class TestUnwritableTargetIsARefusal:
             observe_base,
             "myshop",
             "run-1",
-            [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')],
+            [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')],
         )
         with _unwritable_dir(tmp_path) as readonly:
             result = runner.invoke(

@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import json
+import re
 import subprocess
 import sys
 import warnings
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from graftpunk.devtools.scaffold import policy
+from graftpunk.devtools.scaffold.pysrc import (
+    GENERATED_LINE_LENGTH,
+    literal_dict_entry_lines,
+    literal_lines,
+    wrapped_comment_lines,
+    wrapped_docstring_lines,
+)
 from graftpunk.devtools.scaffold.render import (
-    _DOCSTRING_WRAP_WIDTH,
-    _GENERATED_LINE_LENGTH,
     _MAX_COMMAND_NAME,
     _MAX_PARAM_NAME,
     _MAX_PLUGIN_NAME,
@@ -21,15 +30,9 @@ from graftpunk.devtools.scaffold.render import (
     PLUGIN_NAME_RE,
     ScaffoldSpec,
     _command_name,
-    _dict_entry_lines,
-    _literal_dict_entry_lines,
-    _literal_lines,
     _param_identifier,
-    _url_chunks,
-    _wrapped_comment_lines,
-    _wrapped_docstring_block,
-    _wrapped_docstring_lines,
     class_name_for,
+    fixture_paths,
     module_name_for,
     render,
     validate_plugin_name,
@@ -43,7 +46,9 @@ from graftpunk.har.digest import (
     RunDigest,
     ShapeNode,
     TokenCandidate,
+    digest,
 )
+from tests.unit.cli_harness import strip_ansi
 
 
 def _digest(
@@ -117,12 +122,42 @@ _NOTES_ENDPOINT = Endpoint(
         "body": "str",
         "author": "str",
         "pinned": "bool",
-        "tags": "list",
+        "tags": "list[str]",
     },
     body_kind="json",
     shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
     custom_headers=(),
     examples=("/orders/1/notes",),
+)
+
+_FORM_POST_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/newsletter/subscribe",
+    methods=("POST",),
+    count=1,
+    statuses=(200,),
+    content_type="application/json",
+    query_params={},
+    body_params={"email": "str", "weekly": "bool"},
+    body_kind="form",
+    shape=ShapeNode(kind="object", children={"ok": ShapeNode(kind="boolean")}),
+    custom_headers=(),
+    examples=("/newsletter/subscribe",),
+)
+
+_PAYMENT_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template="/payments",
+    methods=("POST",),
+    count=2,
+    statuses=(201,),
+    content_type="application/json",
+    query_params={},
+    body_params={"amount": "float"},
+    body_kind="json",
+    shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
+    custom_headers=(),
+    examples=("/payments",),
 )
 
 _SITE_NAMED_PARAMS_ENDPOINT = Endpoint(
@@ -174,6 +209,29 @@ _LONG_TEMPLATE_ENDPOINT = Endpoint(
     shape=ShapeNode(kind="object", children={"rows": ShapeNode(kind="array")}),
     custom_headers=(),
     examples=("/records/search-results/by-recorded-date-range/detail",),
+)
+
+# A template too wide for its endpoint= line, so the declaration wraps, and an int
+# and a bool parameter named at the identifier cap, so their params= entries are
+# too wide for one line each.
+_LONG_TYPED_ENDPOINT = Endpoint(
+    host="api.myshop.example.com",
+    template=(
+        "/accounts/{account_identifier}/statements/by-recorded-date-range/detail/summary/line-items"
+    ),
+    methods=("GET",),
+    count=2,
+    statuses=(200,),
+    content_type="application/json",
+    query_params={
+        "include_" + "x" * (_MAX_PARAM_NAME - len("include_")): "bool",
+        "page_" + "n" * (_MAX_PARAM_NAME - len("page_")): "int",
+    },
+    body_params={},
+    body_kind="none",
+    shape=ShapeNode(kind="object", children={"rows": ShapeNode(kind="array")}),
+    custom_headers=(),
+    examples=("/accounts/1/statements/by-recorded-date-range/detail/summary/line-items",),
 )
 
 _PASSWORD_LOGIN_FORM = LoginForm(
@@ -283,6 +341,9 @@ class TestParamIdentifier:
 
     def test_a_leading_digit_is_prefixed(self) -> None:
         assert _param_identifier("2fa", set()) == "p_2fa"
+        assert _param_identifier("$filter", set()) == "filter"
+        assert _param_identifier("__VIEWSTATE", set()) == "viewstate"
+        assert _param_identifier("ctl00$Main$txtSearch", set()) == "ctl00_main_txt_search"
 
     def test_camel_case_becomes_snake_case(self) -> None:
         assert _param_identifier("keywordSearch", set()) == "keyword_search"
@@ -308,7 +369,7 @@ class TestModuleNameFor:
 
 class TestLiteralLines:
     def test_short_value_renders_on_one_line(self) -> None:
-        assert _literal_lines("#login-btn", indent=8, prefix="submit=") == [
+        assert literal_lines("#login-btn", indent=8, prefix="submit=") == [
             '        submit="#login-btn",'
         ]
 
@@ -319,7 +380,7 @@ class TestLiteralLines:
         )
         assert len(value) > 100
         indent = 16
-        lines = _literal_lines(value, indent=indent, prefix="submit=")
+        lines = literal_lines(value, indent=indent, prefix="submit=")
         pad = " " * indent
         continuation_pad = " " * (indent + 4)
         assert lines[0] == f"{pad}submit=("
@@ -332,7 +393,7 @@ class TestLiteralLines:
     def test_long_value_with_no_whitespace_reconstructs_exactly(self) -> None:
         value = "x" * 90
         indent = 12
-        lines = _literal_lines(value, indent=indent, prefix="header=")
+        lines = literal_lines(value, indent=indent, prefix="header=")
         continuation_pad = " " * (indent + 4)
         chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
         assert "".join(chunks) == value
@@ -340,27 +401,9 @@ class TestLiteralLines:
             assert len(line) <= 100
 
 
-class TestDictEntryLines:
-    def test_short_key_renders_on_one_line(self) -> None:
-        assert _dict_entry_lines("page", "page", indent=16) == ['                "page": page,']
-
-    def test_long_key_splits_and_rejoins_exactly(self) -> None:
-        key = "x" * 120
-        indent = 16
-        lines = _dict_entry_lines(key, "identifier", indent=indent)
-        pad = " " * indent
-        continuation_pad = " " * (indent + 4)
-        assert lines[0] == f"{pad}("
-        assert lines[-1] == f"{pad}): identifier,"
-        chunks = [line[len(continuation_pad) + 1 : -1] for line in lines[1:-1]]
-        assert "".join(chunks) == key
-        for line in lines:
-            assert len(line) <= _GENERATED_LINE_LENGTH
-
-
 class TestLiteralDictEntryLines:
     def test_short_pair_renders_on_one_line(self) -> None:
-        assert _literal_dict_entry_lines("username", "#email", indent=16) == [
+        assert literal_dict_entry_lines("username", "#email", indent=16) == [
             '                "username": "#email",'
         ]
 
@@ -368,7 +411,7 @@ class TestLiteralDictEntryLines:
         key = "k" * 110
         value = "v" * 110
         indent = 16
-        lines = _literal_dict_entry_lines(key, value, indent=indent)
+        lines = literal_dict_entry_lines(key, value, indent=indent)
         pad = " " * indent
         continuation_pad = " " * (indent + 4)
         assert lines[0] == f"{pad}("
@@ -383,42 +426,12 @@ class TestLiteralDictEntryLines:
         assert key_chunks == key
         assert value_chunks == value
         for line in lines:
-            assert len(line) <= _GENERATED_LINE_LENGTH
-
-
-class TestUrlChunks:
-    def test_chunks_rejoin_exactly(self) -> None:
-        text = "/api/v2/customer-accounts/{account_id}/payment-methods/default-billing-address"
-        chunks = _url_chunks(text, width=30)
-        assert len(chunks) > 1
-        assert "".join(chunks) == text
-
-    def test_no_chunk_boundary_falls_inside_a_placeholder(self) -> None:
-        text = "/a/{account_id}/b/{payment_method_id}/c"
-        for width in range(4, 40):
-            chunks = _url_chunks(text, width=width)
-            assert "".join(chunks) == text
-            for chunk in chunks:
-                assert chunk.count("{") == chunk.count("}")
-
-    def test_a_single_segment_wider_than_the_width_is_hard_split(self) -> None:
-        text = "/" + "s" * 250
-        chunks = _url_chunks(text, width=40)
-        assert "".join(chunks) == text
-        for chunk in chunks:
-            assert len(chunk) <= 40
-
-    def test_a_chunk_starts_at_a_slash_when_it_can(self) -> None:
-        text = "/alpha/beta/gamma/delta"
-        chunks = _url_chunks(text, width=12)
-        assert "".join(chunks) == text
-        for chunk in chunks[1:]:
-            assert chunk.startswith("/")
+            assert len(line) <= GENERATED_LINE_LENGTH
 
 
 class TestWrappedCommentLines:
     def test_short_text_is_one_line(self) -> None:
-        assert _wrapped_comment_lines("short comment", indent=4) == ["    # short comment"]
+        assert wrapped_comment_lines("short comment", indent=4) == ["    # short comment"]
 
     def test_long_text_reconstructs_after_stripping_prefixes(self) -> None:
         text = (
@@ -427,7 +440,7 @@ class TestWrappedCommentLines:
             "wrapped line (auth_api)"
         )
         indent = 4
-        lines = _wrapped_comment_lines(text, indent=indent)
+        lines = wrapped_comment_lines(text, indent=indent)
         assert len(lines) > 1
         pad = " " * indent
         first_prefix = f"{pad}# "
@@ -444,7 +457,7 @@ class TestWrappedCommentLines:
 
 class TestDocstringWrappingKeepsHyphenatedFactsWhole:
     """A hyphen in this text belongs to a captured fact, never to a word the
-    wrapper may break (polish round 2, 2026-09-12)."""
+    wrapper may break."""
 
     # Long enough to leave room for "myshop-" but not for the whole label, so
     # a hyphen-breaking wrapper would split it exactly there.
@@ -452,7 +465,7 @@ class TestDocstringWrappingKeepsHyphenatedFactsWhole:
     _LABEL = "myshop-tirekick/2026-09-11T22-19-05Z"
 
     def test_a_run_label_is_never_split_at_its_hyphen(self) -> None:
-        lines = _wrapped_docstring_lines(f"{self._FILLER} run {self._LABEL}.")
+        lines = wrapped_docstring_lines(f"{self._FILLER} run {self._LABEL}.")
         assert len(lines) > 1, "the input must actually wrap for this test to mean anything"
         assert any(self._LABEL in line for line in lines)
 
@@ -474,53 +487,6 @@ class TestDocstringWrappingKeepsHyphenatedFactsWhole:
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "myshop-tirekick/2026-09-11T22-19-05Z" in plugin_code
-
-
-class TestDocstringEscaping:
-    """Text that reaches a generated docstring reads back unchanged."""
-
-    @staticmethod
-    def _read_back(lines: list[str]) -> str:
-        source = "\n".join(["def f():", '    """', *lines, '    """', "    pass"])
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", SyntaxWarning)
-            module = ast.parse(source)
-        function = module.body[0]
-        assert isinstance(function, ast.FunctionDef)
-        return ast.get_docstring(function) or ""
-
-    def test_a_triple_quote_and_a_backslash_survive_the_round_trip(self) -> None:
-        text = 'GET /a\\b: shape object{"""k", tail\\}'
-        read_back = self._read_back(_wrapped_docstring_lines(text))
-        assert " ".join(read_back.split()) == " ".join(text.split())
-
-    def test_an_escape_cut_in_half_by_wrapping_is_put_back(self) -> None:
-        # One unbroken word long enough that textwrap breaks it mid-character,
-        # with the backslash sitting exactly on the break: the half left behind
-        # would otherwise read as a line continuation inside the docstring.
-        text = "x" * (_DOCSTRING_WRAP_WIDTH - 2) + "\\" + "y" * 60
-        lines = _wrapped_docstring_lines(text)
-        assert len(lines) > 1, "the input must actually wrap for this test to mean anything"
-        assert self._read_back(lines).replace("\n", "") == text
-
-    def test_a_trailing_quote_does_not_close_the_one_line_form_early(self) -> None:
-        block = _wrapped_docstring_block('Commands for https://myshop.example.com/"', indent=0)
-        assert len(block) == 1
-        source = "\n".join(["class C:", f"    {block[0]}", "    pass"])
-        module = ast.parse(source)
-        klass = module.body[0]
-        assert isinstance(klass, ast.ClassDef)
-        assert ast.get_docstring(klass) == 'Commands for https://myshop.example.com/"'
-
-    def test_a_backslash_before_the_trailing_quote_still_gets_escaped(self) -> None:
-        text = 'a\\"'
-        block = _wrapped_docstring_block(text, indent=0)
-        assert len(block) == 1
-        source = "\n".join(["class C:", f"    {block[0]}", "    pass"])
-        module = ast.parse(source)
-        klass = module.body[0]
-        assert isinstance(klass, ast.ClassDef)
-        assert ast.get_docstring(klass) == text
 
 
 class TestScaffoldSpecValidatesItsName:
@@ -584,6 +550,18 @@ class TestRenderNewProject:
             ".gitignore",
             "README.md",
         }
+
+    def test_readme_names_the_policys_fixtures_tree(self) -> None:
+        """The tests directory is spelled once, in policy: the README quotes it
+        rather than a hand-spelled `tests/fixtures/`."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        readme = render(spec)["README.md"]
+        assert f"Fixtures under `{policy.FIXTURES_TREE}`" in readme
 
     def test_pyproject_declares_entry_point_and_dependency_floor(self) -> None:
         spec = ScaffoldSpec(
@@ -684,6 +662,221 @@ class TestRenderAddToSuite:
         assert 'FIXTURES_DIR = Path(__file__).parent / "fixtures"\n' in test_module
 
 
+class TestGeneratedLoginHoldsNoAccountValue:
+    """The generated LoginConfig opens the login page, and nothing in it spells
+    an id the recording's URLs carried."""
+
+    @staticmethod
+    def _plugin_code(form: LoginForm, *, login: tuple[LoginObservation, ...] = ()) -> str:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login_forms=(form,), login=login),
+        )
+        return render(spec)["src/graftpunk_myshop/plugin.py"]
+
+    @staticmethod
+    def _form(action: str, source: str) -> LoginForm:
+        scope = f'form[action="{action}"]'
+        return LoginForm(
+            action=action,
+            method="POST",
+            fields={
+                "username": f'{scope} input[name="username"]',
+                "password": f'{scope} input[name="password"]',
+            },
+            submit=f'{scope} button[type="submit"]',
+            hidden=(),
+            source=source,
+        )
+
+    def test_the_url_is_the_page_the_form_was_on_not_where_it_posts(self) -> None:
+        code = self._plugin_code(self._form("/session", "https://myshop.example.com/signin"))
+        assert '        url="/signin",' in code
+        assert 'url="/session"' not in code
+
+    def test_a_page_on_another_host_is_kept_absolute(self) -> None:
+        code = self._plugin_code(self._form("/session", "https://auth.myshop.example.com/signin"))
+        assert '        url="https://auth.myshop.example.com/signin",' in code
+
+    def test_a_page_path_holding_an_id_is_a_gp_fill(self) -> None:
+        segment = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+        code = self._plugin_code(
+            self._form("/session", f"https://myshop.example.com/signin/{segment}")
+        )
+        assert segment not in code
+        assert "url=" not in code.replace("success_url", "")
+        assert "GP-FILL: url, the path of the login page" in code
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert "The recorded login page path holds an account value." in comments
+
+    def test_selectors_scoped_to_an_action_holding_an_id_are_unscoped(self) -> None:
+        """A name selector the digest found unique on the page prints unscoped; a
+        selector by type never does, since it would pick the first such control on
+        the page."""
+        form = dataclasses.replace(
+            self._form("/accounts/12345/session", "https://myshop.example.com/signin"),
+            unscoped_fields={
+                "username": 'input[name="username"]',
+                "password": 'input[name="password"]',
+            },
+        )
+        code = self._plugin_code(form)
+        assert "12345" not in code
+        assert '"username": \'input[name="username"]\',' in code
+        assert '"password": \'input[name="password"]\',' in code
+        assert 'submit="GP-FILL: submit selector",' in code
+
+    def test_a_selector_that_cannot_be_unscoped_is_a_gp_fill(self) -> None:
+        form = LoginForm(
+            action="/accounts/12345/session",
+            method="POST",
+            fields={
+                "username": 'form[action="/accounts/12345/session"] input.odd',
+                "password": "#pw",
+            },
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        code = self._plugin_code(form)
+        assert "12345" not in code
+        assert '"username": "GP-FILL: username selector",' in code
+        assert '"password": "#pw",' in code
+
+    @pytest.mark.parametrize("landing", ["/40912873", "/1001/2002"])
+    def test_a_landing_path_of_placeholders_only_sets_no_success_url(self, landing: str) -> None:
+        """*/** matches every URL, so a failed login that navigates would pass."""
+        post = LoginObservation(
+            order=1,
+            method="POST",
+            url="https://myshop.example.com/session",
+            status=302,
+            kind="credential_post",
+            fields=("username", "password"),
+            redirect_to=landing,
+        )
+        code = self._plugin_code(
+            self._form("/session", "https://myshop.example.com/signin"), login=(post,)
+        )
+        assert "success_url=" not in code
+        assert "GP-FILL: success_url" in code
+
+    def test_neutral_and_unresolved_roles_get_a_gp_fill(self) -> None:
+        form = LoginForm(
+            action="/session",
+            method="POST",
+            fields={
+                "password": "#pw",
+                "field_1": 'input[type="tel"]',
+            },
+            submit=None,
+            hidden=(),
+            source="https://myshop.example.com/signin",
+            neutral_roles=("field_1", "field_2"),
+            unresolved_roles=("field_2", "submit"),
+        )
+        code = self._plugin_code(form)
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: field_1 is a placeholder role: the recorded input's name held an "
+            "account value; rename it to the field it is."
+        ) in comments
+        assert (
+            "GP-FILL: field_2 has no selector: none picks one input of the recorded form; "
+            "write one by hand."
+        ) in comments
+        assert (
+            "GP-FILL: submit has no selector: none picks one input of the recorded form; "
+            "write one by hand."
+        ) in comments
+        # The rename comment names only a neutral role the step declares.
+        assert "field_2 is a placeholder role" not in comments
+
+    def test_each_gp_fill_names_its_own_cause(self) -> None:
+        form = LoginForm(
+            action="/session",
+            method="POST",
+            fields={"password": "#pw", "field_1": "#a", "field_2": "#b"},
+            submit="#go",
+            hidden=(),
+            source="https://myshop.example.com/signin",
+            neutral_roles=("field_1", "field_2"),
+            nameless_roles=("field_1",),
+            unresolved_roles=("username",),
+            absent_roles=("username",),
+        )
+        code = self._plugin_code(form)
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: field_1 is a placeholder role: the recorded input had no name; "
+            "rename it to the field it is."
+        ) in comments
+        assert (
+            "GP-FILL: field_2 is a placeholder role: the recorded input's name held an "
+            "account value; rename it to the field it is."
+        ) in comments
+        assert (
+            "GP-FILL: username is not on the recorded form: a multi-step login asks for it "
+            "on another page; add a LoginStep for that page by hand."
+        ) in comments
+        assert "username has no selector" not in comments
+
+    def test_a_selector_that_cannot_be_printed_unscoped_gets_a_gp_fill(self) -> None:
+        scope = 'form[action="/accounts/40912873/session"]'
+        form = LoginForm(
+            action="/accounts/40912873/session",
+            method="POST",
+            fields={"username": f'{scope} input[type="text"]', "password": "#pw"},
+            submit=f'{scope} button[type="submit"]',
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        code = self._plugin_code(form)
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        for role in ("username", "submit"):
+            assert (
+                f"GP-FILL: {role} has no selector: the form's action holds an id, and "
+                "without it none picks one input of the recorded page; write one by hand."
+            ) in comments
+        assert 'input[type="text"]' not in code
+        assert "40912873" not in code
+
+    def test_success_url_templates_an_id_in_the_landing_path(self) -> None:
+        post = LoginObservation(
+            order=1,
+            method="POST",
+            url="https://myshop.example.com/session",
+            status=302,
+            kind="credential_post",
+            fields=("username", "password"),
+            redirect_to="/accounts/12345/dashboard",
+        )
+        code = self._plugin_code(
+            self._form("/session", "https://myshop.example.com/signin"), login=(post,)
+        )
+        assert "12345" not in code
+        assert '        success_url="*/accounts/*/dashboard*",' in code
+
+
 class TestPluginModuleWithLoginForm:
     def test_login_config_uses_the_first_password_form(self) -> None:
         spec = ScaffoldSpec(
@@ -698,7 +891,10 @@ class TestPluginModuleWithLoginForm:
         assert '"username": "#email"' in plugin_code
         assert '"password": "#pw"' in plugin_code
         assert 'submit="#login-btn"' in plugin_code
-        assert 'url="/login"' in plugin_code
+        # The form came from a saved page source, so no page URL was recorded;
+        # the action ("/login") is where the form posts, not the page to open.
+        assert "url=" not in plugin_code.replace("success_url", "")
+        assert "GP-FILL: url, the path of the login page" in plugin_code
         assert "GP-FILL" in plugin_code  # failure/success still need a human
         assert "from graftpunk.plugins import" in plugin_code
         assert "LoginConfig" in plugin_code
@@ -829,6 +1025,29 @@ class TestPluginModuleWithLoginForm:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "# login_config = LoginConfig" in plugin_code
         assert "auth_api" in plugin_code
+
+    def test_an_observation_comment_carries_the_templated_url(self) -> None:
+        """A login URL's path can hold an account id or a one-time token, and the
+        comment lands in a file the author commits."""
+        segment = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+        observation = LoginObservation(
+            order=1,
+            method="GET",
+            url=f"https://myshop.example.com/signin/{segment}",
+            status=200,
+            kind="form_page",
+            fields=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(login=(observation,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert segment not in plugin_code
+        assert "https://myshop.example.com/signin/{signin_id} (form_page)" in plugin_code
 
     def test_no_login_form_omits_the_login_import(self) -> None:
         spec = ScaffoldSpec(
@@ -1038,8 +1257,7 @@ class TestPluginModuleCommandStubs:
         assert '"author": author,' in plugin_code
 
     def test_a_camel_case_site_parameter_is_declared_in_snake_case(self) -> None:
-        """The identifier is this project's own; the dict key stays the site's
-        (polish round 2, 2026-09-12)."""
+        """The identifier is this project's own; the dict key stays the site's."""
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
@@ -1069,7 +1287,7 @@ class TestPluginModuleCommandStubs:
         test_code = rendered["tests/test_plugin.py"]
         assert "search_result_id: str," in plugin_code
         assert 'f"/searchResults/{search_result_id}",' in plugin_code
-        assert 'search_result_id="1"' in test_code
+        assert 'search_result_id="1001"' in test_code
 
     def test_html_endpoint_calls_request_text_with_navigation_role(self) -> None:
         html_endpoint = Endpoint(
@@ -1150,6 +1368,787 @@ class TestPluginModuleCommandStubs:
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         for line in plugin_code.splitlines():
             assert line == line.rstrip()
+
+    def test_every_stub_declares_its_endpoint_on_a_line_of_its_own(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert '        endpoint="GET /orders/{order_id}",' in plugin_code.splitlines()
+        tree = ast.parse(plugin_code)
+        (stub,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+        (decorator,) = stub.decorator_list
+        assert isinstance(decorator, ast.Call)
+        keywords = {k.arg: k.value for k in decorator.keywords}
+        endpoint = keywords["endpoint"]
+        assert isinstance(endpoint, ast.Constant) and endpoint.value == "GET /orders/{order_id}"
+
+    def test_every_declared_endpoint_reads_back_through_parse_endpoint(self) -> None:
+        """The declaration is written for tooling that reads it with parse_endpoint,
+        so each one has to come back as the method and template the stub calls."""
+        from graftpunk.har.naming import parse_endpoint
+
+        endpoints = (
+            _ORDERS_ENDPOINT,
+            _SEARCH_ENDPOINT,
+            _NOTES_ENDPOINT,
+            _LONG_TEMPLATE_ENDPOINT,
+            _LONG_TYPED_ENDPOINT,
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=endpoints),
+        )
+        tree = ast.parse(render(spec)["src/graftpunk_myshop/plugin.py"])
+        declared = set()
+        for stub in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
+            (decorator,) = stub.decorator_list
+            assert isinstance(decorator, ast.Call)
+            (endpoint,) = [k.value for k in decorator.keywords if k.arg == "endpoint"]
+            assert isinstance(endpoint, ast.Constant) and isinstance(endpoint.value, str)
+            declared.add(parse_endpoint(endpoint.value))
+        assert declared == {(e.methods[0], e.template) for e in endpoints}
+
+    def test_a_declaration_too_wide_for_its_line_wraps_and_reads_back_whole(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_LONG_TYPED_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "        endpoint=(" in plugin_code.splitlines()
+        assert all(len(line) <= GENERATED_LINE_LENGTH for line in plugin_code.splitlines())
+        (stub,) = [n for n in ast.walk(ast.parse(plugin_code)) if isinstance(n, ast.FunctionDef)]
+        (decorator,) = stub.decorator_list
+        assert isinstance(decorator, ast.Call)
+        (endpoint,) = [k.value for k in decorator.keywords if k.arg == "endpoint"]
+        assert isinstance(endpoint, ast.Constant)
+        assert endpoint.value == f"GET {_LONG_TYPED_ENDPOINT.template}"
+
+    def test_the_placeholder_stub_declares_no_endpoint(self) -> None:
+        """With no digest there is no observed endpoint, and a declaration of the
+        placeholder path would be a claim tooling reads as true."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+        )
+        tree = ast.parse(render(spec)["src/graftpunk_myshop/plugin.py"])
+        (stub,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+        (decorator,) = stub.decorator_list
+        assert isinstance(decorator, ast.Call)
+        assert "endpoint" not in {k.arg for k in decorator.keywords}
+
+    def test_a_comment_above_the_request_ties_it_to_the_declaration(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
+        )
+        lines = render(spec)["src/graftpunk_myshop/plugin.py"].splitlines()
+        request = lines.index("        return ctx.request_json(")
+        assert "endpoint=" in lines[request - 1] and "change both together" in lines[request - 1]
+
+    def test_typed_parameters_get_explicit_param_specs(self) -> None:
+        """#208: introspected options arrive as strings under the future import, so a
+        stub with an int or bool parameter declares every parameter explicitly."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert 'PluginParamSpec.option("order_id", required=True),' in plugin_code
+        assert 'PluginParamSpec.option("page", type=int),' in plugin_code
+        assert "PluginParamSpec" in plugin_code.split("class ")[0]
+
+    @staticmethod
+    def _registered_calls(
+        monkeypatch: pytest.MonkeyPatch, endpoint: Endpoint, argv: list[str]
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Render a plugin for *endpoint*, register it through the real CLI factory,
+        invoke *argv*, and return the CLI result with the keyword arguments each
+        request the handler made carried. The request itself is recorded, not sent:
+        what is under test is what the CLI hands the handler."""
+        from graftpunk.plugins import CommandContext
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        calls: list[dict[str, Any]] = []
+
+        def record(_ctx: Any, method: str, url: str, **kwargs: Any) -> dict:
+            calls.append(kwargs)
+            return {}
+
+        monkeypatch.setattr(CommandContext, "request_json", record)
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(render(spec)["src/graftpunk_myshop/plugin.py"], namespace)  # noqa: S102
+
+        class _SessionlessPlugin(namespace["MyshopPlugin"]):
+            requires_session = False
+
+        return invoke_plugin_app(_SessionlessPlugin(), argv), calls
+
+    def test_a_stub_with_a_bool_parameter_registers_and_passes_typed_values(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#208 compensation, end to end: the generated params= list has to survive
+        the CLI factory's own checks (a bool option must be a flag), and the handler
+        has to receive an int and a bool, not their text."""
+        result, _ = self._registered_calls(
+            monkeypatch, _SEARCH_ENDPOINT, ["myshop", "search", "--help"]
+        )
+        assert result.exit_code == 0, result.output
+        for option in ("--include-meta", "--page", "--q"):
+            assert option in strip_ansi(result.output)
+
+        result, calls = self._registered_calls(
+            monkeypatch, _SEARCH_ENDPOINT, ["myshop", "search", "--page", "2", "--include-meta"]
+        )
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["params"]["page"] == 2 and type(call["params"]["page"]) is int
+        assert call["params"]["include_meta"] is True
+
+        result, calls = self._registered_calls(monkeypatch, _SEARCH_ENDPOINT, ["myshop", "search"])
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["params"]["include_meta"] is None
+        assert call["params"]["page"] is None
+
+    def test_a_stub_with_only_an_int_parameter_registers_and_passes_an_int(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        argv = ["myshop", "orders-by-order-id", "--order-id", "7", "--page", "3"]
+        result, calls = self._registered_calls(monkeypatch, _ORDERS_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["params"] == {"page": 3}
+        assert type(call["params"]["page"]) is int
+
+    def test_a_bool_parameter_is_a_flag_with_a_negative(self) -> None:
+        """A bool the site recorded as true or false must be able to send either."""
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_SEARCH_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert (
+            'click_kwargs={"is_flag": True, "flag": "--include-meta/--no-include-meta"},'
+            in plugin_code
+        )
+
+    @staticmethod
+    def _wire_requests(
+        monkeypatch: pytest.MonkeyPatch, endpoint: Endpoint, argv: list[str]
+    ) -> tuple[Any, list[Any]]:
+        """Render a plugin for *endpoint*, register it through the real CLI factory,
+        invoke *argv*, and return the CLI result with every request as ``requests``
+        prepared it for the wire: the real ``ctx.request_json`` runs, and only the
+        socket is replaced."""
+        import requests
+
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        sent: list[Any] = []
+
+        def send(_session: Any, prepared: Any, **_kwargs: Any) -> requests.Response:
+            sent.append(prepared)
+            response = requests.Response()
+            response.status_code = 200
+            response.headers["Content-Type"] = "application/json"
+            response._content = b"{}"
+            response.url = prepared.url
+            response.request = prepared
+            return response
+
+        monkeypatch.setattr(requests.Session, "send", send)
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(render(spec)["src/graftpunk_myshop/plugin.py"], namespace)  # noqa: S102
+
+        class _SessionlessPlugin(namespace["MyshopPlugin"]):
+            requires_session = False
+
+        return invoke_plugin_app(_SessionlessPlugin(), argv), sent
+
+    @pytest.mark.parametrize(
+        ("flag", "expected_query"),
+        [
+            ((), "q=widget"),
+            (("--include-meta",), "include_meta=true&q=widget"),
+            (("--no-include-meta",), "include_meta=false&q=widget"),
+        ],
+    )
+    def test_a_bool_query_parameter_sends_the_recorded_spelling_or_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, flag: tuple[str, ...], expected_query: str
+    ) -> None:
+        argv = ["myshop", "search", "--q", "widget", *flag]
+        result, sent = self._wire_requests(monkeypatch, _SEARCH_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/search?{expected_query}"
+
+    @pytest.mark.parametrize(("flag", "expected"), [("--pinned", True), ("--no-pinned", False)])
+    def test_a_bool_json_body_field_sends_a_json_boolean(
+        self, monkeypatch: pytest.MonkeyPatch, flag: str, expected: bool
+    ) -> None:
+        argv = ["myshop", "orders-by-order-id-notes", "--order-id", "7", flag]
+        result, sent = self._wire_requests(monkeypatch, _NOTES_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert json.loads(prepared.body)["pinned"] is expected
+
+    def test_a_json_body_carries_only_the_fields_given(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An option left off is left out of the body, as a query parameter is,
+        rather than sent as null."""
+        argv = ["myshop", "orders-by-order-id-notes", "--order-id", "7", "--body", "hi"]
+        result, sent = self._wire_requests(monkeypatch, _NOTES_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == "https://myshop.example.com/orders/7/notes"
+        assert json.loads(prepared.body) == {"body": "hi"}
+
+    def test_a_form_body_is_sent_as_form_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The digest recorded a form post, so the stub posts a form, not JSON."""
+        argv = ["myshop", "newsletter-subscribe", "--email", "alice@example.com", "--weekly"]
+        result, sent = self._wire_requests(monkeypatch, _FORM_POST_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.headers["Content-Type"] == "application/x-www-form-urlencoded"
+        assert prepared.body == "email=alice%40example.com&weekly=true"
+
+    def test_a_form_body_carries_only_the_fields_given(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        argv = ["myshop", "newsletter-subscribe", "--no-weekly"]
+        result, sent = self._wire_requests(monkeypatch, _FORM_POST_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == "weekly=false"
+
+    @staticmethod
+    def _endpoint(
+        template: str,
+        method: str = "GET",
+        *,
+        query: dict[str, str] | None = None,
+        body: dict[str, str] | None = None,
+        body_kind: str = "none",
+    ) -> Endpoint:
+        return Endpoint(
+            host="api.myshop.example.com",
+            template=template,
+            methods=(method,),
+            count=1,
+            statuses=(200,),
+            content_type="application/json",
+            query_params=query or {},
+            body_params=body or {},
+            body_kind=body_kind,  # type: ignore[arg-type]
+            shape=ShapeNode(kind="object", children={}),
+            custom_headers=(),
+            examples=(template,),
+        )
+
+    @staticmethod
+    def _plugin_code(endpoint: Endpoint) -> str:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        return render(spec)["src/graftpunk_myshop/plugin.py"]
+
+    @pytest.mark.parametrize(
+        ("label", "reason"),
+        [
+            ("object", "a JSON object"),
+            ("mixed", "values of more than one JSON type"),
+            ("list[mixed]", "a JSON array whose elements have more than one type"),
+            ("list[object]", "a JSON array of objects"),
+            ("list[unknown]", "only empty JSON arrays"),
+        ],
+    )
+    def test_a_json_field_no_option_can_send_is_not_declared(
+        self, monkeypatch: pytest.MonkeyPatch, label: str, reason: str
+    ) -> None:
+        """A value of another type is never sent; the stub names the field instead."""
+        endpoint = self._endpoint(
+            "/profile", "POST", body={"extra": label, "name": "str"}, body_kind="json"
+        )
+        plugin_code = self._plugin_code(endpoint)
+        assert "extra:" not in plugin_code
+        comment = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in plugin_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert f'GP-FILL: body field "extra" is not an option: the recording sent {reason}' in (
+            comment
+        )
+        result, sent = self._wire_requests(
+            monkeypatch, endpoint, ["myshop", "profile", "--name", "alice"]
+        )
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert json.loads(prepared.body) == {"name": "alice"}
+
+    def test_a_json_body_with_no_declarable_field_sends_no_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = self._endpoint("/profile", "POST", body={"extra": "object"}, body_kind="json")
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "profile"])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body is None
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_query"),
+        [([], ""), (["--id", "1"], "?id=1"), (["--id", "1", "--id", "2"], "?id=1&id=2")],
+    )
+    def test_a_repeated_query_key_is_a_repeatable_option(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_query: str
+    ) -> None:
+        endpoint = self._endpoint("/orders", query={"id": "list[int]"})
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
+
+    def test_a_repeated_query_key_option_is_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        endpoint = self._endpoint("/orders", query={"id": "list[int]"})
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", "--id", "x"])
+        assert result.exit_code == 2
+        assert sent == []
+
+    def test_a_repeated_form_key_is_sent_as_repeated_keys(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = self._endpoint("/tags", "POST", body={"tag": "list[str]"}, body_kind="form")
+        argv = ["myshop", "tags", "--tag", "a", "--tag", "b"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == "tag=a&tag=b"
+
+    def test_a_json_array_is_sent_as_a_json_array(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        endpoint = self._endpoint("/batch", "POST", body={"ids": "list[int]"}, body_kind="json")
+        argv = ["myshop", "batch", "--ids", "1", "--ids", "2"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == b'{"ids": [1, 2]}'
+
+    def test_a_json_float_field_sends_a_number(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        endpoint = self._endpoint("/pay", "POST", body={"amount": "float"}, body_kind="json")
+        argv = ["myshop", "pay", "--amount", "3.5"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == b'{"amount": 3.5}'
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_query"),
+        [
+            (["--no-cache"], "?no_cache=true"),
+            (["--no-no-cache"], "?no_cache=false"),
+            (["--cache"], "?cache=true"),
+            (["--cache-false"], "?cache=false"),
+        ],
+    )
+    def test_a_bool_whose_negative_is_another_bools_name_gets_a_false_flag(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_query: str
+    ) -> None:
+        endpoint = self._endpoint("/orders", query={"cache": "bool", "no_cache": "bool"})
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_query"),
+        [
+            (["--no-archived", "x"], "?no_archived=x"),
+            (["--archived-false"], "?archived=false"),
+        ],
+    )
+    def test_a_bool_whose_negative_is_another_options_name_gets_a_false_flag(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_query: str
+    ) -> None:
+        endpoint = self._endpoint("/orders", query={"archived": "bool", "no_archived": "str"})
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_query"),
+        [
+            ([], ""),
+            (["--cache"], "?cache=true"),
+            (["--no-cache", "y"], "?no_cache=y"),
+            (["--cache-false", "x"], "?cache_false=x"),
+        ],
+    )
+    def test_a_bool_whose_both_negatives_are_taken_is_positive_only(
+        self, monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_query: str
+    ) -> None:
+        endpoint = self._endpoint(
+            "/orders", query={"cache": "bool", "no_cache": "str", "cache_false": "str"}
+        )
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "orders", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/orders{expected_query}"
+
+    def test_a_positive_only_bool_says_why_false_cannot_be_sent(self) -> None:
+        endpoint = self._endpoint(
+            "/orders", query={"cache": "bool", "no_cache": "str", "cache_false": "str"}
+        )
+        code = self._plugin_code(endpoint)
+        assert '"flag": "--cache"}' in code
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            'GP-FILL: "cache" can send true but not false: --no-cache and --cache-false '
+            "are both other options of this command."
+        ) in comments
+
+    def test_a_body_object_sharing_a_query_name_is_left_out_naming_both_labels(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = self._endpoint(
+            "/items", "POST", query={"limit": "int"}, body={"limit": "object"}, body_kind="json"
+        )
+        code = self._plugin_code(endpoint)
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert 'GP-FILL: body field "limit" is not an option: the recording sent a JSON object' in (
+            comments
+        )
+        assert 'the query parameter "limit" is int' in comments
+        result, sent = self._wire_requests(
+            monkeypatch, endpoint, ["myshop", "items", "--limit", "10"]
+        )
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == "https://myshop.example.com/items?limit=10"
+        assert prepared.body is None
+
+    @pytest.mark.parametrize(
+        ("query", "body", "argv", "expected_query", "expected_body"),
+        [
+            (
+                {"page": "str"},
+                {"page": "int"},
+                ["--page", "abc", "--body-page", "2"],
+                "?page=abc",
+                b'{"page": 2}',
+            ),
+            (
+                {"n": "int"},
+                {"n": "str"},
+                ["--n", "5", "--body-n", "five"],
+                "?n=5",
+                b'{"n": "five"}',
+            ),
+            (
+                {"q": "str"},
+                {"q": "str"},
+                ["--q", "x"],
+                "?q=x",
+                b'{"q": "x"}',
+            ),
+        ],
+    )
+    def test_a_body_field_typed_apart_from_its_query_namesake_gets_its_own_option(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        query: dict[str, str],
+        body: dict[str, str],
+        argv: list[str],
+        expected_query: str,
+        expected_body: bytes,
+    ) -> None:
+        endpoint = self._endpoint("/items", "POST", query=query, body=body, body_kind="json")
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "items", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/items{expected_query}"
+        assert prepared.body == expected_body
+
+    def test_a_query_label_a_query_cannot_carry_is_refused_by_name(self) -> None:
+        """Not an assert: the check holds under python -O too."""
+        endpoint = self._endpoint("/items", query={"filter": "object"})
+        with pytest.raises(ValueError, match="'filter' is labelled 'object'"):
+            self._plugin_code(endpoint)
+
+    @staticmethod
+    def _registered_pair(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> tuple[Any, list[Any]]:
+        """A plugin whose /export takes ?format=&help= beside a plain /orders."""
+        import requests
+
+        from tests.unit.cli_harness import invoke_plugin_app
+
+        sent: list[Any] = []
+
+        def send(_session: Any, prepared: Any, **_kwargs: Any) -> requests.Response:
+            sent.append(prepared)
+            response = requests.Response()
+            response.status_code = 200
+            response.headers["Content-Type"] = "application/json"
+            response._content = b"{}"
+            response.url = prepared.url
+            response.request = prepared
+            return response
+
+        monkeypatch.setattr(requests.Session, "send", send)
+        export = TestPluginModuleCommandStubs._endpoint(
+            "/export", query={"format": "str", "help": "int", "output": "str"}
+        )
+        orders = TestPluginModuleCommandStubs._endpoint("/orders", query={"page": "int"})
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(export, orders)),
+        )
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(render(spec)["src/graftpunk_myshop/plugin.py"], namespace)  # noqa: S102
+
+        class _SessionlessPlugin(namespace["MyshopPlugin"]):
+            requires_session = False
+
+        return invoke_plugin_app(_SessionlessPlugin(), argv), sent
+
+    def test_reserved_parameter_names_are_renamed_and_every_command_registers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """format, output, session, and view are the CLI's own options, and help is
+        --help: a site parameter of either name must not break registration."""
+        result, sent = self._registered_pair(monkeypatch, ["myshop", "--help"])
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "export" in output and "orders" in output
+
+        result, sent = self._registered_pair(monkeypatch, ["myshop", "export", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "Usage" in strip_ansi(result.output)
+        assert sent == []
+
+        argv = ["myshop", "export", "--format-2", "csv", "--help-2", "1", "--output-2", "x"]
+        result, sent = self._registered_pair(monkeypatch, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == "https://myshop.example.com/export?format=csv&help=1&output=x"
+
+    def test_names_dropped_as_ids_are_counted_in_a_gp_fill(self) -> None:
+        """Nothing the digest dropped as an id is lost silently."""
+        endpoint = dataclasses.replace(
+            self._endpoint("/orders", "POST", query={"page": "int"}, body_kind="json"),
+            query_keys_dropped_as_ids=2,
+            body_keys_dropped_as_ids=1,
+            header_names_dropped_as_ids=1,
+            query_keys_dropped_as_non_names=1,
+            body_keys_dropped_as_non_names=0,
+        )
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in self._plugin_code(endpoint).splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: 2 recorded query field(s) and 1 body field(s) were left out because "
+            "their names held an account value; add any this command needs by hand."
+        ) in comments
+        assert (
+            "GP-FILL: 1 recorded header name(s) were left out because they held an account "
+            "value; add any this command needs by hand."
+        ) in comments
+        assert (
+            "GP-FILL: 1 recorded query field(s) and 0 body field(s) were left out because "
+            "their names are not field names (a name starting with a digit, holding a "
+            "character a field name does not, or longer than 64 characters); add any "
+            "this command needs by hand."
+        ) in comments
+
+    @pytest.mark.parametrize(
+        ("query", "body", "argv", "expected_query", "expected_body"),
+        [
+            (
+                {"limit": "int", "body_limit": "str"},
+                {"limit": "str"},
+                ["--limit", "1", "--body-limit", "x", "--body-limit-2", "y"],
+                "?body_limit=x&limit=1",
+                {"limit": "y"},
+            ),
+            (
+                {"limit": "int"},
+                {"limit": "str", "body_limit": "str"},
+                ["--limit", "1", "--body-limit", "z", "--body-limit-2", "y"],
+                "?limit=1",
+                {"body_limit": "z", "limit": "y"},
+            ),
+        ],
+    )
+    def test_a_body_key_is_deduped_against_every_site_name(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        query: dict[str, str],
+        body: dict[str, str],
+        argv: list[str],
+        expected_query: str,
+        expected_body: dict[str, str],
+    ) -> None:
+        """body_<name> must not take the place of a site parameter of that name."""
+        endpoint = self._endpoint("/items", "POST", query=query, body=body, body_kind="json")
+        result, sent = self._wire_requests(monkeypatch, endpoint, ["myshop", "items", *argv])
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == f"https://myshop.example.com/items{expected_query}"
+        assert json.loads(prepared.body) == expected_body
+
+    def test_an_odata_query_is_sent_under_its_dollar_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        endpoint = self._endpoint("/orders", query={"$filter": "str", "$top": "int"})
+        argv = ["myshop", "orders", "--filter", "status eq 1", "--top", "5"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.url == ("https://myshop.example.com/orders?%24filter=status+eq+1&%24top=5")
+
+    def test_a_webforms_postback_is_sent_as_its_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        endpoint = self._endpoint(
+            "/search.aspx",
+            "POST",
+            body={"__VIEWSTATE": "str", "ctl00$Main$txtSearch": "str"},
+            body_kind="form",
+        )
+        argv = ["myshop", "search-aspx", "--viewstate", "dDw", "--ctl00-main-txt-search", "w"]
+        result, sent = self._wire_requests(monkeypatch, endpoint, argv)
+        assert result.exit_code == 0, result.output
+        (prepared,) = sent
+        assert prepared.body == "__VIEWSTATE=dDw&ctl00%24Main%24txtSearch=w"
+
+    def test_a_float_body_field_is_a_float_option(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_PAYMENT_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert 'PluginParamSpec.option("amount", type=float),' in plugin_code
+        assert "amount: float | None = None," in plugin_code
+
+    def test_a_float_option_reaches_the_handler_as_a_float(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        argv = ["myshop", "payments", "--amount", "12.5"]
+        result, calls = self._registered_calls(monkeypatch, _PAYMENT_ENDPOINT, argv)
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["json"]["amount"] == 12.5 and type(call["json"]["amount"]) is float
+
+    def test_a_leading_zero_query_value_is_a_str_option_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Digest to stub: a postal code 07030 stays text, so the command sends
+        it as typed instead of refusing it or dropping the zero."""
+        har = tmp_path / "network.har"
+        entry = {
+            "startedDateTime": "2026-09-10T10:00:00.000Z",
+            "time": 5,
+            "request": {
+                "method": "GET",
+                "url": "https://api.myshop.example.com/stores?zip=07030",
+                "headers": [],
+                "cookies": [],
+                "queryString": [],
+            },
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "cookies": [],
+                "content": {"mimeType": "application/json", "text": "{}", "size": 2},
+            },
+        }
+        har.write_text(json.dumps({"log": {"version": "1.2", "entries": [entry]}}))
+        (endpoint,) = digest(DigestSource.from_har(har)).endpoints
+        result, calls = self._registered_calls(
+            monkeypatch, endpoint, ["myshop", "stores", "--zip", "07030"]
+        )
+        assert result.exit_code == 0, result.output
+        (call,) = calls
+        assert call["params"] == {"zip": "07030"}
+
+    def test_an_untyped_stub_carries_no_params_list(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_CAMEL_PATH_ENDPOINT,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "params=[" not in plugin_code
+        assert "PluginParamSpec" not in plugin_code
+
+    def test_a_long_plugins_import_is_exploded(self) -> None:
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,), login_forms=(_PASSWORD_LOGIN_FORM,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "from graftpunk.plugins import (" in plugin_code
+        assert all(len(line) <= GENERATED_LINE_LENGTH for line in plugin_code.splitlines())
 
 
 _LOGIN_PAGE_ENDPOINT = Endpoint(
@@ -1250,6 +2249,11 @@ _COLLAPSED_FORM_PAGE_OBSERVATION = LoginObservation(
 )
 
 
+def _owned(endpoint: Endpoint) -> Endpoint:
+    """*endpoint* as the digest hands it over when the login flow owns it."""
+    return dataclasses.replace(endpoint, login_flow=True)
+
+
 class TestLoginFlowEndpointsAreNotCommandStubs:
     """login_config owns the login form's GET and the credential POST. Rendered
     as stubs they were wrong for the developer and their generated tests could
@@ -1271,7 +2275,9 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
 
     def test_no_login_stub_beside_a_real_endpoint(self) -> None:
         files = render(
-            self._spec(_LOGIN_PAGE_ENDPOINT, _CREDENTIAL_POST_ENDPOINT, _ORDERS_ENDPOINT)
+            self._spec(
+                _owned(_LOGIN_PAGE_ENDPOINT), _owned(_CREDENTIAL_POST_ENDPOINT), _ORDERS_ENDPOINT
+            )
         )
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
         assert plugin_code.count("@command(") == 1
@@ -1284,7 +2290,7 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         ast.parse(test_code)
 
     def test_a_run_with_nothing_but_the_login_flow_falls_back_to_the_gp_fill_stub(self) -> None:
-        files = render(self._spec(_LOGIN_PAGE_ENDPOINT, _CREDENTIAL_POST_ENDPOINT))
+        files = render(self._spec(_owned(_LOGIN_PAGE_ENDPOINT), _owned(_CREDENTIAL_POST_ENDPOINT)))
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
         assert plugin_code.count("@command(") == 1
         assert "def example(self, ctx: CommandContext)" in plugin_code
@@ -1294,24 +2300,27 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         ast.parse(test_code)
 
     def test_an_endpoint_that_is_not_part_of_the_login_flow_keeps_its_stub(self) -> None:
-        """The same path under another method is a different endpoint."""
+        """The same path under another method is a different endpoint, and the
+        digest leaves it unflagged (test_har_digest.py holds that rule)."""
         other_method = dataclasses.replace(_LOGIN_PAGE_ENDPOINT, methods=("DELETE",))
         files = render(self._spec(other_method))
         plugin_code = files["src/graftpunk_myshop/plugin.py"]
-        assert "def login(" in plugin_code
+        # "login" is the root login command's name, so the stub is login_2.
+        assert "def login_2(" in plugin_code
         ast.parse(plugin_code)
 
     def test_a_login_path_inside_a_collapsed_family_is_still_owned(self) -> None:
         """The digest's high-cardinality collapse can re-template the endpoint
-        the login observation belongs to, so templating the observation's raw
-        path no longer finds it (polish round 2, 2026-09-12)."""
+        the login observation belongs to; the digest
+        flags it (test_har_digest.py holds that rule), and neither the stub nor
+        its generated test is rendered."""
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
             backend="nodriver",
             base_url="https://myshop.example.com",
             digest=_digest(
-                endpoints=(_COLLAPSED_ACCOUNT_FAMILY, _ORDERS_ENDPOINT),
+                endpoints=(_owned(_COLLAPSED_ACCOUNT_FAMILY), _ORDERS_ENDPOINT),
                 login_forms=(_PASSWORD_LOGIN_FORM,),
                 login=(_COLLAPSED_FORM_PAGE_OBSERVATION,),
             ),
@@ -1324,6 +2333,21 @@ class TestLoginFlowEndpointsAreNotCommandStubs:
         test_code = files["tests/test_plugin.py"]
         assert "def test_account_by_account_id(" not in test_code
         ast.parse(test_code)
+
+    def test_the_generator_reads_the_digest_flag(self) -> None:
+        """With no login observation at all, an endpoint the digest flagged is still
+        skipped: the generator reads the flag and never recomputes it."""
+        flagged = dataclasses.replace(_ORDERS_ENDPOINT, login_flow=True)
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(flagged, _SEARCH_ENDPOINT)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "def orders_by_order_id(" not in plugin_code
+        assert "def search(" in plugin_code
 
 
 class TestUnavailableShapeIsOmittedFromTheDocstring:
@@ -1366,6 +2390,23 @@ class TestUnavailableShapeIsOmittedFromTheDocstring:
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert "Shape: object{id}." in plugin_code
+
+    def test_no_shape_line_for_a_non_json_endpoint(self) -> None:
+        """X1 (polish #212 round 21): the shape line is printed only when the
+        fixture recording is JSON (endpoint.shape is the fixture's own shape,
+        None for anything else); it used to print "Shape: non-JSON." instead."""
+        text_endpoint = dataclasses.replace(
+            _single_endpoint("/robots"), content_type="text/plain", shape=None
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(text_endpoint,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "Shape:" not in plugin_code
 
 
 class TestGeneratedPluginModuleParses:
@@ -1474,19 +2515,19 @@ class TestGeneratedPluginModuleParses:
 class TestRenderedTreeIsRuffClean:
     """The generated project is a real ruff target: its own pyproject.toml declares
     the config, so running ruff against the written-out tree is the actual gate a
-    freshly scaffolded plugin's own CI would run (validation Important 2, 2026-09-12).
+    freshly scaffolded plugin's own CI would run.
     """
 
     def _assert_within_the_generated_width(self, files: dict[str, str]) -> None:
         """Every line of every generated Python file fits the width the generated
         project's own pyproject.toml declares. The property the per-shape wrapping and
         the identifier caps exist to hold, asserted for every tree this class renders
-        rather than one patched site at a time (validation fix round 4, 2026-09-12)."""
+        rather than one patched site at a time."""
         for relative_path, content in sorted(files.items()):
             if not relative_path.endswith(".py"):
                 continue
             for number, line in enumerate(content.splitlines(), start=1):
-                assert len(line) <= _GENERATED_LINE_LENGTH, (
+                assert len(line) <= GENERATED_LINE_LENGTH, (
                     f"{relative_path}:{number} is {len(line)} characters: {line!r}"
                 )
 
@@ -1524,7 +2565,7 @@ class TestRenderedTreeIsRuffClean:
         self._assert_tree_is_clean(tree)
 
     def test_endpoints_project(self, tmp_path: Path) -> None:
-        digest = _digest(endpoints=(_SEARCH_ENDPOINT, _NOTES_ENDPOINT))
+        digest = _digest(endpoints=(_SEARCH_ENDPOINT, _NOTES_ENDPOINT, _FORM_POST_ENDPOINT))
         spec = ScaffoldSpec(
             name="myshop",
             mode="new_project",
@@ -1576,12 +2617,29 @@ class TestRenderedTreeIsRuffClean:
         tree = self._write_tree(tmp_path / "long_redirect", files)
         self._assert_tree_is_clean(tree)
 
+    def test_long_typed_parameters_and_template_project(self, tmp_path: Path) -> None:
+        # params= entries too wide for one line explode one argument per line, and
+        # a wrapped endpoint= declaration: both have to be the shape ruff format
+        # would give them.
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(_LONG_TYPED_ENDPOINT, _SEARCH_ENDPOINT)),
+        )
+        files = render(spec)
+        plugin_lines = files["src/graftpunk_myshop/plugin.py"].splitlines()
+        assert "            PluginParamSpec.option(" in plugin_lines
+        assert "        endpoint=(" in plugin_lines
+        tree = self._write_tree(tmp_path / "long_typed", files)
+        self._assert_tree_is_clean(tree)
+
     def test_long_selectors_and_header_name_project(self, tmp_path: Path) -> None:
         # A username selector well past the generated width, a submit selector
         # long enough to be typical but still short enough to fit on one line,
         # and a header name with no whitespace at all: the three shapes
-        # _literal_lines must handle (validation fix round 2, Finding 4,
-        # 2026-09-12).
+        # literal_lines must handle.
         long_selector = (
             "#login-form div.field-wrapper.username-wrapper > label + "
             "input[name='username'][type='text'].form-control.input-lg"
@@ -1622,8 +2680,7 @@ class TestRenderedTreeIsRuffClean:
         # renders), a long observation URL (a path, no query), an unpaired
         # token candidate with a long name, and a long base_url (which the
         # class docstring, and the base_url attribute itself, both
-        # interpolate): the shapes the round-3 re-review reproduced its
-        # failures with (validation fix round 3, 2026-09-12).
+        # interpolate): the shapes that once overflowed the generated width.
         long_path = "/".join(f"segment-{i}" for i in range(12))
         long_url = f"https://api.myshop.example.com/{long_path}"
         assert 140 <= len(long_url) <= 180
@@ -1744,8 +2801,8 @@ class TestRenderedTreeIsRuffClean:
         self._assert_tree_is_clean(tree)
 
     def test_maximal_name_deep_paths_and_wide_parameter_names_project(self, tmp_path: Path) -> None:
-        # Every width-relevant input at once, each at or past the bar the round-4
-        # audit found: the longest name validate_plugin_name accepts (so the class,
+        # Every width-relevant input at once, each at or past the width it can reach:
+        # the longest name validate_plugin_name accepts (so the class,
         # module, env prefix, import line and assert are all at their maximum), a
         # deeply nested template, a template past the width on its own with two
         # placeholders, parameter names longer than a dict entry can hold, a header
@@ -1821,6 +2878,451 @@ class TestRenderedTreeIsRuffClean:
         test_code = files["tests/test_plugin.py"]
         assert "ctx = fixture_context(" in test_code
         assert f'base_url="{base_url}"' not in test_code  # the long base_url was split
-        assert '        account_id="1",' in test_code  # the wide stub's call exploded
+        assert '        account_id="1001",' in test_code  # the wide stub's call exploded
         tree = self._write_tree(tmp_path / "maximal", files)
         self._assert_tree_is_clean(tree)
+
+
+class TestFixturesDirFollowsThePolicy:
+    """The generated test module's FIXTURES_DIR is the policy's root for that plugin."""
+
+    @staticmethod
+    def _fixtures_dir(test_module: str, project: Path, test_file: str) -> Path:
+        for node in ast.parse(test_module).body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "FIXTURES_DIR" for t in node.targets
+            ):
+                expression = ast.unparse(node.value)
+                return eval(  # noqa: S307 - evaluates the generator's own Path expression
+                    expression, {"Path": Path, "__file__": str(project / test_file)}
+                )
+        raise AssertionError("no FIXTURES_DIR in the generated test module")
+
+    def test_a_new_project(self, tmp_path: Path) -> None:
+        from graftpunk.devtools.scaffold.policy import fixtures_root
+
+        spec = ScaffoldSpec(
+            name="myshop", mode="new_project", backend="nodriver", base_url="https://myshop.example"
+        )
+        files = render(spec)
+        found = self._fixtures_dir(files["tests/test_plugin.py"], tmp_path, "tests/test_plugin.py")
+        expected = fixtures_root(suite_member=False, module_name="myshop")
+        assert found == tmp_path / expected.rstrip("/")
+
+    def test_a_suite_member(self, tmp_path: Path) -> None:
+        from graftpunk.devtools.scaffold.policy import fixtures_root
+
+        spec = ScaffoldSpec(
+            name="my-shop",
+            mode="add_to_suite",
+            backend="nodriver",
+            base_url="https://myshop.example",
+        )
+        files = render(spec)
+        found = self._fixtures_dir(
+            files["tests/test_my_shop.py"], tmp_path, "tests/test_my_shop.py"
+        )
+        expected = fixtures_root(suite_member=True, module_name="my_shop")
+        assert found == tmp_path / expected.rstrip("/")
+        assert f"{expected}.gitkeep" in files
+
+
+def test_the_reserved_identifiers_are_the_cli_builtin_options_and_help() -> None:
+    """devtools does not import graftpunk.cli, so render keeps its own copy."""
+    from graftpunk.cli.command_factory import BUILTIN_OPTIONS
+    from graftpunk.devtools.scaffold.render import _RESERVED_OPTION_IDENTIFIERS
+
+    assert set(_RESERVED_OPTION_IDENTIFIERS) == set(BUILTIN_OPTIONS) | {"help"}
+
+
+def test_token_candidates_dropped_as_ids_are_counted_in_one_gp_fill() -> None:
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=dataclasses.replace(_digest(), token_names_dropped_as_ids=2),
+    )
+    code = render(spec)["src/graftpunk_myshop/plugin.py"]
+    comments = " ".join(
+        line.strip().lstrip("#").strip()
+        for line in code.splitlines()
+        if line.strip().startswith("#")
+    )
+    assert (
+        "GP-FILL: 2 token candidate(s) were left out because their names held an account "
+        "value; configure any this plugin needs by hand."
+    ) in comments
+
+
+def _single_endpoint(template: str, method: str = "GET") -> Endpoint:
+    return dataclasses.replace(
+        _ORDERS_ENDPOINT, template=template, methods=(method,), query_params={}, custom_headers=()
+    )
+
+
+def _render_endpoints(*endpoints: Endpoint) -> dict[str, str]:
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=endpoints),
+    )
+    return render(spec)
+
+
+class TestGeneratedNamesAreSafe:
+    @pytest.mark.parametrize(
+        ("template", "name"),
+        [
+            ("/import", "import_"),
+            ("/1/statuses", "n_1_statuses"),
+            ("/class/{class_id}", "class_by_class_id"),
+        ],
+    )
+    def test_a_command_name_is_an_identifier(self, template: str, name: str) -> None:
+        """Through one helper, for the command and its test alike."""
+        files = _render_endpoints(_single_endpoint(template))
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        test_code = files["tests/test_plugin.py"]
+        assert f"def {name}(" in plugin_code
+        assert f"def test_{name}(" in test_code
+        assert f"plugin.{name}(" in test_code
+        compile(plugin_code, "plugin.py", "exec")
+        compile(test_code, "test_plugin.py", "exec")
+
+    @pytest.mark.parametrize("template", ["/setup", "/backend", "/login_config"])
+    def test_a_command_never_shadows_a_site_plugin_attribute(self, template: str) -> None:
+        """The names are seeded from SitePlugin itself."""
+        from graftpunk.plugins.cli_plugin import SitePlugin
+
+        files = _render_endpoints(_single_endpoint(template))
+        plugin_code = files["src/graftpunk_myshop/plugin.py"]
+        attribute = template.strip("/")
+        assert hasattr(SitePlugin, attribute)
+        assert f"def {attribute}(" not in plugin_code
+        assert f"def {attribute}_2(" in plugin_code
+
+    def test_a_generated_test_name_never_repeats_a_fixed_test(self) -> None:
+        """A command named plugin_instantiates gets a test of its own name."""
+        files = _render_endpoints(_single_endpoint("/plugin/instantiates"))
+        test_code = files["tests/test_plugin.py"]
+        assert test_code.count("def test_plugin_instantiates(") == 1
+        assert "def test_plugin_instantiates_2(" in test_code
+        compile(test_code, "test_plugin.py", "exec")
+
+    def test_a_path_parameter_is_percent_encoded_into_its_segment(self) -> None:
+        """A value holding a slash, a query, or a fragment stays in its segment."""
+        plugin_code = _render_endpoints(_single_endpoint("/orders/{order_id}"))[
+            "src/graftpunk_myshop/plugin.py"
+        ]
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(plugin_code, namespace)  # noqa: S102
+        urls: list[str] = []
+
+        class _Ctx:
+            def request_json(self, method: str, url: str, **kwargs: Any) -> dict:
+                urls.append(url)
+                return {}
+
+        plugin = namespace["MyshopPlugin"]()
+        plugin.orders_by_order_id(_Ctx(), order_id="../../admin?x=1#")
+        assert urls == ["/orders/..%2F..%2Fadmin%3Fx%3D1%23"]
+
+
+class TestGeneratedPathEncoderAndFixtureStems:
+    def test_a_parameter_named_quote_does_not_shadow_the_encoder(self) -> None:
+        """The encoder is imported under a private alias."""
+        endpoint = dataclasses.replace(
+            _single_endpoint("/orders/{order_id}"), query_params={"quote": "str"}
+        )
+        plugin_code = _render_endpoints(endpoint)["src/graftpunk_myshop/plugin.py"]
+        assert "from urllib.parse import quote as _quote_path" in plugin_code
+        namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+        exec(plugin_code, namespace)  # noqa: S102
+        urls: list[str] = []
+
+        class _Ctx:
+            def request_json(self, method: str, url: str, **kwargs: Any) -> dict:
+                urls.append(url)
+                return {}
+
+        namespace["MyshopPlugin"]().orders_by_order_id(_Ctx(), order_id="a/b", quote="x")
+        assert urls == ["/orders/a%2Fb"]
+
+    def test_two_endpoints_sharing_a_fixture_stem_get_one_test_and_a_gp_fill(self) -> None:
+        """/api/c_d and /api/c/d both name the stem get_api_c_d."""
+        first = _single_endpoint("/api/c_d")
+        second = dataclasses.replace(_single_endpoint("/api/c/d"), content_type="text/html")
+        files = _render_endpoints(first, second)
+        test_code = files["tests/test_plugin.py"]
+        # The generator's endpoint order names /api/c/d first.
+        assert "def test_api_c_d(" in test_code
+        assert "def test_api_c_d_2(" not in test_code
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in test_code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: no test for api_c_d_2 (GET /api/c_d): its fixture would share the stem "
+            "get_api_c_d with GET /api/c/d; write its test against a fixture of its own."
+        ) in comments
+        compile(test_code, "test_plugin.py", "exec")
+
+
+def test_stems_that_differ_only_in_case_get_one_test() -> None:
+    """The fixture_paths list and the test module compare case-folded stems."""
+    files = _render_endpoints(_single_endpoint("/Users"), _single_endpoint("/users"))
+    test_code = files["tests/test_plugin.py"]
+    assert test_code.count("def test_users") == 1
+    assert "GP-FILL: no test for users_2" in " ".join(test_code.split())
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(_single_endpoint("/Users"), _single_endpoint("/users"))),
+    )
+    assert len(fixture_paths(spec)) == 1
+
+
+def test_a_stub_named_login_never_takes_the_root_login_command(monkeypatch) -> None:
+    """A non-flow GET /login beside a login_config registers as login_2."""
+    from tests.unit.cli_harness import invoke_plugin_app
+
+    form = LoginForm(
+        action="/session",
+        method="POST",
+        fields={"username": "#user", "password": "#pw"},
+        submit="#go",
+        hidden=(),
+        source="https://myshop.example.com/signin",
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(_single_endpoint("/login"),), login_forms=(form,)),
+    )
+    plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+    assert "def login_2(" in plugin_code
+    namespace: dict[str, Any] = {"__name__": "generated_plugin"}
+    exec(plugin_code, namespace)  # noqa: S102
+
+    class _SessionlessPlugin(namespace["MyshopPlugin"]):
+        requires_session = False
+
+    result = invoke_plugin_app(_SessionlessPlugin(), ["myshop", "--help"])
+    assert result.exit_code == 0, result.output
+    output = strip_ansi(result.output)
+    assert "login-2" in output and "login " in output
+
+
+def test_the_reserved_command_names_are_the_root_commands_registration_adds() -> None:
+    """devtools does not import graftpunk.cli, so render keeps its own copy."""
+    from graftpunk.cli.plugin_commands import AUTO_ROOT_COMMAND_NAMES
+    from graftpunk.devtools.scaffold.render import _AUTO_ROOT_COMMAND_NAMES
+
+    assert set(_AUTO_ROOT_COMMAND_NAMES) == set(AUTO_ROOT_COMMAND_NAMES)
+
+
+def test_an_endpoint_recorded_with_no_body_gets_a_test_that_can_pass() -> None:
+    """An empty body is falsy, so the generated test asserts the call completed and
+    says to assert on the page the redirect leads to; one with a body keeps
+    ``assert result``."""
+    bodyless = dataclasses.replace(
+        _single_endpoint("/go"),
+        statuses=(302,),
+        content_type="text/html",
+        shape=None,
+        response_body_empty=True,
+    )
+    test_code = _render_endpoints(bodyless, _single_endpoint("/orders"))["tests/test_plugin.py"]
+    go = test_code[test_code.index("def test_go(") :]
+    go = go[: go.index("\n\n\n")] if "\n\n\n" in go else go
+    assert '    assert result == ""\n' in go
+    assert "GP-FILL: every recorded response had no body" in go
+    assert "a redirect, say" not in go
+    orders = test_code[test_code.index("def test_orders(") :]
+    assert "assert result  # GP-FILL" in orders
+
+
+def test_a_json_endpoint_recorded_with_no_body_is_requested_as_text() -> None:
+    """A 204 answering application/json has no JSON to parse, so its command reads
+    the response as text and its test asserts the call completed."""
+    no_content = dataclasses.replace(
+        _single_endpoint("/cart/clear", method="POST"),
+        statuses=(204,),
+        content_type="application/json",
+        shape=None,
+        response_body_empty=True,
+    )
+    files = _render_endpoints(no_content)
+    plugin = files["src/graftpunk_myshop/plugin.py"]
+    stub = plugin[plugin.index("def cart_clear(") :]
+    assert "return ctx.request_text(" in stub
+    assert "request_json" not in stub
+    test_code = files["tests/test_plugin.py"]
+    assert '    assert result == ""\n' in test_code[test_code.index("def test_cart_clear(") :]
+
+
+@pytest.mark.parametrize(
+    ("falsy", "assertion"),
+    [
+        ("{}", "assert result == {}"),
+        ("[]", "assert result == []"),
+        ('""', 'assert result == ""'),
+        ("0", "assert result == 0"),
+        ("false", "assert result is False"),
+        ("null", "assert result is None"),
+    ],
+    ids=["object", "array", "string", "zero", "false", "null"],
+)
+def test_an_endpoint_recorded_with_a_falsy_json_body_asserts_that_value(
+    falsy: str, assertion: str
+) -> None:
+    """The generated test asserts the recorded falsy value, and says to assert on
+    the shape expected."""
+    ack = dataclasses.replace(
+        _single_endpoint("/ack"), content_type="application/json", falsy_first_response=falsy
+    )
+    test_code = _render_endpoints(ack, _single_endpoint("/orders"))["tests/test_plugin.py"]
+    ack_test = test_code[test_code.index("def test_ack(") : test_code.index("def test_orders(")]
+    assert f"    {assertion}\n" in ack_test
+    assert "is not None" not in ack_test
+    assert "GP-FILL: the recorded response was the falsy JSON value" in ack_test
+    orders = test_code[test_code.index("def test_orders(") :]
+    assert "assert result  # GP-FILL" in orders
+
+
+@pytest.mark.parametrize("falsy", ["0", "false"])
+def test_a_text_endpoint_never_gets_a_falsy_json_assertion(falsy: str) -> None:
+    """A text endpoint's result is a string, so a falsy JSON value is not asserted."""
+    text = dataclasses.replace(
+        _single_endpoint("/count"),
+        content_type="text/plain",
+        shape=None,
+        falsy_first_response=falsy,
+    )
+    test_code = _render_endpoints(text)["tests/test_plugin.py"]
+    count = test_code[test_code.index("def test_count(") :]
+    assert "assert result  # GP-FILL" in count
+    assert "falsy JSON value" not in count
+
+
+def test_a_bodyless_endpoint_whose_fixture_is_never_written_gets_no_test() -> None:
+    """gp observe fixtures writes no fixture for any recording (none kept text, and
+    none was a 3xx or a 204): no test, a GP-FILL in its place, and no fixture
+    listed."""
+    bodyless = dataclasses.replace(
+        _single_endpoint("/report"),
+        statuses=(200,),
+        content_type="text/html",
+        shape=None,
+        response_body_empty=True,
+        fixture_written=False,
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(bodyless, _single_endpoint("/orders"))),
+    )
+    test_code = render(spec)["tests/test_plugin.py"]
+    assert "def test_report(" not in test_code
+    note = re.sub(r"\s*\n#\s*", " ", test_code)
+    assert "GP-FILL: no test for report (GET /report): no recording kept any text" in note
+    assert "def test_orders(" in test_code
+    assert not any("get_report" in path for path in fixture_paths(spec))
+    assert any("get_orders" in path for path in fixture_paths(spec))
+
+
+def _har_entry(status: int, text: str | None) -> dict[str, Any]:
+    """One GET /go response, *text* as ``response.content.text`` (absent when
+    None, matching how a capture with no text is recorded)."""
+    content: dict[str, Any] = {"mimeType": "text/html", "size": 0}
+    if text is not None:
+        content["text"] = text
+    return {
+        "startedDateTime": "2026-09-10T10:00:00.000Z",
+        "time": 1,
+        "request": {
+            "method": "GET",
+            "url": "https://api.myshop.example.com/go",
+            "headers": [],
+            "cookies": [],
+            "queryString": [],
+        },
+        "response": {
+            "status": status,
+            "statusText": "",
+            "headers": [{"name": "Content-Type", "value": "text/html"}],
+            "cookies": [],
+            "content": content,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "statuses_and_texts",
+    [[(302, None)], [(204, None)], [(200, "")], [(200, None), (302, None)]],
+    ids=["3xx-no-text", "204-no-text", "200-empty-text", "no-text-then-302"],
+)
+def test_a_bodyless_endpoint_whose_fixture_is_written_keeps_its_test(
+    tmp_path: Path, statuses_and_texts: list[tuple[int, str | None]]
+) -> None:
+    """A 200 recorded with empty text, or a 3xx or 204 with none: gp observe
+    fixtures writes an empty fixture, so the endpoint keeps its test. Built through
+    the digest (graftpunk.har.naming.capture_text), so each status/text pair is
+    the one gp observe fixtures itself would see, not a hand-set fixture_written."""
+    har = tmp_path / "network.har"
+    entries = [_har_entry(status, text) for status, text in statuses_and_texts]
+    har.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
+    (endpoint,) = digest(DigestSource.from_har(har)).endpoints
+    assert endpoint.fixture_written is True
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(endpoint,)),
+    )
+    assert "def test_go(" in render(spec)["tests/test_plugin.py"]
+    assert any("get_go" in path for path in fixture_paths(spec))
+
+
+def test_a_project_whose_only_endpoint_gets_no_test_imports_no_fixture_context() -> None:
+    """With no endpoint test to call it, the import would be unused (F401)."""
+    bodyless = dataclasses.replace(
+        _single_endpoint("/report"),
+        statuses=(200,),
+        content_type="text/html",
+        shape=None,
+        response_body_empty=True,
+        fixture_written=False,
+    )
+    test_code = _render_endpoints(bodyless)["tests/test_plugin.py"]
+    assert "fixture_context" not in test_code
+    assert "GP-FILL: add a test per command" in test_code
+
+
+def test_the_stub_and_its_fixture_follow_the_fixture_recording_s_content_type() -> None:
+    """The endpoint is mostly JSON, but the fixture its test reads is HTML: the stub
+    reads text, and the listed fixture is .html, so all three agree."""
+    mixed = dataclasses.replace(
+        _single_endpoint("/ack"), content_type="application/json", fixture_content_type="text/html"
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(endpoints=(mixed,)),
+    )
+    plugin = render(spec)["src/graftpunk_myshop/plugin.py"]
+    assert "return ctx.request_text(" in plugin[plugin.index("def ack(") :]
+    assert [path.rsplit("/", 1)[-1] for path in fixture_paths(spec)] == ["get_ack.html"]

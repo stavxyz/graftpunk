@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -18,15 +17,9 @@ from typer.testing import CliRunner
 
 from graftpunk.cli.scaffold_commands import plugin_app
 from graftpunk.logging import configure_logging
+from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
-
-
-def _plain(text: str) -> str:
-    """*text* without ANSI escapes. Rich colours paths and usage errors when a
-    terminal or FORCE_COLOR is detected, and the codes land inside the words
-    these tests look for; CI and local runs differ on that, the words do not."""
-    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def _build_app() -> typer.Typer:
@@ -179,7 +172,7 @@ class TestPluginNewFromRun:
                 content_type="application/json",
                 body="{}",
             ),
-            _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}'),
+            _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}'),
         ]
         har = {"log": {"version": "1.2", "entries": entries}}
         (run_dir / "network.har").write_text(json.dumps(har))
@@ -304,7 +297,7 @@ class TestPathListingsDoNotWrapMidWord:
         assert result.exit_code == 0, result.output
         expected = str(target / "src" / "graftpunk_myshop" / "plugin.py")
         assert len(expected) > 80
-        assert expected in _plain(result.output)
+        assert expected in strip_ansi(result.output)
 
     def test_the_conflict_listing_keeps_whole_paths(self, tmp_path: Path) -> None:
         target = self._deep_target(tmp_path)
@@ -325,7 +318,7 @@ class TestPathListingsDoNotWrapMidWord:
         assert result.exit_code == 1
         expected = str(target / "README.md")
         assert len(expected) > 80
-        assert expected in _plain(result.output)
+        assert expected in strip_ansi(result.output)
 
 
 class TestNextStepsNamesTheFixtures:
@@ -340,7 +333,7 @@ class TestNextStepsNamesTheFixtures:
             observe_base,
             "myshop",
             "run-1",
-            url="https://api.myshop.example.com/orders/1",
+            url="https://api.myshop.example.com/orders/1001",
             body='{"id": 1}',
         )
         target = tmp_path / "out"
@@ -351,7 +344,7 @@ class TestNextStepsNamesTheFixtures:
         )
 
         assert result.exit_code == 0, result.output
-        plain_output = _plain(result.output)
+        plain_output = strip_ansi(result.output)
         assert "Next:" in plain_output
         assert "tests/fixtures/get_orders_{order_id}.json" in plain_output
         assert "gp observe fixtures --help" in plain_output
@@ -371,6 +364,47 @@ class TestNextStepsNamesTheFixtures:
         )
         assert result.exit_code == 0, result.output
         assert "Next:" not in result.output
+
+
+class TestEmailSegmentsAmongOtherTextNeverReachGeneratedOutput:
+    """X2 (polish #212 round 21): a segment that holds an email but is not only
+    one email used to pass through unmasked."""
+
+    @pytest.mark.parametrize(
+        "segment",
+        [
+            "alice@example.com,bob@example.net",
+            "Zq%20Planted%20%3Czq.planted@realmail.example%3E",
+        ],
+        ids=["two-emails", "display-name"],
+    )
+    def test_the_segment_is_absent_from_every_generated_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, segment: str
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base,
+            "myshop",
+            "run-1",
+            url=f"https://api.myshop.example.com/contacts/{segment}",
+            body='{"ok": true}',
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "example.com" not in strip_ansi(result.output)
+        assert "realmail.example" not in strip_ansi(result.output)
+        for path in target.rglob("*"):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            assert "alice@example.com" not in text
+            assert "zq.planted" not in text
+            assert "realmail.example" not in text
 
 
 class TestGeneratedProjectPassesItsOwnGate:
@@ -406,7 +440,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         run_dir = observe_base / "myshop" / "run-1"
         run_dir.mkdir(parents=True)
-        entries = [_entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}')]
+        entries = [_entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}')]
         har = {"log": {"version": "1.2", "entries": entries}}
         (run_dir / "network.har").write_text(json.dumps(har))
 
@@ -446,8 +480,481 @@ class TestGeneratedProjectPassesItsOwnGate:
         # A scaffolded project's first run is clean: no warnings summary at all.
         # The generated conftest used to both import graftpunk.testing.plugin and
         # list it in pytest_plugins, which pytest reports as a
-        # PytestAssertRewriteWarning (final fix wave, 2026-09-12).
+        # PytestAssertRewriteWarning.
         assert "warnings summary" not in pytest_result.stdout.lower(), pytest_result.stdout
+
+    def test_a_generated_test_passes_with_a_query_parameter_named_quote(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stub and its generated test run with a parameter named quote."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entries = [
+            _entry("GET", "https://api.myshop.example.com/orders/1001?quote=x", body='{"id": 1}')
+        ]
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "quote: str | None = None" in (target / "src/graftpunk_myshop/plugin.py").read_text()
+        (target / "tests" / "fixtures" / "get_orders_{order_id}.json").write_text('{"id": 1}')
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", str(target)], capture_output=True, text=True
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+
+    def test_a_generated_test_passes_for_an_endpoint_recorded_with_no_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 302 with no body: the generated test passes against an empty fixture."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entry = _entry("GET", "https://api.myshop.example.com/go", body="")
+        entry["response"]["status"] = 302
+        entry["response"]["headers"] = [
+            {"name": "Content-Type", "value": "text/html"},
+            {"name": "Location", "value": "/app"},
+        ]
+        entry["response"]["content"] = {"mimeType": "text/html", "text": "", "size": 0}
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": [entry]}})
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        (target / "tests" / "fixtures" / "get_go.html").write_text("")
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+
+    @staticmethod
+    def _scaffold_fixture_and_test(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entries: list[dict], match: str
+    ) -> tuple[Path, subprocess.CompletedProcess[str]]:
+        """gp plugin new from *entries*, gp observe fixtures --match *match* into the
+        project's fixtures, then the project's own pytest."""
+        from graftpunk.cli.observe_commands import observe_app
+
+        monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+        app = _build_app()
+        app.add_typer(observe_app)
+        target = tmp_path / "out"
+        argv = ["plugin", "new", "myshop", "--from-run", "myshop", "--run", "run-1"]
+        result = runner.invoke(app, [*argv, "--dir", str(target)])
+        assert result.exit_code == 0, result.output
+        fixtures_dir = target / "tests" / "fixtures"
+        result = runner.invoke(
+            app, ["observe", "fixtures", "myshop", "--match", match, "--out", str(fixtures_dir)]
+        )
+        assert result.exit_code == 0, result.output
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return target, pytest_result
+
+    @pytest.mark.parametrize("body", ["0", "false"])
+    def test_a_text_endpoint_s_generated_test_passes_on_a_falsy_looking_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+    ) -> None:
+        """A text/plain 0 is the string "0", which the generated test's assert result
+        holds."""
+        entry = _entry(
+            "GET", "https://api.myshop.example.com/count", content_type="text/plain", body=body
+        )
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [entry], "GET /count"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        test_code = (target / "tests" / "test_plugin.py").read_text()
+        assert "assert result  # GP-FILL" in test_code
+
+    def test_a_json_endpoint_recorded_empty_then_with_a_body_gets_a_passing_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 204 then a 200 {"n": 1}: the unsuffixed fixture is the 200's body, which
+        the generated test reads."""
+        first = _entry("GET", "https://api.myshop.example.com/cart", body="")
+        first["response"]["status"] = 204
+        second = _entry("GET", "https://api.myshop.example.com/cart", body='{"n": 1}')
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second], "GET /cart"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
+
+    def test_a_bodyless_200_endpoint_is_not_in_the_fixtures_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A third-party HAR with no text for a 200: gp observe fixtures would write
+        nothing, so gp plugin new neither lists a fixture nor generates a test."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        bodyless = _entry("GET", "https://api.myshop.example.com/report", content_type="text/html")
+        bodyless["response"]["content"] = {"mimeType": "text/html", "size": 0}
+        entries = [
+            bodyless,
+            _entry("GET", "https://api.myshop.example.com/orders", body='{"n": 1}'),
+        ]
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+        target = tmp_path / "out"
+        argv = ["plugin", "new", "myshop", "--from-run", "myshop", "--run", "run-1"]
+        result = runner.invoke(_build_app(), [*argv, "--dir", str(target)])
+        assert result.exit_code == 0, result.output
+        output = strip_ansi(result.output)
+        assert "get_orders.json" in output
+        assert "get_report" not in output
+        test_code = (target / "tests" / "test_plugin.py").read_text()
+        assert "def test_report(" not in test_code
+        assert "GP-FILL: no test for report" in test_code
+
+    def test_a_mixed_content_type_endpoint_s_generated_test_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """/v1/cart-shaped: an HTML answer first, then two JSON ones. The endpoint is
+        JSON, so the stub reads JSON and the unsuffixed fixture is the first JSON
+        answer, and the generated test passes on it."""
+        entries = [
+            _entry(
+                "GET",
+                "https://api.myshop.example.com/ack",
+                content_type="text/html",
+                body="<p>ok</p>",
+            ),
+            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+            _entry("GET", "https://api.myshop.example.com/ack", body='{"ok": true}'),
+        ]
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, entries, "GET /ack"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        fixtures = target / "tests" / "fixtures"
+        assert (fixtures / "get_ack.json").read_text() == '{"ok": true}'
+        assert not (fixtures / "get_ack.html").exists()
+        plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "return ctx.request_json(" in plugin
+
+    @pytest.mark.parametrize(
+        "statuses_and_texts",
+        [[(200, "")], [(200, None), (302, None)]],
+        ids=["empty-text", "no-text-then-302"],
+    )
+    def test_a_bodyless_endpoint_with_a_written_fixture_keeps_a_passing_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, statuses_and_texts: list
+    ) -> None:
+        """A 200 recorded with "text": "" (what graftpunk's own recorders write), or a
+        200 with no text beside a 302: gp observe fixtures writes an empty fixture, and
+        the generated test passes on it."""
+        entries = []
+        for status, text in statuses_and_texts:
+            entry = _entry("GET", "https://api.myshop.example.com/ping", content_type="text/html")
+            entry["response"]["status"] = status
+            entry["response"]["content"] = {"mimeType": "text/html", "size": 0}
+            if text is not None:
+                entry["response"]["content"]["text"] = text
+            entries.append(entry)
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, entries, "GET /ping"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert "def test_ping(" in (target / "tests" / "test_plugin.py").read_text()
+
+    def test_a_recorder_redirect_hop_s_fixture_passes_the_generated_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """graftpunk's recorder writes "text": null for a redirect hop: gp observe
+        fixtures writes its empty fixture, and the generated test passes on it."""
+        from graftpunk.cli.observe_commands import observe_app
+
+        monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entry = _entry("GET", "https://api.myshop.example.com/go", content_type="text/html")
+        entry["response"]["status"] = 302
+        entry["response"]["headers"].append({"name": "Location", "value": "/app"})
+        entry["response"]["content"] = {"mimeType": "text/html", "text": None, "size": 0}
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": [entry]}})
+        )
+        app = _build_app()
+        app.add_typer(observe_app)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            app,
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        fixtures_dir = target / "tests" / "fixtures"
+        result = runner.invoke(
+            app,
+            ["observe", "fixtures", "myshop", "--match", "GET /go", "--out", str(fixtures_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        assert (fixtures_dir / "get_go.html").read_text() == ""
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+
+    @pytest.mark.parametrize(
+        ("status", "body", "assertion"),
+        [
+            (204, "", 'assert result == ""'),
+            (200, "{}", "assert result == {}"),
+            (200, "[]", "assert result == []"),
+            (200, "null", "assert result is None"),
+        ],
+        ids=["no-content", "empty-object", "empty-array", "null"],
+    )
+    def test_a_generated_test_passes_for_a_json_endpoint_with_an_empty_or_falsy_body(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        status: int,
+        body: str,
+        assertion: str,
+    ) -> None:
+        """A JSON endpoint answering 204, or an ack answering {}, [], or null: the
+        generated command and test pass against the recorded body."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entry = _entry("GET", "https://api.myshop.example.com/ack", body=body)
+        entry["response"]["status"] = status
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": [entry]}})
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert f"    {assertion}\n" in (target / "tests" / "test_plugin.py").read_text()
+        (target / "tests" / "fixtures" / "get_ack.json").write_text(body)
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+
+    def test_two_204s_then_a_200_json_writes_a_passing_json_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A round-20 regression: two 204s used to outvote the one recording with a
+        body, and the generated stub and test read text instead of JSON."""
+        first = _entry("POST", "https://api.myshop.example.com/ack", body="")
+        first["response"]["status"] = 204
+        second = _entry("POST", "https://api.myshop.example.com/ack", body="")
+        second["response"]["status"] = 204
+        third = _entry("POST", "https://api.myshop.example.com/ack", body='{"ok": true}')
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second, third], "POST /ack"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "post_ack.json").read_text() == '{"ok": true}'
+        plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "return ctx.request_json(" in plugin
+
+    def test_204_json_then_204_then_200_html_writes_a_passing_text_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neither 204 has a body, whatever type it declares: the one recording
+        with a body is the fixture, and the stub reads text."""
+        first = _entry(
+            "PUT", "https://api.myshop.example.com/cart", content_type="application/json", body=""
+        )
+        first["response"]["status"] = 204
+        second = _entry("PUT", "https://api.myshop.example.com/cart", body="")
+        second["response"]["status"] = 204
+        third = _entry(
+            "PUT",
+            "https://api.myshop.example.com/cart",
+            content_type="text/html",
+            body="<p>ok</p>",
+        )
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second, third], "PUT /cart"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "put_cart.html").read_text() == "<p>ok</p>"
+        plugin = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "return ctx.request_text(" in plugin
+
+    def test_a_204_then_an_empty_array_writes_a_passing_falsy_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        first = _entry("DELETE", "https://api.myshop.example.com/items/1001", body="")
+        first["response"]["status"] = 204
+        second = _entry("DELETE", "https://api.myshop.example.com/items/1001", body="[]")
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second], "DELETE /items/{item_id}"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "delete_items_{item_id}.json").read_text() == "[]"
+        test_code = (target / "tests" / "test_plugin.py").read_text()
+        assert "assert result == []" in test_code
+
+    def test_an_out_of_scope_vendor_host_recorded_first_never_becomes_the_fixture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A third-party host answering the same path first, with a body, is not
+        an entry gp plugin new's digest ever saw: gp observe fixtures --match
+        must not pick it either, just because it sorts earliest by content type
+        and body alone."""
+        vendor = _entry("GET", "https://vendor.example.net/cart", body='{"vendor": true}')
+        real_a = _entry("GET", "https://api.myshop.example.com/cart", body='{"n": 1}')
+        real_b = _entry("GET", "https://api.myshop.example.com/cart", body='{"n": 1}')
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [vendor, real_a, real_b], "GET /cart"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_cart.json").read_text() == '{"n": 1}'
+
+    def test_a_charset_suffixed_json_majority_writes_a_passing_json_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two JSON recordings, each with a different charset parameter, outvote
+        one HTML recording only once the types are compared normalised."""
+        first = _entry(
+            "GET",
+            "https://api.myshop.example.com/profile",
+            content_type="application/json;charset=UTF-8",
+            body='{"a": 1}',
+        )
+        second = _entry(
+            "GET",
+            "https://api.myshop.example.com/profile",
+            content_type="application/json; charset=utf-8",
+            body='{"a": 2}',
+        )
+        third = _entry(
+            "GET", "https://api.myshop.example.com/profile", content_type="text/html", body="<p/>"
+        )
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second, third], "GET /profile"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_profile.json").read_text() == '{"a": 1}'
+
+    def test_a_one_to_one_html_and_json_tie_writes_a_passing_json_test(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        first = _entry(
+            "GET", "https://api.myshop.example.com/ping", content_type="text/html", body="<p/>"
+        )
+        second = _entry("GET", "https://api.myshop.example.com/ping", body='{"ok": true}')
+        target, pytest_result = self._scaffold_fixture_and_test(
+            tmp_path, monkeypatch, [first, second], "GET /ping"
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        assert "2 passed" in pytest_result.stdout, pytest_result.stdout
+        assert (target / "tests" / "fixtures" / "get_ping.json").read_text() == '{"ok": true}'
 
     def test_a_project_with_login_and_token_blocks_imports_and_instantiates(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -474,7 +981,7 @@ class TestGeneratedProjectPassesItsOwnGate:
                 content_type="text/html",
                 body=login_page,
             ),
-            _entry("GET", "https://api.myshop.example.com/orders/1", body='{"id": 1}'),
+            _entry("GET", "https://api.myshop.example.com/orders/1001", body='{"id": 1}'),
         ]
         # The header half of the token pair: the meta tag above supplies the
         # value, this request carries it back.
@@ -697,6 +1204,22 @@ class TestRefusalReasons:
         assert "entry-point" in result.output.lower()
         assert self._reasons(events) == ["not_a_plugin_suite"]
 
+    def test_a_suite_pyproject_that_is_not_toml_is_refused_by_path(self, tmp_path: Path) -> None:
+        """A TOMLDecodeError is a ValueError, and it reached the invalid-name arm
+        with no path in the message."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project\nname = "mysuite"\n')
+        with _captured_debug_logs() as events:
+            result = runner.invoke(
+                _build_app(),
+                ["plugin", "new", "myshop", "--dir", str(tmp_path)],
+            )
+        assert result.exit_code == 1, result.output
+        assert str(pyproject) in strip_ansi(result.output).replace("\n", "")
+        assert "not valid TOML" in strip_ansi(result.output)
+        assert self._reasons(events) == ["pyproject_edit_error"]
+        assert pyproject.read_text() == '[project\nname = "mysuite"\n'
+
     def test_an_invalid_name_still_logs_invalid_name(self, tmp_path: Path) -> None:
         with _captured_debug_logs() as events:
             result = runner.invoke(
@@ -705,6 +1228,28 @@ class TestRefusalReasons:
             )
         assert result.exit_code == 1, result.output
         assert self._reasons(events) == ["invalid_name"]
+
+    def test_a_suite_pyproject_that_is_not_utf8_logs_its_own_reason(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_bytes(
+            b'[project]\nname = "mysuite"\n\n[project.entry-points."graftpunk.plugins"]\n'
+            b"# caf\xe9\n"
+        )
+        with _captured_debug_logs() as events:
+            result = runner.invoke(
+                _build_app(),
+                [
+                    "plugin",
+                    "new",
+                    "widgets",
+                    "--url",
+                    "https://myshop.example",
+                    "--dir",
+                    str(tmp_path),
+                ],
+            )
+        assert result.exit_code == 1, result.output
+        assert "not UTF-8 text" in strip_ansi(result.output)
+        assert self._reasons(events) == ["invalid_change"]
 
     def test_a_refusal_logs_at_debug_so_the_console_line_stands_alone(self, tmp_path: Path) -> None:
         """LOG.warning is reserved for an anomaly the console does not report.
@@ -739,12 +1284,23 @@ class TestRefusalReasons:
 
 
 class TestReservedNamesSnapshot:
-    def test_a_later_site_plugin_name_is_not_in_the_snapshot(self) -> None:
+    def test_a_later_site_plugin_name_is_not_in_the_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """register() snapshots reserved names once, at attach time. A site
         plugin's own sub-app, mounted onto the same app afterward (exactly
         what register_plugin_commands does next), must not retroactively
         become reserved: the snapshot is not a live query."""
+        from graftpunk.cli import scaffold_commands
         from graftpunk.cli.scaffold_commands import register, reserved_cli_names
+
+        # register() overwrites the module-global _reserved_names snapshot,
+        # which real_app already populated at import time from its own full
+        # command tree (other tests in this file invoke gp plugin new
+        # through real_app and rely on that real snapshot). Restore it so
+        # this test's throwaway app doesn't leave that global pointing at a
+        # near-empty snapshot for whichever test in this worker runs next.
+        monkeypatch.setattr(scaffold_commands, "_reserved_names", scaffold_commands._reserved_names)
 
         app = typer.Typer()
         register(app)
@@ -754,3 +1310,164 @@ class TestReservedNamesSnapshot:
         app.add_typer(site_app)
 
         assert "myshop" not in reserved_cli_names()
+
+
+@pytest.mark.usefixtures("gp_logging")
+class TestCheckName:
+    """--check-name answers "is this name acceptable" with gp plugin new's own
+    validation, writing nothing (graft skill spec, 2026-09-21)."""
+
+    def test_a_valid_name_is_accepted_and_nothing_is_written(self, tmp_path: Path) -> None:
+        from graftpunk.cli.main import app as real_app
+
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(
+            real_app, ["plugin", "new", "myshop", "--check-name", "--dir", str(tmp_path)]
+        )
+        assert result.exit_code == 0, result.output
+        assert strip_ansi(result.output) == "'myshop' is an acceptable plugin name.\n"
+        assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.parametrize("name", ["observe", "2fa-site", "a" * 41])
+    def test_a_refusal_is_the_same_text_gp_plugin_new_prints(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        from graftpunk.cli.main import app as real_app
+
+        # before, not an empty-dir assertion: the isolated_config autouse
+        # fixture (tests/conftest.py) already created tmp_path/graftpunk for
+        # this test's own settings before the test body ever runs.
+        before = set(tmp_path.iterdir())
+        checked = runner.invoke(
+            real_app, ["plugin", "new", name, "--check-name", "--dir", str(tmp_path)]
+        )
+        created = runner.invoke(real_app, ["plugin", "new", name, "--dir", str(tmp_path)])
+        assert checked.exit_code == created.exit_code == 1
+        assert strip_ansi(checked.output) == strip_ansi(created.output)
+        assert set(tmp_path.iterdir()) == before
+
+    def test_check_name_ignores_an_existing_target_directory(self, tmp_path: Path) -> None:
+        """--check-name answers the name question before write_scaffold's
+        directory inspection ever runs: files the real command would refuse
+        over (an unrelated pyproject.toml, a conflicting README.md) don't
+        change its answer, and it leaves them untouched."""
+        from graftpunk.cli.main import app as real_app
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "unrelated-package"\n')
+        (tmp_path / "README.md").write_text("already here")
+        before_entries = set(tmp_path.iterdir())
+        before_bytes = {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+
+        result = runner.invoke(
+            real_app, ["plugin", "new", "myshop", "--check-name", "--dir", str(tmp_path)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert strip_ansi(result.output) == "'myshop' is an acceptable plugin name.\n"
+        assert set(tmp_path.iterdir()) == before_entries
+        assert {p: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before_bytes
+
+
+@pytest.mark.usefixtures("gp_logging")
+class TestAWriteFailureIsOneRefusal:
+    def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A suite member: the pyproject.toml edit is applied first, so the
+        restore is what puts its original bytes back."""
+        from graftpunk.devtools.scaffold import write
+
+        # A directory of the test's own: tmp_path also holds the config directory
+        # the autouse isolated_config fixture creates.
+        suite = tmp_path / "suite"
+        suite.mkdir()
+        (suite / "pyproject.toml").write_text(
+            '[project]\nname = "mysuite"\n\n'
+            '[project.entry-points."graftpunk.plugins"]\n'
+            'existing = "mysuite.existing:ExistingPlugin"\n'
+        )
+        before = {p.name: p.read_bytes() for p in suite.iterdir()}
+        real_write = write._write_atomically
+
+        def write_failing_on_the_plugin_module(path: Path, text: str) -> None:
+            if path.name == "plugin.py":
+                raise OSError(28, "No space left on device", str(path))
+            real_write(path, text)
+
+        monkeypatch.setattr(write, "_write_atomically", write_failing_on_the_plugin_module)
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "widgets", "--url", "https://myshop.example", "--dir", str(suite)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert line.startswith("Could not write ")
+        assert "No space left on device" in line
+        assert {p.name: p.read_bytes() for p in suite.iterdir()} == before
+
+
+@pytest.mark.usefixtures("gp_logging")
+class TestAConflictSaysWhichKind:
+    def test_an_existing_file_and_a_changed_file_are_listed_under_their_own_headers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """write_scaffold reaches an edit conflict only when a suite file changes
+        between its read and the write, so the refusal is injected here."""
+        from graftpunk.devtools.scaffold.write import ChangeConflictError
+
+        taken, changed = tmp_path / "README.md", tmp_path / "pyproject.toml"
+
+        def refusing(*args: object, **kwargs: object) -> None:
+            raise ChangeConflictError([changed, taken], changed=(changed,))
+
+        monkeypatch.setattr("graftpunk.cli.scaffold_commands.write_scaffold", refusing)
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "widgets", "--url", "https://myshop.example", "--dir", str(tmp_path)],
+        )
+        assert result.exit_code == 1, result.output
+        assert strip_ansi(result.output).splitlines() == [
+            "Refusing to overwrite existing file(s):",
+            f"  {taken}",
+            "Refusing to edit file(s) changed since they were read:",
+            f"  {changed}",
+        ]
+
+    def test_a_rendered_file_that_fails_its_grammar_is_one_line_and_its_own_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A generator bug, reached by corrupting one rendered module: the
+        InvalidChangeError arm, not the ValueError arm that means a bad name."""
+        from graftpunk.devtools.scaffold import project
+
+        real_render = project.render
+
+        def render_with_a_broken_plugin_module(spec: object) -> dict[str, str]:
+            files = real_render(spec)  # ty: ignore[invalid-argument-type]
+            return {
+                rel: ("def (:\n" if rel.endswith("/plugin.py") else content)
+                for rel, content in files.items()
+            }
+
+        monkeypatch.setattr(project, "render", render_with_a_broken_plugin_module)
+        target = tmp_path / "out"
+        with _captured_debug_logs() as events:
+            result = runner.invoke(
+                _build_app(),
+                [
+                    "plugin",
+                    "new",
+                    "widgets",
+                    "--url",
+                    "https://myshop.example",
+                    "--dir",
+                    str(target),
+                ],
+            )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert line.startswith("Refusing to write ")
+        assert "does not parse as Python" in line
+        reasons = [e.get("reason") for e in events if e.get("event") == "scaffold_refused"]
+        assert reasons == ["invalid_change"]
+        assert not target.exists()

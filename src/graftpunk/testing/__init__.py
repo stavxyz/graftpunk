@@ -10,7 +10,7 @@ design note).
 
 from __future__ import annotations
 
-import json
+import glob
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -20,6 +20,7 @@ import requests
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.har.naming import capture_slug
 from graftpunk.plugins.cli_plugin import CommandContext, PluginConfig
+from graftpunk.testing.sidecar import is_sidecar, load_sidecar, sidecar_path
 
 __all__ = ["FixtureSession", "fixture_context", "make_context"]
 
@@ -73,20 +74,27 @@ class FixtureSession(GraftpunkSession):
     Every request is answered from the file in *fixtures_dir* named the way
     :func:`graftpunk.har.naming.capture_slug` names a capture for that
     method and path, the same rule ``gp observe fixtures`` uses to write
-    files, so a fixture copied from a capture keeps its name. A sidecar
-    ``<filename>.meta.json`` beside a fixture supplies its status and
-    content type when present (the same sidecar ``gp observe fixtures``
-    writes); without one, the status is 200 and the type is guessed from
-    the file's extension. No matching file answers 404.
+    files, so a fixture copied from a capture keeps its name. The fixtures
+    command also applies the digest's high-cardinality collapse, which this
+    lookup does not know: a fixture named for a collapsed family
+    (``get_products_{product_id}.json``) answers a request whose segment
+    templates the same way (an id such as ``1``), not a request for one of
+    the recorded slugs. A sidecar
+    ``<filename>.meta.json`` beside a fixture supplies its status and content type
+    when present, read through :mod:`graftpunk.testing.sidecar`; without one, the
+    status is 200 and the type is guessed from the file's extension. No matching
+    file answers 404.
 
-    The lookup matches the base stem only, so the ``_1``, ``_2`` files
-    ``gp observe fixtures`` writes for repeated captures of one template are
-    never consulted: a second recorded response becomes a fixture by being
-    copied onto the base name. When a stem has several extensions, ``.json``
+    The lookup matches a file that is the base stem plus exactly one extension
+    (``get_api_users.csv.txt`` is not ``get_api_users``'s), the stem escaped so a
+    ``[`` in a path is a character and not a pattern, so the ``#1``, ``#2`` files ``gp observe
+    fixtures`` writes for repeated captures of one template are never consulted:
+    a second recorded response becomes a fixture by being copied onto the base
+    name. When a stem has several extensions, ``.json``
     wins and the rest follow in sorted order: an endpoint whose fixture
     directory holds both a ``.html`` and a ``.json`` for one stem is a JSON
     endpoint with an error page beside it, and plain sorted order served the
-    error page (polish round 1, 2026-09-12).
+    error page.
     """
 
     def __init__(self, fixtures_dir: Path | str, **kwargs: Any) -> None:
@@ -101,8 +109,10 @@ class FixtureSession(GraftpunkSession):
         matches = sorted(
             (
                 p
-                for p in self._fixtures_dir.glob(f"{stem}.*")
-                if p.is_file() and not p.name.endswith(".meta.json")
+                for p in self._fixtures_dir.glob(f"{glob.escape(stem)}.*")
+                # The stem plus exactly one extension: get_api_users.csv.txt is
+                # another endpoint's fixture, not get_api_users'.
+                if p.is_file() and not is_sidecar(p) and p.stem == stem
             ),
             key=_fixture_preference,
         )
@@ -118,13 +128,15 @@ class FixtureSession(GraftpunkSession):
         return self._respond_from_file(matches[0], response)
 
     def _respond_from_file(self, path: Path, response: requests.Response) -> requests.Response:
-        meta_path = path.with_name(path.name + ".meta.json")
+        """Answer from *path*; its sidecar, when present, is read through the owner,
+        which refuses a sidecar outside its declared format rather than half-reading it."""
+        meta_path = sidecar_path(path)
         status = 200
         content_type = _CONTENT_TYPE_BY_SUFFIX.get(path.suffix, _DEFAULT_FIXTURE_CONTENT_TYPE)
         if meta_path.exists():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            status = int(meta.get("status", status))
-            content_type = meta.get("content_type", content_type)
+            sidecar = load_sidecar(meta_path)
+            status = sidecar.status
+            content_type = sidecar.content_type
         response.status_code = status
         response.headers["Content-Type"] = content_type
         response._content = path.read_bytes()

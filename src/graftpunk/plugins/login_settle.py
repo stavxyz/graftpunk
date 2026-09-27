@@ -86,7 +86,7 @@ def _check_login_result(*, page_text: str, failure_text: str, site_name: str) ->
     has no success signal by definition, so the page text and the configured
     failure text are everything there is to go on. The element-versus-marker rule
     belongs to ``_login_tick_verdict``, which the signal poll decides its ticks
-    with (polish round 1).
+    with.
 
     Args:
         page_text: Current page text/source content.
@@ -119,7 +119,7 @@ def _check_login_result(*, page_text: str, failure_text: str, site_name: str) ->
 # tick names its reason, so the loop that ends on it can log that reason and no
 # failure the wait returns is left unexplained (tidy round, 2026-09-13). The four
 # values are a closed set, named once here, so a typo in one of them is a type
-# error rather than a tick that silently never matches (polish round 1).
+# error rather than a tick that silently never matches.
 _TickVerdict = Literal["pending", "success", "failure_text", "rate_limited"]
 _TICK_PENDING: Final[_TickVerdict] = "pending"
 _TICK_SUCCESS: Final[_TickVerdict] = "success"
@@ -139,13 +139,13 @@ def _url_signal_holds(*, url: str, pre_submit_url: str, success_url: str) -> boo
     A URL signal means a navigation happened, so it counts only once the URL differs
     from *pre_submit_url*, the one read just before the last submit: a glob loose
     enough to match the login page itself (``*example.com*``) would otherwise report
-    success on the first tick and cache a pre-login session (fix round 1).
+    success on the first tick and cache a pre-login session.
 
     An empty *pre_submit_url* is not a baseline but the absence of one (the read came
     back empty, which nodriver does mid-navigation), and every readable URL differs
     from it, which handed the same loose glob the same false success. With no known
     baseline the URL signal cannot be confirmed at all, so it never holds; the wait
-    says so in its debug trail and in the timeout warning (polish round 1).
+    says so in its debug trail and in the timeout warning.
     """
     return bool(pre_submit_url) and url != pre_submit_url and fnmatch.fnmatchcase(url, success_url)
 
@@ -184,13 +184,12 @@ def _page_text_decides(
     which vetoes a URL signal on the tick it starts to hold (a limiter answering
     the post-submit redirect serves its 429 body at the landing URL itself). A tick
     with no failure text to look for, on a URL that has not arrived, is decided by
-    the success element alone, so it leaves the document where it is (polish round
-    1).
+    the success element alone, so it leaves the document where it is.
 
     The deadline tick reads the page whatever the configuration says. A login whose
     only signal is a ``success`` selector otherwise never fetched a document at all,
     so a site answering the submit with its rate-limit page burned the whole timeout
-    and the warning pointed at the selector instead of the limiter (polish round 2).
+    and the warning pointed at the selector instead of the limiter.
     That costs one extra document read per failed wait and none per successful one.
     """
     if failure_text or last_tick:
@@ -221,7 +220,7 @@ def _login_tick_verdict(
     can carry the marker text. A URL glob carries no such weight, because a
     limiter answering the post-submit redirect serves its 429 body at the landing
     URL itself; letting the glob veto the marker there captured cookies off the
-    limiter's page and cached a dead session (polish round 1, 2026-09-13).
+    limiter's page and cached a dead session.
 
     Returns:
         ``_TICK_SUCCESS``, ``_TICK_PENDING``, or the reason the tick failed:
@@ -274,7 +273,7 @@ def _warn_login_signal_timeout(
     probe from an earlier tick, so every configured signal reads as holding on a
     page no single tick ever saw whole. The deciding tick is the one that failed,
     and the warning says that and carries *last_error* rather than logging an empty
-    ``missing`` (polish round 2).
+    ``missing``.
     """
     missing = _missing_login_signals(
         url=url,
@@ -294,7 +293,7 @@ def _warn_login_signal_timeout(
         if not page_read:
             # The browser answered with a URL but never handed back a document,
             # so the element was never probed: say so, or the warning blames a
-            # signal nothing ever looked at (polish round 2).
+            # signal nothing ever looked at.
             fields["error"] = last_error
             hint += (
                 " No page could be read during the wait, so the success element "
@@ -376,7 +375,7 @@ def _debug_ignored_timings(*, login_config: LoginConfig, site_name: str, backend
 
     There is nothing to wait for on that path, so the wait is the grace window and
     both fields go unread. An author who raised ``timeout`` and saw the login give
-    up at the same moment as before needs the trail to say why (polish round 1).
+    up at the same moment as before needs the trail to say why.
     """
     defaults = {f.name: f.default for f in dataclasses.fields(login_config)}
     set_by_plugin = {
@@ -407,7 +406,7 @@ def _is_deadline_tick(remaining: float) -> bool:
     poll interval or less to go lands at the deadline and nothing follows it. Both
     loops ask this once, before the sleep, and use the answer both to read the page
     on that tick (see ``_page_text_decides``) and to stop after it, so the tick that
-    reads the page is exactly the tick the wait ends on (polish round 2).
+    reads the page is exactly the tick the wait ends on.
     """
     return remaining <= _LOGIN_POLL_INTERVAL
 
@@ -416,7 +415,7 @@ def _poll_sleep_seconds(remaining: float) -> float:
     """One poll interval, or what is left of the budget when that is less.
 
     Sleeping a whole interval past the deadline would make a ``timeout`` smaller
-    than the interval cost the interval instead (fix round 1).
+    than the interval cost the interval instead.
     """
     return min(_LOGIN_POLL_INTERVAL, max(0.0, remaining))
 
@@ -469,8 +468,8 @@ class _ReadWindow:
     one must not replace that reading with nothing, and a window that got nothing at
     all has to be told apart from a window whose pages were all clean: the first has
     confirmed nothing about the login, and the empty page text it leaves behind would
-    read as "the failure text is not on the page" (tidy round, 2026-09-13; extended
-    to the signal poll in polish round 1).
+    read as "the failure text is not on the page". The signal poll follows the same
+    rule.
 
     ``page_read`` means a tick asked for the document and got it, which is what makes
     ``page_text`` worth ruling on. ``answered`` is the wider question the poll asks at
@@ -480,7 +479,7 @@ class _ReadWindow:
     string, so "no error" is not proof of life; a URL, an element probe, or a document
     is (tidy round, 2026-09-13). A URL counts even on a tick that went on to fail, so
     a browser that answers where it is while its documents fail is reported as a
-    missing signal and not as a dead browser (polish round 2).
+    missing signal and not as a dead browser.
     """
 
     def __init__(self) -> None:
@@ -498,8 +497,7 @@ class _ReadWindow:
             # A URL is the browser answering, whatever the rest of the tick did. A
             # tick that read one and then failed its document has told the wait the
             # browser is there, which is the question `answered` asks, so the wait
-            # reports the signal it never saw rather than blaming the browser
-            # (polish round 2).
+            # reports the signal it never saw rather than blaming the browser.
             self.answered = True
         if reading.error:
             self.error = reading.error
@@ -537,7 +535,7 @@ def _decide_login_tick(
 
     The backends differ in how they sleep and how they read a tick, and in nothing
     else. Everything between the read and the loop's own returns lives here, so a
-    rule cannot land on one backend and not the other (polish round 2). The only
+    rule cannot land on one backend and not the other. The only
     effect is the reading folded into *window*; the verdict is decided from the
     reading alone.
 
@@ -581,7 +579,7 @@ async def _read_login_tick_nodriver(
     A closed browser reaches here as something else again (a websockets error, a
     connection error), and catching only the protocol error let that one out of
     ``login()`` while the selenium twin failed cleanly, so every read failure is
-    treated the same way and named by ``exc_type`` in the trail (polish round 2).
+    treated the same way and named by ``exc_type`` in the trail.
     """
     try:
         page_text = await tab.get_content() if want_page_text else ""
@@ -597,7 +595,7 @@ async def _read_login_tick_nodriver(
             # server-error code, the same pair a node that went invalid mid-navigation
             # arrives with. Classifying a bad selector by message text would be
             # guessing at a string the protocol does not promise, so it stays a
-            # transient tick here and the wait ends in a timeout (polish round 2).
+            # transient tick here and the wait ends in a timeout.
             element = await tab.query_selector(success_selector)
             success_found = element is not None
     except Exception as exc:  # broad by design: an unreadable tick is pending, see above
@@ -629,7 +627,7 @@ def _read_login_tick_selenium(
     A selector the browser rejects as malformed is the exception to that: it is an
     InvalidSelectorException on every tick, so the wait would spend its whole budget
     and end by blaming the browser for a page it read perfectly well. The selector
-    cannot become valid, so it ends the login there and then (polish round 2).
+    cannot become valid, so it ends the login there and then.
     """
     from selenium.common.exceptions import (
         InvalidSelectorException,
@@ -709,7 +707,7 @@ async def _wait_for_login_signal_nodriver(
     A poll the browser never answered, whether because every tick raised or because
     a URL-only tick got nothing back, is reported as an unreadable page rather than
     as a missing signal: the signal was never looked at, so naming it would send an
-    author after the wrong thing (polish round 1).
+    author after the wrong thing.
 
     Returns:
         True when every configured success signal holds, False on a failure signal,

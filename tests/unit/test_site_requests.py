@@ -177,8 +177,7 @@ class _RecordingAdapter(requests.adapters.HTTPAdapter):
 
 class TestParamsAndDataNormalisation:
     """A stub declares `keyword_search: bool | None = None` and passes it
-    straight through, so the helper owns the spelling (polish round 2,
-    2026-09-12)."""
+    straight through, so the helper owns the spelling."""
 
     @staticmethod
     def _session() -> tuple[requests.Session, _RecordingAdapter]:
