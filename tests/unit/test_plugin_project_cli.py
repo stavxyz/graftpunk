@@ -530,7 +530,7 @@ class TestAddCommand:
         before = module.read_bytes()
         result = _add(recorded, "myshop", "orders=GET /api/orders")
         assert result.exit_code == 1
-        assert "orders" in _plain(result.output)
+        assert "the plugin class already defines 'orders'" in _plain(result.output)
         assert module.read_bytes() == before
 
     def test_a_class_attribute_blocks_the_same_name(self, recorded: Path) -> None:
@@ -538,7 +538,7 @@ class TestAddCommand:
         before = module.read_bytes()
         result = _add(recorded, "myshop", "orders=GET /api/orders")
         assert result.exit_code == 1
-        assert "orders" in _plain(result.output)
+        assert "the plugin class already defines 'orders'" in _plain(result.output)
         assert module.read_bytes() == before
 
     def test_a_command_group_blocks_its_registered_name(self, recorded: Path) -> None:
@@ -546,7 +546,7 @@ class TestAddCommand:
         before = module.read_bytes()
         result = _add(recorded, "myshop", "admin=GET /api/orders")
         assert result.exit_code == 1
-        assert "admin" in _plain(result.output)
+        assert "a command group already registers 'admin'" in _plain(result.output)
         assert module.read_bytes() == before
 
     def test_a_login_flow_endpoint_is_refused(self, recorded: Path) -> None:

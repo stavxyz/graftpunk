@@ -50,15 +50,28 @@ def insertion_line(plugin: PluginView) -> int:
     return plugin.commands[-1].span.end if plugin.commands else plugin.class_span.end
 
 
-def _taken_names(plugin: PluginView) -> set[str]:
-    # policy.RESERVED_COMMAND_NAMES is also checked by plan_command, called
-    # below before this function; seeded here too, so this collision check
-    # stays correct on its own if that call order ever changes.
+def _command_names(plugin: PluginView) -> set[str]:
+    """Every name a real (non-group) command already registers, plus the reserved
+    names every plugin has. policy.RESERVED_COMMAND_NAMES is also checked by
+    plan_command, called below before this function; seeded here too, so this
+    collision check stays correct on its own if that call order ever changes."""
     taken: set[str] = set(policy.RESERVED_COMMAND_NAMES)
     for command in plugin.commands:
-        taken.add(command.method)
-        taken.add(command.cli_name)
+        if command.endpoint is not None:
+            taken.add(command.method)
+            taken.add(command.cli_name)
     return taken
+
+
+def _group_names(plugin: PluginView) -> set[str]:
+    """Every name a command group (a decorated nested class) already registers:
+    its Python identifier and its CLI name."""
+    names: set[str] = set()
+    for command in plugin.commands:
+        if command.endpoint is None:
+            names.add(command.method)
+            names.add(command.cli_name)
+    return names
 
 
 def add_command(
@@ -91,13 +104,18 @@ def add_command(
             f"its entry points are: {names}."
         )
     command = plan_command(d, selection)
-    collides = command.identifier in plugin.class_names or {
-        command.identifier,
-        command.registered_name,
-    } & _taken_names(plugin)
-    if collides:
+    candidates = {command.identifier, command.registered_name}
+    if candidates & _group_names(plugin):
+        raise CommandInsertError(
+            f"{plugin.module_path}: a command group already registers {selection.name!r}."
+        )
+    if candidates & _command_names(plugin):
         raise CommandInsertError(
             f"{plugin.module_path} already has a command named {selection.name!r}."
+        )
+    if command.identifier in plugin.class_names:
+        raise CommandInsertError(
+            f"{plugin.module_path}: the plugin class already defines {selection.name!r}."
         )
     rendered = render_command(command, d)
     module = root / plugin.module_path
