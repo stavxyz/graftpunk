@@ -322,7 +322,10 @@ def read_project(root: Path) -> ProjectView:
             test_markers=(),
         )
     project_name = str(data.get("project", {}).get("name", ""))
-    read = [_read_plugin(root, key, value, project_name) for key, value in entry_points.items()]
+    read = [
+        _read_plugin(root, key, value, project_name, len(entry_points))
+        for key, value in entry_points.items()
+    ]
     requirement_set = policy.PROJECT_REQUIREMENTS
     requirements = _requirement_statuses(root, requirement_set)
     return ProjectView(
@@ -450,7 +453,9 @@ def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
     return tuple(found)
 
 
-def _read_plugin(root: Path, key: str, value: str, project_name: str) -> PluginView | PluginDefect:
+def _read_plugin(
+    root: Path, key: str, value: str, project_name: str, suite_size: int
+) -> PluginView | PluginDefect:
     module = value.partition(":")[0]
     relative = _module_file(root, module)
     if relative is None:
@@ -491,7 +496,7 @@ def _read_plugin(root: Path, key: str, value: str, project_name: str) -> PluginV
             if GP_FILL_MARKER in line
         ),
         fixtures_root=policy.fixtures_root(
-            suite_member=_normalised(project_name) != _normalised(package),
+            suite_member=suite_size > 1 and _normalised(project_name) != _normalised(package),
             module_name=module_name_for(key),
         ),
         class_names=_class_body_names(klass),
@@ -504,9 +509,14 @@ def _read_plugin(root: Path, key: str, value: str, project_name: str) -> PluginV
 # such field to read back; mode is a choice the writer made at generation
 # time, not a fact gp plugin new or gp plugin add-command persists anywhere
 # on disk (no project file records it), so _read_plugin above re-derives the
-# same answer from the one fact that IS on disk and matches the generator's
-# own decision: a suite member's package name differs from the project's
-# [project].name.
+# same answer from the facts that ARE on disk and match the generator's own
+# decision: more than one entry point, and a suite member's package name
+# differs from the project's [project].name. gp plugin new never produces a
+# one-entry-point project whose package differs from the project name (the
+# first plugin is always new_project, whose package matches), so the count
+# guard changes nothing for a generated project; it only stops a hand-written
+# one-plugin project, whose name happens to differ from its package, from
+# misreading as a suite member (polish-r1 P8).
 # test_the_rule_gives_the_same_answer_from_the_spec_and_from_the_project is
 # the check that these two independent derivations still agree; it is the
 # owner of that agreement, not a coincidence to be relied on silently.

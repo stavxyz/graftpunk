@@ -450,6 +450,30 @@ class TestFixturesRoots:
             == fixtures_root(suite_member=second, module_name=module_name_for(name))
         )
 
+    def test_a_hand_written_single_plugin_project_is_not_a_suite_member(
+        self, tmp_path: Path
+    ) -> None:
+        """B14: a one-entry-point project is never a suite, even when its
+        [project].name differs from its package, which is exactly the case a
+        hand-written project (the one add-command's enhance mode targets) is
+        likely to be in; gp plugin new never produces this shape itself, since
+        its first plugin's package always matches the project name
+        (polish-r1 P8)."""
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "myshop-plugin"\n\n'
+            '[project.entry-points."graftpunk.plugins"]\n'
+            'myshop = "graftpunk_myshop.plugin:MyshopPlugin"\n'
+        )
+        package = tmp_path / "src" / "graftpunk_myshop"
+        package.mkdir(parents=True)
+        (package / "plugin.py").write_text(
+            "from graftpunk.plugins import SitePlugin\n\n\n"
+            "class MyshopPlugin(SitePlugin):\n"
+            '    site_name = "myshop"\n'
+        )
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.fixtures_root == "tests/fixtures/"
+
     def test_fixtures_dir_is_the_root_and_the_conftest_tree_contains_it(
         self, tmp_path: Path
     ) -> None:

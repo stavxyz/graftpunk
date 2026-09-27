@@ -882,6 +882,29 @@ class TestAddCommand:
         assert result.exit_code == 0, result.output
         assert "tests/fixtures/widgets/get_api_orders_{order_id}.json" in _plain(result.output)
 
+    def test_a_hand_written_projects_differing_name_is_not_a_suite_member(
+        self, recorded: Path
+    ) -> None:
+        """B14: a one-entry-point project is never a suite, even when its
+        [project].name differs from its package, which is exactly the case a
+        hand-written project (the one enhance mode targets) is likely to be in
+        (polish-r1 P8)."""
+        (recorded / "pyproject.toml").write_text(
+            '[project]\nname = "myshop-plugin"\n\n'
+            '[project.entry-points."graftpunk.plugins"]\n'
+            'myshop = "graftpunk_myshop.plugin:MyshopPlugin"\n\n'
+            "[tool.ruff]\nline-length = 100\n\n"
+            '[tool.ruff.lint]\nselect = ["E", "F", "I", "UP", "B"]\n'
+        )
+        package = recorded / "src" / "graftpunk_myshop"
+        package.mkdir(parents=True)
+        (package / "plugin.py").write_text(_HAND_WRITTEN)
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        output = _plain(result.output)
+        assert "tests/fixtures/get_api_orders.json" in output
+        assert "tests/fixtures/myshop/" not in output
+
     def test_a_defective_target_is_refused_and_another_plugins_defect_is_not(
         self, recorded: Path
     ) -> None:
