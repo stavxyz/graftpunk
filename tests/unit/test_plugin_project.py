@@ -166,6 +166,7 @@ class TestTheView:
             "commands",
             "markers",
             "fixtures_root",
+            "class_names",
         ]
         assert [f.name for f in fields(CommandView)] == ["method", "span", "keywords"]
 
@@ -184,6 +185,46 @@ class TestTheView:
         assert plugin.markers
         assert all("GP-FILL" in text[line - 1] for line in plugin.markers)
         assert plugin.fixtures_root == "tests/fixtures/"
+
+    def test_class_names_records_every_top_level_binding(self, tmp_path: Path) -> None:
+        module = (
+            "from graftpunk.plugins import CommandContext, SitePlugin, command\n\n\n"
+            "class MyshopPlugin(SitePlugin):\n"
+            '    site_name = "myshop"\n\n'
+            "    orders: int = 1\n\n"
+            "    def helper(self) -> None:\n"
+            "        pass\n\n"
+            '    @command(help="List orders")\n'
+            "    def orders_command(self, ctx: CommandContext) -> dict:\n"
+            "        return {}\n\n"
+            '    @command(help="Admin")\n'
+            "    class Admin:\n"
+            "        pass\n"
+        )
+        _hand_written(tmp_path, module)
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.class_names == frozenset(
+            {"site_name", "orders", "helper", "orders_command", "Admin"}
+        )
+
+    def test_a_command_group_is_recorded_as_a_command_with_no_endpoint(
+        self, tmp_path: Path
+    ) -> None:
+        module = (
+            "from graftpunk.plugins import CommandContext, SitePlugin, command\n\n\n"
+            "class MyshopPlugin(SitePlugin):\n"
+            '    site_name = "myshop"\n\n'
+            '    @command(help="Admin commands")\n'
+            "    class Admin:\n"
+            '        @command(help="List admins")\n'
+            "        def list(self, ctx: CommandContext) -> dict:\n"
+            "            return {}\n"
+        )
+        _hand_written(tmp_path, module)
+        (plugin,) = read_project(tmp_path).plugins
+        (group,) = plugin.commands
+        assert (group.method, group.cli_name, group.endpoint) == ("Admin", "admin", None)
+        assert "Admin" in plugin.class_names
 
     def test_a_plugin_is_found_by_its_entry_point_name(self, tmp_path: Path) -> None:
         _generate(tmp_path)

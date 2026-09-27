@@ -69,9 +69,12 @@ class Span:
 
 @dataclass(frozen=True)
 class CommandView:
-    """One ``@command``-decorated method: its name, its span (first decorator through
-    the end of its body), and its decorator's keywords, read-only, each the string
-    literal it was given or ``None`` when it is not one."""
+    """One ``@command``-decorated method, or nested class (a command group): its
+    name (``method`` holds the group's class name for a group), its span (first
+    decorator through the end of its body), and its decorator's keywords,
+    read-only, each the string literal it was given or ``None`` when it is not
+    one. A group's ``endpoint`` is always ``None``: the ``command`` decorator
+    only applies ``endpoint=`` to a function."""
 
     method: str
     span: Span
@@ -92,7 +95,15 @@ class CommandView:
 class PluginView:
     """One entry point's plugin, as its module reads. ``entry_point`` is the name of
     its line in the ``graftpunk.plugins`` table: the one identity every consumer
-    addresses a plugin by, which ``site_name`` need not match."""
+    addresses a plugin by, which ``site_name`` need not match.
+
+    ``commands`` holds every ``@command``-decorated top-level member: a method, and
+    also a nested class (a command group), whose entry carries the group's
+    registered name and an ``endpoint`` of ``None`` (a group never declares one).
+    ``class_names`` holds every name the class body binds at its top level, decorated
+    or not: a method, a nested class (including a command group), or an assignment
+    target. The stub inserter's collision check reads ``class_names``, not just
+    ``commands``, so a plain helper or attribute is refused too."""
 
     entry_point: str
     module_path: str  # project-relative, forward slashes
@@ -103,6 +114,7 @@ class PluginView:
     commands: tuple[CommandView, ...]
     markers: tuple[int, ...]  # the line of every GP-FILL marker in the module
     fixtures_root: str  # project-relative, trailing slash
+    class_names: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -409,6 +421,7 @@ def _read_plugin(root: Path, key: str, value: str, project_name: str) -> PluginV
             suite_member=_normalised(project_name) != _normalised(package),
             module_name=module_name_for(key),
         ),
+        class_names=_class_body_names(klass),
     )
 
 
@@ -446,8 +459,10 @@ def _class_string(klass: ast.ClassDef, name: str) -> str | None:
 
 
 def _commands(klass: ast.ClassDef) -> Iterator[CommandView]:
+    """Every ``@command``-decorated top-level member: a method, and also a nested
+    class (a command group, which the ``command`` decorator also accepts)."""
     for node in klass.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
         decorator = next(
             (
@@ -474,6 +489,23 @@ def _commands(klass: ast.ClassDef) -> Iterator[CommandView]:
         yield CommandView(
             node.name, Span(start, node.end_lineno or node.lineno), MappingProxyType(keywords)
         )
+
+
+def _class_body_names(klass: ast.ClassDef) -> frozenset[str]:
+    """Every name the class body binds at its top level: a method (decorated or
+    not), a nested class (including a command group), or an assignment target.
+    ``PluginView.class_names``: the stub inserter's collision check reads this,
+    not just the decorated commands, so a plain helper method or attribute is
+    refused too."""
+    names: set[str] = set()
+    for node in klass.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return frozenset(names)
 
 
 def _requirement_statuses(root: Path) -> dict[str, RequirementStatus]:
