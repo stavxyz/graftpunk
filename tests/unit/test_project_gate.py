@@ -3,18 +3,17 @@
 
 from __future__ import annotations
 
-import re
-
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
-from tests.unit.guide_harness import GUIDE_TEXT, check_invocation, section
+from tests.unit.guide_harness import GUIDE_TEXT, blocks, check_invocation, section
 
 
 def _block_lines(text: str, language: str) -> list[str]:
-    """The lines of the first fenced block of *language* in *text*: the one extractor."""
-    match = re.search(rf"^```{language}\n(.*?)^```", text, re.M | re.S)
-    assert match, f"no {language} block"
-    return [line.strip() for line in match.group(1).splitlines() if line.strip()]
+    """The non-blank lines of the first fenced block of *language* in *text*."""
+    found = blocks(text, language)
+    assert found, f"no {language} block"
+    (_line_no, body) = found[0]
+    return [line.strip() for line in body.splitlines() if line.strip()]
 
 
 def _run_step_lines(yaml_lines: list[str]) -> list[str]:
