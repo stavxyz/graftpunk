@@ -116,9 +116,9 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
         return FixturesTreeReport(
             problems=(
                 f"{tree}: the fixtures tree does not exist. The generated conftest names "
-                f"it as FIXTURES_TREE and gp plugin new creates it with a .gitkeep, so a "
-                f"missing tree means the two disagree. Recreate the directory, or "
-                f"correct FIXTURES_TREE.",
+                f"it as FIXTURES_TREE; gp plugin new creates it with a .gitkeep, and "
+                f"gp plugin upgrade creates it for a project that lacks it. Run "
+                f"gp plugin upgrade, or recreate the directory by hand.",
             ),
             verified=0,
             declared=0,

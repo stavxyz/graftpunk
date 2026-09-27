@@ -745,3 +745,15 @@ class TestPluginUpgrade:
         second = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
         assert second.exit_code == 0
         assert "Nothing to upgrade" in _plain(second.output)
+
+    def test_prints_that_it_created_a_missing_fixtures_tree(self, tmp_path: Path) -> None:
+        import shutil
+
+        conftest = _project_lacking_the_wiring(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "tests/conftest.py: added FIXTURES_TREE" in _plain(result.output)
+        assert "tests/fixtures/: created" in _plain(result.output)
+        assert (tmp_path / "tests" / "fixtures" / ".gitkeep").is_file()
+        assert conftest.read_text() != ""

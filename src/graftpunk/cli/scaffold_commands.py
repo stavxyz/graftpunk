@@ -21,6 +21,7 @@ from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
 from graftpunk.devtools.plugin_check import check_project
 from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
+from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.insert import add_command
 from graftpunk.devtools.scaffold.project import (
     NotAPluginSuiteError,
@@ -378,6 +379,8 @@ def plugin_upgrade(
         console.print(
             f"{escape(requirement.path)}: added {escape(requirement.name)}", soft_wrap=True
         )
+    if applied.created_fixtures_tree:
+        console.print(f"{escape(policy.FIXTURES_TREE)}: created", soft_wrap=True)
 
 
 @plugin_app.command("check")

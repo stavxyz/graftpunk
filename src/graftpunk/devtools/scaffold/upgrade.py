@@ -5,16 +5,25 @@ It applies only what the project reader's view says is missing, so it is
 idempotent under the reader's own definition, and it changes nothing a project
 already has (graft skill spec, 2026-09-21). The statements are added by
 ``pysrc.with_bindings``, the assembler the renderer uses for a new conftest, so
-an upgraded conftest is byte-identical to a generated one.
+an upgraded conftest is byte-identical to a generated one. It also creates
+``policy.FIXTURES_TREE`` when a project lacks it, the one thing here the
+reader's view does not decide on its own (the view has no missing-directory
+fact; the filesystem check is this module's).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_project import require_plugin_project
-from graftpunk.devtools.scaffold.policy import ProjectRequirement
+from graftpunk.devtools.scaffold.policy import (
+    FIXTURES_PLACEHOLDER,
+    FIXTURES_TREE,
+    ProjectRequirement,
+)
 from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, with_bindings
 from graftpunk.devtools.scaffold.write import (
     PlannedChange,
@@ -23,7 +32,7 @@ from graftpunk.devtools.scaffold.write import (
     validate_python,
 )
 
-__all__ = ["UpgradeRefusedError", "upgrade_project"]
+__all__ = ["UpgradeApplied", "UpgradeRefusedError", "upgrade_project"]
 
 
 class UpgradeRefusedError(DevtoolsRefusal, ValueError):
@@ -31,8 +40,29 @@ class UpgradeRefusedError(DevtoolsRefusal, ValueError):
     are not in a shape the migrator places into; nothing was written."""
 
 
-def upgrade_project(root: Path) -> tuple[ProjectRequirement, ...]:
-    """Apply every requirement *root*'s project lacks, and return them.
+@dataclass(frozen=True)
+class UpgradeApplied:
+    """What ``upgrade_project`` wrote: the ``PROJECT_REQUIREMENTS`` entries the
+    project's files were missing, in the order they were applied, and whether
+    ``policy.FIXTURES_TREE`` did not exist and was created (with
+    ``FIXTURES_PLACEHOLDER``, the same empty file ``gp plugin new`` writes).
+    Iterating or truth-testing an instance reads ``requirements`` and
+    ``created_fixtures_tree`` together, so a caller that only checked
+    "was anything applied" before this field existed still gets the right
+    answer."""
+
+    requirements: tuple[ProjectRequirement, ...]
+    created_fixtures_tree: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.requirements) or self.created_fixtures_tree
+
+    def __iter__(self) -> Iterator[ProjectRequirement]:
+        return iter(self.requirements)
+
+
+def upgrade_project(root: Path) -> UpgradeApplied:
+    """Apply every requirement *root*'s project lacks, and return what was applied.
 
     Raises:
         UpgradeRefusedError: A requirement's file does not parse, is not a regular
@@ -69,5 +99,9 @@ def upgrade_project(root: Path) -> tuple[ProjectRequirement, ...]:
         except ImportPlacementError as exc:
             raise UpgradeRefusedError(f"{relative}: {exc}") from exc
         changes.append(PlannedChange(path, content, original=original, validate=validate_python))
+    fixtures_tree = root / FIXTURES_TREE
+    created_fixtures_tree = not fixtures_tree.is_dir()
+    if created_fixtures_tree:
+        changes.append(PlannedChange(fixtures_tree / FIXTURES_PLACEHOLDER, ""))
     apply_changes(changes)
-    return missing
+    return UpgradeApplied(requirements=missing, created_fixtures_tree=created_fixtures_tree)
