@@ -169,6 +169,10 @@ def _flagged_name_problems(
     text = body.decode("utf-8", errors="replace").casefold()
     rest = sidecar_scannable_text(sidecar).casefold()
     for name in sidecar.flagged_names:
+        if not name:
+            # An empty string is a substring of every fixture; a sidecar
+            # holding one would flag every file it checks.
+            continue
         folded = name.casefold()
         if folded in text:
             problems.append(

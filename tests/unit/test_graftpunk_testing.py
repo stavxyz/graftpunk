@@ -358,6 +358,16 @@ class TestCheckFixturesTree:
         _fixture(tmp_path, "get_invoice.pdf", body, _captured(b"%PDF captured", "myshop_session"))
         assert check_fixtures_tree(tmp_path).problems == ()
 
+    def test_an_empty_flagged_name_is_ignored(self, tmp_path: Path) -> None:
+        """An empty string in flagged_names would match every fixture as a substring."""
+        _fixture(
+            tmp_path,
+            "get_orders.json",
+            b'{"orders": []}',
+            _captured(b"captured", "myshop_session", ""),
+        )
+        assert check_fixtures_tree(tmp_path).problems == ()
+
     def test_a_macos_ds_store_is_skipped(self, tmp_path: Path) -> None:
         (tmp_path / ".DS_Store").write_bytes(b"\x00\x01")
         assert check_fixtures_tree(tmp_path).problems == ()
