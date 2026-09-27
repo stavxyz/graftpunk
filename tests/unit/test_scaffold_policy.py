@@ -94,6 +94,13 @@ class TestProjectRequirements:
     def test_the_key(self) -> None:
         assert ProjectRequirement(path="a.py", name="x", statement="x = 1").key == "a.py:x"
 
+    def test_every_requirement_targets_the_conftest_the_renderer_emits_into(self) -> None:
+        """render.py's _render_conftest filters PROJECT_REQUIREMENTS to the entries
+        whose path is CONFTEST_PATH; a requirement declared for another file would
+        silently not render, so this is the assertion that makes that limit visible
+        before it bites, not after."""
+        assert all(r.path == CONFTEST_PATH for r in PROJECT_REQUIREMENTS)
+
 
 def test_the_placeholder_is_the_testing_layers() -> None:
     from graftpunk.testing import sidecar
