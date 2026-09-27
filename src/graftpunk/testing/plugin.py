@@ -31,7 +31,6 @@ import pytest
 
 from graftpunk.contracts import current_schema
 from graftpunk.testing.sidecar import (
-    FIXTURES_PLACEHOLDER,
     Sidecar,
     SidecarError,
     is_sidecar,
@@ -109,7 +108,9 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     in a fixture or in its sidecar's other fields. It does not judge whether
     invented content is invented well. A sidecar with no capture hash is the
     author's declaration that the file came off no account; it is trusted, not
-    checked, and counted.
+    checked, and counted. A dotfile (any path component starting with ``.``,
+    which covers ``FIXTURES_PLACEHOLDER`` itself, a macOS ``.DS_Store``, and an
+    editor swap file) is never a fixture and is skipped.
     """
     if not tree.is_dir():
         return FixturesTreeReport(
@@ -127,7 +128,9 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     fixtures = sorted(
         p
         for p in tree.rglob("*")
-        if p.is_file() and not is_sidecar(p) and p.name != FIXTURES_PLACEHOLDER
+        if p.is_file()
+        and not is_sidecar(p)
+        and not any(part.startswith(".") for part in p.relative_to(tree).parts)
     )
     for fixture in fixtures:
         relative = fixture.relative_to(tree)
@@ -158,17 +161,21 @@ def _flagged_name_problems(
     relative: Path, meta_name: str, sidecar: Sidecar, body: bytes
 ) -> list[str]:
     """One problem per flagged name found in the fixture's body or in a sidecar field
-    other than ``flagged_names``."""
+    other than ``flagged_names``. Matched case-insensitively: an HTTP header name is
+    case-insensitive by the protocol, and a capture recorded over HTTP/2 lowercases
+    every header name, so a flagged ``X-Csrf-Token`` copied into a fixture as
+    ``x-csrf-token`` still counts."""
     problems: list[str] = []
-    text = body.decode("utf-8", errors="replace")
-    rest = sidecar_scannable_text(sidecar)
+    text = body.decode("utf-8", errors="replace").casefold()
+    rest = sidecar_scannable_text(sidecar).casefold()
     for name in sidecar.flagged_names:
-        if name in text:
+        folded = name.casefold()
+        if folded in text:
             problems.append(
                 f"{relative}: contains the flagged name {name!r}, a cookie or token "
                 f"name the capture's digest recorded."
             )
-        if name in rest:
+        if folded in rest:
             problems.append(
                 f"{relative.parent / meta_name}: carries the flagged name {name!r} "
                 f"outside flagged_names."

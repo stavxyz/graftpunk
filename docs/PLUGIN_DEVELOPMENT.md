@@ -1341,9 +1341,10 @@ URLs. `tests/captures/` is gitignored and stays that way; `tests/fixtures/` is
 committed and contains nothing that came off a real account.
 
 The generated suite holds you to part of that. Its `tests/conftest.py` wires in
-`fixtures_are_sanitised`, which walks `tests/fixtures/` on every run and fails
-when a fixture has no sidecar, when a fixture is still byte for byte its
-capture, when a name the sidecar flags turns up in the fixture or elsewhere in
+`fixtures_are_sanitised`, which walks every non-dotfile under `tests/fixtures/`
+on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
+and fails when a fixture has no sidecar, when a fixture is still byte for byte
+its capture, when a name the sidecar flags turns up in the fixture or elsewhere in
 the sidecar, or when a sidecar is outside its declared format. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
 you wrote from nothing needs a sidecar too, with all seven keys: its own
