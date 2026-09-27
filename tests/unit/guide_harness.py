@@ -184,9 +184,11 @@ def _walk_to_command(tokens: list[str]) -> tuple[click.Command, list[tuple[click
 def check_invocation(invocation: str, where: str) -> None:
     """Assert *invocation* names a real gp command and only real options.
 
-    The body of :func:`test_every_gp_invocation_names_a_real_command_and_options`,
-    lifted out so the negative tests below can drive the same code with a
-    synthetic invocation the guide does not contain.
+    Shared by the guide test's positive and negative invocation cases
+    (``test_plugin_development_guide.py``) and by the gate test
+    (``test_project_gate.py``), each driving it with its own invocation: the
+    guide's own, a synthetic one the guide does not contain, and
+    ``PROJECT_GATE``'s.
     """
     tokens = shlex.split(invocation)[1:]
     command, groups = _walk_to_command(tokens)

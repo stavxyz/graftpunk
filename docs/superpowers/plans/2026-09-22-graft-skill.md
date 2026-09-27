@@ -1217,7 +1217,7 @@ git commit -m "feat(skill): SKILL.md pre-approves preflight alone, and commands.
 - Create: `skills/graft/references/rules.md`, `capture.md`, `digest.md`, `harden.md`
 - Test: `tests/unit/test_graft_references.py`
 
-The slug helpers the citation tests use are `slug` and `slugs_of` in `tests/unit/guide_harness.py`. The project-tools plan's Task 9 moved `_slugs_of` there from `tests/unit/test_plugin_development_guide.py:317-337` and extracted `slug` from it, so this task edits no guide test.
+The slug helpers the citation tests use are `slug` and `slugs_of`, both defined in `tests/unit/guide_harness.py` (`def slug`, `def slugs_of`). The project-tools plan's Task 9 moved `_slugs_of` there from `tests/unit/test_plugin_development_guide.py` and extracted `slug` from it, so this task edits no guide test.
 
 **Interfaces:**
 - Consumes: `CTRL_C_REACHES_GP` (Task 1); `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, and `declared_commands` from `tests/unit/skill_harness.py` (Task 4); `GUIDE`, `GUIDE_TEXT`, `blocks`, `gp_invocations`, `outside_fences`, `section`, `slug`, and `slugs_of` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9). Fence handling and the section rule have one owner each, in the harness: `_prose` starts from `outside_fences`, and `_without_section` is derived from `section`.
