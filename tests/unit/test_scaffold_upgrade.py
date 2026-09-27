@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from graftpunk.devtools.plugin_project import NotAPluginProjectError, read_project
+from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, FIXTURES_TREE
 from graftpunk.devtools.scaffold.project import write_scaffold
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
 from graftpunk.devtools.scaffold.upgrade import UpgradeRefusedError, upgrade_project
@@ -49,7 +51,8 @@ class TestUpgrade:
     ) -> None:
         conftest = _project(tmp_path, _OLD_CONFTEST)
         applied = upgrade_project(tmp_path)
-        assert [r.name for r in applied] == ["FIXTURES_TREE", "sanitised_fixtures"]
+        assert [r.name for r in applied.requirements] == ["FIXTURES_TREE", "sanitised_fixtures"]
+        assert applied.created_fixtures_tree is False
         assert conftest.read_text() == render(_SPEC)["tests/conftest.py"]
         states = {s.state for s in read_project(tmp_path).requirements.values()}
         assert states == {"bound"}
@@ -59,13 +62,13 @@ class TestUpgrade:
         write_scaffold(tmp_path, _SPEC)
         conftest = tmp_path / "tests" / "conftest.py"
         before = conftest.read_bytes()
-        assert upgrade_project(tmp_path) == ()
+        assert not upgrade_project(tmp_path)
         assert conftest.read_bytes() == before
 
     def test_twice_in_a_row_writes_each_statement_once(self, tmp_path: Path) -> None:
         conftest = _project(tmp_path, _OLD_CONFTEST)
         upgrade_project(tmp_path)
-        assert upgrade_project(tmp_path) == ()
+        assert not upgrade_project(tmp_path)
         text = conftest.read_text()
         assert text.count("FIXTURES_TREE = ") == 1
         assert text.count("sanitised_fixtures = ") == 1
@@ -78,8 +81,39 @@ class TestUpgrade:
             "sanitised_fixtures = check_tree(FIXTURES_TREE)\n"
         )
         conftest = _project(tmp_path, wired)
-        assert upgrade_project(tmp_path) == ()
+        assert not upgrade_project(tmp_path)
         assert conftest.read_text() == wired
+
+    def test_a_missing_fixtures_tree_is_created(self, tmp_path: Path) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        tree = tmp_path / "tests" / "fixtures"
+        shutil.rmtree(tree)
+        applied = upgrade_project(tmp_path)
+        assert applied.created_fixtures_tree is True
+        assert applied.requirements == ()
+        assert bool(applied) is True
+        placeholder = tree / FIXTURES_PLACEHOLDER
+        assert placeholder.is_file()
+        assert placeholder.read_text() == ""
+
+    def test_a_present_fixtures_tree_is_left_alone(self, tmp_path: Path) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        placeholder = tmp_path / FIXTURES_TREE / FIXTURES_PLACEHOLDER
+        before = placeholder.read_bytes()
+        applied = upgrade_project(tmp_path)
+        assert applied.created_fixtures_tree is False
+        assert placeholder.read_bytes() == before
+
+    def test_a_missing_wiring_and_a_missing_fixtures_tree_are_both_fixed_at_once(
+        self, tmp_path: Path
+    ) -> None:
+        conftest = _project(tmp_path, _OLD_CONFTEST)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        applied = upgrade_project(tmp_path)
+        assert [r.name for r in applied.requirements] == ["FIXTURES_TREE", "sanitised_fixtures"]
+        assert applied.created_fixtures_tree is True
+        assert conftest.read_text() == render(_SPEC)["tests/conftest.py"]
+        assert (tmp_path / "tests" / "fixtures" / FIXTURES_PLACEHOLDER).is_file()
 
     def test_a_missing_conftest_is_created(self, tmp_path: Path) -> None:
         conftest = _project(tmp_path, None)
