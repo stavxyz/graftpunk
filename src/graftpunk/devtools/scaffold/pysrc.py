@@ -585,8 +585,7 @@ def with_import(text: str, module: str, name: str) -> str:
                 alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
                 for alias in node.names
             ]
-            merged_names = names if name in names else [*names, name]
-            merged = import_lines(module, *sorted(merged_names, key=_isort_name_key))
+            merged = import_lines(module, *sorted([*names, name], key=_isort_name_key))
             return joined_like(
                 text, lines[: node.lineno - 1] + merged + lines[node.end_lineno or node.lineno :]
             )
