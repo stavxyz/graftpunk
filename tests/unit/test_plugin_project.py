@@ -24,7 +24,13 @@ from graftpunk.devtools.plugin_project import (
     read_project,
     require_plugin_project,
 )
-from graftpunk.devtools.scaffold.policy import PROJECT_REQUIREMENTS, fixtures_root, module_name_for
+from graftpunk.devtools.scaffold import policy
+from graftpunk.devtools.scaffold.policy import (
+    PROJECT_REQUIREMENTS,
+    ProjectRequirement,
+    fixtures_root,
+    module_name_for,
+)
 from graftpunk.devtools.scaffold.project import write_scaffold
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixtures_root_for
 from graftpunk.har.digest import DigestSource, Endpoint, RunDigest, ShapeNode
@@ -469,6 +475,27 @@ class TestRequirementsAreDecidedStructurally:
         view = read_project(tmp_path)
         assert parsed.count(conftest) == 1
         assert {status.state for status in view.requirements.values()} == {"bound"}
+
+    def test_requirement_statuses_uses_the_set_it_is_given(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """read_project reads policy.PROJECT_REQUIREMENTS once and passes that
+        snapshot to _requirement_statuses; the function computes from the
+        argument, not a second live read of the module attribute, so the two
+        cannot drift within one call."""
+        from graftpunk.devtools.plugin_project import _requirement_statuses
+
+        _generate(tmp_path)
+        monkeypatch.setattr(policy, "PROJECT_REQUIREMENTS", ())
+        given = (
+            ProjectRequirement(
+                path="tests/conftest.py",
+                name="FIXTURES_TREE",
+                statement='FIXTURES_TREE = Path(__file__).parent / "fixtures"',
+            ),
+        )
+        statuses = _requirement_statuses(tmp_path, given)
+        assert set(statuses) == {"tests/conftest.py:FIXTURES_TREE"}
 
     def test_missing_requirements_are_the_unbound_entries_in_declared_order(
         self, tmp_path: Path

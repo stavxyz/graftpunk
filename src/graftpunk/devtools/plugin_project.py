@@ -305,13 +305,14 @@ def read_project(root: Path) -> ProjectView:
         )
     project_name = str(data.get("project", {}).get("name", ""))
     read = [_read_plugin(root, key, value, project_name) for key, value in entry_points.items()]
-    requirements = _requirement_statuses(root)
+    requirement_set = policy.PROJECT_REQUIREMENTS
+    requirements = _requirement_statuses(root, requirement_set)
     return ProjectView(
         directory="plugin",
         plugins=tuple(r for r in read if isinstance(r, PluginView)),
         defects=tuple(r for r in read if isinstance(r, PluginDefect)),
         requirements=MappingProxyType(requirements),
-        requirement_set=policy.PROJECT_REQUIREMENTS,
+        requirement_set=requirement_set,
     )
 
 
@@ -508,16 +509,20 @@ def _class_body_names(klass: ast.ClassDef) -> frozenset[str]:
     return frozenset(names)
 
 
-def _requirement_statuses(root: Path) -> dict[str, RequirementStatus]:
-    """Each ``PROJECT_REQUIREMENTS`` entry's status, keyed by its ``key``: whether its
+def _requirement_statuses(
+    root: Path, requirement_set: tuple[ProjectRequirement, ...]
+) -> dict[str, RequirementStatus]:
+    """Each entry in *requirement_set*'s status, keyed by its ``key``: whether its
     file binds its name, by the one predicate, ``pysrc.binds_name``. Each distinct
     file is parsed once. A file that does not parse is ``unreadable`` for every entry
     it holds, with its one reason, rather than raised: one broken conftest must not
-    blind the consumers that never read it."""
-    paths = dict.fromkeys(r.path for r in policy.PROJECT_REQUIREMENTS)
+    blind the consumers that never read it. The caller reads ``policy.PROJECT_REQUIREMENTS``
+    once and passes the snapshot in, so it cannot drift from the view's own
+    ``requirement_set`` within one ``read_project`` call."""
+    paths = dict.fromkeys(r.path for r in requirement_set)
     parsed = {relative: _parse_requirement_file(root / relative) for relative in paths}
     statuses: dict[str, RequirementStatus] = {}
-    for r in policy.PROJECT_REQUIREMENTS:
+    for r in requirement_set:
         tree = parsed[r.path]
         if isinstance(tree, RequirementStatus):
             statuses[r.key] = tree
