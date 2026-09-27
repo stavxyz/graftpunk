@@ -301,6 +301,15 @@ class TestAddCommand:
         assert plugin.commands[-1].endpoint == "GET /api/orders/{order_id}"
         _ruff_clean(recorded)
 
+    def test_crlf_line_endings_are_kept_throughout(self, recorded: Path) -> None:
+        module = _hand_written_project(recorded)
+        module.write_bytes(_HAND_WRITTEN.replace("\n", "\r\n").encode())
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        written = module.read_bytes()
+        assert b"\r\n" in written
+        assert b"\n" not in written.replace(b"\r\n", b"")
+
     def test_a_second_path_parameter_command_does_not_duplicate_the_quote_import(
         self, recorded: Path
     ) -> None:

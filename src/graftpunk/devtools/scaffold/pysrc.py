@@ -33,6 +33,7 @@ __all__ = [
     "exploded_dict_lines",
     "given_entries_dict_lines",
     "import_lines",
+    "joined_like",
     "literal_dict_entry_lines",
     "literal_lines",
     "quoted_literal",
@@ -510,6 +511,27 @@ def _joined(lines: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _line_ending(text: str) -> str:
+    """The line ending *text* already uses: ``"\\r\\n"`` when it holds one, else
+    ``"\\n"``."""
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def joined_like(original: str, lines: Sequence[str]) -> str:
+    """*lines* rejoined as *original* was written: ``"\\r\\n"`` when *original* holds
+    one, else ``"\\n"``, and a trailing newline only when *original* ends with one.
+
+    ``write.read_original`` reads a file's bytes without universal-newline
+    translation, so a CRLF file is compared and restored as CRLF; every writer
+    that rebuilds a module from ``original.splitlines()`` (which discards the
+    line ending each line had) rejoins through here instead of assuming LF, so
+    the round trip keeps faith with what was actually on disk.
+    """
+    ending = _line_ending(original)
+    joined = ending.join(lines)
+    return joined + ending if original.endswith("\n") else joined
+
+
 class ImportPlacementError(ValueError):
     """An import :func:`with_import` will not place: the module's imports are not in a
     shape it knows. Nothing is changed; the message says what to do instead."""
@@ -565,8 +587,8 @@ def with_import(text: str, module: str, name: str) -> str:
             ]
             merged_names = names if name in names else [*names, name]
             merged = import_lines(module, *sorted(merged_names, key=_isort_name_key))
-            return _joined(
-                lines[: node.lineno - 1] + merged + lines[node.end_lineno or node.lineno :]
+            return joined_like(
+                text, lines[: node.lineno - 1] + merged + lines[node.end_lineno or node.lineno :]
             )
     new_line = f"from {module} import {name}"
     first = next(
@@ -612,7 +634,7 @@ def with_import(text: str, module: str, name: str) -> str:
         ]
         at = (leading[-1].end_lineno or leading[-1].lineno) if leading else 0
         insert = ["", new_line] if at else [new_line, ""]
-    return _joined(lines[:at] + insert + lines[at:])
+    return joined_like(text, lines[:at] + insert + lines[at:])
 
 
 class Binding(Protocol):
@@ -649,6 +671,7 @@ def with_bindings(text: str, bindings: Sequence[Binding]) -> str:
         after_definition = bool(body) and isinstance(
             body[-1], (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
         )
-        separator = "\n\n\n" if after_definition else "\n"
-        text = text.rstrip("\n") + separator + binding.statement + "\n"
+        ending = _line_ending(text)
+        separator = ending * 3 if after_definition else ending
+        text = text.rstrip("\r\n") + separator + binding.statement + ending
     return text
