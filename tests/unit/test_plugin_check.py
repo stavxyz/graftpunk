@@ -35,10 +35,24 @@ class MyshopPlugin(SitePlugin):
 """
 
 
+_TEST_MODULE_MARKER = (
+    "\n\n\n# GP-FILL: add a test per command, against a fixture in tests/fixtures/\n"
+)
+
+
 def _clean_project(root: Path) -> Path:
+    """A generated project with no GP-FILL marker left anywhere: the plugin
+    module gets a filled-in command, and the un-filled test module's own
+    marker (render() writes one with no digest) is removed too, so a test
+    asserting no findings is not tripped up by check_project now reading
+    tests/ as well as the plugin module."""
     write_scaffold(root, _SPEC)
     module = root / "src" / "graftpunk_myshop" / "plugin.py"
     module.write_text(_CLEAN_MODULE)
+    test_module = root / "tests" / "test_plugin.py"
+    text = test_module.read_text()
+    assert text.endswith(_TEST_MODULE_MARKER), "render()'s test-module marker text changed"
+    test_module.write_text(text.removesuffix(_TEST_MODULE_MARKER) + "\n")
     return module
 
 
@@ -55,13 +69,17 @@ class TestFindings:
         write_scaffold(tmp_path, _SPEC)
         findings = check_project(tmp_path)
         assert findings
-        module = (tmp_path / "src" / "graftpunk_myshop" / "plugin.py").read_text().splitlines()
+        assert {f.path for f in findings} == {
+            "src/graftpunk_myshop/plugin.py",
+            "tests/test_plugin.py",
+        }
         for finding in findings:
-            assert finding.path == "src/graftpunk_myshop/plugin.py"
-            assert finding.line is not None and "GP-FILL" in module[finding.line - 1]
+            text = (tmp_path / finding.path).read_text().splitlines()
+            assert finding.line is not None and "GP-FILL" in text[finding.line - 1]
         result = runner.invoke(app, ["plugin", "check", "--dir", str(tmp_path)])
         assert result.exit_code == 1
         assert "src/graftpunk_myshop/plugin.py:" in result.output
+        assert "tests/test_plugin.py:" in result.output
 
     def test_a_module_without_exactly_one_plugin_class_is_reported(self, tmp_path: Path) -> None:
         module = _clean_project(tmp_path)
