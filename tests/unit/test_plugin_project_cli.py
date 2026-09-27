@@ -155,6 +155,11 @@ class TestPluginInfo:
         assert plugin["commands"] == [{"name": "order", "endpoint": None}]
         assert plugin["base_url"] is None
 
+    def test_a_command_group_is_listed_by_its_registered_name(self, tmp_path: Path) -> None:
+        _hand_written_project(tmp_path, module_text=_HAND_WRITTEN_WITH_GROUP)
+        (plugin,) = _info(tmp_path)["plugins"]
+        assert {"name": "admin", "endpoint": None} in plugin["commands"]
+
     def test_the_payload_carries_no_installation_facts(self, recorded: Path) -> None:
         _new(recorded)
         payload = _info(recorded)
@@ -345,6 +350,57 @@ if __name__ == "__main__":
 """
 
 
+_HAND_WRITTEN_WITH_HELPER = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+from graftpunk.plugins import SitePlugin
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+
+    def orders(self) -> list:
+        return []
+"""
+
+_HAND_WRITTEN_WITH_ATTRIBUTE = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+from graftpunk.plugins import SitePlugin
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+
+    orders = 1
+"""
+
+_HAND_WRITTEN_WITH_GROUP = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+from graftpunk.plugins import CommandContext, SitePlugin, command
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+
+    @command(help="Admin commands")
+    class Admin:
+        @command(help="List admins")
+        def list(self, ctx: CommandContext) -> dict:
+            return {}
+"""
+
+
 def _hand_written_project(
     root: Path, entry_point: str = "myshop", module_text: str = _HAND_WRITTEN
 ) -> Path:
@@ -468,6 +524,30 @@ class TestAddCommand:
         result = _add(recorded, "myshop", "order-list=GET /api/orders/{order_id}")
         assert result.exit_code == 1
         assert "already has a command" in _plain(result.output)
+
+    def test_an_undecorated_helper_method_blocks_the_same_name(self, recorded: Path) -> None:
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_HELPER)
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        assert "orders" in _plain(result.output)
+        assert module.read_bytes() == before
+
+    def test_a_class_attribute_blocks_the_same_name(self, recorded: Path) -> None:
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_ATTRIBUTE)
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        assert "orders" in _plain(result.output)
+        assert module.read_bytes() == before
+
+    def test_a_command_group_blocks_its_registered_name(self, recorded: Path) -> None:
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_GROUP)
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "admin=GET /api/orders")
+        assert result.exit_code == 1
+        assert "admin" in _plain(result.output)
+        assert module.read_bytes() == before
 
     def test_a_login_flow_endpoint_is_refused(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")

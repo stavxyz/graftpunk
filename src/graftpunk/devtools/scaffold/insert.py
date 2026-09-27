@@ -1,12 +1,12 @@
 """Places one rendered command stub inside a plugin class, through ``write.py``.
 
 The placement rule is code, and total over any class the project reader
-accepts: immediately after the class's last ``@command``-decorated method, or,
-for a class with no command yet, immediately after the class body's last
-statement, wherever the class sits in the module. A module a developer has
-extended with helpers above or below the class is handled rather than refused
-(graft skill spec, 2026-09-21). It inserts a stub, the imports the rendered stub says it
-references, and nothing else.
+accepts: immediately after the class's last ``@command``-decorated member (a
+method or a command group), or, for a class with no command yet, immediately
+after the class body's last statement, wherever the class sits in the module.
+A module a developer has extended with helpers above or below the class is
+handled rather than refused (graft skill spec, 2026-09-21). It inserts a stub, the
+imports the rendered stub says it references, and nothing else.
 """
 
 from __future__ import annotations
@@ -91,7 +91,11 @@ def add_command(
             f"its entry points are: {names}."
         )
     command = plan_command(d, selection)
-    if {command.identifier, command.registered_name} & _taken_names(plugin):
+    collides = (
+        command.identifier in plugin.class_names
+        or {command.identifier, command.registered_name} & _taken_names(plugin)
+    )
+    if collides:
         raise CommandInsertError(
             f"{plugin.module_path} already has a command named {selection.name!r}."
         )
