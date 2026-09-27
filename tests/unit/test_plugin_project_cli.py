@@ -679,6 +679,18 @@ class TestAddCommand:
         assert result.exit_code == 1
         assert "not a graftpunk plugin project (empty)" in " ".join(_plain(result.output).split())
 
+    def test_an_empty_run_directory_is_refused_naming_the_har_path(self, recorded: Path) -> None:
+        """An interrupted recording: the run directory exists but network.har does
+        not, so digest()'s FileNotFoundError must not reach the terminal as a
+        traceback."""
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        har = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
+        har.unlink()
+        result = _add(recorded, "myshop", "invoices=GET /api/invoices")
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert str(har) in line
+
 
 def _project_lacking_the_wiring(root: Path) -> Path:
     """A generated project whose conftest predates the sanitisation wiring."""

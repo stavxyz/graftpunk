@@ -34,6 +34,7 @@ from graftpunk.devtools.scaffold.upgrade import upgrade_project
 from graftpunk.devtools.scaffold.write import InvalidChangeError
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.naming import EndpointSpecError, parse_command_spec
+from graftpunk.har.parser import HARParseError
 from graftpunk.logging import get_logger
 
 LOG = get_logger(__name__)
@@ -196,7 +197,15 @@ def plugin_new(
     if from_run is not None:
         run_dir = resolve_run(from_run, run)
         source = DigestSource.from_run_dir(run_dir, session=from_run, run_id=run_dir.name)
-        digest_result = digest(source)
+        try:
+            digest_result = digest(source)
+        except (FileNotFoundError, HARParseError) as exc:
+            LOG.debug("scaffold_refused", reason="digest_load_error", har_path=str(source.har_path))
+            console.print(
+                f"[red]Could not read {escape(str(source.har_path))}: {escape(str(exc))}[/red]",
+                soft_wrap=True,
+            )
+            raise typer.Exit(1) from None
         base_url = url or f"https://{digest_result.primary_host}"
 
     try:
@@ -328,7 +337,16 @@ def plugin_add_command(
     """Add one command stub to a plugin, in the shape gp plugin new writes."""
     (selection,) = _command_selections([command])
     run_dir = resolve_run(from_run, run)
-    run_digest = digest(DigestSource.from_run_dir(run_dir, session=from_run, run_id=run_dir.name))
+    source = DigestSource.from_run_dir(run_dir, session=from_run, run_id=run_dir.name)
+    try:
+        run_digest = digest(source)
+    except (FileNotFoundError, HARParseError) as exc:
+        LOG.debug("add_command_refused", reason="digest_load_error", har_path=str(source.har_path))
+        console.print(
+            f"[red]Could not read {escape(str(source.har_path))}: {escape(str(exc))}[/red]",
+            soft_wrap=True,
+        )
+        raise typer.Exit(1) from None
     try:
         added = add_command(dir_, plugin, run_digest, selection)
     except DevtoolsRefusal as exc:
