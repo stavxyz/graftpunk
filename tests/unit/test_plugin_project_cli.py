@@ -448,6 +448,30 @@ class MyshopPlugin(SitePlugin):
     base_url = "https://myshop.example"
 """
 
+_HAND_WRITTEN_TAB_INDENTED = (
+    '"""myshop plugin."""\n'
+    "\n"
+    "from __future__ import annotations\n"
+    "\n"
+    "from graftpunk.plugins import SitePlugin\n"
+    "\n"
+    "\n"
+    "class MyshopPlugin(SitePlugin):\n"
+    '\tsite_name = "myshop"\n'
+    '\tbase_url = "https://myshop.example"\n'
+)
+
+_HAND_WRITTEN_ONE_LINE_CLASS = (
+    '"""myshop plugin."""\n'
+    "\n"
+    "from __future__ import annotations\n"
+    "\n"
+    "from graftpunk.plugins import SitePlugin\n"
+    "\n"
+    "\n"
+    'class MyshopPlugin(SitePlugin): site_name = "myshop"\n'
+)
+
 _HAND_WRITTEN_WITH_MODULE_HELPER = """\
 \"\"\"myshop plugin.\"\"\"
 
@@ -564,6 +588,41 @@ class TestAddCommand:
         assert "def orders(" in text
         ast.parse(text)
         _ruff_clean(recorded)
+
+    def test_a_tab_indented_class_gets_a_tab_indented_stub(self, recorded: Path) -> None:
+        """B3: the stub was always rendered at four spaces and spliced in as-is,
+        so a tab-indented class got a mixed-indentation module that does not
+        even parse (polish-r1 P5)."""
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_TAB_INDENTED)
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        text = module.read_text()
+        assert "\tdef orders(" in text
+        assert "    def orders(" not in text
+        ast.parse(text)
+        namespace: dict[str, object] = {}
+        exec(compile(text, "plugin.py", "exec"), namespace)  # noqa: S102
+        assert namespace["MyshopPlugin"]().site_name == "myshop"  # type: ignore[operator]
+        # ruff format --check would reformat a tab-indented file to spaces on
+        # its own (tabs are not this project's own gate's business); ruff
+        # check (lint, no reformatting) is what a tab-indented project passes.
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", "."],
+            cwd=recorded,
+            capture_output=True,
+            text=True,
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+
+    def test_a_one_line_class_body_is_refused(self, recorded: Path) -> None:
+        """B3: splicing a stub after a one-line class's body, itself on the
+        `class` line, put the stub outside the class (polish-r1 P5)."""
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_ONE_LINE_CLASS)
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        assert "class" in _plain(result.output)
+        assert module.read_bytes() == before
 
     def test_a_decorated_helper_and_a_main_block_below_the_class_stay_below_it(
         self, recorded: Path
