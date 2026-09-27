@@ -382,7 +382,8 @@ def parse_har_file(filepath: Path | str) -> HARParseResult:
 
     Raises:
         HARParseError: If file structure is invalid (not valid JSON or missing
-            required HAR structure).
+            required HAR structure), the file is not valid UTF-8, or it cannot
+            be read for another OS reason (for example, it is a directory).
         FileNotFoundError: If file does not exist.
     """
     filepath = Path(filepath)
@@ -396,6 +397,13 @@ def parse_har_file(filepath: Path | str) -> HARParseResult:
             data = json.load(f)
     except json.JSONDecodeError as exc:
         raise HARParseError(f"Invalid JSON in HAR file: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise HARParseError(f"{filepath}: not valid UTF-8 ({exc})") from exc
+    except OSError as exc:
+        # FileNotFoundError is already reported above; anything else that open()
+        # or read() can raise (a directory, a permission error) is this
+        # function's business to name, not an uncaught traceback at the CLI.
+        raise HARParseError(f"{filepath}: {exc}") from exc
 
     validate_har_schema(data)
     result = _parse_entries(data, base_dir=base_dir)

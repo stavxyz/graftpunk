@@ -154,6 +154,15 @@ class TestParseHarFile:
         with pytest.raises(HARParseError, match="must contain 'log'"):
             parse_har_file(bad_file)
 
+    def test_non_utf8_file_is_a_har_parse_error(self, tmp_path: Path) -> None:
+        """A HAR file that is not valid UTF-8 must not raise UnicodeDecodeError
+        past this function: every caller catches (FileNotFoundError, HARParseError)."""
+        bad_file = tmp_path / "bad.har"
+        bad_file.write_bytes(b"\xff\xfe")
+
+        with pytest.raises(HARParseError, match="not valid UTF-8"):
+            parse_har_file(bad_file)
+
 
 class TestParseHarString:
     """Tests for parsing HAR content from strings."""

@@ -169,6 +169,27 @@ class TestPluginNewHappyPath:
         assert str(run_dir / "network.har") in line
         assert set(tmp_path.iterdir()) == before
 
+    @pytest.mark.usefixtures("gp_logging")
+    def test_a_non_utf8_har_is_refused_naming_the_har_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        har = run_dir / "network.har"
+        har.write_bytes(b"\xff\xfe")
+        target = tmp_path / "out"
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert str(har) in line
+        assert set(tmp_path.iterdir()) == before
+
 
 def _write_run(observe_base: Path, session: str, run_id: str, *, url: str, body: str) -> None:
     run_dir = observe_base / session / run_id
