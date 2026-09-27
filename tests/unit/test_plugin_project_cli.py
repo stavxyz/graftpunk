@@ -584,9 +584,7 @@ class TestAddCommand:
         assert "a command group already registers 'admin'" in _plain(result.output)
         assert module.read_bytes() == before
 
-    def test_an_endpointless_command_collision_keeps_the_command_text(
-        self, recorded: Path
-    ) -> None:
+    def test_an_endpointless_command_collision_keeps_the_command_text(self, recorded: Path) -> None:
         """A hand-written @command with no endpoint= is still a command, not a
         group: it must be refused with the command text, not the group text."""
         module = _hand_written_project(
