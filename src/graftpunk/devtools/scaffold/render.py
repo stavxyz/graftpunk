@@ -1050,7 +1050,7 @@ class RenderedCommand:
 def _default_commands(d: RunDigest) -> list[PlannedCommand]:
     """Every eligible endpoint up to ``_MAX_SCAFFOLD_ENDPOINTS``, under generated names:
     what a render produces when the spec selects nothing."""
-    seen_names: set[str] = set(policy.RESERVED_COMMAND_NAMES)
+    seen_names: set[str] = set(policy.RESERVED_COMMAND_NAMES) | set(policy.GENERATED_MODULE_NAMES)
     return [
         PlannedCommand(_command_name(e.template, seen_names), None, e.methods[0], e)
         for e in _ordered_endpoints(d)[:_MAX_SCAFFOLD_ENDPOINTS]

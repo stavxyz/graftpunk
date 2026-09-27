@@ -544,6 +544,59 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert "warnings summary" not in pytest_result.stdout.lower(), pytest_result.stdout
         assert "1 accepted on declaration" in pytest_result.stdout, pytest_result.stdout
 
+    def test_a_command_named_endpoint_is_renamed_and_still_passes_its_own_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A default-named stub for a /command endpoint would bind 'command',
+        shadowing the @command decorator every generated module imports and
+        breaking every later @command(...) in the class body (polish-r1 P1)."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entries = [_entry("GET", "https://api.myshop.example.com/command", body='{"ok": true}')]
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--run",
+                "run-1",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "def command(" not in plugin_code
+        assert "def command_2(" in plugin_code
+
+        fixtures_dir = target / "tests" / "fixtures"
+        (fixtures_dir / "get_command.json").write_text('{"ok": true}')
+        (fixtures_dir / "get_command.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        )
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", str(target)], capture_output=True, text=True
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+
     def test_a_generated_test_passes_with_a_query_parameter_named_quote(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

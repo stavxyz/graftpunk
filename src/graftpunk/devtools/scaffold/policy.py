@@ -19,6 +19,7 @@ __all__ = [
     "CONFTEST_PATH",
     "FIXTURES_PLACEHOLDER",
     "FIXTURES_TREE",
+    "GENERATED_MODULE_NAMES",
     "GP_FILL_MARKER",
     "PROJECT_GATE",
     "PROJECT_REQUIREMENTS",
@@ -139,6 +140,39 @@ RESERVED_COMMAND_NAMES: Final[frozenset[str]] = frozenset(
 SitePlugin, the class every plugin subclasses, read from the class itself so a new
 framework attribute is covered without an edit here, and the root commands
 registration adds. render.py, selection.py, and insert.py all read it."""
+
+GENERATED_MODULE_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "command",
+        "CommandContext",
+        "PluginParamSpec",
+        "SitePlugin",
+        "LoginConfig",
+        "LoginStep",
+        "Token",
+        "TokenConfig",
+        "_quote_path",
+        "int",
+        "float",
+        "bool",
+        "str",
+        "list",
+        "dict",
+    }
+)
+"""The names a generated plugin module binds or reads at its own module level: every
+name ``render.py`` imports into it (``command``, ``CommandContext``,
+``PluginParamSpec``, ``SitePlugin``, ``LoginConfig``, ``LoginStep``, ``Token``,
+``TokenConfig``, and ``_quote_path``, the private alias it gives ``urllib.parse.quote``),
+plus the builtins a stub's ``@command(..., type=int)`` keyword evaluates in the class
+body. A command stub named one of these binds the name inside the class namespace, so
+a later ``@command(...)`` in the same class calls the stub instead of the real
+decorator or type (issue graft-package-project-tools polish-r1 P1).
+``selection.plan_command`` refuses a selection naming one, ``render._default_commands``
+seeds its dedupe with it, and ``insert.add_command`` separately refuses a name the
+target module already binds at top level, for a name outside this set. A test in
+``test_scaffold_policy.py`` pins this set against a rendered module's top-level
+bindings, so a new renderer import cannot silently fall out of step."""
 
 
 PROJECT_GATE: Final[tuple[str, ...]] = (

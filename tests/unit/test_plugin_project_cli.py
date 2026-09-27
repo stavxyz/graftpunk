@@ -435,6 +435,23 @@ class MyshopPlugin(SitePlugin):
         return {}
 """
 
+_HAND_WRITTEN_WITH_MODULE_HELPER = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+from graftpunk.plugins import SitePlugin
+
+
+def helper() -> int:
+    return 1
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+"""
+
 
 def _hand_written_project(
     root: Path, entry_point: str = "myshop", module_text: str = _HAND_WRITTEN
@@ -633,6 +650,28 @@ class TestAddCommand:
         result = _add(recorded, "myshop", "login=GET /api/orders/{order_id}")
         assert result.exit_code == 1
         assert "reserved" in _plain(result.output)
+
+    def test_a_name_shadowing_a_generated_import_is_refused(self, recorded: Path) -> None:
+        """'command' is the @command decorator every generated module imports; a
+        stub named after it would call itself instead (polish-r1 P1)."""
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "command=GET /api/invoices")
+        assert result.exit_code == 1
+        assert "shadow" in _plain(result.output)
+        assert module.read_bytes() == before
+
+    def test_a_module_level_helper_blocks_the_same_name(self, recorded: Path) -> None:
+        """A top-level `def helper()` is not in the plugin class body, so
+        class_names never sees it; the module-level binds_name check catches it
+        instead (polish-r1 P1)."""
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_MODULE_HELPER)
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "helper=GET /api/orders")
+        assert result.exit_code == 1
+        assert "already binds 'helper' at top level" in _plain(result.output)
+        assert module.read_bytes() == before
 
     def test_nothing_but_the_module_is_touched(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")

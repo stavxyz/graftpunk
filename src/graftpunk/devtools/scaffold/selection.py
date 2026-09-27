@@ -104,6 +104,11 @@ def plan_command(d: RunDigest, selection: CommandSelection) -> PlannedCommand:
             f"attribute, and the commands graftpunk registers for every plugin (login), "
             f"cannot be a command name."
         )
+    if identifier in policy.GENERATED_MODULE_NAMES:
+        raise CommandSelectionError(
+            f"Command name {selection.name!r} would shadow a name every generated plugin "
+            f"module binds at its top level; choose another."
+        )
     endpoint = next(
         (
             e

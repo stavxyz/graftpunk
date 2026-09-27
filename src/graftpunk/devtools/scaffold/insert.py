@@ -11,13 +11,19 @@ imports the rendered stub says it references, and nothing else.
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_project import PluginDefect, PluginView, require_plugin_project
 from graftpunk.devtools.scaffold import policy
-from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, joined_like, with_import
+from graftpunk.devtools.scaffold.pysrc import (
+    ImportPlacementError,
+    binds_name,
+    joined_like,
+    with_import,
+)
 from graftpunk.devtools.scaffold.render import render_command
 from graftpunk.devtools.scaffold.selection import CommandSelection, plan_command
 from graftpunk.devtools.scaffold.write import (
@@ -84,9 +90,9 @@ def add_command(
 
     Raises:
         CommandInsertError: The target plugin's module is defective, no entry
-            point has that name, the command name is taken (as a method name or a
-            CLI name), or the module's imports are in a shape ``with_import`` does
-            not place into.
+            point has that name, the command name is taken (as a method name, a
+            CLI name, or a name the module already binds at top level), or the
+            module's imports are in a shape ``with_import`` does not place into.
         CommandSelectionError: See :func:`plan_command`.
         NotAPluginProjectError: *root* is not a plugin project.
         PluginProjectError: See :func:`read_project`.
@@ -119,9 +125,13 @@ def add_command(
         raise CommandInsertError(
             f"{plugin.module_path}: the plugin class already defines {selection.name!r}."
         )
-    rendered = render_command(command, d)
     module = root / plugin.module_path
     original = read_original(module)
+    if binds_name(ast.parse(original), command.identifier):
+        raise CommandInsertError(
+            f"{plugin.module_path}: the module already binds {command.identifier!r} at top level."
+        )
+    rendered = render_command(command, d)
     lines = original.splitlines()
     at = insertion_line(plugin)
     text = joined_like(original, [*lines[:at], "", *rendered.lines, *lines[at:]])

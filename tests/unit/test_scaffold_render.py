@@ -1117,6 +1117,36 @@ class TestPluginModuleWithTokens:
         assert "GP-FILL: unpaired token candidate: header 'X-Lonely'" in plugin_code
 
 
+def test_generated_module_names_matches_a_maximal_rendered_modules_top_level() -> None:
+    """policy.GENERATED_MODULE_NAMES names every module-level binding a generated
+    plugin module can carry: a spec with a login form, a paired token, and an
+    endpoint with a typed query parameter and a path placeholder triggers every
+    optional import at once, and this pins the constant against what the render
+    actually binds (polish-r1 P1)."""
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=_digest(
+            endpoints=(_ORDERS_ENDPOINT,),
+            login_forms=(_PASSWORD_LOGIN_FORM,),
+            tokens=(_HEADER_TOKEN, _COOKIE_TOKEN),
+        ),
+    )
+    plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+    tree = ast.parse(plugin_code)
+    bound = {
+        alias.asname or alias.name.split(".")[0]
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
+        for alias in node.names
+    }
+    builtins_referenced = {"int", "float", "bool", "str", "list", "dict"}
+    assert bound | builtins_referenced == policy.GENERATED_MODULE_NAMES
+
+
 class TestPluginModuleCommandStubs:
     def test_stub_per_endpoint_up_to_the_cap(self) -> None:
         endpoints = tuple(
@@ -1145,6 +1175,29 @@ class TestPluginModuleCommandStubs:
         )
         plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
         assert plugin_code.count("@command(") == _MAX_SCAFFOLD_ENDPOINTS
+
+    def test_a_command_endpoint_gets_a_non_shadowing_default_name(self) -> None:
+        """A /command endpoint's default name would be 'command', which shadows
+        the @command decorator every generated module imports; the default
+        namer must dedupe it away, and the module must actually execute
+        (polish-r1 P1)."""
+        endpoint = dataclasses.replace(
+            _ORDERS_ENDPOINT, template="/command", query_params={}, custom_headers=()
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        assert "def command(" not in plugin_code
+        assert "def command_2(" in plugin_code
+        namespace: dict[str, object] = {}
+        exec(compile(plugin_code, "plugin.py", "exec"), namespace)  # noqa: S102
+        plugin_class = namespace["MyshopPlugin"]
+        assert plugin_class().site_name == "myshop"  # type: ignore[operator]
 
     def test_json_endpoint_calls_request_json_with_xhr_role(self) -> None:
         spec = ScaffoldSpec(
@@ -3443,6 +3496,16 @@ class TestExplicitSelection:
             CommandSelection("login", "GET", "/search"), endpoints=(_SEARCH_ENDPOINT,)
         )
         with pytest.raises(CommandSelectionError, match="reserved"):
+            render(spec)
+
+    def test_a_name_shadowing_a_generated_import_is_refused(self) -> None:
+        """'command' is not a SitePlugin attribute, so it is not "reserved"; it is
+        the @command decorator every generated module imports, and a stub named
+        after it would call itself instead of the decorator (polish-r1 P1)."""
+        spec = self._spec(
+            CommandSelection("command", "GET", "/search"), endpoints=(_SEARCH_ENDPOINT,)
+        )
+        with pytest.raises(CommandSelectionError, match="shadow"):
             render(spec)
 
     def test_building_the_spec_checks_only_its_shape(self) -> None:
