@@ -532,11 +532,15 @@ def with_import(text: str, module: str, name: str) -> str:
     name order, whatever the rest of the module looks like. Failing that, placed
     only into the shapes generated files have: module-level imports contiguous at
     the top (after a docstring and any ``__future__`` import) and in at most two
-    isort sections, the standard library and then everything else. The line goes
-    among its section's imports in module order, or, for a module with no
-    imports, after its docstring. A project whose own code forms a third section
-    (a first-party package isort sorts apart) gets the line in the second
-    section, which its ``ruff check --fix`` then moves.
+    isort sections, the standard library and then everything else. Within a
+    section isort (force-sort-within-sections off) puts every plain ``import x``
+    before any ``from x import y``; the new line, always a from-import, goes
+    before the first same-section from-import whose module sorts after it, else
+    after the last same-section from-import, else after the last same-section
+    plain import, or, for a module with no imports, after its docstring. A
+    project whose own code forms a third section (a first-party package isort
+    sorts apart) gets the line in the second section, which its
+    ``ruff check --fix`` then moves.
 
     Raises:
         ImportPlacementError: An import follows other code, or a relative import
@@ -583,9 +587,16 @@ def with_import(text: str, module: str, name: str) -> str:
         )
     body = [n for n in imports if _imported_module(n) != "__future__"]
     same_section = [n for n in body if _is_stdlib(_imported_module(n)) == _is_stdlib(module)]
-    later = [n for n in same_section if _imported_module(n) > module]
+    # isort (force-sort-within-sections off) puts every plain "import x" before a
+    # section's from-imports; the new line is always a from-import, so only a
+    # same-section from-import can be "later" than it, and a same-section-with-
+    # no-from-imports falls back to going after the plain imports.
+    same_section_from = [n for n in same_section if isinstance(n, ast.ImportFrom)]
+    later = [n for n in same_section_from if _imported_module(n) > module]
     if later:
         at, insert = later[0].lineno - 1, [new_line]
+    elif same_section_from:
+        at, insert = same_section_from[-1].end_lineno or same_section_from[-1].lineno, [new_line]
     elif same_section:
         at, insert = same_section[-1].end_lineno or same_section[-1].lineno, [new_line]
     elif body and _is_stdlib(module):
