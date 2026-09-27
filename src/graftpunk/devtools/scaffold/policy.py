@@ -66,9 +66,13 @@ class ProjectRequirement:
 
     Presence is decided structurally by the project reader, with
     ``pysrc.binds_name``: the file binds the name at module level. The renderer
-    emits every requirement in a new project, ``gp plugin upgrade`` applies the
-    ones a project lacks, and ``gp plugin check`` reports them; the renderer and
-    the migrator both add the statement through ``pysrc.with_bindings``.
+    emits every requirement into the conftest it generates, ``gp plugin upgrade``
+    applies the ones a project lacks, and ``gp plugin check`` reports them; the
+    renderer and the migrator both add the statement through
+    ``pysrc.with_bindings``. Every requirement's ``path`` is ``CONFTEST_PATH``
+    today (a test in ``test_scaffold_policy.py`` holds that), so a requirement
+    for another file would need the renderer's conftest-only filter extended
+    first.
 
     Only a Python file and a module-level binding. A ``pyproject.toml`` key is not
     this format's business (it needs a TOML edit through ``pyproject_edit.py``),
