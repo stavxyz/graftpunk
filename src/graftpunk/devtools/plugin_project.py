@@ -216,7 +216,11 @@ def _load_pyproject(root: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
-        return tomllib.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise PluginProjectError(f"{path}: not valid UTF-8 ({exc})") from exc
+    try:
+        return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise PluginProjectError(f"{path}: not valid TOML ({exc})") from exc
 
@@ -330,14 +334,27 @@ def _module_file(root: Path, module: str) -> str | None:
     return None
 
 
+def _parse_error_message(exc: SyntaxError | ValueError) -> str:
+    """The "does not parse (...)" refusal text, with a line clause only when the
+    exception carries one: a NUL byte in the source raises ``ValueError`` on
+    Python 3.11 (no ``lineno``) and ``SyntaxError`` with ``lineno=None`` on later
+    versions."""
+    msg = getattr(exc, "msg", None) or str(exc)
+    lineno = getattr(exc, "lineno", None)
+    clause = f", line {lineno}" if lineno is not None else ""
+    return f"does not parse ({msg}{clause})"
+
+
 def _parse(root: Path, relative: str) -> tuple[str, ast.Module]:
-    text = (root / relative).read_text(encoding="utf-8")
+    path = root / relative
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise PluginProjectError(f"{relative}: not valid UTF-8 ({exc})") from exc
     try:
         return text, ast.parse(text)
-    except SyntaxError as exc:
-        raise PluginProjectError(
-            f"{relative}: does not parse ({exc.msg}, line {exc.lineno})"
-        ) from exc
+    except (SyntaxError, ValueError) as exc:
+        raise PluginProjectError(f"{relative}: {_parse_error_message(exc)}") from exc
 
 
 def _last_name(node: ast.expr) -> str | None:
@@ -484,6 +501,10 @@ def _parse_requirement_file(path: Path) -> ast.Module | RequirementStatus:
     if not path.is_file():
         return RequirementStatus("unbound")
     try:
-        return ast.parse(path.read_text(encoding="utf-8"))
-    except SyntaxError as exc:
-        return RequirementStatus("unreadable", f"does not parse ({exc.msg}, line {exc.lineno})")
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        return RequirementStatus("unreadable", f"not valid UTF-8 ({exc})")
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError) as exc:
+        return RequirementStatus("unreadable", _parse_error_message(exc))
