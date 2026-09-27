@@ -1,4 +1,5 @@
-"""``gp plugin new``: the CLI surface for the scaffold. Argument handling only."""
+"""``gp plugin``: new, add-command, info, upgrade, and check. Argument handling only;
+each entry point calls into ``graftpunk.devtools``."""
 
 from __future__ import annotations
 
@@ -38,7 +39,9 @@ from graftpunk.logging import get_logger
 LOG = get_logger(__name__)
 console = Console()
 
-plugin_app = typer.Typer(name="plugin", help="Scaffold a new graftpunk plugin.")
+plugin_app = typer.Typer(
+    name="plugin", help="Scaffold, extend, inspect, and check a graftpunk plugin project."
+)
 
 _BackendName = Literal["nodriver", "selenium"]
 _SUPPORTED_BACKENDS: tuple[_BackendName, ...] = ("nodriver", "selenium")
