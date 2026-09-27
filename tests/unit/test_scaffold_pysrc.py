@@ -332,6 +332,13 @@ class TestWithImport:
         aliased = "from elsewhere import thing as Path\n"
         assert with_import(aliased, "pathlib", "Path") == aliased
 
+    def test_an_aliased_name_already_bound_leaves_the_text_alone(self) -> None:
+        """The name with_import is asked to place can itself be "a as b" (render.py
+        asks for "quote as _quote_path"); the module already binds it exactly the
+        same way, so nothing is appended."""
+        text = "from urllib.parse import quote as _quote_path\n"
+        assert with_import(text, "urllib.parse", "quote as _quote_path") == text
+
     def test_a_module_with_no_imports_gets_one_after_its_docstring(self) -> None:
         result = with_import('"""Doc."""\n\nx = 1\n', "pathlib", "Path")
         assert result == '"""Doc."""\n\nfrom pathlib import Path\n\nx = 1\n'

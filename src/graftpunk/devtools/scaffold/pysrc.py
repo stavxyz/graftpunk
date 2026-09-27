@@ -526,15 +526,16 @@ def with_import(text: str, module: str, name: str) -> str:
     to stop placing imports here and run ``ruff check --fix --select I`` over the
     edited text instead.
 
-    Unchanged when :func:`binds_name` says the module already binds *name*.
-    Otherwise merged into an existing ``from {module} import ...``, re-rendered in
-    isort's name order, whatever the rest of the module looks like. Failing that,
-    placed only into the shapes generated files have: module-level imports
-    contiguous at the top (after a docstring and any ``__future__`` import) and in
-    at most two isort sections, the standard library and then everything else.
-    The line goes among its section's imports in module order, or, for a module
-    with no imports, after its docstring. A project whose own code forms a third
-    section (a first-party package isort sorts apart) gets the line in the second
+    Unchanged when :func:`binds_name` says the module already binds *name*'s bound
+    identifier (the alias, for ``"a as b"``; *name* itself otherwise). Otherwise
+    merged into an existing ``from {module} import ...``, re-rendered in isort's
+    name order, whatever the rest of the module looks like. Failing that, placed
+    only into the shapes generated files have: module-level imports contiguous at
+    the top (after a docstring and any ``__future__`` import) and in at most two
+    isort sections, the standard library and then everything else. The line goes
+    among its section's imports in module order, or, for a module with no
+    imports, after its docstring. A project whose own code forms a third section
+    (a first-party package isort sorts apart) gets the line in the second
     section, which its ``ruff check --fix`` then moves.
 
     Raises:
@@ -543,7 +544,7 @@ def with_import(text: str, module: str, name: str) -> str:
             ``ruff check --fix``.
     """
     tree = ast.parse(text)
-    if binds_name(tree, name):
+    if binds_name(tree, name.split(" as ")[-1]):
         return text
     lines = text.splitlines()
     imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
@@ -558,7 +559,8 @@ def with_import(text: str, module: str, name: str) -> str:
                 alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
                 for alias in node.names
             ]
-            merged = import_lines(module, *sorted([*names, name], key=_isort_name_key))
+            merged_names = names if name in names else [*names, name]
+            merged = import_lines(module, *sorted(merged_names, key=_isort_name_key))
             return _joined(
                 lines[: node.lineno - 1] + merged + lines[node.end_lineno or node.lineno :]
             )
