@@ -40,7 +40,7 @@ from graftpunk.devtools.scaffold.pysrc import (
     wrapped_docstring_lines,
 )
 from graftpunk.devtools.scaffold.selection import (
-    _MAX_COMMAND_NAME,
+    MAX_COMMAND_NAME,
     CommandSelection,
     CommandSelectionError,
     PlannedCommand,
@@ -95,7 +95,7 @@ _SCAFFOLD_SHAPE_DEPTH = 1
 # inside the generated width when the line is one identifier (a def, a call,
 # an assignment target): ruff format never splits an identifier and E501 still
 # applies, so the identifiers are bounded at the point they are derived
-# instead. _MAX_COMMAND_NAME is selection.py's own cap (an explicit selection
+# instead. MAX_COMMAND_NAME is selection.py's own cap (an explicit selection
 # is checked there too), imported back here for _command_name.
 _MAX_PLUGIN_NAME = 40
 _MAX_PARAM_NAME = 40
@@ -217,7 +217,7 @@ def _command_name(template: str, seen: set[str]) -> str:
     counter is left for a true collision: the same
     template under another method, or two names equal after truncation.
 
-    Truncated to ``_MAX_COMMAND_NAME`` before the uniqueness counter is applied: the
+    Truncated to ``MAX_COMMAND_NAME`` before the uniqueness counter is applied: the
     name lands in a ``def``, a decorator, and the generated test's own ``def`` and
     call, none of which any wrapping helper can split, so a deep captured path must
     not be able to push those past the generated width.
@@ -227,7 +227,7 @@ def _command_name(template: str, seen: set[str]) -> str:
         for segment in template.strip("/").split("/")
         if segment
     ]
-    base = re.sub(r"[^a-z0-9_]", "_", "_".join(parts).lower())[:_MAX_COMMAND_NAME] or "root"
+    base = re.sub(r"[^a-z0-9_]", "_", "_".join(parts).lower())[:MAX_COMMAND_NAME] or "root"
     return _deduped(_safe_identifier(base, digit_prefix="n_"), seen)
 
 
