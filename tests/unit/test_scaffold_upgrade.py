@@ -185,6 +185,22 @@ class TestUpgrade:
         assert conftest.is_dir()
         assert list(conftest.iterdir()) == []
 
+    def test_a_requirement_paths_parent_that_is_a_file_is_refused(self, tmp_path: Path) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        shutil.rmtree(tmp_path / "tests")
+        (tmp_path / "tests").write_text("not a directory")
+        with pytest.raises(UpgradeRefusedError, match="tests: exists but is not a directory"):
+            upgrade_project(tmp_path)
+
+    def test_the_fixtures_tree_path_as_a_file_is_refused(self, tmp_path: Path) -> None:
+        write_scaffold(tmp_path, _SPEC)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        (tmp_path / "tests" / "fixtures").write_text("not a directory")
+        with pytest.raises(
+            UpgradeRefusedError, match="tests/fixtures: exists but is not a directory"
+        ):
+            upgrade_project(tmp_path)
+
     def test_a_conftest_whose_imports_follow_code_is_refused_and_left_alone(
         self, tmp_path: Path
     ) -> None:

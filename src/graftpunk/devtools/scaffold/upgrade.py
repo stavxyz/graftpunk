@@ -61,6 +61,17 @@ class UpgradeApplied:
         return iter(self.requirements)
 
 
+def _refuse_unless_directory(path: Path, root: Path) -> None:
+    """Refuse in one line when *path* exists but is not a directory: this
+    function is about to write inside it (a requirement's parent directory, or
+    the fixtures tree itself)."""
+    if path.exists() and not path.is_dir():
+        raise UpgradeRefusedError(
+            f"{path.relative_to(root)}: exists but is not a directory. gp plugin "
+            f"upgrade writes there; move it aside, then run it again."
+        )
+
+
 def upgrade_project(root: Path) -> UpgradeApplied:
     """Apply every requirement *root*'s project lacks, and return what was applied.
 
@@ -88,6 +99,7 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     changes: list[PlannedChange] = []
     for relative, requirements in by_path.items():
         path = root / relative
+        _refuse_unless_directory(path.parent, root)
         if path.exists() and not path.is_file():
             raise UpgradeRefusedError(
                 f"{relative}: exists but is not a regular file. gp plugin upgrade writes "
@@ -100,6 +112,7 @@ def upgrade_project(root: Path) -> UpgradeApplied:
             raise UpgradeRefusedError(f"{relative}: {exc}") from exc
         changes.append(PlannedChange(path, content, original=original, validate=validate_python))
     fixtures_tree = root / FIXTURES_TREE
+    _refuse_unless_directory(fixtures_tree, root)
     created_fixtures_tree = not fixtures_tree.is_dir()
     if created_fixtures_tree:
         changes.append(PlannedChange(fixtures_tree / FIXTURES_PLACEHOLDER, ""))
