@@ -401,6 +401,40 @@ class MyshopPlugin(SitePlugin):
             return {}
 """
 
+_HAND_WRITTEN_WITH_ENDPOINTLESS_COMMAND = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+from graftpunk.plugins import CommandContext, SitePlugin, command
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+
+    @command(help="List orders")
+    def orders(self, ctx: CommandContext) -> dict:
+        return {}
+"""
+
+_HAND_WRITTEN_WITH_PINNED_NAME = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+from graftpunk.plugins import CommandContext, SitePlugin, command
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+
+    @command(help="One order", name="order")
+    def by_id(self, ctx: CommandContext) -> dict:
+        return {}
+"""
+
 
 def _hand_written_project(
     root: Path, entry_point: str = "myshop", module_text: str = _HAND_WRITTEN
@@ -548,6 +582,45 @@ class TestAddCommand:
         result = _add(recorded, "myshop", "admin=GET /api/orders")
         assert result.exit_code == 1
         assert "a command group already registers 'admin'" in _plain(result.output)
+        assert module.read_bytes() == before
+
+    def test_an_endpointless_command_collision_keeps_the_command_text(
+        self, recorded: Path
+    ) -> None:
+        """A hand-written @command with no endpoint= is still a command, not a
+        group: it must be refused with the command text, not the group text."""
+        module = _hand_written_project(
+            recorded, module_text=_HAND_WRITTEN_WITH_ENDPOINTLESS_COMMAND
+        )
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        assert "already has a command named 'orders'" in _plain(result.output)
+        assert module.read_bytes() == before
+
+    def test_a_pinned_name_collision_keeps_the_command_text(self, recorded: Path) -> None:
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_PINNED_NAME)
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "order=GET /api/orders")
+        assert result.exit_code == 1
+        assert "already has a command named 'order'" in _plain(result.output)
+        assert module.read_bytes() == before
+
+    def test_the_default_example_command_collision_keeps_the_command_text(
+        self, recorded: Path
+    ) -> None:
+        """gp plugin new with no --from-run writes an example command with no
+        endpoint=; it must collide as a command, not a group."""
+        result = runner.invoke(
+            app,
+            ["plugin", "new", "myshop", "--url", "https://myshop.example", "--dir", str(recorded)],
+        )
+        assert result.exit_code == 0, result.output
+        module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
+        before = module.read_bytes()
+        added = _add(recorded, "myshop", "example=GET /api/orders")
+        assert added.exit_code == 1
+        assert "already has a command named 'example'" in _plain(added.output)
         assert module.read_bytes() == before
 
     def test_a_login_flow_endpoint_is_refused(self, recorded: Path) -> None:
