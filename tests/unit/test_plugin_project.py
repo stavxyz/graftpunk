@@ -238,6 +238,28 @@ class TestTheView:
             {"site_name", "orders", "helper", "orders_command", "Admin"}
         )
 
+    def test_class_names_records_an_import_binding(self, tmp_path: Path) -> None:
+        module = (
+            "from graftpunk.plugins import SitePlugin\n\n\n"
+            "class MyshopPlugin(SitePlugin):\n"
+            '    site_name = "myshop"\n\n'
+            "    import functools\n"
+        )
+        _hand_written(tmp_path, module)
+        (plugin,) = read_project(tmp_path).plugins
+        assert "functools" in plugin.class_names
+
+    def test_class_names_records_tuple_unpacking(self, tmp_path: Path) -> None:
+        module = (
+            "from graftpunk.plugins import SitePlugin\n\n\n"
+            "class MyshopPlugin(SitePlugin):\n"
+            '    site_name = "myshop"\n\n'
+            "    first, second = 1, 2\n"
+        )
+        _hand_written(tmp_path, module)
+        (plugin,) = read_project(tmp_path).plugins
+        assert {"first", "second"} <= plugin.class_names
+
     def test_a_command_group_is_recorded_as_a_command_with_no_endpoint(
         self, tmp_path: Path
     ) -> None:

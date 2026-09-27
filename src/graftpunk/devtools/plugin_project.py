@@ -523,21 +523,65 @@ def _commands(klass: ast.ClassDef) -> Iterator[CommandView]:
         )
 
 
+def _assignment_targets(target: ast.expr) -> Iterator[str]:
+    """Every name *target* binds: a plain name, or, recursively, each element of
+    a tuple/list unpacking (including a starred element)."""
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, ast.Starred):
+        yield from _assignment_targets(target.value)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            yield from _assignment_targets(element)
+
+
+def _import_names(aliases: list[ast.alias]) -> Iterator[str]:
+    """The name each ``import``/``from ... import`` alias binds: the ``as`` name,
+    or, for a plain ``import a.b.c``, the top-level package ``a``."""
+    for alias in aliases:
+        yield alias.asname or alias.name.split(".")[0]
+
+
 def _class_body_names(klass: ast.ClassDef) -> frozenset[str]:
     """Every name the class body binds at its top level: a method (decorated or
-    not), a nested class (including a command group), or an assignment target.
-    ``PluginView.class_names``: the stub inserter's collision check reads this,
-    not just the decorated commands, so a plain helper method or attribute is
-    refused too."""
+    not), a nested class (including a command group), an assignment target
+    (including tuple/starred unpacking and an annotated assignment), an import,
+    a ``for``/``with`` target, or a definition nested under an ``if`` or
+    ``try`` at class-body level (walked recursively, without entering a nested
+    function or class body). ``PluginView.class_names``: the stub inserter's
+    collision check reads this, not just the decorated commands, so a plain
+    helper method, attribute, or import is refused too."""
     names: set[str] = set()
-    for node in klass.body:
+    _collect_body_names(klass.body, names)
+    return frozenset(names)
+
+
+def _collect_body_names(body: list[ast.stmt], names: set[str]) -> None:
+    for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
         elif isinstance(node, ast.Assign):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names.add(node.target.id)
-    return frozenset(names)
+            for target in node.targets:
+                names.update(_assignment_targets(target))
+        elif isinstance(node, ast.AnnAssign):
+            names.update(_assignment_targets(node.target))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update(_import_names(node.names))
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            names.update(_assignment_targets(node.target))
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    names.update(_assignment_targets(item.optional_vars))
+        elif isinstance(node, ast.If):
+            _collect_body_names(node.body, names)
+            _collect_body_names(node.orelse, names)
+        elif isinstance(node, ast.Try):
+            _collect_body_names(node.body, names)
+            for handler in node.handlers:
+                _collect_body_names(handler.body, names)
+            _collect_body_names(node.orelse, names)
+            _collect_body_names(node.finalbody, names)
 
 
 def _requirement_statuses(
