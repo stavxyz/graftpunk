@@ -264,6 +264,7 @@ class TestCheckFixturesTree:
         report = check_fixtures_tree(tmp_path / "fixtures")
         assert len(report.problems) == 1
         assert "does not exist" in report.problems[0]
+        assert "gp plugin upgrade" in report.problems[0]
 
     def test_an_empty_tree_with_its_placeholder_passes(self, tmp_path: Path) -> None:
         (tmp_path / ".gitkeep").write_text("")
