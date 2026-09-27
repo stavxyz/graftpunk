@@ -386,17 +386,31 @@ def _last_name(node: ast.expr) -> str | None:
     return None
 
 
+_SKIPPED_TEST_DIR_NAMES = frozenset({"__pycache__", "venv", ".venv", "node_modules"})
+
+
 def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
     """Every ``GP-FILL`` marker line in a ``*.py`` file under ``policy.TESTS_DIR``,
     as (project-relative path, 1-based line), file order then line order. A file
     that cannot be decoded as UTF-8 is skipped, not raised: it is not this
     function's business to refuse an unreadable test module, only to report the
-    markers it can read."""
+    markers it can read. A path with a component that starts with ``.`` (a
+    dotfile or a dotdir, which covers ``.venv``) or that is ``__pycache__``,
+    ``venv``, or ``node_modules`` is never a test module and is skipped."""
     tests_dir = root / policy.TESTS_DIR
     if not tests_dir.is_dir():
         return ()
     found: list[tuple[str, int]] = []
-    for path in sorted(p for p in tests_dir.rglob("*.py") if p.is_file()):
+    candidates = sorted(
+        p
+        for p in tests_dir.rglob("*.py")
+        if p.is_file()
+        and not any(
+            part.startswith(".") or part in _SKIPPED_TEST_DIR_NAMES
+            for part in p.relative_to(tests_dir).parts
+        )
+    )
+    for path in candidates:
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:

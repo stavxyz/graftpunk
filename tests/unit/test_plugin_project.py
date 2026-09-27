@@ -209,6 +209,14 @@ class TestTheView:
         view = read_project(tmp_path)
         assert all(path != "tests/broken.py" for path, _ in view.test_markers)
 
+    def test_test_markers_skips_a_venv_directory(self, tmp_path: Path) -> None:
+        _generate(tmp_path)
+        marker = tmp_path / "tests" / ".venv" / "x.py"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("# GP-FILL: unreadable\n")
+        view = read_project(tmp_path)
+        assert all(not path.startswith("tests/.venv") for path, _ in view.test_markers)
+
     def test_test_markers_skips_a_directory_named_like_a_python_file(self, tmp_path: Path) -> None:
         """A directory whose name ends in .py matches the *.py glob too; reading
         it as text must not raise."""
