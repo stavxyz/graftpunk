@@ -181,6 +181,43 @@ class TestPluginInfo:
         assert "pyproject.toml: not valid TOML" in _plain(result.output)
         assert "Traceback" not in result.output
 
+    def test_a_non_table_project_is_a_one_line_refusal(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text('project = "x"\n')
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(tmp_path)])
+        assert isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "pyproject.toml" in line
+
+    def test_a_non_table_entry_points_is_a_one_line_refusal(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text('[project]\nentry-points = "x"\n')
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(tmp_path)])
+        assert isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "pyproject.toml" in line
+
+    def test_a_non_table_plugins_group_is_a_one_line_refusal(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project.entry-points]\n"graftpunk.plugins" = "x"\n'
+        )
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(tmp_path)])
+        assert isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "pyproject.toml" in line
+
+    def test_a_non_string_entry_point_value_is_a_one_line_refusal(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project.entry-points."graftpunk.plugins"]\nmyshop = 1\n'
+        )
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(tmp_path)])
+        assert isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "pyproject.toml" in line
+        assert "myshop" in line
+
     def test_a_conftest_that_does_not_parse_does_not_stop_it(self, recorded: Path) -> None:
         """info never reads the conftest: an unreadable requirement file is upgrade's
         and check's business."""
