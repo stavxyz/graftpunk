@@ -309,7 +309,7 @@ def test_the_name_fields_must_be_a_tuple_or_list(kwargs: dict) -> None:
 
 
 class TestScannableText:
-    def test_every_copied_field_is_scanned(self) -> None:
+    def test_status_and_content_type_are_scanned(self) -> None:
         sidecar = Sidecar(
             status=403,
             content_type="text/plain",
@@ -318,8 +318,9 @@ class TestScannableText:
             flagged_names=("shop_session",),
         )
         text = sidecar_scannable_text(sidecar)
-        for value in ("403", "text/plain", "page"):
+        for value in ("403", "text/plain"):
             assert value in text
+        assert "page" not in text
         assert "shop_session" not in text
         assert "ab" * 32 not in text
 

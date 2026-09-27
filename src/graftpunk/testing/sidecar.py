@@ -247,10 +247,15 @@ def _names(data: dict[str, object], key: str, path: Path) -> tuple[str, ...]:
 
 def sidecar_scannable_text(sidecar: Sidecar) -> str:
     """The values of the fields of *sidecar* that were copied from the capture,
-    space-separated: the text a flagged name must not appear in. Three fields
+    space-separated: the text a flagged name must not appear in. Four fields
     are exempt. ``flagged_names`` lists the names themselves; ``capture_sha256``
     and ``redacted_names`` are a digest and a count the writer computed, never
     text copied from the capture, so scanning either could only produce a false
     match on a name that happens to be a run of hex digits or a small integer.
-    ``schema`` is the file's number, not a field of the loaded sidecar."""
-    return " ".join([str(sidecar.status), sidecar.content_type, *sidecar.body_params])
+    ``body_params`` holds request field names, never values, and the writer
+    records them unfiltered against ``flagged_names``, so a posted form's own
+    CSRF field is legitimately both a body parameter and a flagged name; a
+    fixture derived exactly as ``gp observe fixtures`` writes it must not fail
+    on that overlap. ``schema`` is the file's number, not a field of the loaded
+    sidecar."""
+    return " ".join([str(sidecar.status), sidecar.content_type])

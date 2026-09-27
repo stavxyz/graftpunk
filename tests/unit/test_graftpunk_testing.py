@@ -305,14 +305,27 @@ class TestCheckFixturesTree:
     def test_a_flagged_name_in_the_sidecar_fails(self, tmp_path: Path) -> None:
         sidecar = Sidecar(
             status=200,
-            content_type="application/json",
-            body_params=("myshop_session",),
+            content_type="application/vnd.myshop_session+json",
             capture_sha256=hashlib.sha256(b"captured").hexdigest(),
             flagged_names=("myshop_session",),
         )
         _fixture(tmp_path, "get_orders.json", b'{"orders": []}', sidecar)
         (problem,) = check_fixtures_tree(tmp_path).problems
         assert problem.startswith("get_orders.json.meta.json")
+
+    def test_a_flagged_name_in_body_params_alone_passes(self, tmp_path: Path) -> None:
+        """A2: body_params holds field names the writer already filtered, and a
+        form's CSRF field is legitimately both a body parameter and a flagged
+        name; sidecar_scannable_text exempts body_params, so this is not a leak."""
+        sidecar = Sidecar(
+            status=200,
+            content_type="application/json",
+            body_params=("authenticity_token",),
+            capture_sha256=hashlib.sha256(b"captured").hexdigest(),
+            flagged_names=("authenticity_token",),
+        )
+        _fixture(tmp_path, "post_session.json", b'{"ok": true}', sidecar)
+        assert check_fixtures_tree(tmp_path).problems == ()
 
     def test_a_sidecar_of_unknown_schema_fails(self, tmp_path: Path) -> None:
         path = _fixture(tmp_path, "get_orders.json", b"{}", None)
@@ -373,8 +386,7 @@ class TestCheckFixturesTree:
     ) -> None:
         sidecar = Sidecar(
             status=200,
-            content_type="application/json",
-            body_params=("x-csrf-token",),
+            content_type="application/vnd.x-csrf-token+json",
             capture_sha256=hashlib.sha256(b"captured").hexdigest(),
             flagged_names=("X-Csrf-Token",),
         )
