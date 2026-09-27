@@ -17,7 +17,7 @@ from pathlib import Path
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_project import PluginDefect, PluginView, require_plugin_project
 from graftpunk.devtools.scaffold import policy
-from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, with_import
+from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, joined_like, with_import
 from graftpunk.devtools.scaffold.render import render_command
 from graftpunk.devtools.scaffold.selection import CommandSelection, plan_command
 from graftpunk.devtools.scaffold.write import (
@@ -100,7 +100,7 @@ def add_command(
     original = read_original(module)
     lines = original.splitlines()
     at = insertion_line(plugin)
-    text = "\n".join([*lines[:at], "", *rendered.lines, *lines[at:]]) + "\n"
+    text = joined_like(original, [*lines[:at], "", *rendered.lines, *lines[at:]])
     try:
         for imported_from, name in rendered.imports:
             text = with_import(text, imported_from, name)

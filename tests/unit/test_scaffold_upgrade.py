@@ -123,6 +123,14 @@ class TestUpgrade:
         )
         _ruff_check(tmp_path)
 
+    def test_crlf_line_endings_are_kept_throughout(self, tmp_path: Path) -> None:
+        conftest = _project(tmp_path, None)
+        conftest.write_bytes(_OLD_CONFTEST.replace("\n", "\r\n").encode())
+        upgrade_project(tmp_path)
+        written = conftest.read_bytes()
+        assert b"\r\n" in written
+        assert b"\n" not in written.replace(b"\r\n", b"")
+
     def test_a_directory_that_is_not_a_plugin_project_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(NotAPluginProjectError, match="empty"):
             upgrade_project(tmp_path)
