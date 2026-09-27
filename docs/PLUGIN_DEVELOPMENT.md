@@ -1289,9 +1289,11 @@ Without a sidecar, `FixtureSession` answers with status 200 and guesses the
 content type from the extension, but the generated suite's fixtures check fails
 on any fixture that has none (see
 [Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture)). A
-fixture you make by hand gets a sidecar of its own, with `"capture_sha256": null`,
-`"flagged_names": []`, and `"redacted_names": 0`. A sidecar is how you test an error path: copy a fixture together with
-its sidecar, set the copied sidecar's `status` to 403, and assert that the
+fixture you make by hand gets a sidecar of its own with all seven keys shown
+above (the key set is closed, so a sidecar missing one is refused), its own
+`status` and `content_type`, and `"body_params": []`, `"capture_sha256": null`,
+`"flagged_names": []`, and `"redacted_names": 0`. A sidecar is how you test an
+error path: copy a fixture together with its sidecar, set the copied sidecar's `status` to 403, and assert that the
 command raises `SessionRejectedError`.
 
 ### Deriving a fixture from a capture
@@ -1344,9 +1346,10 @@ when a fixture has no sidecar, when a fixture is still byte for byte its
 capture, when a name the sidecar flags turns up in the fixture or elsewhere in
 the sidecar, or when a sidecar is outside its declared format. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
-you wrote from nothing needs a sidecar too, with `"capture_sha256": null`,
-`"flagged_names": []`, and `"redacted_names": 0`: that declares the file came
-off no account. The check trusts that declaration rather than verifying it, and
+you wrote from nothing needs a sidecar too, with all seven keys: its own
+`status` and `content_type`, `"schema": 1`, `"body_params": []`,
+`"capture_sha256": null`, `"flagged_names": []`, and `"redacted_names": 0`. The
+null hash declares the file came off no account. The check trusts that declaration rather than verifying it, and
 prints on every run how many fixtures it accepted that way, so the number shows
 up in review.
 

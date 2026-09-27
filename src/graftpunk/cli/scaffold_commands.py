@@ -40,7 +40,7 @@ LOG = get_logger(__name__)
 console = Console()
 
 plugin_app = typer.Typer(
-    name="plugin", help="Scaffold, extend, inspect, and check a graftpunk plugin project."
+    name="plugin", help="Scaffold, extend, inspect, upgrade, and check a graftpunk plugin project."
 )
 
 _BackendName = Literal["nodriver", "selenium"]

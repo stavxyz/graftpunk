@@ -308,7 +308,7 @@ Commands:
   keepalive   Manage the session keepalive daemon.
   http        Make ad-hoc HTTP requests with cached session cookies.
   config      Show configuration; manage the workstation env file.
-  plugin      Scaffold, extend, inspect, and check a graftpunk plugin project.
+  plugin      Scaffold, extend, inspect, upgrade, and check a graftpunk plugin project.
 ```
 
 (Options and the Quick-start block are elided; the full text is `gp --help`.)
