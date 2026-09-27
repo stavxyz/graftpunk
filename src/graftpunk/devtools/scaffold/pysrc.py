@@ -434,6 +434,22 @@ def _is_stdlib(module: str) -> bool:
     return module.split(".")[0] in sys.stdlib_module_names
 
 
+# isort's default section order this module places into, after __future__ (handled
+# on its own): the standard library, everything else, then the project's own
+# top-level packages, each ``with_import`` caller supplies as ``first_party=``.
+_STDLIB_SECTION, _THIRD_PARTY_SECTION, _FIRST_PARTY_SECTION = range(3)
+
+
+def _section(module: str, first_party: frozenset[str]) -> int:
+    """Which of the three isort sections *module* sorts into, given the project's
+    own top-level package names in *first_party*."""
+    if _is_stdlib(module):
+        return _STDLIB_SECTION
+    if module.split(".")[0] in first_party:
+        return _FIRST_PARTY_SECTION
+    return _THIRD_PARTY_SECTION
+
+
 def _isort_name_key(name: str) -> tuple[int, str]:
     """isort's order-by-type within one import: CONSTANTS, then Classes, then the rest.
     An aliased name (``a as b``) sorts by the imported name."""
@@ -560,7 +576,9 @@ class ImportPlacementError(ValueError):
     shape it knows. Nothing is changed; the message says what to do instead."""
 
 
-def with_import(text: str, module: str, name: str) -> str:
+def with_import(
+    text: str, module: str, name: str, *, first_party: frozenset[str] = frozenset()
+) -> str:
     """*text* with ``from {module} import {name}`` in its module-level imports, placed
     the way isort places a from-import.
 
@@ -576,16 +594,18 @@ def with_import(text: str, module: str, name: str) -> str:
     merged into an existing ``from {module} import ...``, re-rendered in isort's
     name order, whatever the rest of the module looks like. Failing that, placed
     only into the shapes generated files have: module-level imports contiguous at
-    the top (after a docstring and any ``__future__`` import) and in at most two
-    isort sections, the standard library and then everything else. Within a
-    section isort (force-sort-within-sections off) puts every plain ``import x``
-    before any ``from x import y``; the new line, always a from-import, goes
-    before the first same-section from-import whose module sorts after it, else
-    after the last same-section from-import, else after the last same-section
-    plain import, or, for a module with no imports, after its docstring. A
-    project whose own code forms a third section (a first-party package isort
-    sorts apart) gets the line in the second section, which its
-    ``ruff check --fix`` then moves.
+    the top (after a docstring and any ``__future__`` import) and in at most three
+    isort sections, the standard library, everything else, and, for a module
+    whose top-level package is in *first_party*, that package (isort's own
+    default order; ``case-sensitive = false``, ``force-sort-within-sections``
+    off). Within a section isort puts every plain ``import x`` before any
+    ``from x import y``; the new line, always a from-import, goes before the
+    first same-section from-import whose module sorts after it
+    case-insensitively, else after the last same-section from-import, else
+    after the last same-section plain import. For a section with no import yet,
+    the new line's block goes before the first import of the next section that
+    already has one, else after the last import of the previous section that
+    does, else, for a module with no imports at all, after its docstring.
 
     Raises:
         ImportPlacementError: An import follows other code, or a relative import
@@ -630,23 +650,31 @@ def with_import(text: str, module: str, name: str) -> str:
             f"`ruff check --fix` to sort it."
         )
     body = [n for n in imports if _imported_module(n) != "__future__"]
-    same_section = [n for n in body if _is_stdlib(_imported_module(n)) == _is_stdlib(module)]
+    section = _section(module, first_party)
+    same_section = [n for n in body if _section(_imported_module(n), first_party) == section]
     # isort (force-sort-within-sections off) puts every plain "import x" before a
     # section's from-imports; the new line is always a from-import, so only a
     # same-section from-import can be "later" than it, and a same-section-with-
     # no-from-imports falls back to going after the plain imports.
     same_section_from = [n for n in same_section if isinstance(n, ast.ImportFrom)]
-    later = [n for n in same_section_from if _imported_module(n) > module]
+    later = [n for n in same_section_from if _imported_module(n).lower() > module.lower()]
     if later:
         at, insert = later[0].lineno - 1, [new_line]
     elif same_section_from:
         at, insert = same_section_from[-1].end_lineno or same_section_from[-1].lineno, [new_line]
     elif same_section:
         at, insert = same_section[-1].end_lineno or same_section[-1].lineno, [new_line]
-    elif body and _is_stdlib(module):
-        at, insert = body[0].lineno - 1, [new_line, ""]
     elif body:
-        at, insert = body[-1].end_lineno or body[-1].lineno, ["", new_line]
+        # This section has no import yet: place its new block before the first
+        # import of a later section that already has one, else after the last
+        # import of an earlier section that does (source order == section order,
+        # the "generated files have" shape this function's contract is limited to).
+        higher = [n for n in body if _section(_imported_module(n), first_party) > section]
+        if higher:
+            at, insert = higher[0].lineno - 1, [new_line, ""]
+        else:
+            lower = [n for n in body if _section(_imported_module(n), first_party) < section]
+            at, insert = lower[-1].end_lineno or lower[-1].lineno, ["", new_line]
     else:
         leading = [
             n
@@ -672,7 +700,9 @@ class Binding(Protocol):
     def imports(self) -> tuple[tuple[str, str], ...]: ...
 
 
-def with_bindings(text: str, bindings: Sequence[Binding]) -> str:
+def with_bindings(
+    text: str, bindings: Sequence[Binding], *, first_party: frozenset[str] = frozenset()
+) -> str:
     """*text* with each binding's imports merged and its statement appended, in order.
 
     The one assembler for statements a generator or a migrator adds to a module,
@@ -680,7 +710,8 @@ def with_bindings(text: str, bindings: Sequence[Binding]) -> str:
     statement follows the one before it on the next line, and follows a ``def``
     or a ``class`` after two blank lines, which is what ``ruff format`` keeps. Text
     with nothing in it gets the imports as one isort block, a blank line, and then
-    the statements.
+    the statements. *first_party* is :func:`with_import`'s argument of the same
+    name, passed through to every import it merges or places.
     """
     if not text.strip():
         imports = [pair for binding in bindings for pair in binding.imports]
@@ -688,7 +719,7 @@ def with_bindings(text: str, bindings: Sequence[Binding]) -> str:
         return _joined([*head, *(binding.statement for binding in bindings)])
     for binding in bindings:
         for module, name in binding.imports:
-            text = with_import(text, module, name)
+            text = with_import(text, module, name, first_party=first_party)
         body = ast.parse(text).body
         after_definition = bool(body) and isinstance(
             body[-1], (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)

@@ -396,6 +396,70 @@ class TestWithImport:
             )
             assert check.returncode == 0, check.stdout + check.stderr
 
+    def test_a_first_party_import_gets_its_own_section(self, tmp_path: Path) -> None:
+        """B1: with_import used to lump third-party and first-party imports into
+        one section, so a conftest that already imports the project's own package
+        got the new third-party import sorted after it, in the wrong section
+        (polish-r1 P3)."""
+        text = (
+            "import pytest\n"
+            "\n"
+            "from graftpunk_myshop.plugin import MyshopPlugin\n"
+            "\n"
+            "x = MyshopPlugin\n"
+        )
+        result = with_import(
+            text,
+            "graftpunk.testing.plugin",
+            "fixtures_are_sanitised",
+            first_party=frozenset({"graftpunk_myshop"}),
+        )
+        assert result == (
+            "import pytest\n"
+            "from graftpunk.testing.plugin import fixtures_are_sanitised\n"
+            "\n"
+            "from graftpunk_myshop.plugin import MyshopPlugin\n"
+            "\n"
+            "x = MyshopPlugin\n"
+        )
+        # known-first-party spelled out: ruff's own src-layout autodetection needs
+        # a real package tree, which a bare mod.py in an empty directory has none
+        # of; the project generator gives ruff the same fact through its layout.
+        (tmp_path / "pyproject.toml").write_text(
+            _PROJECT_RUFF + '\n[tool.ruff.lint.isort]\nknown-first-party = ["graftpunk_myshop"]\n'
+        )
+        (tmp_path / "mod.py").write_text(result)
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", "--select", "I", "mod.py"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+
+    def test_module_names_compare_case_insensitively(self, tmp_path: Path) -> None:
+        """B2: with_import compared module names case-sensitively, so a
+        lowercase-starting module ("graftpunk...") sorted after an
+        uppercase-starting one ("PIL") that ruff, whose isort default is
+        case-sensitive = false, sorts it before (polish-r1 P3)."""
+        text = "from PIL import Image\n\nx = Image\n"
+        result = with_import(text, "graftpunk.testing.plugin", "fixtures_are_sanitised")
+        assert result == (
+            "from graftpunk.testing.plugin import fixtures_are_sanitised\n"
+            "from PIL import Image\n"
+            "\n"
+            "x = Image\n"
+        )
+        (tmp_path / "pyproject.toml").write_text(_PROJECT_RUFF)
+        (tmp_path / "mod.py").write_text(result)
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", "--select", "I", "mod.py"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+
     def test_a_merge_needs_no_known_shape(self) -> None:
         """Merging into an existing same-module import is always safe, so an odd
         layout elsewhere does not stop it."""

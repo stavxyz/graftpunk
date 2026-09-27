@@ -107,7 +107,9 @@ def upgrade_project(root: Path) -> UpgradeApplied:
             )
         original = read_original(path) if path.is_file() else None
         try:
-            content = with_bindings(original or "", requirements)
+            content = with_bindings(
+                original or "", requirements, first_party=view.first_party_packages
+            )
         except ImportPlacementError as exc:
             raise UpgradeRefusedError(f"{relative}: {exc}") from exc
         except SyntaxError as exc:

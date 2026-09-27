@@ -885,6 +885,45 @@ class TestPluginUpgrade:
         ast.parse(text)
         _ruff_clean(tmp_path)
 
+    def test_a_conftest_importing_the_projects_own_package_stays_ruff_clean(
+        self, tmp_path: Path
+    ) -> None:
+        """B1 end to end: a conftest that already imports the project's own
+        package used to get the new import sorted into the third-party section
+        instead of a first-party one of its own (polish-r1 P3)."""
+        from graftpunk.devtools.scaffold.project import write_scaffold
+        from graftpunk.devtools.scaffold.render import ScaffoldSpec
+
+        write_scaffold(
+            tmp_path,
+            ScaffoldSpec(
+                name="myshop",
+                mode="new_project",
+                backend="nodriver",
+                base_url="https://myshop.example",
+            ),
+        )
+        conftest = tmp_path / "tests" / "conftest.py"
+        conftest.write_text(
+            "import pytest\n"
+            "\n"
+            "from graftpunk_myshop.plugin import MyshopPlugin\n"
+            "\n"
+            "\n"
+            "@pytest.fixture()\n"
+            "def plugin() -> MyshopPlugin:\n"
+            "    return MyshopPlugin()\n"
+        )
+        result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", "--select", "I", "."],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+
     def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

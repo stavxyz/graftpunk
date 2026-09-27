@@ -177,6 +177,15 @@ class ProjectView:
     requirement_set: tuple[ProjectRequirement, ...]
     test_markers: tuple[tuple[str, int], ...]
 
+    @property
+    def first_party_packages(self) -> frozenset[str]:
+        """The top-level package each readable plugin lives under: ``pysrc.with_import``'s
+        ``first_party=`` argument, so ``add_command`` and ``gp plugin upgrade`` place a
+        new import into isort's first-party section when the edited file already
+        imports the project's own package, rather than the third-party section
+        (polish-r1 P3)."""
+        return frozenset(_top_level_package(p.module_path) for p in self.plugins)
+
     def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
         """The plugin or defect whose entry-point name is *entry_point*, or ``None``:
         the one owner of "which plugin does this name address". The reader keys
@@ -343,6 +352,18 @@ def require_plugin_project(root: Path) -> ProjectView:
 
 def _normalised(name: str) -> str:
     return re.sub(r"[-_.]+", "_", name).lower()
+
+
+def _top_level_package(module_path: str) -> str:
+    """The top-level Python package *module_path* (a ``PluginView.module_path``)
+    lives under: its first path segment, after a leading ``src/`` when the module
+    is under that source root."""
+    relative = module_path
+    for base in _SOURCE_ROOTS:
+        if base and relative.startswith(f"{base}/"):
+            relative = relative[len(base) + 1 :]
+            break
+    return relative.split("/", 1)[0]
 
 
 def _module_file(root: Path, module: str) -> str | None:

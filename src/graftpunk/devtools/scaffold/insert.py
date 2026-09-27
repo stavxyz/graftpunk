@@ -136,9 +136,10 @@ def add_command(
     lines = source_lines(original)
     at = insertion_line(plugin)
     text = joined_like(original, [*lines[:at], "", *rendered.lines, *lines[at:]])
+    first_party = view.first_party_packages
     try:
         for imported_from, name in rendered.imports:
-            text = with_import(text, imported_from, name)
+            text = with_import(text, imported_from, name, first_party=first_party)
     except ImportPlacementError as exc:
         raise CommandInsertError(f"{plugin.module_path}: {exc}") from exc
     except SyntaxError as exc:
