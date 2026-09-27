@@ -252,8 +252,7 @@ def _entry_points(data: dict[str, Any]) -> dict[str, str] | None:
     for key, value in group.items():
         if not isinstance(value, str):
             raise PluginProjectError(
-                f"pyproject.toml: entry point {key!r} must be a string, not "
-                f"{type(value).__name__}."
+                f"pyproject.toml: entry point {key!r} must be a string, not {type(value).__name__}."
             )
         result[str(key)] = value
     return result

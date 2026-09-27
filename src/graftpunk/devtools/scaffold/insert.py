@@ -91,10 +91,10 @@ def add_command(
             f"its entry points are: {names}."
         )
     command = plan_command(d, selection)
-    collides = (
-        command.identifier in plugin.class_names
-        or {command.identifier, command.registered_name} & _taken_names(plugin)
-    )
+    collides = command.identifier in plugin.class_names or {
+        command.identifier,
+        command.registered_name,
+    } & _taken_names(plugin)
     if collides:
         raise CommandInsertError(
             f"{plugin.module_path} already has a command named {selection.name!r}."
