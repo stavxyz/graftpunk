@@ -177,7 +177,7 @@ def _flagged_name_problems(
         if folded in text:
             problems.append(
                 f"{relative}: contains the flagged name {name!r}, a cookie or token "
-                f"name the capture's digest recorded."
+                f"name the capture's digest recorded; rename it in the fixture."
             )
         if folded in rest:
             problems.append(

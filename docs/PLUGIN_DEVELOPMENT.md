@@ -1345,7 +1345,9 @@ The generated suite holds you to part of that. Its `tests/conftest.py` wires in
 on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
 and fails when a fixture has no sidecar, when a fixture is still byte for byte
 its capture, when a name the sidecar flags turns up in the fixture or elsewhere in
-the sidecar, or when a sidecar is outside its declared format. It cannot tell
+the sidecar, or when a sidecar is outside its declared format. A flagged name is
+matched as a substring, case-insensitively, so a short cookie name can match an
+ordinary word in the fixture; rename that value in the fixture. It cannot tell
 whether invented content was invented well; that part stays yours. A fixture
 you wrote from nothing needs a sidecar too, with all seven keys: its own
 `status` and `content_type`, `"schema": 1`, `"body_params": []`,

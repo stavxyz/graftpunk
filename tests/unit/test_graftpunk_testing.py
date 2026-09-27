@@ -301,6 +301,7 @@ class TestCheckFixturesTree:
         )
         (problem,) = check_fixtures_tree(tmp_path).problems
         assert "'myshop_session'" in problem
+        assert problem.endswith("rename it in the fixture.")
 
     def test_a_flagged_name_in_the_sidecar_fails(self, tmp_path: Path) -> None:
         sidecar = Sidecar(
