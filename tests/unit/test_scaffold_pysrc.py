@@ -354,6 +354,22 @@ class TestWithImport:
         with pytest.raises(ImportPlacementError, match="ruff check --fix"):
             with_import(text, "pathlib", "Path")
 
+    def test_a_new_from_import_goes_after_a_plain_import_in_the_same_section(
+        self, tmp_path: Path
+    ) -> None:
+        """isort (force-sort-within-sections off) puts every plain "import x" before
+        a section's from-imports; the new line is always a from-import and must not
+        jump ahead of one."""
+        result = with_import("import sys\n", "pathlib", "Path")
+        assert result == "import sys\nfrom pathlib import Path\n"
+        (tmp_path / "pyproject.toml").write_text(_PROJECT_RUFF)
+        (tmp_path / "mod.py").write_text(result)
+        for argv in (["check", "--select", "I", "mod.py"], ["format", "--check", "mod.py"]):
+            check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+                [sys.executable, "-m", "ruff", *argv], cwd=tmp_path, capture_output=True, text=True
+            )
+            assert check.returncode == 0, check.stdout + check.stderr
+
     def test_a_merge_needs_no_known_shape(self) -> None:
         """Merging into an existing same-module import is always safe, so an odd
         layout elsewhere does not stop it."""

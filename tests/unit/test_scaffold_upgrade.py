@@ -103,6 +103,26 @@ class TestUpgrade:
         assert "    return 1\n\n\nFIXTURES_TREE = " in conftest.read_text()
         _ruff_check(tmp_path)
 
+    def test_a_conftest_holding_only_a_plain_stdlib_import_stays_ruff_clean(
+        self, tmp_path: Path
+    ) -> None:
+        """A hand-written conftest with "import pytest" and no graftpunk from-import
+        is exactly the upgrade target; the new from-imports must not jump ahead of
+        the plain import isort keeps first in its section."""
+        conftest = _project(
+            tmp_path,
+            "import pytest\n\n\n@pytest.fixture()\ndef something() -> int:\n    return 1\n",
+        )
+        upgrade_project(tmp_path)
+        lines = conftest.read_text().splitlines()
+        # "import pytest" is the only plain import in its (third-party) section;
+        # isort keeps it before that section's from-import, here the one added
+        # for sanitised_fixtures.
+        assert lines.index("import pytest") < lines.index(
+            "from graftpunk.testing.plugin import fixtures_are_sanitised"
+        )
+        _ruff_check(tmp_path)
+
     def test_a_directory_that_is_not_a_plugin_project_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(NotAPluginProjectError, match="empty"):
             upgrade_project(tmp_path)
