@@ -1285,8 +1285,12 @@ before you commit a sidecar.
 }
 ```
 
-Without a sidecar the status is 200 and the content type is guessed from the
-extension. A sidecar is how you test an error path: copy a fixture together with
+Without a sidecar, `FixtureSession` answers with status 200 and guesses the
+content type from the extension, but the generated suite's fixtures check fails
+on any fixture that has none (see
+[Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture)). A
+fixture you make by hand gets a sidecar of its own, with `"capture_sha256": null`,
+`"flagged_names": []`, and `"redacted_names": 0`. A sidecar is how you test an error path: copy a fixture together with
 its sidecar, set the copied sidecar's `status` to 403, and assert that the
 command raises `SessionRejectedError`.
 
@@ -1326,12 +1330,25 @@ text (graftpunk's own recorder keeps none for a redirect hop) has no body by
 definition and gets an empty fixture and its sidecar; any other response
 recorded with no text (a binary one) is skipped and named.
 
-Then do the work by hand. **A fixture copies the real structure and invents the
-content. No captured page is committed.** Open the capture, keep the shape of
-the response, and replace every real value: order ids, names, addresses,
-amounts, tokens, ids in URLs. `tests/captures/` is gitignored and stays that
-way; `tests/fixtures/` is committed and contains nothing that came off a real
-account.
+Then do the work by hand. Copy the capture and its `.meta.json` sidecar into the
+plugin's fixtures directory together, under the same names, and edit only the
+copy of the capture. **A fixture copies the real structure and invents the
+content. No captured page is committed.** Keep the shape of the response and
+replace every real value: order ids, names, addresses, amounts, tokens, ids in
+URLs. `tests/captures/` is gitignored and stays that way; `tests/fixtures/` is
+committed and contains nothing that came off a real account.
+
+The generated suite holds you to part of that. Its `tests/conftest.py` wires in
+`fixtures_are_sanitised`, which walks `tests/fixtures/` on every run and fails
+when a fixture has no sidecar, when a fixture is still byte for byte its
+capture, when a name the sidecar flags turns up in the fixture or elsewhere in
+the sidecar, or when a sidecar is outside its declared format. It cannot tell
+whether invented content was invented well; that part stays yours. A fixture
+you wrote from nothing needs a sidecar too, with `"capture_sha256": null`,
+`"flagged_names": []`, and `"redacted_names": 0`: that declares the file came
+off no account. The check trusts that declaration rather than verifying it, and
+prints on every run how many fixtures it accepted that way, so the number shows
+up in review.
 
 ### Parsers do not return a confident empty list
 
