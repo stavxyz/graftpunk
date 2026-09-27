@@ -37,6 +37,7 @@ __all__ = [
     "literal_dict_entry_lines",
     "literal_lines",
     "quoted_literal",
+    "source_lines",
     "url_expr_lines",
     "with_bindings",
     "with_import",
@@ -511,6 +512,28 @@ def _joined(lines: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
+
+
+def source_lines(text: str) -> list[str]:
+    """*text* split into physical lines the way the tokenizer (and so ``ast`` line
+    numbers) see them: on ``"\\r\\n"``, ``"\\r"``, and ``"\\n"`` only.
+
+    ``str.splitlines()`` also breaks on characters the tokenizer does not (a form
+    feed, a vertical tab, the file/group/record separators, NEL, and the Unicode
+    line and paragraph separators), so indexing a ``str.splitlines()`` result by an
+    ast line number desyncs by one for every such character above the target line:
+    a stub lands mid-line, and the re-parse that follows can raise a bare
+    ``SyntaxError`` past the caller (polish-r1 P2). No trailing empty element for a
+    text ending in a line break, matching ``str.splitlines()``'s own convention, so
+    every existing caller keeps its line count.
+    """
+    lines = _LINE_BREAK_RE.split(text)
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def _line_ending(text: str) -> str:
     """The line ending *text* already uses: ``"\\r\\n"`` when it holds one, else
     ``"\\n"``."""
@@ -523,9 +546,9 @@ def joined_like(original: str, lines: Sequence[str]) -> str:
 
     ``write.read_original`` reads a file's bytes without universal-newline
     translation, so a CRLF file is compared and restored as CRLF; every writer
-    that rebuilds a module from ``original.splitlines()`` (which discards the
-    line ending each line had) rejoins through here instead of assuming LF, so
-    the round trip keeps faith with what was actually on disk.
+    that rebuilds a module from :func:`source_lines` (which discards the line
+    ending each line had) rejoins through here instead of assuming LF, so the
+    round trip keeps faith with what was actually on disk.
     """
     ending = _line_ending(original)
     joined = ending.join(lines)
@@ -572,7 +595,7 @@ def with_import(text: str, module: str, name: str) -> str:
     tree = ast.parse(text)
     if binds_name(tree, name.split(" as ")[-1]):
         return text
-    lines = text.splitlines()
+    lines = source_lines(text)
     imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
     for node in imports:
         if (

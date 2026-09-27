@@ -22,6 +22,7 @@ from graftpunk.devtools.scaffold.pysrc import (
     _dict_entry_lines,
     _url_chunks,
     binds_name,
+    source_lines,
     with_bindings,
     with_import,
     wrapped_docstring_block,
@@ -302,6 +303,31 @@ class TestBindsName:
         assert not binds_name(ast.parse(source), "Path")
 
 
+class TestSourceLines:
+    """The one line splitter every ast-line-number consumer must use: str.splitlines()
+    also breaks on characters the tokenizer does not, which desyncs an ast line
+    number from a str.splitlines() index (polish-r1 P2)."""
+
+    @pytest.mark.parametrize("break_char", ["\x0c", "\x0b", "\x1c", "\x1d", "\x1e", "\x85", " "])
+    def test_a_character_str_splitlines_treats_as_a_break_does_not_split(
+        self, break_char: str
+    ) -> None:
+        text = f"a{break_char}b\n"
+        assert source_lines(text) == [f"a{break_char}b"]
+        assert len(text.splitlines()) == 2  # the desync source_lines exists to avoid
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+    def test_every_real_line_break_splits(self, newline: str) -> None:
+        assert source_lines(f"a{newline}b{newline}") == ["a", "b"]
+
+    def test_matches_str_splitlines_on_ordinary_text(self) -> None:
+        text = "a\nb\n\nc"
+        assert source_lines(text) == text.splitlines()
+
+    def test_empty_text_is_no_lines(self) -> None:
+        assert source_lines("") == []
+
+
 _OLD_CONFTEST = (
     "from graftpunk.testing.plugin import site_env_scrubber\n"
     "\n"
@@ -377,6 +403,15 @@ class TestWithImport:
         assert with_import(text, "pathlib", "Path").splitlines()[0] == (
             "from pathlib import Path, PurePath"
         )
+
+    def test_a_form_feed_in_a_comment_above_the_import_does_not_desync_the_splice(self) -> None:
+        """str.splitlines() also breaks on a form feed, which ast does not count as
+        a line; with the old splitter this desync shifted the new import onto the
+        wrong line and could corrupt the form-feed line itself (polish-r1 P2, A4)."""
+        text = "# page\x0c break\n\nfrom pathlib import PurePath\n\nx = 1\n"
+        result = with_import(text, "pathlib", "Path")
+        assert result == "# page\x0c break\n\nfrom pathlib import Path, PurePath\n\nx = 1\n"
+        ast.parse(result)
 
 
 _HAND_WRITTEN_PLUGIN = '''\

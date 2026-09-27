@@ -523,6 +523,35 @@ class TestAddCommand:
             '    base_url = "https://myshop.example"'
         )
 
+    def test_a_form_feed_above_the_class_does_not_corrupt_the_insertion(
+        self, recorded: Path
+    ) -> None:
+        """str.splitlines() also breaks on a form feed, which desyncs the ast line
+        number the stub is spliced at from a str.splitlines() index; the old
+        splitter raised an uncaught IndentationError here (polish-r1 P2, A4)."""
+        module_text = (
+            '"""myshop plugin."""\n'
+            "\n"
+            "from __future__ import annotations\n"
+            "\n"
+            "from graftpunk.plugins import SitePlugin\n"
+            "\n"
+            "# page\x0c break\n"
+            "\n"
+            "\n"
+            "class MyshopPlugin(SitePlugin):\n"
+            '    site_name = "myshop"\n'
+            '    base_url = "https://myshop.example"\n'
+        )
+        module = _hand_written_project(recorded, module_text=module_text)
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        text = module.read_text()
+        assert "page\x0c break" in text
+        assert "def orders(" in text
+        ast.parse(text)
+        _ruff_clean(recorded)
+
     def test_a_decorated_helper_and_a_main_block_below_the_class_stay_below_it(
         self, recorded: Path
     ) -> None:
@@ -836,6 +865,26 @@ def _project_lacking_the_wiring(root: Path) -> Path:
 
 @pytest.mark.usefixtures("gp_logging")
 class TestPluginUpgrade:
+    def test_a_form_feed_in_the_conftest_does_not_raise_a_syntax_error(
+        self, tmp_path: Path
+    ) -> None:
+        """As TestAddCommand's form-feed test, for the with_bindings path upgrade
+        drives through with_import (polish-r1 P2, A5)."""
+        conftest = _project_lacking_the_wiring(tmp_path)
+        conftest.write_text(
+            "from graftpunk.testing.plugin import site_env_scrubber\n"
+            "\n"
+            "# note\x0c continued\n"
+            "\n"
+            'scrub_site_env = site_env_scrubber("MYSHOP_")\n'
+        )
+        result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        text = conftest.read_text()
+        assert "note\x0c continued" in text
+        ast.parse(text)
+        _ruff_clean(tmp_path)
+
     def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

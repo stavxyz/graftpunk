@@ -110,6 +110,10 @@ def upgrade_project(root: Path) -> UpgradeApplied:
             content = with_bindings(original or "", requirements)
         except ImportPlacementError as exc:
             raise UpgradeRefusedError(f"{relative}: {exc}") from exc
+        except SyntaxError as exc:
+            raise UpgradeRefusedError(
+                f"{relative}: does not parse after its import is placed ({exc.msg})."
+            ) from exc
         changes.append(PlannedChange(path, content, original=original, validate=validate_python))
     fixtures_tree = root / FIXTURES_TREE
     _refuse_unless_directory(fixtures_tree, root)

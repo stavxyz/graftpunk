@@ -194,6 +194,25 @@ class TestTheView:
         assert all("GP-FILL" in text[line - 1] for line in plugin.markers)
         assert plugin.fixtures_root == "tests/fixtures/"
 
+    def test_a_form_feed_above_a_marker_does_not_shift_its_reported_line(
+        self, tmp_path: Path
+    ) -> None:
+        """str.splitlines() also breaks on a form feed, which is not a line break
+        to ast or the tokenizer; the old splitter reported the marker one line
+        late here (polish-r1 P2, A6)."""
+        module = (
+            "from graftpunk.plugins import SitePlugin\n"
+            "\n"
+            "# note\x0c continued\n"
+            "\n"
+            "class MyshopPlugin(SitePlugin):\n"
+            '    site_name = "myshop"\n'
+            "    # GP-FILL: something\n"
+        )
+        _hand_written(tmp_path, module)
+        (plugin,) = read_project(tmp_path).plugins
+        assert plugin.markers == (7,)
+
     def test_test_markers_records_gp_fill_in_the_test_module(self, tmp_path: Path) -> None:
         _generate(tmp_path)
         view = read_project(tmp_path)
@@ -202,6 +221,16 @@ class TestTheView:
             assert path == "tests/test_plugin.py"
             text = (tmp_path / path).read_text().splitlines()
             assert "GP-FILL" in text[line - 1]
+
+    def test_test_markers_are_not_shifted_by_a_form_feed(self, tmp_path: Path) -> None:
+        """As test_a_form_feed_above_a_marker_does_not_shift_its_reported_line, for
+        _test_markers's own scan of the tests directory (polish-r1 P2, A6)."""
+        _generate(tmp_path)
+        (tmp_path / "tests" / "extra.py").write_text(
+            "# note\x0c continued\n\n# GP-FILL: something\n"
+        )
+        view = read_project(tmp_path)
+        assert ("tests/extra.py", 3) in view.test_markers
 
     def test_test_markers_skips_a_file_that_does_not_decode(self, tmp_path: Path) -> None:
         _generate(tmp_path)

@@ -29,7 +29,7 @@ from typing import Any, Literal
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER, ProjectRequirement, module_name_for
-from graftpunk.devtools.scaffold.pysrc import binds_name
+from graftpunk.devtools.scaffold.pysrc import binds_name, source_lines
 from graftpunk.har.naming import registered_name
 from graftpunk.plugins import PLUGINS_GROUP
 
@@ -418,7 +418,7 @@ def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
         relative = path.relative_to(root).as_posix()
         found.extend(
             (relative, number)
-            for number, line in enumerate(text.splitlines(), start=1)
+            for number, line in enumerate(source_lines(text), start=1)
             if GP_FILL_MARKER in line
         )
     return tuple(found)
@@ -461,7 +461,7 @@ def _read_plugin(root: Path, key: str, value: str, project_name: str) -> PluginV
         commands=tuple(_commands(klass)),
         markers=tuple(
             number
-            for number, line in enumerate(text.splitlines(), start=1)
+            for number, line in enumerate(source_lines(text), start=1)
             if GP_FILL_MARKER in line
         ),
         fixtures_root=policy.fixtures_root(

@@ -22,6 +22,7 @@ from graftpunk.devtools.scaffold.pysrc import (
     ImportPlacementError,
     binds_name,
     joined_like,
+    source_lines,
     with_import,
 )
 from graftpunk.devtools.scaffold.render import render_command
@@ -132,7 +133,7 @@ def add_command(
             f"{plugin.module_path}: the module already binds {command.identifier!r} at top level."
         )
     rendered = render_command(command, d)
-    lines = original.splitlines()
+    lines = source_lines(original)
     at = insertion_line(plugin)
     text = joined_like(original, [*lines[:at], "", *rendered.lines, *lines[at:]])
     try:
@@ -140,6 +141,10 @@ def add_command(
             text = with_import(text, imported_from, name)
     except ImportPlacementError as exc:
         raise CommandInsertError(f"{plugin.module_path}: {exc}") from exc
+    except SyntaxError as exc:
+        raise CommandInsertError(
+            f"{plugin.module_path}: does not parse after the stub is placed ({exc.msg})."
+        ) from exc
     apply_changes([PlannedChange(module, text, original=original, validate=validate_python)])
     return AddedCommand(
         module=module,
