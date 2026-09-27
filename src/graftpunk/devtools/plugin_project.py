@@ -221,9 +221,30 @@ def _load_pyproject(root: Path) -> dict[str, Any] | None:
         raise PluginProjectError(f"{path}: not valid TOML ({exc})") from exc
 
 
+def _table(value: Any, where: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise PluginProjectError(
+            f"pyproject.toml: [{where}] must be a table, not {type(value).__name__}."
+        )
+    return value
+
+
 def _entry_points(data: dict[str, Any]) -> dict[str, str] | None:
-    group = data.get("project", {}).get("entry-points", {}).get(PLUGINS_GROUP)
-    return None if group is None else {str(k): str(v) for k, v in group.items()}
+    project = _table(data.get("project", {}), "project")
+    entry_points = _table(project.get("entry-points", {}), "project.entry-points")
+    group = entry_points.get(PLUGINS_GROUP)
+    if group is None:
+        return None
+    group = _table(group, f'project.entry-points."{PLUGINS_GROUP}"')
+    result: dict[str, str] = {}
+    for key, value in group.items():
+        if not isinstance(value, str):
+            raise PluginProjectError(
+                f"pyproject.toml: entry point {key!r} must be a string, not "
+                f"{type(value).__name__}."
+            )
+        result[str(key)] = value
+    return result
 
 
 def classify(root: Path) -> DirectoryKind:
