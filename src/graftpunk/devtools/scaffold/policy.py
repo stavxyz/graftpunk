@@ -20,6 +20,7 @@ __all__ = [
     "FIXTURES_PLACEHOLDER",
     "FIXTURES_TREE",
     "GP_FILL_MARKER",
+    "PROJECT_GATE",
     "PROJECT_REQUIREMENTS",
     "RESERVED_COMMAND_NAMES",
     "TESTS_DIR",
@@ -134,3 +135,16 @@ RESERVED_COMMAND_NAMES: Final[frozenset[str]] = frozenset(
 SitePlugin, the class every plugin subclasses, read from the class itself so a new
 framework attribute is covered without an edit here, and the root commands
 registration adds. render.py, selection.py, and insert.py all read it."""
+
+
+PROJECT_GATE: Final[tuple[str, ...]] = (
+    "pytest",
+    "ruff check .",
+    "ruff format --check .",
+    "gp plugin check",
+)
+"""The commands a generated project's gate runs, in order.
+
+Reproduced in exactly one rendered form, the checks block of the generated
+README; the guide's "The gate" section and its CI example quote the same
+lines, and a test pins all three to this constant."""

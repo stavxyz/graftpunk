@@ -1451,6 +1451,7 @@ def _render_gitignore() -> str:
 
 
 def _render_readme(spec: ScaffoldSpec) -> str:
+    checks = "\n".join(policy.PROJECT_GATE)
     return (
         f"# {spec.name}\n\n"
         "A graftpunk plugin.\n\n"
@@ -1460,8 +1461,9 @@ def _render_readme(spec: ScaffoldSpec) -> str:
         f"```bash\ngp {spec.name} login\n```\n\n"
         "## Run a command\n\n"
         f"```bash\ngp {spec.name} --help\n```\n\n"
-        "## Tests\n\n"
-        "```bash\npytest\n```\n\n"
+        "## Checks\n\n"
+        "Run all of these before every commit:\n\n"
+        f"```bash\n{checks}\n```\n\n"
         f"Fixtures under `{policy.FIXTURES_TREE}` are hand-derived from captures in "
         f"`{CAPTURES_DIR}/` (captures are never committed; a fixture copies the "
         "structure and invents the content). See `gp observe fixtures --help`.\n"

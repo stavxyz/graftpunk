@@ -1371,11 +1371,15 @@ Run all of it before every commit:
 pytest
 ruff check .
 ruff format --check .
+gp plugin check
 ```
 
-Add a type checker. A generated project passes `ruff check` and `ruff format
---check` as written, so a red gate on a fresh scaffold is something you
-introduced.
+`gp plugin check` lists every `GP-FILL` marker left in a plugin module, any
+plugin module that does not hold exactly one plugin class, and any project
+wiring the project lacks, which `gp plugin upgrade` adds. A fresh scaffold fails
+it until its markers are filled in. It passes `ruff check` and `ruff format
+--check` as written, so a red ruff run on a fresh scaffold is something you
+introduced. Add a type checker.
 
 A minimal CI workflow to start from, running the same gate:
 
@@ -1393,9 +1397,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: pytest
-      - run: ruff check .
-      - run: ruff format --check .
+      - run: |
+          pytest
+          ruff check .
+          ruff format --check .
+          gp plugin check
 ```
 
 Nothing in CI logs into the site: the tests run against committed fixtures, and
@@ -1429,7 +1435,7 @@ Runs of capitals are not split (`getHTTPStatus` becomes `get-httpstatus`), so
 
 ### Before you publish
 
-- [ ] No `GP-FILL` marker is left anywhere in the project.
+- [ ] The gate is green: every command in [The gate](#the-gate) passes.
 - [ ] `gp myshop --help` lists the commands under the names you meant.
 - [ ] `failure` is the site's exact wording, confirmed with a wrong password.
 - [ ] `success` or `success_url` is set, and neither matches the login page.
@@ -1438,7 +1444,6 @@ Runs of capitals are not split (`getHTTPStatus` becomes `get-httpstatus`), so
 - [ ] `tests/captures/` is gitignored and no capture is tracked.
 - [ ] Every fixture is invented content in a real structure.
 - [ ] Every parser raises on a missing container rather than returning `[]`.
-- [ ] `pytest`, `ruff check .`, and `ruff format --check .` are green.
 - [ ] The module docstring records the date you verified the plugin against a
       real account, and what turned out to be wrong.
 
