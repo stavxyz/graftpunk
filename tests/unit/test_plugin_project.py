@@ -396,6 +396,20 @@ class TestRequirementsAreDecidedStructurally:
         assert path == "tests/conftest.py"
         assert reason.startswith("does not parse (")
 
+    def test_a_requirement_file_with_a_bad_byte_is_unreadable_not_raised(
+        self, tmp_path: Path
+    ) -> None:
+        _generate(tmp_path)
+        (tmp_path / "tests" / "conftest.py").write_bytes(b"# \xff\n")
+        view = read_project(tmp_path)
+        assert view.plugins, "the plugins still read"
+        for status in view.requirements.values():
+            assert status.state == "unreadable"
+            assert status.reason is not None and "UTF-8" in status.reason
+        ((path, reason),) = view.unreadable_files()
+        assert path == "tests/conftest.py"
+        assert "UTF-8" in reason
+
     def test_each_requirement_file_is_parsed_once(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

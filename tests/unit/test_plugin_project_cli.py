@@ -102,6 +102,7 @@ def _info(project: Path) -> dict:
     return json.loads(result.stdout)
 
 
+@pytest.mark.usefixtures("gp_logging")
 class TestPluginInfo:
     def test_an_empty_directory(self, tmp_path: Path) -> None:
         assert _info(tmp_path) == {"schema": 1, "directory": "empty", "plugins": []}
@@ -180,6 +181,38 @@ class TestPluginInfo:
         assert result.exit_code == 1
         assert "pyproject.toml: not valid TOML" in _plain(result.output)
         assert "Traceback" not in result.output
+
+    def test_a_pyproject_with_a_bad_byte_is_a_one_line_refusal(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_bytes(b"[project]\nname = \xff\n")
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(tmp_path)])
+        assert isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "pyproject.toml" in line
+        assert "UTF-8" in line
+
+    def test_a_plugin_module_with_a_bad_byte_is_a_one_line_refusal(self, recorded: Path) -> None:
+        _new(recorded)
+        module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
+        module.write_bytes(module.read_bytes() + b"\n# \xff\n")
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(recorded)])
+        assert isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "plugin.py" in line
+        assert "UTF-8" in line
+
+    def test_a_plugin_module_with_a_nul_byte_is_a_one_line_refusal(self, recorded: Path) -> None:
+        _new(recorded)
+        module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
+        module.write_text(module.read_text() + "\nBROKEN = '\x00'\n")
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(recorded)])
+        assert isinstance(result.exception, SystemExit)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "plugin.py" in line
+        assert "does not parse" in line
+        assert "line None" not in line
 
     def test_a_non_table_project_is_a_one_line_refusal(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text('project = "x"\n')
@@ -312,7 +345,9 @@ if __name__ == "__main__":
 """
 
 
-def _hand_written_project(root: Path, entry_point: str = "myshop") -> Path:
+def _hand_written_project(
+    root: Path, entry_point: str = "myshop", module_text: str = _HAND_WRITTEN
+) -> Path:
     (root / "pyproject.toml").write_text(
         '[project]\nname = "graftpunk-myshop"\n\n'
         '[project.entry-points."graftpunk.plugins"]\n'
@@ -323,7 +358,7 @@ def _hand_written_project(root: Path, entry_point: str = "myshop") -> Path:
     package = root / "src" / "graftpunk_myshop"
     package.mkdir(parents=True)
     module = package / "plugin.py"
-    module.write_text(_HAND_WRITTEN)
+    module.write_text(module_text)
     return module
 
 
