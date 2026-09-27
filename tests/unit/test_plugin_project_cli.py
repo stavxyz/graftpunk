@@ -70,6 +70,7 @@ def _run_entries() -> list[dict]:
         _entry("GET", "https://myshop.example/api/orders?page=2", body='{"orders": []}'),
         _entry("GET", "https://myshop.example/api/orders/1001", body='{"id": "1001"}'),
         _entry("GET", "https://myshop.example/api/invoices", body='{"invoices": []}'),
+        _entry("GET", "https://myshop.example/api/invoices/2001", body='{"id": "2001"}'),
     ]
 
 
@@ -298,6 +299,27 @@ class TestAddCommand:
         (plugin,) = read_project(recorded).plugins
         assert [c.method for c in plugin.commands] == ["orders", "order"]
         assert plugin.commands[-1].endpoint == "GET /api/orders/{order_id}"
+        _ruff_clean(recorded)
+
+    def test_a_second_path_parameter_command_does_not_duplicate_the_quote_import(
+        self, recorded: Path
+    ) -> None:
+        """The common enhance-mode case: a second detail endpoint needs the same
+        urllib.parse import the first one already placed."""
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        first = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        assert first.exit_code == 0, first.output
+        second = _add(recorded, "myshop", "invoice=GET /api/invoices/{invoice_id}")
+        assert second.exit_code == 0, second.output
+        module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
+        imports = [
+            node
+            for node in ast.parse(module.read_text()).body
+            if isinstance(node, ast.ImportFrom) and node.module == "urllib.parse"
+        ]
+        (imp,) = imports
+        names = [a.name if a.asname is None else f"{a.name} as {a.asname}" for a in imp.names]
+        assert names == ["quote as _quote_path"]
         _ruff_clean(recorded)
 
     def test_a_first_command_goes_after_the_class_bodys_last_statement(
