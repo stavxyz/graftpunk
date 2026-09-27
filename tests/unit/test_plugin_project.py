@@ -301,6 +301,25 @@ class TestTheView:
         (plugin,) = read_project(tmp_path).plugins
         assert "functools" in plugin.class_names
 
+    def test_class_names_records_a_definition_under_except_star(self, tmp_path: Path) -> None:
+        """A10: ast.TryStar (a try/except* block, added in Python 3.11, which
+        this project's floor is) is walked the same as ast.Try, so a
+        definition nested under it is still refused as an add-command name
+        (polish-r1 P9)."""
+        module = (
+            "from graftpunk.plugins import SitePlugin\n\n\n"
+            "class MyshopPlugin(SitePlugin):\n"
+            '    site_name = "myshop"\n\n'
+            "    try:\n"
+            "        pass\n"
+            "    except* ValueError:\n"
+            "        def helper() -> None:\n"
+            "            pass\n"
+        )
+        _hand_written(tmp_path, module)
+        (plugin,) = read_project(tmp_path).plugins
+        assert "helper" in plugin.class_names
+
     def test_class_names_records_tuple_unpacking(self, tmp_path: Path) -> None:
         module = (
             "from graftpunk.plugins import SitePlugin\n\n\n"

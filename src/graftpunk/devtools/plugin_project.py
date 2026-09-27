@@ -104,10 +104,12 @@ class PluginView:
     ``commands`` holds every ``@command``-decorated top-level member: a method, and
     also a nested class (a command group), whose entry carries the group's
     registered name and an ``endpoint`` of ``None`` (a group never declares one).
-    ``class_names`` holds every name the class body binds at its top level, decorated
-    or not: a method, a nested class (including a command group), or an assignment
-    target. The stub inserter's collision check reads ``class_names``, not just
-    ``commands``, so a plain helper or attribute is refused too."""
+    ``class_names`` holds every name the class body binds, as ``_class_body_names``
+    defines it: a method, a nested class, an assignment, an annotated assignment,
+    or an unpacking target, an import, a ``for``/``with`` target, and any of these
+    nested under an ``if`` or ``try``. The stub inserter's collision check reads
+    ``class_names``, not just ``commands``, so a plain helper, attribute, or
+    import is refused too."""
 
     entry_point: str
     module_path: str  # project-relative, forward slashes
@@ -281,7 +283,14 @@ def _entry_points(data: dict[str, Any]) -> dict[str, str] | None:
 
 def classify(root: Path) -> DirectoryKind:
     """*root* in its own terms: no ``pyproject.toml`` is ``empty``; one declaring the
-    ``graftpunk.plugins`` entry-point group is ``plugin``; any other is ``foreign``."""
+    ``graftpunk.plugins`` entry-point group is ``plugin``; any other is ``foreign``.
+
+    Raises:
+        PluginProjectError: ``pyproject.toml`` exists but is not valid TOML, is not
+            UTF-8, or cannot be read (permissions); its ``project`` or
+            ``project.entry-points`` table, or its ``"graftpunk.plugins"`` group
+            table, has the wrong shape; or an entry point's value is not a string.
+    """
     data = _load_pyproject(root)
     if data is None:
         return "empty"
@@ -298,8 +307,11 @@ def read_project(root: Path) -> ProjectView:
 
     Raises:
         PluginProjectError: The project cannot be read at all: ``pyproject.toml``
-            is not valid TOML, or an entry point's module is missing or does not
-            parse.
+            is not valid TOML, is not UTF-8, or cannot be read (permissions); its
+            ``project`` or ``project.entry-points`` table, or its
+            ``"graftpunk.plugins"`` group table, has the wrong shape; an entry
+            point's value is not a string; or an entry point's module is missing,
+            is not UTF-8, cannot be read (permissions), or does not parse.
     """
     data = _load_pyproject(root)
     if data is None:
@@ -596,9 +608,10 @@ def _class_body_names(klass: ast.ClassDef) -> frozenset[str]:
     """Every name the class body binds at its top level: a method (decorated or
     not), a nested class (including a command group), an assignment target
     (including tuple/starred unpacking and an annotated assignment), an import,
-    a ``for``/``with`` target, or a definition nested under an ``if`` or
-    ``try`` at class-body level (walked recursively, without entering a nested
-    function or class body). ``PluginView.class_names``: the stub inserter's
+    a ``for``/``with`` target, or a definition nested under an ``if``, a
+    ``try``, or a ``try``/``except*`` at class-body level (walked recursively,
+    without entering a nested function or class body). ``PluginView.class_names``:
+    the stub inserter's
     collision check reads this, not just the decorated commands, so a plain
     helper method, attribute, or import is refused too."""
     names: set[str] = set()
@@ -626,7 +639,11 @@ def _collect_body_names(body: list[ast.stmt], names: set[str]) -> None:
         elif isinstance(node, ast.If):
             _collect_body_names(node.body, names)
             _collect_body_names(node.orelse, names)
-        elif isinstance(node, ast.Try):
+        elif isinstance(node, (ast.Try, ast.TryStar)):
+            # ast.TryStar (a "try: ... except* E:" block) parses this way on every
+            # Python this project supports (requires-python >=3.11, which is when
+            # ast.TryStar was added), so it is not conditional on the running
+            # interpreter.
             _collect_body_names(node.body, names)
             for handler in node.handlers:
                 _collect_body_names(handler.body, names)
