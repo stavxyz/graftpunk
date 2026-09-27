@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -185,6 +186,41 @@ class TestPluginInfo:
         result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(tmp_path)])
         assert result.exit_code == 1
         assert "pyproject.toml: not valid TOML" in _plain(result.output)
+        assert "Traceback" not in result.output
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
+    def test_an_unreadable_pyproject_by_permission_is_a_one_line_refusal(
+        self, tmp_path: Path
+    ) -> None:
+        """B6a: a PermissionError (any OSError), not just a decode error, is a
+        one-line refusal (polish-r1 P7)."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "x"\n')
+        pyproject.chmod(0)
+        try:
+            result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(tmp_path)])
+        finally:
+            pyproject.chmod(0o644)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "pyproject.toml: cannot be read" in line
+        assert "Traceback" not in result.output
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
+    def test_an_unreadable_plugin_module_by_permission_is_a_one_line_refusal(
+        self, recorded: Path
+    ) -> None:
+        """B6b: same as above, for the plugin module (polish-r1 P7)."""
+        _new(recorded)
+        module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
+        module.chmod(0)
+        try:
+            result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(recorded)])
+        finally:
+            module.chmod(0o644)
+        assert result.exit_code == 1
+        (line,) = _plain(result.output).strip().splitlines()
+        assert "plugin.py: cannot be read" in line
         assert "Traceback" not in result.output
 
     def test_a_pyproject_with_a_bad_byte_is_a_one_line_refusal(self, tmp_path: Path) -> None:

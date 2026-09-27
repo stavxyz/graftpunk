@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
 from dataclasses import fields
@@ -237,6 +238,20 @@ class TestTheView:
         (tmp_path / "tests" / "broken.py").write_bytes(b"\xff# GP-FILL: unreadable\n")
         view = read_project(tmp_path)
         assert all(path != "tests/broken.py" for path, _ in view.test_markers)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
+    def test_test_markers_skips_an_unreadable_file(self, tmp_path: Path) -> None:
+        """B6c: a permission error, not just a decode error, is skipped rather
+        than raised (polish-r1 P7)."""
+        _generate(tmp_path)
+        locked = tmp_path / "tests" / "locked.py"
+        locked.write_text("# GP-FILL: unreadable\n")
+        locked.chmod(0)
+        try:
+            view = read_project(tmp_path)
+        finally:
+            locked.chmod(0o644)
+        assert all(path != "tests/locked.py" for path, _ in view.test_markers)
 
     def test_test_markers_skips_a_venv_directory(self, tmp_path: Path) -> None:
         _generate(tmp_path)

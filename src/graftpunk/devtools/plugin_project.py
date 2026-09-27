@@ -246,6 +246,8 @@ def _load_pyproject(root: Path) -> dict[str, Any] | None:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise PluginProjectError(f"{path}: not valid UTF-8 ({exc})") from exc
+    except OSError as exc:
+        raise PluginProjectError(f"{path}: cannot be read ({exc.strerror or exc})") from exc
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -393,6 +395,8 @@ def _parse(root: Path, relative: str) -> tuple[str, ast.Module]:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise PluginProjectError(f"{relative}: not valid UTF-8 ({exc})") from exc
+    except OSError as exc:
+        raise PluginProjectError(f"{relative}: cannot be read ({exc.strerror or exc})") from exc
     try:
         return text, ast.parse(text)
     except (SyntaxError, ValueError) as exc:
@@ -413,9 +417,10 @@ _SKIPPED_TEST_DIR_NAMES = frozenset({"__pycache__", "venv", ".venv", "node_modul
 def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
     """Every ``GP-FILL`` marker line in a ``*.py`` file under ``policy.TESTS_DIR``,
     as (project-relative path, 1-based line), file order then line order. A file
-    that cannot be decoded as UTF-8 is skipped, not raised: it is not this
-    function's business to refuse an unreadable test module, only to report the
-    markers it can read. A path with a component that starts with ``.`` (a
+    that cannot be decoded as UTF-8, or cannot be read at all (permissions), is
+    skipped, not raised: it is not this function's business to refuse an
+    unreadable test module, only to report the markers it can read. A path with
+    a component that starts with ``.`` (a
     dotfile or a dotdir, which covers ``.venv``) or that is ``__pycache__``,
     ``venv``, or ``node_modules`` is never a test module and is skipped."""
     tests_dir = root / policy.TESTS_DIR
@@ -434,7 +439,7 @@ def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
     for path in candidates:
         try:
             text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, OSError):
             continue
         relative = path.relative_to(root).as_posix()
         found.extend(
@@ -651,6 +656,8 @@ def _parse_requirement_file(path: Path) -> ast.Module | RequirementStatus:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         return RequirementStatus("unreadable", f"not valid UTF-8 ({exc})")
+    except OSError as exc:
+        return RequirementStatus("unreadable", f"cannot be read ({exc.strerror or exc})")
     try:
         return ast.parse(text)
     except (SyntaxError, ValueError) as exc:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -106,6 +107,20 @@ class TestFindings:
         (finding,) = check_project(tmp_path)
         assert finding.path == "tests/conftest.py"
         assert "does not parse" in finding.message
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
+    def test_a_conftest_that_cannot_be_read_is_one_finding(self, tmp_path: Path) -> None:
+        """B6d: a PermissionError (any OSError), not just a parse error, is a
+        finding rather than a traceback (polish-r1 P7)."""
+        _clean_project(tmp_path)
+        conftest = tmp_path / "tests" / "conftest.py"
+        conftest.chmod(0)
+        try:
+            (finding,) = check_project(tmp_path)
+        finally:
+            conftest.chmod(0o644)
+        assert finding.path == "tests/conftest.py"
+        assert "cannot be read" in finding.message
 
 
 def test_the_three_consumers_follow_the_declaration(
