@@ -57,9 +57,22 @@ class AddedCommand:
     fixture: str
 
 
-def insertion_line(plugin: PluginView) -> int:
-    """The line after which a new command goes."""
-    return plugin.commands[-1].span.end if plugin.commands else plugin.class_span.end
+def insertion_line(plugin: PluginView, lines: Sequence[str], class_indent: str) -> int:
+    """The line after which a new command goes: the last command's last statement,
+    or the class body's last statement for a class with no command yet, advanced
+    past any comment line that immediately follows it (no blank line between)
+    indented deeper than *class_indent*, the class body's own indentation. Such a
+    comment sits at the command body's own indentation, so it reads as that
+    command's trailing comment, not the start of the new stub's body."""
+    at = plugin.commands[-1].span.end if plugin.commands else plugin.class_span.end
+    class_level = len(class_indent)
+    while at < len(lines):
+        line = lines[at]
+        indent = len(line) - len(line.lstrip(" \t"))
+        if not line.strip().startswith("#") or indent <= class_level:
+            break
+        at += 1
+    return at
 
 
 def _reindented(lines: Sequence[str], unit: str) -> list[str]:
@@ -166,7 +179,7 @@ def add_command(
     indent_unit = first_body_line[: len(first_body_line) - len(first_body_line.lstrip(" \t"))]
     rendered = render_command(command, d)
     stub_lines = _reindented(rendered.lines, indent_unit)
-    at = insertion_line(plugin)
+    at = insertion_line(plugin, lines, indent_unit)
     text = joined_like(original, [*lines[:at], "", *stub_lines, *lines[at:]])
     first_party = view.first_party_packages
     try:

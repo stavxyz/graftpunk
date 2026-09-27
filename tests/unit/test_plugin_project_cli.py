@@ -472,6 +472,27 @@ _HAND_WRITTEN_ONE_LINE_CLASS = (
     'class MyshopPlugin(SitePlugin): site_name = "myshop"\n'
 )
 
+_HAND_WRITTEN_WITH_TRAILING_COMMENT = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+from graftpunk.plugins import CommandContext, SitePlugin, command
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+
+    @command(help="List orders")
+    def orders(self, ctx: CommandContext) -> dict:
+        return ctx.request_json("GET", "/api/orders", role="xhr")
+        # TODO(alice): pagination
+
+    def _helper(self) -> int:
+        return 1
+"""
+
 _HAND_WRITTEN_WITH_MODULE_HELPER = """\
 \"\"\"myshop plugin.\"\"\"
 
@@ -586,6 +607,25 @@ class TestAddCommand:
         text = module.read_text()
         assert "page\x0c break" in text
         assert "def orders(" in text
+        ast.parse(text)
+        _ruff_clean(recorded)
+
+    def test_a_trailing_comment_at_the_command_bodys_indentation_stays_with_it(
+        self, recorded: Path
+    ) -> None:
+        """B5: the insertion point was the last command's last statement, so a
+        comment immediately below it (at the command body's own indentation)
+        read as the end of the new stub's body instead of staying with the
+        command it actually follows (polish-r1 P6)."""
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_TRAILING_COMMENT)
+        result = _add(recorded, "myshop", "invoices=GET /api/invoices")
+        assert result.exit_code == 0, result.output
+        text = module.read_text()
+        assert (
+            'return ctx.request_json("GET", "/api/orders", role="xhr")\n'
+            "        # TODO(alice): pagination\n"
+        ) in text
+        assert text.index("# TODO(alice): pagination") < text.index("def invoices(")
         ast.parse(text)
         _ruff_clean(recorded)
 
