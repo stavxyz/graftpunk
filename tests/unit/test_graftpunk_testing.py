@@ -344,6 +344,43 @@ class TestCheckFixturesTree:
         _fixture(tmp_path, "get_invoice.pdf", body, _captured(b"%PDF captured", "myshop_session"))
         assert check_fixtures_tree(tmp_path).problems == ()
 
+    def test_a_macos_ds_store_is_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / ".DS_Store").write_bytes(b"\x00\x01")
+        assert check_fixtures_tree(tmp_path).problems == ()
+
+    def test_an_editor_swap_file_is_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / ".orders.json.swp").write_bytes(b"swap")
+        assert check_fixtures_tree(tmp_path).problems == ()
+
+    def test_a_dotfile_under_a_plugin_directory_is_skipped_too(self, tmp_path: Path) -> None:
+        (tmp_path / "myshop").mkdir()
+        (tmp_path / "myshop" / ".DS_Store").write_bytes(b"\x00\x01")
+        assert check_fixtures_tree(tmp_path).problems == ()
+
+    def test_a_flagged_name_is_matched_case_insensitively_in_the_body(self, tmp_path: Path) -> None:
+        _fixture(
+            tmp_path,
+            "get_orders.json",
+            b'{"x-csrf-token": "invented"}',
+            _captured(b"captured", "X-Csrf-Token"),
+        )
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert "'X-Csrf-Token'" in problem
+
+    def test_a_flagged_name_is_matched_case_insensitively_in_the_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        sidecar = Sidecar(
+            status=200,
+            content_type="application/json",
+            body_params=("x-csrf-token",),
+            capture_sha256=hashlib.sha256(b"captured").hexdigest(),
+            flagged_names=("X-Csrf-Token",),
+        )
+        _fixture(tmp_path, "get_orders.json", b'{"orders": []}', sidecar)
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert problem.startswith("get_orders.json.meta.json")
+
 
 class TestFixturesAreSanitisedInASuite:
     """Driven through a real inner pytest run, given FIXTURES_TREE the way the
