@@ -147,6 +147,28 @@ class TestPluginNewHappyPath:
         assert "--from-run" in result.output
         assert set(tmp_path.iterdir()) == before
 
+    @pytest.mark.usefixtures("gp_logging")
+    def test_an_empty_run_directory_is_refused_naming_the_har_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An interrupted recording: the run directory exists but network.har does
+        not, so digest()'s FileNotFoundError must not reach the terminal as a
+        traceback."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        target = tmp_path / "out"
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert str(run_dir / "network.har") in line
+        assert set(tmp_path.iterdir()) == before
+
 
 def _write_run(observe_base: Path, session: str, run_id: str, *, url: str, body: str) -> None:
     run_dir = observe_base / session / run_id
