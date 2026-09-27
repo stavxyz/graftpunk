@@ -31,6 +31,7 @@ import pytest
 
 from graftpunk.contracts import current_schema
 from graftpunk.testing.sidecar import (
+    FIXTURES_PLACEHOLDER,
     Sidecar,
     SidecarError,
     is_sidecar,
@@ -116,7 +117,7 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
         return FixturesTreeReport(
             problems=(
                 f"{tree}: the fixtures tree does not exist. The generated conftest names "
-                f"it as FIXTURES_TREE; gp plugin new creates it with a .gitkeep, and "
+                f"it as FIXTURES_TREE; gp plugin new creates it with a {FIXTURES_PLACEHOLDER}, and "
                 f"gp plugin upgrade creates it for a project that lacks it. Run "
                 f"gp plugin upgrade, or recreate the directory by hand.",
             ),

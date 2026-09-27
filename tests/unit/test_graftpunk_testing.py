@@ -14,11 +14,12 @@ from pathlib import Path
 import pytest
 import requests
 
+import graftpunk.testing.plugin as plugin_module
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
 from graftpunk.testing import FixtureSession, fixture_context, make_context
 from graftpunk.testing.plugin import check_fixtures_tree
-from graftpunk.testing.sidecar import Sidecar, SidecarError, sidecar_text
+from graftpunk.testing.sidecar import FIXTURES_PLACEHOLDER, Sidecar, SidecarError, sidecar_text
 
 
 class TestMakeContext:
@@ -265,6 +266,16 @@ class TestCheckFixturesTree:
         assert len(report.problems) == 1
         assert "does not exist" in report.problems[0]
         assert "gp plugin upgrade" in report.problems[0]
+        assert f"with a {FIXTURES_PLACEHOLDER}" in report.problems[0]
+
+    def test_the_missing_tree_message_names_the_one_placeholder_constant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A9: the message interpolates FIXTURES_PLACEHOLDER rather than spelling
+        .gitkeep beside it, so the two cannot drift apart."""
+        monkeypatch.setattr(plugin_module, "FIXTURES_PLACEHOLDER", ".marker")
+        report = check_fixtures_tree(tmp_path / "fixtures")
+        assert "with a .marker" in report.problems[0]
 
     def test_an_empty_tree_with_its_placeholder_passes(self, tmp_path: Path) -> None:
         (tmp_path / ".gitkeep").write_text("")
