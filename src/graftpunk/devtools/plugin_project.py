@@ -154,15 +154,11 @@ class ProjectView:
     short-lived: read it, act on it, and read the project again rather than keep
     one.
 
-    Design note (2026-09-24): ``missing_requirements`` and ``unreadable_files``
-    originally read ``policy.PROJECT_REQUIREMENTS`` live, at call time, rather than
-    from the view's own fields; two calls on the same ``ProjectView`` could then
-    disagree if a test or a caller mutated ``policy.PROJECT_REQUIREMENTS`` between
-    them, even though nothing else about the view changed. ``ProjectView`` carries
-    a ``requirement_set`` field, snapshotted from ``policy.PROJECT_REQUIREMENTS`` by
-    ``read_project`` at read time, and both methods read ``self.requirement_set``
-    instead, so a ``ProjectView`` is a value: two calls on the same instance always
-    agree, and equality compares the same fields the methods read.
+    Design note: ``requirement_set`` is snapshotted from ``policy.PROJECT_REQUIREMENTS``
+    by ``read_project`` at read time, and both methods read ``self.requirement_set``
+    instead of the module attribute, so a ``ProjectView`` is a value: two calls on
+    the same instance always agree, and equality compares the same fields the
+    methods read.
     """
 
     directory: DirectoryKind
@@ -426,22 +422,18 @@ def _read_plugin(root: Path, key: str, value: str, project_name: str) -> PluginV
     )
 
 
-# Design note (2026-09-24): whether a plugin is a suite member is decided
-# twice, by two different facts. The renderer knows it directly:
-# ScaffoldSpec.mode is "add_to_suite" or "new_project", set by whoever calls
-# it. The reader has no such field to read back; mode is a choice the writer
-# made at generation time, not a fact gp plugin new or gp plugin add-command
-# persists anywhere on disk (no project file records it), so _read_plugin
-# above re-derives the same answer from the one fact that IS on disk and
-# matches the generator's own decision: a suite member's package name differs
-# from the project's [project].name.
+# Design note: whether a plugin is a suite member is decided twice, by two
+# different facts. The renderer knows it directly: ScaffoldSpec.mode is
+# "add_to_suite" or "new_project", set by whoever calls it. The reader has no
+# such field to read back; mode is a choice the writer made at generation
+# time, not a fact gp plugin new or gp plugin add-command persists anywhere
+# on disk (no project file records it), so _read_plugin above re-derives the
+# same answer from the one fact that IS on disk and matches the generator's
+# own decision: a suite member's package name differs from the project's
+# [project].name.
 # test_the_rule_gives_the_same_answer_from_the_spec_and_from_the_project is
 # the check that these two independent derivations still agree; it is the
 # owner of that agreement, not a coincidence to be relied on silently.
-# Recording mode as an on-disk marker would remove the need for the
-# heuristic, but that is a new generated-project file format, outside this
-# plan's scope; the parity test is the cheaper fix for the actual risk (the
-# two derivations drifting apart), and this plan keeps it.
 
 
 def _class_string(klass: ast.ClassDef, name: str) -> str | None:
