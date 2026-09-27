@@ -176,7 +176,7 @@ class TestTheView:
             "fixtures_root",
             "class_names",
         ]
-        assert [f.name for f in fields(CommandView)] == ["method", "span", "keywords"]
+        assert [f.name for f in fields(CommandView)] == ["method", "span", "keywords", "group"]
 
     def test_a_generated_plugin_declares_every_endpoint(self, tmp_path: Path) -> None:
         _generate(tmp_path)
@@ -255,6 +255,7 @@ class TestTheView:
         (plugin,) = read_project(tmp_path).plugins
         (group,) = plugin.commands
         assert (group.method, group.cli_name, group.endpoint) == ("Admin", "admin", None)
+        assert group.group is True
         assert "Admin" in plugin.class_names
 
     def test_a_plugin_is_found_by_its_entry_point_name(self, tmp_path: Path) -> None:
@@ -270,6 +271,7 @@ class TestTheView:
         (command,) = plugin.commands
         assert (command.method, command.endpoint) == ("orders", None)
         assert command.keywords == {"help": "List orders"}
+        assert command.group is False
         assert plugin.markers == ()
 
     def test_cli_name_is_the_pinned_name_or_the_kebab_cased_method(self) -> None:

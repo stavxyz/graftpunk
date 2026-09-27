@@ -54,10 +54,12 @@ def _command_names(plugin: PluginView) -> set[str]:
     """Every name a real (non-group) command already registers, plus the reserved
     names every plugin has. policy.RESERVED_COMMAND_NAMES is also checked by
     plan_command, called below before this function; seeded here too, so this
-    collision check stays correct on its own if that call order ever changes."""
+    collision check stays correct on its own if that call order ever changes.
+    Split from a group by CommandView.group, never by whether endpoint is set:
+    a hand-written command can carry no endpoint= and is still a command."""
     taken: set[str] = set(policy.RESERVED_COMMAND_NAMES)
     for command in plugin.commands:
-        if command.endpoint is not None:
+        if not command.group:
             taken.add(command.method)
             taken.add(command.cli_name)
     return taken
@@ -68,7 +70,7 @@ def _group_names(plugin: PluginView) -> set[str]:
     its Python identifier and its CLI name."""
     names: set[str] = set()
     for command in plugin.commands:
-        if command.endpoint is None:
+        if command.group:
             names.add(command.method)
             names.add(command.cli_name)
     return names

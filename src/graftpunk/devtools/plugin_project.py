@@ -74,11 +74,15 @@ class CommandView:
     decorator through the end of its body), and its decorator's keywords,
     read-only, each the string literal it was given or ``None`` when it is not
     one. A group's ``endpoint`` is always ``None``: the ``command`` decorator
-    only applies ``endpoint=`` to a function."""
+    only applies ``endpoint=`` to a function. ``group`` is ``True`` for a
+    decorated nested class and ``False`` for a decorated method, set from the
+    AST node type, never from whether ``endpoint`` is set: a hand-written
+    method can carry no ``endpoint=`` and still be a command, not a group."""
 
     method: str
     span: Span
     keywords: Mapping[str, str | None]
+    group: bool = False
 
     @property
     def endpoint(self) -> str | None:
@@ -512,7 +516,10 @@ def _commands(klass: ast.ClassDef) -> Iterator[CommandView]:
                 )
         start = min(d.lineno for d in node.decorator_list)
         yield CommandView(
-            node.name, Span(start, node.end_lineno or node.lineno), MappingProxyType(keywords)
+            node.name,
+            Span(start, node.end_lineno or node.lineno),
+            MappingProxyType(keywords),
+            group=isinstance(node, ast.ClassDef),
         )
 
 
