@@ -435,6 +435,19 @@ class MyshopPlugin(SitePlugin):
         return {}
 """
 
+_HAND_WRITTEN_WITH_COMMENTED_IMPORT = """\
+\"\"\"myshop plugin.\"\"\"
+
+from __future__ import annotations
+
+from graftpunk.plugins import SitePlugin  # noqa: F401
+
+
+class MyshopPlugin(SitePlugin):
+    site_name = "myshop"
+    base_url = "https://myshop.example"
+"""
+
 _HAND_WRITTEN_WITH_MODULE_HELPER = """\
 \"\"\"myshop plugin.\"\"\"
 
@@ -691,6 +704,19 @@ class TestAddCommand:
         assert "shadow" in _plain(result.output)
         assert module.read_bytes() == before
 
+    def test_a_comment_on_the_import_to_merge_into_refuses_instead_of_dropping_it(
+        self, recorded: Path
+    ) -> None:
+        """B4/A12: the stub needs CommandContext and command merged into the
+        existing commented graftpunk.plugins import; re-rendering it would drop
+        the noqa (polish-r1 P4)."""
+        module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_COMMENTED_IMPORT)
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        assert "holds a comment" in _plain(result.output)
+        assert module.read_bytes() == before
+
     def test_a_module_level_helper_blocks_the_same_name(self, recorded: Path) -> None:
         """A top-level `def helper()` is not in the plugin class body, so
         class_names never sees it; the module-level binds_name check catches it
@@ -923,6 +949,23 @@ class TestPluginUpgrade:
             text=True,
         )
         assert check.returncode == 0, check.stdout + check.stderr
+
+    def test_a_comment_on_the_conftest_import_refuses_instead_of_dropping_it(
+        self, tmp_path: Path
+    ) -> None:
+        """As TestAddCommand's equivalent test, for the with_bindings path upgrade
+        drives (polish-r1 P4)."""
+        conftest = _project_lacking_the_wiring(tmp_path)
+        conftest.write_text(
+            "from graftpunk.testing.plugin import site_env_scrubber  # noqa: F401\n"
+            "\n"
+            'scrub_site_env = site_env_scrubber("MYSHOP_")\n'
+        )
+        before = conftest.read_bytes()
+        result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "holds a comment" in _plain(result.output)
+        assert conftest.read_bytes() == before
 
     def test_a_failed_write_is_one_line_exit_1_and_the_original_bytes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

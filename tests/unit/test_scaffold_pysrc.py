@@ -342,6 +342,18 @@ class TestWithImport:
             "from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber"
         )
 
+    def test_a_comment_on_the_merged_line_refuses_instead_of_dropping_it(self) -> None:
+        """B4/A12: re-rendering the merged statement from its ast aliases would
+        silently drop a trailing comment such as a noqa (polish-r1 P4)."""
+        text = "from graftpunk.plugins import SitePlugin  # noqa: F401\n\nx = 1\n"
+        with pytest.raises(ImportPlacementError, match="holds a comment"):
+            with_import(text, "graftpunk.plugins", "command")
+
+    def test_a_comment_inside_a_parenthesised_import_also_refuses(self) -> None:
+        text = "from graftpunk.plugins import (\n    SitePlugin,  # the base\n)\n\nx = 1\n"
+        with pytest.raises(ImportPlacementError, match="holds a comment"):
+            with_import(text, "graftpunk.plugins", "command")
+
     def test_a_stdlib_import_goes_first_with_a_blank_line_after(self) -> None:
         result = with_import(_OLD_CONFTEST, "pathlib", "Path")
         assert result.splitlines()[:3] == [

@@ -592,7 +592,9 @@ def with_import(
     Unchanged when :func:`binds_name` says the module already binds *name*'s bound
     identifier (the alias, for ``"a as b"``; *name* itself otherwise). Otherwise
     merged into an existing ``from {module} import ...``, re-rendered in isort's
-    name order, whatever the rest of the module looks like. Failing that, placed
+    name order, whatever the rest of the module looks like, unless a source line
+    of that statement holds a comment: re-rendering it would drop the comment, so
+    this refuses instead (below). Failing that, placed
     only into the shapes generated files have: module-level imports contiguous at
     the top (after a docstring and any ``__future__`` import) and in at most three
     isort sections, the standard library, everything else, and, for a module
@@ -608,9 +610,10 @@ def with_import(
     does, else, for a module with no imports at all, after its docstring.
 
     Raises:
-        ImportPlacementError: An import follows other code, or a relative import
-            is present; the message says to add the import by hand and run
-            ``ruff check --fix``.
+        ImportPlacementError: An import follows other code, a relative import is
+            present, or a matching existing import's source lines hold a comment;
+            the message says to add the import by hand (and, for the first two,
+            to run ``ruff check --fix``).
     """
     tree = ast.parse(text)
     if binds_name(tree, name.split(" as ")[-1]):
@@ -624,6 +627,13 @@ def with_import(
             and node.module == module
             and all(alias.name != "*" for alias in node.names)
         ):
+            node_lines = lines[node.lineno - 1 : node.end_lineno or node.lineno]
+            if any("#" in line for line in node_lines):
+                raise ImportPlacementError(
+                    f"cannot merge {name!r} into the existing 'from {module} import ...': its "
+                    f"line holds a comment, which re-rendering the statement would drop. Add "
+                    f"the name to it by hand."
+                )
             names = [
                 alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
                 for alias in node.names
