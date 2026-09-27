@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-import re
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -55,6 +54,7 @@ if TYPE_CHECKING:
 
 from graftpunk.cache import cache_session, get_session_metadata, load_session_for_api
 from graftpunk.exceptions import PluginError
+from graftpunk.har.naming import registered_name, to_cli_name
 from graftpunk.logging import get_logger
 from graftpunk.observe import NoOpObservabilityContext, ObservabilityContext
 from graftpunk.plugins.site_requests import SiteRequests
@@ -784,19 +784,6 @@ class CLIPluginProtocol(Protocol):
     def teardown(self) -> None: ...
 
 
-def _to_cli_name(name: str) -> str:
-    """Convert PythonName to cli-name (CamelCase to kebab-case, underscores to hyphens).
-
-    Args:
-        name: Python identifier (e.g. "AccountStatements" or "account_statements").
-
-    Returns:
-        CLI-friendly name (e.g. "account-statements").
-    """
-    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", name)
-    return s.lower().replace("_", "-")
-
-
 def command(
     help: str = "",  # noqa: A002 - shadows builtin but matches typer convention
     params: list[PluginParamSpec] | None = None,
@@ -863,7 +850,7 @@ def command(
         if isinstance(target, type):
             # Class -> command group
             target._command_group_meta = CommandGroupMeta(
-                name=name or _to_cli_name(target.__name__),
+                name=registered_name(name, target.__name__),
                 help_text=help,
                 parent=parent,
             )
@@ -874,7 +861,7 @@ def command(
                 attr = getattr(target, attr_name, None)
                 if callable(attr) and not hasattr(attr, "_command_meta"):
                     attr._command_meta = CommandMetadata(
-                        name=_to_cli_name(attr_name),
+                        name=to_cli_name(attr_name),
                         params=(),
                         parent=None,
                         requires_session=None,
@@ -886,7 +873,7 @@ def command(
             if help:
                 click_kw["help"] = help
             target._command_meta = CommandMetadata(
-                name=name or _to_cli_name(target.__name__),
+                name=registered_name(name, target.__name__),
                 params=tuple(params) if params else (),
                 parent=parent,
                 requires_session=requires_session,

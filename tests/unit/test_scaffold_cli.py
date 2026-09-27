@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from typer.testing import CliRunner
 
 from graftpunk.cli.scaffold_commands import plugin_app
 from graftpunk.logging import configure_logging
+from graftpunk.testing.sidecar import Sidecar, load_sidecar, sidecar_text
 from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
@@ -43,6 +45,16 @@ def _entry(
             "content": {"mimeType": content_type, "text": body, "size": len(body)},
         },
     }
+
+
+def _declare_fixtures(fixtures_dir: Path) -> None:
+    """Every sidecar ``gp observe fixtures`` just wrote, rewritten as declared (no
+    capture hash): the tests that call this exercise ``gp observe fixtures`` itself,
+    against a fixture that is never hand-edited afterwards, and
+    ``fixtures_are_sanitised`` otherwise fails it as an unchanged copy of its
+    capture. Every other field is kept exactly as ``gp observe fixtures`` wrote it."""
+    for meta in fixtures_dir.glob("*.meta.json"):
+        meta.write_text(sidecar_text(replace(load_sidecar(meta), capture_sha256=None)))
 
 
 class TestPluginNewHappyPath:
@@ -133,6 +145,49 @@ class TestPluginNewHappyPath:
         )
         assert result.exit_code == 1
         assert "--from-run" in result.output
+        assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.usefixtures("gp_logging")
+    def test_an_empty_run_directory_is_refused_naming_the_har_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An interrupted recording: the run directory exists but network.har does
+        not, so digest()'s FileNotFoundError must not reach the terminal as a
+        traceback."""
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        target = tmp_path / "out"
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert str(run_dir / "network.har") in line
+        assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.usefixtures("gp_logging")
+    def test_a_non_utf8_har_is_refused_naming_the_har_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        har = run_dir / "network.har"
+        har.write_bytes(b"\xff\xfe")
+        target = tmp_path / "out"
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert str(har) in line
         assert set(tmp_path.iterdir()) == before
 
 
@@ -468,6 +523,11 @@ class TestGeneratedProjectPassesItsOwnGate:
         fixtures_dir = target / "tests" / "fixtures"
         (fixtures_dir / "get_orders_{order_id}.json").write_text('{"id": 1}')
 
+        # A hand-derived fixture with no capture behind it: its sidecar declares so.
+        (fixtures_dir / "get_orders_{order_id}.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        )
+
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -482,6 +542,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         # list it in pytest_plugins, which pytest reports as a
         # PytestAssertRewriteWarning.
         assert "warnings summary" not in pytest_result.stdout.lower(), pytest_result.stdout
+        assert "1 accepted on declaration" in pytest_result.stdout, pytest_result.stdout
 
     def test_a_generated_test_passes_with_a_query_parameter_named_quote(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -515,6 +576,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert result.exit_code == 0, result.output
         assert "quote: str | None = None" in (target / "src/graftpunk_myshop/plugin.py").read_text()
         (target / "tests" / "fixtures" / "get_orders_{order_id}.json").write_text('{"id": 1}')
+        (target / "tests" / "fixtures" / "get_orders_{order_id}.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -564,6 +628,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert result.exit_code == 0, result.output
         (target / "tests" / "fixtures" / "get_go.html").write_text("")
+        (target / "tests" / "fixtures" / "get_go.html.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="text/html"))
+        )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -601,6 +668,7 @@ class TestGeneratedProjectPassesItsOwnGate:
             app, ["observe", "fixtures", "myshop", "--match", match, "--out", str(fixtures_dir)]
         )
         assert result.exit_code == 0, result.output
+        _declare_fixtures(fixtures_dir)
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -769,6 +837,7 @@ class TestGeneratedProjectPassesItsOwnGate:
         )
         assert result.exit_code == 0, result.output
         assert (fixtures_dir / "get_go.html").read_text() == ""
+        _declare_fixtures(fixtures_dir)
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -827,6 +896,9 @@ class TestGeneratedProjectPassesItsOwnGate:
         assert result.exit_code == 0, result.output
         assert f"    {assertion}\n" in (target / "tests" / "test_plugin.py").read_text()
         (target / "tests" / "fixtures" / "get_ack.json").write_text(body)
+        (target / "tests" / "fixtures" / "get_ack.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=status, content_type="application/json"))
+        )
         env = {**os.environ, "PYTHONPATH": str(target / "src")}
         pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
             [sys.executable, "-m", "pytest", "tests", "-q"],
@@ -1471,3 +1543,138 @@ class TestAConflictSaysWhichKind:
         reasons = [e.get("reason") for e in events if e.get("event") == "scaffold_refused"]
         assert reasons == ["invalid_change"]
         assert not target.exists()
+
+
+class TestPluginNewCommand:
+    """--command selects and names the stubs (graft skill spec, 2026-09-21)."""
+
+    @staticmethod
+    def _record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        entries = [
+            _entry("GET", "https://myshop.example/api/orders", body='{"orders": []}'),
+            _entry("GET", "https://myshop.example/api/orders/1001", body='{"id": 1}'),
+        ]
+        (run_dir / "network.har").write_text(
+            json.dumps({"log": {"version": "1.2", "entries": entries}})
+        )
+
+    def test_writes_only_the_selected_stubs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record(tmp_path, monkeypatch)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(target),
+                "--command",
+                "order=GET /api/orders/{order_id}",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert "def order(" in plugin_code
+        assert "def api_orders(" not in plugin_code
+        assert "tests/fixtures/get_api_orders_{order_id}.json" in strip_ansi(result.output)
+
+    @pytest.mark.parametrize(
+        "value", ["orders GET /api/orders", "=GET /api/orders", "orders=", "orders=get /api/orders"]
+    )
+    def test_a_malformed_value_is_refused_with_the_parsers_own_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        from graftpunk.har.naming import EndpointSpecError, parse_command_spec
+
+        self._record(tmp_path, monkeypatch)
+        with pytest.raises(EndpointSpecError) as caught:
+            parse_command_spec(value)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(target),
+                "--command",
+                value,
+            ],
+        )
+        assert result.exit_code == 1
+        assert f"--command: {caught.value}" in " ".join(strip_ansi(result.output).split())
+        assert not target.exists()
+
+    def test_a_colliding_name_is_refused_and_nothing_is_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record(tmp_path, monkeypatch)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(target),
+                "--command",
+                "orders=GET /api/orders",
+                "--command",
+                "orders=GET /api/orders/{order_id}",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "given twice" in strip_ansi(result.output)
+        assert not target.exists()
+
+    def test_an_endpoint_the_digest_lacks_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._record(tmp_path, monkeypatch)
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--dir",
+                str(tmp_path / "out"),
+                "--command",
+                "x=GET /api/nowhere",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "not an endpoint in this run" in strip_ansi(result.output)
+
+    def test_command_without_from_run_is_refused(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--dir",
+                str(tmp_path),
+                "--command",
+                "orders=GET /api/orders",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "--command requires --from-run" in strip_ansi(result.output)

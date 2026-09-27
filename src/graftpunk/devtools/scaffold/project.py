@@ -14,12 +14,13 @@ from pathlib import Path
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
 from graftpunk.devtools.errors import DevtoolsRefusal
+from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, module_name_for
 from graftpunk.devtools.scaffold.pyproject_edit import (
     PyprojectEditError,
     with_entry_point,
     with_wheel_package,
 )
-from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, module_name_for, render
+from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, render
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
     InvalidChangeError,
@@ -32,6 +33,7 @@ from graftpunk.devtools.scaffold.write import (
     validate_toml,
 )
 from graftpunk.logging import get_logger
+from graftpunk.plugins import PLUGINS_GROUP
 
 LOG = get_logger(__name__)
 
@@ -41,8 +43,6 @@ __all__ = [
     "ScaffoldResult",
     "write_scaffold",
 ]
-
-PLUGINS_ENTRY_POINT_GROUP = "graftpunk.plugins"
 
 
 ScaffoldConflictError = ChangeConflictError
@@ -100,7 +100,7 @@ def _declares_plugin_group(pyproject_text: str, pyproject_path: Path) -> bool:
     # string entry-points would otherwise pass a substring test.
     project = data.get("project")
     entry_points = project.get("entry-points") if isinstance(project, dict) else None
-    return isinstance(entry_points, dict) and PLUGINS_ENTRY_POINT_GROUP in entry_points
+    return isinstance(entry_points, dict) and PLUGINS_GROUP in entry_points
 
 
 def write_scaffold(
@@ -143,7 +143,7 @@ def write_scaffold(
     if existing is not None and not _declares_plugin_group(original, existing):
         raise NotAPluginSuiteError(
             f"{existing} exists but does not declare "
-            f'[project.entry-points."{PLUGINS_ENTRY_POINT_GROUP}"]. '
+            f'[project.entry-points."{PLUGINS_GROUP}"]. '
             "This does not look like a graftpunk plugin suite. Use --new to start a fresh "
             "project in a different directory, or add the entry-point group by hand."
         )
@@ -160,7 +160,10 @@ def write_scaffold(
         files = {
             relative: content
             for relative, content in files.items()
-            if not (relative.endswith("/.gitkeep") and (target_dir / relative).parent.is_dir())
+            if not (
+                relative.endswith(f"/{FIXTURES_PLACEHOLDER}")
+                and (target_dir / relative).parent.is_dir()
+            )
         }
 
     rendered = [

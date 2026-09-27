@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -16,6 +17,7 @@ import requests
 from graftpunk.graftpunk_session import GraftpunkSession
 from graftpunk.plugins.cli_plugin import CommandContext
 from graftpunk.testing import FixtureSession, fixture_context, make_context
+from graftpunk.testing.plugin import check_fixtures_tree
 from graftpunk.testing.sidecar import Sidecar, SidecarError, sidecar_text
 
 
@@ -223,3 +225,199 @@ def test_a_fixture_is_its_stem_plus_one_extension(tmp_path: Path) -> None:
     assert session.get("https://myshop.example.com/feed").status_code == 404
     (tmp_path / "get_api_users.json").write_text('{"users": []}')
     assert session.get("https://myshop.example.com/api/users").json() == {"users": []}
+
+
+_GENERATED_CONFTEST = """
+from pathlib import Path
+
+from graftpunk.testing.plugin import fixtures_are_sanitised
+
+FIXTURES_TREE = Path(__file__).parent / "fixtures"
+
+sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)
+"""
+
+
+def _fixture(tree: Path, relative: str, body: bytes, sidecar: Sidecar | None) -> Path:
+    path = tree / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    if sidecar is not None:
+        path.with_name(path.name + ".meta.json").write_text(sidecar_text(sidecar))
+    return path
+
+
+def _captured(body: bytes, *flagged: str) -> Sidecar:
+    return Sidecar(
+        status=200,
+        content_type="application/json",
+        capture_sha256=hashlib.sha256(body).hexdigest(),
+        flagged_names=flagged,
+    )
+
+
+class TestCheckFixturesTree:
+    """The one enforcer of "a committed fixture came off no account unchanged"
+    (graft skill spec, 2026-09-21)."""
+
+    def test_a_missing_tree_fails(self, tmp_path: Path) -> None:
+        report = check_fixtures_tree(tmp_path / "fixtures")
+        assert len(report.problems) == 1
+        assert "does not exist" in report.problems[0]
+        assert "gp plugin upgrade" in report.problems[0]
+
+    def test_an_empty_tree_with_its_placeholder_passes(self, tmp_path: Path) -> None:
+        (tmp_path / ".gitkeep").write_text("")
+        assert check_fixtures_tree(tmp_path).problems == ()
+
+    def test_a_fixture_with_no_sidecar_fails_and_says_how_to_make_one(self, tmp_path: Path) -> None:
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert "get_orders.json: no sidecar" in problem
+        assert "gp observe fixtures" in problem
+        assert '"capture_sha256": null' in problem
+
+    def test_a_suite_member_added_after_the_conftest_is_covered(self, tmp_path: Path) -> None:
+        """The walk covers the whole tree, so a second member's root needs no
+        per-plugin fact in the conftest."""
+        _fixture(tmp_path, "myshop/get_orders.json", b"{}", None)
+        _fixture(tmp_path, "widgets/get_widgets.json", b"{}", None)
+        problems = check_fixtures_tree(tmp_path).problems
+        assert any(p.startswith("myshop/get_orders.json") for p in problems)
+        assert any(p.startswith("widgets/get_widgets.json") for p in problems)
+
+    def test_an_unchanged_copy_of_the_capture_fails(self, tmp_path: Path) -> None:
+        body = b'{"orders": [{"id": "1001"}]}'
+        _fixture(tmp_path, "get_orders.json", body, _captured(body))
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert "unchanged copy" in problem
+
+    def test_a_flagged_name_in_the_body_fails(self, tmp_path: Path) -> None:
+        _fixture(
+            tmp_path,
+            "get_orders.json",
+            b'{"myshop_session": "invented"}',
+            _captured(b"captured", "myshop_session"),
+        )
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert "'myshop_session'" in problem
+
+    def test_a_flagged_name_in_the_sidecar_fails(self, tmp_path: Path) -> None:
+        sidecar = Sidecar(
+            status=200,
+            content_type="application/json",
+            body_params=("myshop_session",),
+            capture_sha256=hashlib.sha256(b"captured").hexdigest(),
+            flagged_names=("myshop_session",),
+        )
+        _fixture(tmp_path, "get_orders.json", b'{"orders": []}', sidecar)
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert problem.startswith("get_orders.json.meta.json")
+
+    def test_a_sidecar_of_unknown_schema_fails(self, tmp_path: Path) -> None:
+        path = _fixture(tmp_path, "get_orders.json", b"{}", None)
+        payload = json.loads(sidecar_text(Sidecar(status=200, content_type="x")))
+        payload["schema"] = 99
+        path.with_name(path.name + ".meta.json").write_text(json.dumps(payload))
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert "schema 99" in problem
+
+    def test_an_invented_fixture_passes_and_counts_as_verified(self, tmp_path: Path) -> None:
+        _fixture(
+            tmp_path,
+            "get_orders.json",
+            b'{"orders": [{"id": "9001"}]}',
+            _captured(b'{"orders": [{"id": "1001"}]}', "myshop_session"),
+        )
+        report = check_fixtures_tree(tmp_path)
+        assert (report.problems, report.verified, report.declared) == ((), 1, 0)
+
+    def test_a_hand_made_fixture_with_no_capture_hash_passes_on_declaration(
+        self, tmp_path: Path
+    ) -> None:
+        _fixture(tmp_path, "get_orders.json", b"{}", Sidecar(status=200, content_type="x"))
+        report = check_fixtures_tree(tmp_path)
+        assert (report.problems, report.verified, report.declared) == ((), 0, 1)
+        assert "1 accepted on declaration" in report.summary
+
+    def test_a_binary_fixture_is_checked_without_decoding_errors(self, tmp_path: Path) -> None:
+        body = b"%PDF-1.7\n\xff\xfe\x00invented"
+        _fixture(tmp_path, "get_invoice.pdf", body, _captured(b"%PDF captured", "myshop_session"))
+        assert check_fixtures_tree(tmp_path).problems == ()
+
+    def test_a_macos_ds_store_is_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / ".DS_Store").write_bytes(b"\x00\x01")
+        assert check_fixtures_tree(tmp_path).problems == ()
+
+    def test_an_editor_swap_file_is_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / ".orders.json.swp").write_bytes(b"swap")
+        assert check_fixtures_tree(tmp_path).problems == ()
+
+    def test_a_dotfile_under_a_plugin_directory_is_skipped_too(self, tmp_path: Path) -> None:
+        (tmp_path / "myshop").mkdir()
+        (tmp_path / "myshop" / ".DS_Store").write_bytes(b"\x00\x01")
+        assert check_fixtures_tree(tmp_path).problems == ()
+
+    def test_a_flagged_name_is_matched_case_insensitively_in_the_body(self, tmp_path: Path) -> None:
+        _fixture(
+            tmp_path,
+            "get_orders.json",
+            b'{"x-csrf-token": "invented"}',
+            _captured(b"captured", "X-Csrf-Token"),
+        )
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert "'X-Csrf-Token'" in problem
+
+    def test_a_flagged_name_is_matched_case_insensitively_in_the_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        sidecar = Sidecar(
+            status=200,
+            content_type="application/json",
+            body_params=("x-csrf-token",),
+            capture_sha256=hashlib.sha256(b"captured").hexdigest(),
+            flagged_names=("X-Csrf-Token",),
+        )
+        _fixture(tmp_path, "get_orders.json", b'{"orders": []}', sidecar)
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert problem.startswith("get_orders.json.meta.json")
+
+
+class TestFixturesAreSanitisedInASuite:
+    """Driven through a real inner pytest run, given FIXTURES_TREE the way the
+    generated conftest supplies it."""
+
+    def test_a_clean_tree_passes_and_the_declared_count_is_reported(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        fixtures = pytester.path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "get_orders.json").write_text("{}")
+        (fixtures / "get_orders.json.meta.json").write_text(
+            sidecar_text(Sidecar(status=200, content_type="application/json"))
+        )
+        pytester.makepyfile(conftest=_GENERATED_CONFTEST, test_one="def test_one():\n    pass\n")
+        result = pytester.runpytest_inprocess("-o", "asyncio_default_fixture_loop_scope=function")
+        result.assert_outcomes(passed=1)
+        result.stdout.fnmatch_lines(["*0 fixture(s) verified*1 accepted on declaration*"])
+
+    def test_a_violation_fails_the_run_with_its_message(self, pytester: pytest.Pytester) -> None:
+        fixtures = pytester.path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "get_orders.json").write_text("{}")
+        pytester.makepyfile(conftest=_GENERATED_CONFTEST, test_one="def test_one():\n    pass\n")
+        result = pytester.runpytest_inprocess("-o", "asyncio_default_fixture_loop_scope=function")
+        result.assert_outcomes(errors=1)
+        result.stdout.fnmatch_lines(["*get_orders.json: no sidecar*"])
+
+
+def test_graftpunk_testing_plugin_imports_nothing_from_devtools() -> None:
+    script = (
+        "import sys\n"
+        "import graftpunk.testing.plugin\n"
+        "print(sorted(m for m in sys.modules if m.startswith('graftpunk.devtools')))\n"
+    )
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60, check=True
+    )
+    assert result.stdout.strip() == "[]"

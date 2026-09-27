@@ -651,7 +651,7 @@ class MyshopPlugin(SitePlugin):
     # GP-FILL: unpaired token candidate: header 'X-Csrf-Token'
 
     @command(
-        help="GP-FILL: describe api_orders",
+        help="GP-FILL: describe api-orders",
         params=[
             PluginParamSpec.option(
                 "archived",
@@ -1201,12 +1201,16 @@ verify once by logging in.
 
 ### Keep the developer's own environment out of the tests
 
-A generated `tests/conftest.py` is an import and an assignment:
+A generated `tests/conftest.py` is two imports and three assignments:
 
 ```python
-from graftpunk.testing.plugin import site_env_scrubber
+from pathlib import Path
+
+from graftpunk.testing.plugin import fixtures_are_sanitised, site_env_scrubber
 
 scrub_site_env = site_env_scrubber("MYSHOP_")
+FIXTURES_TREE = Path(__file__).parent / "fixtures"
+sanitised_fixtures = fixtures_are_sanitised(FIXTURES_TREE)
 ```
 
 `site_env_scrubber(prefix)` returns an autouse pytest fixture that removes every
@@ -1215,7 +1219,10 @@ restores them afterwards. Assigning it to a module-level name is what registers
 it. Without it, a developer who has `MYSHOP_PASSWORD` in their environment gets
 a green suite on code that fails for everybody else. Adding a plugin to an
 existing suite does not update this file: add a line for the new prefix
-yourself.
+yourself. The last two lines wire in the fixtures check described in
+[Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture).
+`FIXTURES_TREE` is the whole fixtures directory, so a plugin added to the suite
+later is covered without editing this file.
 
 ## Harden
 
@@ -1278,10 +1285,16 @@ before you commit a sidecar.
 }
 ```
 
-Without a sidecar the status is 200 and the content type is guessed from the
-extension. A sidecar is how you test an error path: copy a fixture together with
-its sidecar, set the copied sidecar's `status` to 403, and assert that the
-command raises `SessionRejectedError`.
+Without a sidecar, `FixtureSession` answers with status 200 and guesses the
+content type from the extension, but the generated suite's fixtures check fails
+on any fixture that has none (see
+[Deriving a fixture from a capture](#deriving-a-fixture-from-a-capture)). A
+fixture you make by hand gets a sidecar of its own with all seven keys shown
+above (the key set is closed, so a sidecar missing one is refused), its own
+`status` and `content_type`, and `"body_params": []`, `"capture_sha256": null`,
+`"flagged_names": []`, and `"redacted_names": 0`. A sidecar is how you test an
+error path: copy a fixture together with its sidecar, set the copied sidecar's
+`status` to 403, and assert that the command raises `SessionRejectedError`.
 
 ### Deriving a fixture from a capture
 
@@ -1319,12 +1332,27 @@ text (graftpunk's own recorder keeps none for a redirect hop) has no body by
 definition and gets an empty fixture and its sidecar; any other response
 recorded with no text (a binary one) is skipped and named.
 
-Then do the work by hand. **A fixture copies the real structure and invents the
-content. No captured page is committed.** Open the capture, keep the shape of
-the response, and replace every real value: order ids, names, addresses,
-amounts, tokens, ids in URLs. `tests/captures/` is gitignored and stays that
-way; `tests/fixtures/` is committed and contains nothing that came off a real
-account.
+Then do the work by hand. Copy the capture and its `.meta.json` sidecar into the
+plugin's fixtures directory together, under the same names, and edit only the
+copy of the capture. **A fixture copies the real structure and invents the
+content. No captured page is committed.** Keep the shape of the response and
+replace every real value: order ids, names, addresses, amounts, tokens, ids in
+URLs. `tests/captures/` is gitignored and stays that way; `tests/fixtures/` is
+committed and contains nothing that came off a real account.
+
+The generated suite holds you to part of that. Its `tests/conftest.py` wires in
+`fixtures_are_sanitised`, which walks every non-dotfile under `tests/fixtures/`
+on every run (a `.DS_Store` or an editor swap file is skipped, like `.gitkeep`)
+and fails when a fixture has no sidecar, when a fixture is still byte for byte
+its capture, when a name the sidecar flags turns up in the fixture or elsewhere in
+the sidecar, or when a sidecar is outside its declared format. It cannot tell
+whether invented content was invented well; that part stays yours. A fixture
+you wrote from nothing needs a sidecar too, with all seven keys: its own
+`status` and `content_type`, `"schema": 1`, `"body_params": []`,
+`"capture_sha256": null`, `"flagged_names": []`, and `"redacted_names": 0`. The
+null hash declares the file came off no account. The check trusts that
+declaration rather than verifying it, and prints on every run how many
+fixtures it accepted that way, so the number shows up in review.
 
 ### Parsers do not return a confident empty list
 
@@ -1364,11 +1392,15 @@ Run all of it before every commit:
 pytest
 ruff check .
 ruff format --check .
+gp plugin check
 ```
 
-Add a type checker. A generated project passes `ruff check` and `ruff format
---check` as written, so a red gate on a fresh scaffold is something you
-introduced.
+`gp plugin check` lists every `GP-FILL` marker left in a plugin module or a
+test module, any plugin module that does not hold exactly one plugin class,
+and any project wiring the project lacks, which `gp plugin upgrade` adds. A
+fresh scaffold fails it until its markers are filled in. It passes
+`ruff check` and `ruff format --check` as written, so a red ruff run on a
+fresh scaffold is something you introduced. Add a type checker.
 
 A minimal CI workflow to start from, running the same gate:
 
@@ -1386,9 +1418,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: pytest
-      - run: ruff check .
-      - run: ruff format --check .
+      - run: |
+          pytest
+          ruff check .
+          ruff format --check .
+          gp plugin check
 ```
 
 Nothing in CI logs into the site: the tests run against committed fixtures, and
@@ -1422,7 +1456,7 @@ Runs of capitals are not split (`getHTTPStatus` becomes `get-httpstatus`), so
 
 ### Before you publish
 
-- [ ] No `GP-FILL` marker is left anywhere in the project.
+- [ ] The gate is green: every command in [The gate](#the-gate) passes.
 - [ ] `gp myshop --help` lists the commands under the names you meant.
 - [ ] `failure` is the site's exact wording, confirmed with a wrong password.
 - [ ] `success` or `success_url` is set, and neither matches the login page.
@@ -1431,7 +1465,6 @@ Runs of capitals are not split (`getHTTPStatus` becomes `get-httpstatus`), so
 - [ ] `tests/captures/` is gitignored and no capture is tracked.
 - [ ] Every fixture is invented content in a real structure.
 - [ ] Every parser raises on a missing container rather than returning `[]`.
-- [ ] `pytest`, `ruff check .`, and `ruff format --check .` are green.
 - [ ] The module docstring records the date you verified the plugin against a
       real account, and what turned out to be wrong.
 

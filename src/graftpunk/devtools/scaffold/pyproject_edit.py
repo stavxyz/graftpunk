@@ -12,6 +12,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from graftpunk.plugins import PLUGINS_GROUP
+
 __all__ = ["PyprojectEditError", "with_entry_point", "with_wheel_package"]
 
 _ENTRY_POINT_TABLE_RE = re.compile(
@@ -80,13 +82,13 @@ def with_entry_point(text: str, pyproject_path: Path, name: str, target: str) ->
     text, crlf = _as_lf(text, pyproject_path)
     text = _normalised(text)
     data = tomllib.loads(text)
-    existing = data.get("project", {}).get("entry-points", {}).get("graftpunk.plugins", {})
+    existing = data.get("project", {}).get("entry-points", {}).get(PLUGINS_GROUP, {})
     if name in existing:
         raise PyprojectEditError(f"Entry point '{name}' is already registered in {pyproject_path}.")
     match = _ENTRY_POINT_TABLE_RE.search(text)
     if match is None:
         raise PyprojectEditError(
-            f'{pyproject_path} has no [project.entry-points."graftpunk.plugins"] table I can '
+            f'{pyproject_path} has no [project.entry-points."{PLUGINS_GROUP}"] table I can '
             f"locate textually. Add this line by hand:\n"
             f'{name} = "{target}"'
         )
