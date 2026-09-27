@@ -23,19 +23,20 @@ from graftpunk.har.naming import to_cli_name
 __all__ = [
     "CommandSelection",
     "CommandSelectionError",
+    "MAX_COMMAND_NAME",
     "PlannedCommand",
     "command_identifier",
     "plan_command",
     "planned_commands",
 ]
 
-_MAX_COMMAND_NAME = 40
+MAX_COMMAND_NAME = 40
 # keyword.softkwlist on Python 3.13, the newest version CI runs
 # (.github/workflows/python-quality.yml). Fixed here rather than read from the
 # running interpreter, so a name refused on one Python is refused on every one:
 # 3.11 lacks "type", which 3.12 added.
 _SOFT_KEYWORDS = ("_", "case", "match", "type")
-_COMMAND_NAME_RE = re.compile(rf"[A-Za-z][A-Za-z0-9_-]{{0,{_MAX_COMMAND_NAME - 1}}}")
+_COMMAND_NAME_RE = re.compile(rf"[A-Za-z][A-Za-z0-9_-]{{0,{MAX_COMMAND_NAME - 1}}}")
 
 
 @dataclass(frozen=True)
@@ -56,13 +57,13 @@ def command_identifier(name: str) -> str:
 
     Raises:
         CommandSelectionError: *name* is not a letter followed by letters, digits,
-            hyphens, and underscores within ``_MAX_COMMAND_NAME``, or it maps to
+            hyphens, and underscores within ``MAX_COMMAND_NAME``, or it maps to
             a Python keyword.
     """
     if not _COMMAND_NAME_RE.fullmatch(name):
         raise CommandSelectionError(
             f"Command name {name!r} must start with a letter and contain only letters, "
-            f"digits, hyphens, and underscores, and be at most {_MAX_COMMAND_NAME} characters."
+            f"digits, hyphens, and underscores, and be at most {MAX_COMMAND_NAME} characters."
         )
     identifier = name.replace("-", "_")
     if keyword.iskeyword(identifier) or identifier in _SOFT_KEYWORDS:

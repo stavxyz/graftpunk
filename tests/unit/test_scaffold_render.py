@@ -24,7 +24,6 @@ from graftpunk.devtools.scaffold.pysrc import (
     wrapped_docstring_lines,
 )
 from graftpunk.devtools.scaffold.render import (
-    _MAX_COMMAND_NAME,
     _MAX_PARAM_NAME,
     _MAX_PLUGIN_NAME,
     _MAX_SCAFFOLD_ENDPOINTS,
@@ -39,6 +38,7 @@ from graftpunk.devtools.scaffold.render import (
     validate_plugin_name,
 )
 from graftpunk.devtools.scaffold.selection import (
+    MAX_COMMAND_NAME,
     CommandSelection,
     CommandSelectionError,
     plan_command,
@@ -296,15 +296,15 @@ class TestCommandName:
     def test_truncates_a_deep_path_to_the_cap(self) -> None:
         template = "/" + "/".join(f"segment-number-{i}" for i in range(8))
         name = _command_name(template, set())
-        assert len(name) == _MAX_COMMAND_NAME
+        assert len(name) == MAX_COMMAND_NAME
 
     def test_two_paths_truncating_to_the_same_base_stay_unique(self) -> None:
-        first = "/" + "a" * (_MAX_COMMAND_NAME + 5) + "/one"
-        second = "/" + "a" * (_MAX_COMMAND_NAME + 5) + "/two"
+        first = "/" + "a" * (MAX_COMMAND_NAME + 5) + "/one"
+        second = "/" + "a" * (MAX_COMMAND_NAME + 5) + "/two"
         seen: set[str] = set()
         first_name = _command_name(first, seen)
         second_name = _command_name(second, seen)
-        assert first_name == "a" * _MAX_COMMAND_NAME
+        assert first_name == "a" * MAX_COMMAND_NAME
         assert second_name == f"{first_name}_2"
 
     def test_the_root_path_is_named_root(self) -> None:
