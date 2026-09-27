@@ -120,6 +120,7 @@ class TestClassify:
             defects=(),
             requirements={},
             requirement_set=PROJECT_REQUIREMENTS,
+            test_markers=(),
         )
 
     def test_a_pyproject_with_the_group_is_a_plugin(self, tmp_path: Path) -> None:
@@ -160,6 +161,7 @@ class TestTheView:
             "defects",
             "requirements",
             "requirement_set",
+            "test_markers",
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]
         assert [f.name for f in fields(PluginView)] == [
@@ -191,6 +193,29 @@ class TestTheView:
         assert plugin.markers
         assert all("GP-FILL" in text[line - 1] for line in plugin.markers)
         assert plugin.fixtures_root == "tests/fixtures/"
+
+    def test_test_markers_records_gp_fill_in_the_test_module(self, tmp_path: Path) -> None:
+        _generate(tmp_path)
+        view = read_project(tmp_path)
+        assert view.test_markers
+        for path, line in view.test_markers:
+            assert path == "tests/test_plugin.py"
+            text = (tmp_path / path).read_text().splitlines()
+            assert "GP-FILL" in text[line - 1]
+
+    def test_test_markers_skips_a_file_that_does_not_decode(self, tmp_path: Path) -> None:
+        _generate(tmp_path)
+        (tmp_path / "tests" / "broken.py").write_bytes(b"\xff# GP-FILL: unreadable\n")
+        view = read_project(tmp_path)
+        assert all(path != "tests/broken.py" for path, _ in view.test_markers)
+
+    def test_test_markers_skips_a_directory_named_like_a_python_file(self, tmp_path: Path) -> None:
+        """A directory whose name ends in .py matches the *.py glob too; reading
+        it as text must not raise."""
+        _generate(tmp_path)
+        (tmp_path / "tests" / "odd.py").mkdir()
+        view = read_project(tmp_path)
+        assert all(path != "tests/odd.py" for path, _ in view.test_markers)
 
     def test_class_names_records_every_top_level_binding(self, tmp_path: Path) -> None:
         module = (

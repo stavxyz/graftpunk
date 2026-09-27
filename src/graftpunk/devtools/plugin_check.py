@@ -1,8 +1,9 @@
 """``gp plugin check``: a lint over the project reader's view. It never edits.
 
-Reports a remaining ``GP-FILL`` marker, a module without exactly one
-``SitePlugin`` subclass (the reader's per-plugin defect, listed with the other
-findings), a requirement's file that does not parse, and a
+Reports a remaining ``GP-FILL`` marker in a plugin module or a test module, a
+module without exactly one ``SitePlugin`` subclass (the reader's per-plugin
+defect, listed with the other findings), a requirement's file that does not
+parse, and a
 ``PROJECT_REQUIREMENTS`` entry the project lacks, which ``gp plugin upgrade``
 fixes. It does not compare a declared endpoint
 against the request call: the declaration is authoritative by design, and a
@@ -55,6 +56,10 @@ def check_project(root: Path) -> list[Finding]:
         for plugin in view.plugins
         for line in plugin.markers
     ]
+    findings.extend(
+        Finding(path=path, line=line, message=f"{GP_FILL_MARKER} marker left to fill in.")
+        for path, line in view.test_markers
+    )
     findings.extend(
         Finding(path=defect.module_path, line=None, message=defect.message)
         for defect in view.defects

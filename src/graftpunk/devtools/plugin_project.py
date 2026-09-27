@@ -154,6 +154,11 @@ class ProjectView:
     short-lived: read it, act on it, and read the project again rather than keep
     one.
 
+    ``test_markers`` holds every ``GP-FILL`` marker line in a ``*.py`` file under
+    ``policy.TESTS_DIR`` (project-relative path, 1-based line), the same fact
+    ``PluginView.markers`` holds for a plugin module; ``gp plugin check`` reports
+    both.
+
     Design note: ``requirement_set`` is snapshotted from ``policy.PROJECT_REQUIREMENTS``
     by ``read_project`` at read time, and both methods read ``self.requirement_set``
     instead of the module attribute, so a ``ProjectView`` is a value: two calls on
@@ -166,6 +171,7 @@ class ProjectView:
     defects: tuple[PluginDefect, ...]
     requirements: Mapping[str, RequirementStatus]
     requirement_set: tuple[ProjectRequirement, ...]
+    test_markers: tuple[tuple[str, int], ...]
 
     def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
         """The plugin or defect whose entry-point name is *entry_point*, or ``None``:
@@ -288,6 +294,7 @@ def read_project(root: Path) -> ProjectView:
             defects=(),
             requirements=MappingProxyType({}),
             requirement_set=policy.PROJECT_REQUIREMENTS,
+            test_markers=(),
         )
     entry_points = _entry_points(data)
     if entry_points is None:
@@ -297,6 +304,7 @@ def read_project(root: Path) -> ProjectView:
             defects=(),
             requirements=MappingProxyType({}),
             requirement_set=policy.PROJECT_REQUIREMENTS,
+            test_markers=(),
         )
     project_name = str(data.get("project", {}).get("name", ""))
     read = [_read_plugin(root, key, value, project_name) for key, value in entry_points.items()]
@@ -308,6 +316,7 @@ def read_project(root: Path) -> ProjectView:
         defects=tuple(r for r in read if isinstance(r, PluginDefect)),
         requirements=MappingProxyType(requirements),
         requirement_set=requirement_set,
+        test_markers=_test_markers(root),
     )
 
 
@@ -371,6 +380,30 @@ def _last_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Attribute):
         return node.attr
     return None
+
+
+def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
+    """Every ``GP-FILL`` marker line in a ``*.py`` file under ``policy.TESTS_DIR``,
+    as (project-relative path, 1-based line), file order then line order. A file
+    that cannot be decoded as UTF-8 is skipped, not raised: it is not this
+    function's business to refuse an unreadable test module, only to report the
+    markers it can read."""
+    tests_dir = root / policy.TESTS_DIR
+    if not tests_dir.is_dir():
+        return ()
+    found: list[tuple[str, int]] = []
+    for path in sorted(p for p in tests_dir.rglob("*.py") if p.is_file()):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        relative = path.relative_to(root).as_posix()
+        found.extend(
+            (relative, number)
+            for number, line in enumerate(text.splitlines(), start=1)
+            if GP_FILL_MARKER in line
+        )
+    return tuple(found)
 
 
 def _read_plugin(root: Path, key: str, value: str, project_name: str) -> PluginView | PluginDefect:
