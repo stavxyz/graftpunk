@@ -314,9 +314,13 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
         meta_detail: list[str] = []
         meta_kind = _stat_kind(meta, meta_detail)
         if meta_kind != "file":
+            sidecar_relative = relative.parent / meta.name
             if meta_detail:
-                sidecar_relative = relative.parent / meta.name
                 problems.append(f"{sidecar_relative}: cannot be read ({meta_detail[0]}).")
+            elif meta_kind in ("dir", "other"):
+                problems.append(
+                    f"{sidecar_relative}: not a regular file. Move it aside and write the sidecar."
+                )
             else:
                 problems.append(_missing_sidecar(relative, meta.name))
             continue

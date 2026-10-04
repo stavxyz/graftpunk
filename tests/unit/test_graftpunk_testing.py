@@ -510,6 +510,19 @@ class TestCheckFixturesTree:
             (tmp_path / "priv").chmod(0o755)
         assert problems == (f"a.json.meta.json: cannot be read ({os.strerror(errno.EACCES)}).",)
 
+    def test_a_sidecar_path_occupied_by_a_directory_is_not_a_regular_file(
+        self, tmp_path: Path
+    ) -> None:
+        """A directory sitting where the sidecar belongs is never told to
+        "write" a sidecar, which it already has in some sense: it gets the
+        same "not a regular file" advice as any other blocked path."""
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        (tmp_path / "get_orders.json.meta.json").mkdir()
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert problem == (
+            "get_orders.json.meta.json: not a regular file. Move it aside and write the sidecar."
+        )
+
     def test_a_symlinked_fixtures_subdirectory_is_walked(self, tmp_path: Path) -> None:
         """A per-plugin fixtures directory that is itself a symlink (into a
         captures directory the developer pointed it at, say) is still
