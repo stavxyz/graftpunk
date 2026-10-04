@@ -1083,8 +1083,8 @@ def test_no_message_retypes_a_guarded_phrase(module: object) -> None:
     """A message built in ``plugin_project.py``, ``plugin_check.py``, or
     ``scaffold/upgrade.py`` by retyping one of ``_GUARDED_PHRASES`` instead of
     interpolating its constant drifts silently the moment the constant is
-    reworded (A7-2 to A7-6, R7-B2 to R7-B13): this is the test that would have
-    failed on every one of those sites before they were fixed."""
+    reworded: this is the test that would have failed on every retyped site
+    before each was fixed to interpolate instead."""
     source = Path(module.__file__).read_text()  # type: ignore[attr-defined]
     violations = _phrase_violations(ast.parse(source), _GUARDED_PHRASES)
     assert violations == []
