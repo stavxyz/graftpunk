@@ -1467,6 +1467,52 @@ class TestReservedNamesSnapshot:
         assert "myshop" not in reserved_cli_names()
 
 
+def test_register_attaches_all_five_commands_without_a_separate_import() -> None:
+    """R2-B16: a caller that reaches scaffold_commands and calls register()
+    must get info/add-command/upgrade/check on plugin_app too, not just new;
+    those four attach to plugin_app as scaffold_project_commands.py's own
+    decorator side effect. In this repo, graftpunk.cli's own __init__.py
+    always imports main.py first (which imports both scaffold modules), so a
+    plain `import graftpunk.cli.scaffold_commands` cannot observe a missing
+    import on its own; the script below stubs graftpunk.cli in sys.modules
+    without running its __init__.py, simulating a caller who reaches
+    scaffold_commands some other way (a lazy import, a future entry point
+    that does not route through cli/__init__.py), to prove register() does
+    not depend on that side effect."""
+    script = (
+        "import importlib.util, pathlib, sys\n"
+        "import typer\n"
+        "import graftpunk\n"
+        "cli_dir = pathlib.Path(graftpunk.__file__).parent / 'cli'\n"
+        "spec = importlib.util.spec_from_file_location(\n"
+        "    'graftpunk.cli', cli_dir / '__init__.py', submodule_search_locations=[str(cli_dir)]\n"
+        ")\n"
+        "stub = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['graftpunk.cli'] = stub\n"
+        "# Deliberately do not exec the real __init__.py (its own\n"
+        "# 'from graftpunk.cli.main import app' is the side effect under test).\n"
+        "assert 'graftpunk.cli.scaffold_project_commands' not in sys.modules\n"
+        "from graftpunk.cli.scaffold_commands import plugin_app, register\n"
+        "app = typer.Typer()\n"
+        "register(app)\n"
+        "names = sorted(\n"
+        "    c.name for c in plugin_app.registered_commands if isinstance(c.name, str)\n"
+        ")\n"
+        "print(','.join(names))\n"
+    )
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [sys.executable, "-c", script], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().split(",") == [
+        "add-command",
+        "check",
+        "info",
+        "new",
+        "upgrade",
+    ]
+
+
 @pytest.mark.usefixtures("gp_logging")
 class TestCheckName:
     """--check-name answers "is this name acceptable" with gp plugin new's own

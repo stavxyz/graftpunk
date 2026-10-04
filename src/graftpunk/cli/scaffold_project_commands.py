@@ -2,8 +2,10 @@
 handling only, over ``graftpunk.devtools``.
 
 ``gp plugin new`` lives in ``scaffold_commands.py``; both modules attach their
-commands to the ``plugin_app`` in ``scaffold_shared.py``, and ``main.py``
-imports both modules before it calls ``scaffold_commands.register()``.
+commands to the ``plugin_app`` in ``scaffold_shared.py``, and
+``scaffold_commands.register()`` imports this module itself before it
+attaches ``plugin_app``, so this module's commands are there wherever
+``register()`` is called.
 """
 
 from __future__ import annotations

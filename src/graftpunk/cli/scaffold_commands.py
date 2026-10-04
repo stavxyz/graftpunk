@@ -2,8 +2,10 @@
 
 ``info``, ``add-command``, ``upgrade``, and ``check`` live in
 ``scaffold_project_commands.py``; both modules attach their commands to the
-same ``plugin_app``, from ``scaffold_shared.py``, and ``main.py`` imports both
-modules before it calls :func:`register`. ``register`` and the reserved-names
+same ``plugin_app``, from ``scaffold_shared.py``. :func:`register` imports
+``scaffold_project_commands`` itself, so ``plugin_app`` carries all five
+commands wherever ``register`` is called, not only when ``main.py`` happens
+to have imported that module first. ``register`` and the reserved-names
 snapshot stay here rather than in the shared module because tests patch
 ``scaffold_commands._reserved_names`` directly, and that patch only reaches
 the global a function reads when the function is defined in this module.
@@ -50,17 +52,24 @@ _reserved_names: frozenset[str] = frozenset()
 def register(app: typer.Typer) -> None:
     """Attach ``plugin_app`` to *app* and snapshot its reserved top-level names.
 
+    Imports ``graftpunk.cli.scaffold_project_commands`` first, a local import
+    (that module does not import this one, so there is no cycle), so
+    ``info``/``add-command``/``upgrade``/``check`` attach to ``plugin_app``
+    here too, rather than depending on some other caller having imported that
+    module first.
+
     Called from ``main.py`` right before ``register_plugin_commands(app)``
     runs, so the snapshot holds only the CLI's own built-in names (session,
     http, config, keepalive, observe, plugins, plugin, ...) and never an
     installed site plugin's ``site_name``: plugin discovery has not mounted
     anything onto *app* yet at this point. A snapshot, rather than deriving
     fresh from a live app reference, also means this module never has to
-    import ``graftpunk.cli.main`` (main.py already imports this module at
-    module scope; the reverse import would be a real cycle, not just a lazy
-    one deferred past load time).
+    import ``graftpunk.cli.main`` (the reverse import would be a real cycle,
+    not just a lazy one deferred past load time).
     """
     global _reserved_names
+    import graftpunk.cli.scaffold_project_commands  # noqa: F401 - attaches info/add-command/upgrade/check to plugin_app
+
     app.add_typer(plugin_app)
     _reserved_names = derive_reserved_cli_names(app)
 
