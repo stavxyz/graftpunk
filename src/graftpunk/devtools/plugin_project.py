@@ -34,6 +34,8 @@ from graftpunk.har.naming import registered_name
 from graftpunk.plugins import PLUGINS_GROUP
 
 __all__ = [
+    "NOT_A_DIRECTORY",
+    "NOT_A_REGULAR_FILE",
     "CommandView",
     "DirectoryKind",
     "NotAPluginProjectError",
@@ -51,6 +53,12 @@ __all__ = [
 
 DirectoryKind = Literal["empty", "plugin", "foreign"]
 RequirementState = Literal["bound", "unbound", "unreadable"]
+
+# Shared between gp plugin check (a Finding's message) and gp plugin upgrade
+# (a refusal), so the two consumers of the one reader fact never describe the
+# same blocked path differently.
+NOT_A_DIRECTORY = "exists but is not a directory; move it aside, then run gp plugin upgrade."
+NOT_A_REGULAR_FILE = "exists but is not a regular file"
 
 _PLUGIN_BASE = "SitePlugin"
 _COMMAND_DECORATOR = "command"
@@ -168,6 +176,10 @@ class ProjectView:
     ``fixtures_tree_present`` is whether ``root / policy.FIXTURES_TREE`` is a
     directory, read once here so ``gp plugin check`` and ``gp plugin upgrade``
     take the same answer from the same place and cannot disagree.
+    ``fixtures_tree_blocked`` is whether that path exists but is something
+    else (a regular file, most likely): a reader fact distinct from "missing",
+    so neither consumer tells an author gp plugin upgrade will create a path
+    it is actually going to refuse.
 
     ``first_party_packages`` is read once here, by the same rule ruff's own
     default (``src = [".", "src"]``) uses to decide a module is first party:
@@ -194,6 +206,7 @@ class ProjectView:
     requirement_set: tuple[ProjectRequirement, ...]
     test_markers: tuple[tuple[str, int], ...]
     fixtures_tree_present: bool
+    fixtures_tree_blocked: bool = False
     first_party_packages: frozenset[str] = frozenset()
 
     def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
@@ -250,8 +263,10 @@ class NotAPluginProjectError(DevtoolsRefusal, ValueError):
 
 def _load_pyproject(root: Path) -> dict[str, Any] | None:
     path = root / "pyproject.toml"
-    if not path.is_file():
+    if not path.exists():
         return None
+    if not path.is_file():
+        raise PluginProjectError(f"{path}: {NOT_A_REGULAR_FILE}.")
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -289,16 +304,30 @@ def _entry_points(data: dict[str, Any]) -> dict[str, str] | None:
     return result
 
 
+def _require_directory(root: Path) -> None:
+    """Refuse *root* in one line when it is not a readable directory: the one
+    guard both of the reader's public entry points, :func:`classify` and
+    :func:`read_project`, apply first, so a mistyped ``--dir`` cannot read as
+    an empty project through one of them and a refusal through the other."""
+    if not root.exists():
+        raise PluginProjectError(f"{root}: no such directory.")
+    if not root.is_dir():
+        raise PluginProjectError(f"{root}: not a directory.")
+
+
 def classify(root: Path) -> DirectoryKind:
     """*root* in its own terms: no ``pyproject.toml`` is ``empty``; one declaring the
     ``graftpunk.plugins`` entry-point group is ``plugin``; any other is ``foreign``.
 
     Raises:
-        PluginProjectError: ``pyproject.toml`` exists but is not valid TOML, is not
-            UTF-8, or cannot be read (permissions); its ``project`` or
-            ``project.entry-points`` table, or its ``"graftpunk.plugins"`` group
-            table, has the wrong shape; or an entry point's value is not a string.
+        PluginProjectError: *root* does not exist or is not a directory; or
+            ``pyproject.toml`` exists but is not a regular file, is not valid
+            TOML, is not UTF-8, or cannot be read (permissions); its
+            ``project`` or ``project.entry-points`` table, or its
+            ``"graftpunk.plugins"`` group table, has the wrong shape; or an
+            entry point's value is not a string.
     """
+    _require_directory(root)
     data = _load_pyproject(root)
     if data is None:
         return "empty"
@@ -315,19 +344,19 @@ def read_project(root: Path) -> ProjectView:
 
     Raises:
         PluginProjectError: *root* does not exist or is not a directory; or the
-            project cannot be read at all: ``pyproject.toml`` is not valid TOML,
-            is not UTF-8, or cannot be read (permissions); its ``project`` or
-            ``project.entry-points`` table, or its ``"graftpunk.plugins"`` group
-            table, has the wrong shape; an entry point's value is not a string;
-            or an entry point's module is missing, is not UTF-8, cannot be read
-            (permissions), or does not parse.
+            project cannot be read at all: ``pyproject.toml`` exists but is not
+            a regular file, is not valid TOML, is not UTF-8, or cannot be read
+            (permissions); its ``project`` or ``project.entry-points`` table,
+            or its ``"graftpunk.plugins"`` group table, has the wrong shape; an
+            entry point's value is not a string; or an entry point's module is
+            missing, is not UTF-8, cannot be read (permissions), or does not
+            parse.
     """
-    if not root.exists():
-        raise PluginProjectError(f"{root}: no such directory.")
-    if not root.is_dir():
-        raise PluginProjectError(f"{root}: not a directory.")
+    _require_directory(root)
     data = _load_pyproject(root)
-    fixtures_tree_present = (root / policy.FIXTURES_TREE).is_dir()
+    fixtures_tree = root / policy.FIXTURES_TREE
+    fixtures_tree_present = fixtures_tree.is_dir()
+    fixtures_tree_blocked = fixtures_tree.exists() and not fixtures_tree_present
     first_party_packages = _first_party_packages(root, data)
     if data is None:
         return ProjectView(
@@ -338,6 +367,7 @@ def read_project(root: Path) -> ProjectView:
             requirement_set=policy.PROJECT_REQUIREMENTS,
             test_markers=(),
             fixtures_tree_present=fixtures_tree_present,
+            fixtures_tree_blocked=fixtures_tree_blocked,
             first_party_packages=first_party_packages,
         )
     entry_points = _entry_points(data)
@@ -350,6 +380,7 @@ def read_project(root: Path) -> ProjectView:
             requirement_set=policy.PROJECT_REQUIREMENTS,
             test_markers=(),
             fixtures_tree_present=fixtures_tree_present,
+            fixtures_tree_blocked=fixtures_tree_blocked,
             first_party_packages=first_party_packages,
         )
     project_name = str(data.get("project", {}).get("name", ""))
@@ -367,6 +398,7 @@ def read_project(root: Path) -> ProjectView:
         requirement_set=requirement_set,
         test_markers=_test_markers(root),
         fixtures_tree_present=fixtures_tree_present,
+        fixtures_tree_blocked=fixtures_tree_blocked,
         first_party_packages=first_party_packages,
     )
 
@@ -741,10 +773,13 @@ def _requirement_statuses(
 
 def _parse_requirement_file(path: Path) -> ast.Module | RequirementStatus:
     """*path*'s tree, or the status every requirement in it takes when there is no
-    tree: ``unbound`` for a missing file, ``unreadable`` with the reason for one that
-    does not parse."""
-    if not path.is_file():
+    tree: ``unbound`` for a missing file, ``unreadable`` with the reason for one
+    that exists but is the wrong kind (a directory, most likely) or does not
+    parse."""
+    if not path.exists():
         return RequirementStatus("unbound")
+    if not path.is_file():
+        return RequirementStatus("unreadable", NOT_A_REGULAR_FILE)
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:

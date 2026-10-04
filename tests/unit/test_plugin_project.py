@@ -135,6 +135,17 @@ class TestClassify:
         assert classify(tmp_path) == "foreign"
         assert read_project(tmp_path).plugins == ()
 
+    def test_a_pyproject_that_is_a_directory_is_refused_not_read_as_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """R2-B4: a wrong pyproject.toml path must not read as "empty" (create
+        mode), the same rule a missing --dir gets."""
+        (tmp_path / "pyproject.toml").mkdir()
+        with pytest.raises(PluginProjectError, match="exists but is not a regular file"):
+            classify(tmp_path)
+        with pytest.raises(PluginProjectError, match="exists but is not a regular file"):
+            read_project(tmp_path)
+
 
 class TestReadProjectRefusesABadDirectory:
     """B9: a mistyped --dir reads as "empty" (create mode) otherwise, instead
@@ -151,6 +162,20 @@ class TestReadProjectRefusesABadDirectory:
         not_a_dir.write_text("not a directory")
         with pytest.raises(PluginProjectError, match="not a directory"):
             read_project(not_a_dir)
+
+    def test_classify_shares_the_same_guard_for_a_missing_directory(self, tmp_path: Path) -> None:
+        """classify is read_project's own classifier (exported in __all__), so
+        the two public entry points of the one reader must not disagree on
+        the same bad --dir."""
+        missing = tmp_path / "nonexistent"
+        with pytest.raises(PluginProjectError, match="no such directory"):
+            classify(missing)
+
+    def test_classify_shares_the_same_guard_for_a_regular_file(self, tmp_path: Path) -> None:
+        not_a_dir = tmp_path / "plain_file"
+        not_a_dir.write_text("not a directory")
+        with pytest.raises(PluginProjectError, match="not a directory"):
+            classify(not_a_dir)
 
 
 class TestRequirePluginProject:
@@ -183,6 +208,7 @@ class TestTheView:
             "requirement_set",
             "test_markers",
             "fixtures_tree_present",
+            "fixtures_tree_blocked",
             "first_party_packages",
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]

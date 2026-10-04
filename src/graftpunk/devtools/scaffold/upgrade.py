@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.plugin_project import require_plugin_project
+from graftpunk.devtools.plugin_project import NOT_A_DIRECTORY, require_plugin_project
 from graftpunk.devtools.scaffold.policy import (
     FIXTURES_PLACEHOLDER,
     FIXTURES_TREE,
@@ -61,10 +61,7 @@ def _refuse_unless_directory(path: Path, root: Path) -> None:
     function is about to write inside it (a requirement's parent directory, or
     the fixtures tree itself)."""
     if path.exists() and not path.is_dir():
-        raise UpgradeRefusedError(
-            f"{path.relative_to(root)}: exists but is not a directory. gp plugin "
-            f"upgrade writes there; move it aside, then run it again."
-        )
+        raise UpgradeRefusedError(f"{path.relative_to(root)}: {NOT_A_DIRECTORY}")
 
 
 def upgrade_project(root: Path) -> UpgradeApplied:

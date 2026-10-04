@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.plugin_project import (
+    NOT_A_DIRECTORY,
+    NOT_A_REGULAR_FILE,
     NotAPluginProjectError,
     PluginProjectError,
     require_plugin_project,
@@ -43,6 +45,15 @@ class Finding:
         return f"{where}: {self.message}"
 
 
+def _unreadable_file_message(reason: str) -> str:
+    """A requirement file's ``unreadable`` reason, with the advice that fits it:
+    a wrong-kind path (a directory where a file belongs) is something an
+    author moves aside, not something ``gp plugin upgrade`` can parse past."""
+    if reason == NOT_A_REGULAR_FILE:
+        return f"{reason}; move it aside, then run gp plugin upgrade."
+    return f"{reason}; gp plugin upgrade can add its wiring once it parses."
+
+
 def check_project(root: Path) -> list[Finding]:
     """Every finding in *root*'s plugin project: a missing fixtures tree, then
     markers in file order, then plugin defects, then requirement files that do
@@ -53,7 +64,9 @@ def check_project(root: Path) -> list[Finding]:
     except (NotAPluginProjectError, PluginProjectError) as exc:
         return [Finding(path=None, line=None, message=str(exc))]
     findings: list[Finding] = []
-    if not view.fixtures_tree_present:
+    if view.fixtures_tree_blocked:
+        findings.append(Finding(path=FIXTURES_TREE, line=None, message=NOT_A_DIRECTORY))
+    elif not view.fixtures_tree_present:
         findings.append(
             Finding(path=FIXTURES_TREE, line=None, message="missing; gp plugin upgrade creates it.")
         )
@@ -73,11 +86,7 @@ def check_project(root: Path) -> list[Finding]:
         for defect in view.defects
     )
     findings.extend(
-        Finding(
-            path=path,
-            line=None,
-            message=f"{reason}; gp plugin upgrade can add its wiring once it parses.",
-        )
+        Finding(path=path, line=None, message=_unreadable_file_message(reason))
         for path, reason in view.unreadable_files()
     )
     findings.extend(

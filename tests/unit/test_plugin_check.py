@@ -17,7 +17,7 @@ from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.policy import ProjectRequirement
 from graftpunk.devtools.scaffold.project import write_scaffold
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
-from graftpunk.devtools.scaffold.upgrade import upgrade_project
+from graftpunk.devtools.scaffold.upgrade import UpgradeRefusedError, upgrade_project
 
 runner = CliRunner()
 _SPEC = ScaffoldSpec(
@@ -110,6 +110,40 @@ class TestFindings:
         upgrade_project(tmp_path)
         assert (tmp_path / "tests" / "fixtures").is_dir()
         assert check_project(tmp_path) == []
+
+    def test_a_fixtures_tree_that_is_a_file_is_reported_as_blocked_and_upgrade_agrees(
+        self, tmp_path: Path
+    ) -> None:
+        """The reader tells "missing" from "blocked": a regular file at
+        tests/fixtures is not something gp plugin upgrade can create, so check
+        must not tell the reader it will."""
+        _clean_project(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        (tmp_path / "tests" / "fixtures").write_text("not a directory")
+        (finding,) = check_project(tmp_path)
+        assert finding.path == "tests/fixtures/"
+        assert finding.message == (
+            "exists but is not a directory; move it aside, then run gp plugin upgrade."
+        )
+        with pytest.raises(UpgradeRefusedError, match="exists but is not a directory"):
+            upgrade_project(tmp_path)
+
+    def test_a_conftest_that_is_a_directory_is_reported_as_unreadable_and_upgrade_agrees(
+        self, tmp_path: Path
+    ) -> None:
+        """The same rule at a second site: a directory at tests/conftest.py is
+        not a file gp plugin upgrade can add its wiring to by parsing, so
+        check must not say "adds it" the way it does for a merely missing
+        binding."""
+        _clean_project(tmp_path)
+        (tmp_path / "tests" / "conftest.py").unlink()
+        (tmp_path / "tests" / "conftest.py").mkdir()
+        (finding,) = check_project(tmp_path)
+        assert finding.path == "tests/conftest.py"
+        assert "exists but is not a regular file" in finding.message
+        assert "gp plugin upgrade adds it" not in finding.message
+        with pytest.raises(UpgradeRefusedError, match="exists but is not a regular file"):
+            upgrade_project(tmp_path)
 
     def test_a_directory_that_is_not_a_plugin_project_is_a_finding(self, tmp_path: Path) -> None:
         (finding,) = check_project(tmp_path)
