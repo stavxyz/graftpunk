@@ -24,6 +24,7 @@ from graftpunk.devtools.plugin_project import (
     PluginProjectError,
     PluginView,
     ProjectView,
+    RequirementStatus,
     Span,
     classify,
     read_project,
@@ -1005,3 +1006,235 @@ def test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -> No
     source = Path(plugin_project_module.__file__).read_text()
     violations = _calls_outside_probe(ast.parse(source))
     assert violations == []
+
+
+# The strerror text for ELOOP on this platform, used by every self-loop case
+# below instead of a guessed literal.
+_LOOP_STRERROR = "Too many levels of symbolic links"
+
+_PROBE_CALLERS = frozenset(
+    {
+        "_blocked_path",
+        "_load_pyproject",
+        "_require_directory",
+        "_module_file",
+        "read_project",
+        "_first_party_packages",
+        "_test_markers",
+        "_parse_requirement_file",
+    }
+)
+
+
+def _probe_callers(tree: ast.Module) -> frozenset[str]:
+    """The name of the nearest enclosing function for every direct call to
+    ``_probe`` in *tree*."""
+    callers: set[str] = set()
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if isinstance(node.func, ast.Name) and node.func.id == "_probe" and self.stack:
+                callers.add(self.stack[-1])
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    return callers
+
+
+def test_every_probe_caller_is_covered_by_an_unfollowable_symlink_case() -> None:
+    """Every function whose body calls ``_probe`` directly must be named in
+    ``_PROBE_CALLERS``: a new call site in a function this set does not name
+    fails here, instead of shipping with no case for the "unfollowable" kind.
+    ``_blocked_path``'s case is the existing locked-directory and self-loop
+    tests in test_plugin_check.py (round 5's ruling; unchanged by this kind);
+    every other name has a case in TestUnfollowableSymlink below."""
+    source = Path(plugin_project_module.__file__).read_text()
+    assert _probe_callers(ast.parse(source)) == _PROBE_CALLERS
+
+
+def _locked_target(
+    tmp_path_factory: pytest.TempPathFactory, link: Path, *, is_dir: bool, text: str = ""
+) -> Path:
+    """A symlink at *link* into a mode-000 directory: following it raises
+    ``PermissionError``. Returns the locked directory so the caller can
+    ``chmod`` it back after use."""
+    locked = tmp_path_factory.mktemp("locked")
+    target = locked / "real"
+    if is_dir:
+        target.mkdir()
+    else:
+        target.write_text(text)
+    locked.chmod(0o000)
+    link.symlink_to(target)
+    return locked
+
+
+def _loop(link: Path) -> None:
+    """A self-loop symlink at *link*: following it raises ``OSError(ELOOP)``."""
+    link.symlink_to(link.name)
+
+
+@pytest.mark.usefixtures("gp_logging")
+class TestUnfollowableSymlink:
+    """``_probe``'s ``"unfollowable"`` kind: a symlink whose own ``lstat``
+    succeeds but whose follow-up ``stat`` raises ``OSError``, carrying the
+    reason. One locked-directory case and one self-loop case per caller
+    named in ``_PROBE_CALLERS`` (``_blocked_path`` excepted; see
+    test_every_probe_caller_is_covered_by_an_unfollowable_symlink_case)."""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_require_directory_names_a_locked_target(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        link = tmp_path / "link"
+        locked = _locked_target(tmp_path_factory, link, is_dir=True)
+        try:
+            with pytest.raises(PluginProjectError) as excinfo:
+                read_project(link)
+        finally:
+            locked.chmod(0o755)
+        assert str(excinfo.value) == f"{link}: cannot be followed (Permission denied)."
+
+    def test_require_directory_names_a_self_loop(self, tmp_path: Path) -> None:
+        link = tmp_path / "link"
+        _loop(link)
+        with pytest.raises(PluginProjectError) as excinfo:
+            read_project(link)
+        assert str(excinfo.value) == f"{link}: cannot be followed ({_LOOP_STRERROR})."
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_load_pyproject_names_a_locked_target(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        locked = _locked_target(tmp_path_factory, pyproject, is_dir=False)
+        try:
+            with pytest.raises(PluginProjectError) as excinfo:
+                read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert str(excinfo.value) == f"{pyproject}: cannot be followed (Permission denied)."
+
+    def test_load_pyproject_names_a_self_loop(self, tmp_path: Path) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        _loop(pyproject)
+        with pytest.raises(PluginProjectError) as excinfo:
+            read_project(tmp_path)
+        assert str(excinfo.value) == f"{pyproject}: cannot be followed ({_LOOP_STRERROR})."
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_read_project_reads_fixtures_tree_present_false_for_a_locked_target(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """The fixtures tree's own ``_probe`` call (the one direct call in
+        ``read_project``) can only ever see "absent" or "dir": ``_blocked_path``
+        already turns an unfollowable tree into ``fixtures_tree_blocked``
+        first. This pins the end-to-end answer that call site depends on."""
+        _generate(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        fixtures = tmp_path / "tests" / "fixtures"
+        locked = _locked_target(tmp_path_factory, fixtures, is_dir=True)
+        try:
+            view = read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert view.fixtures_tree_present is False
+        assert view.fixtures_tree_blocked == ("tests/fixtures", NOT_A_DIRECTORY)
+
+    def test_read_project_reads_fixtures_tree_present_false_for_a_self_loop(
+        self, tmp_path: Path
+    ) -> None:
+        _generate(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        fixtures = tmp_path / "tests" / "fixtures"
+        _loop(fixtures)
+        view = read_project(tmp_path)
+        assert view.fixtures_tree_present is False
+        assert view.fixtures_tree_blocked == ("tests/fixtures", NOT_A_DIRECTORY)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_first_party_packages_skips_a_root_level_locked_target(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        _generate(tmp_path)
+        shared = tmp_path / "shared"
+        locked = _locked_target(tmp_path_factory, shared, is_dir=True)
+        try:
+            view = read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert "shared" not in view.first_party_packages
+
+    def test_first_party_packages_skips_a_root_level_self_loop(self, tmp_path: Path) -> None:
+        _generate(tmp_path)
+        shared = tmp_path / "shared"
+        _loop(shared)
+        view = read_project(tmp_path)
+        assert "shared" not in view.first_party_packages
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_test_markers_skips_a_locked_module(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        _generate(tmp_path)
+        link = tmp_path / "tests" / "linked.py"
+        locked = _locked_target(
+            tmp_path_factory, link, is_dir=False, text="# GP-FILL: unreachable\n"
+        )
+        try:
+            view = read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert all(path != "tests/linked.py" for path, _ in view.test_markers)
+
+    def test_test_markers_skips_a_self_loop_module(self, tmp_path: Path) -> None:
+        _generate(tmp_path)
+        link = tmp_path / "tests" / "linked.py"
+        _loop(link)
+        view = read_project(tmp_path)
+        assert all(path != "tests/linked.py" for path, _ in view.test_markers)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_parse_requirement_file_reports_unreadable_for_a_locked_conftest(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """``_blocked_path`` already turns an unfollowable requirement file
+        into ``NOT_A_REGULAR_FILE`` before the direct ``_probe`` call in
+        ``_parse_requirement_file`` is reached; this pins that end-to-end
+        answer, naming the file itself (``blocking`` is ``None``), the same
+        as test_plugin_check.py's locked-conftest finding does through
+        ``check_project``."""
+        _generate(tmp_path)
+        conftest = tmp_path / "tests" / "conftest.py"
+        conftest.unlink()
+        locked = _locked_target(tmp_path_factory, conftest, is_dir=False)
+        try:
+            view = read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        status = view.requirements["tests/conftest.py:FIXTURES_TREE"]
+        assert status == RequirementStatus("unreadable", NOT_A_REGULAR_FILE)
+
+    def test_parse_requirement_file_reports_unreadable_for_a_self_loop_conftest(
+        self, tmp_path: Path
+    ) -> None:
+        _generate(tmp_path)
+        conftest = tmp_path / "tests" / "conftest.py"
+        conftest.unlink()
+        _loop(conftest)
+        view = read_project(tmp_path)
+        status = view.requirements["tests/conftest.py:FIXTURES_TREE"]
+        assert status == RequirementStatus("unreadable", NOT_A_REGULAR_FILE)

@@ -55,7 +55,7 @@ __all__ = [
 
 DirectoryKind = Literal["empty", "plugin", "foreign"]
 RequirementState = Literal["bound", "unbound", "unreadable"]
-PathKind = Literal["absent", "file", "dir", "other", "unreadable"]
+PathKind = Literal["absent", "file", "dir", "other", "unreadable", "unfollowable"]
 
 # Shared between gp plugin check (a Finding's message) and gp plugin upgrade
 # (a refusal), so the two consumers of the one reader fact never describe the
@@ -95,11 +95,17 @@ def _probe(path: Path, detail: list[str] | None = None) -> PathKind:
     ``"absent"``: *path*, or a component of it, plainly does not exist
     (``FileNotFoundError`` or ``NotADirectoryError``). ``"dir"`` or
     ``"file"``: a directory or a regular file, a symlink to one included.
-    ``"other"``: anything else that exists, including a symlink whose target
-    is absent, whose own kind is neither, or that cannot be followed at all
-    (a loop, a permission error on the target, or any other ``OSError`` the
-    follow-up ``stat()`` raises): the symlink itself is what is wrong in
-    every one of those cases, never the path that led to it.
+    ``"other"``: a symlink whose follow-up ``stat()`` finds nothing there at
+    all (``FileNotFoundError`` or ``NotADirectoryError``, a dangling target)
+    or whose own kind is neither a directory nor a regular file: the symlink
+    itself is what is wrong, never the path that led to it.
+    ``"unfollowable"``: a symlink whose follow-up ``stat()`` raises any other
+    ``OSError`` (a loop, or a permission error reaching the target): the
+    symlink itself is again what is wrong, not the path that led to it, but
+    unlike ``"other"`` the reason is worth keeping. When *detail* is given
+    and the result is ``"unfollowable"``, ``exc.strerror`` (or the exception
+    itself when the platform gives none) is appended to it, the same as for
+    ``"unreadable"`` below.
     ``"unreadable"``: an ``OSError`` from ``lstat()`` on *path* itself, which
     can only mean an ancestor of *path* is untraversable (most often a
     permission error on a directory without its execute bit); ``lstat()``
@@ -119,8 +125,12 @@ def _probe(path: Path, detail: list[str] | None = None) -> PathKind:
     if stat.S_ISLNK(linked.st_mode):
         try:
             found = path.stat()
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             return "other"
+        except OSError as exc:
+            if detail is not None:
+                detail.append(exc.strerror or str(exc))
+            return "unfollowable"
     else:
         found = linked
     if stat.S_ISDIR(found.st_mode):
@@ -145,11 +155,10 @@ def _blocked_path(
     ``NOT_A_REGULAR_FILE``), or an ancestor whose own ``lstat()`` raises an
     ``OSError`` other than "missing", which only an ancestor further up can
     cause (*reason* names ``exc.strerror``). ``stat`` needs no execute bit on
-    *current* itself, only
-    on each directory above it, so a probe of ``root/a/b`` that fails this way
-    blames ``a`` (the last component already confirmed a directory), never
-    ``a/b`` (which was never reached): the one component shallower than
-    whichever probe first raised."""
+    *current* itself, only on each directory above it, so a probe of
+    ``root/a/b`` that fails this way blames ``a`` (the last component already
+    confirmed a directory), never ``a/b`` (which was never reached): the one
+    component shallower than whichever probe first raised."""
     parts = [part for part in relative.split("/") if part]
     current = root
     consumed: list[str] = []
@@ -401,6 +410,8 @@ def _load_pyproject(root: Path) -> dict[str, Any] | None:
     kind = _probe(path, detail)
     if kind == "unreadable":
         raise PluginProjectError(f"{path}: cannot be read ({detail[0]}).")
+    if kind == "unfollowable":
+        raise PluginProjectError(f"{path}: cannot be followed ({detail[0]}).")
     if kind == "absent":
         return None
     if kind != "file":
@@ -453,6 +464,8 @@ def _require_directory(root: Path) -> None:
         raise PluginProjectError(f"{root}: no such directory.")
     if kind == "unreadable":
         raise PluginProjectError(f"{root}: cannot be read ({detail[0]}).")
+    if kind == "unfollowable":
+        raise PluginProjectError(f"{root}: cannot be followed ({detail[0]}).")
     if kind != "dir":
         raise PluginProjectError(f"{root}: not a directory.")
 
@@ -462,9 +475,10 @@ def classify(root: Path) -> DirectoryKind:
     ``graftpunk.plugins`` entry-point group is ``plugin``; any other is ``foreign``.
 
     Raises:
-        PluginProjectError: *root* does not exist or is not a directory; or
-            ``pyproject.toml`` exists but is not a regular file, is not valid
-            TOML, is not UTF-8, or cannot be read (permissions); its
+        PluginProjectError: *root* does not exist, is not a directory, or is a
+            symlink that cannot be followed; or ``pyproject.toml`` exists but
+            is not a regular file, is not valid TOML, is not UTF-8, cannot be
+            read (permissions), or is a symlink that cannot be followed; its
             ``project`` or ``project.entry-points`` table, or its
             ``"graftpunk.plugins"`` group table, has the wrong shape; or an
             entry point's value is not a string.
