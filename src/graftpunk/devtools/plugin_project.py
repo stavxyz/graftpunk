@@ -682,12 +682,12 @@ def _module_file(root: Path, module: str) -> str | None:
     a symlink on the way that cannot be followed, raised with its reason once
     found; a candidate path that plainly exists but is a directory or a
     dangling symlink rather than a file, raised as ``NOT_A_REGULAR_FILE`` once
-    no candidate is ever a file; or a non-directory ancestor (run through
-    :func:`_blocked_path`) blocking every candidate outright, raised naming
-    that ancestor once nothing else was found. An unreadable or unfollowable
-    candidate is reported over a wrong-kind one wherever each falls in the
-    search order, since a file may lie past the untraversable or unfollowable
-    ancestor, while the wrong-kind path cannot be the module."""
+    no candidate is ever a file; or a non-directory ancestor (found by
+    :func:`_blocked_path`) blocking a candidate, raised naming that ancestor
+    when no candidate was found and nothing else was wrong. An unreadable or
+    unfollowable candidate is reported over a wrong-kind one wherever each
+    falls in the search order, since a file may lie past the untraversable or
+    unfollowable ancestor, while the wrong-kind path cannot be the module."""
     relative = module.replace(".", "/")
     first_error: tuple[str, str, Literal["unreadable", "unfollowable"]] | None = None
     first_wrong_kind: str | None = None
@@ -700,7 +700,16 @@ def _module_file(root: Path, module: str) -> str | None:
             if blocked is not None:
                 component, reason = blocked
                 if component != posix and reason == NOT_A_DIRECTORY:
-                    if first_blocked_ancestor is None:
+                    # _blocked_path folds an unfollowable ancestor into
+                    # NOT_A_DIRECTORY (round 5's wrong-kind convention), which
+                    # loses the reason; re-probe the ancestor itself so an
+                    # unfollowable one still reports why, instead of a false
+                    # "exists but is not a directory".
+                    component_detail: list[str] = []
+                    if _probe(root / component, component_detail) == "unfollowable":
+                        if first_error is None:
+                            first_error = (component, component_detail[0], "unfollowable")
+                    elif first_blocked_ancestor is None:
                         first_blocked_ancestor = component
                     continue
             detail: list[str] = []

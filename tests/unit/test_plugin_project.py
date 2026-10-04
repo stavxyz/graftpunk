@@ -1166,6 +1166,35 @@ class TestUnfollowableSymlink:
         )
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_module_file_names_a_locked_target_package_directory(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """The package directory itself (an ancestor of every candidate, not
+        a candidate's leaf) is the unfollowable symlink here, which
+        ``_blocked_path`` folds into ``NOT_A_DIRECTORY`` before ``_module_file``
+        sees it; the fix re-probes the blocking ancestor so the refusal still
+        carries the reason instead of a false "exists but is not a directory"."""
+        (tmp_path / "pyproject.toml").write_text(_HAND_WRITTEN_PYPROJECT)
+        (tmp_path / "src").mkdir()
+        package = tmp_path / "src" / "graftpunk_myshop"
+        locked = _locked_target(tmp_path_factory, package, is_dir=True)
+        try:
+            with pytest.raises(PluginProjectError) as excinfo:
+                read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert str(excinfo.value) == "src/graftpunk_myshop: cannot be followed (Permission denied)."
+
+    def test_module_file_names_a_self_loop_package_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(_HAND_WRITTEN_PYPROJECT)
+        (tmp_path / "src").mkdir()
+        package = tmp_path / "src" / "graftpunk_myshop"
+        _loop(package)
+        with pytest.raises(PluginProjectError) as excinfo:
+            read_project(tmp_path)
+        assert str(excinfo.value) == f"src/graftpunk_myshop: cannot be followed ({_LOOP_STRERROR})."
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
     def test_read_project_reads_fixtures_tree_present_false_for_a_locked_target(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
