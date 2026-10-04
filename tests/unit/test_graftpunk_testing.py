@@ -430,8 +430,7 @@ class TestCheckFixturesTree:
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 644-mode directory's entries")
     def test_a_tree_whose_parent_is_untraversable_cannot_be_read(self, tmp_path: Path) -> None:
         """The tree check stats the tree itself, not an ``is_dir()`` predicate,
-        so the message does not depend on the Python version (DD2, A13-1,
-        B5)."""
+        so the message does not depend on the Python version."""
         parent = tmp_path / "tests"
         parent.mkdir()
         tree = parent / "fixtures"
@@ -444,7 +443,7 @@ class TestCheckFixturesTree:
         assert problems == (f"{tree}: cannot be read ({os.strerror(errno.EACCES)}).",)
 
     def test_a_tree_that_is_a_regular_file_is_not_a_directory(self, tmp_path: Path) -> None:
-        """DD2: a tree that exists but is not a directory gets its own line,
+        """A tree that exists but is not a directory gets its own line,
         distinct from "does not exist"."""
         tree = tmp_path / "fixtures"
         tree.write_text("")
@@ -457,7 +456,7 @@ class TestCheckFixturesTree:
     ) -> None:
         """A symlink entry whose own target cannot be reached is that entry's
         problem, not the whole directory's: the walk goes on to check its
-        siblings (DD3, B1)."""
+        siblings."""
         priv = tmp_path / "priv" / "inner"
         priv.mkdir(parents=True)
         (priv / "x.json").write_text("{}")
@@ -477,7 +476,7 @@ class TestCheckFixturesTree:
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode directory")
     def test_a_sidecar_into_an_unreadable_location_cannot_be_read(self, tmp_path: Path) -> None:
         """A sidecar that is a symlink into a blocked location is "cannot be
-        read", never a traceback and never a false "no sidecar" (DD4, B4)."""
+        read", never a traceback and never a false "no sidecar"."""
         priv = tmp_path / "priv" / "inner"
         priv.mkdir(parents=True)
         (priv / "s.meta.json").write_text(sidecar_text(Sidecar(status=200, content_type="x")))
@@ -494,8 +493,7 @@ class TestCheckFixturesTree:
 
     def test_a_dangling_symlink_and_a_loop_are_skipped_not_reported(self, tmp_path: Path) -> None:
         """Neither a dangling symlink nor a symlink loop is a fixture or a
-        problem; only the real fixture's missing sidecar is reported (DD5,
-        B2, B3)."""
+        problem; only the real fixture's missing sidecar is reported."""
         (tmp_path / "dangling.json").symlink_to(tmp_path / "missing.json")
         (tmp_path / "loop_a.json").symlink_to(tmp_path / "loop_b.json")
         (tmp_path / "loop_b.json").symlink_to(tmp_path / "loop_a.json")
@@ -665,7 +663,7 @@ def test_only_stat_kind_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -
     ``.lstat()``, or ``.stat()`` call anywhere else reintroduces the
     version-dependent pathlib predicate this round removed, so this test
     fails loudly on it rather than waiting for a reviewer to find it by hand
-    again (DD1, A13-1, B1 to B5)."""
+    again."""
     source = Path(plugin_module.__file__).read_text()
     violations = _calls_outside_stat_kind(ast.parse(source))
     assert violations == []

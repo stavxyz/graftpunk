@@ -401,7 +401,7 @@ class TestWithGraftpunkFloor:
     ) -> None:
         """A marker-split pair each already excluding everything below the
         floor is nothing extra to do, the same as a single requirement in
-        that shape (DD6, A13-2)."""
+        that shape."""
         text = _deps(
             "'graftpunk>=1.17.0; python_version < \"3.12\"',",
             "'graftpunk[browser]>=1.17.0; python_version >= \"3.12\"',",
@@ -410,7 +410,7 @@ class TestWithGraftpunkFloor:
 
     def test_two_graftpunk_requirements_one_below_the_floor_cannot_be_raised(self) -> None:
         """Only one of the pair excludes everything below the floor: still
-        cannot raise, and still named (DD6, A13-2)."""
+        cannot raise, and still named."""
         text = _deps(
             "'graftpunk>=1.0; python_version < \"3.12\"',",
             "'graftpunk[browser]>=1.17.0; python_version >= \"3.12\"',",
