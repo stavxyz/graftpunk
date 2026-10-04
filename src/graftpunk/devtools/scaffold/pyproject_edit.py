@@ -25,6 +25,7 @@ from graftpunk.plugins import PLUGINS_GROUP
 
 __all__ = [
     "CannotRaiseFloor",
+    "DynamicDependencies",
     "PyprojectEditError",
     "RaisedFloor",
     "with_entry_point",
@@ -209,6 +210,14 @@ class CannotRaiseFloor:
     requirement: str | None
 
 
+@dataclass(frozen=True)
+class DynamicDependencies:
+    """``[project] dependencies`` is itself listed in ``[project] dynamic``: a
+    build backend supplies this project's dependencies, not the array (if any)
+    in this file, so there is no ``graftpunk`` literal here to raise or name
+    (graft skill spec, amended 2026-10-04)."""
+
+
 def _array_literals(text: str, open_bracket: int) -> list[tuple[int, int]] | None:
     """The spans of the string literals in the one-level array opening at
     *open_bracket*, or ``None`` when the array holds anything but one-line basic
@@ -286,7 +295,9 @@ def _excludes_everything_below(specifiers: list[Specifier], floor: Version) -> b
     return False
 
 
-def with_graftpunk_floor(text: str, floor: str) -> RaisedFloor | CannotRaiseFloor | None:
+def with_graftpunk_floor(
+    text: str, floor: str
+) -> RaisedFloor | CannotRaiseFloor | DynamicDependencies | None:
     """*text* with its ``[project] dependencies`` ``graftpunk`` requirement's lower
     bound raised to *floor*, when that requirement's only version specifier is a
     ``>=`` below it. Only the version is rewritten: the name, extras, spacing, and
@@ -296,12 +307,19 @@ def with_graftpunk_floor(text: str, floor: str) -> RaisedFloor | CannotRaiseFloo
     any specifier with operator ``>=``, ``>``, ``==``, ``===``, or ``~=`` whose
     version (for ``==X.*``, ``X``) is at or above *floor*, however many other
     specifiers (an upper bound included) sit alongside it. Returns
-    :class:`CannotRaiseFloor` for any other form that allows a release below
-    *floor*: no ``graftpunk`` requirement, several of them, a bare upper bound,
-    several specifiers none of which excludes everything below the floor, a
-    URL, or a literal this module cannot locate textually.
+    :class:`DynamicDependencies` when ``"dependencies"`` is listed in
+    ``[project] dynamic``: there is no array here to hold a literal to raise
+    or name, whatever ``[project] dependencies`` itself happens to say.
+    Returns :class:`CannotRaiseFloor` for any other form that allows a release
+    below *floor*: no ``graftpunk`` requirement, several of them, a bare upper
+    bound, several specifiers none of which excludes everything below the
+    floor, a URL, or a literal this module cannot locate textually.
     """
-    dependencies = tomllib.loads(text).get("project", {}).get("dependencies", [])
+    project = tomllib.loads(text).get("project", {})
+    dynamic = project.get("dynamic", [])
+    if isinstance(dynamic, list) and "dependencies" in dynamic:
+        return DynamicDependencies()
+    dependencies = project.get("dependencies", [])
     if not isinstance(dependencies, list):
         return CannotRaiseFloor(requirement=None)
     found = [

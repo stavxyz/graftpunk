@@ -1421,6 +1421,10 @@ requirement that already allows nothing below the floor gets nothing extra.
 Any other form that allows a release below the floor (a pin, an upper bound,
 a URL, or no graftpunk requirement) is left as it is, and they print a
 `Next:` line naming the floor and the requirement as found, and to reinstall.
+A project whose `[project] dependencies` is itself listed in `[project]
+dynamic` has no array here to raise or name; they print `Next: this
+project's dependencies are dynamic; make sure whatever supplies them
+requires graftpunk>=<floor>, then reinstall.`
 
 A minimal CI workflow to start from, running the same gate:
 

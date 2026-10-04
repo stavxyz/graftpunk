@@ -1564,6 +1564,22 @@ class TestGraftpunkFloor:
         assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
         assert _plain(result.output).strip().splitlines() == own
 
+    def test_dynamic_dependencies_are_named_in_their_own_next_line(
+        self, command: str, recorded: Path
+    ) -> None:
+        pyproject = _floor_pyproject(None).replace(
+            "[project]", '[project]\ndynamic = ["dependencies"]'
+        )
+        result, own = _run_writer(command, recorded, pyproject)
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
+        lines = _plain(result.output).strip().splitlines()
+        assert lines == [
+            *own,
+            "Next: this project's dependencies are dynamic; make sure whatever supplies "
+            "them requires graftpunk>=1.17.0, then reinstall.",
+        ]
+
     def test_a_capped_requirement_already_at_the_floor_prints_nothing_extra(
         self, command: str, recorded: Path
     ) -> None:

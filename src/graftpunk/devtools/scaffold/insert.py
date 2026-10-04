@@ -28,7 +28,11 @@ from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_project import PluginDefect, PluginView, require_plugin_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.project import planned_graftpunk_floor
-from graftpunk.devtools.scaffold.pyproject_edit import CannotRaiseFloor, RaisedFloor
+from graftpunk.devtools.scaffold.pyproject_edit import (
+    CannotRaiseFloor,
+    DynamicDependencies,
+    RaisedFloor,
+)
 from graftpunk.devtools.scaffold.pysrc import (
     INDENT_STEP,
     ImportPlacementError,
@@ -66,7 +70,7 @@ class AddedCommand:
     module: Path
     cli_name: str
     fixture: str | None
-    floor: RaisedFloor | CannotRaiseFloor | None = None
+    floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | None = None
 
 
 def insertion_line(plugin: PluginView, lines: Sequence[str], class_indent: str) -> int:

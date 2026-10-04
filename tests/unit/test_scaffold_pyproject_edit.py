@@ -12,6 +12,7 @@ import pytest
 
 from graftpunk.devtools.scaffold.pyproject_edit import (
     CannotRaiseFloor,
+    DynamicDependencies,
     PyprojectEditError,
     RaisedFloor,
     with_entry_point,
@@ -361,6 +362,21 @@ class TestWithGraftpunkFloor:
     def test_no_dependencies_key_cannot_be_raised(self) -> None:
         text = '[project]\nname = "x"\n'
         assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(requirement=None)
+
+    def test_dependencies_listed_as_dynamic_is_its_own_verdict(self) -> None:
+        """A build backend, not this array, supplies the project's
+        dependencies; there is no literal here to raise, and the CLI's wording
+        for "no graftpunk requirement" (add it to [project] dependencies)
+        would ask for a key the metadata spec does not let sit beside its own
+        name in dynamic."""
+        text = '[project]\nname = "x"\ndynamic = ["dependencies"]\n'
+        assert with_graftpunk_floor(text, "1.17.0") == DynamicDependencies()
+
+    def test_dependencies_listed_as_dynamic_wins_even_if_also_present(self) -> None:
+        text = _deps('"graftpunk>=1.0",').replace(
+            "[project]", '[project]\ndynamic = ["dependencies"]'
+        )
+        assert with_graftpunk_floor(text, "1.17.0") == DynamicDependencies()
 
     def test_two_graftpunk_requirements_cannot_be_raised(self) -> None:
         text = _deps(

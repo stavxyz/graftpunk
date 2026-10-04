@@ -17,6 +17,7 @@ from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, module_name_for
 from graftpunk.devtools.scaffold.pyproject_edit import (
     CannotRaiseFloor,
+    DynamicDependencies,
     PyprojectEditError,
     RaisedFloor,
     with_entry_point,
@@ -61,7 +62,7 @@ the name the CLI and callers of ``write_scaffold`` already catch."""
 
 def planned_graftpunk_floor(
     root: Path,
-) -> tuple[RaisedFloor | CannotRaiseFloor | None, list[PlannedChange]]:
+) -> tuple[RaisedFloor | CannotRaiseFloor | DynamicDependencies | None, list[PlannedChange]]:
     """What a write adding code that needs the running graftpunk does to *root*'s
     ``pyproject.toml``: :func:`with_graftpunk_floor`'s verdict at
     :func:`graftpunk_version_floor`, and the edit to put in the same

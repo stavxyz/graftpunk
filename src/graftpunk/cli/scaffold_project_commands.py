@@ -25,20 +25,33 @@ from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.insert import add_command
-from graftpunk.devtools.scaffold.pyproject_edit import CannotRaiseFloor, RaisedFloor
+from graftpunk.devtools.scaffold.pyproject_edit import (
+    CannotRaiseFloor,
+    DynamicDependencies,
+    RaisedFloor,
+)
 from graftpunk.devtools.scaffold.render import graftpunk_version_floor
 from graftpunk.devtools.scaffold.upgrade import upgrade_project
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.parser import HARParseError
 
 
-def _print_floor(floor: RaisedFloor | CannotRaiseFloor | None) -> None:
+def _print_floor(floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | None) -> None:
     """One line on the project's graftpunk requirement after a write that needs
     the running graftpunk: the raise it got, or how to make it by hand."""
     at = graftpunk_version_floor()
     if isinstance(floor, RaisedFloor):
         line = f"pyproject.toml: graftpunk>={at} (was >={floor.previous}); reinstall the project"
         console.print(escape(line), soft_wrap=True, highlight=False)
+    elif isinstance(floor, DynamicDependencies):
+        console.print(
+            "[bold]Next:[/bold] "
+            + escape(
+                f"this project's dependencies are dynamic; make sure whatever supplies "
+                f"them requires graftpunk>={at}, then reinstall."
+            ),
+            soft_wrap=True,
+        )
     elif isinstance(floor, CannotRaiseFloor) and floor.requirement is None:
         console.print(
             "[bold]Next:[/bold] "
