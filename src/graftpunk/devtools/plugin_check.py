@@ -20,10 +20,10 @@ from pathlib import Path
 
 from graftpunk.devtools.plugin_project import (
     NOT_A_DIRECTORY,
-    NOT_A_REGULAR_FILE,
     NotAPluginProjectError,
     PluginProjectError,
     require_plugin_project,
+    unreadable_file_message,
 )
 from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, GP_FILL_MARKER
 
@@ -47,27 +47,23 @@ class Finding:
         return f"{where}: {self.message}"
 
 
-def _unreadable_file_message(reason: str) -> str:
-    """A requirement file's ``unreadable`` reason, with the advice that fits it:
-    a wrong-kind path (a directory where a file belongs) is something an
-    author moves aside, not something ``gp plugin upgrade`` can parse past."""
-    if reason == NOT_A_REGULAR_FILE:
-        return f"{reason}; move it aside, then run gp plugin upgrade."
-    return f"{reason}; gp plugin upgrade can add its wiring once it parses."
-
-
 def check_project(root: Path) -> list[Finding]:
-    """Every finding in *root*'s plugin project: a missing fixtures tree, then
-    markers in file order, then plugin defects, then requirement files that do
-    not parse, then missing requirements. A refusal from the reader (not a
-    plugin project, or not readable at all) is the one finding."""
+    """Every finding in *root*'s plugin project: a missing or blocked fixtures
+    tree, then markers in file order, then plugin defects, then requirement
+    files that do not parse or are not regular files, then missing
+    requirements. A refusal from the reader (not a plugin project, or not
+    readable at all) is the one finding. The same blocked ancestor can surface
+    through both the fixtures tree and a requirement file (both live under
+    ``tests/``); findings are deduplicated so it is reported once."""
     try:
         view = require_plugin_project(root)
     except (NotAPluginProjectError, PluginProjectError) as exc:
         return [Finding(path=None, line=None, message=str(exc))]
     findings: list[Finding] = []
-    if view.fixtures_tree_blocked:
-        findings.append(Finding(path=FIXTURES_TREE, line=None, message=NOT_A_DIRECTORY))
+    if view.fixtures_tree_blocked is not None:
+        findings.append(
+            Finding(path=view.fixtures_tree_blocked, line=None, message=NOT_A_DIRECTORY)
+        )
     elif not view.fixtures_tree_present:
         findings.append(
             Finding(path=FIXTURES_TREE, line=None, message="missing; gp plugin upgrade creates it.")
@@ -90,7 +86,7 @@ def check_project(root: Path) -> list[Finding]:
         for defect in view.defects
     )
     findings.extend(
-        Finding(path=path, line=None, message=_unreadable_file_message(reason))
+        Finding(path=path, line=None, message=unreadable_file_message(reason))
         for path, reason in view.unreadable_files()
     )
     findings.extend(
@@ -101,4 +97,4 @@ def check_project(root: Path) -> list[Finding]:
         )
         for requirement in view.missing_requirements()
     )
-    return findings
+    return list(dict.fromkeys(findings))

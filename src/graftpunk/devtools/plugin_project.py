@@ -18,6 +18,7 @@ A reader: it imports neither ``graftpunk.devtools.scaffold.write`` nor
 from __future__ import annotations
 
 import ast
+import os
 import re
 import tomllib
 from collections.abc import Iterator, Mapping
@@ -49,6 +50,7 @@ __all__ = [
     "classify",
     "read_project",
     "require_plugin_project",
+    "unreadable_file_message",
 ]
 
 DirectoryKind = Literal["empty", "plugin", "foreign"]
@@ -59,6 +61,46 @@ RequirementState = Literal["bound", "unbound", "unreadable"]
 # same blocked path differently.
 NOT_A_DIRECTORY = "exists but is not a directory; move it aside, then run gp plugin upgrade."
 NOT_A_REGULAR_FILE = "exists but is not a regular file"
+
+
+def unreadable_file_message(reason: str) -> str:
+    """*reason* (one of this module's unreadable-file reasons, or a parse/decode
+    message) with the advice that fits it, built once so ``gp plugin check``'s
+    finding and ``gp plugin upgrade``'s refusal can never word the same reason
+    differently. ``NOT_A_DIRECTORY`` already carries its own advice (an ancestor
+    blocking the path, not the path itself): used as given."""
+    if reason == NOT_A_DIRECTORY:
+        return reason
+    if reason == NOT_A_REGULAR_FILE:
+        return f"{reason}; move it aside, then run gp plugin upgrade."
+    return f"{reason}; gp plugin upgrade can add its wiring once it parses."
+
+
+def _blocked_path(root: Path, relative: str, *, kind: Literal["directory", "file"]) -> str | None:
+    """Whether project-relative *relative* can be read as *kind*: ``None`` when
+    nothing blocks it (every ancestor is a directory, and *relative* itself is
+    either missing outright or matches *kind*), or the first project-relative
+    path component (no trailing slash) that blocks it: an ancestor that
+    ``os.path.lexists`` (so a dangling symlink counts as existing) but is not a
+    directory, or *relative* itself when it exists but is not *kind*, including
+    a symlink of any kind that does not resolve."""
+    parts = [part for part in relative.split("/") if part]
+    current = root
+    consumed: list[str] = []
+    for index, part in enumerate(parts):
+        current = current / part
+        consumed.append(part)
+        if not os.path.lexists(current):
+            return None
+        if index < len(parts) - 1:
+            if not current.is_dir():
+                return "/".join(consumed)
+        else:
+            matches = current.is_dir() if kind == "directory" else current.is_file()
+            if not matches:
+                return "/".join(consumed)
+    return None
+
 
 _PLUGIN_BASE = "SitePlugin"
 _COMMAND_DECORATOR = "command"
@@ -146,10 +188,15 @@ class PluginDefect:
 class RequirementStatus:
     """Whether a project's file binds one ``PROJECT_REQUIREMENTS`` name: ``bound``;
     ``unbound`` (the file is missing, or does not bind it); or ``unreadable`` (the
-    file does not parse), with ``reason`` saying why."""
+    file does not parse, is not a regular file, or an ancestor blocks it), with
+    ``reason`` saying why. ``blocking`` is the project-relative ancestor path an
+    "unreadable" finding should name instead of the requirement's own path, when
+    an ancestor (not the file itself) is what is wrong; ``None`` for every other
+    reason, where the requirement's own path is the right one to name."""
 
     state: RequirementState
     reason: str | None = None
+    blocking: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,8 +223,10 @@ class ProjectView:
     ``fixtures_tree_present`` is whether ``root / policy.FIXTURES_TREE`` is a
     directory, read once here so ``gp plugin check`` and ``gp plugin upgrade``
     take the same answer from the same place and cannot disagree.
-    ``fixtures_tree_blocked`` is whether that path exists but is something
-    else (a regular file, most likely): a reader fact distinct from "missing",
+    ``fixtures_tree_blocked`` is ``None`` when nothing blocks it, or the
+    project-relative path (no trailing slash) that does: the tree itself (a
+    regular file or a dangling symlink there), or an ancestor (``tests``
+    itself being a file, most likely). A reader fact distinct from "missing",
     so neither consumer tells an author gp plugin upgrade will create a path
     it is actually going to refuse.
 
@@ -206,7 +255,7 @@ class ProjectView:
     requirement_set: tuple[ProjectRequirement, ...]
     test_markers: tuple[tuple[str, int], ...]
     fixtures_tree_present: bool
-    fixtures_tree_blocked: bool = False
+    fixtures_tree_blocked: str | None = None
     first_party_packages: frozenset[str] = frozenset()
 
     def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
@@ -238,14 +287,17 @@ class ProjectView:
         the order ``requirement_set`` first names it, however many requirements
         it holds: ``gp plugin upgrade`` refuses on them and ``gp plugin check``
         reports one finding each, while ``gp plugin info`` and
-        ``gp plugin add-command``, which never read those files, proceed."""
+        ``gp plugin add-command``, which never read those files, proceed. *path*
+        is the requirement's own file, unless an ancestor blocks it
+        (``status.blocking``), in which case it is that ancestor: the finding
+        then names the same path ``gp plugin upgrade`` refuses on."""
         if self.directory != "plugin":
             return ()
         files: dict[str, str] = {}
         for r in self.requirement_set:
             status = self.requirements.get(r.key)
             if status is not None and status.state == "unreadable":
-                files.setdefault(r.path, status.reason or "does not parse")
+                files.setdefault(status.blocking or r.path, status.reason or "does not parse")
         return tuple(files.items())
 
 
@@ -263,10 +315,10 @@ class NotAPluginProjectError(DevtoolsRefusal, ValueError):
 
 def _load_pyproject(root: Path) -> dict[str, Any] | None:
     path = root / "pyproject.toml"
+    if _blocked_path(root, "pyproject.toml", kind="file") is not None:
+        raise PluginProjectError(f"{path}: {NOT_A_REGULAR_FILE}.")
     if not path.exists():
         return None
-    if not path.is_file():
-        raise PluginProjectError(f"{path}: {NOT_A_REGULAR_FILE}.")
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -356,7 +408,7 @@ def read_project(root: Path) -> ProjectView:
     data = _load_pyproject(root)
     fixtures_tree = root / policy.FIXTURES_TREE
     fixtures_tree_present = fixtures_tree.is_dir()
-    fixtures_tree_blocked = fixtures_tree.exists() and not fixtures_tree_present
+    fixtures_tree_blocked = _blocked_path(root, policy.FIXTURES_TREE, kind="directory")
     first_party_packages = _first_party_packages(root, data)
     if data is None:
         return ProjectView(
@@ -775,7 +827,7 @@ def _requirement_statuses(
     once and passes the snapshot in, so it cannot drift from the view's own
     ``requirement_set`` within one ``read_project`` call."""
     paths = dict.fromkeys(r.path for r in requirement_set)
-    parsed = {relative: _parse_requirement_file(root / relative) for relative in paths}
+    parsed = {relative: _parse_requirement_file(root, relative) for relative in paths}
     statuses: dict[str, RequirementStatus] = {}
     for r in requirement_set:
         tree = parsed[r.path]
@@ -786,15 +838,20 @@ def _requirement_statuses(
     return statuses
 
 
-def _parse_requirement_file(path: Path) -> ast.Module | RequirementStatus:
-    """*path*'s tree, or the status every requirement in it takes when there is no
-    tree: ``unbound`` for a missing file, ``unreadable`` with the reason for one
-    that exists but is the wrong kind (a directory, most likely) or does not
+def _parse_requirement_file(root: Path, relative: str) -> ast.Module | RequirementStatus:
+    """*relative*'s tree, or the status every requirement in it takes when there is
+    no tree: ``unbound`` for a path that is plainly missing, ``unreadable`` with
+    the reason for one that is blocked (an ancestor, or the path itself, exists
+    but is the wrong kind, including a dangling symlink of either) or does not
     parse."""
+    blocked = _blocked_path(root, relative, kind="file")
+    if blocked is not None:
+        if blocked == relative:
+            return RequirementStatus("unreadable", NOT_A_REGULAR_FILE)
+        return RequirementStatus("unreadable", NOT_A_DIRECTORY, blocking=blocked)
+    path = root / relative
     if not path.exists():
         return RequirementStatus("unbound")
-    if not path.is_file():
-        return RequirementStatus("unreadable", NOT_A_REGULAR_FILE)
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:

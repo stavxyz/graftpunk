@@ -113,6 +113,14 @@ class TestPluginInfo:
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "other"\n')
         assert _info(tmp_path)["directory"] == "foreign"
 
+    def test_a_dangling_pyproject_symlink_is_refused_not_read_as_empty(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").symlink_to(tmp_path / "nonexistent.toml")
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "exists but is not a regular file" in _plain(result.output)
+
     def test_a_standalone_project_lists_one_plugin_with_the_pinned_fields(
         self, recorded: Path
     ) -> None:

@@ -146,6 +146,17 @@ class TestClassify:
         with pytest.raises(PluginProjectError, match="exists but is not a regular file"):
             read_project(tmp_path)
 
+    def test_a_dangling_pyproject_symlink_is_refused_not_read_as_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """A dangling symlink `lexists` but not `exists`: reading "empty" from
+        it would let gp plugin new overwrite the link instead of refusing."""
+        (tmp_path / "pyproject.toml").symlink_to(tmp_path / "nonexistent.toml")
+        with pytest.raises(PluginProjectError, match="exists but is not a regular file"):
+            classify(tmp_path)
+        with pytest.raises(PluginProjectError, match="exists but is not a regular file"):
+            read_project(tmp_path)
+
 
 class TestReadProjectRefusesABadDirectory:
     """A mistyped --dir reads as "empty" (create mode) otherwise, instead of a

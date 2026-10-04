@@ -133,12 +133,13 @@ class TestFindings:
         shutil.rmtree(tmp_path / "tests" / "fixtures")
         (tmp_path / "tests" / "fixtures").write_text("not a directory")
         (finding,) = check_project(tmp_path)
-        assert finding.path == "tests/fixtures/"
+        assert finding.path == "tests/fixtures"
         assert finding.message == (
             "exists but is not a directory; move it aside, then run gp plugin upgrade."
         )
-        with pytest.raises(UpgradeRefusedError, match="exists but is not a directory"):
+        with pytest.raises(UpgradeRefusedError) as excinfo:
             upgrade_project(tmp_path)
+        assert str(excinfo.value) == str(finding)
 
     def test_a_conftest_that_is_a_directory_is_reported_as_unreadable_and_upgrade_agrees(
         self, tmp_path: Path
@@ -152,10 +153,57 @@ class TestFindings:
         (tmp_path / "tests" / "conftest.py").mkdir()
         (finding,) = check_project(tmp_path)
         assert finding.path == "tests/conftest.py"
-        assert "exists but is not a regular file" in finding.message
-        assert "gp plugin upgrade adds it" not in finding.message
-        with pytest.raises(UpgradeRefusedError, match="exists but is not a regular file"):
+        assert finding.message == (
+            "exists but is not a regular file; move it aside, then run gp plugin upgrade."
+        )
+        with pytest.raises(UpgradeRefusedError) as excinfo:
             upgrade_project(tmp_path)
+        assert str(excinfo.value) == str(finding)
+
+    def test_a_tests_dir_that_is_a_file_blocks_both_the_tree_and_the_conftest(
+        self, tmp_path: Path
+    ) -> None:
+        """tests itself, not just the leaf, can be the wrong kind: the fixtures
+        tree and the requirement file both live under it, so both findings
+        name the same blocking ancestor, deduplicated to one line that
+        upgrade's refusal (its own first blocker) agrees with."""
+        _clean_project(tmp_path)
+        shutil.rmtree(tmp_path / "tests")
+        (tmp_path / "tests").write_text("not a directory")
+        (finding,) = check_project(tmp_path)
+        assert finding.path == "tests"
+        assert finding.message == (
+            "exists but is not a directory; move it aside, then run gp plugin upgrade."
+        )
+        with pytest.raises(UpgradeRefusedError) as excinfo:
+            upgrade_project(tmp_path)
+        assert str(excinfo.value) == str(finding)
+
+    def test_a_dangling_symlink_at_fixtures_is_blocked_not_missing(self, tmp_path: Path) -> None:
+        _clean_project(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        (tmp_path / "tests" / "fixtures").symlink_to(tmp_path / "tests" / "nonexistent")
+        (finding,) = check_project(tmp_path)
+        assert finding.path == "tests/fixtures"
+        assert finding.message == (
+            "exists but is not a directory; move it aside, then run gp plugin upgrade."
+        )
+        with pytest.raises(UpgradeRefusedError) as excinfo:
+            upgrade_project(tmp_path)
+        assert str(excinfo.value) == str(finding)
+
+    def test_a_dangling_symlink_at_conftest_is_blocked_not_missing(self, tmp_path: Path) -> None:
+        _clean_project(tmp_path)
+        (tmp_path / "tests" / "conftest.py").unlink()
+        (tmp_path / "tests" / "conftest.py").symlink_to(tmp_path / "tests" / "nonexistent.py")
+        (finding,) = check_project(tmp_path)
+        assert finding.path == "tests/conftest.py"
+        assert finding.message == (
+            "exists but is not a regular file; move it aside, then run gp plugin upgrade."
+        )
+        with pytest.raises(UpgradeRefusedError) as excinfo:
+            upgrade_project(tmp_path)
+        assert str(excinfo.value) == str(finding)
 
     def test_a_directory_that_is_not_a_plugin_project_is_a_finding(self, tmp_path: Path) -> None:
         (finding,) = check_project(tmp_path)

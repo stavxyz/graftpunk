@@ -13,11 +13,16 @@ reads), so the two consumers cannot disagree.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.plugin_project import NOT_A_DIRECTORY, require_plugin_project
+from graftpunk.devtools.plugin_project import (
+    NOT_A_DIRECTORY,
+    require_plugin_project,
+    unreadable_file_message,
+)
 from graftpunk.devtools.scaffold.policy import (
     FIXTURES_PLACEHOLDER,
     FIXTURES_TREE,
@@ -57,10 +62,12 @@ class UpgradeApplied:
 
 
 def _refuse_unless_directory(path: Path, root: Path) -> None:
-    """Refuse in one line when *path* exists but is not a directory: this
-    function is about to write inside it (a requirement's parent directory, or
-    the fixtures tree itself)."""
-    if path.exists() and not path.is_dir():
+    """Refuse in one line when *path* exists (``os.path.lexists``, so a
+    dangling symlink counts) but is not a directory: this function is about to
+    write inside it (a requirement's parent directory, or the fixtures tree
+    itself), and a dangling symlink there is no more writable into than a
+    plain file."""
+    if os.path.lexists(path) and not path.is_dir():
         raise UpgradeRefusedError(f"{path.relative_to(root)}: {NOT_A_DIRECTORY}")
 
 
@@ -79,11 +86,10 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     view = require_plugin_project(root)
     unreadable = view.unreadable_files()
     if unreadable:
-        listing = "; ".join(f"{path}: {reason}" for path, reason in unreadable)
-        raise UpgradeRefusedError(
-            f"{listing}. gp plugin upgrade edits only a file it can parse; fix it by "
-            f"hand, then run it again."
+        listing = "; ".join(
+            f"{path}: {unreadable_file_message(reason)}" for path, reason in unreadable
         )
+        raise UpgradeRefusedError(listing)
     missing = view.missing_requirements()
     by_path: dict[str, list[ProjectRequirement]] = {}
     for requirement in missing:
@@ -92,11 +98,6 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     for relative, requirements in by_path.items():
         path = root / relative
         _refuse_unless_directory(path.parent, root)
-        if path.exists() and not path.is_file():
-            raise UpgradeRefusedError(
-                f"{relative}: exists but is not a regular file. gp plugin upgrade writes "
-                f"a Python module there; move it aside, then run it again."
-            )
         original = read_original(path) if path.is_file() else None
         try:
             content = with_bindings(
