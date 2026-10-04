@@ -738,10 +738,10 @@ def test_only_stat_kind_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -
     """``_stat_kind`` is the one place in this module allowed to ask the
     filesystem what is at a path; a later edit that adds a second
     ``.exists()``, ``.is_dir()``, ``.is_file()``, ``.is_symlink()``,
-    ``.lstat()``, or ``.stat()`` call anywhere else reintroduces the
-    version-dependent pathlib predicate this round removed, so this test
-    fails loudly on it rather than waiting for a reviewer to find it by hand
-    again."""
+    ``.lstat()``, or ``.stat()`` call anywhere else reintroduces a
+    version-dependent pathlib predicate (before Python 3.14, ``is_dir()``
+    and ``is_file()`` raise on a permission error; from 3.14 they answer
+    ``False``)."""
     source = Path(plugin_module.__file__).read_text()
     violations = _calls_outside_stat_kind(ast.parse(source))
     assert violations == []

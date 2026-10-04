@@ -1017,9 +1017,8 @@ def test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -> No
     what is at a path; a later edit that adds a second ``.exists()``,
     ``.is_dir()``, ``.is_file()``, ``.is_symlink()``, ``.lstat()``, or
     ``.stat()`` call anywhere else reintroduces the PermissionError-as-traceback
-    bug an untraversable ancestor used to cause at every site that asked a
-    filesystem question of its own, so this test fails loudly on it rather
-    than waiting for a reviewer to find it by hand again."""
+    bug an untraversable ancestor causes at any site that asks a filesystem
+    question of its own."""
     source = Path(plugin_project_module.__file__).read_text()
     violations = _calls_outside_probe(ast.parse(source))
     assert violations == []
