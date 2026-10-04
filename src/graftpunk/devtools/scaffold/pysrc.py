@@ -540,7 +540,7 @@ def source_lines(text: str) -> list[str]:
     line and paragraph separators), so indexing a ``str.splitlines()`` result by an
     ast line number desyncs by one for every such character above the target line:
     a stub lands mid-line, and the re-parse that follows can raise a bare
-    ``SyntaxError`` past the caller (polish-r1 P2). No trailing empty element for a
+    ``SyntaxError`` past the caller. No trailing empty element for a
     text ending in a line break, matching ``str.splitlines()``'s own convention, so
     every existing caller keeps its line count.
     """

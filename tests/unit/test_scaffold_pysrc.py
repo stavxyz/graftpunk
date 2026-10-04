@@ -306,7 +306,7 @@ class TestBindsName:
 class TestSourceLines:
     """The one line splitter every ast-line-number consumer must use: str.splitlines()
     also breaks on characters the tokenizer does not, which desyncs an ast line
-    number from a str.splitlines() index (polish-r1 P2)."""
+    number from a str.splitlines() index."""
 
     @pytest.mark.parametrize("break_char", ["\x0c", "\x0b", "\x1c", "\x1d", "\x1e", "\x85", " "])
     def test_a_character_str_splitlines_treats_as_a_break_does_not_split(
@@ -343,8 +343,8 @@ class TestWithImport:
         )
 
     def test_a_comment_on_the_merged_line_refuses_instead_of_dropping_it(self) -> None:
-        """B4/A12: re-rendering the merged statement from its ast aliases would
-        silently drop a trailing comment such as a noqa (polish-r1 P4)."""
+        """Re-rendering the merged statement from its ast aliases would silently
+        drop a trailing comment such as a noqa."""
         text = "from graftpunk.plugins import SitePlugin  # noqa: F401\n\nx = 1\n"
         with pytest.raises(ImportPlacementError, match="holds a comment"):
             with_import(text, "graftpunk.plugins", "command")
@@ -409,10 +409,10 @@ class TestWithImport:
             assert check.returncode == 0, check.stdout + check.stderr
 
     def test_a_first_party_import_gets_its_own_section(self, tmp_path: Path) -> None:
-        """B1: with_import used to lump third-party and first-party imports into
-        one section, so a conftest that already imports the project's own package
-        got the new third-party import sorted after it, in the wrong section
-        (polish-r1 P3)."""
+        """with_import used to lump third-party and first-party imports into
+        one section, so a conftest that already imports the project's own
+        package got the new third-party import sorted after it, in the wrong
+        section."""
         text = (
             "import pytest\n"
             "\n"
@@ -450,10 +450,10 @@ class TestWithImport:
         assert check.returncode == 0, check.stdout + check.stderr
 
     def test_module_names_compare_case_insensitively(self, tmp_path: Path) -> None:
-        """B2: with_import compared module names case-sensitively, so a
+        """with_import compared module names case-sensitively, so a
         lowercase-starting module ("graftpunk...") sorted after an
         uppercase-starting one ("PIL") that ruff, whose isort default is
-        case-sensitive = false, sorts it before (polish-r1 P3)."""
+        case-sensitive = false, sorts it before."""
         text = "from PIL import Image\n\nx = Image\n"
         result = with_import(text, "graftpunk.testing.plugin", "fixtures_are_sanitised")
         assert result == (
@@ -483,7 +483,7 @@ class TestWithImport:
     def test_a_form_feed_in_a_comment_above_the_import_does_not_desync_the_splice(self) -> None:
         """str.splitlines() also breaks on a form feed, which ast does not count as
         a line; with the old splitter this desync shifted the new import onto the
-        wrong line and could corrupt the form-feed line itself (polish-r1 P2, A4)."""
+        wrong line and could corrupt the form-feed line itself."""
         text = "# page\x0c break\n\nfrom pathlib import PurePath\n\nx = 1\n"
         result = with_import(text, "pathlib", "Path")
         assert result == "# page\x0c break\n\nfrom pathlib import Path, PurePath\n\nx = 1\n"

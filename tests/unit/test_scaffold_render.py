@@ -1149,8 +1149,7 @@ class TestPluginModuleCommandStubs:
     def test_a_command_endpoint_gets_a_non_shadowing_default_name(self) -> None:
         """A /command endpoint's default name would be 'command', which shadows
         the @command decorator every generated module imports; the default
-        namer must dedupe it away, and the module must actually execute
-        (polish-r1 P1)."""
+        namer must dedupe it away, and the module must actually execute."""
         endpoint = dataclasses.replace(
             _ORDERS_ENDPOINT, template="/command", query_params={}, custom_headers=()
         )
@@ -3471,7 +3470,7 @@ class TestExplicitSelection:
     def test_a_name_shadowing_a_generated_import_is_refused(self) -> None:
         """'command' is not a SitePlugin attribute, so it is not "reserved"; it is
         the @command decorator every generated module imports, and a stub named
-        after it would call itself instead of the decorator (polish-r1 P1)."""
+        after it would call itself instead of the decorator."""
         spec = self._spec(
             CommandSelection("command", "GET", "/search"), endpoints=(_SEARCH_ENDPOINT,)
         )
@@ -3508,8 +3507,8 @@ class TestExplicitSelection:
         assert rendered.fixture == "get_orders_{order_id}.json"
 
     def test_render_command_names_no_fixture_when_none_is_written(self) -> None:
-        """B10: an endpoint gp observe fixtures writes no fixture for must not
-        name one anyway; add-command's CLI prints a GP-FILL note instead."""
+        """An endpoint gp observe fixtures writes no fixture for must not name
+        one anyway; add-command's CLI prints a GP-FILL note instead."""
         endpoint = dataclasses.replace(_ORDERS_ENDPOINT, fixture_written=False)
         d = _digest(endpoints=(endpoint,))
         command = plan_command(d, CommandSelection("orders", "GET", endpoint.template))

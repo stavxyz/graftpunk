@@ -8,7 +8,7 @@ already has (graft skill spec, 2026-09-21). The statements are added by
 an upgraded conftest is byte-identical to a generated one. It also creates
 ``policy.FIXTURES_TREE`` when a project lacks it, reading that fact from
 ``ProjectView.fixtures_tree_present`` (the same field ``gp plugin check``
-reads), so the two consumers cannot disagree (polish-r1 B7).
+reads), so the two consumers cannot disagree.
 """
 
 from __future__ import annotations

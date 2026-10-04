@@ -112,8 +112,8 @@ class TestFindings:
     def test_a_missing_fixtures_tree_is_reported_then_created_by_upgrade(
         self, tmp_path: Path
     ) -> None:
-        """B7: check and upgrade take the fact from one place (the reader's
-        view), so the two cannot disagree."""
+        """check and upgrade take the fact from one place (the reader's view),
+        so the two cannot disagree."""
         _clean_project(tmp_path)
         shutil.rmtree(tmp_path / "tests" / "fixtures")
         (finding,) = check_project(tmp_path)
@@ -160,13 +160,13 @@ class TestFindings:
     def test_a_directory_that_is_not_a_plugin_project_is_a_finding(self, tmp_path: Path) -> None:
         (finding,) = check_project(tmp_path)
         assert "not a graftpunk plugin project" in finding.message
-        # B12: a reader refusal names no path of its own; printing it should
-        # not prepend a "." that reads like one.
+        # A reader refusal names no path of its own; printing it should not
+        # prepend a "." that reads like one.
         assert finding.path is None
         assert str(finding) == f"{tmp_path} is not a graftpunk plugin project (empty)."
 
     def test_a_dir_that_does_not_exist_is_a_finding_not_read_as_empty(self, tmp_path: Path) -> None:
-        """B9: a mistyped --dir must not read as a fresh, empty project."""
+        """A mistyped --dir must not read as a fresh, empty project."""
         missing = tmp_path / "nonexistent"
         (finding,) = check_project(missing)
         assert finding.message == f"{missing}: no such directory."
@@ -184,8 +184,8 @@ class TestFindings:
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
     def test_a_conftest_that_cannot_be_read_is_one_finding(self, tmp_path: Path) -> None:
-        """B6d: a PermissionError (any OSError), not just a parse error, is a
-        finding rather than a traceback (polish-r1 P7)."""
+        """A PermissionError (any OSError), not just a parse error, is a finding
+        rather than a traceback."""
         _clean_project(tmp_path)
         conftest = tmp_path / "tests" / "conftest.py"
         conftest.chmod(0)

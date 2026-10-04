@@ -254,10 +254,10 @@ def _ruff_check_conftest(project: Path) -> None:
 
 
 class TestFirstPartyPackages:
-    """A1/R2-B1: ruff's own default (``src = [".", "src"]``) treats a top-level
-    directory or ``*.py`` stem under the project root or ``src/`` as first
-    party; ``first_party_packages`` must agree, or ``gp plugin upgrade`` places
-    an import ruff then reports as unsorted."""
+    """ruff's own default (``src = [".", "src"]``) treats a top-level directory
+    or ``*.py`` stem under the project root or ``src/`` as first party;
+    ``first_party_packages`` must agree, or ``gp plugin upgrade`` places an
+    import ruff then reports as unsorted."""
 
     def test_a_single_module_plugin_at_the_root_is_first_party(self, tmp_path: Path) -> None:
         conftest = _single_module_project(tmp_path, under_src=False)
@@ -275,8 +275,8 @@ class TestFirstPartyPackages:
         _ruff_check_conftest(tmp_path)
 
     def test_a_root_level_tests_package_is_first_party(self, tmp_path: Path) -> None:
-        """R2-B1: a hand-written conftest importing a sibling helper module from
-        the project's own tests package, which ruff classes first party because
+        """A hand-written conftest importing a sibling helper module from the
+        project's own tests package, which ruff classes first party because
         tests/ sits at the project root."""
         conftest = _project(tmp_path, "from tests.helpers import THING\n\nX = THING\n")
         (tmp_path / "tests" / "helpers.py").write_text("THING = 1\n")

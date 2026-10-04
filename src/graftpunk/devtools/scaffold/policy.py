@@ -167,7 +167,7 @@ name ``render.py`` imports into it (``command``, ``CommandContext``,
 plus the builtins a stub's ``@command(..., type=int)`` keyword evaluates in the class
 body. A command stub named one of these binds the name inside the class namespace, so
 a later ``@command(...)`` in the same class calls the stub instead of the real
-decorator or type (issue graft-package-project-tools polish-r1 P1).
+decorator or type.
 ``selection.plan_command`` refuses a selection naming one, ``render._default_commands``
 seeds its dedupe with it, and ``insert.add_command`` separately refuses a name the
 target module already binds at top level, for a name outside this set. A test in

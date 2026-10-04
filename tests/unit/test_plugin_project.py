@@ -138,8 +138,8 @@ class TestClassify:
     def test_a_pyproject_that_is_a_directory_is_refused_not_read_as_empty(
         self, tmp_path: Path
     ) -> None:
-        """R2-B4: a wrong pyproject.toml path must not read as "empty" (create
-        mode), the same rule a missing --dir gets."""
+        """A wrong pyproject.toml path must not read as "empty" (create mode),
+        the same rule a missing --dir gets."""
         (tmp_path / "pyproject.toml").mkdir()
         with pytest.raises(PluginProjectError, match="exists but is not a regular file"):
             classify(tmp_path)
@@ -148,8 +148,8 @@ class TestClassify:
 
 
 class TestReadProjectRefusesABadDirectory:
-    """B9: a mistyped --dir reads as "empty" (create mode) otherwise, instead
-    of a refusal; every one of info/check/add-command/upgrade routes through
+    """A mistyped --dir reads as "empty" (create mode) otherwise, instead of a
+    refusal; every one of info/check/add-command/upgrade routes through
     read_project or require_plugin_project, so the refusal belongs here."""
 
     def test_a_directory_that_does_not_exist_is_refused(self, tmp_path: Path) -> None:
@@ -231,7 +231,7 @@ class TestTheView:
         assert read_project(tmp_path).fixtures_tree_present is True
 
     def test_fixtures_tree_present_is_false_when_the_tree_is_missing(self, tmp_path: Path) -> None:
-        """B7: check and upgrade take this fact from the one place the reader
+        """check and upgrade take this fact from the one place the reader
         records it, so the two consumers cannot disagree."""
         _generate(tmp_path)
         shutil.rmtree(tmp_path / "tests" / "fixtures")
@@ -258,7 +258,7 @@ class TestTheView:
     ) -> None:
         """str.splitlines() also breaks on a form feed, which is not a line break
         to ast or the tokenizer; the old splitter reported the marker one line
-        late here (polish-r1 P2, A6)."""
+        late here."""
         module = (
             "from graftpunk.plugins import SitePlugin\n"
             "\n"
@@ -282,8 +282,8 @@ class TestTheView:
             assert "GP-FILL" in text[line - 1]
 
     def test_test_markers_are_not_shifted_by_a_form_feed(self, tmp_path: Path) -> None:
-        """As test_a_form_feed_above_a_marker_does_not_shift_its_reported_line, for
-        _test_markers's own scan of the tests directory (polish-r1 P2, A6)."""
+        """As test_a_form_feed_above_a_marker_does_not_shift_its_reported_line,
+        for _test_markers's own scan of the tests directory."""
         _generate(tmp_path)
         (tmp_path / "tests" / "extra.py").write_text(
             "# note\x0c continued\n\n# GP-FILL: something\n"
@@ -299,8 +299,8 @@ class TestTheView:
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
     def test_test_markers_skips_an_unreadable_file(self, tmp_path: Path) -> None:
-        """B6c: a permission error, not just a decode error, is skipped rather
-        than raised (polish-r1 P7)."""
+        """A permission error, not just a decode error, is skipped rather than
+        raised."""
         _generate(tmp_path)
         locked = tmp_path / "tests" / "locked.py"
         locked.write_text("# GP-FILL: unreadable\n")
@@ -360,10 +360,9 @@ class TestTheView:
         assert "functools" in plugin.class_names
 
     def test_class_names_records_a_definition_under_except_star(self, tmp_path: Path) -> None:
-        """A10: ast.TryStar (a try/except* block, added in Python 3.11, which
-        this project's floor is) is walked the same as ast.Try, so a
-        definition nested under it is still refused as an add-command name
-        (polish-r1 P9)."""
+        """ast.TryStar (a try/except* block, added in Python 3.11, which this
+        project's floor is) is walked the same as ast.Try, so a definition
+        nested under it is still refused as an add-command name."""
         module = (
             "from graftpunk.plugins import SitePlugin\n\n\n"
             "class MyshopPlugin(SitePlugin):\n"
@@ -530,12 +529,11 @@ class TestFixturesRoots:
     def test_a_hand_written_single_plugin_project_is_not_a_suite_member(
         self, tmp_path: Path
     ) -> None:
-        """B14: a one-entry-point project is never a suite, even when its
+        """A one-entry-point project is never a suite, even when its
         [project].name differs from its package, which is exactly the case a
         hand-written project (the one add-command's enhance mode targets) is
         likely to be in; gp plugin new never produces this shape itself, since
-        its first plugin's package always matches the project name
-        (polish-r1 P8)."""
+        its first plugin's package always matches the project name."""
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "myshop-plugin"\n\n'
             '[project.entry-points."graftpunk.plugins"]\n'

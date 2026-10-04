@@ -579,7 +579,7 @@ class TestGeneratedProjectPassesItsOwnGate:
     ) -> None:
         """A default-named stub for a /command endpoint would bind 'command',
         shadowing the @command decorator every generated module imports and
-        breaking every later @command(...) in the class body (polish-r1 P1)."""
+        breaking every later @command(...) in the class body."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         run_dir = observe_base / "myshop" / "run-1"
@@ -1468,8 +1468,8 @@ class TestReservedNamesSnapshot:
 
 
 def test_register_attaches_all_five_commands_without_a_separate_import() -> None:
-    """R2-B16: a caller that reaches scaffold_commands and calls register()
-    must get info/add-command/upgrade/check on plugin_app too, not just new;
+    """A caller that reaches scaffold_commands and calls register() must get
+    info/add-command/upgrade/check on plugin_app too, not just new;
     those four attach to plugin_app as scaffold_project_commands.py's own
     decorator side effect. In this repo, graftpunk.cli's own __init__.py
     always imports main.py first (which imports both scaffold modules), so a
@@ -1727,8 +1727,8 @@ class TestPluginNewCommand:
         from graftpunk.har.naming import EndpointSpecError, parse_command_spec
 
         self._record(tmp_path, monkeypatch)
-        # B11a: pin the console to a pipe's usual 80 columns; a wide real
-        # terminal (as this sandbox has) would hide a missing soft_wrap=True.
+        # Pin the console to a pipe's usual 80 columns; a wide real terminal
+        # (as this sandbox has) would hide a missing soft_wrap=True.
         monkeypatch.setattr(console, "size", (80, 24))
         with pytest.raises(EndpointSpecError) as caught:
             parse_command_spec(value)
@@ -1785,8 +1785,8 @@ class TestPluginNewCommand:
         from graftpunk.cli.scaffold_commands import console
 
         self._record(tmp_path, monkeypatch)
-        # B11b: pin the console to a pipe's usual 80 columns; a wide real
-        # terminal (as this sandbox has) would hide a missing soft_wrap=True.
+        # Pin the console to a pipe's usual 80 columns; a wide real terminal
+        # (as this sandbox has) would hide a missing soft_wrap=True.
         monkeypatch.setattr(console, "size", (80, 24))
         result = runner.invoke(
             _build_app(),
@@ -1804,7 +1804,7 @@ class TestPluginNewCommand:
         )
         assert result.exit_code == 1
         assert "not an endpoint in this run" in strip_ansi(result.output)
-        # B11b: this message is over 80 columns; it must not wrap under a pipe.
+        # This message is over 80 columns; it must not wrap under a pipe.
         assert len(strip_ansi(result.output).strip().splitlines()) == 1
 
     def test_command_without_from_run_is_refused(self, tmp_path: Path) -> None:

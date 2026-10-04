@@ -626,7 +626,7 @@ def _read_plugin(
 # first plugin is always new_project, whose package matches), so the count
 # guard changes nothing for a generated project; it only stops a hand-written
 # one-plugin project, whose name happens to differ from its package, from
-# misreading as a suite member (polish-r1 P8).
+# misreading as a suite member.
 # test_the_rule_gives_the_same_answer_from_the_spec_and_from_the_project is
 # the check that these two independent derivations still agree; it is the
 # owner of that agreement, not a coincidence to be relied on silently.

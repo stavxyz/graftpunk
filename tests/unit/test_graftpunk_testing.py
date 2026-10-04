@@ -271,7 +271,7 @@ class TestCheckFixturesTree:
     def test_the_missing_tree_message_names_the_one_placeholder_constant(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A9: the message interpolates FIXTURES_PLACEHOLDER rather than spelling
+        """The message interpolates FIXTURES_PLACEHOLDER rather than spelling
         .gitkeep beside it, so the two cannot drift apart."""
         monkeypatch.setattr(plugin_module, "FIXTURES_PLACEHOLDER", ".marker")
         report = check_fixtures_tree(tmp_path / "fixtures")
@@ -326,9 +326,9 @@ class TestCheckFixturesTree:
         assert problem.startswith("get_orders.json.meta.json")
 
     def test_a_flagged_name_in_body_params_alone_passes(self, tmp_path: Path) -> None:
-        """A2: body_params holds field names the writer already filtered, and a
-        form's CSRF field is legitimately both a body parameter and a flagged
-        name; sidecar_scannable_text exempts body_params, so this is not a leak."""
+        """body_params holds request field names, which can legitimately include
+        a flagged CSRF field's name; sidecar_scannable_text exempts body_params,
+        so this is not a leak."""
         sidecar = Sidecar(
             status=200,
             content_type="application/json",

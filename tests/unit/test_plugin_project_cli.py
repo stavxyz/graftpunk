@@ -168,7 +168,7 @@ class TestPluginInfo:
         assert "contracts" not in payload and "graftpunk" not in payload
 
     def test_a_dir_that_does_not_exist_is_refused_not_read_as_empty(self, tmp_path: Path) -> None:
-        """B9: a mistyped --dir must not read as "empty" (create mode)."""
+        """A mistyped --dir must not read as "empty" (create mode)."""
         missing = tmp_path / "nonexistent"
         result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(missing)])
         assert result.exit_code == 1
@@ -207,8 +207,8 @@ class TestPluginInfo:
     def test_an_unreadable_pyproject_by_permission_is_a_one_line_refusal(
         self, tmp_path: Path
     ) -> None:
-        """B6a: a PermissionError (any OSError), not just a decode error, is a
-        one-line refusal (polish-r1 P7)."""
+        """A PermissionError (any OSError), not just a decode error, is a
+        one-line refusal."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nname = "x"\n')
         pyproject.chmod(0)
@@ -225,7 +225,7 @@ class TestPluginInfo:
     def test_an_unreadable_plugin_module_by_permission_is_a_one_line_refusal(
         self, recorded: Path
     ) -> None:
-        """B6b: same as above, for the plugin module (polish-r1 P7)."""
+        """Same as above, for the plugin module."""
         _new(recorded)
         module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
         module.chmod(0)
@@ -605,7 +605,7 @@ class TestAddCommand:
         _ruff_clean(recorded)
 
     def test_prints_a_gp_fill_note_instead_of_a_fixture_no_one_writes(self, recorded: Path) -> None:
-        """B10: an endpoint gp observe fixtures writes no fixture for (a binary
+        """An endpoint gp observe fixtures writes no fixture for (a binary
         response with no captured text) must not be told its test looks for a
         fixture that will never exist."""
         _new(recorded, "myshop", "orders=GET /api/orders")
@@ -685,7 +685,7 @@ class TestAddCommand:
     ) -> None:
         """str.splitlines() also breaks on a form feed, which desyncs the ast line
         number the stub is spliced at from a str.splitlines() index; the old
-        splitter raised an uncaught IndentationError here (polish-r1 P2, A4)."""
+        splitter raised an uncaught IndentationError here."""
         module_text = (
             '"""myshop plugin."""\n'
             "\n"
@@ -712,10 +712,10 @@ class TestAddCommand:
     def test_a_trailing_comment_at_the_command_bodys_indentation_stays_with_it(
         self, recorded: Path
     ) -> None:
-        """B5: the insertion point was the last command's last statement, so a
+        """The insertion point was the last command's last statement, so a
         comment immediately below it (at the command body's own indentation)
         read as the end of the new stub's body instead of staying with the
-        command it actually follows (polish-r1 P6)."""
+        command it actually follows."""
         module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_TRAILING_COMMENT)
         result = _add(recorded, "myshop", "invoices=GET /api/invoices")
         assert result.exit_code == 0, result.output
@@ -729,9 +729,9 @@ class TestAddCommand:
         _ruff_clean(recorded)
 
     def test_a_tab_indented_class_gets_a_tab_indented_stub(self, recorded: Path) -> None:
-        """B3: the stub was always rendered at four spaces and spliced in as-is,
-        so a tab-indented class got a mixed-indentation module that does not
-        even parse (polish-r1 P5)."""
+        """The stub was always rendered at four spaces and spliced in as-is, so
+        a tab-indented class got a mixed-indentation module that does not even
+        parse."""
         module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_TAB_INDENTED)
         result = _add(recorded, "myshop", "orders=GET /api/orders")
         assert result.exit_code == 0, result.output
@@ -919,7 +919,7 @@ class TestAddCommand:
 
     def test_a_name_shadowing_a_generated_import_is_refused(self, recorded: Path) -> None:
         """'command' is the @command decorator every generated module imports; a
-        stub named after it would call itself instead (polish-r1 P1)."""
+        stub named after it would call itself instead."""
         _new(recorded, "myshop", "orders=GET /api/orders")
         module = recorded / "src" / "graftpunk_myshop" / "plugin.py"
         before = module.read_bytes()
@@ -931,9 +931,9 @@ class TestAddCommand:
     def test_a_comment_on_the_import_to_merge_into_refuses_instead_of_dropping_it(
         self, recorded: Path
     ) -> None:
-        """B4/A12: the stub needs CommandContext and command merged into the
-        existing commented graftpunk.plugins import; re-rendering it would drop
-        the noqa (polish-r1 P4)."""
+        """The stub needs CommandContext and command merged into the existing
+        commented graftpunk.plugins import; re-rendering it would drop the
+        noqa."""
         module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_COMMENTED_IMPORT)
         before = module.read_bytes()
         result = _add(recorded, "myshop", "orders=GET /api/orders")
@@ -944,7 +944,7 @@ class TestAddCommand:
     def test_a_module_level_helper_blocks_the_same_name(self, recorded: Path) -> None:
         """A top-level `def helper()` is not in the plugin class body, so
         class_names never sees it; the module-level binds_name check catches it
-        instead (polish-r1 P1)."""
+        instead."""
         module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_WITH_MODULE_HELPER)
         before = module.read_bytes()
         result = _add(recorded, "myshop", "helper=GET /api/orders")
@@ -974,10 +974,10 @@ class TestAddCommand:
     def test_a_hand_written_projects_differing_name_is_not_a_suite_member(
         self, recorded: Path
     ) -> None:
-        """B14: a one-entry-point project is never a suite, even when its
+        """A one-entry-point project is never a suite, even when its
         [project].name differs from its package, which is exactly the case a
-        hand-written project (the one enhance mode targets) is likely to be in
-        (polish-r1 P8)."""
+        hand-written project (the one enhance mode targets) is likely to be
+        in."""
         (recorded / "pyproject.toml").write_text(
             '[project]\nname = "myshop-plugin"\n\n'
             '[project.entry-points."graftpunk.plugins"]\n'
@@ -1093,7 +1093,7 @@ class TestAddCommand:
         assert "not a graftpunk plugin project (empty)" in " ".join(_plain(result.output).split())
 
     def test_a_dir_that_does_not_exist_is_refused_not_read_as_empty(self, recorded: Path) -> None:
-        """B9: the recording exists but the project directory itself does not."""
+        """The recording exists but the project directory itself does not."""
         missing = recorded / "nonexistent"
         result = _add(missing, "myshop", "orders=GET /api/orders")
         assert result.exit_code == 1
@@ -1163,7 +1163,7 @@ def _project_lacking_the_wiring(root: Path) -> Path:
 @pytest.mark.usefixtures("gp_logging")
 class TestPluginUpgrade:
     def test_a_dir_that_does_not_exist_is_refused_not_read_as_empty(self, tmp_path: Path) -> None:
-        """B9: a mistyped --dir must not be read as a fresh, empty project."""
+        """A mistyped --dir must not be read as a fresh, empty project."""
         missing = tmp_path / "nonexistent"
         result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(missing)])
         assert result.exit_code == 1
@@ -1172,8 +1172,8 @@ class TestPluginUpgrade:
     def test_a_form_feed_in_the_conftest_does_not_raise_a_syntax_error(
         self, tmp_path: Path
     ) -> None:
-        """As TestAddCommand's form-feed test, for the with_bindings path upgrade
-        drives through with_import (polish-r1 P2, A5)."""
+        """As TestAddCommand's form-feed test, for the with_bindings path
+        upgrade drives through with_import."""
         conftest = _project_lacking_the_wiring(tmp_path)
         conftest.write_text(
             "from graftpunk.testing.plugin import site_env_scrubber\n"
@@ -1192,9 +1192,9 @@ class TestPluginUpgrade:
     def test_a_conftest_importing_the_projects_own_package_stays_ruff_clean(
         self, tmp_path: Path
     ) -> None:
-        """B1 end to end: a conftest that already imports the project's own
+        """End to end: a conftest that already imports the project's own
         package used to get the new import sorted into the third-party section
-        instead of a first-party one of its own (polish-r1 P3)."""
+        instead of a first-party one of its own."""
         from graftpunk.devtools.scaffold.project import write_scaffold
         from graftpunk.devtools.scaffold.render import ScaffoldSpec
 
@@ -1231,8 +1231,8 @@ class TestPluginUpgrade:
     def test_a_comment_on_the_conftest_import_refuses_instead_of_dropping_it(
         self, tmp_path: Path
     ) -> None:
-        """As TestAddCommand's equivalent test, for the with_bindings path upgrade
-        drives (polish-r1 P4)."""
+        """As TestAddCommand's equivalent test, for the with_bindings path
+        upgrade drives."""
         conftest = _project_lacking_the_wiring(tmp_path)
         conftest.write_text(
             "from graftpunk.testing.plugin import site_env_scrubber  # noqa: F401\n"
