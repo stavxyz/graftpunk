@@ -1284,3 +1284,17 @@ def test_a_module_packages_directory_that_is_a_regular_file_names_that_ancestor(
     with pytest.raises(PluginProjectError) as excinfo:
         read_project(tmp_path)
     assert str(excinfo.value) == "src/graftpunk_myshop: exists but is not a directory."
+
+
+def test_requirement_status_present_is_false_when_an_ancestor_blocks_it(tmp_path: Path) -> None:
+    """``present`` must not claim a requirement file exists when an ancestor
+    (here ``tests`` itself, replaced with a plain file) blocked the reader
+    before it ever reached the file."""
+    _generate(tmp_path)
+    shutil.rmtree(tmp_path / "tests")
+    (tmp_path / "tests").write_text("not a directory")
+    view = read_project(tmp_path)
+    status = view.requirements["tests/conftest.py:FIXTURES_TREE"]
+    assert status == RequirementStatus(
+        "unreadable", NOT_A_DIRECTORY, blocking="tests", present=False
+    )

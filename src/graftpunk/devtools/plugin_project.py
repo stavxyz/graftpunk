@@ -276,10 +276,14 @@ class RequirementStatus:
     path an "unreadable" finding should name instead of the requirement's own path,
     when an ancestor (not the file itself) is what is wrong; ``None`` for every other
     reason, where the requirement's own path is the right one to name. ``present`` is
-    whether the file exists at all, true for ``bound``, true for ``unbound`` when the
-    file exists but does not bind the name, and false only for the ``unbound`` case
-    where the file is plainly absent: ``gp plugin upgrade`` reads it instead of
-    asking the filesystem the same question a second time."""
+    whether the file itself exists, defined for every state: true for ``bound``; true
+    for ``unbound`` when the file exists but does not bind the name, false when it is
+    plainly absent; true for an ``unreadable`` file that is wrong in its own right
+    (does not parse, is not valid UTF-8, cannot be read, or is not a regular file),
+    since the file does exist; false for an ``unreadable`` status whose ``blocking``
+    names an ancestor, since the file past that ancestor was never reached and its
+    own existence is unknown. ``gp plugin upgrade`` reads it instead of asking the
+    filesystem the same question a second time."""
 
     state: RequirementState
     reason: str | None = None
@@ -981,16 +985,15 @@ def _requirement_statuses(
 
 def _parse_requirement_file(root: Path, relative: str) -> ast.Module | RequirementStatus:
     """*relative*'s tree, or the status every requirement in it takes when there is
-    no tree: ``unbound`` for a path that is plainly missing, or ``unreadable``
-    with the reason (``graftpunk.devtools.plugin_check``'s module docstring has
-    the complete list: blocked, not valid UTF-8, cannot be read, or does not
-    parse)."""
+    no tree: ``unbound`` with ``present=False`` for a path that is plainly missing,
+    or ``unreadable`` with the reason (``graftpunk.devtools.plugin_check``'s module
+    docstring has the complete list)."""
     blocked = _blocked_path(root, relative, kind="file")
     if blocked is not None:
         component, reason = blocked
         if component == relative:
             return RequirementStatus("unreadable", reason)
-        return RequirementStatus("unreadable", reason, blocking=component)
+        return RequirementStatus("unreadable", reason, blocking=component, present=False)
     path = root / relative
     if _probe(path) == "absent":
         return RequirementStatus("unbound", present=False)
