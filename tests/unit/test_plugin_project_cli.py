@@ -545,6 +545,19 @@ _HAND_WRITTEN_MULTILINE_HEADER_ONE_LINE_CLASS = (
     '): site_name = "myshop"; base_url = "https://myshop.example"\n'
 )
 
+_HAND_WRITTEN_MULTILINE_HEADER_INDENTED_ONE_LINE_CLASS = (
+    '"""myshop plugin."""\n'
+    "\n"
+    "from __future__ import annotations\n"
+    "\n"
+    "from graftpunk.plugins import SitePlugin\n"
+    "\n"
+    "\n"
+    "class MyshopPlugin(\n"
+    "    SitePlugin,\n"
+    '    ): site_name = "myshop"; base_url = "https://myshop.example"\n'
+)
+
 _HAND_WRITTEN_WITH_TRAILING_COMMENT = """\
 \"\"\"myshop plugin.\"\"\"
 
@@ -785,6 +798,27 @@ class TestAddCommand:
         shapes refuse on."""
         module = _hand_written_project(
             recorded, module_text=_HAND_WRITTEN_MULTILINE_HEADER_ONE_LINE_CLASS
+        )
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        output = _plain(result.output).strip()
+        assert output.splitlines() == [
+            "src/graftpunk_myshop/plugin.py: the stub does not fit this class's "
+            "layout (its body starts on the class header's line); add a command "
+            "by hand."
+        ]
+        assert module.read_bytes() == before
+
+    def test_a_multiline_header_with_an_indented_one_line_body_is_refused(
+        self, recorded: Path
+    ) -> None:
+        """A class whose header spans lines, with its body on an indented `):`
+        line: the body's own line is not empty before the statement starts
+        (four spaces of header text precede it), so it is refused the same as
+        the other two layouts, not spliced in as a syntax error."""
+        module = _hand_written_project(
+            recorded, module_text=_HAND_WRITTEN_MULTILINE_HEADER_INDENTED_ONE_LINE_CLASS
         )
         before = module.read_bytes()
         result = _add(recorded, "myshop", "orders=GET /api/orders")

@@ -187,13 +187,12 @@ def add_command(
     lines = source_lines(original)
     first_body_line = lines[klass.body[0].lineno - 1]
     indent_unit = first_body_line[: len(first_body_line) - len(first_body_line.lstrip(" \t"))]
-    if klass.body[0].lineno == klass.lineno or not indent_unit:
-        # The body shares a line with the header: either the `class` keyword's
-        # own line (a one-line class), or, for a header that spans lines, the
-        # line holding the closing `):` (klass.body[0].lineno != klass.lineno
-        # there, so that comparison alone misses it; an empty indent unit
-        # catches both shapes, since a body on its own line is always
-        # indented).
+    if first_body_line[: klass.body[0].col_offset].strip():
+        # Header text precedes the body's first statement on its own line:
+        # the `class` keyword's own line (a one-line class), an unindented
+        # `):` line, or an indented `):` line all have something other than
+        # whitespace before the statement starts; a body that begins its own
+        # line never does, whatever that line's indent.
         raise CommandInsertError(_layout_refusal(plugin.module_path))
     rendered = render_command(command, d)
     stub_lines = _reindented(rendered.lines, indent_unit)
