@@ -349,6 +349,7 @@ class TestWithGraftpunkFloor:
             "graftpunk",
             "graftpunk @ https://example.com/graftpunk-1.0-py3-none-any.whl",
             "graftpunk>1.0",
+            "graftpunk>=",
         ],
     )
     def test_any_other_form_cannot_be_raised_and_is_named(self, requirement: str) -> None:
@@ -420,4 +421,16 @@ class TestWithGraftpunkFloor:
                 'graftpunk>=1.0; python_version < "3.12" and '
                 'graftpunk[browser]>=1.17.0; python_version >= "3.12"'
             )
+        )
+
+    def test_two_graftpunk_requirements_one_unparseable_cannot_be_raised(self) -> None:
+        """One literal of a marker-split pair passes _is_graftpunk's name
+        match but is not a parseable Requirement: still cannot raise, named
+        with the pair joined, not a crash."""
+        text = _deps(
+            '"graftpunk>=",',
+            "'graftpunk>=1.17.0; python_version >= \"3.12\"',",
+        )
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
+            requirement='graftpunk>= and graftpunk>=1.17.0; python_version >= "3.12"'
         )
