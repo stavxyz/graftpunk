@@ -97,8 +97,8 @@ def check_project(root: Path) -> list[Finding]:
     blocked fixtures tree, then markers in file order, then plugin defects,
     then unreadable requirement files, then missing requirements (this
     module's own docstring has the complete list of finding kinds). A
-    refusal from the reader (not a plugin project, or not readable at all) is
-    the one finding. The same blocked ancestor can surface through both the
+    refusal from the reader (for example, not a plugin project, or not
+    readable at all) is the one finding. The same blocked ancestor can surface through both the
     fixtures tree and a requirement file (both live under ``tests/``);
     findings are deduplicated so it is reported once."""
     try:
