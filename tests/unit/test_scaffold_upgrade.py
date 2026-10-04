@@ -204,22 +204,33 @@ class TestUpgrade:
 
     def test_check_and_upgrade_name_both_blocked_paths_in_one_run(self, tmp_path: Path) -> None:
         """tests/fixtures and tests/conftest.py both dangling symlinks: check
-        lists both findings in one run, and upgrade must refuse naming both
-        in that same run too, not just the first one it happens to read (the
+        lists both findings in one run, and upgrade must refuse listing every
+        blocked path check lists, in the same order and the same words (the
         old two-owners bug refused on conftest.py alone, then on fixtures
-        alone on a second call, once the first was fixed by hand)."""
+        alone on a second call, once the first was fixed by hand), joined by
+        a single space: each finding is already a full sentence ending in
+        "." and contains its own semicolon, so "; " between two of them
+        would read as a third sentence."""
         write_scaffold(tmp_path, _SPEC)
         shutil.rmtree(tmp_path / "tests" / "fixtures")
         (tmp_path / "tests" / "fixtures").symlink_to(tmp_path / "tests" / "nonexistent")
         (tmp_path / "tests" / "conftest.py").unlink()
         (tmp_path / "tests" / "conftest.py").symlink_to(tmp_path / "tests" / "nonexistent.py")
-        findings = {str(f) for f in check_project(tmp_path)}
-        assert any(f.startswith("tests/fixtures:") for f in findings)
-        assert any(f.startswith("tests/conftest.py:") for f in findings)
+        blocked = [
+            f for f in check_project(tmp_path) if f.path in {"tests/fixtures", "tests/conftest.py"}
+        ]
+        assert [f.path for f in blocked] == ["tests/fixtures", "tests/conftest.py"]
+        assert str(blocked[0]) == (
+            "tests/fixtures: exists but is not a directory; move it aside, "
+            "then run gp plugin upgrade."
+        )
+        assert str(blocked[1]) == (
+            "tests/conftest.py: exists but is not a regular file; move it "
+            "aside, then run gp plugin upgrade."
+        )
         with pytest.raises(UpgradeRefusedError) as refused:
             upgrade_project(tmp_path)
-        assert "tests/fixtures" in str(refused.value)
-        assert "tests/conftest.py" in str(refused.value)
+        assert str(refused.value) == " ".join(str(f) for f in blocked)
 
     def test_a_conftest_whose_imports_follow_code_is_refused_and_left_alone(
         self, tmp_path: Path

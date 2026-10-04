@@ -83,9 +83,10 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     blocked.extend(view.unreadable_files())
     blocked = list(dict.fromkeys(blocked))
     if blocked:
-        listing = "; ".join(
-            f"{path}: {unreadable_file_message(reason)}" for path, reason in blocked
-        )
+        # A single space, not "; ": each entry is already a full sentence
+        # ending in "." and contains its own semicolon (the advice clause),
+        # so "; " between two entries reads as a third one.
+        listing = " ".join(f"{path}: {unreadable_file_message(reason)}" for path, reason in blocked)
         raise UpgradeRefusedError(listing)
     missing = view.missing_requirements()
     by_path: dict[str, list[ProjectRequirement]] = {}
