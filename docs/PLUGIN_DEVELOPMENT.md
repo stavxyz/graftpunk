@@ -1410,6 +1410,17 @@ scaffold fails it until its markers are filled in. It passes `ruff check` and
 `ruff format --check` as written, so a red ruff run on a fresh scaffold is
 something you introduced. Add a type checker.
 
+`gp plugin upgrade` and `gp plugin add-command` write code that needs the
+graftpunk you run them with (the conftest's `graftpunk.testing` import, a
+stub's `@command(..., endpoint=...)`). When the project's `[project]
+dependencies` holds a plain `graftpunk>=` lower bound below that release (as
+`major.minor.0`, the bound `gp plugin new` writes), they raise it in the same
+write, keeping any extras and environment marker, and print
+`pyproject.toml: graftpunk>=<floor> (was >=<old>)`. Any other form (a pin, an
+upper bound, a URL, or no graftpunk requirement) is left as it is, and they
+print a `Next:` line naming the floor and the requirement as found. Reinstall
+the project after either, so its environment has that graftpunk.
+
 A minimal CI workflow to start from, running the same gate:
 
 ```yaml
