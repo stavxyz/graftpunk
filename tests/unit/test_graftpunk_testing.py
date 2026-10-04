@@ -397,6 +397,35 @@ class TestCheckFixturesTree:
         assert problems[0] == f"sub: cannot be read ({os.strerror(errno.EACCES)})."
         assert problems[1].startswith("b_invoices.json: no sidecar")
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode directory")
+    def test_an_unlistable_tree_root_is_labelled_by_the_tree_not_a_dot(
+        self, tmp_path: Path
+    ) -> None:
+        """When the fixtures tree itself cannot be listed, the problem names
+        the tree (as the caller gave it), not the relative path ".", which
+        reads as the working directory rather than the fixtures tree."""
+        tmp_path.chmod(0o000)
+        try:
+            problems = check_fixtures_tree(tmp_path).problems
+        finally:
+            tmp_path.chmod(0o755)
+        assert problems == (f"{tmp_path}: cannot be read ({os.strerror(errno.EACCES)}).",)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 644-mode directory's entries")
+    def test_an_untraversable_tree_root_is_labelled_by_the_tree_not_a_dot(
+        self, tmp_path: Path
+    ) -> None:
+        """When the fixtures tree is listable but not searchable and holds a
+        fixture directly, the same "." mislabel happens by the other code
+        path (classifying the entry, not listing the directory)."""
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        tmp_path.chmod(0o644)
+        try:
+            problems = check_fixtures_tree(tmp_path).problems
+        finally:
+            tmp_path.chmod(0o755)
+        assert problems == (f"{tmp_path}: cannot be read ({os.strerror(errno.EACCES)}).",)
+
     def test_a_sidecar_of_unknown_schema_fails(self, tmp_path: Path) -> None:
         path = _fixture(tmp_path, "get_orders.json", b"{}", None)
         payload = json.loads(sidecar_text(Sidecar(status=200, content_type="x")))

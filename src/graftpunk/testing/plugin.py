@@ -102,6 +102,14 @@ def _missing_sidecar(relative: Path, sidecar_name: str) -> str:
     )
 
 
+def _label(tree: Path, relative: Path) -> Path:
+    """The path to name in a problem line: *tree* itself, as the caller gave
+    it, when *relative* is its own root (``Path(".")``, which otherwise
+    reads as the working directory rather than the fixtures tree); the
+    relative path for anything under it."""
+    return tree if relative == Path(".") else relative
+
+
 def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
     """The committed fixtures under *tree*, sorted, and one problem line for
     each directory that cannot be listed (no read permission) or whose
@@ -117,7 +125,7 @@ def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
 
     def onerror(exc: OSError) -> None:
         relative = Path(exc.filename).relative_to(tree)
-        problems.append(f"{relative}: cannot be read ({exc.strerror or exc}).")
+        problems.append(f"{_label(tree, relative)}: cannot be read ({exc.strerror or exc}).")
 
     for dirpath, dirnames, filenames in os.walk(tree, onerror=onerror):
         dirnames[:] = [name for name in dirnames if not name.startswith(".")]
@@ -137,7 +145,9 @@ def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
                 if exc.errno == errno.ELOOP:
                     # A dangling or looping symlink: not a fixture either.
                     continue
-                problems.append(f"{relative_dir}: cannot be read ({exc.strerror or exc}).")
+                problems.append(
+                    f"{_label(tree, relative_dir)}: cannot be read ({exc.strerror or exc})."
+                )
                 break
             if stat.S_ISREG(mode) and not is_sidecar(candidate):
                 fixtures.append(candidate)
