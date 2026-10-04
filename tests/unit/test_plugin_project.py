@@ -1173,9 +1173,11 @@ def test_every_probe_caller_is_covered_by_an_unfollowable_symlink_case() -> None
             continue
         prefix = f"test_{caller.lstrip('_')}_"
         matches = [name for name in case_names if name.startswith(prefix)]
-        assert any("locked" in name for name in matches) and any(
-            "loop" in name for name in matches
-        ), (
+        # Whole underscore-separated words, so "blocked" is not "locked", and
+        # two distinct cases, so one name holding both words is not both.
+        locked = {name for name in matches if "locked" in name.split("_")}
+        loops = {name for name in matches if "loop" in name.split("_")}
+        assert locked and loops and locked.isdisjoint(loops), (
             f"{caller} calls _probe directly but TestUnfollowableSymlink has no "
             f"locked-target case and loop case among {matches}; add both, named {prefix}..."
         )
