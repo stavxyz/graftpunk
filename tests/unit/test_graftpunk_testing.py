@@ -683,7 +683,22 @@ def test_graftpunk_testing_plugin_imports_nothing_from_devtools() -> None:
     assert result.stdout.strip() == "[]"
 
 
-_PROBE_ONLY_ATTRIBUTES = frozenset({"exists", "is_dir", "is_file", "is_symlink", "lstat", "stat"})
+_PROBE_ONLY_ATTRIBUTES = frozenset(
+    {
+        "exists",
+        "is_dir",
+        "is_file",
+        "is_symlink",
+        "lstat",
+        "stat",
+        "isdir",
+        "isfile",
+        "islink",
+        "lexists",
+        "is_junction",
+        "access",
+    }
+)
 
 
 def _calls_outside_stat_kind(tree: ast.Module) -> list[tuple[int, str]]:

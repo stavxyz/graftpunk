@@ -962,7 +962,22 @@ def test_the_reader_imports_neither_the_writer_nor_the_renderer() -> None:
     assert result.stdout.strip() == "[]"
 
 
-_PROBE_ONLY_ATTRIBUTES = frozenset({"exists", "is_dir", "is_file", "is_symlink", "lstat", "stat"})
+_PROBE_ONLY_ATTRIBUTES = frozenset(
+    {
+        "exists",
+        "is_dir",
+        "is_file",
+        "is_symlink",
+        "lstat",
+        "stat",
+        "isdir",
+        "isfile",
+        "islink",
+        "lexists",
+        "is_junction",
+        "access",
+    }
+)
 
 
 def _calls_outside_probe(tree: ast.Module) -> list[tuple[int, str]]:

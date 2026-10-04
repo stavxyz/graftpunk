@@ -103,7 +103,9 @@ def _probe(path: Path, detail: list[str] | None = None) -> PathKind:
     """What is at *path*, from ``path.lstat()``/``path.stat()`` inside
     ``try``/``except OSError``: the one place in this module allowed to call
     ``.exists()``, ``.is_dir()``, ``.is_file()``, ``.is_symlink()``,
-    ``.lstat()``, or ``.stat()``
+    ``.lstat()``, ``.stat()``, ``os.path.isdir()``, ``os.path.isfile()``,
+    ``os.path.islink()``, ``os.path.lexists()``, ``os.path.is_junction()``,
+    or ``os.access()``
     (``test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat``
     enforces it by AST), so every other "what is at this path" question in
     this module goes through this function.
