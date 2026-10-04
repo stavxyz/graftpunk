@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -338,6 +339,24 @@ class TestCheckFixturesTree:
         )
         _fixture(tmp_path, "post_session.json", b'{"ok": true}', sidecar)
         assert check_fixtures_tree(tmp_path).problems == ()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode file")
+    def test_an_unreadable_fixture_is_a_problem_and_the_check_goes_on(self, tmp_path: Path) -> None:
+        """A fixture the runner cannot read is one problem line, not a
+        PermissionError out of the check, and the fixtures after it are still
+        checked."""
+        unreadable = _fixture(
+            tmp_path, "a_orders.json", b"{}", Sidecar(status=200, content_type="x")
+        )
+        _fixture(tmp_path, "b_invoices.json", b"{}", None)
+        unreadable.chmod(0o000)
+        try:
+            problems = check_fixtures_tree(tmp_path).problems
+        finally:
+            unreadable.chmod(0o644)
+        assert len(problems) == 2
+        assert problems[0] == f"a_orders.json: cannot be read ({os.strerror(errno.EACCES)})."
+        assert problems[1].startswith("b_invoices.json: no sidecar")
 
     def test_a_sidecar_of_unknown_schema_fails(self, tmp_path: Path) -> None:
         path = _fixture(tmp_path, "get_orders.json", b"{}", None)

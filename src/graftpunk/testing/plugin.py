@@ -105,7 +105,8 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
 
     Catches a missing tree, a fixture with no sidecar, a sidecar outside its
     declared format (through the owner, :mod:`graftpunk.testing.sidecar`), a
-    fixture that is byte for byte its capture, and a flagged cookie or token name
+    fixture that cannot be read, a fixture that is byte for byte its capture,
+    and a flagged cookie or token name
     in a fixture or in its sidecar's other fields. It does not judge whether
     invented content is invented well. A sidecar with no capture hash is the
     author's declaration that the file came off no account; it is trusted, not
@@ -144,7 +145,11 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
         except SidecarError as exc:
             problems.append(f"{relative}: {exc}")
             continue
-        body = fixture.read_bytes()
+        try:
+            body = fixture.read_bytes()
+        except OSError as exc:
+            problems.append(f"{relative}: cannot be read ({exc.strerror or exc}).")
+            continue
         if sidecar.declared:
             declared += 1
         else:
