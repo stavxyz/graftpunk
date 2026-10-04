@@ -491,6 +491,37 @@ class TestCheckFixturesTree:
             (tmp_path / "priv").chmod(0o755)
         assert problems == (f"a.json.meta.json: cannot be read ({os.strerror(errno.EACCES)}).",)
 
+    def test_a_symlinked_fixtures_subdirectory_is_walked(self, tmp_path: Path) -> None:
+        """A per-plugin fixtures directory that is itself a symlink (into a
+        captures directory the developer pointed it at, say) is still
+        walked: the fixture inside it is checked like any other, not
+        silently skipped because the walk never follows the link."""
+        captures = tmp_path / "captures" / "myshop"
+        captures.mkdir(parents=True)
+        body = b'{"orders": [{"id": "1001"}]}'
+        _fixture(captures, "orders.json", body, _captured(body))
+        fixtures = tmp_path / "fixtures"
+        fixtures.mkdir()
+        (fixtures / "myshop").symlink_to(captures)
+        report = check_fixtures_tree(fixtures)
+        assert report.verified == 1
+        assert any("unchanged copy of its capture" in p for p in report.problems)
+
+    def test_a_symlink_cycle_under_the_tree_terminates_and_checks_once(
+        self, tmp_path: Path
+    ) -> None:
+        """Two symlinks pointing at the same real directory do not each get
+        walked (which would report its fixture's missing sidecar twice);
+        a stat-identity set lets only the first one through."""
+        real = tmp_path / "real"
+        real.mkdir()
+        _fixture(real, "get_orders.json", b"{}", None)
+        (tmp_path / "link_one").symlink_to(real)
+        (tmp_path / "link_two").symlink_to(real)
+        report = check_fixtures_tree(tmp_path)
+        no_sidecar = [p for p in report.problems if "get_orders.json: no sidecar" in p]
+        assert len(no_sidecar) == 1
+
     def test_a_dangling_symlink_and_a_loop_are_skipped_not_reported(self, tmp_path: Path) -> None:
         """Neither a dangling symlink nor a symlink loop is a fixture or a
         problem; only the real fixture's missing sidecar is reported."""

@@ -94,7 +94,11 @@ class FixturesTreeReport:
 PathKind = Literal["absent", "file", "dir", "other", "unreadable"]
 
 
-def _stat_kind(path: Path, detail: list[str] | None = None) -> PathKind:
+def _stat_kind(
+    path: Path,
+    detail: list[str] | None = None,
+    stat_result: list[os.stat_result] | None = None,
+) -> PathKind:
     """What is at *path*, from ``path.stat()`` (and ``path.lstat()`` where a
     symlink must be told apart from its unsearchable directory) inside
     ``try``/``except OSError``: the one place in this module allowed to call
@@ -122,9 +126,12 @@ def _stat_kind(path: Path, detail: list[str] | None = None) -> PathKind:
     is given and the result is the symlink-target form of ``"other"`` or is
     ``"unreadable"``, ``exc.strerror`` (or the exception itself when the
     platform gives none) is appended to it, so a caller that wants the
-    reason for a message does not stat *path* again."""
+    reason for a message does not stat *path* again. When *stat_result* is
+    given and the result is ``"dir"``, the ``os.stat_result`` itself is
+    appended to it, so a caller building a visited-directory set for cycle
+    detection (``(st_dev, st_ino)``) does not stat *path* again either."""
     try:
-        mode = path.stat().st_mode
+        found = path.stat()
     except (FileNotFoundError, NotADirectoryError):
         # A dangling symlink, or path (or a parent) gone between a caller's
         # listing and this stat: not a problem, just not there.
@@ -148,9 +155,11 @@ def _stat_kind(path: Path, detail: list[str] | None = None) -> PathKind:
         if detail is not None:
             detail.append(exc.strerror or str(exc))
         return "other"
-    if stat.S_ISDIR(mode):
+    if stat.S_ISDIR(found.st_mode):
+        if stat_result is not None:
+            stat_result.append(found)
         return "dir"
-    if stat.S_ISREG(mode):
+    if stat.S_ISREG(found.st_mode):
         return "file"
     return "other"
 
@@ -174,7 +183,7 @@ def _label(tree: Path, relative: Path) -> Path:
     return tree if relative == Path(".") else relative
 
 
-def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
+def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path], list[str]]:
     """The committed fixtures under *tree*, sorted, and one problem line for
     each directory that cannot be listed (no read permission) or whose
     entries cannot be told apart from a subdirectory (listed, but no search
@@ -187,18 +196,39 @@ def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
     itself still searchable, is that one entry's problem instead, and the
     walk goes on to its siblings. A dotfile (any path component starting
     with ``.``) is pruned before it is recursed into, so it and everything
-    under it are skipped."""
+    under it are skipped.
+
+    The walk follows a symlink to a directory (``followlinks=True``), so a
+    fixtures directory committed elsewhere and symlinked in (or a single
+    plugin's fixtures directory symlinked at a shared location) is still
+    walked, the same as a plain subdirectory. *tree_stat* (the caller's own
+    stat of *tree*, already taken to confirm it is a directory) seeds a set
+    of every directory's ``(st_dev, st_ino)`` visited so far; a dirnames
+    entry whose identity is already in that set, reached a second time
+    through a different symlink or a symlink cycle, is pruned before the
+    walk would recurse into it again."""
     problems: list[str] = []
     fixtures: list[Path] = []
+    visited = {(tree_stat.st_dev, tree_stat.st_ino)}
 
     def onerror(exc: OSError) -> None:
         relative = Path(exc.filename).relative_to(tree)
         problems.append(f"{_label(tree, relative)}: cannot be read ({exc.strerror or exc}).")
 
-    for dirpath, dirnames, filenames in os.walk(tree, onerror=onerror):
+    for dirpath, dirnames, filenames in os.walk(tree, onerror=onerror, followlinks=True):
         dirnames[:] = [name for name in dirnames if not name.startswith(".")]
         directory = Path(dirpath)
         relative_dir = directory.relative_to(tree)
+        kept_dirnames: list[str] = []
+        for name in dirnames:
+            child_stat: list[os.stat_result] = []
+            if _stat_kind(directory / name, stat_result=child_stat) == "dir" and child_stat:
+                identity = (child_stat[0].st_dev, child_stat[0].st_ino)
+                if identity in visited:
+                    continue
+                visited.add(identity)
+            kept_dirnames.append(name)
+        dirnames[:] = kept_dirnames
         for name in filenames:
             if name.startswith("."):
                 continue
@@ -243,7 +273,8 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     skipped.
     """
     tree_detail: list[str] = []
-    tree_kind = _stat_kind(tree, tree_detail)
+    tree_stat: list[os.stat_result] = []
+    tree_kind = _stat_kind(tree, tree_detail, tree_stat)
     if tree_kind != "dir":
         if tree_kind == "absent":
             message = (
@@ -257,7 +288,7 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
         else:
             message = f"{tree}: not a directory. Move it aside, then run gp plugin upgrade."
         return FixturesTreeReport(problems=(message,), verified=0, declared=0)
-    fixtures, problems = _collect_fixtures(tree)
+    fixtures, problems = _collect_fixtures(tree, tree_stat[0])
     verified = declared = 0
     for fixture in fixtures:
         relative = fixture.relative_to(tree)
