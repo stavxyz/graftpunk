@@ -1246,8 +1246,8 @@ def _render_conftest(spec: ScaffoldSpec) -> str:
 
     The imports alone plus assignments: naming the module in ``pytest_plugins`` as
     well would make pytest try to rewrite assertions in a module the import has
-    already loaded, which it reports as a warning on every run (final fix wave,
-    2026-09-12). Each assignment is what registers its fixture.
+    already loaded, which it reports as a warning on every run. Each assignment
+    is what registers its fixture.
     """
     scrubber = [
         *import_lines("graftpunk.testing.plugin", "site_env_scrubber"),
