@@ -391,7 +391,7 @@ class TestTheView:
         finally:
             src.chmod(0o755)
         assert str(excinfo.value) == (
-            "src/graftpunk_myshop/plugin.py: cannot be read (Permission denied)."
+            f"src/graftpunk_myshop/plugin.py: cannot be read ({os.strerror(errno.EACCES)})."
         )
 
     def test_a_module_path_that_is_a_directory_refuses_as_not_a_regular_file(
@@ -1012,19 +1012,33 @@ def test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -> No
 
 
 # Every phrase FINDING_ADVICE or unreadable_file_message keys on, named by its
-# own constant: the one vocabulary a message built in any of the three files
-# below is allowed to use, by interpolating the constant rather than retyping
-# the words.
-_GUARDED_PHRASES: dict[str, str] = {
-    "CANNOT_BE_READ": plugin_project_module.CANNOT_BE_READ,
-    "NOT_VALID_UTF8": plugin_project_module.NOT_VALID_UTF8,
-    "DOES_NOT_PARSE": plugin_project_module.DOES_NOT_PARSE,
-    "NOT_A_DIRECTORY_PHRASE": plugin_project_module.NOT_A_DIRECTORY_PHRASE,
-    "NOT_A_REGULAR_FILE_PHRASE": plugin_project_module.NOT_A_REGULAR_FILE_PHRASE,
-    "EXACTLY_ONE": plugin_project_module.EXACTLY_ONE,
-    "_CREATES_IT": plugin_check_module._CREATES_IT,
-    "_ADDS_IT": plugin_check_module._ADDS_IT,
+# own constant and the module that assigns it: the one vocabulary a message
+# built in any of the three files below is allowed to use, by interpolating
+# the constant rather than retyping the words.
+_GUARDED_PHRASES: dict[str, tuple[object, str]] = {
+    "CANNOT_BE_READ": (plugin_project_module, plugin_project_module.CANNOT_BE_READ),
+    "NOT_VALID_UTF8": (plugin_project_module, plugin_project_module.NOT_VALID_UTF8),
+    "DOES_NOT_PARSE": (plugin_project_module, plugin_project_module.DOES_NOT_PARSE),
+    "NOT_A_DIRECTORY_PHRASE": (
+        plugin_project_module,
+        plugin_project_module.NOT_A_DIRECTORY_PHRASE,
+    ),
+    "NOT_A_REGULAR_FILE_PHRASE": (
+        plugin_project_module,
+        plugin_project_module.NOT_A_REGULAR_FILE_PHRASE,
+    ),
+    "EXACTLY_ONE": (plugin_project_module, plugin_project_module.EXACTLY_ONE),
+    "GP_FILL_MARKER": (policy, policy.GP_FILL_MARKER),
+    "_CREATES_IT": (plugin_check_module, plugin_check_module._CREATES_IT),
+    "_ADDS_IT": (plugin_check_module, plugin_check_module._ADDS_IT),
 }
+
+
+def test_the_guarded_phrases_are_exactly_the_finding_advice() -> None:
+    """The guard below checks the phrases ``FINDING_ADVICE`` holds, no fewer: a
+    phrase added there without an entry here would go unguarded."""
+    guarded = {phrase for _owner, phrase in _GUARDED_PHRASES.values()}
+    assert guarded == set(plugin_check_module.FINDING_ADVICE)
 
 
 def _is_docstring(node: ast.Constant, tree: ast.Module) -> bool:
@@ -1044,19 +1058,23 @@ def _is_docstring(node: ast.Constant, tree: ast.Module) -> bool:
     return False
 
 
-def _phrase_violations(tree: ast.Module, phrases: dict[str, str]) -> list[tuple[int, str, str]]:
+def _phrase_violations(
+    tree: ast.Module, phrases: dict[str, str], owned: frozenset[str]
+) -> list[tuple[int, str, str]]:
     """Every string literal or f-string constant fragment in *tree* that
     contains one of *phrases*' values, as (line, name, text): excepting a
-    docstring (see :func:`_is_docstring`) and the literal that is that name's
-    own module-level assignment (``NAME = "...""``), which is the one place
-    each phrase is allowed to be spelled out."""
+    docstring (see :func:`_is_docstring`) and the literal of a module-level
+    ``NAME = "..."`` assignment of a name in *owned* (the names *tree*'s own
+    module assigns), which is the one place each phrase is allowed to be
+    spelled out. A same-named assignment anywhere else (a function body, or
+    another module shadowing an import) is a retyped copy, not the owner."""
     exempt_ids = {
         id(node.value)
-        for node in ast.walk(tree)
+        for node in tree.body
         if isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id in phrases
+        and node.targets[0].id in owned
         and isinstance(node.value, ast.Constant)
         and isinstance(node.value.value, str)
     }
@@ -1086,7 +1104,11 @@ def test_no_message_retypes_a_guarded_phrase(module: object) -> None:
     reworded: this is the test that would have failed on every retyped site
     before each was fixed to interpolate instead."""
     source = Path(module.__file__).read_text()  # type: ignore[attr-defined]
-    violations = _phrase_violations(ast.parse(source), _GUARDED_PHRASES)
+    phrases = {name: phrase for name, (_owner, phrase) in _GUARDED_PHRASES.items()}
+    owned = frozenset(
+        name for name, (owner, _phrase) in _GUARDED_PHRASES.items() if owner is module
+    )
+    violations = _phrase_violations(ast.parse(source), phrases, owned)
     assert violations == []
 
 
@@ -1151,9 +1173,11 @@ def test_every_probe_caller_is_covered_by_an_unfollowable_symlink_case() -> None
             continue
         prefix = f"test_{caller.lstrip('_')}_"
         matches = [name for name in case_names if name.startswith(prefix)]
-        assert len(matches) >= 2, (
-            f"{caller} calls _probe directly but TestUnfollowableSymlink has "
-            f"{len(matches)} case(s) named {prefix}...; add a locked-target case and a loop case"
+        assert any("locked" in name for name in matches) and any(
+            "loop" in name for name in matches
+        ), (
+            f"{caller} calls _probe directly but TestUnfollowableSymlink has no "
+            f"locked-target case and loop case among {matches}; add both, named {prefix}..."
         )
 
 
@@ -1264,8 +1288,9 @@ class TestUnfollowableSymlink:
         """The package directory itself (an ancestor of every candidate, not
         a candidate's leaf) is the unfollowable symlink here, which
         ``_blocked_path`` folds into ``NOT_A_DIRECTORY`` before ``_module_file``
-        sees it; the fix re-probes the blocking ancestor so the refusal still
-        carries the reason instead of a false "exists but is not a directory"."""
+        sees it; ``_module_file`` re-probes the blocking ancestor so the
+        refusal still carries the reason instead of a false "exists but is
+        not a directory"."""
         (tmp_path / "pyproject.toml").write_text(_HAND_WRITTEN_PYPROJECT)
         (tmp_path / "src").mkdir()
         package = tmp_path / "src" / "graftpunk_myshop"
