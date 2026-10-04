@@ -17,6 +17,7 @@ from structlog.testing import capture_logs
 from typer.testing import CliRunner
 
 from graftpunk.cli.scaffold_commands import plugin_app
+from graftpunk.har.parser import HARParseError, parse_har_file
 from graftpunk.logging import configure_logging
 from graftpunk.testing.sidecar import Sidecar, load_sidecar, sidecar_text
 from tests.unit.cli_harness import strip_ansi
@@ -153,20 +154,24 @@ class TestPluginNewHappyPath:
     ) -> None:
         """An interrupted recording: the run directory exists but network.har does
         not, so digest()'s FileNotFoundError must not reach the terminal as a
-        traceback."""
+        traceback. The parser's own message already names the path once; the
+        CLI must not name it again."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         run_dir = observe_base / "myshop" / "run-1"
         run_dir.mkdir(parents=True)
+        har = run_dir / "network.har"
         target = tmp_path / "out"
         before = set(tmp_path.iterdir())
+        with pytest.raises(FileNotFoundError) as caught:
+            parse_har_file(har)
         result = runner.invoke(
             _build_app(),
             ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
         )
         assert result.exit_code == 1, result.output
         (line,) = strip_ansi(result.output).strip().splitlines()
-        assert str(run_dir / "network.har") in line
+        assert line == f"Could not read the recording: {caught.value}"
         assert set(tmp_path.iterdir()) == before
 
     @pytest.mark.usefixtures("gp_logging")
@@ -181,13 +186,38 @@ class TestPluginNewHappyPath:
         har.write_bytes(b"\xff\xfe")
         target = tmp_path / "out"
         before = set(tmp_path.iterdir())
+        with pytest.raises(HARParseError) as caught:
+            parse_har_file(har)
         result = runner.invoke(
             _build_app(),
             ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
         )
         assert result.exit_code == 1, result.output
         (line,) = strip_ansi(result.output).strip().splitlines()
-        assert str(har) in line
+        assert line == f"Could not read the recording: {caught.value}"
+        assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.usefixtures("gp_logging")
+    def test_a_har_path_that_is_a_directory_is_refused_naming_it_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        har = run_dir / "network.har"
+        har.mkdir()
+        target = tmp_path / "out"
+        before = set(tmp_path.iterdir())
+        with pytest.raises(HARParseError) as caught:
+            parse_har_file(har)
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert line == f"Could not read the recording: {caught.value}"
         assert set(tmp_path.iterdir()) == before
 
 

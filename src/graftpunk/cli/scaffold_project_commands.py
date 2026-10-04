@@ -72,7 +72,7 @@ def plugin_add_command(
     except (FileNotFoundError, HARParseError) as exc:
         LOG.debug("add_command_refused", reason="digest_load_error", har_path=str(source.har_path))
         console.print(
-            f"[red]Could not read {escape(str(source.har_path))}: {escape(str(exc))}[/red]",
+            f"[red]Could not read the recording: {escape(str(exc))}[/red]",
             soft_wrap=True,
         )
         raise typer.Exit(1) from None

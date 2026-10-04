@@ -19,6 +19,7 @@ from graftpunk.cli.main import app
 from graftpunk.devtools.plugin_info import PluginDefectRefusal, info_payload
 from graftpunk.devtools.plugin_project import PluginDefect, ProjectView, read_project
 from graftpunk.devtools.scaffold.policy import PROJECT_REQUIREMENTS
+from graftpunk.har.parser import HARParseError, parse_har_file
 
 runner = CliRunner()
 
@@ -1101,23 +1102,40 @@ class TestAddCommand:
     def test_an_empty_run_directory_is_refused_naming_the_har_path(self, recorded: Path) -> None:
         """An interrupted recording: the run directory exists but network.har does
         not, so digest()'s FileNotFoundError must not reach the terminal as a
-        traceback."""
+        traceback. The parser's own message already names the path once; the
+        CLI must not name it again."""
         _new(recorded, "myshop", "orders=GET /api/orders")
         har = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
         har.unlink()
+        with pytest.raises(FileNotFoundError) as caught:
+            parse_har_file(har)
         result = _add(recorded, "myshop", "invoices=GET /api/invoices")
         assert result.exit_code == 1, result.output
         (line,) = _plain(result.output).strip().splitlines()
-        assert str(har) in line
+        assert line == f"Could not read the recording: {caught.value}"
 
     def test_a_non_utf8_har_is_refused_naming_the_har_path(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
         har = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
         har.write_bytes(b"\xff\xfe")
+        with pytest.raises(HARParseError) as caught:
+            parse_har_file(har)
         result = _add(recorded, "myshop", "invoices=GET /api/invoices")
         assert result.exit_code == 1, result.output
         (line,) = _plain(result.output).strip().splitlines()
-        assert str(har) in line
+        assert line == f"Could not read the recording: {caught.value}"
+
+    def test_a_har_path_that_is_a_directory_is_refused_naming_it_once(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        har = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
+        har.unlink()
+        har.mkdir()
+        with pytest.raises(HARParseError) as caught:
+            parse_har_file(har)
+        result = _add(recorded, "myshop", "invoices=GET /api/invoices")
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line == f"Could not read the recording: {caught.value}"
 
 
 def _project_lacking_the_wiring(root: Path) -> Path:
