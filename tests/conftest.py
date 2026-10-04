@@ -82,10 +82,17 @@ def _reset_structlog():
     the test, CliRunner closes the file. We reset structlog to prevent stale
     references.
 
+    It also resets before each test: importing ``graftpunk.cli.main`` (which
+    test collection does) runs ``configure_logging()``, so without this the
+    first test on each xdist worker sees the CLI's configuration while every
+    later test sees structlog's defaults, and a test that reads structlog's
+    default stdout output passes or fails by which worker ran it first.
+
     Note: With cache_logger_on_first_use=False (our current setting), the
     bind-cache clearing loop below is no longer strictly necessary, but we
     keep it as defense-in-depth in case caching is re-enabled.
     """
+    structlog.reset_defaults()
     yield
     structlog.reset_defaults()
     for module in list(sys.modules.values()):
