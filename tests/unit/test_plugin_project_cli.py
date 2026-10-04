@@ -570,6 +570,34 @@ _HAND_WRITTEN_BACKSLASH_CONTINUATION_CLASS = (
     '    site_name = "myshop"\n'
 )
 
+_HAND_WRITTEN_PAREN_BACKSLASH_HEADER_CLASS = (
+    '"""myshop plugin."""\n'
+    "\n"
+    "from __future__ import annotations\n"
+    "\n"
+    "from graftpunk.plugins import SitePlugin\n"
+    "\n"
+    "\n"
+    "class MyshopPlugin(\\\n"
+    "    SitePlugin\n"
+    "):\n"
+    '    site_name = "myshop"\n'
+    '    base_url = "https://myshop.example"\n'
+)
+
+_HAND_WRITTEN_COMMENT_BACKSLASH_HEADER_CLASS = (
+    '"""myshop plugin."""\n'
+    "\n"
+    "from __future__ import annotations\n"
+    "\n"
+    "from graftpunk.plugins import SitePlugin\n"
+    "\n"
+    "\n"
+    "class MyshopPlugin(SitePlugin):  # windows path C:\\\n"
+    '    site_name = "myshop"\n'
+    '    base_url = "https://myshop.example"\n'
+)
+
 _HAND_WRITTEN_WITH_TRAILING_COMMENT = """\
 \"\"\"myshop plugin.\"\"\"
 
@@ -865,6 +893,41 @@ class TestAddCommand:
             "by hand."
         ]
         assert module.read_bytes() == before
+
+    def test_a_redundant_backslash_inside_the_headers_parens_still_inserts(
+        self, recorded: Path
+    ) -> None:
+        """`class MyshopPlugin(\\` then `    SitePlugin` then `):` then an
+        indented body on its own line: the backslash is redundant (the open
+        paren already continues the line) and never joins the body to the
+        header, so this is an ordinary multi-line class the inserter must
+        accept, not a one-line-body refusal."""
+        module = _hand_written_project(
+            recorded, module_text=_HAND_WRITTEN_PAREN_BACKSLASH_HEADER_CLASS
+        )
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        text = module.read_text()
+        assert "def orders(" in text
+        # Not _ruff_clean: the redundant backslash inside the header's own
+        # parens is this test's point and ruff format would rewrite it away,
+        # which has nothing to do with whether the stub was placed correctly.
+        ast.parse(text)
+
+    def test_a_comment_ending_in_backslash_still_inserts(self, recorded: Path) -> None:
+        """A comment on the header line ending in `\\` (e.g. a Windows path)
+        is not a line continuation; the body still begins its own line below
+        it, so this must insert, not refuse with a false "body starts on the
+        class header's line" message."""
+        module = _hand_written_project(
+            recorded, module_text=_HAND_WRITTEN_COMMENT_BACKSLASH_HEADER_CLASS
+        )
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        text = module.read_text()
+        assert "def orders(" in text
+        ast.parse(text)
+        _ruff_clean(recorded)
 
     def test_a_decorated_helper_and_a_main_block_below_the_class_stay_below_it(
         self, recorded: Path

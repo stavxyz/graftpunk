@@ -15,6 +15,8 @@ stub, the imports the rendered stub says it references, and nothing else.
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,6 +119,36 @@ def _group_names(plugin: PluginView) -> set[str]:
     return names
 
 
+def _body_starts_new_line(original: str, klass: ast.ClassDef) -> bool:
+    """Whether a ``NEWLINE`` token (the end of the header's own logical line)
+    lies between the class header's depth-zero colon and the first token of
+    ``klass.body[0]``: the only shape the inserter can re-indent a stub into.
+    Decided from tokens, not text, so a redundant backslash inside the
+    header's parentheses (already implied by the open paren) and one ending
+    a trailing comment never read as a real continuation: neither emits a
+    token the tokenizer treats as joining two lines, and a ``NEWLINE`` still
+    separates the header from the body in both cases."""
+    header_start = (klass.lineno, klass.col_offset)
+    body_start = (klass.body[0].lineno, klass.body[0].col_offset)
+    depth = 0
+    seen_header_colon = False
+    for tok in tokenize.generate_tokens(io.StringIO(original).readline):
+        if tok.start < header_start:
+            continue
+        if tok.start >= body_start:
+            break
+        if tok.type == tokenize.OP:
+            if tok.string in "([{":
+                depth += 1
+            elif tok.string in ")]}":
+                depth -= 1
+            elif tok.string == ":" and depth == 0:
+                seen_header_colon = True
+        elif seen_header_colon and tok.type == tokenize.NEWLINE:
+            return True
+    return False
+
+
 def _layout_refusal(module_path: str) -> str:
     """The one-line refusal for a class whose body shares a line with its
     header: the stub inserter only knows how to re-indent a stub to an
@@ -187,19 +219,7 @@ def add_command(
     lines = source_lines(original)
     first_body_line = lines[klass.body[0].lineno - 1]
     indent_unit = first_body_line[: len(first_body_line) - len(first_body_line.lstrip(" \t"))]
-    joined_by_backslash = any(
-        lines[number - 1].endswith("\\") for number in range(klass.lineno, klass.body[0].lineno)
-    )
-    if joined_by_backslash or first_body_line[: klass.body[0].col_offset].strip():
-        # Header text precedes the body's first statement on its own line:
-        # the `class` keyword's own line (a one-line class), an unindented
-        # `):` line, or an indented `):` line all have something other than
-        # whitespace before the statement starts; a body that begins its own
-        # line never does, whatever that line's indent. A backslash
-        # continuation joining the header's line (or a line between it and
-        # the body) to the body's physical line is the same shape in
-        # disguise: the body's own line can be all whitespace before its
-        # statement starts and still not begin a fresh logical line.
+    if not _body_starts_new_line(original, klass):
         raise CommandInsertError(_layout_refusal(plugin.module_path))
     rendered = render_command(command, d)
     stub_lines = _reindented(rendered.lines, indent_unit)
