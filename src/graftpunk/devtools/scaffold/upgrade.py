@@ -13,7 +13,6 @@ reads), so the two consumers cannot disagree.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,12 +61,13 @@ class UpgradeApplied:
 
 
 def _refuse_unless_directory(path: Path, root: Path) -> None:
-    """Refuse in one line when *path* exists (``os.path.lexists``, so a
-    dangling symlink counts) but is not a directory: this function is about to
-    write inside it (a requirement's parent directory, or the fixtures tree
-    itself), and a dangling symlink there is no more writable into than a
-    plain file."""
-    if os.path.lexists(path) and not path.is_dir():
+    """Refuse in one line when *path* exists (a plain file or directory, or a
+    symlink of either kind, dangling included: ``is_symlink() or exists()``
+    is ``os.path.lexists`` without the extra import) but is not a directory:
+    this function is about to write inside it (a requirement's parent
+    directory, or the fixtures tree itself), and a dangling symlink there is
+    no more writable into than a plain file."""
+    if (path.is_symlink() or path.exists()) and not path.is_dir():
         raise UpgradeRefusedError(f"{path.relative_to(root)}: {NOT_A_DIRECTORY}")
 
 
