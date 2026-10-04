@@ -14,6 +14,7 @@ from types import MappingProxyType
 
 import pytest
 
+from graftpunk.devtools import plugin_project as plugin_project_module
 from graftpunk.devtools.plugin_project import (
     CommandView,
     NotAPluginProjectError,
@@ -345,19 +346,46 @@ class TestTheView:
             locked.chmod(0o644)
         assert all(path != "tests/locked.py" for path, _ in view.test_markers)
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 600-mode directory")
+    def test_test_markers_skips_a_module_in_an_unlistable_subdirectory(
+        self, tmp_path: Path
+    ) -> None:
+        """tests/sub at 0o600 is listable (read bit) but not traversable (no
+        execute bit): rglob finds test_a.py by name, but stat-ing it to
+        check is_file() used to raise PermissionError. It is skipped, not
+        raised, the same as an unreadable file; the plugin module's own
+        markers still read."""
+        _generate(tmp_path)
+        sub = tmp_path / "tests" / "sub"
+        sub.mkdir()
+        (sub / "test_a.py").write_text("# GP-FILL: unreachable\n")
+        sub.chmod(0o600)
+        try:
+            view = read_project(tmp_path)
+        finally:
+            sub.chmod(0o755)
+        assert all(path != "tests/sub/test_a.py" for path, _ in view.test_markers)
+        (plugin,) = view.plugins
+        assert plugin.markers
+
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
     def test_a_src_with_no_execute_bit_refuses_in_one_line(self, tmp_path: Path) -> None:
         """chmod 000 denies even traversing into src/, so the plugin module
         itself cannot be reached; the reader must refuse in one line, not
-        leak the PermissionError as a traceback."""
+        leak the PermissionError as a traceback. The module exists; the
+        refusal must say "cannot be read", never "neither ... exists" (which
+        would be false)."""
         _generate(tmp_path)
         src = tmp_path / "src"
         src.chmod(0o000)
         try:
-            with pytest.raises(PluginProjectError):
+            with pytest.raises(PluginProjectError) as excinfo:
                 read_project(tmp_path)
         finally:
             src.chmod(0o755)
+        assert str(excinfo.value) == (
+            "src/graftpunk_myshop/plugin.py: cannot be read (Permission denied)."
+        )
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root lists a 300-mode directory")
     def test_an_unlistable_src_contributes_no_first_party_names(self, tmp_path: Path) -> None:
@@ -372,6 +400,25 @@ class TestTheView:
         finally:
             src.chmod(0o755)
         assert "graftpunk_myshop" not in view.first_party_packages
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_a_root_level_symlink_into_an_unreadable_directory_is_skipped(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """A top-level entry can be a symlink whose target sits under a
+        directory without its execute bit: entry.is_dir() used to follow it
+        and raise PermissionError; the probe must read it the same as any
+        other path it cannot stat, contributing no name, not a traceback."""
+        _generate(tmp_path)
+        locked = tmp_path_factory.mktemp("locked")
+        (locked / "inner").mkdir()
+        locked.chmod(0o000)
+        (tmp_path / "shared").symlink_to(locked / "inner")
+        try:
+            view = read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert "shared" not in view.first_party_packages
 
     def test_known_first_party_from_the_new_isort_table_changes_placement(
         self, tmp_path: Path
@@ -848,3 +895,51 @@ def test_the_reader_imports_neither_the_writer_nor_the_renderer() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=60, check=True
     )
     assert result.stdout.strip() == "[]"
+
+
+_PROBE_ONLY_ATTRIBUTES = frozenset({"exists", "is_dir", "is_file", "is_symlink", "lstat", "stat"})
+
+
+def _calls_outside_probe(tree: ast.Module) -> list[tuple[int, str]]:
+    """Every call in *tree* to one of ``_PROBE_ONLY_ATTRIBUTES``, as (line, name),
+    whose nearest enclosing function is not named ``_probe``: a second filesystem
+    presence/kind check sitting outside the one probe plugin_project.py allows."""
+    violations: list[tuple[int, str]] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            is_probe_only_call = (
+                isinstance(node.func, ast.Attribute) and node.func.attr in _PROBE_ONLY_ATTRIBUTES
+            )
+            if is_probe_only_call and (not self.stack or self.stack[-1] != "_probe"):
+                violations.append((node.lineno, node.func.attr))
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    return violations
+
+
+def test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -> None:
+    """``_probe`` is the one place in this module allowed to ask the filesystem
+    what is at a path; a later edit that adds a second ``.exists()``,
+    ``.is_dir()``, ``.is_file()``, ``.is_symlink()``, ``.lstat()``, or
+    ``.stat()`` call anywhere else reintroduces the PermissionError-as-traceback
+    bug an untraversable ancestor used to cause at every site that asked a
+    filesystem question of its own, so this test fails loudly on it rather
+    than waiting for a reviewer to find it by hand again."""
+    source = Path(plugin_project_module.__file__).read_text()
+    violations = _calls_outside_probe(ast.parse(source))
+    assert violations == []

@@ -247,7 +247,9 @@ class TestFindings:
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
     def test_an_unreadable_src_refuses_without_a_traceback(self, tmp_path: Path) -> None:
         """gp plugin info --json and gp plugin check both name a clean refusal
-        when src/ cannot be traversed, never a PermissionError traceback."""
+        when src/ cannot be traversed, never a PermissionError traceback, and
+        the refusal says "cannot be read" (the module exists; a "neither ...
+        exists" refusal would be false)."""
         _clean_project(tmp_path)
         src = tmp_path / "src"
         src.chmod(0o000)
@@ -260,8 +262,69 @@ class TestFindings:
             )
         finally:
             src.chmod(0o755)
+        expected = "src/graftpunk_myshop/plugin.py: cannot be read (Permission denied)."
         assert info_result.exit_code == 1, info_result.output
+        assert expected in info_result.output
         assert check_result.exit_code == 1, check_result.output
+        assert expected in check_result.output
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000/600-mode directory")
+    @pytest.mark.parametrize("mode", [0o000, 0o600])
+    def test_an_untraversable_tests_dir_refuses_in_one_line_everywhere(
+        self, tmp_path: Path, mode: int
+    ) -> None:
+        """tests/ without its execute bit cannot be entered to reach
+        tests/fixtures, whether or not it is also unreadable (0o000) or
+        readable-but-not-traversable (0o600). gp plugin check and gp plugin
+        upgrade both read fixtures_tree_blocked and must name it in one line,
+        never a PermissionError traceback, and must agree; gp plugin info
+        --json does not read that fact at all, so it reads the rest of the
+        project cleanly, with no traceback either."""
+        _clean_project(tmp_path)
+        tests_dir = tmp_path / "tests"
+        tests_dir.chmod(mode)
+        try:
+            check_result = runner.invoke(
+                app, ["plugin", "check", "--dir", str(tmp_path)], catch_exceptions=False
+            )
+            info_result = runner.invoke(
+                app, ["plugin", "info", "--json", "--dir", str(tmp_path)], catch_exceptions=False
+            )
+            upgrade_result = runner.invoke(
+                app, ["plugin", "upgrade", "--dir", str(tmp_path)], catch_exceptions=False
+            )
+        finally:
+            tests_dir.chmod(0o755)
+        expected = "tests: cannot be read (Permission denied)"
+        assert check_result.exit_code == 1, check_result.output
+        assert expected in check_result.output
+        assert info_result.exit_code == 0, info_result.output
+        assert upgrade_result.exit_code == 1, upgrade_result.output
+        assert expected in upgrade_result.output
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 600-mode directory")
+    def test_a_project_dir_with_no_execute_bit_refuses_naming_pyproject(
+        self, tmp_path: Path
+    ) -> None:
+        """A project directory at 0o600 stats fine on its own (no execute bit
+        needed to stat a path, only to list into it), so the "is this even a
+        directory" guard does not catch it; the first read that must enter
+        it (pyproject.toml) has to refuse in one line instead of raising."""
+        project = tmp_path / "proj"
+        _clean_project(project)
+        project.chmod(0o600)
+        try:
+            result = runner.invoke(
+                app,
+                ["plugin", "info", "--json", "--dir", str(project)],
+                catch_exceptions=False,
+            )
+        finally:
+            project.chmod(0o755)
+        assert result.exit_code == 1, result.output
+        assert f"{project / 'pyproject.toml'}: cannot be read (Permission denied)." in (
+            result.output
+        )
 
 
 def test_the_three_consumers_follow_the_declaration(

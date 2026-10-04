@@ -18,8 +18,8 @@ A reader: it imports neither ``graftpunk.devtools.scaffold.write`` nor
 from __future__ import annotations
 
 import ast
-import os
 import re
+import stat
 import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -55,6 +55,7 @@ __all__ = [
 
 DirectoryKind = Literal["empty", "plugin", "foreign"]
 RequirementState = Literal["bound", "unbound", "unreadable"]
+PathKind = Literal["absent", "file", "dir", "other", "unreadable"]
 
 # Shared between gp plugin check (a Finding's message) and gp plugin upgrade
 # (a refusal), so the two consumers of the one reader fact never describe the
@@ -76,29 +77,88 @@ def unreadable_file_message(reason: str) -> str:
     return f"{reason}; gp plugin upgrade can add its wiring once it parses."
 
 
-def _blocked_path(root: Path, relative: str, *, kind: Literal["directory", "file"]) -> str | None:
+def _probe(path: Path, detail: list[str] | None = None) -> PathKind:
+    """What is at *path*, from ``path.lstat()``/``path.stat()`` inside
+    ``try``/``except OSError``: the one place in this module allowed to call
+    ``.exists()``, ``.is_dir()``, ``.is_file()``, ``.is_symlink()``,
+    ``.lstat()``, or ``.stat()`` (``test_only_probe_calls_lstat_or_stat``
+    enforces it by AST), so every other "what is at this path" question in
+    this module goes through this function.
+
+    ``"absent"``: *path*, or a component of it, plainly does not exist
+    (``FileNotFoundError`` or ``NotADirectoryError``). ``"dir"`` or
+    ``"file"``: a directory or a regular file, a symlink to one included.
+    ``"other"``: anything else that exists, including a symlink whose target
+    is absent or whose own kind is neither (a socket, a FIFO, a device).
+    ``"unreadable"``: any other ``OSError`` probing it, most often a
+    permission error on an ancestor without its execute bit. When *detail* is
+    given and the result is ``"unreadable"``, ``exc.strerror`` (or the
+    exception itself when the platform gives none) is appended to it, so a
+    caller that wants the reason for a message does not stat *path* again."""
+    try:
+        linked = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return "absent"
+    except OSError as exc:
+        if detail is not None:
+            detail.append(exc.strerror or str(exc))
+        return "unreadable"
+    if stat.S_ISLNK(linked.st_mode):
+        try:
+            found = path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            return "other"
+        except OSError as exc:
+            if detail is not None:
+                detail.append(exc.strerror or str(exc))
+            return "unreadable"
+    else:
+        found = linked
+    if stat.S_ISDIR(found.st_mode):
+        return "dir"
+    if stat.S_ISREG(found.st_mode):
+        return "file"
+    return "other"
+
+
+def _blocked_path(
+    root: Path, relative: str, *, kind: Literal["directory", "file"]
+) -> tuple[str, str] | None:
     """Whether project-relative *relative* can be read as *kind*: ``None`` when
     nothing blocks it (every ancestor is a directory, and *relative* itself is
-    either missing outright or matches *kind*), or the first project-relative
-    path component (no trailing slash) that blocks it: an ancestor that
-    ``os.path.lexists`` (so a dangling symlink counts as existing) but is not a
-    directory, or *relative* itself when it exists but is not *kind*, including
-    a symlink of any kind that does not resolve."""
+    either missing outright or matches *kind*), or ``(path, reason)`` for the
+    first project-relative path component (no trailing slash) that blocks it:
+    an ancestor that exists but is not a directory (*reason* is
+    ``NOT_A_DIRECTORY``), *relative* itself when it exists but is not *kind*
+    (including a symlink of any kind that does not resolve; *reason* is
+    ``NOT_A_DIRECTORY`` or ``NOT_A_REGULAR_FILE``), or an ancestor an
+    ``OSError`` other than "missing" makes untraversable (*reason* names
+    ``exc.strerror``). ``stat`` needs no execute bit on *current* itself, only
+    on each directory above it, so a probe of ``root/a/b`` that fails this way
+    blames ``a`` (the last component already confirmed a directory), never
+    ``a/b`` (which was never reached): the one component shallower than
+    whichever probe first raised."""
     parts = [part for part in relative.split("/") if part]
     current = root
     consumed: list[str] = []
     for index, part in enumerate(parts):
         current = current / part
         consumed.append(part)
-        if not os.path.lexists(current):
+        detail: list[str] = []
+        found = _probe(current, detail)
+        if found == "absent":
             return None
+        if found == "unreadable":
+            blamed = consumed[:-1] or consumed
+            return "/".join(blamed), f"cannot be read ({detail[0]})"
         if index < len(parts) - 1:
-            if not current.is_dir():
-                return "/".join(consumed)
+            if found != "dir":
+                return "/".join(consumed), NOT_A_DIRECTORY
         else:
-            matches = current.is_dir() if kind == "directory" else current.is_file()
-            if not matches:
-                return "/".join(consumed)
+            wanted: PathKind = "dir" if kind == "directory" else "file"
+            if found != wanted:
+                reason = NOT_A_DIRECTORY if kind == "directory" else NOT_A_REGULAR_FILE
+                return "/".join(consumed), reason
     return None
 
 
@@ -225,12 +285,14 @@ class ProjectView:
     ``fixtures_tree_present`` is whether ``root / policy.FIXTURES_TREE`` is a
     directory, read once here so ``gp plugin check`` and ``gp plugin upgrade``
     take the same answer from the same place and cannot disagree.
-    ``fixtures_tree_blocked`` is ``None`` when nothing blocks it, or the
-    project-relative path (no trailing slash) that does: the tree itself (a
-    regular file or a dangling symlink there), or an ancestor (``tests``
-    itself being a file, most likely). A reader fact distinct from "missing",
-    so neither consumer tells an author gp plugin upgrade will create a path
-    it is actually going to refuse.
+    ``fixtures_tree_blocked`` is ``None`` when nothing blocks it, or
+    ``(path, reason)`` for the project-relative path (no trailing slash) that
+    does: the tree itself (a regular file or a dangling symlink there), or an
+    ancestor (``tests`` itself being a file, or unreadable, most likely).
+    *reason* is ``NOT_A_DIRECTORY`` or "cannot be read (<strerror>)", the same
+    text :func:`unreadable_file_message` turns into a finding or a refusal. A
+    reader fact distinct from "missing", so neither consumer tells an author
+    gp plugin upgrade will create a path it is actually going to refuse.
 
     ``first_party_packages`` is read once here, by the same rule ruff's own
     default (``src = [".", "src"]``) uses to decide a module is first party:
@@ -257,7 +319,7 @@ class ProjectView:
     requirement_set: tuple[ProjectRequirement, ...]
     test_markers: tuple[tuple[str, int], ...]
     fixtures_tree_present: bool
-    fixtures_tree_blocked: str | None = None
+    fixtures_tree_blocked: tuple[str, str] | None = None
     first_party_packages: frozenset[str] = frozenset()
 
     def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
@@ -317,10 +379,14 @@ class NotAPluginProjectError(DevtoolsRefusal, ValueError):
 
 def _load_pyproject(root: Path) -> dict[str, Any] | None:
     path = root / "pyproject.toml"
-    if _blocked_path(root, "pyproject.toml", kind="file") is not None:
-        raise PluginProjectError(f"{path}: {NOT_A_REGULAR_FILE}.")
-    if not path.exists():
+    detail: list[str] = []
+    kind = _probe(path, detail)
+    if kind == "unreadable":
+        raise PluginProjectError(f"{path}: cannot be read ({detail[0]}).")
+    if kind == "absent":
         return None
+    if kind != "file":
+        raise PluginProjectError(f"{path}: {NOT_A_REGULAR_FILE}.")
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -363,9 +429,13 @@ def _require_directory(root: Path) -> None:
     guard both of the reader's public entry points, :func:`classify` and
     :func:`read_project`, apply first, so a mistyped ``--dir`` cannot read as
     an empty project through one of them and a refusal through the other."""
-    if not root.exists():
+    detail: list[str] = []
+    kind = _probe(root, detail)
+    if kind == "absent":
         raise PluginProjectError(f"{root}: no such directory.")
-    if not root.is_dir():
+    if kind == "unreadable":
+        raise PluginProjectError(f"{root}: cannot be read ({detail[0]}).")
+    if kind != "dir":
         raise PluginProjectError(f"{root}: not a directory.")
 
 
@@ -409,8 +479,8 @@ def read_project(root: Path) -> ProjectView:
     _require_directory(root)
     data = _load_pyproject(root)
     fixtures_tree = root / policy.FIXTURES_TREE
-    fixtures_tree_present = fixtures_tree.is_dir()
     fixtures_tree_blocked = _blocked_path(root, policy.FIXTURES_TREE, kind="directory")
+    fixtures_tree_present = fixtures_tree_blocked is None and _probe(fixtures_tree) == "dir"
     first_party_packages = _first_party_packages(root, data)
     if data is None:
         return ProjectView(
@@ -494,7 +564,7 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
     per-plugin derivation left in the set, so ruff never matched it."""
     names: set[str] = set()
     for base in (root, root / "src"):
-        if not base.is_dir():
+        if _probe(base) != "dir":
             continue
         try:
             entries = tuple(base.iterdir())
@@ -506,7 +576,12 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
         for entry in entries:
             if entry.name.startswith("."):
                 continue
-            if entry.is_dir():
+            kind = _probe(entry)
+            if kind == "unreadable":
+                # A path ruff itself cannot stat contributes no names, the
+                # same rule the directory-level OSError above follows.
+                continue
+            if kind == "dir":
                 if entry.name not in _SKIPPED_ROOT_DIR_NAMES and entry.name.isidentifier():
                     names.add(entry.name)
             elif entry.suffix == ".py":
@@ -543,20 +618,27 @@ def _known_first_party(data: dict[str, Any] | None) -> frozenset[str]:
 
 
 def _module_file(root: Path, module: str) -> str | None:
+    """The first candidate path (src layout, then flat) that is a regular
+    file, or ``None`` when none is: the caller then refuses, naming the
+    entry point, since no candidate exists at all. A directory on the way
+    that cannot even be traversed (no execute bit) does not read as "not
+    here": the first such candidate is remembered, and when no candidate is
+    ever found to exist, it is raised directly, naming the module and the
+    reason, rather than told apart from a module that plainly is not there."""
     relative = module.replace(".", "/")
+    first_error: tuple[str, str] | None = None
     for base in _SOURCE_ROOTS:
         for candidate in (f"{relative}.py", f"{relative}/__init__.py"):
             path = Path(base) / candidate
-            try:
-                found = (root / path).is_file()
-            except OSError:
-                # A directory on the way that cannot even be traversed (no
-                # execute bit) reads as "not here", the same as a path that
-                # plainly does not exist: _read_plugin's caller still refuses
-                # in one line, naming the entry point.
-                continue
-            if found:
+            detail: list[str] = []
+            kind = _probe(root / path, detail)
+            if kind == "file":
                 return path.as_posix()
+            if kind == "unreadable" and first_error is None:
+                first_error = (path.as_posix(), detail[0])
+    if first_error is not None:
+        candidate_path, reason = first_error
+        raise PluginProjectError(f"{candidate_path}: cannot be read ({reason}).")
     return None
 
 
@@ -606,13 +688,13 @@ def _test_markers(root: Path) -> tuple[tuple[str, int], ...]:
     dotfile or a dotdir, which covers ``.venv``) or that is ``__pycache__``,
     ``venv``, or ``node_modules`` is never a test module and is skipped."""
     tests_dir = root / policy.TESTS_DIR
-    if not tests_dir.is_dir():
+    if _probe(tests_dir) != "dir":
         return ()
     found: list[tuple[str, int]] = []
     candidates = sorted(
         p
         for p in tests_dir.rglob("*.py")
-        if p.is_file()
+        if _probe(p) == "file"
         and not any(
             part.startswith(".") or part in _SKIPPED_TEST_DIR_NAMES
             for part in p.relative_to(tests_dir).parts
@@ -848,11 +930,12 @@ def _parse_requirement_file(root: Path, relative: str) -> ast.Module | Requireme
     parse."""
     blocked = _blocked_path(root, relative, kind="file")
     if blocked is not None:
-        if blocked == relative:
-            return RequirementStatus("unreadable", NOT_A_REGULAR_FILE)
-        return RequirementStatus("unreadable", NOT_A_DIRECTORY, blocking=blocked)
+        component, reason = blocked
+        if component == relative:
+            return RequirementStatus("unreadable", reason)
+        return RequirementStatus("unreadable", reason, blocking=component)
     path = root / relative
-    if not path.exists():
+    if _probe(path) == "absent":
         return RequirementStatus("unbound")
     try:
         text = path.read_text(encoding="utf-8")

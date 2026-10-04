@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.plugin_project import (
-    NOT_A_DIRECTORY,
     NotAPluginProjectError,
     PluginProjectError,
     require_plugin_project,
@@ -61,9 +60,8 @@ def check_project(root: Path) -> list[Finding]:
         return [Finding(path=None, line=None, message=str(exc))]
     findings: list[Finding] = []
     if view.fixtures_tree_blocked is not None:
-        findings.append(
-            Finding(path=view.fixtures_tree_blocked, line=None, message=NOT_A_DIRECTORY)
-        )
+        path, reason = view.fixtures_tree_blocked
+        findings.append(Finding(path=path, line=None, message=unreadable_file_message(reason)))
     elif not view.fixtures_tree_present:
         findings.append(
             Finding(path=FIXTURES_TREE, line=None, message="missing; gp plugin upgrade creates it.")
