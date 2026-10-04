@@ -183,6 +183,7 @@ class TestTheView:
             "requirement_set",
             "test_markers",
             "fixtures_tree_present",
+            "first_party_packages",
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]
         assert [f.name for f in fields(PluginView)] == [

@@ -209,3 +209,77 @@ class TestUpgrade:
         with pytest.raises(UpgradeRefusedError, match="ruff check --fix"):
             upgrade_project(tmp_path)
         assert conftest.read_text() == odd
+
+
+_SINGLE_MODULE_PYPROJECT = """\
+[project]
+name = "aaa"
+
+[project.entry-points."graftpunk.plugins"]
+aaa = "aaa_plugin:AaaPlugin"
+
+[tool.ruff.lint]
+select = ["I"]
+"""
+
+_SINGLE_MODULE_PLUGIN = """\
+from graftpunk.plugins import SitePlugin
+
+
+class AaaPlugin(SitePlugin):
+    site_name = "aaa"
+    base_url = "https://aaa.example"
+"""
+
+
+def _single_module_project(tmp_path: Path, *, under_src: bool) -> Path:
+    (tmp_path / "pyproject.toml").write_text(_SINGLE_MODULE_PYPROJECT)
+    module_dir = tmp_path / "src" if under_src else tmp_path
+    module_dir.mkdir(parents=True, exist_ok=True)
+    (module_dir / "aaa_plugin.py").write_text(_SINGLE_MODULE_PLUGIN)
+    conftest = tmp_path / "tests" / "conftest.py"
+    conftest.parent.mkdir(parents=True)
+    conftest.write_text("from aaa_plugin import AaaPlugin\n\nX = AaaPlugin\n")
+    return conftest
+
+
+def _ruff_check_conftest(project: Path) -> None:
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [sys.executable, "-m", "ruff", "check", "tests/conftest.py"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestFirstPartyPackages:
+    """A1/R2-B1: ruff's own default (``src = [".", "src"]``) treats a top-level
+    directory or ``*.py`` stem under the project root or ``src/`` as first
+    party; ``first_party_packages`` must agree, or ``gp plugin upgrade`` places
+    an import ruff then reports as unsorted."""
+
+    def test_a_single_module_plugin_at_the_root_is_first_party(self, tmp_path: Path) -> None:
+        conftest = _single_module_project(tmp_path, under_src=False)
+        view = read_project(tmp_path)
+        assert "aaa_plugin" in view.first_party_packages
+        upgrade_project(tmp_path)
+        assert conftest.read_text().splitlines()[0] == "from pathlib import Path"
+        _ruff_check_conftest(tmp_path)
+
+    def test_a_single_module_plugin_under_src_is_first_party(self, tmp_path: Path) -> None:
+        _single_module_project(tmp_path, under_src=True)
+        view = read_project(tmp_path)
+        assert "aaa_plugin" in view.first_party_packages
+        upgrade_project(tmp_path)
+        _ruff_check_conftest(tmp_path)
+
+    def test_a_root_level_tests_package_is_first_party(self, tmp_path: Path) -> None:
+        """R2-B1: a hand-written conftest importing a sibling helper module from
+        the project's own tests package, which ruff classes first party because
+        tests/ sits at the project root."""
+        conftest = _project(tmp_path, "from tests.helpers import THING\n\nX = THING\n")
+        (tmp_path / "tests" / "helpers.py").write_text("THING = 1\n")
+        upgrade_project(tmp_path)
+        _ruff_check(tmp_path)
+        assert conftest.read_text().splitlines()[0] == "from pathlib import Path"

@@ -47,7 +47,12 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
       load() re-reads from THIS test's config dir instead of whatever was
       cached under a previous config dir (collection-time or another test's)
     """
-    config_dir = tmp_path / "graftpunk"
+    # Dot-prefixed: plugin_project.first_party_packages now scans tmp_path's
+    # own top-level entries to match ruff's first-party detection, and a
+    # sibling directory literally named "graftpunk" would be misread as the
+    # project's own first-party package instead of the installed dependency
+    # by any test that builds a scratch project directly in tmp_path.
+    config_dir = tmp_path / ".graftpunk-test-config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     # Set environment variable for config directory

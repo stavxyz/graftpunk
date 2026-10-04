@@ -167,7 +167,18 @@ class ProjectView:
 
     ``fixtures_tree_present`` is whether ``root / policy.FIXTURES_TREE`` is a
     directory, read once here so ``gp plugin check`` and ``gp plugin upgrade``
-    take the same answer from the same place and cannot disagree (polish-r1 B7).
+    take the same answer from the same place and cannot disagree.
+
+    ``first_party_packages`` is read once here, by the same rule ruff's own
+    default (``src = [".", "src"]``) uses to decide a module is first party:
+    every top-level directory and ``*.py`` stem directly under the project
+    root and under ``src/``, plus any name the project's own
+    ``[tool.ruff.lint.isort] known-first-party`` (or the legacy
+    ``[tool.ruff.isort]``) declares. ``pysrc.with_import``'s ``first_party=``
+    argument, so ``add_command`` and ``gp plugin upgrade`` place a new import
+    into isort's first-party section exactly when ruff itself would sort it
+    there, whether the plugin lives in a package directory or is a single
+    module file.
 
     Design note: ``requirement_set`` is snapshotted from ``policy.PROJECT_REQUIREMENTS``
     by ``read_project`` at read time, and both methods read ``self.requirement_set``
@@ -183,15 +194,7 @@ class ProjectView:
     requirement_set: tuple[ProjectRequirement, ...]
     test_markers: tuple[tuple[str, int], ...]
     fixtures_tree_present: bool
-
-    @property
-    def first_party_packages(self) -> frozenset[str]:
-        """The top-level package each readable plugin lives under: ``pysrc.with_import``'s
-        ``first_party=`` argument, so ``add_command`` and ``gp plugin upgrade`` place a
-        new import into isort's first-party section when the edited file already
-        imports the project's own package, rather than the third-party section
-        (polish-r1 P3)."""
-        return frozenset(_top_level_package(p.module_path) for p in self.plugins)
+    first_party_packages: frozenset[str] = frozenset()
 
     def plugin(self, entry_point: str) -> PluginView | PluginDefect | None:
         """The plugin or defect whose entry-point name is *entry_point*, or ``None``:
@@ -325,6 +328,7 @@ def read_project(root: Path) -> ProjectView:
         raise PluginProjectError(f"{root}: not a directory.")
     data = _load_pyproject(root)
     fixtures_tree_present = (root / policy.FIXTURES_TREE).is_dir()
+    first_party_packages = _first_party_packages(root, data)
     if data is None:
         return ProjectView(
             directory="empty",
@@ -334,6 +338,7 @@ def read_project(root: Path) -> ProjectView:
             requirement_set=policy.PROJECT_REQUIREMENTS,
             test_markers=(),
             fixtures_tree_present=fixtures_tree_present,
+            first_party_packages=first_party_packages,
         )
     entry_points = _entry_points(data)
     if entry_points is None:
@@ -345,6 +350,7 @@ def read_project(root: Path) -> ProjectView:
             requirement_set=policy.PROJECT_REQUIREMENTS,
             test_markers=(),
             fixtures_tree_present=fixtures_tree_present,
+            first_party_packages=first_party_packages,
         )
     project_name = str(data.get("project", {}).get("name", ""))
     read = [
@@ -361,6 +367,7 @@ def read_project(root: Path) -> ProjectView:
         requirement_set=requirement_set,
         test_markers=_test_markers(root),
         fixtures_tree_present=fixtures_tree_present,
+        first_party_packages=first_party_packages,
     )
 
 
@@ -385,16 +392,61 @@ def _normalised(name: str) -> str:
     return re.sub(r"[-_.]+", "_", name).lower()
 
 
-def _top_level_package(module_path: str) -> str:
-    """The top-level Python package *module_path* (a ``PluginView.module_path``)
-    lives under: its first path segment, after a leading ``src/`` when the module
-    is under that source root."""
-    relative = module_path
-    for base in _SOURCE_ROOTS:
-        if base and relative.startswith(f"{base}/"):
-            relative = relative[len(base) + 1 :]
-            break
-    return relative.split("/", 1)[0]
+_SKIPPED_ROOT_DIR_NAMES = frozenset({"__pycache__", "venv", "node_modules"})
+
+
+def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[str]:
+    """Every name ruff's own default (``src = [".", "src"]``) treats as first party
+    for *root*: each top-level directory (skipping a dotdir, ``__pycache__``,
+    ``venv``, ``node_modules``, or a name that is not a valid Python identifier)
+    and each top-level ``*.py`` stem, directly under the project root and under
+    ``src/``, plus any name *data*'s ``[tool.ruff.lint.isort] known-first-party``
+    (or the legacy ``[tool.ruff.isort]``) declares. Scanning the filesystem,
+    rather than deriving this from ``PluginView.module_path``, is what makes a
+    single-module plugin (a ``*.py`` file with no package directory) first
+    party too: its module path keeps its ``.py`` suffix, which the old
+    per-plugin derivation left in the set, so ruff never matched it."""
+    names: set[str] = set()
+    for base in (root, root / "src"):
+        if not base.is_dir():
+            continue
+        for entry in base.iterdir():
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir():
+                if entry.name not in _SKIPPED_ROOT_DIR_NAMES and entry.name.isidentifier():
+                    names.add(entry.name)
+            elif entry.suffix == ".py":
+                names.add(entry.stem)
+    names.update(_known_first_party(data))
+    return frozenset(names)
+
+
+def _known_first_party(data: dict[str, Any] | None) -> frozenset[str]:
+    """The project's own declared first-party names: ``[tool.ruff.lint.isort]
+    known-first-party``, or the legacy ``[tool.ruff.isort] known-first-party``
+    when the project has not migrated. Either table being the wrong shape is
+    not this function's business to refuse; it reads what it can and ignores
+    the rest, the same way an unreadable ``pyproject.toml`` table would already
+    have raised earlier in ``read_project``."""
+    if data is None:
+        return frozenset()
+    tool = data.get("tool")
+    if not isinstance(tool, dict):
+        return frozenset()
+    ruff = tool.get("ruff")
+    if not isinstance(ruff, dict):
+        return frozenset()
+    lint = ruff.get("lint")
+    isort = lint.get("isort") if isinstance(lint, dict) else None
+    if not isinstance(isort, dict):
+        isort = ruff.get("isort")
+    if not isinstance(isort, dict):
+        return frozenset()
+    known = isort.get("known-first-party")
+    if not isinstance(known, list):
+        return frozenset()
+    return frozenset(name for name in known if isinstance(name, str))
 
 
 def _module_file(root: Path, module: str) -> str | None:
