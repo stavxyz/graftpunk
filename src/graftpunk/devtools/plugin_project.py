@@ -678,9 +678,10 @@ def _module_file(root: Path, module: str) -> str | None:
     file, or ``None`` when none is and no candidate exists at all (the caller
     then refuses, naming the entry point). A candidate that exists but is not
     a regular file does not read as "not here" either, in any of three ways:
-    a directory on the way that cannot even be traversed (no execute bit) or
-    a symlink on the way that cannot be followed, raised with its reason once
-    found; a candidate path that plainly exists but is a directory or a
+    a directory on the way that cannot even be traversed (no execute bit),
+    raised naming that directory (the one to fix) with its reason once found,
+    or a symlink on the way that cannot be followed, raised the same way; a
+    candidate path that plainly exists but is a directory or a
     dangling symlink rather than a file, raised as ``NOT_A_REGULAR_FILE`` once
     no candidate is ever a file; or a non-directory ancestor (found by
     :func:`_blocked_path`) blocking a candidate, raised naming that ancestor
@@ -699,6 +700,14 @@ def _module_file(root: Path, module: str) -> str | None:
             blocked = _blocked_path(root, posix, kind="file")
             if blocked is not None:
                 component, reason = blocked
+                if reason.startswith(CANNOT_BE_READ):
+                    # An untraversable ancestor: name it, as the fixtures tree
+                    # and the requirement files do, not the candidate past it,
+                    # whose own permissions may well be fine.
+                    if first_error is None:
+                        detail_text = reason.removeprefix(f"{CANNOT_BE_READ} (").removesuffix(")")
+                        first_error = (component, detail_text, "unreadable")
+                    continue
                 if component != posix and reason == NOT_A_DIRECTORY:
                     # _blocked_path folds an unfollowable ancestor into
                     # NOT_A_DIRECTORY (a symlink that cannot be followed reads

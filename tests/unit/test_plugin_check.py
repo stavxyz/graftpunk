@@ -338,7 +338,7 @@ class TestFindings:
         """gp plugin info --json and gp plugin check both name a clean refusal
         when src/ cannot be traversed, never a PermissionError traceback, and
         the refusal says "cannot be read" (the module exists; a "neither ...
-        exists" refusal would be false)."""
+        exists" refusal would be false), naming src, the directory to fix."""
         _clean_project(tmp_path)
         src = tmp_path / "src"
         src.chmod(0o000)
@@ -351,7 +351,7 @@ class TestFindings:
             )
         finally:
             src.chmod(0o755)
-        expected = f"src/graftpunk_myshop/plugin.py: cannot be read ({os.strerror(errno.EACCES)})."
+        expected = f"src: cannot be read ({os.strerror(errno.EACCES)})."
         assert info_result.exit_code == 1, info_result.output
         assert expected in info_result.output
         assert check_result.exit_code == 1, check_result.output

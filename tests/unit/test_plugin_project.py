@@ -381,7 +381,8 @@ class TestTheView:
         itself cannot be reached; the reader must refuse in one line, not
         leak the PermissionError as a traceback. The module exists; the
         refusal must say "cannot be read", never "neither ... exists" (which
-        would be false)."""
+        would be false), and must name src, the directory to fix: the module
+        file's own permissions are fine."""
         _generate(tmp_path)
         src = tmp_path / "src"
         src.chmod(0o000)
@@ -390,9 +391,7 @@ class TestTheView:
                 read_project(tmp_path)
         finally:
             src.chmod(0o755)
-        assert str(excinfo.value) == (
-            f"src/graftpunk_myshop/plugin.py: cannot be read ({os.strerror(errno.EACCES)})."
-        )
+        assert str(excinfo.value) == (f"src: cannot be read ({os.strerror(errno.EACCES)}).")
 
     def test_a_module_path_that_is_a_directory_refuses_as_not_a_regular_file(
         self, tmp_path: Path
