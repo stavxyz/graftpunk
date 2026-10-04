@@ -442,7 +442,14 @@ def _first_party_packages(root: Path, data: dict[str, Any] | None) -> frozenset[
     for base in (root, root / "src"):
         if not base.is_dir():
             continue
-        for entry in base.iterdir():
+        try:
+            entries = tuple(base.iterdir())
+        except OSError:
+            # A directory ruff itself cannot stat into contributes no names
+            # (ruff's own source matching treats an unreadable path as "no
+            # match"); a refusal must still be one line, which this is not.
+            continue
+        for entry in entries:
             if entry.name.startswith("."):
                 continue
             if entry.is_dir():
@@ -486,7 +493,15 @@ def _module_file(root: Path, module: str) -> str | None:
     for base in _SOURCE_ROOTS:
         for candidate in (f"{relative}.py", f"{relative}/__init__.py"):
             path = Path(base) / candidate
-            if (root / path).is_file():
+            try:
+                found = (root / path).is_file()
+            except OSError:
+                # A directory on the way that cannot even be traversed (no
+                # execute bit) reads as "not here", the same as a path that
+                # plainly does not exist: _read_plugin's caller still refuses
+                # in one line, naming the entry point.
+                continue
+            if found:
                 return path.as_posix()
     return None
 

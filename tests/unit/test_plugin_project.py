@@ -311,6 +311,34 @@ class TestTheView:
             locked.chmod(0o644)
         assert all(path != "tests/locked.py" for path, _ in view.test_markers)
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_a_src_with_no_execute_bit_refuses_in_one_line(self, tmp_path: Path) -> None:
+        """chmod 000 denies even traversing into src/, so the plugin module
+        itself cannot be reached; the reader must refuse in one line, not
+        leak the PermissionError as a traceback."""
+        _generate(tmp_path)
+        src = tmp_path / "src"
+        src.chmod(0o000)
+        try:
+            with pytest.raises(PluginProjectError):
+                read_project(tmp_path)
+        finally:
+            src.chmod(0o755)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root lists a 300-mode directory")
+    def test_an_unlistable_src_contributes_no_first_party_names(self, tmp_path: Path) -> None:
+        """chmod 300 denies listing src/ but still allows traversing to a
+        known file inside it: the plugin still reads, but the directory
+        contributes no first-party name since it cannot be listed."""
+        _generate(tmp_path)
+        src = tmp_path / "src"
+        src.chmod(0o300)
+        try:
+            view = read_project(tmp_path)
+        finally:
+            src.chmod(0o755)
+        assert "graftpunk_myshop" not in view.first_party_packages
+
     def test_test_markers_skips_a_venv_directory(self, tmp_path: Path) -> None:
         _generate(tmp_path)
         marker = tmp_path / "tests" / ".venv" / "x.py"

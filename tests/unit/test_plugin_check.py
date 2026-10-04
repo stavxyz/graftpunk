@@ -196,6 +196,25 @@ class TestFindings:
         assert finding.path == "tests/conftest.py"
         assert "cannot be read" in finding.message
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_an_unreadable_src_refuses_without_a_traceback(self, tmp_path: Path) -> None:
+        """gp plugin info --json and gp plugin check both name a clean refusal
+        when src/ cannot be traversed, never a PermissionError traceback."""
+        _clean_project(tmp_path)
+        src = tmp_path / "src"
+        src.chmod(0o000)
+        try:
+            info_result = runner.invoke(
+                app, ["plugin", "info", "--json", "--dir", str(tmp_path)], catch_exceptions=False
+            )
+            check_result = runner.invoke(
+                app, ["plugin", "check", "--dir", str(tmp_path)], catch_exceptions=False
+            )
+        finally:
+            src.chmod(0o755)
+        assert info_result.exit_code == 1, info_result.output
+        assert check_result.exit_code == 1, check_result.output
+
 
 def test_the_three_consumers_follow_the_declaration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
