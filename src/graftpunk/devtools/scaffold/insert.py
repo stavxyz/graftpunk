@@ -9,7 +9,10 @@ A module a developer has extended with helpers above or below the class is
 handled rather than refused (graft skill spec, 2026-09-21). The stub is
 re-indented to the class body's own indentation (tabs included) before it is
 spliced in, read from the first body statement's source line. It inserts a
-stub, the imports the rendered stub says it references, and nothing else.
+stub, the imports the rendered stub says it references, and, in the same
+``apply_changes`` call, the project's plain ``graftpunk>=`` lower bound raised
+to the running release (``project.planned_graftpunk_floor``), since the stub's
+``@command(..., endpoint=...)`` needs that graftpunk; nothing else.
 """
 
 from __future__ import annotations
@@ -24,6 +27,8 @@ from pathlib import Path
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_project import PluginDefect, PluginView, require_plugin_project
 from graftpunk.devtools.scaffold import policy
+from graftpunk.devtools.scaffold.project import planned_graftpunk_floor
+from graftpunk.devtools.scaffold.pyproject_edit import CannotRaiseFloor, RaisedFloor
 from graftpunk.devtools.scaffold.pysrc import (
     INDENT_STEP,
     ImportPlacementError,
@@ -54,11 +59,14 @@ class AddedCommand:
     """What ``add_command`` did: the module it edited, the command's CLI name, and the
     project-relative fixture its test will look for, or ``None`` when
     ``gp observe fixtures`` writes no fixture for this endpoint (see
-    ``render.RenderedCommand.fixture``)."""
+    ``render.RenderedCommand.fixture``), and what the write did to the
+    project's ``graftpunk`` requirement (see
+    ``project.planned_graftpunk_floor``)."""
 
     module: Path
     cli_name: str
     fixture: str | None
+    floor: RaisedFloor | CannotRaiseFloor | None = None
 
 
 def insertion_line(plugin: PluginView, lines: Sequence[str], class_indent: str) -> int:
@@ -235,10 +243,14 @@ def add_command(
         raise CommandInsertError(
             f"{plugin.module_path}: does not parse after the stub is placed ({exc.msg})."
         ) from exc
-    apply_changes([PlannedChange(module, text, original=original, validate=validate_python)])
+    floor, floor_changes = planned_graftpunk_floor(root)
+    apply_changes(
+        [PlannedChange(module, text, original=original, validate=validate_python), *floor_changes]
+    )
     fixture = None if rendered.fixture is None else f"{plugin.fixtures_root}{rendered.fixture}"
     return AddedCommand(
         module=module,
         cli_name=command.registered_name,
         fixture=fixture,
+        floor=floor,
     )

@@ -1454,3 +1454,109 @@ class TestPluginUpgrade:
         assert "tests/fixtures/: created" in _plain(result.output)
         assert (tmp_path / "tests" / "fixtures" / ".gitkeep").is_file()
         assert conftest.read_text() != ""
+
+
+def _floor_pyproject(dependencies: str | None) -> str:
+    """A hand-written plugin project's pyproject, its [project] dependencies
+    holding *dependencies* as one TOML array item, or no dependencies key."""
+    deps = "" if dependencies is None else f"dependencies = [\n    {dependencies},\n]\n"
+    return (
+        '[project]\nname = "graftpunk-myshop"\nversion = "0.1.0"\n'
+        f"{deps}\n"
+        '[project.entry-points."graftpunk.plugins"]\n'
+        'myshop = "graftpunk_myshop.plugin:MyshopPlugin"\n\n'
+        "[tool.ruff]\nline-length = 100\n"
+    )
+
+
+def _run_writer(command: str, project: Path, pyproject: str) -> tuple[object, list[str]]:
+    """Run *command* (upgrade or add-command) on a project whose pyproject is
+    *pyproject*, and return the result with the lines the command prints
+    whatever the floor (so a test asserts the exact full output)."""
+    if command == "upgrade":
+        _project_lacking_the_wiring(project)
+        (project / "pyproject.toml").write_text(pyproject)
+        result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(project)])
+        own = [
+            "tests/conftest.py: added FIXTURES_TREE",
+            "tests/conftest.py: added sanitised_fixtures",
+        ]
+    else:
+        module = _hand_written_project(project)
+        (project / "pyproject.toml").write_text(pyproject)
+        result = _add(project, "myshop", "orders=GET /api/orders")
+        own = [
+            f"Added orders to {module}",
+            "Next: its test looks for tests/fixtures/get_api_orders.json",
+        ]
+    return result, own
+
+
+@pytest.mark.usefixtures("gp_logging")
+@pytest.mark.parametrize("command", ["upgrade", "add-command"])
+class TestGraftpunkFloor:
+    """Both writers add code that needs the running graftpunk (the conftest's
+    graftpunk.testing import, a stub's endpoint= keyword), so a write also
+    makes the project declare it, or says how to."""
+
+    @pytest.fixture(autouse=True)
+    def _running_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import graftpunk
+
+        monkeypatch.setattr(graftpunk, "__version__", "1.17.3")
+
+    @pytest.mark.parametrize(
+        ("dependency", "raised"),
+        [
+            ('"graftpunk>=1.0"', '"graftpunk>=1.17.0"'),
+            (
+                "'graftpunk[browser]>=1.0; python_version >= \"3.11\"'",
+                "'graftpunk[browser]>=1.17.0; python_version >= \"3.11\"'",
+            ),
+        ],
+    )
+    def test_a_plain_lower_bound_is_raised_and_reported(
+        self, command: str, recorded: Path, dependency: str, raised: str
+    ) -> None:
+        result, own = _run_writer(command, recorded, _floor_pyproject(dependency))
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == _floor_pyproject(raised).encode()
+        lines = _plain(result.output).strip().splitlines()
+        assert lines == [*own, "pyproject.toml: graftpunk>=1.17.0 (was >=1.0)"]
+
+    def test_a_pinned_requirement_is_left_and_named_in_a_next_line(
+        self, command: str, recorded: Path
+    ) -> None:
+        pyproject = _floor_pyproject('"graftpunk==1.0"')
+        result, own = _run_writer(command, recorded, pyproject)
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
+        lines = _plain(result.output).strip().splitlines()
+        assert lines == [
+            *own,
+            "Next: raise graftpunk in pyproject.toml to >=1.17.0 and reinstall; "
+            "it reads graftpunk==1.0",
+        ]
+
+    def test_no_graftpunk_dependency_is_named_in_a_next_line(
+        self, command: str, recorded: Path
+    ) -> None:
+        pyproject = _floor_pyproject(None)
+        result, own = _run_writer(command, recorded, pyproject)
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
+        lines = _plain(result.output).strip().splitlines()
+        assert lines == [
+            *own,
+            "Next: add graftpunk>=1.17.0 to pyproject.toml's [project] dependencies "
+            "and reinstall; it has no graftpunk requirement",
+        ]
+
+    def test_a_project_already_at_the_floor_prints_nothing_extra(
+        self, command: str, recorded: Path
+    ) -> None:
+        pyproject = _floor_pyproject('"graftpunk[browser]>=1.17.0"')
+        result, own = _run_writer(command, recorded, pyproject)
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
+        assert _plain(result.output).strip().splitlines() == own

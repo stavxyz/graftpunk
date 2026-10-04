@@ -16,11 +16,19 @@ from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, module_name_for
 from graftpunk.devtools.scaffold.pyproject_edit import (
+    CannotRaiseFloor,
     PyprojectEditError,
+    RaisedFloor,
     with_entry_point,
+    with_graftpunk_floor,
     with_wheel_package,
 )
-from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, render
+from graftpunk.devtools.scaffold.render import (
+    ScaffoldSpec,
+    class_name_for,
+    graftpunk_version_floor,
+    render,
+)
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
     InvalidChangeError,
@@ -41,6 +49,7 @@ __all__ = [
     "NotAPluginSuiteError",
     "ScaffoldConflictError",
     "ScaffoldResult",
+    "planned_graftpunk_floor",
     "write_scaffold",
 ]
 
@@ -48,6 +57,26 @@ __all__ = [
 ScaffoldConflictError = ChangeConflictError
 """A target path already exists; nothing was written. The writer's own error, under
 the name the CLI and callers of ``write_scaffold`` already catch."""
+
+
+def planned_graftpunk_floor(
+    root: Path,
+) -> tuple[RaisedFloor | CannotRaiseFloor | None, list[PlannedChange]]:
+    """What a write adding code that needs the running graftpunk does to *root*'s
+    ``pyproject.toml``: :func:`with_graftpunk_floor`'s verdict at
+    :func:`graftpunk_version_floor`, and the edit to put in the same
+    ``apply_changes`` call as that code (empty unless the verdict is a raise).
+
+    Raises:
+        InvalidChangeError: ``pyproject.toml`` is not UTF-8 text.
+        OSError: ``pyproject.toml`` cannot be read.
+    """
+    path = root / "pyproject.toml"
+    original = read_original(path)
+    verdict = with_graftpunk_floor(original, graftpunk_version_floor())
+    if not isinstance(verdict, RaisedFloor):
+        return verdict, []
+    return verdict, [PlannedChange(path, verdict.text, original=original, validate=validate_toml)]
 
 
 def _validator_for(relative: str) -> Validator | None:

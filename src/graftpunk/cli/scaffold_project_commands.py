@@ -25,9 +25,38 @@ from graftpunk.devtools.plugin_info import info_payload
 from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.insert import add_command
+from graftpunk.devtools.scaffold.pyproject_edit import CannotRaiseFloor, RaisedFloor
+from graftpunk.devtools.scaffold.render import graftpunk_version_floor
 from graftpunk.devtools.scaffold.upgrade import upgrade_project
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.parser import HARParseError
+
+
+def _print_floor(floor: RaisedFloor | CannotRaiseFloor | None) -> None:
+    """One line on the project's graftpunk requirement after a write that needs
+    the running graftpunk: the raise it got, or how to make it by hand."""
+    at = graftpunk_version_floor()
+    if isinstance(floor, RaisedFloor):
+        line = f"pyproject.toml: graftpunk>={at} (was >={floor.previous})"
+        console.print(escape(line), soft_wrap=True, highlight=False)
+    elif isinstance(floor, CannotRaiseFloor) and floor.requirement is None:
+        console.print(
+            "[bold]Next:[/bold] "
+            + escape(
+                f"add graftpunk>={at} to pyproject.toml's [project] dependencies and "
+                "reinstall; it has no graftpunk requirement"
+            ),
+            soft_wrap=True,
+        )
+    elif isinstance(floor, CannotRaiseFloor):
+        console.print(
+            "[bold]Next:[/bold] "
+            + escape(
+                f"raise graftpunk in pyproject.toml to >={at} and reinstall; "
+                f"it reads {floor.requirement}"
+            ),
+            soft_wrap=True,
+        )
 
 
 @plugin_app.command("info")
@@ -98,6 +127,7 @@ def plugin_add_command(
         console.print(
             f"[bold]Next:[/bold] its test looks for {escape(added.fixture)}", soft_wrap=True
         )
+    _print_floor(added.floor)
 
 
 @plugin_app.command("upgrade")
@@ -120,6 +150,7 @@ def plugin_upgrade(
         )
     if applied.created_fixtures_tree:
         console.print(f"{escape(policy.FIXTURES_TREE)}: created", soft_wrap=True)
+    _print_floor(applied.floor)
 
 
 @plugin_app.command("check")

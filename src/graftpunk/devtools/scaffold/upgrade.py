@@ -12,7 +12,11 @@ reads). It decides nothing about the filesystem itself: every path it might
 otherwise refuse on, a blocked ``policy.FIXTURES_TREE`` or an ancestor of a
 requirement's file included, is read from ``ProjectView.fixtures_tree_blocked``
 and ``ProjectView.unreadable_files()``, the same two facts ``gp plugin check``
-reports findings from, so the two consumers cannot disagree.
+reports findings from, so the two consumers cannot disagree. Whenever it
+writes, the same ``apply_changes`` call raises the project's plain
+``graftpunk>=`` lower bound to the running release
+(``project.planned_graftpunk_floor``), since what it adds imports
+``graftpunk.testing``, which an older graftpunk lacks.
 """
 
 from __future__ import annotations
@@ -31,6 +35,8 @@ from graftpunk.devtools.scaffold.policy import (
     FIXTURES_TREE,
     ProjectRequirement,
 )
+from graftpunk.devtools.scaffold.project import planned_graftpunk_floor
+from graftpunk.devtools.scaffold.pyproject_edit import CannotRaiseFloor, RaisedFloor
 from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, with_bindings
 from graftpunk.devtools.scaffold.write import (
     PlannedChange,
@@ -56,10 +62,13 @@ class UpgradeApplied:
     ``policy.FIXTURES_TREE`` did not exist and was created (with
     ``FIXTURES_PLACEHOLDER``, the same empty file ``gp plugin new`` writes).
     ``changed`` is whether either happened, for a caller that wants one
-    truth test instead of reading both fields."""
+    truth test instead of reading both fields. ``floor`` is what a change did
+    to the project's ``graftpunk`` requirement (see
+    ``project.planned_graftpunk_floor``), ``None`` when nothing changed."""
 
     requirements: tuple[ProjectRequirement, ...]
     created_fixtures_tree: bool = False
+    floor: RaisedFloor | CannotRaiseFloor | None = None
 
     @property
     def changed(self) -> bool:
@@ -117,5 +126,11 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     created_fixtures_tree = not view.fixtures_tree_present
     if created_fixtures_tree:
         changes.append(PlannedChange(fixtures_tree / FIXTURES_PLACEHOLDER, ""))
+    floor = None
+    if changes:
+        floor, floor_changes = planned_graftpunk_floor(root)
+        changes.extend(floor_changes)
     apply_changes(changes)
-    return UpgradeApplied(requirements=missing, created_fixtures_tree=created_fixtures_tree)
+    return UpgradeApplied(
+        requirements=missing, created_fixtures_tree=created_fixtures_tree, floor=floor
+    )
