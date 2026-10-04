@@ -372,10 +372,10 @@ def plugin_upgrade(
         LOG.debug("upgrade_refused", reason=type(exc).__name__)
         console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
-    if not applied:
+    if not applied.changed:
         console.print("Nothing to upgrade: the project already has every requirement.")
         return
-    for requirement in applied:
+    for requirement in applied.requirements:
         console.print(
             f"{escape(requirement.path)}: added {escape(requirement.name)}", soft_wrap=True
         )

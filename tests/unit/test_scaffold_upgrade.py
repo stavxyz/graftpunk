@@ -62,13 +62,13 @@ class TestUpgrade:
         write_scaffold(tmp_path, _SPEC)
         conftest = tmp_path / "tests" / "conftest.py"
         before = conftest.read_bytes()
-        assert not upgrade_project(tmp_path)
+        assert not upgrade_project(tmp_path).changed
         assert conftest.read_bytes() == before
 
     def test_twice_in_a_row_writes_each_statement_once(self, tmp_path: Path) -> None:
         conftest = _project(tmp_path, _OLD_CONFTEST)
         upgrade_project(tmp_path)
-        assert not upgrade_project(tmp_path)
+        assert not upgrade_project(tmp_path).changed
         text = conftest.read_text()
         assert text.count("FIXTURES_TREE = ") == 1
         assert text.count("sanitised_fixtures = ") == 1
@@ -81,7 +81,7 @@ class TestUpgrade:
             "sanitised_fixtures = check_tree(FIXTURES_TREE)\n"
         )
         conftest = _project(tmp_path, wired)
-        assert not upgrade_project(tmp_path)
+        assert not upgrade_project(tmp_path).changed
         assert conftest.read_text() == wired
 
     def test_a_missing_fixtures_tree_is_created(self, tmp_path: Path) -> None:
@@ -91,7 +91,7 @@ class TestUpgrade:
         applied = upgrade_project(tmp_path)
         assert applied.created_fixtures_tree is True
         assert applied.requirements == ()
-        assert bool(applied) is True
+        assert applied.changed is True
         placeholder = tree / FIXTURES_PLACEHOLDER
         assert placeholder.is_file()
         assert placeholder.read_text() == ""

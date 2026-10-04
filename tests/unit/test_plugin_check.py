@@ -151,7 +151,7 @@ def test_the_three_consumers_follow_the_declaration(
     assert "extra_probe = 1" in render(_SPEC)["tests/conftest.py"]
     (finding,) = check_project(tmp_path)
     assert "extra_probe" in finding.message
-    assert [r.name for r in upgrade_project(tmp_path)] == ["extra_probe"]
+    assert [r.name for r in upgrade_project(tmp_path).requirements] == ["extra_probe"]
     assert check_project(tmp_path) == []
 
 

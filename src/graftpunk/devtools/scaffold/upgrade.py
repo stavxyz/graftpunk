@@ -13,7 +13,6 @@ reads), so the two consumers cannot disagree (polish-r1 B7).
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,19 +45,15 @@ class UpgradeApplied:
     project's files were missing, in the order they were applied, and whether
     ``policy.FIXTURES_TREE`` did not exist and was created (with
     ``FIXTURES_PLACEHOLDER``, the same empty file ``gp plugin new`` writes).
-    Iterating or truth-testing an instance reads ``requirements`` and
-    ``created_fixtures_tree`` together, so a caller that only checked
-    "was anything applied" before this field existed still gets the right
-    answer."""
+    ``changed`` is whether either happened, for a caller that wants one
+    truth test instead of reading both fields."""
 
     requirements: tuple[ProjectRequirement, ...]
     created_fixtures_tree: bool = False
 
-    def __bool__(self) -> bool:
+    @property
+    def changed(self) -> bool:
         return bool(self.requirements) or self.created_fixtures_tree
-
-    def __iter__(self) -> Iterator[ProjectRequirement]:
-        return iter(self.requirements)
 
 
 def _refuse_unless_directory(path: Path, root: Path) -> None:
