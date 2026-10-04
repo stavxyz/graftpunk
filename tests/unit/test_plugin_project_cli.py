@@ -319,6 +319,7 @@ def test_info_payload_refuses_a_view_with_a_defect_and_names_every_one() -> None
         requirements=MappingProxyType({}),
         requirement_set=PROJECT_REQUIREMENTS,
         test_markers=(),
+        fixtures_tree_present=True,
     )
     with pytest.raises(PluginDefectRefusal) as caught:
         info_payload(view)

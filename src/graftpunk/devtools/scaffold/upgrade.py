@@ -6,9 +6,9 @@ idempotent under the reader's own definition, and it changes nothing a project
 already has (graft skill spec, 2026-09-21). The statements are added by
 ``pysrc.with_bindings``, the assembler the renderer uses for a new conftest, so
 an upgraded conftest is byte-identical to a generated one. It also creates
-``policy.FIXTURES_TREE`` when a project lacks it, the one thing here the
-reader's view does not decide on its own (the view has no missing-directory
-fact; the filesystem check is this module's).
+``policy.FIXTURES_TREE`` when a project lacks it, reading that fact from
+``ProjectView.fixtures_tree_present`` (the same field ``gp plugin check``
+reads), so the two consumers cannot disagree (polish-r1 B7).
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ def upgrade_project(root: Path) -> UpgradeApplied:
         changes.append(PlannedChange(path, content, original=original, validate=validate_python))
     fixtures_tree = root / FIXTURES_TREE
     _refuse_unless_directory(fixtures_tree, root)
-    created_fixtures_tree = not fixtures_tree.is_dir()
+    created_fixtures_tree = not view.fixtures_tree_present
     if created_fixtures_tree:
         changes.append(PlannedChange(fixtures_tree / FIXTURES_PLACEHOLDER, ""))
     apply_changes(changes)

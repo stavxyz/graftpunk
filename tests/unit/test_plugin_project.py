@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import fields
@@ -122,6 +123,7 @@ class TestClassify:
             requirements={},
             requirement_set=PROJECT_REQUIREMENTS,
             test_markers=(),
+            fixtures_tree_present=False,
         )
 
     def test_a_pyproject_with_the_group_is_a_plugin(self, tmp_path: Path) -> None:
@@ -163,6 +165,7 @@ class TestTheView:
             "requirements",
             "requirement_set",
             "test_markers",
+            "fixtures_tree_present",
         ]
         assert [f.name for f in fields(PluginDefect)] == ["entry_point", "module_path", "message"]
         assert [f.name for f in fields(PluginView)] == [
@@ -178,6 +181,17 @@ class TestTheView:
             "class_names",
         ]
         assert [f.name for f in fields(CommandView)] == ["method", "span", "keywords", "group"]
+
+    def test_fixtures_tree_present_is_true_for_a_generated_project(self, tmp_path: Path) -> None:
+        _generate(tmp_path)
+        assert read_project(tmp_path).fixtures_tree_present is True
+
+    def test_fixtures_tree_present_is_false_when_the_tree_is_missing(self, tmp_path: Path) -> None:
+        """B7: check and upgrade take this fact from the one place the reader
+        records it, so the two consumers cannot disagree."""
+        _generate(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        assert read_project(tmp_path).fixtures_tree_present is False
 
     def test_a_generated_plugin_declares_every_endpoint(self, tmp_path: Path) -> None:
         _generate(tmp_path)

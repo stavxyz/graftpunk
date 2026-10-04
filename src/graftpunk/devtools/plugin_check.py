@@ -21,7 +21,7 @@ from graftpunk.devtools.plugin_project import (
     PluginProjectError,
     require_plugin_project,
 )
-from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER
+from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, GP_FILL_MARKER
 
 __all__ = ["Finding", "check_project"]
 
@@ -40,21 +40,26 @@ class Finding:
 
 
 def check_project(root: Path) -> list[Finding]:
-    """Every finding in *root*'s plugin project: markers in file order, then plugin
-    defects, then requirement files that do not parse, then missing requirements.
-    A refusal from the reader (not a plugin project, or not readable at all) is
-    the one finding."""
+    """Every finding in *root*'s plugin project: a missing fixtures tree, then
+    markers in file order, then plugin defects, then requirement files that do
+    not parse, then missing requirements. A refusal from the reader (not a
+    plugin project, or not readable at all) is the one finding."""
     try:
         view = require_plugin_project(root)
     except (NotAPluginProjectError, PluginProjectError) as exc:
         return [Finding(path=".", line=None, message=str(exc))]
-    findings = [
+    findings: list[Finding] = []
+    if not view.fixtures_tree_present:
+        findings.append(
+            Finding(path=FIXTURES_TREE, line=None, message="missing; gp plugin upgrade creates it.")
+        )
+    findings.extend(
         Finding(
             path=plugin.module_path, line=line, message=f"{GP_FILL_MARKER} marker left to fill in."
         )
         for plugin in view.plugins
         for line in plugin.markers
-    ]
+    )
     findings.extend(
         Finding(path=path, line=line, message=f"{GP_FILL_MARKER} marker left to fill in.")
         for path, line in view.test_markers

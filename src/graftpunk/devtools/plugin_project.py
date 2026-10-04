@@ -165,6 +165,10 @@ class ProjectView:
     ``PluginView.markers`` holds for a plugin module; ``gp plugin check`` reports
     both.
 
+    ``fixtures_tree_present`` is whether ``root / policy.FIXTURES_TREE`` is a
+    directory, read once here so ``gp plugin check`` and ``gp plugin upgrade``
+    take the same answer from the same place and cannot disagree (polish-r1 B7).
+
     Design note: ``requirement_set`` is snapshotted from ``policy.PROJECT_REQUIREMENTS``
     by ``read_project`` at read time, and both methods read ``self.requirement_set``
     instead of the module attribute, so a ``ProjectView`` is a value: two calls on
@@ -178,6 +182,7 @@ class ProjectView:
     requirements: Mapping[str, RequirementStatus]
     requirement_set: tuple[ProjectRequirement, ...]
     test_markers: tuple[tuple[str, int], ...]
+    fixtures_tree_present: bool
 
     @property
     def first_party_packages(self) -> frozenset[str]:
@@ -314,6 +319,7 @@ def read_project(root: Path) -> ProjectView:
             is not UTF-8, cannot be read (permissions), or does not parse.
     """
     data = _load_pyproject(root)
+    fixtures_tree_present = (root / policy.FIXTURES_TREE).is_dir()
     if data is None:
         return ProjectView(
             directory="empty",
@@ -322,6 +328,7 @@ def read_project(root: Path) -> ProjectView:
             requirements=MappingProxyType({}),
             requirement_set=policy.PROJECT_REQUIREMENTS,
             test_markers=(),
+            fixtures_tree_present=fixtures_tree_present,
         )
     entry_points = _entry_points(data)
     if entry_points is None:
@@ -332,6 +339,7 @@ def read_project(root: Path) -> ProjectView:
             requirements=MappingProxyType({}),
             requirement_set=policy.PROJECT_REQUIREMENTS,
             test_markers=(),
+            fixtures_tree_present=fixtures_tree_present,
         )
     project_name = str(data.get("project", {}).get("name", ""))
     read = [
@@ -347,6 +355,7 @@ def read_project(root: Path) -> ProjectView:
         requirements=MappingProxyType(requirements),
         requirement_set=requirement_set,
         test_markers=_test_markers(root),
+        fixtures_tree_present=fixtures_tree_present,
     )
 
 

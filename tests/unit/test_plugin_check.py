@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -95,6 +96,20 @@ class TestFindings:
         messages = [f.message for f in check_project(tmp_path)]
         assert len(messages) == 2
         assert all("gp plugin upgrade" in m for m in messages)
+
+    def test_a_missing_fixtures_tree_is_reported_then_created_by_upgrade(
+        self, tmp_path: Path
+    ) -> None:
+        """B7: check and upgrade take the fact from one place (the reader's
+        view), so the two cannot disagree."""
+        _clean_project(tmp_path)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        (finding,) = check_project(tmp_path)
+        assert finding.path == "tests/fixtures/"
+        assert finding.message == "missing; gp plugin upgrade creates it."
+        upgrade_project(tmp_path)
+        assert (tmp_path / "tests" / "fixtures").is_dir()
+        assert check_project(tmp_path) == []
 
     def test_a_directory_that_is_not_a_plugin_project_is_a_finding(self, tmp_path: Path) -> None:
         (finding,) = check_project(tmp_path)
