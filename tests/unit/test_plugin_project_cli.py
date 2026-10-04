@@ -523,6 +523,19 @@ _HAND_WRITTEN_ONE_LINE_CLASS = (
     'class MyshopPlugin(SitePlugin): site_name = "myshop"\n'
 )
 
+_HAND_WRITTEN_MULTILINE_HEADER_ONE_LINE_CLASS = (
+    '"""myshop plugin."""\n'
+    "\n"
+    "from __future__ import annotations\n"
+    "\n"
+    "from graftpunk.plugins import SitePlugin\n"
+    "\n"
+    "\n"
+    "class MyshopPlugin(\n"
+    "    SitePlugin,\n"
+    '): site_name = "myshop"; base_url = "https://myshop.example"\n'
+)
+
 _HAND_WRITTEN_WITH_TRAILING_COMMENT = """\
 \"\"\"myshop plugin.\"\"\"
 
@@ -740,13 +753,39 @@ class TestAddCommand:
         assert check.returncode == 0, check.stdout + check.stderr
 
     def test_a_one_line_class_body_is_refused(self, recorded: Path) -> None:
-        """B3: splicing a stub after a one-line class's body, itself on the
-        `class` line, put the stub outside the class (polish-r1 P5)."""
+        """Splicing a stub after a one-line class's body, itself on the `class`
+        line, put the stub outside the class."""
         module = _hand_written_project(recorded, module_text=_HAND_WRITTEN_ONE_LINE_CLASS)
         before = module.read_bytes()
         result = _add(recorded, "myshop", "orders=GET /api/orders")
         assert result.exit_code == 1
-        assert "class" in _plain(result.output)
+        output = _plain(result.output).strip()
+        assert output.splitlines() == [
+            "src/graftpunk_myshop/plugin.py: the stub does not fit this class's "
+            "layout (its body starts on the class header's line); add a command "
+            "by hand."
+        ]
+        assert module.read_bytes() == before
+
+    def test_a_multiline_header_with_a_one_line_body_is_refused(self, recorded: Path) -> None:
+        """A class whose header spans lines, with its body on the `):` line:
+        klass.body[0].lineno != klass.lineno (the header's own last line, not
+        the `class` keyword's line), so the body-on-the-header-line guard
+        alone misses this shape; the computed indentation unit is empty too
+        (the body shares a line with `):`), which is the shared signal both
+        shapes refuse on."""
+        module = _hand_written_project(
+            recorded, module_text=_HAND_WRITTEN_MULTILINE_HEADER_ONE_LINE_CLASS
+        )
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        output = _plain(result.output).strip()
+        assert output.splitlines() == [
+            "src/graftpunk_myshop/plugin.py: the stub does not fit this class's "
+            "layout (its body starts on the class header's line); add a command "
+            "by hand."
+        ]
         assert module.read_bytes() == before
 
     def test_a_decorated_helper_and_a_main_block_below_the_class_stay_below_it(

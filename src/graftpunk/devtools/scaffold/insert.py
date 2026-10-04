@@ -117,6 +117,17 @@ def _group_names(plugin: PluginView) -> set[str]:
     return names
 
 
+def _layout_refusal(module_path: str) -> str:
+    """The one-line refusal for a class whose body shares a line with its
+    header: the stub inserter only knows how to re-indent a stub to an
+    existing body line's own indentation, which a header-line body has none
+    of."""
+    return (
+        f"{module_path}: the stub does not fit this class's layout (its body starts "
+        f"on the class header's line); add a command by hand."
+    )
+
+
 def add_command(
     root: Path, entry_point: str, d: RunDigest, selection: CommandSelection
 ) -> AddedCommand:
@@ -171,14 +182,19 @@ def add_command(
     klass = next(
         n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == plugin.class_name
     )
-    if not klass.body or klass.body[0].lineno == klass.lineno:
-        raise CommandInsertError(
-            f"{plugin.module_path}: the stub does not fit this class's layout (its body starts "
-            f"on the `class` line); add a command by hand."
-        )
+    if not klass.body:
+        raise CommandInsertError(_layout_refusal(plugin.module_path))
     lines = source_lines(original)
     first_body_line = lines[klass.body[0].lineno - 1]
     indent_unit = first_body_line[: len(first_body_line) - len(first_body_line.lstrip(" \t"))]
+    if klass.body[0].lineno == klass.lineno or not indent_unit:
+        # The body shares a line with the header: either the `class` keyword's
+        # own line (a one-line class), or, for a header that spans lines, the
+        # line holding the closing `):` (klass.body[0].lineno != klass.lineno
+        # there, so that comparison alone misses it; an empty indent unit
+        # catches both shapes, since a body on its own line is always
+        # indented).
+        raise CommandInsertError(_layout_refusal(plugin.module_path))
     rendered = render_command(command, d)
     stub_lines = _reindented(rendered.lines, indent_unit)
     at = insertion_line(plugin, lines, indent_unit)
