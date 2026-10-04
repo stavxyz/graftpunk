@@ -94,7 +94,9 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     changes: list[PlannedChange] = []
     for relative, requirements in by_path.items():
         path = root / relative
-        original = read_original(path) if path.is_file() else None
+        status = view.requirements.get(requirements[0].key)
+        present = status.present if status is not None else False
+        original = read_original(path) if present else None
         try:
             content = with_bindings(
                 original or "", requirements, first_party=view.first_party_packages

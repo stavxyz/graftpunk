@@ -261,16 +261,21 @@ class PluginDefect:
 @dataclass(frozen=True)
 class RequirementStatus:
     """Whether a project's file binds one ``PROJECT_REQUIREMENTS`` name: ``bound``;
-    ``unbound`` (the file is missing, or does not bind it); or ``unreadable`` (the
-    file does not parse, is not a regular file, or an ancestor blocks it), with
-    ``reason`` saying why. ``blocking`` is the project-relative ancestor path an
-    "unreadable" finding should name instead of the requirement's own path, when
-    an ancestor (not the file itself) is what is wrong; ``None`` for every other
-    reason, where the requirement's own path is the right one to name."""
+    ``unbound`` (the file is missing, or does not bind it); or ``unreadable``, with
+    ``reason`` saying why (see ``graftpunk.devtools.plugin_check``'s module docstring
+    for the complete list of reasons). ``blocking`` is the project-relative ancestor
+    path an "unreadable" finding should name instead of the requirement's own path,
+    when an ancestor (not the file itself) is what is wrong; ``None`` for every other
+    reason, where the requirement's own path is the right one to name. ``present`` is
+    whether the file exists at all, true for ``bound``, true for ``unbound`` when the
+    file exists but does not bind the name, and false only for the ``unbound`` case
+    where the file is plainly absent: ``gp plugin upgrade`` reads it instead of
+    asking the filesystem the same question a second time."""
 
     state: RequirementState
     reason: str | None = None
     blocking: str | None = None
+    present: bool = True
 
 
 @dataclass(frozen=True)
@@ -958,7 +963,7 @@ def _parse_requirement_file(root: Path, relative: str) -> ast.Module | Requireme
         return RequirementStatus("unreadable", reason, blocking=component)
     path = root / relative
     if _probe(path) == "absent":
-        return RequirementStatus("unbound")
+        return RequirementStatus("unbound", present=False)
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
