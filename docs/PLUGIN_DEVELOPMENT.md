@@ -1403,10 +1403,10 @@ or cannot be read), a `tests/conftest.py` that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
 in a plugin module or a test module, any plugin module that does not hold
 exactly one plugin class, and any project wiring the project lacks (`gp
-plugin upgrade` adds it). When the project cannot be read at all (not a
-plugin project, or a `pyproject.toml` or plugin module that cannot be read or
-does not parse), that refusal is the one finding. A fresh scaffold fails it
-until its markers are filled in. It passes `ruff check` and
+plugin upgrade` adds it). When the project cannot be read at all (for
+example, not a plugin project, or a `pyproject.toml` or plugin module that
+cannot be read or does not parse), that refusal is the one finding. A fresh
+scaffold fails it until its markers are filled in. It passes `ruff check` and
 `ruff format --check` as written, so a red ruff run on a fresh scaffold is
 something you introduced. Add a type checker.
 

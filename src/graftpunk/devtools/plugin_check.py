@@ -12,13 +12,14 @@ blocked); a ``PROJECT_REQUIREMENTS`` entry the project lacks, which
 (which ``gp plugin upgrade`` creates), is not a directory (an author must
 move it aside), or cannot be read (an author must fix its permissions),
 including when ``tests/`` itself, not the tree, is the one blocked; and,
-when the reader refuses the project outright (not a plugin project, or a
-``pyproject.toml`` or plugin module that cannot be read or does not parse),
-that refusal as the only finding. It does not compare a declared endpoint
-against the request call: the declaration is authoritative by design, and a
-check that could only ever be weak would give an author a reason to drop the
-keyword. It does not restate the fixtures check, which the generated suite
-runs (graft skill spec, 2026-09-21). A reader: never imports ``write.py``.
+when the reader refuses the project outright (for example, not a plugin
+project, or a ``pyproject.toml`` or plugin module that cannot be read or
+does not parse), that refusal as the only finding. It does not compare a
+declared endpoint against the request call: the declaration is authoritative
+by design, and a check that could only ever be weak would give an author a
+reason to drop the keyword. It does not restate the fixtures check, which the
+generated suite runs (graft skill spec, 2026-09-21). A reader: never imports
+``write.py``.
 
 ``FINDING_ADVICE`` is every advice phrase a message built here can carry, each
 drawn from the constant the message itself is built from (never re-typed), so
