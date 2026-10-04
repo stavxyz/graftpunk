@@ -1093,18 +1093,14 @@ def test_no_message_retypes_a_guarded_phrase(module: object) -> None:
 # below instead of a guessed literal.
 _LOOP_STRERROR = "Too many levels of symbolic links"
 
-_PROBE_CALLERS = frozenset(
-    {
-        "_blocked_path",
-        "_load_pyproject",
-        "_require_directory",
-        "_module_file",
-        "read_project",
-        "_first_party_packages",
-        "_test_markers",
-        "_parse_requirement_file",
-    }
-)
+# The one `_probe` caller with no case in TestUnfollowableSymlink below,
+# mapped to why.
+_PROBE_CALLER_EXEMPTIONS = {
+    "_blocked_path": (
+        "its case is the existing locked-directory and self-loop tests in "
+        "test_plugin_check.py (round 5's ruling; unchanged by this kind)"
+    ),
+}
 
 
 def _probe_callers(tree: ast.Module) -> frozenset[str]:
@@ -1136,14 +1132,25 @@ def _probe_callers(tree: ast.Module) -> frozenset[str]:
 
 
 def test_every_probe_caller_is_covered_by_an_unfollowable_symlink_case() -> None:
-    """Every function whose body calls ``_probe`` directly must be named in
-    ``_PROBE_CALLERS``: a new call site in a function this set does not name
-    fails here, instead of shipping with no case for the "unfollowable" kind.
-    ``_blocked_path``'s case is the existing locked-directory and self-loop
-    tests in test_plugin_check.py (round 5's ruling; unchanged by this kind);
-    every other name has a case in TestUnfollowableSymlink below."""
+    """Every function the AST walk finds calling ``_probe`` directly (except a
+    name in ``_PROBE_CALLER_EXEMPTIONS``) must have at least two methods on
+    ``TestUnfollowableSymlink`` named ``test_<name without its leading
+    underscore>_...``: one for a locked target, one for a self-loop. The
+    check runs against the caller name the walk itself found, not a
+    hand-kept set a new caller's name could be added to without writing
+    either case, so a new ``_probe`` call site with no case fails here."""
     source = Path(plugin_project_module.__file__).read_text()
-    assert _probe_callers(ast.parse(source)) == _PROBE_CALLERS
+    callers = _probe_callers(ast.parse(source))
+    case_names = [name for name in vars(TestUnfollowableSymlink) if name.startswith("test_")]
+    for caller in callers:
+        if caller in _PROBE_CALLER_EXEMPTIONS:
+            continue
+        prefix = f"test_{caller.lstrip('_')}_"
+        matches = [name for name in case_names if name.startswith(prefix)]
+        assert len(matches) >= 2, (
+            f"{caller} calls _probe directly but TestUnfollowableSymlink has "
+            f"{len(matches)} case(s) named {prefix}...; add a locked-target case and a loop case"
+        )
 
 
 def _locked_target(
@@ -1172,8 +1179,8 @@ def _loop(link: Path) -> None:
 class TestUnfollowableSymlink:
     """``_probe``'s ``"unfollowable"`` kind: a symlink whose own ``lstat``
     succeeds but whose follow-up ``stat`` raises ``OSError``, carrying the
-    reason. One locked-directory case and one self-loop case per caller
-    named in ``_PROBE_CALLERS`` (``_blocked_path`` excepted; see
+    reason. One locked-directory case and one self-loop case per direct
+    ``_probe`` caller (``_blocked_path`` excepted; see
     test_every_probe_caller_is_covered_by_an_unfollowable_symlink_case)."""
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
