@@ -313,6 +313,34 @@ class TestWithGraftpunkFloor:
     @pytest.mark.parametrize(
         "requirement",
         [
+            "graftpunk>=1.17.0,<2",
+            "graftpunk==1.17.0",
+            "graftpunk==1.17.*",
+            "graftpunk~=1.17.0",
+            "graftpunk>1.17.0",
+            "graftpunk>=2.0,<3",
+        ],
+    )
+    def test_a_requirement_that_already_excludes_everything_below_the_floor_is_nothing_to_do(
+        self, requirement: str
+    ) -> None:
+        """A bound, a pin, a compatible-release clause, or a cap, each already at
+        or above the floor, needs no rewrite: raising it would change nothing a
+        resolver sees (graft skill spec, amended 2026-10-04)."""
+        text = _deps(f'"{requirement}",')
+        assert with_graftpunk_floor(text, "1.17.0") is None
+
+    def test_an_unparseable_specifier_version_cannot_be_raised(self) -> None:
+        """``===`` permits any text as its "version"; one that packaging.version
+        cannot parse is "cannot raise", not a crash."""
+        text = _deps('"graftpunk===notaversion",')
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
+            requirement="graftpunk===notaversion"
+        )
+
+    @pytest.mark.parametrize(
+        "requirement",
+        [
             "graftpunk==1.0",
             "graftpunk~=1.0",
             "graftpunk<2",

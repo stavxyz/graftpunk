@@ -1560,3 +1560,15 @@ class TestGraftpunkFloor:
         assert result.exit_code == 0, result.output
         assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
         assert _plain(result.output).strip().splitlines() == own
+
+    def test_a_capped_requirement_already_at_the_floor_prints_nothing_extra(
+        self, command: str, recorded: Path
+    ) -> None:
+        """An upper bound does not by itself make the requirement unraisable: a
+        requirement that already allows nothing below the floor gets nothing
+        extra, capped or not."""
+        pyproject = _floor_pyproject('"graftpunk[browser]>=1.17.0,<2"')
+        result, own = _run_writer(command, recorded, pyproject)
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
+        assert _plain(result.output).strip().splitlines() == own

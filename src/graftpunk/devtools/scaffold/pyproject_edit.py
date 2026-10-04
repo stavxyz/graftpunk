@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import Specifier
 from packaging.utils import canonicalize_name
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 from graftpunk.plugins import PLUGINS_GROUP
 
@@ -257,17 +258,48 @@ def _is_graftpunk(requirement: str) -> bool:
     return match is not None and canonicalize_name(match.group(1)) == "graftpunk"
 
 
+# Operators whose version is a lower bound (or the one version an exact pin or
+# compatible-release clause allows): a specifier using one of these, at or
+# above the floor, excludes everything below the floor by itself, regardless
+# of any other specifier alongside it (an upper bound included).
+_LOWER_BOUND_OPERATORS = frozenset({">=", ">", "==", "===", "~="})
+
+
+def _excludes_everything_below(specifiers: list[Specifier], floor: Version) -> bool:
+    """Whether some specifier in *specifiers* already guarantees every version
+    it allows is at or above *floor*, so raising the requirement would be
+    nothing extra (graft skill spec, amended 2026-10-04). A specifier whose
+    version :mod:`packaging.version` cannot parse (only ``===``, arbitrary
+    equality, permits that) does not count: it answers nothing, it does not
+    refuse the requirement, which is for the caller to decide."""
+    for spec in specifiers:
+        if spec.operator not in _LOWER_BOUND_OPERATORS:
+            continue
+        version = spec.version
+        if spec.operator == "==" and version.endswith(".*"):
+            version = version.removesuffix(".*")
+        try:
+            if Version(version) >= floor:
+                return True
+        except InvalidVersion:
+            continue
+    return False
+
+
 def with_graftpunk_floor(text: str, floor: str) -> RaisedFloor | CannotRaiseFloor | None:
     """*text* with its ``[project] dependencies`` ``graftpunk`` requirement's lower
     bound raised to *floor*, when that requirement's only version specifier is a
     ``>=`` below it. Only the version is rewritten: the name, extras, spacing, and
     environment marker stay byte for byte, and so do the file's line endings.
 
-    Returns ``None`` when the requirement already allows nothing below *floor*,
-    and :class:`CannotRaiseFloor` for any other form: no ``graftpunk``
-    requirement, several of them, any other specifier (an upper bound, ``==``,
-    ``~=``, several specifiers, or none), a URL, or a literal this module cannot
-    locate textually.
+    Returns ``None`` when the requirement already allows nothing below *floor*:
+    any specifier with operator ``>=``, ``>``, ``==``, ``===``, or ``~=`` whose
+    version (for ``==X.*``, ``X``) is at or above *floor*, however many other
+    specifiers (an upper bound included) sit alongside it. Returns
+    :class:`CannotRaiseFloor` for any other form that allows a release below
+    *floor*: no ``graftpunk`` requirement, several of them, a bare upper bound,
+    several specifiers none of which excludes everything below the floor, a
+    URL, or a literal this module cannot locate textually.
     """
     dependencies = tomllib.loads(text).get("project", {}).get("dependencies", [])
     if not isinstance(dependencies, list):
@@ -288,11 +320,13 @@ def with_graftpunk_floor(text: str, floor: str) -> RaisedFloor | CannotRaiseFloo
     except InvalidRequirement:
         return cannot
     specifiers = list(requirement.specifier)
-    if requirement.url is not None or len(specifiers) != 1 or specifiers[0].operator != ">=":
+    if requirement.url is not None:
+        return cannot
+    if _excludes_everything_below(specifiers, Version(floor)):
+        return None
+    if len(specifiers) != 1 or specifiers[0].operator != ">=":
         return cannot
     previous = specifiers[0].version
-    if Version(previous) >= Version(floor):
-        return None
     spans = _dependency_literals(text)
     if spans is None or len(spans) != len(dependencies):
         return cannot
