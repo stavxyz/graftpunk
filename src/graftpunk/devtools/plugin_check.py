@@ -28,13 +28,17 @@ __all__ = ["Finding", "check_project"]
 
 @dataclass(frozen=True)
 class Finding:
-    """One thing the lint found, at a project-relative path and, when it has one, a line."""
+    """One thing the lint found: the message alone for a refusal that names no
+    path of its own (``path`` is ``None``), or at a project-relative path and,
+    when it has one, a line."""
 
-    path: str
+    path: str | None
     line: int | None
     message: str
 
     def __str__(self) -> str:
+        if self.path is None:
+            return self.message
         where = f"{self.path}:{self.line}" if self.line is not None else self.path
         return f"{where}: {self.message}"
 
@@ -47,7 +51,7 @@ def check_project(root: Path) -> list[Finding]:
     try:
         view = require_plugin_project(root)
     except (NotAPluginProjectError, PluginProjectError) as exc:
-        return [Finding(path=".", line=None, message=str(exc))]
+        return [Finding(path=None, line=None, message=str(exc))]
     findings: list[Finding] = []
     if not view.fixtures_tree_present:
         findings.append(

@@ -114,6 +114,10 @@ class TestFindings:
     def test_a_directory_that_is_not_a_plugin_project_is_a_finding(self, tmp_path: Path) -> None:
         (finding,) = check_project(tmp_path)
         assert "not a graftpunk plugin project" in finding.message
+        # B12: a reader refusal names no path of its own; printing it should
+        # not prepend a "." that reads like one.
+        assert finding.path is None
+        assert str(finding) == f"{tmp_path} is not a graftpunk plugin project (empty)."
 
     def test_a_dir_that_does_not_exist_is_a_finding_not_read_as_empty(self, tmp_path: Path) -> None:
         """B9: a mistyped --dir must not read as a fresh, empty project."""
