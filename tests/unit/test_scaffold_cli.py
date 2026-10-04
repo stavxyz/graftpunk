@@ -218,6 +218,55 @@ class TestPluginNewHappyPath:
         assert result.exit_code == 1, result.output
         (line,) = strip_ansi(result.output).strip().splitlines()
         assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
+        assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.usefixtures("gp_logging")
+    def test_an_invalid_json_har_is_refused_naming_the_har_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        har = run_dir / "network.har"
+        har.write_text("not json")
+        target = tmp_path / "out"
+        before = set(tmp_path.iterdir())
+        with pytest.raises(HARParseError) as caught:
+            parse_har_file(har)
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
+        assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.usefixtures("gp_logging")
+    def test_a_har_with_the_wrong_schema_is_refused_naming_the_har_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        run_dir = observe_base / "myshop" / "run-1"
+        run_dir.mkdir(parents=True)
+        har = run_dir / "network.har"
+        har.write_text("{}")
+        target = tmp_path / "out"
+        before = set(tmp_path.iterdir())
+        with pytest.raises(HARParseError) as caught:
+            parse_har_file(har)
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 1, result.output
+        (line,) = strip_ansi(result.output).strip().splitlines()
+        assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
         assert set(tmp_path.iterdir()) == before
 
 

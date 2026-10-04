@@ -396,16 +396,23 @@ def parse_har_file(filepath: Path | str) -> HARParseResult:
         with open(filepath, encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError as exc:
-        raise HARParseError(f"Invalid JSON in HAR file: {exc}") from exc
+        raise HARParseError(f"{filepath}: not valid JSON ({exc})") from exc
     except UnicodeDecodeError as exc:
         raise HARParseError(f"{filepath}: not valid UTF-8 ({exc})") from exc
     except OSError as exc:
         # FileNotFoundError is already reported above; anything else that open()
         # or read() can raise (a directory, a permission error) is this
         # function's business to name, not an uncaught traceback at the CLI.
-        raise HARParseError(f"{filepath}: {exc}") from exc
+        # exc.strerror, not str(exc): str(OSError) already ends with the path
+        # (repr-quoted), which would print it twice after the f-string prefix.
+        raise HARParseError(f"{filepath}: {exc.strerror or exc}") from exc
 
-    validate_har_schema(data)
+    try:
+        validate_har_schema(data)
+    except HARParseError as exc:
+        # validate_har_schema's own messages carry no path; this is its one
+        # caller that reads a file, so the path belongs here, not there.
+        raise HARParseError(f"{filepath}: {exc}") from exc
     result = _parse_entries(data, base_dir=base_dir)
 
     LOG.info(

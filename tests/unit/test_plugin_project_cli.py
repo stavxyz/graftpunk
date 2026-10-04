@@ -1178,6 +1178,33 @@ class TestAddCommand:
         assert result.exit_code == 1, result.output
         (line,) = _plain(result.output).strip().splitlines()
         assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
+
+    def test_an_invalid_json_har_is_refused_naming_the_har_path(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        har = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
+        har.write_text("not json")
+        with pytest.raises(HARParseError) as caught:
+            parse_har_file(har)
+        result = _add(recorded, "myshop", "invoices=GET /api/invoices")
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
+
+    def test_a_har_with_the_wrong_schema_is_refused_naming_the_har_path(
+        self, recorded: Path
+    ) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        har = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
+        har.write_text("{}")
+        with pytest.raises(HARParseError) as caught:
+            parse_har_file(har)
+        result = _add(recorded, "myshop", "invoices=GET /api/invoices")
+        assert result.exit_code == 1, result.output
+        (line,) = _plain(result.output).strip().splitlines()
+        assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
 
 
 def _project_lacking_the_wiring(root: Path) -> Path:

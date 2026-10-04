@@ -139,20 +139,36 @@ class TestParseHarFile:
             parse_har_file(tmp_path / "nonexistent.har")
 
     def test_invalid_json(self, tmp_path: Path) -> None:
-        """HARParseError for invalid JSON."""
+        """HARParseError names the file, once, for invalid JSON: an author with
+        several recordings cannot tell which one is broken otherwise."""
         bad_file = tmp_path / "bad.har"
         bad_file.write_text("not json")
 
-        with pytest.raises(HARParseError, match="Invalid JSON"):
+        with pytest.raises(HARParseError, match="not valid JSON") as caught:
             parse_har_file(bad_file)
+        assert str(caught.value).count(str(bad_file)) == 1
 
     def test_invalid_schema(self, tmp_path: Path) -> None:
-        """HARParseError for invalid schema."""
+        """HARParseError names the file, once, for an invalid schema too:
+        validate_har_schema's own messages carry no path, so parse_har_file
+        is the one place that adds it."""
         bad_file = tmp_path / "bad.har"
         bad_file.write_text('{"not": "valid har"}')
 
-        with pytest.raises(HARParseError, match="must contain 'log'"):
+        with pytest.raises(HARParseError, match="must contain 'log'") as caught:
             parse_har_file(bad_file)
+        assert str(caught.value).count(str(bad_file)) == 1
+
+    def test_a_directory_is_named_once_not_twice(self, tmp_path: Path) -> None:
+        """str(OSError) already ends with the path (repr-quoted); using
+        exc.strerror instead of str(exc) keeps the f-string's own prefix the
+        only copy."""
+        a_directory = tmp_path / "a_directory.har"
+        a_directory.mkdir()
+
+        with pytest.raises(HARParseError, match="Is a directory") as caught:
+            parse_har_file(a_directory)
+        assert str(caught.value).count(str(a_directory)) == 1
 
     def test_non_utf8_file_is_a_har_parse_error(self, tmp_path: Path) -> None:
         """A HAR file that is not valid UTF-8 must not raise UnicodeDecodeError
