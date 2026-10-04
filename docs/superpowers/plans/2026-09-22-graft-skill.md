@@ -23,7 +23,7 @@ validated:
 
 **Architecture:** `.claude-plugin/marketplace.json` and `.claude-plugin/plugin.json` make the repository root a plugin (`source: "./"`), and `skills/graft/` holds the skill: `SKILL.md` (frontmatter and the flow), five references read one step at a time (`commands.md`, `rules.md`, `capture.md`, `digest.md`, `harden.md`), and `scripts/preflight.sh`, the one version handshake. Everything the skill knows about a plugin project comes from the package (`gp version --json --at-least --contract`, `gp plugin info --json`, `gp observe digest --endpoints-json`, and the scaffold commands); the skill's own tests pin its prose to the guide's headings, forbid copying the guide, hold the frontmatter's pre-approval to preflight alone and every offered allow rule to a command the skill itself runs, and run preflight against real and fake `gp` executables. The tests take the guide helpers from `tests/unit/guide_harness.py` (the project-tools plan, Task 9) and import no other test module. A CI job and a `just` recipe enforce the skill's independent version.
 
-**Permissions, decided (primary source: https://code.claude.com/docs/en/skills):** `allowed-tools` grants "Tools Claude can use without asking permission during the turn that invokes this skill. The grant clears when you send your next message." The frontmatter therefore pre-approves only preflight, the one command the invoking turn reliably runs. `references/commands.md` stays the one declared list of the commands each step runs and gains the allow rules the skill offers for a prompt-free run; the skill offers them in its first message and never adds them itself. The live login and the first live read are asked for in words at the kick-the-tires step, whatever the user's settings allow.
+**Permissions, decided (primary source: https://code.claude.com/docs/en/skills):** `allowed-tools` grants "Tools Claude can use without asking permission during the turn that invokes this skill. The grant clears when you send your next message." The frontmatter therefore pre-approves only preflight, the one command the invoking turn reliably runs. `references/commands.md` stays the one declared list of the commands each step runs and gains the allow rules the skill offers for a prompt-free run; the skill offers each rule once it can be filled in (`SKILL.md` owns when) and never adds one itself. The live login and the first live read are asked for in words at the kick-the-tires step, whatever the user's settings allow.
 
 **Tech Stack:** Markdown with YAML frontmatter, bash, JSON manifests, pytest (with `pyyaml`, already a dependency), GitHub Actions, `just`.
 
@@ -69,11 +69,11 @@ validated:
 | `tests/unit/test_graft_manifests.py` (new, Task 2) | The manifests' tests. |
 | `tests/unit/skill_harness.py` (new, Task 4) | The skill's files, found once for the skill's test modules: `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, `commands_in`, and `declared_commands`. Not a test module. |
 | `tests/unit/test_graft_consent.py` (new, Task 4) | The frontmatter, the offered allow rules against the declared commands, the live-call question, and every `gp` invocation resolved against the CLI. |
-| `tests/unit/test_graft_references.py` (new, Task 5) | Citations, the copy check, the references' length, the commands' one owner, and `digest.md`'s closed lists against the code that defines them. |
+| `tests/unit/test_graft_references.py` (new, Task 5) | Citations, the copy check, the references' length, the commands' one owner, and `digest.md`'s closed lists against what the digest produces. |
 | `tests/unit/test_graft_preflight.py` (new, Task 3) | Preflight against the real `gp` and a fake one, and CONTRIBUTING's update procedure against preflight's (Task 7). |
 | `scripts/check-skill-version.sh` (new, Task 6) | The version-bump check. |
 | `.github/workflows/skill-version.yml` (new, Task 6) | Runs the check on pull requests. |
-| `.github/workflows/python-quality.yml` (modify, Task 6) | Runs the Python quality jobs (the full test suite, lint, type check, typer compatibility, and the lean install) when only the skill or the guide changes. |
+| `.github/workflows/python-quality.yml` (modify, Task 6) | Runs the Python quality jobs (the full test suite, lint, type check, typer compatibility, and the lean install) when only the skill, the guide, `scripts/`, or `CONTRIBUTING.md` changes. |
 | `justfile` (modify, Task 6) | `just skill-version`. |
 | `tests/unit/test_skill_version_script.py` (new, Task 6) | The check against throwaway git repositories. |
 | `docs/PLUGIN_DEVELOPMENT.md`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md` (modify, Task 7) | "With the skill", the install lines, "Releasing the skill", one Added line. |
@@ -792,11 +792,16 @@ _SKILL_DIR_VAR = "${CLAUDE_SKILL_DIR}/"
 # the turn that invokes the skill (https://code.claude.com/docs/en/skills), and
 # preflight is the one command that turn reliably runs.
 _PREFLIGHT_ENTRY = "${CLAUDE_SKILL_DIR}/scripts/preflight.sh *"
+# The prefix that runs a command in the project's own environment, where the plugin
+# is installed: every command that loads the plugin carries it.
+_PROJECT_ENV = "uv run --project . --extra dev"
+# The Harden line that runs the gate, one PROJECT_GATE command at a time.
+_GATE_SLOT = "<gate-command>"
 # The offered rules scoped to the plugin being built, one per declared Kick the
 # tires line: the skill puts the plugin's site_name in place of <site-name> when
 # it offers them. The live read-only command gets no rule and asks each time.
-_SITE_RULES = ["gp <site-name> --help", "gp <site-name> login"]
-_LIVE_READ_ONLY = "gp <site-name> <command>"
+_SITE_RULES = [f"{_PROJECT_ENV} gp <site-name> --help", f"{_PROJECT_ENV} gp <site-name> login"]
+_LIVE_READ_ONLY = f"{_PROJECT_ENV} gp <site-name> <command>"
 # What the kick-the-tires step asks before the first live call, whatever the
 # user's settings allow: the consent point for the live site and the login.
 _LIVE_CALL_QUESTION = "run a live login and one read-only command now?"
@@ -823,8 +828,17 @@ def _commands_section(heading: str) -> str:
 
 
 def _skill_run_commands() -> list[str]:
-    """The commands under "Run by the skill": the only ones an offered rule may cover."""
-    return commands_in(_commands_section("## Run by the skill"))
+    """The commands under "Run by the skill", the gate's line expanded to each
+    PROJECT_GATE command in its place: the only ones an offered rule may cover."""
+    return [
+        command
+        for line in commands_in(_commands_section("## Run by the skill"))
+        for command in (
+            [line.replace(_GATE_SLOT, gate) for gate in PROJECT_GATE]
+            if _GATE_SLOT in line
+            else [line]
+        )
+    ]
 
 
 def _preflight_commands() -> list[str]:
@@ -897,10 +911,12 @@ class TestOfferedAllowRules:
             assert not any(_matches(p, command) for p in _offered_rules()), command
 
     def test_every_rule_is_a_scoped_gp_rule(self) -> None:
-        """Never Bash(*), never a bare Bash(gp *), never a command other than gp."""
+        """Never Bash(*), never a bare Bash(gp *), never a command other than gp,
+        whether gp runs from PATH or in the project's environment."""
         for pattern in _offered_rules():
-            assert pattern.startswith("gp "), pattern
-            assert pattern not in ("*", "gp *"), pattern
+            command = pattern.removeprefix(f"{_PROJECT_ENV} ")
+            assert command.startswith("gp "), pattern
+            assert command not in ("*", "gp *"), pattern
             assert "*" not in pattern.removesuffix(" *"), pattern
 
     def test_no_offered_rule_reaches_the_recorder_or_every_gp_command(self) -> None:
@@ -911,12 +927,16 @@ class TestOfferedAllowRules:
             "gp observe -s <session> interactive <url>",
             "gp anything",
             "gp <site-name> delete-everything",
+            "uv run anything",
+            f"{_PROJECT_ENV} pytest",
+            f"{_PROJECT_ENV} gp anything",
+            f"{_PROJECT_ENV} gp <site-name> delete-everything",
         ):
             assert not any(_matches(pattern, probe) for pattern in _offered_rules()), probe
 
     def test_the_plugin_rules_are_the_declared_help_and_login_lines(self) -> None:
         rules = _offered_rules()
-        assert [rule for rule in rules if rule.startswith("gp <")] == _SITE_RULES
+        assert [rule for rule in rules if "<site-name>" in rule] == _SITE_RULES
         assert set(_SITE_RULES) <= set(_skill_run_commands())
 
     def test_the_live_read_only_command_asks_each_time(self) -> None:
@@ -927,17 +947,27 @@ class TestOfferedAllowRules:
     def test_the_gates_gp_commands_have_rules_and_commands_md_says_the_rest_do_not(
         self,
     ) -> None:
-        """The gate is policy.PROJECT_GATE's to list. Every gp command in it is
-        covered by an offered rule; an offered rule is only ever a gp rule
-        (test_every_rule_is_a_scoped_gp_rule), so commands.md says in words that
-        the gate's other commands ask each time."""
+        """The gate is policy.PROJECT_GATE's to list, and runs in the project's
+        environment. Every gp command in it is covered by an offered rule; an
+        offered rule is only ever a gp rule (test_every_rule_is_a_scoped_gp_rule),
+        so commands.md says in words that the gate's other commands ask each time."""
         rules = _offered_rules()
-        gate_gp = [command for command in PROJECT_GATE if command.startswith("gp ")]
+        gate_gp = [f"{_PROJECT_ENV} {c}" for c in PROJECT_GATE if c.startswith("gp ")]
         assert gate_gp
         for command in gate_gp:
             assert any(_matches(pattern, command) for pattern in rules), command
         commands_md = " ".join(COMMANDS_MD.read_text(encoding="utf-8").split())
         assert _GATE_RULE_SENTENCE in commands_md
+
+
+def test_the_commands_that_load_the_plugin_run_in_the_project_environment() -> None:
+    """The kick-the-tires lines and the gate need the plugin installed, which the
+    project's own environment guarantees and the gp on PATH does not."""
+    kick = commands_in(_commands_section("### Kick the tires"))
+    harden = commands_in(_commands_section("### Harden"))
+    assert kick and f"{_PROJECT_ENV} {_GATE_SLOT}" in harden
+    for line in kick:
+        assert line.startswith(f"{_PROJECT_ENV} gp "), line
 
 
 def test_the_live_step_asks_before_the_first_live_call() -> None:
@@ -1011,8 +1041,9 @@ when you send your next message", https://code.claude.com/docs/en/skills), and
 preflight is the one command that turn reliably runs. Every other command asks
 the user's permission each time it runs, unless their settings already allow it.
 
-`references/commands.md` lists every command the steps run and, under "Allow
-rules for a prompt-free run", the permission rules this skill offers for them.
+`references/commands.md` lists every `gp` command the steps run and the
+preflight call, names the project's gate as one unit, and, under "Allow rules
+for a prompt-free run", holds the permission rules this skill offers for them.
 Offer those rules; never add a rule to a settings file yourself.
 
 The live login and the first command against the live site are asked for in
@@ -1029,13 +1060,15 @@ mode: `empty` is create mode, `plugin` is enhance mode. For `foreign`, stop and
 say: "this directory holds a project that is not a graftpunk plugin; run the
 skill in an empty directory or in the plugin's project".
 
-Your first message after preflight offers the allow rules: show the lines under
-"Allow rules for a prompt-free run" in `references/commands.md`, with
-`<site-name>` replaced by the name gp runs the plugin by, its `site_name` in the
-`plugins` list of `gp plugin info --json` (in create mode, known once the
-scaffold step has run), and say that the user can add them to this project's
-settings with `/permissions` for a run without prompts. Say that the skill works
-either way: without the rules, each command asks first.
+Your first message after preflight offers the allow rules under "Allow rules
+for a prompt-free run" in `references/commands.md` that hold no `<site-name>`,
+and says that the user can add them to this project's settings with
+`/permissions` for a run without prompts. Say that the skill works either way:
+without the rules, each command asks first. Offer the rules that hold
+`<site-name>` once the plugin's name is fixed, with that name in its place: in
+create mode at the end of the frame step, since the name `gp plugin new` takes
+becomes the plugin's `site_name`; in enhance mode once the plugin is chosen,
+from its `site_name` in `project.plugins`.
 
 This invocation's arguments: plugin name `$0`, site URL `$1`. Claude Code puts
 each argument given in its place, and a position with no argument keeps its
@@ -1157,8 +1190,8 @@ templated command. Placeholders: `<name>` (passed to `gp plugin new`),
 `<site-name>` (the name gp runs the plugin by, `site_name` in
 `gp plugin info --json`), `<entry-point>` (its `entry_point` there),
 `<command>` (an agreed command name), `<session>` and `<run>` (chosen at the
-end of the capture step), `<url>`, `<version>`, `<n>`, `<METHOD>`, and
-`<template>`.
+end of the capture step), `<gate-command>` (each command of the project's
+gate, in order), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
 
 Only preflight is pre-approved (`SKILL.md`, "Permissions"); every other command
 asks unless the user's settings allow it. The rules offered at the end are
@@ -1175,8 +1208,7 @@ gp plugin info --json
 
 ## Run by the user
 
-The recorder needs a person at the keyboard; the skill prints one of these and
-never runs it.
+The skill prints one of these for the user to run and never runs it.
 
 ```bash
 gp observe --no-session interactive <url>
@@ -1184,6 +1216,11 @@ gp observe -s <session> interactive <url>
 ```
 
 ## Run by the skill
+
+The Kick the tires lines and each command of the gate load the plugin, so they
+run in the project's own environment, through `uv run --project . --extra dev`;
+every other `gp` line runs the `gp` on PATH. When `uv` is missing, say that this
+step needs it (https://docs.astral.sh/uv/) and stop there.
 
 ### Start
 
@@ -1212,8 +1249,6 @@ gp observe digest <session> <run> --endpoints-json
 
 ### Scaffold
 
-The last line reads back the commands the step added.
-
 ```bash
 gp plugin new <name> --from-run <session> --run <run> --command "<command>=<METHOD> <template>"
 gp plugin add-command <entry-point> --from-run <session> --run <run> --command "<command>=<METHOD> <template>"
@@ -1222,16 +1257,17 @@ gp plugin info --json
 
 ### Harden
 
-```bash
-gp observe fixtures <session> <run> --match "<METHOD> <template>"
-gp plugin check
-gp plugin upgrade
-```
-
-The project's gate is one unit, run whole: `policy.PROJECT_GATE` owns its
+The last line is the project's gate, one unit, run whole: each of its commands
+in place of `<gate-command>`, in order. `policy.PROJECT_GATE` owns those
 commands and the guide's section on it lists them (guide: The gate). The skill
 offers an allow rule only for the gate's `gp` commands; every other command in
 the gate asks each time it runs, unless the user's settings allow it.
+
+```bash
+gp observe fixtures <session> <run> --match "<METHOD> <template>"
+gp plugin upgrade
+uv run --project . --extra dev <gate-command>
+```
 
 ### Kick the tires
 
@@ -1240,17 +1276,16 @@ first of them runs, whatever the user's settings allow. The last line is one
 read-only command from the agreed proposal.
 
 ```bash
-gp <site-name> --help
-gp <site-name> login
-gp <site-name> <command>
+uv run --project . --extra dev gp <site-name> --help
+uv run --project . --extra dev gp <site-name> login
+uv run --project . --extra dev gp <site-name> <command>
 ```
 
 ## Allow rules for a prompt-free run
 
-The rules the skill offers in its first message, in the settings syntax, with
-`<site-name>` filled in. The user adds them with `/permissions`; the skill never
-adds them. The last two cover the plugin's help and login; the live read-only
-command has no rule and asks each time, since it reads the account.
+The rules the skill offers, in the settings syntax. `<site-name>` is the
+plugin's `site_name`. The last two cover the plugin's help and login; the live
+read-only command has no rule and asks each time, since it reads the account.
 
 ```text
 Bash(gp plugin info *)
@@ -1261,13 +1296,15 @@ Bash(gp observe fixtures *)
 Bash(gp plugin new *)
 Bash(gp plugin add-command *)
 Bash(gp plugin upgrade *)
-Bash(gp plugin check *)
-Bash(gp <site-name> --help)
-Bash(gp <site-name> login)
+Bash(uv run --project . --extra dev gp plugin check *)
+Bash(uv run --project . --extra dev gp <site-name> --help)
+Bash(uv run --project . --extra dev gp <site-name> login)
 ```
 ````
 
 `gp plugin add-command` takes `--run` as `gp plugin new` does (`src/graftpunk/cli/scaffold_project_commands.py:106` (`"--run"`)), so both scaffold lines read the run chosen at the end of the capture step, never whichever run is newest when they run; the walker test resolves both lines against the CLI.
+
+**Which `gp` loads the plugin (probed 2026-10-04 with uv 0.12.18, in a scratch directory, against a project from `gp plugin new myshop --url https://myshop.example`).** A `gp` installed with `uv tool install <graftpunk checkout>` does not list `myshop` in `gp --help`; one installed with `uv tool install <graftpunk checkout> --with-editable <project>` does, and so does `uv run --project <project> gp --help`, which needs no install outside the project because the generated `pyproject.toml` depends on graftpunk. The skill therefore runs every command that loads the plugin (the Kick the tires lines and the gate) as `uv run --project . --extra dev ...`; `--extra dev` brings in the generated project's `dev` extra, without which `uv run --project . pytest` fails with `Failed to spawn: pytest`. The same probe showed that `uv run` re-locks and reinstalls when a lower bound in `pyproject.toml` is raised, which is what `harden.md` relies on for "install the project again". Each such project environment resolves graftpunk from the index at the floor `gp plugin new` writes, so the gate there needs a graftpunk release that ships `gp plugin check` and `graftpunk.testing` (1.17.0, this plan's precondition): in the probe, the project's environment resolved PyPI's 1.16.0, which has neither, and the gate passed its ruff steps while `pytest` failed on the missing `graftpunk.testing` and `gp plugin check` was an unknown command. With the checkout's graftpunk overlaid (`--with <graftpunk checkout>`), `pytest` passed and `gp plugin check` ran and reported the fresh scaffold's `GP-FILL` markers, as the guide says it does.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -1292,7 +1329,7 @@ git commit -m "feat(skill): SKILL.md pre-approves preflight alone, and commands.
 The slug helpers the citation tests use are `slug` and `slugs_of`, both defined in `tests/unit/guide_harness.py` (`def slug`, `def slugs_of`). The project-tools plan's Task 9 moved `_slugs_of` there from `tests/unit/test_plugin_development_guide.py` and extracted `slug` from it, so this task edits no guide test.
 
 **Interfaces:**
-- Consumes: `CTRL_C_REACHES_GP` (Task 1); `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, and `declared_commands` from `tests/unit/skill_harness.py` (Task 4); `GUIDE`, `GUIDE_TEXT`, `REPO_ROOT`, `ROOT_COMMAND`, `gp_invocations`, `outside_fences`, `section`, `slug`, and `slugs_of` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9); `ObservationKind` and `digest` from `src/graftpunk/har/digest.py:48` (`ObservationKind = Literal`), `endpoints_projection` and `_LOGIN_SHAPED_KINDS` from `src/graftpunk/har/report.py:196` (`_LOGIN_SHAPED_KINDS = frozenset`), and `LoginForm` from `src/graftpunk/har/documents.py:65` (`class LoginForm`). Fence handling and the section rule have one owner each, in the harness: `_prose` starts from `outside_fences`, and `_without_section` is derived from `section`.
+- Consumes: `CTRL_C_REACHES_GP` (Task 1); `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, and `declared_commands` from `tests/unit/skill_harness.py` (Task 4); `GUIDE`, `GUIDE_TEXT`, `REPO_ROOT`, `ROOT_COMMAND`, `gp_invocations`, `outside_fences`, `section`, `slug`, and `slugs_of` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9); `DigestSource` from `src/graftpunk/har/digest.py:202` (`class DigestSource`), `digest` from `src/graftpunk/har/digest.py:1430` (`def digest`), `endpoints_projection` from `src/graftpunk/har/report.py:222` (`def endpoints_projection`), and `LoginForm` from `src/graftpunk/har/documents.py:65` (`class LoginForm`). Fence handling and the section rule have one owner each, in the harness: `_prose` starts from `outside_fences`, and `_without_section` is derived from `section`.
 - Produces: the four references `SKILL.md` names, and `tests/unit/test_graft_references.py`, the citation, copy, command-ownership, and digest-list tests. The copy detector (`_words`, `_runs`, `_prose`) and its self-tests' probe (`_probe`, which takes a sentence from `GUIDE_TEXT` at test time) stay in that module, their one user. No reference restates what a `gp` command prints: `harden.md` ("The gate") tells the reader to show gp's output and act on every instruction in it, and the other files point there, so gp's output stays the one owner of the follow-up steps. `capture.md` and `harden.md` carry no fenced command blocks: they point to the step's block in `commands.md`, the one owner of the commands.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1306,17 +1343,18 @@ against commands.md, their one owner (graft skill spec, 2026-09-21, "Testing")."
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import shlex
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any
 
 import click
 import pytest
 
-from graftpunk.har.digest import DigestSource, ObservationKind, digest
+from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.documents import LoginForm
-from graftpunk.har.report import _LOGIN_SHAPED_KINDS, endpoints_projection
+from graftpunk.har.report import endpoints_projection
 from tests.unit.guide_harness import (
     GUIDE,
     GUIDE_TEXT,
@@ -1516,7 +1554,7 @@ def test_commands_md_owns_every_gp_command_the_skill_spells(doc: Path) -> None:
             assert "<" not in invocation, f"{where} spells a command commands.md owns"
 
 
-# digest.md's closed lists, each compared with the code that defines it. The
+# digest.md's closed lists, each compared with what the digest produces. The
 # projection's type labels are not a closed list there: graftpunk.har.digest
 # builds them across several functions and keeps no constant naming them all, so
 # digest.md says which labels the list includes, and no test here pins them.
@@ -1546,13 +1584,77 @@ def _projection() -> dict[str, Any]:
     return endpoints_projection(dataclasses.replace(result, login_forms=(form,)))
 
 
+def _har_entry(
+    method: str,
+    url: str,
+    *,
+    status: int = 200,
+    body: str = "",
+    headers: tuple[tuple[str, str], ...] = (),
+    post: str | None = None,
+) -> dict[str, Any]:
+    response_headers = [("Content-Type", "text/html"), *headers]
+    entry: dict[str, Any] = {
+        "startedDateTime": "2026-09-10T10:00:00.000Z",
+        "time": 5,
+        "request": {"method": method, "url": url, "headers": [], "cookies": [], "queryString": []},
+        "response": {
+            "status": status,
+            "statusText": "",
+            "headers": [{"name": n, "value": v} for n, v in response_headers],
+            "cookies": [],
+            "content": {"mimeType": "text/html", "text": body, "size": len(body)},
+        },
+    }
+    if post is not None:
+        entry["request"]["postData"] = {"mimeType": "application/json", "text": post}
+    return entry
+
+
+def _login_projection(tmp_path: Path) -> dict[str, Any]:
+    """endpoints_projection of a recorded login: the form page, the credential post
+    answering a redirect, one redirect hop, and the landing page setting a cookie."""
+    form = (
+        '<form action="/session" method="post"><input type="email" name="email">'
+        '<input type="password" name="password"></form>'
+    )
+    credentials = json.dumps({"email": "alice@example.com", "password": "x"})
+    entries = [
+        _har_entry("GET", "https://myshop.example/signin", body=form),
+        _har_entry(
+            "POST",
+            "https://myshop.example/session",
+            status=302,
+            headers=(("Location", "/sso/callback"),),
+            post=credentials,
+        ),
+        _har_entry(
+            "GET",
+            "https://myshop.example/sso/callback",
+            status=302,
+            headers=(("Location", "/dashboard"),),
+        ),
+        _har_entry(
+            "GET",
+            "https://myshop.example/dashboard",
+            body="<p>orders</p>",
+            headers=(("Set-Cookie", "s=v; Path=/"),),
+        ),
+    ]
+    har = tmp_path / "login.har"
+    har.write_text(json.dumps({"log": {"version": "1.2", "entries": entries}}))
+    return endpoints_projection(digest(DigestSource.from_har(har)))
+
+
 class TestDigestListsMatchTheirSource:
-    def test_the_auth_url_kinds_are_the_login_flow_kinds(self) -> None:
-        """auth_urls keeps only login_flow observations, and digest.py marks only the
-        login-shaped kinds as login_flow; auth_api never is."""
-        expected = set(get_args(ObservationKind)) & _LOGIN_SHAPED_KINDS
-        assert expected
-        assert _listed("each of kind", ". A plain form") == expected
+    def test_the_auth_url_kinds_are_the_ones_a_login_produces(self, tmp_path: Path) -> None:
+        """Derived from behaviour: a recorded login that walks a form page, a
+        credential post, a redirect hop, and a landing that sets a cookie, digested,
+        and the kinds its auth_urls hold. That recording produces every login kind,
+        so digest.md's list must equal them."""
+        produced = {o["kind"] for o in _login_projection(tmp_path)["login"]["auth_urls"]}
+        assert produced
+        assert _listed("each of kind", ". A plain form") == produced
 
     def test_the_endpoint_fields_are_the_projections(self) -> None:
         (endpoint, *_rest) = _projection()["endpoints"]
@@ -1664,13 +1766,17 @@ list those for them before they start. Useful prompts:
 ## After the recording
 
 This is where the recording is chosen, once. When the user says they are done,
-run `gp observe list`, take the newest run under the name graftpunk inferred
-from the host, and say the session name and the run ID back; the user may name
-another run instead. Every later step reads that session and that run, never
+run `gp observe list` and take the newest run under the name the recording was
+stored under: after the `--no-session` line, the name graftpunk inferred from
+the host; after the `-s <session>` line, that session's stored name as
+`gp observe list` shows it. Say the session name and the run ID back; the user
+may name another run instead. Every later step reads that session and that run, never
 whichever run is newest by then. A want that the digest later shows no endpoint
 for gets a second, narrower recording aimed at that one flow, and that
 recording is chosen the same way.
 ````
+
+The two recorder lines store their runs under different names. `--no-session` stores under the name inferred from the URL, and `-s` under the session's own name (`src/graftpunk/cli/observe_commands.py:629` (`def _resolve_observe_context`)), passed through `session_dirname` on the way to disk (`src/graftpunk/observe/storage.py:20` (`def session_dirname`)), so a session `myshop@alice` lists as `myshop-alice`. `gp observe list` prints those directory names, which is why "After the recording" reads the name from its output rather than from the session as typed.
 
 - [ ] **Step 5: Write `digest.md`**
 
@@ -1766,12 +1872,14 @@ Create `skills/graft/references/harden.md`:
 
 For each command, write its capture out of the recording with the
 `gp observe fixtures` line from the Harden block of `references/commands.md`,
-the command's endpoint in place of `<METHOD> <template>`. gp's `Wrote:` lines
-name each capture under `tests/captures/`, and the scaffold step's `Next:`
-lines name the fixture each test reads. Copy each capture with its sidecar to
-that fixture path, then edit the copy's response, inventing every value while
-keeping its structure (guide: Deriving a fixture from a capture). Leave the
-copied sidecar alone.
+the command's endpoint in place of `<METHOD> <template>`. Copy each capture gp
+writes, with its sidecar, into the fixtures directory the generated tests read
+(their `FIXTURES_DIR`), keeping its file name: a test finds its fixture by that
+name, and a request with no fixture under it answers 404. When gp writes
+numbered copies of one endpoint, copy the one you want onto the plain name.
+Then edit the copy's response, inventing every value while keeping its
+structure (guide: Deriving a fixture from a capture). Leave the copied sidecar
+alone.
 
 When gp says it can write no fixture for a command's endpoint, write a
 fixture and its sidecar by hand, with invented values in the shape the site
@@ -1797,17 +1905,25 @@ returned shape (guide: Test against fixtures, not against the site).
 ## The gate
 
 Read the guide's section on the gate (guide: The gate) and run every command it
-lists, in the project's directory, until all of them pass. This section is
-where the skill's handling of gp's output lives, for the scaffold step and this
-one: show the user gp's output and act on every instruction in it, then run the
+lists, in the project's environment as the Harden block of
+`references/commands.md` says, until all of them pass. This section is where
+the skill's handling of gp's output lives, for the scaffold step and this one:
+show the user gp's output and act on every instruction in it, then run the
 gate again. Both `gp plugin add-command` and `gp plugin upgrade` may ask for
 the project to be installed again or for its graftpunk requirement to be
-raised, and each `gp plugin check` finding carries the advice to follow. The cases to
-expect, in plain words:
+raised, and each finding of the gate's plugin check carries the advice to
+follow.
 
-- graftpunk's requirement in the project was raised: install the project again.
-- the requirement cannot be raised for you: raise it by hand, then install the
-  project again.
+Installing the project again means the project's own environment, the one the
+`uv run --project .` lines use, and never the `gp` on the user's PATH. `uv run`
+brings that environment in line with `pyproject.toml` before it runs anything,
+so running the gate again in that form is the reinstall. The cases to expect,
+in plain words:
+
+- graftpunk's requirement in the project was raised: run the gate again, which
+  installs the project again.
+- the requirement cannot be raised for you: raise it by hand, then run the
+  gate again.
 - the fixtures tree or some project wiring is missing: gp says to run
   `gp plugin upgrade`; run it, then the whole gate.
 - an endpoint for which `gp observe fixtures` writes no fixture: write the
@@ -1819,6 +1935,8 @@ Read the guide's publish checklist (guide: Before you publish) and walk its
 items in order. Keep no copy of that list here or in the conversation; the
 guide is the one place it lives.
 ````
+
+"A fixture per command" names no gp output label: the generated test spells no fixture path, and `FixtureSession` finds a fixture by the capture's own file name (the name `gp observe fixtures` writes) and answers 404 when none matches (`src/graftpunk/testing/__init__.py:71` (`class FixtureSession`)), so the copy keeps the capture's name.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -2117,12 +2235,14 @@ skill-version BASE="origin/main":
     scripts/check-skill-version.sh {{BASE}}
 ```
 
-In `.github/workflows/python-quality.yml`, add these three lines to the `python:` filter list (after `- 'uv.lock'`), so the skill's tests and the guide's tests run when only the skill or the guide changes:
+In `.github/workflows/python-quality.yml`, add these five lines to the `python:` filter list (after `- 'uv.lock'`), so the tests that pin a non-Python file run when only that file changes: the skill's tests, the guide's tests, the version script's tests, and the test that holds `CONTRIBUTING.md`'s update procedure to preflight's:
 
 ```yaml
               - 'skills/**'
               - '.claude-plugin/**'
               - 'docs/PLUGIN_DEVELOPMENT.md'
+              - 'scripts/**'
+              - 'CONTRIBUTING.md'
 ```
 
 - [ ] **Step 5: Run the tests and the recipe to verify they pass**
