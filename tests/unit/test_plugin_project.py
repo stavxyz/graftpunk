@@ -34,6 +34,7 @@ from graftpunk.devtools.scaffold.policy import (
     module_name_for,
 )
 from graftpunk.devtools.scaffold.project import write_scaffold
+from graftpunk.devtools.scaffold.pysrc import with_import
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixtures_root_for
 from graftpunk.har.digest import DigestSource, Endpoint, RunDigest, ShapeNode
 
@@ -349,6 +350,64 @@ class TestTheView:
         finally:
             src.chmod(0o755)
         assert "graftpunk_myshop" not in view.first_party_packages
+
+    def test_known_first_party_from_the_new_isort_table_changes_placement(
+        self, tmp_path: Path
+    ) -> None:
+        """[tool.ruff.lint.isort] known-first-party names a module with no
+        directory on disk for the scan to find; the placed import must still
+        land in the first-party section ruff itself agrees with."""
+        _generate(tmp_path)
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            pyproject.read_text()
+            + '\n[tool.ruff.lint.isort]\nknown-first-party = ["myshop_shared"]\n'
+        )
+        view = read_project(tmp_path)
+        assert "myshop_shared" in view.first_party_packages
+        text = with_import(
+            "import pytest\n",
+            "myshop_shared.util",
+            "helper",
+            first_party=view.first_party_packages,
+        )
+        assert text == "import pytest\n\nfrom myshop_shared.util import helper\n"
+        (tmp_path / "mod.py").write_text(text)
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", "--select", "I", "mod.py"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
+
+    def test_known_first_party_from_the_legacy_isort_table_changes_placement(
+        self, tmp_path: Path
+    ) -> None:
+        """The legacy [tool.ruff.isort] table, for a project that has not
+        migrated to [tool.ruff.lint.isort], is read the same way."""
+        _generate(tmp_path)
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            pyproject.read_text() + '\n[tool.ruff.isort]\nknown-first-party = ["myshop_shared"]\n'
+        )
+        view = read_project(tmp_path)
+        assert "myshop_shared" in view.first_party_packages
+        text = with_import(
+            "import pytest\n",
+            "myshop_shared.util",
+            "helper",
+            first_party=view.first_party_packages,
+        )
+        assert text == "import pytest\n\nfrom myshop_shared.util import helper\n"
+        (tmp_path / "mod.py").write_text(text)
+        check = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "ruff", "check", "--select", "I", "mod.py"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert check.returncode == 0, check.stdout + check.stderr
 
     def test_test_markers_skips_a_venv_directory(self, tmp_path: Path) -> None:
         _generate(tmp_path)
