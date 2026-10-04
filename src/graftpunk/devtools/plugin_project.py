@@ -69,11 +69,17 @@ def unreadable_file_message(reason: str) -> str:
     message) with the advice that fits it, built once so ``gp plugin check``'s
     finding and ``gp plugin upgrade``'s refusal can never word the same reason
     differently. ``NOT_A_DIRECTORY`` already carries its own advice (an ancestor
-    blocking the path, not the path itself): used as given."""
+    blocking the path, not the path itself): used as given. A permissions
+    problem and an encoding problem each get advice of their own, since
+    neither is fixed by waiting for the file to parse."""
     if reason == NOT_A_DIRECTORY:
         return reason
     if reason == NOT_A_REGULAR_FILE:
         return f"{reason}; move it aside, then run gp plugin upgrade."
+    if reason.startswith("cannot be read"):
+        return f"{reason}; fix its permissions, then run gp plugin upgrade."
+    if reason.startswith("not valid UTF-8"):
+        return f"{reason}; save it as UTF-8, then run gp plugin upgrade."
     return f"{reason}; gp plugin upgrade can add its wiring once it parses."
 
 

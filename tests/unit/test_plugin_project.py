@@ -16,6 +16,8 @@ import pytest
 
 from graftpunk.devtools import plugin_project as plugin_project_module
 from graftpunk.devtools.plugin_project import (
+    NOT_A_DIRECTORY,
+    NOT_A_REGULAR_FILE,
     CommandView,
     NotAPluginProjectError,
     PluginDefect,
@@ -26,6 +28,7 @@ from graftpunk.devtools.plugin_project import (
     classify,
     read_project,
     require_plugin_project,
+    unreadable_file_message,
 )
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.policy import (
@@ -876,6 +879,39 @@ class TestRequirementsAreDecidedStructurally:
 
     def test_a_directory_that_is_not_a_plugin_project_lacks_nothing(self, tmp_path: Path) -> None:
         assert read_project(tmp_path).missing_requirements() == ()
+
+
+class TestUnreadableFileMessage:
+    """unreadable_file_message builds the one piece of advice gp plugin check's
+    finding and gp plugin upgrade's refusal both print for a given reason, so a
+    permissions problem, an encoding problem, and a genuine parse failure must
+    each get their own words, not the one fallback tail that used to cover all
+    three."""
+
+    def test_not_a_directory_is_used_as_given(self) -> None:
+        assert unreadable_file_message(NOT_A_DIRECTORY) == NOT_A_DIRECTORY
+
+    def test_not_a_regular_file_gets_move_it_aside_advice(self) -> None:
+        assert unreadable_file_message(NOT_A_REGULAR_FILE) == (
+            f"{NOT_A_REGULAR_FILE}; move it aside, then run gp plugin upgrade."
+        )
+
+    def test_cannot_be_read_gets_permissions_advice_not_the_parse_tail(self) -> None:
+        assert unreadable_file_message("cannot be read (Permission denied)") == (
+            "cannot be read (Permission denied); fix its permissions, then run gp plugin upgrade."
+        )
+
+    def test_not_valid_utf_8_gets_encoding_advice_not_the_parse_tail(self) -> None:
+        reason = "not valid UTF-8 ('utf-8' codec can't decode byte 0xff)"
+        assert unreadable_file_message(reason) == (
+            f"{reason}; save it as UTF-8, then run gp plugin upgrade."
+        )
+
+    def test_a_genuine_parse_failure_keeps_the_parse_tail(self) -> None:
+        reason = "does not parse (invalid syntax, line 1)"
+        assert unreadable_file_message(reason) == (
+            f"{reason}; gp plugin upgrade can add its wiring once it parses."
+        )
 
 
 def _states(root: Path) -> set[str]:
