@@ -599,12 +599,13 @@ class TestCheckFixturesTree:
         assert report.verified == 1
         assert any("unchanged copy of its capture" in p for p in report.problems)
 
-    def test_a_symlink_cycle_under_the_tree_terminates_and_checks_once(
+    def test_two_symlinks_to_one_real_directory_check_its_fixture_once(
         self, tmp_path: Path
     ) -> None:
-        """Two symlinks pointing at the same real directory do not each get
-        walked (which would report its fixture's missing sidecar twice);
-        a stat-identity set lets only the first one through."""
+        """Two symlinks pointing at the same real directory (not a cycle:
+        neither sits under the other) do not each get walked (which would
+        report its fixture's missing sidecar twice); a stat-identity set
+        lets only the first one through."""
         real = tmp_path / "real"
         real.mkdir()
         _fixture(real, "get_orders.json", b"{}", None)
@@ -612,6 +613,21 @@ class TestCheckFixturesTree:
         (tmp_path / "link_two").symlink_to(real)
         report = check_fixtures_tree(tmp_path)
         no_sidecar = [p for p in report.problems if "get_orders.json: no sidecar" in p]
+        assert len(no_sidecar) == 1
+
+    def test_a_symlink_back_to_the_tree_is_a_true_cycle_checked_once(self, tmp_path: Path) -> None:
+        """A symlink under the tree pointing back at the tree's own root is
+        an actual cycle, not just two paths to one directory. The tree's
+        own identity is seeded into the visited set before the walk starts
+        (``_collect_fixtures``'s *tree_stat* parameter); without that seed,
+        the walk would re-enter the tree through the link and report the
+        root fixture's missing sidecar a second time."""
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "back").symlink_to(tmp_path)
+        report = check_fixtures_tree(tmp_path)
+        no_sidecar = [p for p in report.problems if "no sidecar" in p]
         assert len(no_sidecar) == 1
 
     def test_a_dangling_symlink_and_a_loop_are_skipped_not_reported(self, tmp_path: Path) -> None:
