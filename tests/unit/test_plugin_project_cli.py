@@ -1522,7 +1522,10 @@ class TestGraftpunkFloor:
         assert result.exit_code == 0, result.output
         assert (recorded / "pyproject.toml").read_bytes() == _floor_pyproject(raised).encode()
         lines = _plain(result.output).strip().splitlines()
-        assert lines == [*own, "pyproject.toml: graftpunk>=1.17.0 (was >=1.0)"]
+        assert lines == [
+            *own,
+            "pyproject.toml: graftpunk>=1.17.0 (was >=1.0); reinstall the project",
+        ]
 
     def test_a_pinned_requirement_is_left_and_named_in_a_next_line(
         self, command: str, recorded: Path

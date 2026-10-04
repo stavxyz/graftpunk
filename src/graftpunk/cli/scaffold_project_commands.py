@@ -37,7 +37,7 @@ def _print_floor(floor: RaisedFloor | CannotRaiseFloor | None) -> None:
     the running graftpunk: the raise it got, or how to make it by hand."""
     at = graftpunk_version_floor()
     if isinstance(floor, RaisedFloor):
-        line = f"pyproject.toml: graftpunk>={at} (was >={floor.previous})"
+        line = f"pyproject.toml: graftpunk>={at} (was >={floor.previous}); reinstall the project"
         console.print(escape(line), soft_wrap=True, highlight=False)
     elif isinstance(floor, CannotRaiseFloor) and floor.requirement is None:
         console.print(
