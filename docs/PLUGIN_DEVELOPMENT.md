@@ -1397,16 +1397,16 @@ ruff format --check .
 gp plugin check
 ```
 
-`gp plugin check` lists a missing `tests/fixtures/`, or one that something
-blocks (it, or `tests/`, is not a directory, which `gp plugin upgrade` creates
-when it is simply missing), a `tests/conftest.py` that does not parse, cannot
-be read, or is not a regular file, every `GP-FILL` marker left in a plugin
-module or a test module, any plugin module that does not hold exactly one
-plugin class, and any project wiring the project lacks, which `gp plugin
-upgrade` adds. A fresh scaffold
-fails it until its markers are filled in. It passes
-`ruff check` and `ruff format --check` as written, so a red ruff run on a
-fresh scaffold is something you introduced. Add a type checker.
+`gp plugin check` lists a missing `tests/fixtures/` (which `gp plugin upgrade`
+creates), or one that something blocks (it, or `tests/`, is not a directory or
+cannot be read), a `tests/conftest.py` that does not parse, is not valid
+UTF-8, cannot be read, or is not a regular file, every `GP-FILL` marker left
+in a plugin module or a test module, any plugin module that does not hold
+exactly one plugin class, and any project wiring the project lacks, which
+`gp plugin upgrade` adds. A fresh scaffold fails it until its markers are
+filled in. It passes `ruff check` and `ruff format --check` as written, so a
+red ruff run on a fresh scaffold is something you introduced. Add a type
+checker.
 
 A minimal CI workflow to start from, running the same gate:
 

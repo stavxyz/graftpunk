@@ -364,14 +364,15 @@ class ProjectView:
         return tuple(r for r in self.requirement_set if self._state(r) == "unbound")
 
     def unreadable_files(self) -> tuple[tuple[str, str], ...]:
-        """Each requirement file that does not parse, once, as ``(path, reason)``, in
-        the order ``requirement_set`` first names it, however many requirements
-        it holds: ``gp plugin upgrade`` refuses on them and ``gp plugin check``
-        reports one finding each, while ``gp plugin info`` and
-        ``gp plugin add-command``, which never read those files, proceed. *path*
-        is the requirement's own file, unless an ancestor blocks it
-        (``status.blocking``), in which case it is that ancestor: the finding
-        then names the same path ``gp plugin upgrade`` refuses on."""
+        """Each requirement file whose status is ``unreadable``, once, as ``(path,
+        reason)``, in the order ``requirement_set`` first names it, however many
+        requirements it holds (``graftpunk.devtools.plugin_check``'s module
+        docstring has the complete list of reasons): ``gp plugin upgrade`` refuses
+        on them and ``gp plugin check`` reports one finding each, while
+        ``gp plugin info`` and ``gp plugin add-command``, which never read those
+        files, proceed. *path* is the requirement's own file, unless an ancestor
+        blocks it (``status.blocking``), in which case it is that ancestor: the
+        finding then names the same path ``gp plugin upgrade`` refuses on."""
         if self.directory != "plugin":
             return ()
         files: dict[str, str] = {}
@@ -951,10 +952,10 @@ def _requirement_statuses(
 
 def _parse_requirement_file(root: Path, relative: str) -> ast.Module | RequirementStatus:
     """*relative*'s tree, or the status every requirement in it takes when there is
-    no tree: ``unbound`` for a path that is plainly missing, ``unreadable`` with
-    the reason for one that is blocked (an ancestor, or the path itself, exists
-    but is the wrong kind, including a dangling symlink of either) or does not
-    parse."""
+    no tree: ``unbound`` for a path that is plainly missing, or ``unreadable``
+    with the reason (``graftpunk.devtools.plugin_check``'s module docstring has
+    the complete list: blocked, not valid UTF-8, cannot be read, or does not
+    parse)."""
     blocked = _blocked_path(root, relative, kind="file")
     if blocked is not None:
         component, reason = blocked

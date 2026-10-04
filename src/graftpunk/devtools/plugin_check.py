@@ -1,16 +1,22 @@
 """``gp plugin check``: a lint over the project reader's view. It never edits.
 
-Reports a missing or blocked ``policy.FIXTURES_TREE`` (the first case
-``gp plugin upgrade`` creates, the second an author must move aside), a
-remaining ``GP-FILL`` marker in a plugin module or a test module, a module
-without exactly one ``SitePlugin`` subclass (the reader's per-plugin defect,
-listed with the other findings), a requirement's file that does not parse or
-is not a regular file, and a ``PROJECT_REQUIREMENTS`` entry the project lacks,
-which ``gp plugin upgrade`` fixes. It does not compare a declared endpoint against
-the request call: the declaration is authoritative by design, and a check
-that could only ever be weak would give an author a reason to drop the
-keyword. It does not restate the fixtures check, which the generated suite
-runs (graft skill spec, 2026-09-21). A reader: never imports ``write.py``.
+The one owner of the complete list of finding kinds (every other docstring in
+this module or ``plugin_project.py`` that names a reason points back here
+instead of re-enumerating). This module reports: a remaining ``GP-FILL``
+marker in a plugin module or a test module; a module without exactly one
+``SitePlugin`` subclass (the reader's per-plugin defect, listed with the
+other findings); a requirement's file that does not parse, is not valid
+UTF-8, cannot be read, or is not a regular file (or whose directory is
+blocked); a ``PROJECT_REQUIREMENTS`` entry the project lacks, which
+``gp plugin upgrade`` fixes; and a ``policy.FIXTURES_TREE`` that is missing
+(which ``gp plugin upgrade`` creates), is not a directory (an author must
+move it aside), or cannot be read (an author must fix its permissions),
+including when ``tests/`` itself, not the tree, is the one blocked. It does
+not compare a declared endpoint against the request call: the declaration is
+authoritative by design, and a check that could only ever be weak would give
+an author a reason to drop the keyword. It does not restate the fixtures
+check, which the generated suite runs (graft skill spec, 2026-09-21). A
+reader: never imports ``write.py``.
 """
 
 from __future__ import annotations
@@ -47,13 +53,14 @@ class Finding:
 
 
 def check_project(root: Path) -> list[Finding]:
-    """Every finding in *root*'s plugin project: a missing or blocked fixtures
-    tree, then markers in file order, then plugin defects, then requirement
-    files that do not parse or are not regular files, then missing
-    requirements. A refusal from the reader (not a plugin project, or not
-    readable at all) is the one finding. The same blocked ancestor can surface
-    through both the fixtures tree and a requirement file (both live under
-    ``tests/``); findings are deduplicated so it is reported once."""
+    """Every finding in *root*'s plugin project, in this order: a missing or
+    blocked fixtures tree, then markers in file order, then plugin defects,
+    then unreadable requirement files, then missing requirements (this
+    module's own docstring has the complete list of finding kinds). A
+    refusal from the reader (not a plugin project, or not readable at all) is
+    the one finding. The same blocked ancestor can surface through both the
+    fixtures tree and a requirement file (both live under ``tests/``);
+    findings are deduplicated so it is reported once."""
     try:
         view = require_plugin_project(root)
     except (NotAPluginProjectError, PluginProjectError) as exc:

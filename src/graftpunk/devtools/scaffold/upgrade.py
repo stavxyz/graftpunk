@@ -39,10 +39,10 @@ __all__ = ["UpgradeApplied", "UpgradeRefusedError", "upgrade_project"]
 
 
 class UpgradeRefusedError(DevtoolsRefusal, ValueError):
-    """A requirement's file does not parse, is not a regular file, or its imports
-    are not in a shape the migrator places into; or a path it must write inside
-    (``tests/fixtures``, or an ancestor of a requirement's file) is not a
-    directory, or the file cannot be read; nothing was written."""
+    """A requirement's file, or ``tests/fixtures``, is one of the reader's
+    unreadable or blocked kinds (``graftpunk.devtools.plugin_check``'s module
+    docstring has the complete list), or an import is not in a shape
+    ``pysrc.with_import`` places into; nothing was written."""
 
 
 @dataclass(frozen=True)
@@ -66,11 +66,11 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     """Apply every requirement *root*'s project lacks, and return what was applied.
 
     Raises:
-        UpgradeRefusedError: A requirement's file does not parse, is not a regular
-            file, or its imports are not in a shape ``pysrc.with_import`` places
-            into; or a path it must write inside (``tests/fixtures``, or an
-            ancestor of a requirement's file) is not a directory, or the file
-            cannot be read.
+        UpgradeRefusedError: A requirement's file, or ``tests/fixtures``, is one
+            of the reader's unreadable or blocked kinds
+            (``graftpunk.devtools.plugin_check``'s module docstring has the
+            complete list), or an import is not in a shape
+            ``pysrc.with_import`` places into.
         NotAPluginProjectError: *root* is not a plugin project.
         PluginProjectError: See :func:`read_project`.
         ScaffoldWriteError: A write failed; every file was restored first, or the

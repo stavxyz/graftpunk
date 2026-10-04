@@ -171,6 +171,32 @@ def test_the_guide_has_commands_links_and_python_to_check() -> None:
     assert PYTHON_BLOCKS, "no python blocks found in docs/PLUGIN_DEVELOPMENT.md"
 
 
+_GATE_PARAGRAPH_RE = re.compile(r"`gp plugin check` lists a missing.*?(?=\n\n)", re.DOTALL)
+
+
+def test_the_gate_paragraph_names_every_phrase_check_can_emit() -> None:
+    """``graftpunk.devtools.plugin_check`` is the one owner of the complete list
+    of finding kinds; this paragraph is where the guide restates it in prose.
+    Each phrase below is a substring of a message ``check_project`` can emit
+    (``unreadable_file_message``'s four reasons, a ``GP-FILL`` marker, and a
+    module's wrong class count), so a reason added there without updating
+    this paragraph fails here instead of drifting unnoticed through another
+    round."""
+    match = _GATE_PARAGRAPH_RE.search(GUIDE_TEXT)
+    assert match is not None, "the `gp plugin check` paragraph moved or was reworded"
+    paragraph = " ".join(match.group(0).split())
+    for phrase in (
+        "is not a directory",
+        "cannot be read",
+        "is not a regular file",
+        "not valid UTF-8",
+        "does not parse",
+        "GP-FILL",
+        "exactly one",
+    ):
+        assert phrase in paragraph, f"{phrase!r} missing from the gp plugin check paragraph"
+
+
 @pytest.mark.parametrize(("line_no", "invocation"), GP_INVOCATIONS, ids=lambda v: str(v)[:60])
 def test_every_gp_invocation_names_a_real_command_and_options(
     line_no: int, invocation: str
