@@ -450,6 +450,25 @@ class TestCheckFixturesTree:
         problems = check_fixtures_tree(tree).problems
         assert problems == (f"{tree}: not a directory. Move it aside, then run gp plugin upgrade.",)
 
+    def test_a_dangling_symlink_tree_is_not_a_directory_not_does_not_exist(
+        self, tmp_path: Path
+    ) -> None:
+        """A dangling symlink at the tree path is told apart from a plainly
+        missing tree: gp plugin upgrade can create a directory where there
+        is nothing, but refuses to move a symlink aside itself, so the
+        advice has to be the "not a directory" line, matching what gp
+        plugin upgrade and gp plugin check say about the same shape."""
+        tree = tmp_path / "fixtures"
+        tree.symlink_to(tmp_path / "nowhere")
+        problems = check_fixtures_tree(tree).problems
+        assert problems == (f"{tree}: not a directory. Move it aside, then run gp plugin upgrade.",)
+
+    def test_a_self_looping_symlink_tree_is_not_a_directory(self, tmp_path: Path) -> None:
+        tree = tmp_path / "fixtures"
+        tree.symlink_to(tree)
+        problems = check_fixtures_tree(tree).problems
+        assert problems == (f"{tree}: not a directory. Move it aside, then run gp plugin upgrade.",)
+
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode directory")
     def test_a_symlink_entry_into_an_unreadable_location_is_its_own_problem(
         self, tmp_path: Path

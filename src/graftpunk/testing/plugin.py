@@ -91,7 +91,7 @@ class FixturesTreeReport:
         )
 
 
-PathKind = Literal["absent", "file", "dir", "other", "unreadable"]
+PathKind = Literal["absent", "file", "dir", "other", "unreadable", "dangling"]
 
 
 def _stat_kind(
@@ -113,15 +113,22 @@ def _stat_kind(
 
     ``"absent"``: *path* plainly does not exist (``FileNotFoundError`` or
     ``NotADirectoryError``, which also covers a race between a caller's
-    listing and this stat), or is a dangling symlink (the same
-    ``FileNotFoundError``) or a symlink loop (``ELOOP``): nothing to report,
-    *path* is just not there. ``"dir"`` or ``"file"``: a directory or a
-    regular file, a symlink to one included. ``"other"``: *path* resolves to
-    neither a directory nor a regular file, or is a symlink whose target
-    raised some other ``OSError`` while *path* itself could still be
-    ``lstat``'d: the symlink's target is what is wrong, not *path*'s own
-    directory. ``"unreadable"``: ``stat()`` and ``lstat()`` both raised,
-    which can only mean an ancestor of *path* is untraversable (most often a
+    listing and this stat), and is not a symlink either (its own
+    ``lstat()`` fails the same way). ``"dangling"``: *path* is a symlink
+    whose own ``lstat()`` succeeds but whose target cannot be reached
+    (``FileNotFoundError`` from ``stat()``, a dangling target, or
+    ``ELOOP``, a loop): there is something at *path*, just not a directory
+    or a file, which a caller walking entries skips the same way as
+    ``"absent"`` but a caller checking a single path (the fixtures tree
+    itself) reports apart from a plain "nothing there" so its advice does
+    not ask for a directory to be created where a symlink already sits.
+    ``"dir"`` or ``"file"``: a directory or a regular file, a symlink to
+    one included. ``"other"``: *path* resolves to neither a directory nor
+    a regular file, or is a symlink whose target raised some other
+    ``OSError`` while *path* itself could still be ``lstat``'d: the
+    symlink's target is what is wrong, not *path*'s own directory.
+    ``"unreadable"``: ``stat()`` and ``lstat()`` both raised, which can
+    only mean an ancestor of *path* is untraversable (most often a
     permission error on a directory without its execute bit). When *detail*
     is given and the result is the symlink-target form of ``"other"`` or is
     ``"unreadable"``, ``exc.strerror`` (or the exception itself when the
@@ -133,13 +140,24 @@ def _stat_kind(
     try:
         found = path.stat()
     except (FileNotFoundError, NotADirectoryError):
-        # A dangling symlink, or path (or a parent) gone between a caller's
-        # listing and this stat: not a problem, just not there.
-        return "absent"
+        try:
+            path.lstat()
+        except OSError:
+            # path itself (or a parent) is gone between a caller's listing
+            # and this stat: not a problem, just not there.
+            return "absent"
+        # lstat succeeded where stat did not: path is a symlink with
+        # nothing at the far end.
+        return "dangling"
     except OSError as exc:
         if exc.errno == errno.ELOOP:
-            # A symlink loop: also not a problem, just not followable.
-            return "absent"
+            try:
+                path.lstat()
+            except OSError:
+                return "absent"
+            # lstat succeeded: path is a symlink whose target cannot be
+            # resolved because it loops back on itself.
+            return "dangling"
         try:
             path.lstat()
         except OSError:
@@ -235,7 +253,7 @@ def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path]
             candidate = directory / name
             detail: list[str] = []
             kind = _stat_kind(candidate, detail)
-            if kind == "absent":
+            if kind == "absent" or kind == "dangling":
                 # A dangling or looping symlink, or an entry gone between
                 # the listing and the stat: not a fixture, not a problem.
                 continue
