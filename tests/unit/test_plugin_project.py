@@ -390,6 +390,32 @@ class TestTheView:
             "src/graftpunk_myshop/plugin.py: cannot be read (Permission denied)."
         )
 
+    def test_a_module_path_that_is_a_directory_refuses_as_not_a_regular_file(
+        self, tmp_path: Path
+    ) -> None:
+        """A directory at the module's path exists, so the refusal must say
+        "exists but is not a regular file", never "neither ... exists"
+        (which would be false: `ls` would show it)."""
+        _generate(tmp_path)
+        module = tmp_path / "src" / "graftpunk_myshop" / "plugin.py"
+        module.unlink()
+        module.mkdir()
+        with pytest.raises(PluginProjectError) as excinfo:
+            read_project(tmp_path)
+        assert str(excinfo.value) == (f"src/graftpunk_myshop/plugin.py: {NOT_A_REGULAR_FILE}.")
+
+    def test_a_dangling_symlink_at_the_module_path_refuses_as_not_a_regular_file(
+        self, tmp_path: Path
+    ) -> None:
+        """Same as above, for a dangling symlink at the module's path."""
+        _generate(tmp_path)
+        module = tmp_path / "src" / "graftpunk_myshop" / "plugin.py"
+        module.unlink()
+        module.symlink_to(tmp_path / "elsewhere" / "plugin.py")
+        with pytest.raises(PluginProjectError) as excinfo:
+            read_project(tmp_path)
+        assert str(excinfo.value) == (f"src/graftpunk_myshop/plugin.py: {NOT_A_REGULAR_FILE}.")
+
     @pytest.mark.skipif(os.geteuid() == 0, reason="root lists a 300-mode directory")
     def test_an_unlistable_src_contributes_no_first_party_names(self, tmp_path: Path) -> None:
         """chmod 300 denies listing src/ but still allows traversing to a

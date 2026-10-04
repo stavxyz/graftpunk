@@ -631,14 +631,19 @@ def _known_first_party(data: dict[str, Any] | None) -> frozenset[str]:
 
 def _module_file(root: Path, module: str) -> str | None:
     """The first candidate path (src layout, then flat) that is a regular
-    file, or ``None`` when none is: the caller then refuses, naming the
-    entry point, since no candidate exists at all. A directory on the way
-    that cannot even be traversed (no execute bit) does not read as "not
-    here": the first such candidate is remembered, and when no candidate is
-    ever found to exist, it is raised directly, naming the module and the
-    reason, rather than told apart from a module that plainly is not there."""
+    file, or ``None`` when none is and no candidate exists at all (the caller
+    then refuses, naming the entry point). A candidate that exists but is not
+    a regular file does not read as "not here" either, in either of two ways:
+    a directory on the way that cannot even be traversed (no execute bit),
+    raised with its reason once found; or a candidate path that plainly
+    exists but is a directory or a dangling symlink rather than a file,
+    raised as ``NOT_A_REGULAR_FILE`` once no candidate is ever a file. An
+    unreadable candidate is reported over a wrong-kind one when both exist,
+    since it is reached first and a caller cannot yet tell whether a file
+    would have been found past it."""
     relative = module.replace(".", "/")
     first_error: tuple[str, str] | None = None
+    first_wrong_kind: str | None = None
     for base in _SOURCE_ROOTS:
         for candidate in (f"{relative}.py", f"{relative}/__init__.py"):
             path = Path(base) / candidate
@@ -646,11 +651,16 @@ def _module_file(root: Path, module: str) -> str | None:
             kind = _probe(root / path, detail)
             if kind == "file":
                 return path.as_posix()
-            if kind == "unreadable" and first_error is None:
-                first_error = (path.as_posix(), detail[0])
+            if kind == "unreadable":
+                if first_error is None:
+                    first_error = (path.as_posix(), detail[0])
+            elif kind != "absent" and first_wrong_kind is None:
+                first_wrong_kind = path.as_posix()
     if first_error is not None:
         candidate_path, reason = first_error
         raise PluginProjectError(f"{candidate_path}: cannot be read ({reason}).")
+    if first_wrong_kind is not None:
+        raise PluginProjectError(f"{first_wrong_kind}: {NOT_A_REGULAR_FILE}.")
     return None
 
 
