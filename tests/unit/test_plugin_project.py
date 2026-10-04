@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 from dataclasses import fields
 from pathlib import Path
 from types import MappingProxyType
@@ -962,29 +963,57 @@ def test_the_reader_imports_neither_the_writer_nor_the_renderer() -> None:
     assert result.stdout.strip() == "[]"
 
 
-_PROBE_ONLY_ATTRIBUTES = frozenset(
-    {
-        "exists",
-        "is_dir",
-        "is_file",
-        "is_symlink",
-        "lstat",
-        "stat",
-        "isdir",
-        "isfile",
-        "islink",
-        "lexists",
-        "is_junction",
-        "access",
-    }
+_PROBE_ONLY_NAMES = frozenset({"exists", "lexists", "stat", "lstat", "samefile", "access"})
+_OS_PATH_ALLOWED_CALLS = frozenset(
+    {"join", "basename", "dirname", "splitext", "split", "normpath", "relpath", "sep"}
 )
 
 
+def _is_probe_only_attribute(name: str) -> bool:
+    """True for an attribute call's name the guard bans outright: any
+    ``is_*`` predicate (``is_fifo``, ``is_mount``, ``is_dir``, and any
+    future sibling, not a fixed list of the ones a past finding named) or
+    one of the exact names in ``_PROBE_ONLY_NAMES``. Scoped to attribute
+    calls (``candidate.is_fifo()``): a bare function named ``is_whatever``
+    that is not a filesystem predicate is not one of these just for
+    sharing the prefix."""
+    return name.startswith("is_") or name in _PROBE_ONLY_NAMES
+
+
+def _is_os_path_attribute(node: ast.expr) -> bool:
+    """True when *node* is the attribute access ``os.path``."""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "path"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    )
+
+
+def _names_imported_from_os_path(tree: ast.Module) -> set[str]:
+    """Every local name a ``from os.path import ...`` statement anywhere in
+    *tree* binds (the alias, when it has one), so a bare call to an
+    imported ``isfile`` is told apart from an unrelated function of the
+    same name."""
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "os.path":
+            for alias in node.names:
+                imported.add(alias.asname or alias.name)
+    return imported
+
+
 def _calls_outside_probe(tree: ast.Module) -> list[tuple[int, str]]:
-    """Every call in *tree* to one of ``_PROBE_ONLY_ATTRIBUTES``, as (line, name),
-    whose nearest enclosing function is not named ``_probe``: a second filesystem
-    presence/kind check sitting outside the one probe plugin_project.py allows."""
+    """Every call in *tree* banned outside the one probe ``_probe`` allows,
+    as (line, name): an attribute call whose name starts with ``is_`` or is
+    one of ``_PROBE_ONLY_NAMES``; any ``os.path.<name>(...)`` call other
+    than the pure string functions in ``_OS_PATH_ALLOWED_CALLS``; or a bare
+    call to a name in ``_PROBE_ONLY_NAMES`` or bound by a
+    ``from os.path import`` and not in the allowed set. A second filesystem
+    presence/kind check sitting outside the one probe plugin_project.py
+    allows."""
     violations: list[tuple[int, str]] = []
+    imported = _names_imported_from_os_path(tree)
 
     class _Visitor(ast.NodeVisitor):
         def __init__(self) -> None:
@@ -1001,11 +1030,21 @@ def _calls_outside_probe(tree: ast.Module) -> list[tuple[int, str]]:
             self.stack.pop()
 
         def visit_Call(self, node: ast.Call) -> None:
-            is_probe_only_call = (
-                isinstance(node.func, ast.Attribute) and node.func.attr in _PROBE_ONLY_ATTRIBUTES
-            )
-            if is_probe_only_call and (not self.stack or self.stack[-1] != "_probe"):
-                violations.append((node.lineno, node.func.attr))
+            func = node.func
+            name: str | None = None
+            banned = False
+            if isinstance(func, ast.Attribute):
+                name = func.attr
+                banned = _is_probe_only_attribute(name) or (
+                    _is_os_path_attribute(func.value) and name not in _OS_PATH_ALLOWED_CALLS
+                )
+            elif isinstance(func, ast.Name):
+                name = func.id
+                banned = name in _PROBE_ONLY_NAMES or (
+                    name in imported and name not in _OS_PATH_ALLOWED_CALLS
+                )
+            if banned and (not self.stack or self.stack[-1] != "_probe"):
+                violations.append((node.lineno, name or ""))
             self.generic_visit(node)
 
     _Visitor().visit(tree)
@@ -1022,6 +1061,59 @@ def test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -> No
     source = Path(plugin_project_module.__file__).read_text()
     violations = _calls_outside_probe(ast.parse(source))
     assert violations == []
+
+
+def test_the_probe_guard_bans_every_is_underscore_predicate_and_an_os_path_import() -> None:
+    """The guard does not chase names one at a time: any ``is_*`` attribute
+    call (``is_fifo``, not just the ones already hit in review), any
+    ``os.path.<name>(...)`` call, and a name bound by ``from os.path import``
+    and then called bare are all banned outside ``_probe``, not only the
+    exact names a past finding happened to name."""
+    source = textwrap.dedent(
+        """
+        from os.path import isfile
+
+        def check(candidate, p):
+            candidate.is_fifo()
+            os.path.ismount(p)
+            isfile(p)
+        """
+    )
+    violations = _calls_outside_probe(ast.parse(source))
+    assert {name for _, name in violations} == {"is_fifo", "ismount", "isfile"}
+
+
+def test_the_probe_guard_allows_the_pure_string_os_path_functions() -> None:
+    """``os.path.join`` and its siblings never ask the filesystem anything;
+    the guard's ``os.path`` ban exempts them by name, outside the probe."""
+    source = textwrap.dedent(
+        """
+        def build(a, b):
+            os.path.join(a, b)
+            os.path.basename(a)
+            os.path.dirname(a)
+            os.path.splitext(a)
+            os.path.split(a)
+            os.path.normpath(a)
+            os.path.relpath(a, b)
+        """
+    )
+    assert _calls_outside_probe(ast.parse(source)) == []
+
+
+def test_the_probe_guard_still_allows_the_probe_itself() -> None:
+    """Every banned call is still allowed inside ``_probe``, the one
+    function the guard exempts."""
+    source = textwrap.dedent(
+        """
+        def _probe(path):
+            path.stat()
+            path.lstat()
+            os.path.ismount(path)
+            path.is_fifo()
+        """
+    )
+    assert _calls_outside_probe(ast.parse(source)) == []
 
 
 # Every phrase FINDING_ADVICE or unreadable_file_message keys on, named by its
