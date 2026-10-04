@@ -1040,11 +1040,13 @@ def _run_label(d: RunDigest) -> str:
 class RenderedCommand:
     """One stub, at class-body indentation with no trailing blank line; every
     ``(module, name)`` import the stub references, which an inserter merges as it is
-    handed them; and the fixture filename its test looks for."""
+    handed them; and the fixture filename its test looks for, or ``None`` when
+    ``_no_fixture_is_written`` says ``gp observe fixtures`` writes no fixture for
+    this endpoint (its test needs a fixture of its own instead)."""
 
     lines: tuple[str, ...]
     imports: tuple[tuple[str, str], ...]
-    fixture: str
+    fixture: str | None
 
 
 def _default_commands(d: RunDigest) -> list[PlannedCommand]:
@@ -1080,12 +1082,17 @@ def render_command(command: PlannedCommand, d: RunDigest) -> RenderedCommand:
         # a site parameter may be named quote. The stub always calls it when the
         # endpoint templates a path segment (see _render_command_stub above).
         imports.append(("urllib.parse", "quote as _quote_path"))
+    fixture = (
+        None
+        if _no_fixture_is_written(command.endpoint)
+        else capture_filename(
+            command.method, command.endpoint.template, _fixture_type(command.endpoint)
+        )
+    )
     return RenderedCommand(
         lines=tuple(lines[:-1] if lines[-1] == "" else lines),
         imports=tuple(imports),
-        fixture=capture_filename(
-            command.method, command.endpoint.template, _fixture_type(command.endpoint)
-        ),
+        fixture=fixture,
     )
 
 

@@ -50,11 +50,13 @@ class CommandInsertError(DevtoolsRefusal, ValueError):
 @dataclass(frozen=True)
 class AddedCommand:
     """What ``add_command`` did: the module it edited, the command's CLI name, and the
-    project-relative fixture its test will look for."""
+    project-relative fixture its test will look for, or ``None`` when
+    ``gp observe fixtures`` writes no fixture for this endpoint (see
+    ``render.RenderedCommand.fixture``)."""
 
     module: Path
     cli_name: str
-    fixture: str
+    fixture: str | None
 
 
 def insertion_line(plugin: PluginView, lines: Sequence[str], class_indent: str) -> int:
@@ -192,8 +194,9 @@ def add_command(
             f"{plugin.module_path}: does not parse after the stub is placed ({exc.msg})."
         ) from exc
     apply_changes([PlannedChange(module, text, original=original, validate=validate_python)])
+    fixture = None if rendered.fixture is None else f"{plugin.fixtures_root}{rendered.fixture}"
     return AddedCommand(
         module=module,
         cli_name=command.registered_name,
-        fixture=f"{plugin.fixtures_root}{rendered.fixture}",
+        fixture=fixture,
     )

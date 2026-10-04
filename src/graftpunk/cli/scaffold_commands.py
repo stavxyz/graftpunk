@@ -358,7 +358,16 @@ def plugin_add_command(
         f"[green]Added[/green] {escape(added.cli_name)} to {escape(str(added.module))}",
         soft_wrap=True,
     )
-    console.print(f"[bold]Next:[/bold] its test looks for {escape(added.fixture)}", soft_wrap=True)
+    if added.fixture is None:
+        console.print(
+            "[bold]Next:[/bold] gp observe fixtures writes no fixture for this endpoint; "
+            "write its test against a fixture of your own.",
+            soft_wrap=True,
+        )
+    else:
+        console.print(
+            f"[bold]Next:[/bold] its test looks for {escape(added.fixture)}", soft_wrap=True
+        )
 
 
 @plugin_app.command("upgrade")

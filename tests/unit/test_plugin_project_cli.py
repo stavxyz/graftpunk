@@ -590,6 +590,40 @@ class TestAddCommand:
         assert plugin.commands[-1].endpoint == "GET /api/orders/{order_id}"
         _ruff_clean(recorded)
 
+    def test_prints_a_gp_fill_note_instead_of_a_fixture_no_one_writes(self, recorded: Path) -> None:
+        """B10: an endpoint gp observe fixtures writes no fixture for (a binary
+        response with no captured text) must not be told its test looks for a
+        fixture that will never exist."""
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        har_path = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
+        har = json.loads(har_path.read_text())
+        har["log"]["entries"].append(
+            {
+                "startedDateTime": "2026-09-10T10:00:00.000Z",
+                "time": 1,
+                "request": {
+                    "method": "GET",
+                    "url": "https://myshop.example/api/export",
+                    "headers": [],
+                    "cookies": [],
+                    "queryString": [],
+                },
+                "response": {
+                    "status": 200,
+                    "statusText": "OK",
+                    "headers": [{"name": "Content-Type", "value": "application/octet-stream"}],
+                    "cookies": [],
+                    "content": {"mimeType": "application/octet-stream", "size": 1024},
+                },
+            }
+        )
+        har_path.write_text(json.dumps(har))
+        result = _add(recorded, "myshop", "export=GET /api/export")
+        assert result.exit_code == 0, result.output
+        output = _plain(result.output)
+        assert "gp observe fixtures writes no fixture for this endpoint" in output
+        assert "its test looks for" not in output
+
     def test_crlf_line_endings_are_kept_throughout(self, recorded: Path) -> None:
         module = _hand_written_project(recorded)
         module.write_bytes(_HAND_WRITTEN.replace("\n", "\r\n").encode())

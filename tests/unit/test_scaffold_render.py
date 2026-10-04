@@ -3536,3 +3536,12 @@ class TestExplicitSelection:
             rendered.imports
         )
         assert rendered.fixture == "get_orders_{order_id}.json"
+
+    def test_render_command_names_no_fixture_when_none_is_written(self) -> None:
+        """B10: an endpoint gp observe fixtures writes no fixture for must not
+        name one anyway; add-command's CLI prints a GP-FILL note instead."""
+        endpoint = dataclasses.replace(_ORDERS_ENDPOINT, fixture_written=False)
+        d = _digest(endpoints=(endpoint,))
+        command = plan_command(d, CommandSelection("orders", "GET", endpoint.template))
+        rendered = render_command(command, d)
+        assert rendered.fixture is None
