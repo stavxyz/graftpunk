@@ -311,13 +311,18 @@ def read_project(root: Path) -> ProjectView:
     distinct requirement file is parsed once.
 
     Raises:
-        PluginProjectError: The project cannot be read at all: ``pyproject.toml``
-            is not valid TOML, is not UTF-8, or cannot be read (permissions); its
-            ``project`` or ``project.entry-points`` table, or its
-            ``"graftpunk.plugins"`` group table, has the wrong shape; an entry
-            point's value is not a string; or an entry point's module is missing,
-            is not UTF-8, cannot be read (permissions), or does not parse.
+        PluginProjectError: *root* does not exist or is not a directory; or the
+            project cannot be read at all: ``pyproject.toml`` is not valid TOML,
+            is not UTF-8, or cannot be read (permissions); its ``project`` or
+            ``project.entry-points`` table, or its ``"graftpunk.plugins"`` group
+            table, has the wrong shape; an entry point's value is not a string;
+            or an entry point's module is missing, is not UTF-8, cannot be read
+            (permissions), or does not parse.
     """
+    if not root.exists():
+        raise PluginProjectError(f"{root}: no such directory.")
+    if not root.is_dir():
+        raise PluginProjectError(f"{root}: not a directory.")
     data = _load_pyproject(root)
     fixtures_tree_present = (root / policy.FIXTURES_TREE).is_dir()
     if data is None:

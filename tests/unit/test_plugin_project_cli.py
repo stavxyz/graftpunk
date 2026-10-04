@@ -166,6 +166,20 @@ class TestPluginInfo:
         payload = _info(recorded)
         assert "contracts" not in payload and "graftpunk" not in payload
 
+    def test_a_dir_that_does_not_exist_is_refused_not_read_as_empty(self, tmp_path: Path) -> None:
+        """B9: a mistyped --dir must not read as "empty" (create mode)."""
+        missing = tmp_path / "nonexistent"
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(missing)])
+        assert result.exit_code == 1
+        assert _plain(result.output).strip() == f"{missing}: no such directory."
+
+    def test_a_dir_that_is_a_regular_file_is_refused(self, tmp_path: Path) -> None:
+        not_a_dir = tmp_path / "plain_file"
+        not_a_dir.write_text("not a directory")
+        result = runner.invoke(app, ["plugin", "info", "--json", "--dir", str(not_a_dir)])
+        assert result.exit_code == 1
+        assert _plain(result.output).strip() == f"{not_a_dir}: not a directory."
+
     def test_json_is_required(self, tmp_path: Path) -> None:
         result = runner.invoke(app, ["plugin", "info", "--dir", str(tmp_path)])
         assert result.exit_code == 1
@@ -1004,6 +1018,13 @@ class TestAddCommand:
         assert result.exit_code == 1
         assert "not a graftpunk plugin project (empty)" in " ".join(_plain(result.output).split())
 
+    def test_a_dir_that_does_not_exist_is_refused_not_read_as_empty(self, recorded: Path) -> None:
+        """B9: the recording exists but the project directory itself does not."""
+        missing = recorded / "nonexistent"
+        result = _add(missing, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        assert _plain(result.output).strip() == f"{missing}: no such directory."
+
     def test_an_empty_run_directory_is_refused_naming_the_har_path(self, recorded: Path) -> None:
         """An interrupted recording: the run directory exists but network.har does
         not, so digest()'s FileNotFoundError must not reach the terminal as a
@@ -1050,6 +1071,13 @@ def _project_lacking_the_wiring(root: Path) -> Path:
 
 @pytest.mark.usefixtures("gp_logging")
 class TestPluginUpgrade:
+    def test_a_dir_that_does_not_exist_is_refused_not_read_as_empty(self, tmp_path: Path) -> None:
+        """B9: a mistyped --dir must not be read as a fresh, empty project."""
+        missing = tmp_path / "nonexistent"
+        result = runner.invoke(app, ["plugin", "upgrade", "--dir", str(missing)])
+        assert result.exit_code == 1
+        assert _plain(result.output).strip() == f"{missing}: no such directory."
+
     def test_a_form_feed_in_the_conftest_does_not_raise_a_syntax_error(
         self, tmp_path: Path
     ) -> None:

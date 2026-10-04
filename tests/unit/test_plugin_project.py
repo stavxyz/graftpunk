@@ -136,6 +136,23 @@ class TestClassify:
         assert read_project(tmp_path).plugins == ()
 
 
+class TestReadProjectRefusesABadDirectory:
+    """B9: a mistyped --dir reads as "empty" (create mode) otherwise, instead
+    of a refusal; every one of info/check/add-command/upgrade routes through
+    read_project or require_plugin_project, so the refusal belongs here."""
+
+    def test_a_directory_that_does_not_exist_is_refused(self, tmp_path: Path) -> None:
+        missing = tmp_path / "nonexistent"
+        with pytest.raises(PluginProjectError, match="no such directory"):
+            read_project(missing)
+
+    def test_a_path_that_is_a_regular_file_is_refused(self, tmp_path: Path) -> None:
+        not_a_dir = tmp_path / "plain_file"
+        not_a_dir.write_text("not a directory")
+        with pytest.raises(PluginProjectError, match="not a directory"):
+            read_project(not_a_dir)
+
+
 class TestRequirePluginProject:
     """The one owner of "this directory must be a plugin project": insert, upgrade,
     and check all ask it, so they refuse with one type and one message."""

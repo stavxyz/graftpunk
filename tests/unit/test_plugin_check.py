@@ -115,6 +115,15 @@ class TestFindings:
         (finding,) = check_project(tmp_path)
         assert "not a graftpunk plugin project" in finding.message
 
+    def test_a_dir_that_does_not_exist_is_a_finding_not_read_as_empty(self, tmp_path: Path) -> None:
+        """B9: a mistyped --dir must not read as a fresh, empty project."""
+        missing = tmp_path / "nonexistent"
+        (finding,) = check_project(missing)
+        assert finding.message == f"{missing}: no such directory."
+        result = runner.invoke(app, ["plugin", "check", "--dir", str(missing)])
+        assert result.exit_code == 1
+        assert f"{missing}: no such directory." in result.output
+
     def test_a_conftest_that_does_not_parse_is_one_finding(self, tmp_path: Path) -> None:
         """One finding per unreadable file, however many requirements it holds."""
         _clean_project(tmp_path)
