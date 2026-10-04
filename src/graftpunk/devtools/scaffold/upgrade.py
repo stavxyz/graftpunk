@@ -40,7 +40,9 @@ __all__ = ["UpgradeApplied", "UpgradeRefusedError", "upgrade_project"]
 
 class UpgradeRefusedError(DevtoolsRefusal, ValueError):
     """A requirement's file does not parse, is not a regular file, or its imports
-    are not in a shape the migrator places into; nothing was written."""
+    are not in a shape the migrator places into; or a path it must write inside
+    (``tests/fixtures``, or an ancestor of a requirement's file) is not a
+    directory, or the file cannot be read; nothing was written."""
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,9 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     Raises:
         UpgradeRefusedError: A requirement's file does not parse, is not a regular
             file, or its imports are not in a shape ``pysrc.with_import`` places
-            into.
+            into; or a path it must write inside (``tests/fixtures``, or an
+            ancestor of a requirement's file) is not a directory, or the file
+            cannot be read.
         NotAPluginProjectError: *root* is not a plugin project.
         PluginProjectError: See :func:`read_project`.
         ScaffoldWriteError: A write failed; every file was restored first, or the
