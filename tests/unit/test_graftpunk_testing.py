@@ -358,6 +358,45 @@ class TestCheckFixturesTree:
         assert problems[0] == f"a_orders.json: cannot be read ({os.strerror(errno.EACCES)})."
         assert problems[1].startswith("b_invoices.json: no sidecar")
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode directory")
+    def test_an_unlistable_subdirectory_is_a_problem_and_the_check_goes_on(
+        self, tmp_path: Path
+    ) -> None:
+        """A subdirectory the runner cannot even list is one problem line, not
+        a traceback out of the check, and a readable sibling fixture is still
+        checked."""
+        _fixture(tmp_path, "sub/get_orders.json", b"{}", Sidecar(status=200, content_type="x"))
+        _fixture(tmp_path, "b_invoices.json", b"{}", None)
+        sub = tmp_path / "sub"
+        sub.chmod(0o000)
+        try:
+            problems = check_fixtures_tree(tmp_path).problems
+        finally:
+            sub.chmod(0o755)
+        assert len(problems) == 2
+        assert problems[0] == f"sub: cannot be read ({os.strerror(errno.EACCES)})."
+        assert problems[1].startswith("b_invoices.json: no sidecar")
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 644-mode directory's entries")
+    def test_an_untraversable_subdirectory_is_a_problem_and_the_check_goes_on(
+        self, tmp_path: Path
+    ) -> None:
+        """A subdirectory the runner can list (read) but not search (no
+        execute) can still be listed, so the fixture inside it shows up as a
+        name; checking that name's type raises, not list()ing it, so the same
+        one problem line still covers it."""
+        _fixture(tmp_path, "sub/get_orders.json", b"{}", None)
+        _fixture(tmp_path, "b_invoices.json", b"{}", None)
+        sub = tmp_path / "sub"
+        sub.chmod(0o644)
+        try:
+            problems = check_fixtures_tree(tmp_path).problems
+        finally:
+            sub.chmod(0o755)
+        assert len(problems) == 2
+        assert problems[0] == f"sub: cannot be read ({os.strerror(errno.EACCES)})."
+        assert problems[1].startswith("b_invoices.json: no sidecar")
+
     def test_a_sidecar_of_unknown_schema_fails(self, tmp_path: Path) -> None:
         path = _fixture(tmp_path, "get_orders.json", b"{}", None)
         payload = json.loads(sidecar_text(Sidecar(status=200, content_type="x")))

@@ -100,19 +100,56 @@ def _missing_sidecar(relative: Path, sidecar_name: str) -> str:
     )
 
 
+def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
+    """The committed fixtures under *tree*, sorted, and one problem line for
+    each directory that cannot be listed (no read permission) or whose
+    entries cannot be told apart from a subdirectory (listed, but no search
+    permission to stat them): ``os.walk``'s own classification of an entry
+    as a file or a directory needs neither, so the failure surfaces only
+    when this function stats an entry itself. Either way, no fixture under
+    that directory is trusted; the walk continues with its siblings. A
+    dotfile (any path component starting with ``.``) is pruned before it is
+    recursed into, so it and everything under it are skipped."""
+    problems: list[str] = []
+    fixtures: list[Path] = []
+
+    def onerror(exc: OSError) -> None:
+        relative = Path(exc.filename).relative_to(tree)
+        problems.append(f"{relative}: cannot be read ({exc.strerror or exc}).")
+
+    for dirpath, dirnames, filenames in os.walk(tree, onerror=onerror):
+        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+        directory = Path(dirpath)
+        relative_dir = directory.relative_to(tree)
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            candidate = directory / name
+            try:
+                is_file = candidate.is_file()
+            except OSError as exc:
+                problems.append(f"{relative_dir}: cannot be read ({exc.strerror or exc}).")
+                break
+            if is_file and not is_sidecar(candidate):
+                fixtures.append(candidate)
+    return sorted(fixtures), problems
+
+
 def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     """Check every fixture anywhere under *tree* against its sidecar.
 
-    Catches a missing tree, a fixture with no sidecar, a sidecar outside its
-    declared format (through the owner, :mod:`graftpunk.testing.sidecar`), a
-    fixture that cannot be read, a fixture that is byte for byte its capture,
-    and a flagged cookie or token name
-    in a fixture or in its sidecar's other fields. It does not judge whether
-    invented content is invented well. A sidecar with no capture hash is the
-    author's declaration that the file came off no account; it is trusted, not
-    checked, and counted. A dotfile (any path component starting with ``.``,
-    which covers ``FIXTURES_PLACEHOLDER`` itself, a macOS ``.DS_Store``, and an
-    editor swap file) is never a fixture and is skipped.
+    Catches a missing tree, a directory under it that cannot be listed or
+    whose entries cannot be stated, a fixture with no sidecar, a sidecar
+    outside its declared format (through the owner,
+    :mod:`graftpunk.testing.sidecar`), a fixture that cannot be read, a
+    fixture that is byte for byte its capture, and a flagged cookie or token
+    name in a fixture or in its sidecar's other fields. It does not judge
+    whether invented content is invented well. A sidecar with no capture hash
+    is the author's declaration that the file came off no account; it is
+    trusted, not checked, and counted. A dotfile (any path component starting
+    with ``.``, which covers ``FIXTURES_PLACEHOLDER`` itself, a macOS
+    ``.DS_Store``, and an editor swap file) is never a fixture and is
+    skipped.
     """
     if not tree.is_dir():
         return FixturesTreeReport(
@@ -125,15 +162,8 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
             verified=0,
             declared=0,
         )
-    problems: list[str] = []
+    fixtures, problems = _collect_fixtures(tree)
     verified = declared = 0
-    fixtures = sorted(
-        p
-        for p in tree.rglob("*")
-        if p.is_file()
-        and not is_sidecar(p)
-        and not any(part.startswith(".") for part in p.relative_to(tree).parts)
-    )
     for fixture in fixtures:
         relative = fixture.relative_to(tree)
         meta = sidecar_path(fixture)
