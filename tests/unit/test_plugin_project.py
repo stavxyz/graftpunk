@@ -1136,6 +1136,36 @@ class TestUnfollowableSymlink:
         assert str(excinfo.value) == f"{pyproject}: cannot be followed ({_LOOP_STRERROR})."
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_module_file_names_a_locked_target(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(_HAND_WRITTEN_PYPROJECT)
+        package = tmp_path / "src" / "graftpunk_myshop"
+        package.mkdir(parents=True)
+        module = package / "plugin.py"
+        locked = _locked_target(tmp_path_factory, module, is_dir=False, text=_HAND_WRITTEN_MODULE)
+        try:
+            with pytest.raises(PluginProjectError) as excinfo:
+                read_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert str(excinfo.value) == (
+            "src/graftpunk_myshop/plugin.py: cannot be followed (Permission denied)."
+        )
+
+    def test_module_file_names_a_self_loop(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(_HAND_WRITTEN_PYPROJECT)
+        package = tmp_path / "src" / "graftpunk_myshop"
+        package.mkdir(parents=True)
+        module = package / "plugin.py"
+        _loop(module)
+        with pytest.raises(PluginProjectError) as excinfo:
+            read_project(tmp_path)
+        assert str(excinfo.value) == (
+            f"src/graftpunk_myshop/plugin.py: cannot be followed ({_LOOP_STRERROR})."
+        )
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
     def test_read_project_reads_fixtures_tree_present_false_for_a_locked_target(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
@@ -1238,3 +1268,19 @@ class TestUnfollowableSymlink:
         view = read_project(tmp_path)
         status = view.requirements["tests/conftest.py:FIXTURES_TREE"]
         assert status == RequirementStatus("unreadable", NOT_A_REGULAR_FILE)
+
+
+def test_a_module_packages_directory_that_is_a_regular_file_names_that_ancestor(
+    tmp_path: Path,
+) -> None:
+    """When no candidate for an entry point's module is ever a file, and one
+    is blocked by a non-directory ancestor (here ``src/graftpunk_myshop``
+    touched as a plain file after its package directory is removed), the
+    refusal names that ancestor instead of the generic "neither ... exists",
+    which would read as false once ``ls`` shows the ancestor sitting there."""
+    _generate(tmp_path)
+    shutil.rmtree(tmp_path / "src" / "graftpunk_myshop")
+    (tmp_path / "src" / "graftpunk_myshop").write_text("")
+    with pytest.raises(PluginProjectError) as excinfo:
+        read_project(tmp_path)
+    assert str(excinfo.value) == "src/graftpunk_myshop: exists but is not a directory."

@@ -653,34 +653,49 @@ def _module_file(root: Path, module: str) -> str | None:
     """The first candidate path (src layout, then flat) that is a regular
     file, or ``None`` when none is and no candidate exists at all (the caller
     then refuses, naming the entry point). A candidate that exists but is not
-    a regular file does not read as "not here" either, in either of two ways:
-    a directory on the way that cannot even be traversed (no execute bit),
-    raised with its reason once found; or a candidate path that plainly
-    exists but is a directory or a dangling symlink rather than a file,
-    raised as ``NOT_A_REGULAR_FILE`` once no candidate is ever a file. An
-    unreadable candidate is reported over a wrong-kind one when both exist,
-    since it is reached first and a caller cannot yet tell whether a file
-    would have been found past it."""
+    a regular file does not read as "not here" either, in any of three ways:
+    a directory on the way that cannot even be traversed (no execute bit) or
+    a symlink on the way that cannot be followed, raised with its reason once
+    found; a candidate path that plainly exists but is a directory or a
+    dangling symlink rather than a file, raised as ``NOT_A_REGULAR_FILE`` once
+    no candidate is ever a file; or a non-directory ancestor (run through
+    :func:`_blocked_path`) blocking every candidate outright, raised naming
+    that ancestor once nothing else was found. An unreadable or unfollowable
+    candidate is reported over a wrong-kind one wherever each falls in the
+    search order, since a file may lie past the untraversable or unfollowable
+    ancestor, while the wrong-kind path cannot be the module."""
     relative = module.replace(".", "/")
-    first_error: tuple[str, str] | None = None
+    first_error: tuple[str, str, Literal["unreadable", "unfollowable"]] | None = None
     first_wrong_kind: str | None = None
+    first_blocked_ancestor: str | None = None
     for base in _SOURCE_ROOTS:
         for candidate in (f"{relative}.py", f"{relative}/__init__.py"):
             path = Path(base) / candidate
+            posix = path.as_posix()
+            blocked = _blocked_path(root, posix, kind="file")
+            if blocked is not None:
+                component, reason = blocked
+                if component != posix and reason == NOT_A_DIRECTORY:
+                    if first_blocked_ancestor is None:
+                        first_blocked_ancestor = component
+                    continue
             detail: list[str] = []
             kind = _probe(root / path, detail)
             if kind == "file":
-                return path.as_posix()
-            if kind == "unreadable":
+                return posix
+            if kind in ("unreadable", "unfollowable"):
                 if first_error is None:
-                    first_error = (path.as_posix(), detail[0])
+                    first_error = (posix, detail[0], kind)
             elif kind != "absent" and first_wrong_kind is None:
-                first_wrong_kind = path.as_posix()
+                first_wrong_kind = posix
     if first_error is not None:
-        candidate_path, reason = first_error
-        raise PluginProjectError(f"{candidate_path}: cannot be read ({reason}).")
+        candidate_path, reason, error_kind = first_error
+        verb = "read" if error_kind == "unreadable" else "followed"
+        raise PluginProjectError(f"{candidate_path}: cannot be {verb} ({reason}).")
     if first_wrong_kind is not None:
         raise PluginProjectError(f"{first_wrong_kind}: {NOT_A_REGULAR_FILE}.")
+    if first_blocked_ancestor is not None:
+        raise PluginProjectError(f"{first_blocked_ancestor}: exists but is not a directory.")
     return None
 
 
