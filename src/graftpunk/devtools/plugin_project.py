@@ -701,8 +701,9 @@ def _module_file(root: Path, module: str) -> str | None:
                 component, reason = blocked
                 if component != posix and reason == NOT_A_DIRECTORY:
                     # _blocked_path folds an unfollowable ancestor into
-                    # NOT_A_DIRECTORY (round 5's wrong-kind convention), which
-                    # loses the reason; re-probe the ancestor itself so an
+                    # NOT_A_DIRECTORY (a symlink that cannot be followed reads
+                    # as the wrong kind, like a dangling one), which loses the
+                    # reason; re-probe the ancestor itself so an
                     # unfollowable one still reports why, instead of a false
                     # "exists but is not a directory".
                     component_detail: list[str] = []
@@ -723,8 +724,8 @@ def _module_file(root: Path, module: str) -> str | None:
                 first_wrong_kind = posix
     if first_error is not None:
         candidate_path, reason, error_kind = first_error
-        verb = "read" if error_kind == "unreadable" else "followed"
-        raise PluginProjectError(f"{candidate_path}: cannot be {verb} ({reason}).")
+        phrase = CANNOT_BE_READ if error_kind == "unreadable" else "cannot be followed"
+        raise PluginProjectError(f"{candidate_path}: {phrase} ({reason}).")
     if first_wrong_kind is not None:
         raise PluginProjectError(f"{first_wrong_kind}: {NOT_A_REGULAR_FILE}.")
     if first_blocked_ancestor is not None:
