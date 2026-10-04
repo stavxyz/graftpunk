@@ -20,8 +20,10 @@ declares it as ``FIXTURES_TREE``; nothing here imports ``graftpunk.devtools``
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,11 +128,18 @@ def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
                 continue
             candidate = directory / name
             try:
-                is_file = candidate.is_file()
+                mode = candidate.stat().st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                # Gone, or a parent turned out not to be a directory, between
+                # the listing and the stat: not a fixture, not a problem.
+                continue
             except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    # A dangling or looping symlink: not a fixture either.
+                    continue
                 problems.append(f"{relative_dir}: cannot be read ({exc.strerror or exc}).")
                 break
-            if is_file and not is_sidecar(candidate):
+            if stat.S_ISREG(mode) and not is_sidecar(candidate):
                 fixtures.append(candidate)
     return sorted(fixtures), problems
 
