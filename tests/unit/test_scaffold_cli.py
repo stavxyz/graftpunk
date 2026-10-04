@@ -172,6 +172,7 @@ class TestPluginNewHappyPath:
         assert result.exit_code == 1, result.output
         (line,) = strip_ansi(result.output).strip().splitlines()
         assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
         assert set(tmp_path.iterdir()) == before
 
     @pytest.mark.usefixtures("gp_logging")
@@ -195,6 +196,7 @@ class TestPluginNewHappyPath:
         assert result.exit_code == 1, result.output
         (line,) = strip_ansi(result.output).strip().splitlines()
         assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
         assert set(tmp_path.iterdir()) == before
 
     @pytest.mark.usefixtures("gp_logging")

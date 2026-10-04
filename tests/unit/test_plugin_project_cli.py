@@ -1190,6 +1190,7 @@ class TestAddCommand:
         assert result.exit_code == 1, result.output
         (line,) = _plain(result.output).strip().splitlines()
         assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
 
     def test_a_non_utf8_har_is_refused_naming_the_har_path(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
@@ -1201,6 +1202,7 @@ class TestAddCommand:
         assert result.exit_code == 1, result.output
         (line,) = _plain(result.output).strip().splitlines()
         assert line == f"Could not read the recording: {caught.value}"
+        assert line.count(str(har)) == 1
 
     def test_a_har_path_that_is_a_directory_is_refused_naming_it_once(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
