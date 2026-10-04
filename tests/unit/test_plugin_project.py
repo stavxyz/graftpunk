@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import os
 import shutil
 import subprocess
@@ -1089,9 +1090,10 @@ def test_no_message_retypes_a_guarded_phrase(module: object) -> None:
     assert violations == []
 
 
-# The strerror text for ELOOP on this platform, used by every self-loop case
-# below instead of a guessed literal.
-_LOOP_STRERROR = "Too many levels of symbolic links"
+# The strerror text for ELOOP and EACCES on this platform, used by every
+# self-loop and locked-target case below instead of a guessed literal.
+_LOOP_STRERROR = os.strerror(errno.ELOOP)
+_EACCES_STRERROR = os.strerror(errno.EACCES)
 
 # The one `_probe` caller with no case in TestUnfollowableSymlink below,
 # mapped to why.
@@ -1194,7 +1196,7 @@ class TestUnfollowableSymlink:
                 read_project(link)
         finally:
             locked.chmod(0o755)
-        assert str(excinfo.value) == f"{link}: cannot be followed (Permission denied)."
+        assert str(excinfo.value) == f"{link}: cannot be followed ({_EACCES_STRERROR})."
 
     def test_require_directory_names_a_self_loop(self, tmp_path: Path) -> None:
         link = tmp_path / "link"
@@ -1214,7 +1216,7 @@ class TestUnfollowableSymlink:
                 read_project(tmp_path)
         finally:
             locked.chmod(0o755)
-        assert str(excinfo.value) == f"{pyproject}: cannot be followed (Permission denied)."
+        assert str(excinfo.value) == f"{pyproject}: cannot be followed ({_EACCES_STRERROR})."
 
     def test_load_pyproject_names_a_self_loop(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
@@ -1238,7 +1240,7 @@ class TestUnfollowableSymlink:
         finally:
             locked.chmod(0o755)
         assert str(excinfo.value) == (
-            "src/graftpunk_myshop/plugin.py: cannot be followed (Permission denied)."
+            f"src/graftpunk_myshop/plugin.py: cannot be followed ({_EACCES_STRERROR})."
         )
 
     def test_module_file_names_a_self_loop(self, tmp_path: Path) -> None:
@@ -1271,7 +1273,9 @@ class TestUnfollowableSymlink:
                 read_project(tmp_path)
         finally:
             locked.chmod(0o755)
-        assert str(excinfo.value) == "src/graftpunk_myshop: cannot be followed (Permission denied)."
+        assert (
+            str(excinfo.value) == f"src/graftpunk_myshop: cannot be followed ({_EACCES_STRERROR})."
+        )
 
     def test_module_file_names_a_self_loop_package_directory(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(_HAND_WRITTEN_PYPROJECT)
