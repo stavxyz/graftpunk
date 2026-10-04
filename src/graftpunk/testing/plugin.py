@@ -277,7 +277,8 @@ def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path]
             kind = _stat_kind(candidate, detail)
             if kind == "absent" or kind == "dangling":
                 # A dangling or looping symlink, or an entry gone between
-                # the listing and the stat: not a fixture, not a problem.
+                # the listing and the stat: not a fixture. A sidecar in this
+                # shape is reported once, by its fixture's sidecar probe below.
                 continue
             if kind == "unreadable":
                 problems.append(f"{_label(tree, relative_dir)}: cannot be read ({detail[0]}).")
