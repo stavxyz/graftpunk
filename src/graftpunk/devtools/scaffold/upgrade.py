@@ -8,7 +8,11 @@ already has (graft skill spec, 2026-09-21). The statements are added by
 an upgraded conftest is byte-identical to a generated one. It also creates
 ``policy.FIXTURES_TREE`` when a project lacks it, reading that fact from
 ``ProjectView.fixtures_tree_present`` (the same field ``gp plugin check``
-reads), so the two consumers cannot disagree.
+reads). It decides nothing about the filesystem itself: every path it might
+otherwise refuse on, a blocked ``policy.FIXTURES_TREE`` or an ancestor of a
+requirement's file included, is read from ``ProjectView.fixtures_tree_blocked``
+and ``ProjectView.unreadable_files()``, the same two facts ``gp plugin check``
+reports findings from, so the two consumers cannot disagree.
 """
 
 from __future__ import annotations
@@ -17,11 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.plugin_project import (
-    NOT_A_DIRECTORY,
-    require_plugin_project,
-    unreadable_file_message,
-)
+from graftpunk.devtools.plugin_project import require_plugin_project, unreadable_file_message
 from graftpunk.devtools.scaffold.policy import (
     FIXTURES_PLACEHOLDER,
     FIXTURES_TREE,
@@ -60,17 +60,6 @@ class UpgradeApplied:
         return bool(self.requirements) or self.created_fixtures_tree
 
 
-def _refuse_unless_directory(path: Path, root: Path) -> None:
-    """Refuse in one line when *path* exists (a plain file or directory, or a
-    symlink of either kind, dangling included: ``is_symlink() or exists()``
-    is ``os.path.lexists`` without the extra import) but is not a directory:
-    this function is about to write inside it (a requirement's parent
-    directory, or the fixtures tree itself), and a dangling symlink there is
-    no more writable into than a plain file."""
-    if (path.is_symlink() or path.exists()) and not path.is_dir():
-        raise UpgradeRefusedError(f"{path.relative_to(root)}: {NOT_A_DIRECTORY}")
-
-
 def upgrade_project(root: Path) -> UpgradeApplied:
     """Apply every requirement *root*'s project lacks, and return what was applied.
 
@@ -84,10 +73,14 @@ def upgrade_project(root: Path) -> UpgradeApplied:
             error names what was left changed.
     """
     view = require_plugin_project(root)
-    unreadable = view.unreadable_files()
-    if unreadable:
+    blocked: list[tuple[str, str]] = []
+    if view.fixtures_tree_blocked is not None:
+        blocked.append(view.fixtures_tree_blocked)
+    blocked.extend(view.unreadable_files())
+    blocked = list(dict.fromkeys(blocked))
+    if blocked:
         listing = "; ".join(
-            f"{path}: {unreadable_file_message(reason)}" for path, reason in unreadable
+            f"{path}: {unreadable_file_message(reason)}" for path, reason in blocked
         )
         raise UpgradeRefusedError(listing)
     missing = view.missing_requirements()
@@ -97,7 +90,6 @@ def upgrade_project(root: Path) -> UpgradeApplied:
     changes: list[PlannedChange] = []
     for relative, requirements in by_path.items():
         path = root / relative
-        _refuse_unless_directory(path.parent, root)
         original = read_original(path) if path.is_file() else None
         try:
             content = with_bindings(
@@ -111,7 +103,6 @@ def upgrade_project(root: Path) -> UpgradeApplied:
             ) from exc
         changes.append(PlannedChange(path, content, original=original, validate=validate_python))
     fixtures_tree = root / FIXTURES_TREE
-    _refuse_unless_directory(fixtures_tree, root)
     created_fixtures_tree = not view.fixtures_tree_present
     if created_fixtures_tree:
         changes.append(PlannedChange(fixtures_tree / FIXTURES_PLACEHOLDER, ""))

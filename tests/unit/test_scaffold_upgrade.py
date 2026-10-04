@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from graftpunk.devtools.plugin_check import check_project
 from graftpunk.devtools.plugin_project import NotAPluginProjectError, read_project
 from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, FIXTURES_TREE
 from graftpunk.devtools.scaffold.project import write_scaffold
@@ -200,6 +201,25 @@ class TestUpgrade:
             UpgradeRefusedError, match="tests/fixtures: exists but is not a directory"
         ):
             upgrade_project(tmp_path)
+
+    def test_check_and_upgrade_name_both_blocked_paths_in_one_run(self, tmp_path: Path) -> None:
+        """tests/fixtures and tests/conftest.py both dangling symlinks: check
+        lists both findings in one run, and upgrade must refuse naming both
+        in that same run too, not just the first one it happens to read (the
+        old two-owners bug refused on conftest.py alone, then on fixtures
+        alone on a second call, once the first was fixed by hand)."""
+        write_scaffold(tmp_path, _SPEC)
+        shutil.rmtree(tmp_path / "tests" / "fixtures")
+        (tmp_path / "tests" / "fixtures").symlink_to(tmp_path / "tests" / "nonexistent")
+        (tmp_path / "tests" / "conftest.py").unlink()
+        (tmp_path / "tests" / "conftest.py").symlink_to(tmp_path / "tests" / "nonexistent.py")
+        findings = {str(f) for f in check_project(tmp_path)}
+        assert any(f.startswith("tests/fixtures:") for f in findings)
+        assert any(f.startswith("tests/conftest.py:") for f in findings)
+        with pytest.raises(UpgradeRefusedError) as refused:
+            upgrade_project(tmp_path)
+        assert "tests/fixtures" in str(refused.value)
+        assert "tests/conftest.py" in str(refused.value)
 
     def test_a_conftest_whose_imports_follow_code_is_refused_and_left_alone(
         self, tmp_path: Path
