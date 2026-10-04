@@ -317,12 +317,13 @@ class ProjectView:
     take the same answer from the same place and cannot disagree.
     ``fixtures_tree_blocked`` is ``None`` when nothing blocks it, or
     ``(path, reason)`` for the project-relative path (no trailing slash) that
-    does: the tree itself (a regular file or a dangling symlink there), or an
-    ancestor (``tests`` itself being a file, or unreadable, most likely).
-    *reason* is ``NOT_A_DIRECTORY`` or "cannot be read (<strerror>)", the same
-    text :func:`unreadable_file_message` turns into a finding or a refusal. A
-    reader fact distinct from "missing", so neither consumer tells an author
-    gp plugin upgrade will create a path it is actually going to refuse.
+    does: the tree itself (a regular file, or a symlink that cannot be
+    followed to a directory), or an ancestor (``tests`` itself being a file,
+    or unreadable, most likely). *reason* is ``NOT_A_DIRECTORY`` or "cannot be
+    read (<strerror>)", the same text :func:`unreadable_file_message` turns
+    into a finding or a refusal. A reader fact distinct from "missing", so
+    neither consumer tells an author gp plugin upgrade will create a path it
+    is actually going to refuse.
 
     ``first_party_packages`` is read once here, by the same rule ruff's own
     default (``src = [".", "src"]``) uses to decide a module is first party:
@@ -503,14 +504,17 @@ def read_project(root: Path) -> ProjectView:
     distinct requirement file is parsed once.
 
     Raises:
-        PluginProjectError: *root* does not exist or is not a directory; or the
-            project cannot be read at all: ``pyproject.toml`` exists but is not
-            a regular file, is not valid TOML, is not UTF-8, or cannot be read
-            (permissions); its ``project`` or ``project.entry-points`` table,
-            or its ``"graftpunk.plugins"`` group table, has the wrong shape; an
-            entry point's value is not a string; or an entry point's module is
-            missing, is not UTF-8, cannot be read (permissions), or does not
-            parse.
+        PluginProjectError: *root* does not exist, is not a directory, or is a
+            symlink that cannot be followed; or the project cannot be read at
+            all: ``pyproject.toml`` exists but is not a regular file, is not
+            valid TOML, is not UTF-8, cannot be read (permissions), or is a
+            symlink that cannot be followed; its ``project`` or
+            ``project.entry-points`` table, or its ``"graftpunk.plugins"``
+            group table, has the wrong shape; an entry point's value is not a
+            string; or an entry point's module is missing, is not a regular
+            file (a directory or a dangling symlink), is blocked by a
+            non-directory ancestor, is not UTF-8, cannot be read (permissions
+            or a symlink that cannot be followed), or does not parse.
     """
     _require_directory(root)
     data = _load_pyproject(root)
