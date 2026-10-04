@@ -51,9 +51,11 @@ __all__ = ["FINDING_ADVICE", "Finding", "check_project"]
 # The two messages built entirely in this module, each holding its own advice
 # phrase; unreadable_file_message's phrases live in plugin_project.py, next to
 # the reasons it builds its advice from.
-_FIXTURES_TREE_MISSING = "missing; gp plugin upgrade creates it."
+_CREATES_IT = "creates it"
+_ADDS_IT = "adds it"
+_FIXTURES_TREE_MISSING = f"missing; gp plugin upgrade {_CREATES_IT}."
 _DOES_NOT_BIND = "does not bind"
-_MISSING_REQUIREMENT_TAIL = "gp plugin upgrade adds it."
+_MISSING_REQUIREMENT_TAIL = f"gp plugin upgrade {_ADDS_IT}."
 
 FINDING_ADVICE: tuple[str, ...] = (
     NOT_A_DIRECTORY_PHRASE,
@@ -63,8 +65,8 @@ FINDING_ADVICE: tuple[str, ...] = (
     DOES_NOT_PARSE,
     EXACTLY_ONE,
     GP_FILL_MARKER,
-    "creates it",
-    "adds it",
+    _CREATES_IT,
+    _ADDS_IT,
 )
 """Every advice phrase a ``check_project`` finding can carry, for a test to
 check the guide's prose against: not a guarantee that a future reason is

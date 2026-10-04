@@ -21,7 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.errors import DevtoolsRefusal
-from graftpunk.devtools.plugin_project import require_plugin_project, unreadable_file_message
+from graftpunk.devtools.plugin_project import (
+    DOES_NOT_PARSE,
+    require_plugin_project,
+    unreadable_file_message,
+)
 from graftpunk.devtools.scaffold.policy import (
     FIXTURES_PLACEHOLDER,
     FIXTURES_TREE,
@@ -106,7 +110,7 @@ def upgrade_project(root: Path) -> UpgradeApplied:
             raise UpgradeRefusedError(f"{relative}: {exc}") from exc
         except SyntaxError as exc:
             raise UpgradeRefusedError(
-                f"{relative}: does not parse after its import is placed ({exc.msg})."
+                f"{relative}: {DOES_NOT_PARSE} after its import is placed ({exc.msg})."
             ) from exc
         changes.append(PlannedChange(path, content, original=original, validate=validate_python))
     fixtures_tree = root / FIXTURES_TREE

@@ -14,6 +14,7 @@ from types import MappingProxyType
 
 import pytest
 
+from graftpunk.devtools import plugin_check as plugin_check_module
 from graftpunk.devtools import plugin_project as plugin_project_module
 from graftpunk.devtools.plugin_project import (
     NOT_A_DIRECTORY,
@@ -32,6 +33,7 @@ from graftpunk.devtools.plugin_project import (
     unreadable_file_message,
 )
 from graftpunk.devtools.scaffold import policy
+from graftpunk.devtools.scaffold import upgrade as upgrade_module
 from graftpunk.devtools.scaffold.policy import (
     PROJECT_REQUIREMENTS,
     ProjectRequirement,
@@ -1005,6 +1007,85 @@ def test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -> No
     than waiting for a reviewer to find it by hand again."""
     source = Path(plugin_project_module.__file__).read_text()
     violations = _calls_outside_probe(ast.parse(source))
+    assert violations == []
+
+
+# Every phrase FINDING_ADVICE or unreadable_file_message keys on, named by its
+# own constant: the one vocabulary a message built in any of the three files
+# below is allowed to use, by interpolating the constant rather than retyping
+# the words.
+_GUARDED_PHRASES: dict[str, str] = {
+    "CANNOT_BE_READ": plugin_project_module.CANNOT_BE_READ,
+    "NOT_VALID_UTF8": plugin_project_module.NOT_VALID_UTF8,
+    "DOES_NOT_PARSE": plugin_project_module.DOES_NOT_PARSE,
+    "NOT_A_DIRECTORY_PHRASE": plugin_project_module.NOT_A_DIRECTORY_PHRASE,
+    "NOT_A_REGULAR_FILE_PHRASE": plugin_project_module.NOT_A_REGULAR_FILE_PHRASE,
+    "EXACTLY_ONE": plugin_project_module.EXACTLY_ONE,
+    "_CREATES_IT": plugin_check_module._CREATES_IT,
+    "_ADDS_IT": plugin_check_module._ADDS_IT,
+}
+
+
+def _is_docstring(node: ast.Constant, tree: ast.Module) -> bool:
+    """Whether *node* is the literal of a module, class, or function docstring
+    (the first statement of some body in *tree*): prose explaining a reason in
+    the guarded vocabulary is not a message built by retyping it, so a
+    docstring is not this guard's business."""
+    for parent in ast.walk(tree):
+        body = getattr(parent, "body", None)
+        if (
+            isinstance(body, list)
+            and body
+            and isinstance(body[0], ast.Expr)
+            and body[0].value is node
+        ):
+            return True
+    return False
+
+
+def _phrase_violations(tree: ast.Module, phrases: dict[str, str]) -> list[tuple[int, str, str]]:
+    """Every string literal or f-string constant fragment in *tree* that
+    contains one of *phrases*' values, as (line, name, text): excepting a
+    docstring (see :func:`_is_docstring`) and the literal that is that name's
+    own module-level assignment (``NAME = "...""``), which is the one place
+    each phrase is allowed to be spelled out."""
+    exempt_ids = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in phrases
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+    violations: list[tuple[int, str, str]] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in exempt_ids
+            and not _is_docstring(node, tree)
+        ):
+            for name, phrase in phrases.items():
+                if phrase in node.value:
+                    violations.append((node.lineno, name, node.value))
+    return violations
+
+
+@pytest.mark.parametrize(
+    "module",
+    [plugin_project_module, plugin_check_module, upgrade_module],
+    ids=lambda m: m.__name__.rsplit(".", 1)[-1],
+)
+def test_no_message_retypes_a_guarded_phrase(module: object) -> None:
+    """A message built in ``plugin_project.py``, ``plugin_check.py``, or
+    ``scaffold/upgrade.py`` by retyping one of ``_GUARDED_PHRASES`` instead of
+    interpolating its constant drifts silently the moment the constant is
+    reworded (A7-2 to A7-6, R7-B2 to R7-B13): this is the test that would have
+    failed on every one of those sites before they were fixed."""
+    source = Path(module.__file__).read_text()  # type: ignore[attr-defined]
+    violations = _phrase_violations(ast.parse(source), _GUARDED_PHRASES)
     assert violations == []
 
 

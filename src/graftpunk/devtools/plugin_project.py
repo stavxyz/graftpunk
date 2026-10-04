@@ -187,7 +187,7 @@ def _blocked_path(
             return None
         if found == "unreadable":
             blamed = consumed[:-1] or consumed
-            return "/".join(blamed), f"cannot be read ({detail[0]})"
+            return "/".join(blamed), f"{CANNOT_BE_READ} ({detail[0]})"
         if index < len(parts) - 1:
             if found != "dir":
                 return "/".join(consumed), NOT_A_DIRECTORY
@@ -409,7 +409,7 @@ class ProjectView:
         for r in self.requirement_set:
             status = self.requirements.get(r.key)
             if status is not None and status.state == "unreadable":
-                files.setdefault(status.blocking or r.path, status.reason or "does not parse")
+                files.setdefault(status.blocking or r.path, status.reason or DOES_NOT_PARSE)
         return tuple(files.items())
 
 
@@ -430,7 +430,7 @@ def _load_pyproject(root: Path) -> dict[str, Any] | None:
     detail: list[str] = []
     kind = _probe(path, detail)
     if kind == "unreadable":
-        raise PluginProjectError(f"{path}: cannot be read ({detail[0]}).")
+        raise PluginProjectError(f"{path}: {CANNOT_BE_READ} ({detail[0]}).")
     if kind == "unfollowable":
         raise PluginProjectError(f"{path}: cannot be followed ({detail[0]}).")
     if kind == "absent":
@@ -440,9 +440,9 @@ def _load_pyproject(root: Path) -> dict[str, Any] | None:
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        raise PluginProjectError(f"{path}: not valid UTF-8 ({exc})") from exc
+        raise PluginProjectError(f"{path}: {NOT_VALID_UTF8} ({exc})") from exc
     except OSError as exc:
-        raise PluginProjectError(f"{path}: cannot be read ({exc.strerror or exc})") from exc
+        raise PluginProjectError(f"{path}: {CANNOT_BE_READ} ({exc.strerror or exc})") from exc
     try:
         return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -484,7 +484,7 @@ def _require_directory(root: Path) -> None:
     if kind == "absent":
         raise PluginProjectError(f"{root}: no such directory.")
     if kind == "unreadable":
-        raise PluginProjectError(f"{root}: cannot be read ({detail[0]}).")
+        raise PluginProjectError(f"{root}: {CANNOT_BE_READ} ({detail[0]}).")
     if kind == "unfollowable":
         raise PluginProjectError(f"{root}: cannot be followed ({detail[0]}).")
     if kind != "dir":
@@ -728,7 +728,7 @@ def _module_file(root: Path, module: str) -> str | None:
     if first_wrong_kind is not None:
         raise PluginProjectError(f"{first_wrong_kind}: {NOT_A_REGULAR_FILE}.")
     if first_blocked_ancestor is not None:
-        raise PluginProjectError(f"{first_blocked_ancestor}: exists but is not a directory.")
+        raise PluginProjectError(f"{first_blocked_ancestor}: exists but {NOT_A_DIRECTORY_PHRASE}.")
     return None
 
 
@@ -748,9 +748,9 @@ def _parse(root: Path, relative: str) -> tuple[str, ast.Module]:
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        raise PluginProjectError(f"{relative}: not valid UTF-8 ({exc})") from exc
+        raise PluginProjectError(f"{relative}: {NOT_VALID_UTF8} ({exc})") from exc
     except OSError as exc:
-        raise PluginProjectError(f"{relative}: cannot be read ({exc.strerror or exc})") from exc
+        raise PluginProjectError(f"{relative}: {CANNOT_BE_READ} ({exc.strerror or exc})") from exc
     try:
         return text, ast.parse(text)
     except (SyntaxError, ValueError) as exc:
@@ -1029,9 +1029,9 @@ def _parse_requirement_file(root: Path, relative: str) -> ast.Module | Requireme
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        return RequirementStatus("unreadable", f"not valid UTF-8 ({exc})")
+        return RequirementStatus("unreadable", f"{NOT_VALID_UTF8} ({exc})")
     except OSError as exc:
-        return RequirementStatus("unreadable", f"cannot be read ({exc.strerror or exc})")
+        return RequirementStatus("unreadable", f"{CANNOT_BE_READ} ({exc.strerror or exc})")
     try:
         return ast.parse(text)
     except (SyntaxError, ValueError) as exc:
