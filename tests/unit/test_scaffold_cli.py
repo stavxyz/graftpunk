@@ -1640,15 +1640,20 @@ class TestPluginNewCommand:
         assert "def api_orders(" not in plugin_code
         assert "tests/fixtures/get_api_orders_{order_id}.json" in strip_ansi(result.output)
 
+    @pytest.mark.usefixtures("gp_logging")
     @pytest.mark.parametrize(
         "value", ["orders GET /api/orders", "=GET /api/orders", "orders=", "orders=get /api/orders"]
     )
     def test_a_malformed_value_is_refused_with_the_parsers_own_text(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
     ) -> None:
+        from graftpunk.cli.scaffold_commands import console
         from graftpunk.har.naming import EndpointSpecError, parse_command_spec
 
         self._record(tmp_path, monkeypatch)
+        # B11a: pin the console to a pipe's usual 80 columns; a wide real
+        # terminal (as this sandbox has) would hide a missing soft_wrap=True.
+        monkeypatch.setattr(console, "size", (80, 24))
         with pytest.raises(EndpointSpecError) as caught:
             parse_command_spec(value)
         target = tmp_path / "out"
@@ -1669,6 +1674,8 @@ class TestPluginNewCommand:
         assert result.exit_code == 1
         assert f"--command: {caught.value}" in " ".join(strip_ansi(result.output).split())
         assert not target.exists()
+        # All four messages are over 80 columns with the "--command: " prefix.
+        assert len(strip_ansi(result.output).strip().splitlines()) == 1
 
     def test_a_colliding_name_is_refused_and_nothing_is_written(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1695,10 +1702,16 @@ class TestPluginNewCommand:
         assert "given twice" in strip_ansi(result.output)
         assert not target.exists()
 
+    @pytest.mark.usefixtures("gp_logging")
     def test_an_endpoint_the_digest_lacks_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from graftpunk.cli.scaffold_commands import console
+
         self._record(tmp_path, monkeypatch)
+        # B11b: pin the console to a pipe's usual 80 columns; a wide real
+        # terminal (as this sandbox has) would hide a missing soft_wrap=True.
+        monkeypatch.setattr(console, "size", (80, 24))
         result = runner.invoke(
             _build_app(),
             [
@@ -1715,6 +1728,8 @@ class TestPluginNewCommand:
         )
         assert result.exit_code == 1
         assert "not an endpoint in this run" in strip_ansi(result.output)
+        # B11b: this message is over 80 columns; it must not wrap under a pipe.
+        assert len(strip_ansi(result.output).strip().splitlines()) == 1
 
     def test_command_without_from_run_is_refused(self, tmp_path: Path) -> None:
         result = runner.invoke(

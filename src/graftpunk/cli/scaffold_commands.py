@@ -120,7 +120,7 @@ def _command_selections(values: list[str]) -> tuple[CommandSelection, ...]:
             name, method, template = parse_command_spec(value)
         except EndpointSpecError as exc:
             LOG.debug("scaffold_refused", reason="bad_command")
-            console.print(f"[red]--command: {escape(str(exc))}[/red]")
+            console.print(f"[red]--command: {escape(str(exc))}[/red]", soft_wrap=True)
             raise typer.Exit(1) from None
         selections.append(CommandSelection(name=name, method=method, template=template))
     return tuple(selections)
@@ -164,14 +164,15 @@ def plugin_new(
     refusal = _name_refusal(name)
     if check_name:
         if refusal is not None:
-            console.print(f"[red]{escape(refusal[1])}[/red]")
+            console.print(f"[red]{escape(refusal[1])}[/red]", soft_wrap=True)
             raise typer.Exit(1)
         console.print(f"'{escape(name)}' is an acceptable plugin name.")
         return
     if backend not in _SUPPORTED_BACKENDS:
         LOG.debug("scaffold_refused", reason="bad_backend", backend=backend)
         console.print(
-            f"[red]--backend must be one of {_SUPPORTED_BACKENDS}, got '{escape(backend)}'[/red]"
+            f"[red]--backend must be one of {_SUPPORTED_BACKENDS}, got '{escape(backend)}'[/red]",
+            soft_wrap=True,
         )
         raise typer.Exit(1)
     # ty narrows `backend: str` to `_BackendName` from the membership check
@@ -179,18 +180,18 @@ def plugin_new(
 
     if refusal is not None:
         LOG.debug("scaffold_refused", reason=refusal[0], name=name)
-        console.print(f"[red]{escape(refusal[1])}[/red]")
+        console.print(f"[red]{escape(refusal[1])}[/red]", soft_wrap=True)
         raise typer.Exit(1)
 
     if run is not None and from_run is None:
         LOG.debug("scaffold_refused", reason="run_without_from_run")
-        console.print("[red]--run requires --from-run.[/red]")
+        console.print("[red]--run requires --from-run.[/red]", soft_wrap=True)
         raise typer.Exit(1)
 
     selections = _command_selections(command)
     if selections and from_run is None:
         LOG.debug("scaffold_refused", reason="command_without_from_run")
-        console.print("[red]--command requires --from-run.[/red]")
+        console.print("[red]--command requires --from-run.[/red]", soft_wrap=True)
         raise typer.Exit(1)
 
     digest_result = None
@@ -223,13 +224,13 @@ def plugin_new(
     except ScaffoldConflictError as exc:
         LOG.debug("scaffold_refused", reason="conflict", conflicts=len(exc.conflicts))
         for header, paths in exc.kinds:
-            console.print(f"[red]{escape(header)}:[/red]")
+            console.print(f"[red]{escape(header)}:[/red]", soft_wrap=True)
             for path in paths:
                 console.print(f"  {escape(str(path))}", soft_wrap=True)
         raise typer.Exit(1) from None
     except PyprojectEditError as exc:
         LOG.debug("scaffold_refused", reason="pyproject_edit_error")
-        console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
     except ScaffoldWriteError as exc:
         # The writer restored what it could before raising, and its message is
@@ -245,18 +246,20 @@ def plugin_new(
         LOG.debug("scaffold_refused", reason="os_error", error=str(exc))
         target = exc.filename or str(dir_)
         reason = exc.strerror or str(exc)
-        console.print(f"[red]Could not write {escape(str(target))}: {escape(reason)}[/red]")
+        console.print(
+            f"[red]Could not write {escape(str(target))}: {escape(reason)}[/red]", soft_wrap=True
+        )
         raise typer.Exit(1) from None
     except CommandSelectionError as exc:
         LOG.debug("scaffold_refused", reason="bad_command")
-        console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
     except NotAPluginSuiteError as exc:
         # Before the ValueError arm below: it is a ValueError subclass, and the
         # two conditions are different (a directory holding someone else's
         # project, versus a name the generator cannot use).
         LOG.debug("scaffold_refused", reason="not_a_plugin_suite")
-        console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
     except InvalidChangeError as exc:
         # Also before the ValueError arm: a rendered file that fails its own
@@ -266,7 +269,7 @@ def plugin_new(
         raise typer.Exit(1) from None
     except ValueError as exc:
         LOG.debug("scaffold_refused", reason="invalid_name")
-        console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(1) from None
 
     LOG.info("scaffold_written", mode=result.mode, dir=str(dir_))
@@ -307,7 +310,7 @@ def plugin_info(
 ) -> None:
     """Describe the plugin project in --dir: its classification, plugins, and commands."""
     if not as_json:
-        console.print("[red]gp plugin info prints JSON only: pass --json.[/red]")
+        console.print("[red]gp plugin info prints JSON only: pass --json.[/red]", soft_wrap=True)
         raise typer.Exit(1)
     try:
         payload = info_payload(read_project(dir_))
@@ -401,6 +404,6 @@ def plugin_check(
     for finding in findings:
         console.print(escape(str(finding)), soft_wrap=True, highlight=False)
     if findings:
-        console.print(f"[red]gp plugin check: {len(findings)} finding(s).[/red]")
+        console.print(f"[red]gp plugin check: {len(findings)} finding(s).[/red]", soft_wrap=True)
         raise typer.Exit(1)
     console.print("[green]gp plugin check: no findings.[/green]")
