@@ -1117,36 +1117,6 @@ class TestPluginModuleWithTokens:
         assert "GP-FILL: unpaired token candidate: header 'X-Lonely'" in plugin_code
 
 
-def test_generated_module_names_matches_a_maximal_rendered_modules_top_level() -> None:
-    """policy.GENERATED_MODULE_NAMES names every module-level binding a generated
-    plugin module can carry: a spec with a login form, a paired token, and an
-    endpoint with a typed query parameter and a path placeholder triggers every
-    optional import at once, and this pins the constant against what the render
-    actually binds (polish-r1 P1)."""
-    spec = ScaffoldSpec(
-        name="myshop",
-        mode="new_project",
-        backend="nodriver",
-        base_url="https://myshop.example.com",
-        digest=_digest(
-            endpoints=(_ORDERS_ENDPOINT,),
-            login_forms=(_PASSWORD_LOGIN_FORM,),
-            tokens=(_HEADER_TOKEN, _COOKIE_TOKEN),
-        ),
-    )
-    plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
-    tree = ast.parse(plugin_code)
-    bound = {
-        alias.asname or alias.name.split(".")[0]
-        for node in tree.body
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
-        for alias in node.names
-    }
-    builtins_referenced = {"int", "float", "bool", "str", "list", "dict"}
-    assert bound | builtins_referenced == policy.GENERATED_MODULE_NAMES
-
-
 class TestPluginModuleCommandStubs:
     def test_stub_per_endpoint_up_to_the_cap(self) -> None:
         endpoints = tuple(

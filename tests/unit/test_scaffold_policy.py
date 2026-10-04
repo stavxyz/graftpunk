@@ -171,3 +171,78 @@ def test_the_reserved_command_names_are_the_root_commands_registration_adds() ->
     from graftpunk.cli.plugin_commands import AUTO_ROOT_COMMAND_NAMES
 
     assert set(policy._AUTO_ROOT_COMMAND_NAMES) == set(AUTO_ROOT_COMMAND_NAMES)
+
+
+def test_generated_module_names_matches_a_maximal_rendered_modules_top_level() -> None:
+    """GENERATED_MODULE_NAMES names every module-level binding a generated plugin
+    module can carry: a spec with a login form, a paired token, and an endpoint
+    with a typed query parameter and a path placeholder triggers every optional
+    import at once, and this pins the constant against what the render actually
+    binds. Lives here rather than beside the render tests because it pins a
+    policy constant; the endpoint/login-form/token shapes below are the
+    smallest inputs that trigger every optional import together, kept local
+    to this test rather than imported from test_scaffold_render.py's own
+    (private) fixtures."""
+    from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
+    from graftpunk.har.digest import (
+        DigestSource,
+        Endpoint,
+        LoginForm,
+        RunDigest,
+        ShapeNode,
+        TokenCandidate,
+    )
+
+    endpoint = Endpoint(
+        host="api.myshop.example.com",
+        template="/orders/{order_id}",
+        methods=("GET",),
+        count=5,
+        statuses=(200,),
+        content_type="application/json",
+        query_params={"page": "int"},
+        body_params={},
+        body_kind="none",
+        shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
+        custom_headers=("X-Shop-Client",),
+        examples=("/orders/1",),
+    )
+    login_form = LoginForm(
+        action="/login",
+        method="POST",
+        fields={"username": "#email", "password": "#pw"},
+        submit="#login-btn",
+        hidden=("_token",),
+        source="page-source.html",
+    )
+    header_token = TokenCandidate(kind="header", name="X-CSRF-Token", seen_on=("GET /dashboard",))
+    cookie_token = TokenCandidate(kind="cookie", name="X-CSRF-Token", seen_on=("GET /dashboard",))
+    run_digest = RunDigest(
+        source=DigestSource(har_path=Path("network.har"), session="myshop", run_id="run-1"),
+        primary_host="api.myshop.example.com",
+        hosts={"api.myshop.example.com": 3},
+        endpoints=(endpoint,),
+        login=(),
+        login_forms=(login_form,),
+        tokens=(header_token, cookie_token),
+        cookies=(),
+        dropped={"static": 0, "third_party": 0, "error": 0},
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=run_digest,
+    )
+    plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+    tree = ast.parse(plugin_code)
+    bound = {
+        alias.asname or alias.name.split(".")[0]
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
+        for alias in node.names
+    }
+    builtins_referenced = {"int", "float", "bool", "str", "list", "dict"}
+    assert bound | builtins_referenced == policy.GENERATED_MODULE_NAMES
