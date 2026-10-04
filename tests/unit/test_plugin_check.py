@@ -83,12 +83,24 @@ class TestFindings:
         assert "src/graftpunk_myshop/plugin.py:" in result.output
         assert "tests/test_plugin.py:" in result.output
 
-    def test_a_module_without_exactly_one_plugin_class_is_reported(self, tmp_path: Path) -> None:
+    def test_a_module_without_exactly_one_plugin_class_is_reported_once(
+        self, tmp_path: Path
+    ) -> None:
+        """A plugin defect's message already starts with its own module path
+        ("{relative}: ..."), so the finding must carry no path of its own, or
+        the path prints twice."""
         module = _clean_project(tmp_path)
         module.write_text(_CLEAN_MODULE + "\n\nclass Other(SitePlugin):\n    site_name = 'o'\n")
         (finding,) = check_project(tmp_path)
-        assert finding.path == "src/graftpunk_myshop/plugin.py"
-        assert "exactly one SitePlugin subclass, found 2" in finding.message
+        assert finding.path is None
+        assert finding.line is None
+        assert str(finding) == (
+            "src/graftpunk_myshop/plugin.py: expected exactly one SitePlugin subclass, "
+            "found 2 (MyshopPlugin, Other). A plugin module holds one plugin class."
+        )
+        result = runner.invoke(app, ["plugin", "check", "--dir", str(tmp_path)])
+        assert result.exit_code == 1
+        assert result.output.count("src/graftpunk_myshop/plugin.py:") == 1
 
     def test_a_missing_requirement_is_reported_and_names_the_fix(self, tmp_path: Path) -> None:
         _clean_project(tmp_path)

@@ -82,7 +82,9 @@ def check_project(root: Path) -> list[Finding]:
         for path, line in view.test_markers
     )
     findings.extend(
-        Finding(path=defect.module_path, line=None, message=defect.message)
+        # defect.message already starts with "{module_path}: " (PluginDefect's
+        # own contract); a path here too would print it twice.
+        Finding(path=None, line=None, message=defect.message)
         for defect in view.defects
     )
     findings.extend(
