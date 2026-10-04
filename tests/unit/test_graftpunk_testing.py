@@ -398,6 +398,43 @@ class TestCheckFixturesTree:
         assert problems[0] == f"sub: cannot be read ({os.strerror(errno.EACCES)})."
         assert problems[1].startswith("b_invoices.json: no sidecar")
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 644-mode directory's entries")
+    def test_an_untraversable_directory_holding_only_a_subdirectory_is_one_line(
+        self, tmp_path: Path
+    ) -> None:
+        """A directory the runner can list but not search, holding only a
+        subdirectory (no file directly inside it), is blamed on itself, not
+        on the subdirectory ``os.walk`` would otherwise try to descend
+        into: the dirnames loop has to notice the same "unreadable" kind
+        the filenames loop already does."""
+        group = tmp_path / "group"
+        (group / "sub1").mkdir(parents=True)
+        (group / "sub1" / "a.json").write_bytes(b"{}")
+        group.chmod(0o644)
+        try:
+            problems = check_fixtures_tree(tmp_path).problems
+        finally:
+            group.chmod(0o755)
+        assert problems == (f"group: cannot be read ({os.strerror(errno.EACCES)}).",)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 644-mode directory's entries")
+    def test_an_untraversable_directory_holding_a_file_and_a_subdirectory_is_still_one_line(
+        self, tmp_path: Path
+    ) -> None:
+        """The same directory, holding a file directly as well as a
+        subdirectory, still gets exactly one problem line, not one for the
+        file and another for the subdirectory."""
+        group = tmp_path / "group"
+        (group / "sub1").mkdir(parents=True)
+        (group / "sub1" / "a.json").write_bytes(b"{}")
+        (group / "z.json").write_bytes(b"{}")
+        group.chmod(0o644)
+        try:
+            problems = check_fixtures_tree(tmp_path).problems
+        finally:
+            group.chmod(0o755)
+        assert problems == (f"group: cannot be read ({os.strerror(errno.EACCES)}).",)
+
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode directory")
     def test_an_unlistable_tree_root_is_labelled_by_the_tree_not_a_dot(
         self, tmp_path: Path

@@ -240,14 +240,30 @@ def _collect_fixtures(tree: Path, tree_stat: os.stat_result) -> tuple[list[Path]
         directory = Path(dirpath)
         relative_dir = directory.relative_to(tree)
         kept_dirnames: list[str] = []
+        blocked = False
         for name in dirnames:
             child_stat: list[os.stat_result] = []
-            if _stat_kind(directory / name, stat_result=child_stat) == "dir" and child_stat:
+            child_detail: list[str] = []
+            child_kind = _stat_kind(directory / name, child_detail, child_stat)
+            if child_kind == "unreadable":
+                # directory itself (not the child, which os.walk would try
+                # to descend into next) lacks the search permission needed
+                # to tell its entries apart: one line for it, and nothing
+                # under it is trusted.
+                problems.append(
+                    f"{_label(tree, relative_dir)}: cannot be read ({child_detail[0]})."
+                )
+                blocked = True
+                break
+            if child_kind == "dir" and child_stat:
                 identity = (child_stat[0].st_dev, child_stat[0].st_ino)
                 if identity in visited:
                     continue
                 visited.add(identity)
             kept_dirnames.append(name)
+        if blocked:
+            dirnames[:] = []
+            continue
         dirnames[:] = kept_dirnames
         for name in filenames:
             if name.startswith("."):
