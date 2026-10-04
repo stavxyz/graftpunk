@@ -311,9 +311,10 @@ def with_graftpunk_floor(
     ``[project] dynamic``: there is no array here to hold a literal to raise
     or name, whatever ``[project] dependencies`` itself happens to say.
     Returns :class:`CannotRaiseFloor` for any other form that allows a release
-    below *floor*: no ``graftpunk`` requirement, several of them, a bare upper
-    bound, several specifiers none of which excludes everything below the
-    floor, a URL, or a literal this module cannot locate textually.
+    below *floor*: no ``graftpunk`` requirement, several of them not all of
+    which exclude everything below the floor, a bare upper bound, several
+    specifiers none of which excludes everything below the floor, a URL, or a
+    literal this module cannot locate textually.
     """
     project = tomllib.loads(text).get("project", {})
     dynamic = project.get("dynamic", [])
@@ -330,7 +331,15 @@ def with_graftpunk_floor(
     if not found:
         return CannotRaiseFloor(requirement=None)
     if len(found) > 1:
-        return CannotRaiseFloor(requirement=" and ".join(raw for _, raw in found))
+        joined = " and ".join(raw for _, raw in found)
+        try:
+            requirements = [Requirement(raw) for _, raw in found]
+        except InvalidRequirement:
+            return CannotRaiseFloor(requirement=joined)
+        floor_version = Version(floor)
+        if all(_excludes_everything_below(list(r.specifier), floor_version) for r in requirements):
+            return None
+        return CannotRaiseFloor(requirement=joined)
     index, raw = found[0]
     cannot = CannotRaiseFloor(requirement=raw)
     try:

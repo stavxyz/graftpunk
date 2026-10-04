@@ -395,3 +395,29 @@ class TestWithGraftpunkFloor:
         assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
             requirement="graftpunk>=1.0"
         )
+
+    def test_two_graftpunk_requirements_both_already_at_the_floor_are_nothing_to_do(
+        self,
+    ) -> None:
+        """A marker-split pair each already excluding everything below the
+        floor is nothing extra to do, the same as a single requirement in
+        that shape (DD6, A13-2)."""
+        text = _deps(
+            "'graftpunk>=1.17.0; python_version < \"3.12\"',",
+            "'graftpunk[browser]>=1.17.0; python_version >= \"3.12\"',",
+        )
+        assert with_graftpunk_floor(text, "1.17.0") is None
+
+    def test_two_graftpunk_requirements_one_below_the_floor_cannot_be_raised(self) -> None:
+        """Only one of the pair excludes everything below the floor: still
+        cannot raise, and still named (DD6, A13-2)."""
+        text = _deps(
+            "'graftpunk>=1.0; python_version < \"3.12\"',",
+            "'graftpunk[browser]>=1.17.0; python_version >= \"3.12\"',",
+        )
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
+            requirement=(
+                'graftpunk>=1.0; python_version < "3.12" and '
+                'graftpunk[browser]>=1.17.0; python_version >= "3.12"'
+            )
+        )
