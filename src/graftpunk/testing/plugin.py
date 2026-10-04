@@ -101,13 +101,17 @@ def _stat_kind(
 ) -> PathKind:
     """What is at *path*, from ``path.stat()`` (and ``path.lstat()`` where a
     symlink must be told apart from its unsearchable directory) inside
-    ``try``/``except OSError``: the one place in this module allowed to call
-    ``.exists()``, ``.is_dir()``, ``.is_file()``, ``.is_symlink()``,
-    ``.lstat()``, ``.stat()``, ``os.path.isdir()``, ``os.path.isfile()``,
-    ``os.path.islink()``, ``os.path.lexists()``, ``os.path.is_junction()``,
-    or ``os.access()``
+    ``try``/``except OSError``: the one place in this module allowed to ask
+    the filesystem what is at a path or what kind of thing it is. That
+    covers any ``is_*`` predicate call (``.is_dir()``, ``.is_fifo()``,
+    ``.is_mount()``, and every other one pathlib has or ever adds), the
+    exact calls ``.exists()``, ``.lexists()``, ``.stat()``, ``.lstat()``,
+    ``.samefile()``, and ``.access()``, and any ``os.path`` function other
+    than the pure string ones (``join``, ``basename``, ``dirname``,
+    ``splitext``, ``split``, ``normpath``, ``relpath``, ``sep``), whether
+    reached as ``os.path.whatever(...)`` or imported by name and called bare
     (``test_only_stat_kind_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat``
-    enforces it by AST), so every other "what is at this path" question in
+    enforces this by AST), so every other "what is at this path" question in
     the fixtures check goes through this function instead of a
     version-dependent pathlib predicate (before Python 3.14, ``is_dir()`` and
     ``is_file()`` raise on a permission error past the path; from 3.14 they
