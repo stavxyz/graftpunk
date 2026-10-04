@@ -29,14 +29,14 @@ validated:
 
 **Spec:** `docs/superpowers/specs/2026-09-21-graft-skill-design.md` (validated 2026-09-22). Read it alongside this plan. This plan runs only after `docs/superpowers/plans/2026-09-22-graft-package-foundations.md` and `docs/superpowers/plans/2026-09-22-graft-package-project-tools.md` have merged and shipped in one graftpunk release; it consumes their CLI surfaces exactly as their Interfaces blocks state them.
 
-**Precondition, checked by Task 3's first test:** the graftpunk installed in this checkout's environment reports a version at least `SKILL_REQUIRES_GRAFTPUNK` (`1.17.0`, the release that ships the two package pull requests). The skill must never merge ahead of the package it needs.
+**Precondition, checked by Task 3's first test:** the graftpunk installed in this checkout's environment reports a version at least `SKILL_REQUIRES_GRAFTPUNK` (`1.17.0`, the release that ships the two package pull requests). The skill must never merge ahead of the package it needs. Until graftpunk 1.17.0 is released (after #216 merges), Task 3's floor test (`test_the_installed_graftpunk_meets_the_skill_floor`) and its real-gp preflight tests (`TestPreflightWithTheRealGp`) fail, and execution stops at Task 3 Step 4 until that release is installed here.
 
 ## Global Constraints
 
 - The placement rule in `src/graftpunk/devtools/__init__.py` is untouched: this pull request adds no Python under `src/`. `graftpunk.testing` still imports nothing from `graftpunk.devtools`.
 - The skill copies nothing from the guide: no run of eight or more consecutive words from `SKILL.md` or a reference appears in `docs/PLUGIN_DEVELOPMENT.md`, outside a quotation that ends with a citation of a guide heading. It cites only headings that exist. Tests enforce both.
 - The skill carries no schema number except `SKILL_READS_INFO_SCHEMA` and `SKILL_READS_ENDPOINTS_SCHEMA` at the top of `preflight.sh`, and no copy of the name rule, the reserved names, the gate, or the publish checklist.
-- Any change under `skills/` or `.claude-plugin/` bumps the `version` field of both manifests, equal to each other. This pull request introduces them at `0.1.0`.
+- Any change under `skills/` or `.claude-plugin/` bumps the `version` field of `.claude-plugin/plugin.json`, the one version the skill carries; `marketplace.json` has no root `version`. This pull request introduces it at `0.1.0`.
 - No email in either manifest; the GitHub handle is enough.
 - Placeholders only, in the skill, tests, docs, and commit messages: `myshop`, `myshop.example`, `alice@example.com`, and `example.com` and `example.net` hosts. Never a real site, vendor, account, `op://` path, or a named secret manager (the skill says `your-secret-tool`).
 - No em dashes or en dashes, and no spaced double hyphen standing in for one, in any file, commit message, or plan text.
@@ -54,7 +54,7 @@ validated:
 2. `gp plugin info --json` refusing to read the directory (a malformed `pyproject.toml`): a person expects preflight to stop with gp's own message rather than print half a JSON object. Pinned in Task 3 (`test_a_project_gp_cannot_read_exits_4_with_gps_message`).
 3. An offered allow rule that widens consent by accident, such as `Bash(gp *)` or `Bash(gp observe *)`: the second would let Claude run `gp observe interactive`, which the skill never runs. Pinned in Task 4 (`test_no_offered_rule_reaches_the_recorder_or_every_gp_command`).
 4. A reference that quotes a guide sentence to be accurate: a blockquote line is exempt from the copy check only when it ends with a citation of a heading that exists. Pinned in Task 5 (`test_a_quotation_is_exempt_only_with_a_citation`).
-5. `just skill-version` run on a branch whose base has no manifests yet (this pull request itself): a first introduction has no base version to differ from, and must pass when the two new versions agree. Pinned in Task 6 (`test_a_first_introduction_passes_when_the_versions_agree`).
+5. `just skill-version` run on a branch whose base has no manifests yet (this pull request itself): a first introduction has no base version to differ from, and must pass. Pinned in Task 6 (`test_a_first_introduction_passes`).
 
 ## File Structure
 
@@ -84,7 +84,7 @@ validated:
 
 The spec marks this UNVERIFIED: that a Ctrl+C typed while a `!` command runs in a Claude Code session reaches `gp` as SIGINT, so the recorder's handler runs and the HAR is saved. The interactive-mode documentation (https://code.claude.com/docs/en/interactive-mode) lists Ctrl+C as "Interrupt, or clear input", and its shell-mode section does not say whether Ctrl+C reaches a running `!` command. The outcome decides one wording choice in Task 5 (`capture.md`) and nothing else; every other task is independent of it. A person runs this task on a workstation with a display, because the recorder opens a real browser.
 
-The spec's former second UNVERIFIED claim, that an unchanged version string leaves users on the content they have, needs no probe (the spec now cites the source): the plugins reference (https://code.claude.com/docs/en/plugins-reference, the `version` field) says setting a version "pins the plugin to that version string, so users only receive updates when you bump it" (the sentence goes on to exempt a `command` source and a plugin loaded in place from a local-directory marketplace; neither applies to a GitHub install). The version rule in Task 6 rests on that sentence.
+The spec's former second UNVERIFIED claim, that an unchanged version string leaves users on the content they have, needs no probe (the spec now cites the source): the plugins reference (https://code.claude.com/docs/en/plugins-reference, the `version` field) says setting `version` "pins the plugin to that version until you change it", and names three installs the field does not pin: "A plugin with a `command` source, a plugin from a marketplace hosted on claude.ai, and a plugin loaded in place from a marketplace added from a local path aren't pinned by this field." None applies to a GitHub install. The version rule in Task 6 rests on that sentence.
 
 **Files:**
 - None. The result is recorded in the pull request's test plan and in Task 5's commit message.
@@ -175,12 +175,16 @@ def _json(path: Path) -> dict[str, Any]:
 
 
 class TestManifests:
-    def test_the_two_versions_are_equal(self) -> None:
+    def test_plugin_json_carries_the_one_version(self) -> None:
         """plugin.json's version is the one that pins an installed plugin (plugins
-        reference, the version field); marketplace.json's root version is the
-        marketplace manifest's own (plugin marketplaces, root fields). This
-        repository keeps them in lockstep so one number names a release."""
-        assert _json(MARKETPLACE)["version"] == _json(PLUGIN_MANIFEST)["version"]
+        reference, the version field). marketplace.json's root version is only the
+        marketplace manifest's own (marketplace reference, top-level fields), and
+        nothing here reads it, so neither the root nor the entry carries one."""
+        assert _json(PLUGIN_MANIFEST)["version"]
+        marketplace = _json(MARKETPLACE)
+        (entry,) = marketplace["plugins"]
+        assert "version" not in marketplace
+        assert "version" not in entry
 
     def test_the_plugin_name_matches_the_marketplace_entry(self) -> None:
         (entry,) = _json(MARKETPLACE)["plugins"]
@@ -212,7 +216,6 @@ Create `.claude-plugin/marketplace.json`:
   "name": "graftpunk",
   "owner": {"name": "stavxyz"},
   "description": "graftpunk's Claude Code skills: /graftpunk:graft creates or enhances a site plugin",
-  "version": "0.1.0",
   "plugins": [
     {
       "name": "graftpunk",
@@ -223,7 +226,7 @@ Create `.claude-plugin/marketplace.json`:
 }
 ```
 
-The manifest carries no `$schema` key. The marketplace documentation says of `$schema` that "Claude Code ignores this field at load time" (https://code.claude.com/docs/en/plugin-marketplaces), and `https://www.anthropic.com/claude-code/marketplace.schema.json` returned HTTP 404 when checked on 2026-09-22.
+The manifest carries no root `version` (the plugin's version lives in `plugin.json` alone; see the test above) and no `$schema` key. The marketplace reference says `$schema` is "Ignored at load time" (https://code.claude.com/docs/en/plugins/marketplace-reference, top-level fields), and `https://www.anthropic.com/claude-code/marketplace.schema.json` returned HTTP 404 when checked on 2026-09-22.
 
 Create `.claude-plugin/plugin.json`:
 
@@ -262,7 +265,7 @@ git commit -m "feat(skill): the repository is a Claude Code plugin marketplace s
 - Test: `tests/unit/test_graft_preflight.py`
 
 **Interfaces:**
-- Consumes: `gp version --json --at-least VERSION --contract SURFACE=N ...` from the foundations plan, Task 5 (prints one line of JSON first, then exits 0; 1 when the installed version is below VERSION, VERSION is unreadable, or a `--contract` value is malformed, with gp's message on stderr for the latter two; 3 when a named surface differs, one line per mismatch on stderr naming the older side; 2 for an option gp does not know); `gp plugin info --json` from the project-tools plan, Task 4; `REPO_ROOT` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9).
+- Consumes: `gp version --json --at-least VERSION --contract SURFACE=N ...` from the foundations plan, Task 5. When gp can read every value it was given, it prints one line of JSON on stdout and exits 0, or 1 when the installed version is below VERSION, or 3 when a named surface differs (one line per mismatch on stderr naming the older side). When it cannot read VERSION or a `--contract` value, it prints nothing on stdout and exits 1 with its message on stderr. It exits 2 for an option it does not know (`src/graftpunk/cli/main.py:173` (`def version`)); `gp plugin info --json` from the project-tools plan, Task 4; `REPO_ROOT` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9).
 - Produces: `skills/graft/scripts/preflight.sh` with `SKILL_REQUIRES_GRAFTPUNK="1.17.0"`, `SKILL_READS_INFO_SCHEMA=1`, and `SKILL_READS_ENDPOINTS_SCHEMA=1` at the top; it passes all three to gp in one `gp version` call, parses no JSON, and compares nothing itself. On success it prints `{"installation": <gp version --json>, "project": <gp plugin info --json>}` and exits 0; otherwise one message on stderr and exit 2 (no `gp`), 3 (`gp version` exited 1, whose message names all three readings: graftpunk below the floor, a floor gp cannot read, or a malformed `--contract` value; or gp reports a contract mismatch, with gp's own lines relayed and the fix for each side), 4 (`gp` could not read the project), 5 (`gp` rejected an option preflight passed), or 6 (`gp version` exited with any other status, relayed with gp's output). Task 4's `SKILL.md` runs it first.
 
 - [ ] **Step 1: Write the failing tests**
@@ -499,6 +502,10 @@ class TestPreflightWithAFakeGp:
         assert result.returncode == 3
         assert _OLDER_CALLER in result.stderr
         assert "/plugin marketplace update graftpunk" in result.stderr
+        assert "Installed tab of /plugin" in result.stderr
+        assert "claude plugin update graftpunk@graftpunk" in result.stderr
+        # /plugin update has no session form; /plugin would open the Discover tab.
+        assert "/plugin update" not in result.stderr
         assert "uv tool upgrade graftpunk" in result.stderr
         assert result.stdout == ""
 
@@ -588,7 +595,7 @@ SKILL_READS_ENDPOINTS_SCHEMA=1
 
 INSTALL_LINE="uv tool install graftpunk   (or: pip install graftpunk)"
 UPGRADE_LINE="uv tool upgrade graftpunk   (or: pip install --upgrade graftpunk)"
-SKILL_UPDATE_LINE="/plugin marketplace update graftpunk, then /plugin update graftpunk@graftpunk"
+SKILL_UPDATE_LINE="/plugin marketplace update graftpunk, then update graftpunk on the Installed tab of /plugin (or run: claude plugin update graftpunk@graftpunk)"
 
 if ! command -v gp >/dev/null 2>&1; then
   printf 'graftpunk is not installed: gp is not on PATH.\nInstall it: %s\n' "$INSTALL_LINE" >&2
@@ -683,7 +690,7 @@ git commit -m "feat(skill): preflight asks gp every version question in one call
 - Test: `tests/unit/test_graft_consent.py`
 
 **Interfaces:**
-- Consumes: `preflight.sh` (Task 3); `REPO_ROOT`, `check_invocation`, `gp_invocations`, `blocks`, and `section` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9, which moved them out of the guide's test module and added `section`, the one rule for where a markdown section ends).
+- Consumes: `preflight.sh` (Task 3); `REPO_ROOT`, `check_invocation`, `gp_invocations`, `blocks`, and `section` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9, which moved them out of the guide's test module and added `section`, the one rule for where a markdown section ends); `PROJECT_GATE` from `src/graftpunk/devtools/scaffold/policy.py:178` (`PROJECT_GATE: Final`), the gate's one owner.
 - Produces: the skill, invoked as `/graftpunk:graft [plugin-name] [site-url]`, whose frontmatter pre-approves preflight alone; `references/commands.md` with the declared commands per step and the offered allow rules; `tests/unit/skill_harness.py`, a non-test module (pytest does not collect it) with `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs() -> list[Path]`, `commands_in(text: str) -> list[str]`, and `declared_commands() -> list[str]`, which Task 5's tests use; `tests/unit/test_graft_consent.py`, the frontmatter and consent tests.
 
 - [ ] **Step 1: Write the failing tests**
@@ -745,6 +752,7 @@ from typing import Any
 import pytest
 import yaml
 
+from graftpunk.devtools.scaffold.policy import PROJECT_GATE
 from tests.unit.guide_harness import blocks, check_invocation, gp_invocations, section
 from tests.unit.skill_harness import (
     COMMANDS_MD,
@@ -765,6 +773,11 @@ _PLUGIN_RULE = "gp <name> *"
 # What the kick-the-tires step asks before the first live call, whatever the
 # user's settings allow: the consent point for the live site and the login.
 _LIVE_CALL_QUESTION = "run a live login and one read-only command now?"
+# What commands.md says about the gate's commands an offered rule does not cover.
+_GATE_RULE_SENTENCE = (
+    "The skill offers an allow rule only for the gate's `gp` commands; every other "
+    "command in the gate asks each time it runs, unless the user's settings allow it."
+)
 
 
 def _frontmatter() -> dict[str, Any]:
@@ -875,6 +888,23 @@ class TestOfferedAllowRules:
         rules = _offered_rules()
         assert _PLUGIN_RULE in rules
         assert [rule for rule in rules if rule.startswith("gp <")] == [_PLUGIN_RULE]
+
+    def test_the_gates_gp_commands_have_rules_and_commands_md_says_the_rest_do_not(
+        self,
+    ) -> None:
+        """The gate is policy.PROJECT_GATE's to list. Every gp command in it is
+        covered by an offered rule; an offered rule is only ever a gp rule
+        (test_every_rule_is_a_scoped_gp_rule), so commands.md says in words that
+        the gate's other commands ask each time."""
+        rules = _offered_rules()
+        gate_gp = [command for command in PROJECT_GATE if command.startswith("gp ")]
+        assert gate_gp
+        for command in gate_gp:
+            assert any(_matches(pattern, command) for pattern in rules), command
+        for command in set(PROJECT_GATE) - set(gate_gp):
+            assert not any(_matches(pattern, command) for pattern in rules), command
+        commands_md = " ".join(COMMANDS_MD.read_text(encoding="utf-8").split())
+        assert _GATE_RULE_SENTENCE in commands_md
 
 
 def test_the_live_step_asks_before_the_first_live_call() -> None:
@@ -1021,9 +1051,11 @@ it.
    Raise `CommandError` or `PluginError` on failure. Read `references/rules.md`
    and read the guide section behind any rule the work touches.
 6. **Harden** (guide: Harden). Read `references/harden.md` and follow it: one
-   fixture and one test per command, then the project's gate. When
-   `gp plugin check` reports missing project wiring, run `gp plugin upgrade`
-   and run the gate again. The gate must pass before the next step.
+   fixture and one test per command, then the project's gate (guide: The gate).
+   Show the user gp's output, act on every `Next:` line and every
+   `reinstall the project` line it prints, and follow the advice each
+   `gp plugin check` finding carries, before running the gate again. The gate
+   must pass before the next step.
 7. **Kick the tires** (guide: Check the CLI surface you shipped) (guide: Login).
    Before the first live call, ask in words, whatever the user's settings
    allow: "run a live login and one read-only command now?" Their answer is
@@ -1059,9 +1091,11 @@ with these differences, and this list is the only place they are stated:
   can say whether a proposed row duplicates it. Never drop or propose over an
   undeclared command silently.
 - Scaffold does not run `gp plugin new`. For each agreed command it runs the
-  `gp plugin add-command` line of the Scaffold block in `references/commands.md`,
-  which adds one stub in the generated shape and prints the fixture path its
-  test will look for.
+  `gp plugin add-command` line of the Scaffold block in `references/commands.md`
+  (its `--run` form pins an older run), which adds one stub in the generated
+  shape and writes no test. Show the user gp's output and act on every `Next:`
+  line and every `reinstall the project` line it prints; `references/harden.md`
+  says what the harden step does for each added command.
 - The publish checklist is limited to the items the new commands touch.
 
 ## Secrets
@@ -1152,6 +1186,7 @@ The last line reads back the commands the step added.
 gp plugin new <name> --from-run <session> --command "<command>=<METHOD> <template>"
 gp plugin new <name> --from-run <session> --run <run-id> --command "<command>=<METHOD> <template>"
 gp plugin add-command <entry-point> --from-run <session> --command "<command>=<METHOD> <template>"
+gp plugin add-command <entry-point> --from-run <session> --run <run-id> --command "<command>=<METHOD> <template>"
 gp plugin info --json
 ```
 
@@ -1163,8 +1198,10 @@ gp plugin check
 gp plugin upgrade
 ```
 
-The project's gate is whatever the guide's "The gate" section lists; it includes
-`gp plugin check`.
+The project's gate is one unit, run whole: `policy.PROJECT_GATE` owns its
+commands and the guide's section on it lists them (guide: The gate). The skill
+offers an allow rule only for the gate's `gp` commands; every other command in
+the gate asks each time it runs, unless the user's settings allow it.
 
 ### Kick the tires
 
@@ -1197,6 +1234,8 @@ Bash(gp <name> *)
 ```
 ````
 
+`gp plugin add-command` takes `--run` as `gp plugin new` does (`src/graftpunk/cli/scaffold_project_commands.py:106` (`"--run"`)), so enhance mode can pin an older run too; the walker test resolves both `--run` lines against the CLI.
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `NO_COLOR=1 FORCE_COLOR= uv run pytest tests/unit/test_graft_consent.py -q`
@@ -1221,7 +1260,7 @@ The slug helpers the citation tests use are `slug` and `slugs_of`, both defined 
 
 **Interfaces:**
 - Consumes: `CTRL_C_REACHES_GP` (Task 1); `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, and `declared_commands` from `tests/unit/skill_harness.py` (Task 4); `GUIDE`, `GUIDE_TEXT`, `blocks`, `gp_invocations`, `outside_fences`, `section`, `slug`, and `slugs_of` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9). Fence handling and the section rule have one owner each, in the harness: `_prose` starts from `outside_fences`, and `_without_section` is derived from `section`.
-- Produces: the four references `SKILL.md` names, and `tests/unit/test_graft_references.py`, the citation, copy, and command-ownership tests. The copy detector (`_words`, `_runs`, `_prose`) stays in that module, its one user. `capture.md` and `harden.md` carry no fenced command blocks: they point to the step's block in `commands.md`, the one owner of the commands.
+- Produces: the four references `SKILL.md` names, and `tests/unit/test_graft_references.py`, the citation, copy, and command-ownership tests. The copy detector (`_words`, `_runs`, `_prose`) and its self-tests' probe (`_probe`, which takes a sentence from `GUIDE_TEXT` at test time) stay in that module, their one user. No reference restates what a `gp` command prints: each tells the reader to show gp's output and act on its `Next:` lines, so gp's output stays the one owner of the follow-up steps. `capture.md` and `harden.md` carry no fenced command blocks: they point to the step's block in `commands.md`, the one owner of the commands.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1301,6 +1340,20 @@ def _without_section(text: str, heading: str) -> str:
 # every other section is the guide's to state and the skill's to cite.
 GUIDE_RUNS = _runs(_words(_without_section(GUIDE_TEXT, "## With the skill")))
 
+# The section the copy detector's self-tests take their probe sentence from.
+_PROBE_HEADING = "## Capture"
+
+
+def _probe() -> tuple[str, str]:
+    """The first prose sentence of the guide's _PROBE_HEADING section, and that
+    section's title, read from GUIDE_TEXT at test time so a guide edit cannot leave
+    the self-tests probing a sentence the guide no longer holds."""
+    paragraphs = outside_fences(section(GUIDE_TEXT, _PROBE_HEADING)).split("\n\n")[1:]
+    paragraph = " ".join(next(p for p in paragraphs if p.strip()).split())
+    sentence = re.split(r"(?<=[.:])\s", paragraph)[0]
+    assert len(_words(sentence)) >= _COPY_RUN, sentence
+    return sentence, _PROBE_HEADING.lstrip("# ")
+
 
 class TestCitations:
     @pytest.mark.parametrize("doc", skill_docs(), ids=lambda p: p.name)
@@ -1339,13 +1392,12 @@ class TestNothingIsCopied:
         assert copied == [], f"{doc.name} copies the guide: {copied[:3]}"
 
     def test_the_detector_catches_a_copied_sentence(self) -> None:
-        sentence = "The recording is only as good as what you clicked."
-        assert sentence in GUIDE_TEXT
+        sentence, _title = _probe()
         assert _runs(_words(_prose(sentence))) & GUIDE_RUNS
 
     def test_a_quotation_is_exempt_only_with_a_citation(self) -> None:
-        sentence = "The recording is only as good as what you clicked."
-        assert not _runs(_words(_prose(f"> {sentence} (guide: Capture)"))) & GUIDE_RUNS
+        sentence, title = _probe()
+        assert not _runs(_words(_prose(f"> {sentence} (guide: {title})"))) & GUIDE_RUNS
         assert _runs(_words(_prose(f"> {sentence}"))) & GUIDE_RUNS
 
     @pytest.mark.parametrize("doc", skill_docs(), ids=lambda p: p.name)
@@ -1568,8 +1620,11 @@ Read that projection only; never read the HAR, a capture, or `--json`.
    (the path parameter becomes the command's argument), `invoice-pdf` for a
    document download. A list and its detail are two commands, never one.
 4. Show one table, one row per command: name, what it returns (from `shape` and
-   `content_type`), the endpoint as `<METHOD> <template>`, and the parameters.
-   Say which of the user's wants each row serves, and name any want with no row.
+   `content_type`), the endpoint as `<METHOD> <template>`, and the parameters
+   with their types (each `query_params` and `body_params` value is one of the
+   projection's type labels, `str`, `int`, `float`, `bool`, `object`, `mixed`,
+   or `list[<element>]`; a `mixed` or list label needs the user's decision when
+   the row is proposed) (guide: Understand). Say which of the user's wants each row serves, and name any want with no row.
 5. Ask one question, "keep, rename, or drop any of these?", and apply the
    answer. A want with no endpoint goes back to the capture step for that flow.
 
@@ -1577,10 +1632,20 @@ What request call a stub makes (`request_json` or `request_text`, and its role)
 is the generator's decision; the table reports `content_type` and `shape` and
 never predicts the call.
 
-The `login` summary tells a plain form from a redirect: `forms` holds the
-field selectors a plain form needs, and `auth_urls` entries of kind `redirect`,
-or on another host, point to an identity provider. Confirm the login shape with
-the user only when that summary leaves it open.
+The `login` summary tells a plain form from a redirect. `auth_urls` lists only
+the login's own observations, each of kind `form_page`, `credential_post`,
+`redirect` (a hop of the credential post's redirect chain), `set_cookie`, or
+`auth_api`. A plain form shows a `form_page` and a `credential_post` on the
+primary host. A login whose form or post is on another host, or whose `forms`
+entry is empty while a credential post exists, points to an identity provider
+(guide: Identity-provider redirects). Confirm the login shape with the user
+only when that summary leaves it open.
+
+`forms` holds each login form's `action`, its `fields` selectors by role, its
+`submit` selector, `neutral_roles`, and `unresolved_roles`. Name every
+unresolved role in the proposal: the generated login config carries a
+`GP-FILL` for each, which the implement step fills from the page with the
+user's confirmation (guide: Login).
 
 ## A worked example
 
@@ -1600,8 +1665,8 @@ For "see my orders", the proposal is:
 
 | command | returns | endpoint | parameters |
 | --- | --- | --- | --- |
-| orders | a page of orders with a total | GET /api/orders | archived, page, per_page |
-| order | one order with its items | GET /api/orders/{order_id} | order_id |
+| orders | a page of orders with a total | GET /api/orders | archived: bool, page: int, per_page: int |
+| order | one order with its items | GET /api/orders/{order_id} | order_id (path) |
 
 `/login` and `/session` are gone by rule 1, and `/dashboard` is left out as
 chrome unless the user asked for something only it shows. The two kept rows
@@ -1623,14 +1688,16 @@ Create `skills/graft/references/harden.md`:
 
 For each command, write its capture out of the recording with the
 `gp observe fixtures` line from the Harden block of `references/commands.md`,
-the command's endpoint in place of `<METHOD> <template>`. That writes the
-response and its `.meta.json` sidecar under `tests/captures/`, which is
-gitignored. Copy both files, under the same names, into the fixtures directory
-the command's test reads: `gp plugin new` listed it under its `Next:` line, and
-`gp plugin add-command` printed it after adding the stub. Then edit the
-copied response and invent every value in it while keeping its structure, as
-the guide's recipe says (guide: Deriving a fixture from a capture). Leave the
-copied sidecar alone.
+the command's endpoint in place of `<METHOD> <template>`. Show the user gp's
+output, from that line and from the scaffold step, and act on every `Next:`
+line it prints: that output, and nothing in this file, says where each file
+goes. Then edit the fixture's response and invent every value in it while
+keeping its structure (guide: Deriving a fixture from a capture). Leave its
+sidecar alone.
+
+When gp says it can write no fixture for a command's endpoint, write a
+fixture and its sidecar by hand, with invented values in the shape the site
+returns (guide: Test against fixtures, not against the site).
 
 The generated suite checks the result on every run: a fixture with no sidecar,
 a fixture that is still byte for byte its capture, or a flagged cookie or token
@@ -1645,12 +1712,25 @@ one on the shape the command returns: the keys a caller relies on, and the
 values you invented. Add one error-path test where a command can fail, by
 copying a fixture and setting its sidecar's `status` to an error.
 
+In enhance mode `gp plugin add-command` writes no test. For each command it
+added, write one in the shape of the tests the project already has: the same
+context over the plugin's fixtures directory, one call, and assertions on the
+returned shape (guide: Test against fixtures, not against the site).
+
 ## The gate
 
 Read the guide's section on the gate (guide: The gate) and run every command it
-lists, in the project's directory, until all of them pass. One of them is
-`gp plugin check`; when it says the project is missing wiring, run
-`gp plugin upgrade` and then the whole gate again.
+lists, in the project's directory, until all of them pass. Show the user gp's
+output, act on every `Next:` line and every `reinstall the project` line it
+prints, and follow the advice each `gp plugin check` finding carries, before
+running the gate again. The cases to expect, in plain words:
+
+- graftpunk's requirement in the project was raised: reinstall the project.
+- the requirement cannot be raised for you: raise it by hand, then reinstall.
+- the fixtures tree or some project wiring is missing: gp says to run
+  `gp plugin upgrade`; run it, then the whole gate.
+- an endpoint for which `gp observe fixtures` writes no fixture: write the
+  fixture by hand, as above.
 
 ## Before you publish
 
@@ -1679,12 +1759,12 @@ git commit -m "feat(skill): the step references, cited by heading and checked ag
 
 **Files:**
 - Create: `scripts/check-skill-version.sh` (executable), `.github/workflows/skill-version.yml`
-- Modify: `justfile` (new recipe after `test-unit`), `.github/workflows/python-quality.yml:25-31` (paths filter)
+- Modify: `justfile` (new recipe after `test-unit`), `.github/workflows/python-quality.yml:25` (`python:`) (the paths filter list, which ends at `- 'uv.lock'` on line 31)
 - Test: `tests/unit/test_skill_version_script.py`
 
 **Interfaces:**
 - Consumes: the two manifests (Task 2); `REPO_ROOT` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9), so the repository root has one definition across the test modules.
-- Produces: `scripts/check-skill-version.sh BASE`, exit 0 when nothing under `skills/` or `.claude-plugin/` changed between BASE and HEAD, or when both manifest versions are equal and differ from BASE's (or BASE has no manifest); exit 1 otherwise, naming the next patch version. `just skill-version [BASE]`, defaulting to `origin/main`. Task 7's `CONTRIBUTING.md` section describes both.
+- Produces: `scripts/check-skill-version.sh BASE`, which compares HEAD against the merge base of BASE and HEAD: exit 0 when nothing under `skills/` or `.claude-plugin/` changed between the merge base and HEAD (`git diff --name-only BASE...HEAD`), or when `plugin.json`'s version differs from the merge base's (or the merge base has no `plugin.json`); exit 1 otherwise, naming the next patch version. A base branch that moved on after the branch point never reads as this branch's downgrade. `just skill-version [BASE]`, defaulting to `origin/main`. Task 7's `CONTRIBUTING.md` section describes both.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1744,14 +1824,15 @@ class _Repo:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
-    def manifests(self, marketplace: str, plugin: str) -> None:
+    def manifests(self, version: str) -> None:
+        """The two manifests as Task 2 writes them: the version in plugin.json alone."""
         self.write(
             ".claude-plugin/marketplace.json",
-            json.dumps({"name": "graftpunk", "version": marketplace}, indent=2),
+            json.dumps({"name": "graftpunk", "plugins": [{"name": "graftpunk"}]}, indent=2),
         )
         self.write(
             ".claude-plugin/plugin.json",
-            json.dumps({"name": "graftpunk", "version": plugin}, indent=2),
+            json.dumps({"name": "graftpunk", "version": version}, indent=2),
         )
 
     def commit(self, message: str) -> str:
@@ -1774,7 +1855,7 @@ def repo(tmp_path: Path) -> _Repo:
 
 
 def test_a_skill_change_without_a_bump_fails_and_names_the_next_patch(repo: _Repo) -> None:
-    repo.manifests("0.1.0", "0.1.0")
+    repo.manifests("0.1.0")
     repo.write("skills/graft/SKILL.md", "first\n")
     base = repo.commit("base")
     repo.write("skills/graft/SKILL.md", "second\n")
@@ -1784,41 +1865,54 @@ def test_a_skill_change_without_a_bump_fails_and_names_the_next_patch(repo: _Rep
     assert "0.1.1" in result.stdout + result.stderr
 
 
-def test_a_skill_change_with_both_bumped_passes(repo: _Repo) -> None:
-    repo.manifests("0.1.0", "0.1.0")
+def test_a_skill_change_with_a_bump_passes(repo: _Repo) -> None:
+    repo.manifests("0.1.0")
     repo.write("skills/graft/SKILL.md", "first\n")
     base = repo.commit("base")
     repo.write("skills/graft/SKILL.md", "second\n")
-    repo.manifests("0.1.1", "0.1.1")
+    repo.manifests("0.1.1")
     repo.commit("change with a bump")
     assert repo.check(base).returncode == 0
 
 
-def test_versions_that_disagree_fail(repo: _Repo) -> None:
-    repo.manifests("0.1.0", "0.1.0")
-    base = repo.commit("base")
-    repo.manifests("0.1.1", "0.1.0")
-    repo.commit("half a bump")
-    result = repo.check(base)
-    assert result.returncode == 1
-    assert "differ" in result.stdout + result.stderr
-
-
 def test_a_change_elsewhere_needs_no_bump(repo: _Repo) -> None:
-    repo.manifests("0.1.0", "0.1.0")
+    repo.manifests("0.1.0")
     base = repo.commit("base")
     repo.write("src/module.py", "x = 1\n")
     repo.commit("unrelated")
     assert repo.check(base).returncode == 0
 
 
-def test_a_first_introduction_passes_when_the_versions_agree(repo: _Repo) -> None:
+def test_a_first_introduction_passes(repo: _Repo) -> None:
     repo.write("README.md", "before the skill\n")
     base = repo.commit("base")
-    repo.manifests("0.1.0", "0.1.0")
+    repo.manifests("0.1.0")
     repo.write("skills/graft/SKILL.md", "first\n")
     repo.commit("introduce the skill")
     assert repo.check(base).returncode == 0
+
+
+def test_a_base_that_moved_on_after_the_branch_point_is_not_this_branchs_change(
+    repo: _Repo,
+) -> None:
+    """The base bumped the skill after the branch point and the branch never touched
+    skills/: compared against the merge base, the branch changed nothing there, and
+    the base's newer version is not reported as this branch's downgrade."""
+    repo.manifests("0.1.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    repo.commit("branch point")
+    repo.git("checkout", "-q", "-b", "feature")
+    repo.write("src/module.py", "x = 1\n")
+    repo.commit("unrelated, on the branch")
+    repo.git("checkout", "-q", "main")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.manifests("0.1.1")
+    base = repo.commit("the base bumps the skill")
+    repo.git("checkout", "-q", "feature")
+    result = repo.check(base)
+    assert result.returncode == 0, result.stderr
+    assert "no bump needed" in result.stdout
+    assert "0.1.1" not in result.stdout + result.stderr
 
 
 def test_the_script_is_executable() -> None:
@@ -1838,41 +1932,35 @@ Create `scripts/check-skill-version.sh`:
 #!/usr/bin/env bash
 # check-skill-version.sh BASE
 #
-# When the diff from BASE to HEAD touches skills/ or .claude-plugin/, the version
-# field of .claude-plugin/plugin.json and .claude-plugin/marketplace.json must be
-# equal to each other and different from BASE's. plugin.json's version is the one
-# that pins an installed plugin: Claude Code keeps a GitHub install on that string,
-# so a skill change without a bump never reaches people who already installed it
-# (a local-directory marketplace loads the plugin in place and is not pinned).
-# marketplace.json's root version is the marketplace manifest's own, and moves in
-# lockstep so one number names a release. Run by .github/workflows/skill-version.yml
-# on pull requests, and by hand as `just skill-version`.
+# When this branch's changes since it left BASE touch skills/ or .claude-plugin/,
+# the version field of .claude-plugin/plugin.json must differ from the merge
+# base's. That version pins an installed plugin: Claude Code keeps a GitHub install
+# on that string, so a skill change without a bump never reaches people who
+# already installed it. Comparing against the merge base, not BASE's tip, keeps
+# a base branch that moved on after the branch point out of this branch's result.
+# Run by .github/workflows/skill-version.yml on pull requests, and by hand as
+# `just skill-version`.
 set -euo pipefail
 
 base="${1:?usage: scripts/check-skill-version.sh <base commit>}"
-marketplace=".claude-plugin/marketplace.json"
 plugin=".claude-plugin/plugin.json"
 
 version_of() {
   python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])'
 }
 
-# Two steps, so a bad BASE fails here under set -e instead of reading as "no change".
-all_changed="$(git diff --name-only "$base" HEAD)"
+# Separate steps, so a bad BASE fails here under set -e instead of reading as
+# "no change".
+merge_base="$(git merge-base "$base" HEAD)"
+all_changed="$(git diff --name-only "$base"...HEAD)"
 changed="$(printf '%s\n' "$all_changed" | grep -E '^(skills|\.claude-plugin)/' || true)"
 if [ -z "$changed" ]; then
   echo "skill-version: nothing under skills/ or .claude-plugin/ changed; no bump needed."
   exit 0
 fi
 
-head_marketplace="$(version_of < "$marketplace")"
 head_plugin="$(version_of < "$plugin")"
-if [ "$head_marketplace" != "$head_plugin" ]; then
-  echo "skill-version: the two versions differ: $marketplace has $head_marketplace, $plugin has $head_plugin. Set both to the same version." >&2
-  exit 1
-fi
-
-base_json="$(git show "$base:$plugin" 2>/dev/null || true)"
+base_json="$(git show "$merge_base:$plugin" 2>/dev/null || true)"
 if [ -z "$base_json" ]; then
   echo "skill-version: $plugin is new at $head_plugin."
   exit 0
@@ -1880,7 +1968,7 @@ fi
 base_version="$(printf '%s' "$base_json" | version_of)"
 if [ "$head_plugin" = "$base_version" ]; then
   next="$(python3 -c 'import sys; p = sys.argv[1].split("."); p[-1] = str(int(p[-1]) + 1); print(".".join(p))' "$base_version")"
-  echo "skill-version: skills/ or .claude-plugin/ changed, but the version is still $base_version. Bump both manifests to $next." >&2
+  echo "skill-version: skills/ or .claude-plugin/ changed, but the version is still $base_version. Bump $plugin to $next." >&2
   exit 1
 fi
 echo "skill-version: $base_version -> $head_plugin"
@@ -1916,7 +2004,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Both manifest versions bumped together
+      - name: The plugin version bumped
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: scripts/check-skill-version.sh "$BASE_SHA"
@@ -1950,7 +2038,7 @@ Expected: exit 0 and `skill-version: .claude-plugin/plugin.json is new at 0.1.0.
 
 ```bash
 git add scripts/check-skill-version.sh .github/workflows/skill-version.yml .github/workflows/python-quality.yml justfile tests/unit/test_skill_version_script.py
-git commit -m "ci(skill): a skill change must bump both manifest versions together"
+git commit -m "ci(skill): a skill change must bump the plugin version, checked against the merge base"
 ```
 
 ---
@@ -2005,23 +2093,27 @@ In `CONTRIBUTING.md`, insert before `## Reporting Issues`:
 
 The Claude Code skill under `skills/` is versioned apart from the graftpunk
 package. Any change under `skills/` or `.claude-plugin/` needs a patch bump of
-the `version` field in both `.claude-plugin/plugin.json` and
-`.claude-plugin/marketplace.json`, and the two stay equal; a new skill or a
-changed invocation contract is a minor bump. The version in `plugin.json` is the
-one that pins an installed plugin: Claude Code keeps a GitHub install on that
-string, so people who installed the skill receive a change only when it moves
+the `version` field in `.claude-plugin/plugin.json`; a new skill or a changed
+invocation contract is a minor bump. That field pins an installed plugin:
+setting it "pins the plugin to that version until you change it"
 ([plugins reference](https://code.claude.com/docs/en/plugins-reference), the
-`version` field; a plugin loaded in place from a local-directory marketplace is
-not pinned). The root `version` in `marketplace.json` is the marketplace
-manifest's own
-([plugin marketplaces](https://code.claude.com/docs/en/plugin-marketplaces),
-root fields); it moves with the plugin's so one number names a release.
+`version` field), so people who installed the skill from GitHub receive a
+change only when it moves. Three kinds of install are not pinned by it: a
+plugin with a `command` source, a plugin from a marketplace hosted on
+claude.ai, and a plugin loaded in place from a marketplace added from a local
+path. `.claude-plugin/marketplace.json` carries no root `version`: that field
+is the marketplace manifest's own version
+([marketplace reference](https://code.claude.com/docs/en/plugins/marketplace-reference),
+top-level fields), and nothing here needs it.
 
 The `Skill version` workflow checks this on every pull request that touches
-those paths. Run the same check before pushing with `just skill-version`, which
+those paths, comparing against the commit the branch started from (the merge
+base). Run the same check before pushing with `just skill-version`, which
 compares against `origin/main`, or name another base with
 `just skill-version <commit>`. After a merge, users update with
-`/plugin marketplace update graftpunk` and `/plugin update graftpunk@graftpunk`.
+`/plugin marketplace update graftpunk`, then **Update now** on graftpunk's
+Installed tab in `/plugin` (or `claude plugin update graftpunk@graftpunk` in a
+shell).
 ```
 
 - [ ] **Step 4: Add the CHANGELOG line**
@@ -2039,7 +2131,7 @@ Expected: every test passes (the skill's copy check now also runs against the ne
 
 - [ ] **Step 6: Scan the diff for banned punctuation and names**
 
-Run: `git diff main | perl -CSD -ne 'print "$.: $_" if /^\+.*([\x{2013}\x{2014}]| \x2d\x2d )/'`
+Run: `git diff origin/main...HEAD | perl -CSD -ne 'print "$.: $_" if /^\+.*([\x{2013}\x{2014}]| \x2d\x2d )/'`
 Expected: no output.
 
 - [ ] **Step 7: Commit**
