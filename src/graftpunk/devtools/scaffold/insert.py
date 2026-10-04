@@ -187,12 +187,19 @@ def add_command(
     lines = source_lines(original)
     first_body_line = lines[klass.body[0].lineno - 1]
     indent_unit = first_body_line[: len(first_body_line) - len(first_body_line.lstrip(" \t"))]
-    if first_body_line[: klass.body[0].col_offset].strip():
+    joined_by_backslash = any(
+        lines[number - 1].endswith("\\") for number in range(klass.lineno, klass.body[0].lineno)
+    )
+    if joined_by_backslash or first_body_line[: klass.body[0].col_offset].strip():
         # Header text precedes the body's first statement on its own line:
         # the `class` keyword's own line (a one-line class), an unindented
         # `):` line, or an indented `):` line all have something other than
         # whitespace before the statement starts; a body that begins its own
-        # line never does, whatever that line's indent.
+        # line never does, whatever that line's indent. A backslash
+        # continuation joining the header's line (or a line between it and
+        # the body) to the body's physical line is the same shape in
+        # disguise: the body's own line can be all whitespace before its
+        # statement starts and still not begin a fresh logical line.
         raise CommandInsertError(_layout_refusal(plugin.module_path))
     rendered = render_command(command, d)
     stub_lines = _reindented(rendered.lines, indent_unit)

@@ -558,6 +558,18 @@ _HAND_WRITTEN_MULTILINE_HEADER_INDENTED_ONE_LINE_CLASS = (
     '    ): site_name = "myshop"; base_url = "https://myshop.example"\n'
 )
 
+_HAND_WRITTEN_BACKSLASH_CONTINUATION_CLASS = (
+    '"""myshop plugin."""\n'
+    "\n"
+    "from __future__ import annotations\n"
+    "\n"
+    "from graftpunk.plugins import SitePlugin\n"
+    "\n"
+    "\n"
+    "class MyshopPlugin(SitePlugin): \\\n"
+    '    site_name = "myshop"\n'
+)
+
 _HAND_WRITTEN_WITH_TRAILING_COMMENT = """\
 \"\"\"myshop plugin.\"\"\"
 
@@ -819,6 +831,29 @@ class TestAddCommand:
         the other two layouts, not spliced in as a syntax error."""
         module = _hand_written_project(
             recorded, module_text=_HAND_WRITTEN_MULTILINE_HEADER_INDENTED_ONE_LINE_CLASS
+        )
+        before = module.read_bytes()
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 1
+        output = _plain(result.output).strip()
+        assert output.splitlines() == [
+            "src/graftpunk_myshop/plugin.py: the stub does not fit this class's "
+            "layout (its body starts on the class header's line); add a command "
+            "by hand."
+        ]
+        assert module.read_bytes() == before
+
+    def test_a_backslash_continued_header_with_a_one_line_body_is_refused(
+        self, recorded: Path
+    ) -> None:
+        """A header joined to its body by a backslash continuation
+        (`class X(SitePlugin): \\` then an indented next line) puts the body
+        on its own physical line with nothing but whitespace before its
+        column offset, which the body-on-the-header-line guard alone misses;
+        without the backslash check, the stub is spliced in and the written
+        module fails to parse ("unexpected indent") instead of refusing."""
+        module = _hand_written_project(
+            recorded, module_text=_HAND_WRITTEN_BACKSLASH_CONTINUATION_CLASS
         )
         before = module.read_bytes()
         result = _add(recorded, "myshop", "orders=GET /api/orders")
