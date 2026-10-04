@@ -1099,8 +1099,10 @@ _EACCES_STRERROR = os.strerror(errno.EACCES)
 # mapped to why.
 _PROBE_CALLER_EXEMPTIONS = {
     "_blocked_path": (
-        "its case is the existing locked-directory and self-loop tests in "
-        "test_plugin_check.py (round 5's ruling; unchanged by this kind)"
+        "it maps an unfollowable symlink to the wrong-kind reason "
+        "(NOT_A_DIRECTORY or NOT_A_REGULAR_FILE), never the unfollowable kind "
+        "itself; its cases are the locked-directory and self-loop tests in "
+        "test_plugin_check.py"
     ),
 }
 
