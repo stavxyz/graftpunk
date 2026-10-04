@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import errno
 import hashlib
 import json
@@ -426,6 +427,83 @@ class TestCheckFixturesTree:
             tmp_path.chmod(0o755)
         assert problems == (f"{tmp_path}: cannot be read ({os.strerror(errno.EACCES)}).",)
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 644-mode directory's entries")
+    def test_a_tree_whose_parent_is_untraversable_cannot_be_read(self, tmp_path: Path) -> None:
+        """The tree check stats the tree itself, not an ``is_dir()`` predicate,
+        so the message does not depend on the Python version (DD2, A13-1,
+        B5)."""
+        parent = tmp_path / "tests"
+        parent.mkdir()
+        tree = parent / "fixtures"
+        tree.mkdir()
+        parent.chmod(0o644)
+        try:
+            problems = check_fixtures_tree(tree).problems
+        finally:
+            parent.chmod(0o755)
+        assert problems == (f"{tree}: cannot be read ({os.strerror(errno.EACCES)}).",)
+
+    def test_a_tree_that_is_a_regular_file_is_not_a_directory(self, tmp_path: Path) -> None:
+        """DD2: a tree that exists but is not a directory gets its own line,
+        distinct from "does not exist"."""
+        tree = tmp_path / "fixtures"
+        tree.write_text("")
+        problems = check_fixtures_tree(tree).problems
+        assert problems == (f"{tree}: not a directory. Move it aside, then run gp plugin upgrade.",)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode directory")
+    def test_a_symlink_entry_into_an_unreadable_location_is_its_own_problem(
+        self, tmp_path: Path
+    ) -> None:
+        """A symlink entry whose own target cannot be reached is that entry's
+        problem, not the whole directory's: the walk goes on to check its
+        siblings (DD3, B1)."""
+        priv = tmp_path / "priv" / "inner"
+        priv.mkdir(parents=True)
+        (priv / "x.json").write_text("{}")
+        fx = tmp_path / "fx"
+        fx.mkdir()
+        (fx / "z_orders.json").write_bytes(b"{}")
+        (fx / "m_link.json").symlink_to(Path("..") / "priv" / "inner" / "x.json")
+        (tmp_path / "priv").chmod(0o000)
+        try:
+            problems = check_fixtures_tree(fx).problems
+        finally:
+            (tmp_path / "priv").chmod(0o755)
+        assert len(problems) == 2
+        assert f"m_link.json: cannot be read ({os.strerror(errno.EACCES)})." in problems
+        assert any(p.startswith("z_orders.json: no sidecar") for p in problems)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 000-mode directory")
+    def test_a_sidecar_into_an_unreadable_location_cannot_be_read(self, tmp_path: Path) -> None:
+        """A sidecar that is a symlink into a blocked location is "cannot be
+        read", never a traceback and never a false "no sidecar" (DD4, B4)."""
+        priv = tmp_path / "priv" / "inner"
+        priv.mkdir(parents=True)
+        (priv / "s.meta.json").write_text(sidecar_text(Sidecar(status=200, content_type="x")))
+        fx = tmp_path / "fx_a"
+        fx.mkdir()
+        (fx / "a.json").write_bytes(b"{}")
+        (fx / "a.json.meta.json").symlink_to(Path("..") / "priv" / "inner" / "s.meta.json")
+        (tmp_path / "priv").chmod(0o000)
+        try:
+            problems = check_fixtures_tree(fx).problems
+        finally:
+            (tmp_path / "priv").chmod(0o755)
+        assert problems == (f"a.json.meta.json: cannot be read ({os.strerror(errno.EACCES)}).",)
+
+    def test_a_dangling_symlink_and_a_loop_are_skipped_not_reported(self, tmp_path: Path) -> None:
+        """Neither a dangling symlink nor a symlink loop is a fixture or a
+        problem; only the real fixture's missing sidecar is reported (DD5,
+        B2, B3)."""
+        (tmp_path / "dangling.json").symlink_to(tmp_path / "missing.json")
+        (tmp_path / "loop_a.json").symlink_to(tmp_path / "loop_b.json")
+        (tmp_path / "loop_b.json").symlink_to(tmp_path / "loop_a.json")
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        problems = check_fixtures_tree(tmp_path).problems
+        assert len(problems) == 1
+        assert problems[0].startswith("get_orders.json: no sidecar")
+
     def test_a_sidecar_of_unknown_schema_fails(self, tmp_path: Path) -> None:
         path = _fixture(tmp_path, "get_orders.json", b"{}", None)
         payload = json.loads(sidecar_text(Sidecar(status=200, content_type="x")))
@@ -542,3 +620,52 @@ def test_graftpunk_testing_plugin_imports_nothing_from_devtools() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=60, check=True
     )
     assert result.stdout.strip() == "[]"
+
+
+_PROBE_ONLY_ATTRIBUTES = frozenset({"exists", "is_dir", "is_file", "is_symlink", "lstat", "stat"})
+
+
+def _calls_outside_stat_kind(tree: ast.Module) -> list[tuple[int, str]]:
+    """Every call in *tree* to one of ``_PROBE_ONLY_ATTRIBUTES``, as (line, name),
+    whose nearest enclosing function is not named ``_stat_kind``: a second
+    filesystem presence/kind check sitting outside the one probe
+    ``testing/plugin.py`` allows."""
+    violations: list[tuple[int, str]] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            is_probe_only_call = (
+                isinstance(node.func, ast.Attribute) and node.func.attr in _PROBE_ONLY_ATTRIBUTES
+            )
+            if is_probe_only_call and (not self.stack or self.stack[-1] != "_stat_kind"):
+                violations.append((node.lineno, node.func.attr))
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    return violations
+
+
+def test_only_stat_kind_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat() -> None:
+    """``_stat_kind`` is the one place in this module allowed to ask the
+    filesystem what is at a path; a later edit that adds a second
+    ``.exists()``, ``.is_dir()``, ``.is_file()``, ``.is_symlink()``,
+    ``.lstat()``, or ``.stat()`` call anywhere else reintroduces the
+    version-dependent pathlib predicate this round removed, so this test
+    fails loudly on it rather than waiting for a reviewer to find it by hand
+    again (DD1, A13-1, B1 to B5)."""
+    source = Path(plugin_module.__file__).read_text()
+    violations = _calls_outside_stat_kind(ast.parse(source))
+    assert violations == []

@@ -27,7 +27,7 @@ import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -91,6 +91,70 @@ class FixturesTreeReport:
         )
 
 
+PathKind = Literal["absent", "file", "dir", "other", "unreadable"]
+
+
+def _stat_kind(path: Path, detail: list[str] | None = None) -> PathKind:
+    """What is at *path*, from ``path.stat()`` (and ``path.lstat()`` where a
+    symlink must be told apart from its unsearchable directory) inside
+    ``try``/``except OSError``: the one place in this module allowed to call
+    ``.exists()``, ``.is_dir()``, ``.is_file()``, ``.is_symlink()``,
+    ``.lstat()``, or ``.stat()``
+    (``test_only_stat_kind_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat``
+    enforces it by AST), so every other "what is at this path" question in
+    the fixtures check goes through this function instead of a
+    version-dependent pathlib predicate (before Python 3.14, ``is_dir()`` and
+    ``is_file()`` raise on a permission error past the path; from 3.14 they
+    swallow it and answer ``False``, which reads as "missing").
+
+    ``"absent"``: *path* plainly does not exist (``FileNotFoundError`` or
+    ``NotADirectoryError``, which also covers a race between a caller's
+    listing and this stat), or is a dangling symlink (the same
+    ``FileNotFoundError``) or a symlink loop (``ELOOP``): nothing to report,
+    *path* is just not there. ``"dir"`` or ``"file"``: a directory or a
+    regular file, a symlink to one included. ``"other"``: *path* resolves to
+    neither a directory nor a regular file, or is a symlink whose target
+    raised some other ``OSError`` while *path* itself could still be
+    ``lstat``'d: the symlink's target is what is wrong, not *path*'s own
+    directory. ``"unreadable"``: ``stat()`` and ``lstat()`` both raised,
+    which can only mean an ancestor of *path* is untraversable (most often a
+    permission error on a directory without its execute bit). When *detail*
+    is given and the result is the symlink-target form of ``"other"`` or is
+    ``"unreadable"``, ``exc.strerror`` (or the exception itself when the
+    platform gives none) is appended to it, so a caller that wants the
+    reason for a message does not stat *path* again."""
+    try:
+        mode = path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        # A dangling symlink, or path (or a parent) gone between a caller's
+        # listing and this stat: not a problem, just not there.
+        return "absent"
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            # A symlink loop: also not a problem, just not followable.
+            return "absent"
+        try:
+            path.lstat()
+        except OSError:
+            # path's own directory entry cannot even be examined: an
+            # ancestor (most often the containing directory's search
+            # permission) is what is wrong, not path's own target.
+            if detail is not None:
+                detail.append(exc.strerror or str(exc))
+            return "unreadable"
+        # lstat succeeded where stat did not: path itself is reachable, so
+        # it is a symlink whose target could not be reached. The symlink
+        # itself is what is wrong, not the directory it sits in.
+        if detail is not None:
+            detail.append(exc.strerror or str(exc))
+        return "other"
+    if stat.S_ISDIR(mode):
+        return "dir"
+    if stat.S_ISREG(mode):
+        return "file"
+    return "other"
+
+
 def _missing_sidecar(relative: Path, sidecar_name: str) -> str:
     schema = current_schema("sidecar")
     return (
@@ -116,10 +180,14 @@ def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
     entries cannot be told apart from a subdirectory (listed, but no search
     permission to stat them): ``os.walk``'s own classification of an entry
     as a file or a directory needs neither, so the failure surfaces only
-    when this function stats an entry itself. Either way, no fixture under
-    that directory is trusted; the walk continues with its siblings. A
-    dotfile (any path component starting with ``.``) is pruned before it is
-    recursed into, so it and everything under it are skipped."""
+    when this function stats an entry itself. A directory-wide failure (the
+    directory, or an ancestor, is untraversable) stops the walk of that
+    directory's remaining entries; no fixture under it is trusted. A single
+    symlink entry whose own target cannot be reached, with the directory
+    itself still searchable, is that one entry's problem instead, and the
+    walk goes on to its siblings. A dotfile (any path component starting
+    with ``.``) is pruned before it is recursed into, so it and everything
+    under it are skipped."""
     problems: list[str] = []
     fixtures: list[Path] = []
 
@@ -135,21 +203,25 @@ def _collect_fixtures(tree: Path) -> tuple[list[Path], list[str]]:
             if name.startswith("."):
                 continue
             candidate = directory / name
-            try:
-                mode = candidate.stat().st_mode
-            except (FileNotFoundError, NotADirectoryError):
-                # Gone, or a parent turned out not to be a directory, between
+            detail: list[str] = []
+            kind = _stat_kind(candidate, detail)
+            if kind == "absent":
+                # A dangling or looping symlink, or an entry gone between
                 # the listing and the stat: not a fixture, not a problem.
                 continue
-            except OSError as exc:
-                if exc.errno == errno.ELOOP:
-                    # A dangling or looping symlink: not a fixture either.
-                    continue
-                problems.append(
-                    f"{_label(tree, relative_dir)}: cannot be read ({exc.strerror or exc})."
-                )
+            if kind == "unreadable":
+                problems.append(f"{_label(tree, relative_dir)}: cannot be read ({detail[0]}).")
                 break
-            if stat.S_ISREG(mode) and not is_sidecar(candidate):
+            if kind == "other" and detail:
+                # The entry is a symlink whose own target could not be
+                # reached; the directory itself is fine. A sidecar in this
+                # shape is the owning fixture's problem to report, once,
+                # when it is probed for its sidecar below; anything else is
+                # this entry's own line, and the walk continues either way.
+                if not is_sidecar(candidate):
+                    problems.append(f"{relative_dir / name}: cannot be read ({detail[0]}).")
+                continue
+            if kind == "file" and not is_sidecar(candidate):
                 fixtures.append(candidate)
     return sorted(fixtures), problems
 
@@ -170,24 +242,34 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     ``.DS_Store``, and an editor swap file) is never a fixture and is
     skipped.
     """
-    if not tree.is_dir():
-        return FixturesTreeReport(
-            problems=(
+    tree_detail: list[str] = []
+    tree_kind = _stat_kind(tree, tree_detail)
+    if tree_kind != "dir":
+        if tree_kind == "absent":
+            message = (
                 f"{tree}: the fixtures tree does not exist. The generated conftest names "
                 f"it as FIXTURES_TREE; gp plugin new creates it with a {FIXTURES_PLACEHOLDER}, and "
                 f"gp plugin upgrade creates it for a project that lacks it. Run "
-                f"gp plugin upgrade, or recreate the directory by hand.",
-            ),
-            verified=0,
-            declared=0,
-        )
+                f"gp plugin upgrade, or recreate the directory by hand."
+            )
+        elif tree_detail:
+            message = f"{tree}: cannot be read ({tree_detail[0]})."
+        else:
+            message = f"{tree}: not a directory. Move it aside, then run gp plugin upgrade."
+        return FixturesTreeReport(problems=(message,), verified=0, declared=0)
     fixtures, problems = _collect_fixtures(tree)
     verified = declared = 0
     for fixture in fixtures:
         relative = fixture.relative_to(tree)
         meta = sidecar_path(fixture)
-        if not meta.is_file():
-            problems.append(_missing_sidecar(relative, meta.name))
+        meta_detail: list[str] = []
+        meta_kind = _stat_kind(meta, meta_detail)
+        if meta_kind != "file":
+            if meta_detail:
+                sidecar_relative = relative.parent / meta.name
+                problems.append(f"{sidecar_relative}: cannot be read ({meta_detail[0]}).")
+            else:
+                problems.append(_missing_sidecar(relative, meta.name))
             continue
         try:
             sidecar = load_sidecar(meta)
