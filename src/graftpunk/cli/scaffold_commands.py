@@ -1,28 +1,30 @@
-"""``gp plugin``: new, add-command, info, upgrade, and check. Argument handling only;
-each entry point calls into ``graftpunk.devtools``."""
+"""``gp plugin new``: argument handling only, over ``graftpunk.devtools``.
+
+``info``, ``add-command``, ``upgrade``, and ``check`` live in
+``scaffold_project_commands.py``; both modules attach their commands to the
+same ``plugin_app``, from ``scaffold_shared.py``, and ``main.py`` imports both
+modules before it calls :func:`register`. ``register`` and the reserved-names
+snapshot stay here rather than in the shared module because tests patch
+``scaffold_commands._reserved_names`` directly, and that patch only reaches
+the global a function reads when the function is defined in this module.
+"""
 
 from __future__ import annotations
 
 import dataclasses
-import json
 import re
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
-from rich.console import Console
 from rich.markup import escape
 
 import graftpunk
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.plugin_commands import derive_reserved_cli_names
+from graftpunk.cli.scaffold_shared import LOG, command_selections, console, plugin_app
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
-from graftpunk.devtools.errors import DevtoolsRefusal, ScaffoldWriteError
-from graftpunk.devtools.plugin_check import check_project
-from graftpunk.devtools.plugin_info import info_payload
-from graftpunk.devtools.plugin_project import read_project
-from graftpunk.devtools.scaffold import policy
-from graftpunk.devtools.scaffold.insert import add_command
+from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold.project import (
     NotAPluginSuiteError,
     ScaffoldConflictError,
@@ -30,20 +32,10 @@ from graftpunk.devtools.scaffold.project import (
 )
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths, validate_plugin_name
-from graftpunk.devtools.scaffold.selection import CommandSelection, CommandSelectionError
-from graftpunk.devtools.scaffold.upgrade import upgrade_project
+from graftpunk.devtools.scaffold.selection import CommandSelectionError
 from graftpunk.devtools.scaffold.write import InvalidChangeError
 from graftpunk.har.digest import DigestSource, digest
-from graftpunk.har.naming import EndpointSpecError, parse_command_spec
 from graftpunk.har.parser import HARParseError
-from graftpunk.logging import get_logger
-
-LOG = get_logger(__name__)
-console = Console()
-
-plugin_app = typer.Typer(
-    name="plugin", help="Scaffold, extend, inspect, upgrade, and check a graftpunk plugin project."
-)
 
 _BackendName = Literal["nodriver", "selenium"]
 _SUPPORTED_BACKENDS: tuple[_BackendName, ...] = ("nodriver", "selenium")
@@ -110,22 +102,6 @@ def _name_refusal(name: str) -> tuple[str, str] | None:
     return None
 
 
-def _command_selections(values: list[str]) -> tuple[CommandSelection, ...]:
-    """Every ``--command`` value as a selection, refusing the first that does not parse
-    with :func:`parse_command_spec`'s own text. Both scaffold commands call this, and
-    neither splits a value itself."""
-    selections: list[CommandSelection] = []
-    for value in values:
-        try:
-            name, method, template = parse_command_spec(value)
-        except EndpointSpecError as exc:
-            LOG.debug("scaffold_refused", reason="bad_command")
-            console.print(f"[red]--command: {escape(str(exc))}[/red]", soft_wrap=True)
-            raise typer.Exit(1) from None
-        selections.append(CommandSelection(name=name, method=method, template=template))
-    return tuple(selections)
-
-
 @plugin_app.command("new")
 def plugin_new(
     name: Annotated[str, typer.Argument(help="Plugin name: site_name, and the package suffix")],
@@ -188,7 +164,7 @@ def plugin_new(
         console.print("[red]--run requires --from-run.[/red]", soft_wrap=True)
         raise typer.Exit(1)
 
-    selections = _command_selections(command)
+    selections = command_selections(command)
     if selections and from_run is None:
         LOG.debug("scaffold_refused", reason="command_without_from_run")
         console.print("[red]--command requires --from-run.[/red]", soft_wrap=True)
@@ -301,109 +277,3 @@ def _print_next_steps(spec: ScaffoldSpec) -> None:
         "[dim]Derive each one from a capture of the same name: gp observe fixtures --help[/dim]",
         soft_wrap=True,
     )
-
-
-@plugin_app.command("info")
-def plugin_info(
-    as_json: Annotated[bool, typer.Option("--json", help="Print JSON (the only form)")] = False,
-    dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
-) -> None:
-    """Describe the plugin project in --dir: its classification, plugins, and commands."""
-    if not as_json:
-        console.print("[red]gp plugin info prints JSON only: pass --json.[/red]", soft_wrap=True)
-        raise typer.Exit(1)
-    try:
-        payload = info_payload(read_project(dir_))
-    except DevtoolsRefusal as exc:
-        LOG.debug("plugin_info_refused", reason=type(exc).__name__)
-        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
-        raise typer.Exit(1) from None
-    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
-
-
-@plugin_app.command("add-command")
-def plugin_add_command(
-    plugin: Annotated[
-        str,
-        typer.Argument(help="The plugin's entry-point name, as gp plugin info --json reports it"),
-    ],
-    from_run: Annotated[
-        str, typer.Option("--from-run", help="SESSION: take the endpoint from its newest run")
-    ],
-    command: Annotated[
-        str, typer.Option("--command", help='"NAME=METHOD template": the command to add')
-    ],
-    run: Annotated[
-        str | None, typer.Option("--run", help="RUN_ID: use this run instead of the newest one")
-    ] = None,
-    dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
-) -> None:
-    """Add one command stub to a plugin, in the shape gp plugin new writes."""
-    (selection,) = _command_selections([command])
-    run_dir = resolve_run(from_run, run)
-    source = DigestSource.from_run_dir(run_dir, session=from_run, run_id=run_dir.name)
-    try:
-        run_digest = digest(source)
-    except (FileNotFoundError, HARParseError) as exc:
-        LOG.debug("add_command_refused", reason="digest_load_error", har_path=str(source.har_path))
-        console.print(
-            f"[red]Could not read {escape(str(source.har_path))}: {escape(str(exc))}[/red]",
-            soft_wrap=True,
-        )
-        raise typer.Exit(1) from None
-    try:
-        added = add_command(dir_, plugin, run_digest, selection)
-    except DevtoolsRefusal as exc:
-        LOG.debug("add_command_refused", reason=type(exc).__name__)
-        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
-        raise typer.Exit(1) from None
-    console.print(
-        f"[green]Added[/green] {escape(added.cli_name)} to {escape(str(added.module))}",
-        soft_wrap=True,
-    )
-    if added.fixture is None:
-        console.print(
-            "[bold]Next:[/bold] gp observe fixtures writes no fixture for this endpoint; "
-            "write its test against a fixture of your own.",
-            soft_wrap=True,
-        )
-    else:
-        console.print(
-            f"[bold]Next:[/bold] its test looks for {escape(added.fixture)}", soft_wrap=True
-        )
-
-
-@plugin_app.command("upgrade")
-def plugin_upgrade(
-    dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
-) -> None:
-    """Bring a plugin project up to the current generated shape, changing nothing it has."""
-    try:
-        applied = upgrade_project(dir_)
-    except DevtoolsRefusal as exc:
-        LOG.debug("upgrade_refused", reason=type(exc).__name__)
-        console.print(f"[red]{escape(str(exc))}[/red]", soft_wrap=True)
-        raise typer.Exit(1) from None
-    if not applied.changed:
-        console.print("Nothing to upgrade: the project already has every requirement.")
-        return
-    for requirement in applied.requirements:
-        console.print(
-            f"{escape(requirement.path)}: added {escape(requirement.name)}", soft_wrap=True
-        )
-    if applied.created_fixtures_tree:
-        console.print(f"{escape(policy.FIXTURES_TREE)}: created", soft_wrap=True)
-
-
-@plugin_app.command("check")
-def plugin_check(
-    dir_: Annotated[Path, typer.Option("--dir", help="Project directory")] = Path("."),
-) -> None:
-    """Lint a plugin project: markers left, one plugin class per module, project wiring."""
-    findings = check_project(dir_)
-    for finding in findings:
-        console.print(escape(str(finding)), soft_wrap=True, highlight=False)
-    if findings:
-        console.print(f"[red]gp plugin check: {len(findings)} finding(s).[/red]", soft_wrap=True)
-        raise typer.Exit(1)
-    console.print("[green]gp plugin check: no findings.[/green]")
