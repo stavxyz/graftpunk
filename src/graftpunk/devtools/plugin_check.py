@@ -4,9 +4,9 @@ Reports a missing or blocked ``policy.FIXTURES_TREE`` (the first case
 ``gp plugin upgrade`` creates, the second an author must move aside), a
 remaining ``GP-FILL`` marker in a plugin module or a test module, a module
 without exactly one ``SitePlugin`` subclass (the reader's per-plugin defect,
-listed with the other findings), a requirement's file that does not parse,
-and a ``PROJECT_REQUIREMENTS`` entry the project lacks, which
-``gp plugin upgrade`` fixes. It does not compare a declared endpoint against
+listed with the other findings), a requirement's file that does not parse or
+is not a regular file, and a ``PROJECT_REQUIREMENTS`` entry the project lacks,
+which ``gp plugin upgrade`` fixes. It does not compare a declared endpoint against
 the request call: the declaration is authoritative by design, and a check
 that could only ever be weak would give an author a reason to drop the
 keyword. It does not restate the fixtures check, which the generated suite
@@ -32,9 +32,9 @@ __all__ = ["Finding", "check_project"]
 
 @dataclass(frozen=True)
 class Finding:
-    """One thing the lint found: the message alone for a refusal that names no
-    path of its own (``path`` is ``None``), or at a project-relative path and,
-    when it has one, a line."""
+    """One thing the lint found: the message alone when the message already
+    names its own path or names none (a reader refusal, a plugin defect), or
+    at a project-relative path and, when it has one, a line."""
 
     path: str | None
     line: int | None

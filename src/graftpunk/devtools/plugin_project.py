@@ -177,7 +177,9 @@ class PluginView:
 class PluginDefect:
     """An entry point whose module parsed but does not hold exactly one ``SitePlugin``
     subclass. Recorded rather than raised, so the rest of the project still reads
-    and each consumer decides whether the defect stops it."""
+    and each consumer decides whether the defect stops it. ``message`` begins with
+    ``module_path`` and a colon, so a consumer that prints it (``gp plugin check``'s
+    ``Finding``) names no path of its own: doing so would print the path twice."""
 
     entry_point: str
     module_path: str  # project-relative, forward slashes

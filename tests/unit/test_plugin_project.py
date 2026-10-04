@@ -238,6 +238,28 @@ class TestTheView:
         ]
         assert [f.name for f in fields(CommandView)] == ["method", "span", "keywords", "group"]
 
+    @pytest.mark.parametrize(
+        "module",
+        [
+            "from graftpunk.plugins import SitePlugin\n",
+            (
+                "from graftpunk.plugins import SitePlugin\n\n\n"
+                'class A(SitePlugin):\n    site_name = "a"\n\n\n'
+                'class B(SitePlugin):\n    site_name = "b"\n'
+            ),
+        ],
+        ids=["zero_classes", "two_classes"],
+    )
+    def test_every_defects_message_begins_with_its_own_module_path(
+        self, tmp_path: Path, module: str
+    ) -> None:
+        """PluginDefect's contract (its message begins with module_path and a
+        colon) holds for every shape the reader builds one from, not just the
+        two-class case gp plugin check's own test happens to cover."""
+        _hand_written(tmp_path, module)
+        (defect,) = read_project(tmp_path).defects
+        assert defect.message.startswith(f"{defect.module_path}: ")
+
     def test_fixtures_tree_present_is_true_for_a_generated_project(self, tmp_path: Path) -> None:
         _generate(tmp_path)
         assert read_project(tmp_path).fixtures_tree_present is True
