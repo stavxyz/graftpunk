@@ -335,7 +335,7 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
             sidecar_relative = relative.parent / meta.name
             if meta_detail:
                 problems.append(f"{sidecar_relative}: cannot be read ({meta_detail[0]}).")
-            elif meta_kind in ("dir", "other"):
+            elif meta_kind in ("dir", "other", "dangling"):
                 problems.append(
                     f"{sidecar_relative}: not a regular file. Move it aside and write the sidecar."
                 )

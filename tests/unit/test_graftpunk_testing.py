@@ -560,6 +560,29 @@ class TestCheckFixturesTree:
             "get_orders.json.meta.json: not a regular file. Move it aside and write the sidecar."
         )
 
+    def test_a_looping_symlink_sidecar_is_not_a_regular_file(self, tmp_path: Path) -> None:
+        """A sidecar path occupied by a symlink that loops back on itself is
+        never told to "write" a sidecar there: a symlink already sits at the
+        path, and writing through a loop raises ELOOP."""
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        meta = tmp_path / "get_orders.json.meta.json"
+        meta.symlink_to(meta)
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert problem == (
+            "get_orders.json.meta.json: not a regular file. Move it aside and write the sidecar."
+        )
+
+    def test_a_dangling_symlink_sidecar_is_not_a_regular_file(self, tmp_path: Path) -> None:
+        """A sidecar path occupied by a symlink to a missing target gets the
+        same advice: following "write it" would land the sidecar at the
+        link's target, which can be outside the tree."""
+        _fixture(tmp_path, "get_orders.json", b"{}", None)
+        (tmp_path / "get_orders.json.meta.json").symlink_to(tmp_path / "nowhere")
+        (problem,) = check_fixtures_tree(tmp_path).problems
+        assert problem == (
+            "get_orders.json.meta.json: not a regular file. Move it aside and write the sidecar."
+        )
+
     def test_a_symlinked_fixtures_subdirectory_is_walked(self, tmp_path: Path) -> None:
         """A per-plugin fixtures directory that is itself a symlink (into a
         captures directory the developer pointed it at, say) is still
