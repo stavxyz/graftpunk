@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
 
+import graftpunk
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER
@@ -72,6 +73,7 @@ __all__ = [
     "class_name_for",
     "fixture_paths",
     "fixtures_root_for",
+    "graftpunk_version_floor",
     "render",
     "render_command",
     "validate_plugin_name",
@@ -1203,6 +1205,23 @@ def _render_plugin_module(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
     lines.append("")
     lines.extend(_render_command_stubs(spec, planned))
     return "\n".join(lines).rstrip() + "\n"
+
+
+_PRERELEASE_SUFFIX_RE = re.compile(r"(a|b|rc|dev)\d*$")
+
+
+def graftpunk_version_floor() -> str:
+    """The running graftpunk's release, floored to ``major.minor.0``: the lower
+    bound ``gp plugin new`` writes for a generated project, and the one
+    ``gp plugin upgrade`` and ``gp plugin add-command`` raise a project to.
+
+    A pre-release or local checkout (``1.17.0.dev3+g1234abc``) floors at its
+    base release (``1.17.0``), per the spec.
+    """
+    version = re.split(r"[-+]", graftpunk.__version__)[0]
+    version = _PRERELEASE_SUFFIX_RE.sub("", version)
+    parts = (version.split(".") + ["0", "0"])[:2]
+    return f"{parts[0]}.{parts[1]}.0"
 
 
 def _render_pyproject(spec: ScaffoldSpec) -> str:

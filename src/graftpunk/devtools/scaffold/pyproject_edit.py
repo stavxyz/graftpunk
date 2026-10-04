@@ -1,20 +1,35 @@
-"""The one seam that edits an existing pyproject.toml's text: two known shapes, no file access.
+"""The one seam that edits an existing pyproject.toml's text: three known shapes, no file access.
 
 Refuses rather than guesses on anything else: a wrong edit to someone's
 build configuration is worse than a refusal with instructions (plugin
-tooling spec, 2026-09-11). The caller writes the result; ``write_scaffold``
-does, through ``write.py``.
+tooling spec, 2026-09-11). The caller writes the result through ``write.py``:
+``write_scaffold`` for the entry point and the wheel package, and
+``upgrade_project`` and ``add_command`` for the graftpunk floor, which they
+raise because the code they add needs the running graftpunk (graft skill
+spec, amended 2026-10-04).
 """
 
 from __future__ import annotations
 
 import re
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 from graftpunk.plugins import PLUGINS_GROUP
 
-__all__ = ["PyprojectEditError", "with_entry_point", "with_wheel_package"]
+__all__ = [
+    "CannotRaiseFloor",
+    "PyprojectEditError",
+    "RaisedFloor",
+    "with_entry_point",
+    "with_graftpunk_floor",
+    "with_wheel_package",
+]
 
 _ENTRY_POINT_TABLE_RE = re.compile(
     r'(\[project\.entry-points\."graftpunk\.plugins"\]\n)((?:.*\n)*?)(?=\[|\Z)'
@@ -167,3 +182,128 @@ def with_wheel_package(text: str, pyproject_path: Path, package: str) -> str:
     prefix, array = match.group(1), match.group(2)
     edited = text[: match.start()] + prefix + _append_to_array(array, package) + text[match.end() :]
     return _as_crlf_if(edited, crlf)
+
+
+_PROJECT_TABLE_RE = re.compile(r"^[ \t]*\[project\][ \t]*(?:#[^\n]*)?\r?$", re.MULTILINE)
+_NEXT_TABLE_RE = re.compile(r"\n[ \t]*\[")
+_DEPENDENCIES_KEY_RE = re.compile(r"^[ \t]*dependencies[ \t]*=[ \t]*\[", re.MULTILINE)
+_REQUIREMENT_NAME_RE = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+@dataclass(frozen=True)
+class RaisedFloor:
+    """The pyproject *text* with its ``graftpunk`` requirement's lower bound
+    raised to the floor; *previous* is that bound's version as it was written."""
+
+    text: str
+    previous: str
+
+
+@dataclass(frozen=True)
+class CannotRaiseFloor:
+    """The project's ``graftpunk`` requirement is in a form a lower-bound rewrite
+    cannot raise. *requirement* is that requirement as written, or ``None`` when
+    ``[project] dependencies`` holds none."""
+
+    requirement: str | None
+
+
+def _array_literals(text: str, open_bracket: int) -> list[tuple[int, int]] | None:
+    """The spans of the string literals in the one-level array opening at
+    *open_bracket*, or ``None`` when the array holds anything but one-line basic
+    and literal strings (a multi-line string, a nested array or table) or never
+    closes."""
+    spans: list[tuple[int, int]] = []
+    i = open_bracket + 1
+    while i < len(text):
+        char = text[i]
+        if char == "]":
+            return spans
+        if char == "#":
+            end = text.find("\n", i)
+            i = len(text) if end == -1 else end
+            continue
+        if text.startswith('"""', i) or text.startswith("'''", i) or char in "[{":
+            return None
+        if char in "\"'":
+            j = i + 1
+            while j < len(text) and text[j] not in (char, "\n"):
+                j += 2 if char == '"' and text[j] == "\\" else 1
+            if j >= len(text) or text[j] != char:
+                return None
+            spans.append((i, j + 1))
+            i = j + 1
+            continue
+        i += 1
+    return None
+
+
+def _dependency_literals(text: str) -> list[tuple[int, int]] | None:
+    """The spans of ``[project] dependencies``'s string literals in *text*, or
+    ``None`` when that array cannot be located textually."""
+    table = _PROJECT_TABLE_RE.search(text)
+    if table is None:
+        return None
+    following = _NEXT_TABLE_RE.search(text, table.end())
+    end = len(text) if following is None else following.start()
+    key = _DEPENDENCIES_KEY_RE.search(text, table.end(), end)
+    if key is None:
+        return None
+    return _array_literals(text, key.end() - 1)
+
+
+def _is_graftpunk(requirement: str) -> bool:
+    match = _REQUIREMENT_NAME_RE.match(requirement)
+    return match is not None and canonicalize_name(match.group(1)) == "graftpunk"
+
+
+def with_graftpunk_floor(text: str, floor: str) -> RaisedFloor | CannotRaiseFloor | None:
+    """*text* with its ``[project] dependencies`` ``graftpunk`` requirement's lower
+    bound raised to *floor*, when that requirement's only version specifier is a
+    ``>=`` below it. Only the version is rewritten: the name, extras, spacing, and
+    environment marker stay byte for byte, and so do the file's line endings.
+
+    Returns ``None`` when the requirement already allows nothing below *floor*,
+    and :class:`CannotRaiseFloor` for any other form: no ``graftpunk``
+    requirement, several of them, any other specifier (an upper bound, ``==``,
+    ``~=``, several specifiers, or none), a URL, or a literal this module cannot
+    locate textually.
+    """
+    dependencies = tomllib.loads(text).get("project", {}).get("dependencies", [])
+    if not isinstance(dependencies, list):
+        return CannotRaiseFloor(requirement=None)
+    found = [
+        (index, raw)
+        for index, raw in enumerate(dependencies)
+        if isinstance(raw, str) and _is_graftpunk(raw)
+    ]
+    if not found:
+        return CannotRaiseFloor(requirement=None)
+    if len(found) > 1:
+        return CannotRaiseFloor(requirement=" and ".join(raw for _, raw in found))
+    index, raw = found[0]
+    cannot = CannotRaiseFloor(requirement=raw)
+    try:
+        requirement = Requirement(raw)
+    except InvalidRequirement:
+        return cannot
+    specifiers = list(requirement.specifier)
+    if requirement.url is not None or len(specifiers) != 1 or specifiers[0].operator != ">=":
+        return cannot
+    previous = specifiers[0].version
+    if Version(previous) >= Version(floor):
+        return None
+    spans = _dependency_literals(text)
+    if spans is None or len(spans) != len(dependencies):
+        return cannot
+    start, end = spans[index]
+    literal = text[start:end]
+    if tomllib.loads(f"value = {literal}")["value"] != raw:
+        return cannot
+    # A marker's own ">=" compares a quoted value, so it never matches here.
+    pattern = r">=\s*(" + re.escape(previous) + r")(?![\w.+!*-])"
+    bounds = list(re.finditer(pattern, literal))
+    if len(bounds) != 1:
+        return cannot
+    version_start, version_end = (start + offset for offset in bounds[0].span(1))
+    return RaisedFloor(text=text[:version_start] + floor + text[version_end:], previous=previous)

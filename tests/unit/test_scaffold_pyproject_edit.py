@@ -11,8 +11,11 @@ from pathlib import Path
 import pytest
 
 from graftpunk.devtools.scaffold.pyproject_edit import (
+    CannotRaiseFloor,
     PyprojectEditError,
+    RaisedFloor,
     with_entry_point,
+    with_graftpunk_floor,
     with_wheel_package,
 )
 
@@ -243,3 +246,108 @@ class TestCrlfText:
             with_entry_point(mixed, _PATH, "widgets", _WIDGETS)
         with pytest.raises(PyprojectEditError, match="line endings"):
             with_wheel_package(mixed, _PATH, "src/graftpunk_widgets")
+
+
+def _deps(*lines: str) -> str:
+    body = "".join(f"    {line}\n" for line in lines)
+    return (
+        "[project]\n"
+        'name = "graftpunk-myshop"\n'
+        "dependencies = [\n"
+        f"{body}"
+        "]\n"
+        "\n"
+        "[project.optional-dependencies]\n"
+        'dev = ["graftpunk>=1.0", "pytest>=8.0.0"]\n'
+    )
+
+
+class TestWithGraftpunkFloor:
+    """A write that adds code needing this graftpunk also makes the project
+    declare it: a plain lower bound below the floor is raised in place, one at
+    or above it is left alone, and any other form is reported, never guessed at."""
+
+    def test_a_lower_bound_below_the_floor_is_raised_in_place(self) -> None:
+        text = _deps('"httpx>=0.27",', '"graftpunk>=1.0",  # the plugin API')
+        result = with_graftpunk_floor(text, "1.17.0")
+        assert result == RaisedFloor(
+            text=text.replace('"graftpunk>=1.0"', '"graftpunk>=1.17.0"', 1), previous="1.0"
+        )
+        assert 'dev = ["graftpunk>=1.0"' in result.text
+
+    def test_extras_spacing_and_an_environment_marker_are_kept_byte_for_byte(self) -> None:
+        literal = "'graftpunk[browser] >= 1.0 ; python_version >= \"3.11\"',"
+        text = _deps(literal)
+        result = with_graftpunk_floor(text, "1.17.0")
+        assert isinstance(result, RaisedFloor)
+        assert result.text == text.replace(">= 1.0 ;", ">= 1.17.0 ;")
+        assert result.previous == "1.0"
+
+    def test_a_basic_string_with_escaped_marker_quotes_is_raised(self) -> None:
+        text = _deps('"graftpunk[browser]>=1.0; python_version >= \\"3.11\\"",')
+        result = with_graftpunk_floor(text, "1.17.0")
+        assert isinstance(result, RaisedFloor)
+        assert result.text == text.replace("]>=1.0;", "]>=1.17.0;")
+        assert tomllib.loads(result.text)["project"]["dependencies"] == [
+            'graftpunk[browser]>=1.17.0; python_version >= "3.11"'
+        ]
+
+    def test_crlf_line_endings_are_kept(self) -> None:
+        text = _deps('"graftpunk>=1.0",').replace("\n", "\r\n")
+        result = with_graftpunk_floor(text, "1.17.0")
+        assert isinstance(result, RaisedFloor)
+        assert result.text == text.replace('>=1.0"', '>=1.17.0"', 1)
+
+    def test_a_one_line_array_holding_a_bracket_inside_a_string_is_raised(self) -> None:
+        text = (
+            '[project]\nname = "x"\ndependencies = ["graftpunk[browser]>=1.0", "httpx"]  # see ]\n'
+        )
+        result = with_graftpunk_floor(text, "1.17.0")
+        assert isinstance(result, RaisedFloor)
+        assert result.text == text.replace(">=1.0", ">=1.17.0")
+
+    @pytest.mark.parametrize("bound", ["1.17.0", "1.17", "1.18.2", "2.0"])
+    def test_a_lower_bound_at_or_above_the_floor_is_nothing_to_do(self, bound: str) -> None:
+        assert with_graftpunk_floor(_deps(f'"graftpunk>={bound}",'), "1.17.0") is None
+
+    @pytest.mark.parametrize(
+        "requirement",
+        [
+            "graftpunk==1.0",
+            "graftpunk~=1.0",
+            "graftpunk<2",
+            "graftpunk>=1.0,<2",
+            "graftpunk",
+            "graftpunk @ https://example.com/graftpunk-1.0-py3-none-any.whl",
+            "graftpunk>1.0",
+        ],
+    )
+    def test_any_other_form_cannot_be_raised_and_is_named(self, requirement: str) -> None:
+        text = _deps(f'"{requirement}",')
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(requirement=requirement)
+
+    def test_no_graftpunk_requirement_cannot_be_raised(self) -> None:
+        text = _deps('"graftpunk-extras>=1.0",')
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(requirement=None)
+
+    def test_no_dependencies_key_cannot_be_raised(self) -> None:
+        text = '[project]\nname = "x"\n'
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(requirement=None)
+
+    def test_two_graftpunk_requirements_cannot_be_raised(self) -> None:
+        text = _deps(
+            "'graftpunk>=1.0; python_version < \"3.12\"',",
+            "'graftpunk>=1.1; python_version >= \"3.12\"',",
+        )
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
+            requirement=(
+                'graftpunk>=1.0; python_version < "3.12" and '
+                'graftpunk>=1.1; python_version >= "3.12"'
+            )
+        )
+
+    def test_a_requirement_it_cannot_locate_textually_cannot_be_raised(self) -> None:
+        text = '[project]\nname = "x"\ndependencies = [\n    """graftpunk>=1.0""",\n]\n'
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
+            requirement="graftpunk>=1.0"
+        )

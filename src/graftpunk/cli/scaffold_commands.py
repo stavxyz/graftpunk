@@ -14,14 +14,12 @@ the global a function reads when the function is defined in this module.
 from __future__ import annotations
 
 import dataclasses
-import re
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
 from rich.markup import escape
 
-import graftpunk
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.plugin_commands import derive_reserved_cli_names
 from graftpunk.cli.scaffold_shared import LOG, command_selections, console, plugin_app
@@ -33,7 +31,12 @@ from graftpunk.devtools.scaffold.project import (
     write_scaffold,
 )
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
-from graftpunk.devtools.scaffold.render import ScaffoldSpec, fixture_paths, validate_plugin_name
+from graftpunk.devtools.scaffold.render import (
+    ScaffoldSpec,
+    fixture_paths,
+    graftpunk_version_floor,
+    validate_plugin_name,
+)
 from graftpunk.devtools.scaffold.selection import CommandSelectionError
 from graftpunk.devtools.scaffold.write import InvalidChangeError
 from graftpunk.har.digest import DigestSource, digest
@@ -41,7 +44,6 @@ from graftpunk.har.parser import HARParseError
 
 _BackendName = Literal["nodriver", "selenium"]
 _SUPPORTED_BACKENDS: tuple[_BackendName, ...] = ("nodriver", "selenium")
-_PRERELEASE_SUFFIX_RE = re.compile(r"(a|b|rc|dev)\d*$")
 
 # The reserved top-level CLI names, snapshotted by register() at attach time
 # (before any site plugin's own sub-app is mounted): see register()'s
@@ -81,18 +83,6 @@ def reserved_cli_names() -> frozenset[str]:
     anything.
     """
     return _reserved_names
-
-
-def _graftpunk_version_floor() -> str:
-    """The running graftpunk's release, floored to ``major.minor.0``.
-
-    A pre-release or local checkout (``1.17.0.dev3+g1234abc``) floors at its
-    base release (``1.17.0``), per the spec.
-    """
-    version = re.split(r"[-+]", graftpunk.__version__)[0]
-    version = _PRERELEASE_SUFFIX_RE.sub("", version)
-    parts = (version.split(".") + ["0", "0"])[:2]
-    return f"{parts[0]}.{parts[1]}.0"
 
 
 def _name_refusal(name: str) -> tuple[str, str] | None:
@@ -202,7 +192,7 @@ def plugin_new(
             backend=backend,
             base_url=base_url,
             digest=digest_result,
-            graftpunk_version=_graftpunk_version_floor(),
+            graftpunk_version=graftpunk_version_floor(),
             commands=selections,
         )
         result = write_scaffold(dir_, spec, force_new=new)
