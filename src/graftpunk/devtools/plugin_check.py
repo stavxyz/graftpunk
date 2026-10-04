@@ -1,9 +1,11 @@
 """``gp plugin check``: a lint over the project reader's view. It never edits.
 
-Reports a remaining ``GP-FILL`` marker in a plugin module or a test module, a
-module without exactly one ``SitePlugin`` subclass (the reader's per-plugin
-defect, listed with the other findings), a requirement's file that does not
-parse, and a ``PROJECT_REQUIREMENTS`` entry the project lacks, which
+Reports a missing or blocked ``policy.FIXTURES_TREE`` (the first case
+``gp plugin upgrade`` creates, the second an author must move aside), a
+remaining ``GP-FILL`` marker in a plugin module or a test module, a module
+without exactly one ``SitePlugin`` subclass (the reader's per-plugin defect,
+listed with the other findings), a requirement's file that does not parse,
+and a ``PROJECT_REQUIREMENTS`` entry the project lacks, which
 ``gp plugin upgrade`` fixes. It does not compare a declared endpoint against
 the request call: the declaration is authoritative by design, and a check
 that could only ever be weak would give an author a reason to drop the
