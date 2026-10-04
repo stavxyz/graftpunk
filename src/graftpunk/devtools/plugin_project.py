@@ -87,7 +87,8 @@ def _probe(path: Path, detail: list[str] | None = None) -> PathKind:
     """What is at *path*, from ``path.lstat()``/``path.stat()`` inside
     ``try``/``except OSError``: the one place in this module allowed to call
     ``.exists()``, ``.is_dir()``, ``.is_file()``, ``.is_symlink()``,
-    ``.lstat()``, or ``.stat()`` (``test_only_probe_calls_lstat_or_stat``
+    ``.lstat()``, or ``.stat()``
+    (``test_only_probe_calls_exists_is_dir_is_file_is_symlink_lstat_or_stat``
     enforces it by AST), so every other "what is at this path" question in
     this module goes through this function.
 
@@ -95,12 +96,18 @@ def _probe(path: Path, detail: list[str] | None = None) -> PathKind:
     (``FileNotFoundError`` or ``NotADirectoryError``). ``"dir"`` or
     ``"file"``: a directory or a regular file, a symlink to one included.
     ``"other"``: anything else that exists, including a symlink whose target
-    is absent or whose own kind is neither (a socket, a FIFO, a device).
-    ``"unreadable"``: any other ``OSError`` probing it, most often a
-    permission error on an ancestor without its execute bit. When *detail* is
-    given and the result is ``"unreadable"``, ``exc.strerror`` (or the
-    exception itself when the platform gives none) is appended to it, so a
-    caller that wants the reason for a message does not stat *path* again."""
+    is absent, whose own kind is neither, or that cannot be followed at all
+    (a loop, a permission error on the target, or any other ``OSError`` the
+    follow-up ``stat()`` raises): the symlink itself is what is wrong in
+    every one of those cases, never the path that led to it.
+    ``"unreadable"``: an ``OSError`` from ``lstat()`` on *path* itself, which
+    can only mean an ancestor of *path* is untraversable (most often a
+    permission error on a directory without its execute bit); ``lstat()``
+    does not follow a symlink at *path*, so *path*'s own kind is never why
+    this happens. When *detail* is given and the result is ``"unreadable"``,
+    ``exc.strerror`` (or the exception itself when the platform gives none)
+    is appended to it, so a caller that wants the reason for a message does
+    not stat *path* again."""
     try:
         linked = path.lstat()
     except (FileNotFoundError, NotADirectoryError):
@@ -112,12 +119,8 @@ def _probe(path: Path, detail: list[str] | None = None) -> PathKind:
     if stat.S_ISLNK(linked.st_mode):
         try:
             found = path.stat()
-        except (FileNotFoundError, NotADirectoryError):
+        except OSError:
             return "other"
-        except OSError as exc:
-            if detail is not None:
-                detail.append(exc.strerror or str(exc))
-            return "unreadable"
     else:
         found = linked
     if stat.S_ISDIR(found.st_mode):
@@ -134,12 +137,15 @@ def _blocked_path(
     nothing blocks it (every ancestor is a directory, and *relative* itself is
     either missing outright or matches *kind*), or ``(path, reason)`` for the
     first project-relative path component (no trailing slash) that blocks it:
-    an ancestor that exists but is not a directory (*reason* is
-    ``NOT_A_DIRECTORY``), *relative* itself when it exists but is not *kind*
-    (including a symlink of any kind that does not resolve; *reason* is
-    ``NOT_A_DIRECTORY`` or ``NOT_A_REGULAR_FILE``), or an ancestor an
-    ``OSError`` other than "missing" makes untraversable (*reason* names
-    ``exc.strerror``). ``stat`` needs no execute bit on *current* itself, only
+    an ancestor that exists but is not a directory, including one that is a
+    symlink that cannot be followed (*reason* is ``NOT_A_DIRECTORY``,
+    blaming the symlink itself, never the directory it sits in), *relative*
+    itself when it exists but is not *kind* (the same is true of a symlink
+    of any kind that does not resolve; *reason* is ``NOT_A_DIRECTORY`` or
+    ``NOT_A_REGULAR_FILE``), or an ancestor whose own ``lstat()`` raises an
+    ``OSError`` other than "missing", which only an ancestor further up can
+    cause (*reason* names ``exc.strerror``). ``stat`` needs no execute bit on
+    *current* itself, only
     on each directory above it, so a probe of ``root/a/b`` that fails this way
     blames ``a`` (the last component already confirmed a directory), never
     ``a/b`` (which was never reached): the one component shallower than

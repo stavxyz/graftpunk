@@ -205,6 +205,94 @@ class TestFindings:
             upgrade_project(tmp_path)
         assert str(excinfo.value) == str(finding)
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_a_conftest_symlink_into_an_unreadable_directory_blames_the_symlink(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """tests/conftest.py is a symlink whose target sits under a directory
+        with no execute bit; tests/ itself is fine. Following the symlink is
+        what fails, so the symlink is the one at fault: the finding and the
+        refusal must both name tests/conftest.py with "move it aside", never
+        tests/ with "fix its permissions" (tests/ has nothing wrong with it)."""
+        _clean_project(tmp_path)
+        locked = tmp_path_factory.mktemp("locked")
+        (locked / "real").mkdir()
+        (locked / "real" / "conftest.py").write_text("")
+        locked.chmod(0o000)
+        conftest = tmp_path / "tests" / "conftest.py"
+        conftest.unlink()
+        conftest.symlink_to(locked / "real" / "conftest.py")
+        try:
+            (finding,) = check_project(tmp_path)
+            with pytest.raises(UpgradeRefusedError) as excinfo:
+                upgrade_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert finding.path == "tests/conftest.py"
+        assert finding.message == (
+            "exists but is not a regular file; move it aside, then run gp plugin upgrade."
+        )
+        assert str(excinfo.value) == str(finding)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a 000-mode directory")
+    def test_a_fixtures_symlink_into_an_unreadable_directory_blames_the_symlink(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Same shape as the conftest case above, for tests/fixtures: a
+        symlink to a directory that sits under a 000-mode directory. The
+        symlink is the one at fault, not tests/."""
+        _clean_project(tmp_path)
+        locked = tmp_path_factory.mktemp("locked")
+        (locked / "real").mkdir()
+        locked.chmod(0o000)
+        fixtures = tmp_path / "tests" / "fixtures"
+        shutil.rmtree(fixtures)
+        fixtures.symlink_to(locked / "real")
+        try:
+            (finding,) = check_project(tmp_path)
+            with pytest.raises(UpgradeRefusedError) as excinfo:
+                upgrade_project(tmp_path)
+        finally:
+            locked.chmod(0o755)
+        assert finding.path == "tests/fixtures"
+        assert finding.message == (
+            "exists but is not a directory; move it aside, then run gp plugin upgrade."
+        )
+        assert str(excinfo.value) == str(finding)
+
+    def test_a_conftest_symlink_loop_blames_the_symlink_not_tests(self, tmp_path: Path) -> None:
+        """tests/conftest.py -> conftest.py is a self-loop (ELOOP on follow):
+        the finding and the refusal must name the symlink itself with "move
+        it aside", never tests/ with permissions advice."""
+        _clean_project(tmp_path)
+        conftest = tmp_path / "tests" / "conftest.py"
+        conftest.unlink()
+        conftest.symlink_to("conftest.py")
+        (finding,) = check_project(tmp_path)
+        assert finding.path == "tests/conftest.py"
+        assert finding.message == (
+            "exists but is not a regular file; move it aside, then run gp plugin upgrade."
+        )
+        with pytest.raises(UpgradeRefusedError) as excinfo:
+            upgrade_project(tmp_path)
+        assert str(excinfo.value) == str(finding)
+
+    def test_a_fixtures_symlink_loop_blames_the_symlink_not_tests(self, tmp_path: Path) -> None:
+        """tests/fixtures -> fixtures is the same self-loop shape, for a
+        directory."""
+        _clean_project(tmp_path)
+        fixtures = tmp_path / "tests" / "fixtures"
+        shutil.rmtree(fixtures)
+        fixtures.symlink_to("fixtures")
+        (finding,) = check_project(tmp_path)
+        assert finding.path == "tests/fixtures"
+        assert finding.message == (
+            "exists but is not a directory; move it aside, then run gp plugin upgrade."
+        )
+        with pytest.raises(UpgradeRefusedError) as excinfo:
+            upgrade_project(tmp_path)
+        assert str(excinfo.value) == str(finding)
+
     def test_a_directory_that_is_not_a_plugin_project_is_a_finding(self, tmp_path: Path) -> None:
         (finding,) = check_project(tmp_path)
         assert "not a graftpunk plugin project" in finding.message
