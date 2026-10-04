@@ -23,6 +23,7 @@ import click
 import pytest
 import typer.main
 
+from graftpunk.devtools.plugin_check import FINDING_ADVICE
 from graftpunk.testing.sidecar import Sidecar, sidecar_text
 from tests.unit.guide_harness import (
     GUIDE,
@@ -175,25 +176,15 @@ _GATE_PARAGRAPH_RE = re.compile(r"`gp plugin check` lists a missing.*?(?=\n\n)",
 
 
 def test_the_gate_paragraph_names_every_phrase_check_can_emit() -> None:
-    """``graftpunk.devtools.plugin_check`` is the one owner of the complete list
-    of finding kinds; this paragraph is where the guide restates it in prose.
-    Each phrase below is a substring of a message ``check_project`` can emit
-    (``unreadable_file_message``'s four reasons, a ``GP-FILL`` marker, and a
-    module's wrong class count), so a reason added there without updating
-    this paragraph fails here instead of drifting unnoticed through another
-    round."""
+    """Checks that the guide's `gp plugin check` paragraph names every phrase
+    in ``plugin_check.FINDING_ADVICE``: each phrase there is a constant the
+    module's own messages are built from, not a copy retyped for this test,
+    so a phrase missing from the paragraph fails here rather than drifting
+    unnoticed."""
     match = _GATE_PARAGRAPH_RE.search(GUIDE_TEXT)
     assert match is not None, "the `gp plugin check` paragraph moved or was reworded"
     paragraph = " ".join(match.group(0).split())
-    for phrase in (
-        "is not a directory",
-        "cannot be read",
-        "is not a regular file",
-        "not valid UTF-8",
-        "does not parse",
-        "GP-FILL",
-        "exactly one",
-    ):
+    for phrase in FINDING_ADVICE:
         assert phrase in paragraph, f"{phrase!r} missing from the gp plugin check paragraph"
 
 

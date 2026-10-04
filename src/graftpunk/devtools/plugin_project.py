@@ -35,8 +35,14 @@ from graftpunk.har.naming import registered_name
 from graftpunk.plugins import PLUGINS_GROUP
 
 __all__ = [
+    "CANNOT_BE_READ",
+    "DOES_NOT_PARSE",
+    "EXACTLY_ONE",
     "NOT_A_DIRECTORY",
+    "NOT_A_DIRECTORY_PHRASE",
     "NOT_A_REGULAR_FILE",
+    "NOT_A_REGULAR_FILE_PHRASE",
+    "NOT_VALID_UTF8",
     "CommandView",
     "DirectoryKind",
     "NotAPluginProjectError",
@@ -59,9 +65,19 @@ PathKind = Literal["absent", "file", "dir", "other", "unreadable", "unfollowable
 
 # Shared between gp plugin check (a Finding's message) and gp plugin upgrade
 # (a refusal), so the two consumers of the one reader fact never describe the
-# same blocked path differently.
-NOT_A_DIRECTORY = "exists but is not a directory; move it aside, then run gp plugin upgrade."
-NOT_A_REGULAR_FILE = "exists but is not a regular file"
+# same blocked path differently. The short *_PHRASE constants are each
+# reason's one identifying substring, built into its full constant below and
+# also used by plugin_check.FINDING_ADVICE, so the guide's prose and the
+# messages themselves are checked against the same words.
+NOT_A_DIRECTORY_PHRASE = "is not a directory"
+NOT_A_REGULAR_FILE_PHRASE = "is not a regular file"
+CANNOT_BE_READ = "cannot be read"
+NOT_VALID_UTF8 = "not valid UTF-8"
+DOES_NOT_PARSE = "does not parse"
+EXACTLY_ONE = "exactly one"
+
+NOT_A_DIRECTORY = f"exists but {NOT_A_DIRECTORY_PHRASE}; move it aside, then run gp plugin upgrade."
+NOT_A_REGULAR_FILE = f"exists but {NOT_A_REGULAR_FILE_PHRASE}"
 
 
 def unreadable_file_message(reason: str) -> str:
@@ -76,9 +92,9 @@ def unreadable_file_message(reason: str) -> str:
         return reason
     if reason == NOT_A_REGULAR_FILE:
         return f"{reason}; move it aside, then run gp plugin upgrade."
-    if reason.startswith("cannot be read"):
+    if reason.startswith(CANNOT_BE_READ):
         return f"{reason}; fix its permissions, then run gp plugin upgrade."
-    if reason.startswith("not valid UTF-8"):
+    if reason.startswith(NOT_VALID_UTF8):
         return f"{reason}; save it as UTF-8, then run gp plugin upgrade."
     return f"{reason}; gp plugin upgrade can add its wiring once it parses."
 
@@ -715,7 +731,7 @@ def _parse_error_message(exc: SyntaxError | ValueError) -> str:
     msg = getattr(exc, "msg", None) or str(exc)
     lineno = getattr(exc, "lineno", None)
     clause = f", line {lineno}" if lineno is not None else ""
-    return f"does not parse ({msg}{clause})"
+    return f"{DOES_NOT_PARSE} ({msg}{clause})"
 
 
 def _parse(root: Path, relative: str) -> tuple[str, ast.Module]:
@@ -801,7 +817,7 @@ def _read_plugin(
             entry_point=key,
             module_path=relative,
             message=(
-                f"{relative}: expected exactly one SitePlugin subclass, found {len(classes)} "
+                f"{relative}: expected {EXACTLY_ONE} SitePlugin subclass, found {len(classes)} "
                 f"({found}). A plugin module holds one plugin class."
             ),
         )

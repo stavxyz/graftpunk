@@ -8,15 +8,23 @@ marker in a plugin module or a test module; a module without exactly one
 other findings); a requirement's file that does not parse, is not valid
 UTF-8, cannot be read, or is not a regular file (or whose directory is
 blocked); a ``PROJECT_REQUIREMENTS`` entry the project lacks, which
-``gp plugin upgrade`` fixes; and a ``policy.FIXTURES_TREE`` that is missing
+``gp plugin upgrade`` fixes; a ``policy.FIXTURES_TREE`` that is missing
 (which ``gp plugin upgrade`` creates), is not a directory (an author must
 move it aside), or cannot be read (an author must fix its permissions),
-including when ``tests/`` itself, not the tree, is the one blocked. It does
-not compare a declared endpoint against the request call: the declaration is
-authoritative by design, and a check that could only ever be weak would give
-an author a reason to drop the keyword. It does not restate the fixtures
-check, which the generated suite runs (graft skill spec, 2026-09-21). A
-reader: never imports ``write.py``.
+including when ``tests/`` itself, not the tree, is the one blocked; and,
+when the reader refuses the project outright (not a plugin project, or a
+``pyproject.toml`` or plugin module that cannot be read or does not parse),
+that refusal as the only finding. It does not compare a declared endpoint
+against the request call: the declaration is authoritative by design, and a
+check that could only ever be weak would give an author a reason to drop the
+keyword. It does not restate the fixtures check, which the generated suite
+runs (graft skill spec, 2026-09-21). A reader: never imports ``write.py``.
+
+``FINDING_ADVICE`` is every advice phrase a message built here can carry, each
+drawn from the constant the message itself is built from (never re-typed), so
+a test pinning the plugin-development guide's prose against this tuple fails
+when a phrase here has no match in the guide, instead of the two drifting
+silently.
 """
 
 from __future__ import annotations
@@ -25,6 +33,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from graftpunk.devtools.plugin_project import (
+    CANNOT_BE_READ,
+    DOES_NOT_PARSE,
+    EXACTLY_ONE,
+    NOT_A_DIRECTORY_PHRASE,
+    NOT_A_REGULAR_FILE_PHRASE,
+    NOT_VALID_UTF8,
     NotAPluginProjectError,
     PluginProjectError,
     require_plugin_project,
@@ -32,7 +46,30 @@ from graftpunk.devtools.plugin_project import (
 )
 from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, GP_FILL_MARKER
 
-__all__ = ["Finding", "check_project"]
+__all__ = ["FINDING_ADVICE", "Finding", "check_project"]
+
+# The two messages built entirely in this module, each holding its own advice
+# phrase; unreadable_file_message's phrases live in plugin_project.py, next to
+# the reasons it builds its advice from.
+_FIXTURES_TREE_MISSING = "missing; gp plugin upgrade creates it."
+_DOES_NOT_BIND = "does not bind"
+_MISSING_REQUIREMENT_TAIL = "gp plugin upgrade adds it."
+
+FINDING_ADVICE: tuple[str, ...] = (
+    NOT_A_DIRECTORY_PHRASE,
+    NOT_A_REGULAR_FILE_PHRASE,
+    CANNOT_BE_READ,
+    NOT_VALID_UTF8,
+    DOES_NOT_PARSE,
+    EXACTLY_ONE,
+    GP_FILL_MARKER,
+    "creates it",
+    "adds it",
+)
+"""Every advice phrase a ``check_project`` finding can carry, for a test to
+check the guide's prose against: not a guarantee that a future reason is
+caught here automatically, since a new reason still has to be added to this
+tuple by hand."""
 
 
 @dataclass(frozen=True)
@@ -70,9 +107,7 @@ def check_project(root: Path) -> list[Finding]:
         path, reason = view.fixtures_tree_blocked
         findings.append(Finding(path=path, line=None, message=unreadable_file_message(reason)))
     elif not view.fixtures_tree_present:
-        findings.append(
-            Finding(path=FIXTURES_TREE, line=None, message="missing; gp plugin upgrade creates it.")
-        )
+        findings.append(Finding(path=FIXTURES_TREE, line=None, message=_FIXTURES_TREE_MISSING))
     findings.extend(
         Finding(
             path=plugin.module_path, line=line, message=f"{GP_FILL_MARKER} marker left to fill in."
@@ -98,7 +133,7 @@ def check_project(root: Path) -> list[Finding]:
         Finding(
             path=requirement.path,
             line=None,
-            message=f"does not bind {requirement.name}; gp plugin upgrade adds it.",
+            message=f"{_DOES_NOT_BIND} {requirement.name}; {_MISSING_REQUIREMENT_TAIL}",
         )
         for requirement in view.missing_requirements()
     )
