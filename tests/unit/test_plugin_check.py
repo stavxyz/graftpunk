@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -350,7 +351,7 @@ class TestFindings:
             )
         finally:
             src.chmod(0o755)
-        expected = "src/graftpunk_myshop/plugin.py: cannot be read (Permission denied)."
+        expected = f"src/graftpunk_myshop/plugin.py: cannot be read ({os.strerror(errno.EACCES)})."
         assert info_result.exit_code == 1, info_result.output
         assert expected in info_result.output
         assert check_result.exit_code == 1, check_result.output
@@ -383,7 +384,7 @@ class TestFindings:
             )
         finally:
             tests_dir.chmod(0o755)
-        expected = "tests: cannot be read (Permission denied)"
+        expected = f"tests: cannot be read ({os.strerror(errno.EACCES)})"
         assert check_result.exit_code == 1, check_result.output
         assert expected in check_result.output
         assert info_result.exit_code == 0, info_result.output
@@ -410,7 +411,7 @@ class TestFindings:
         finally:
             project.chmod(0o755)
         assert result.exit_code == 1, result.output
-        assert f"{project / 'pyproject.toml'}: cannot be read (Permission denied)." in (
+        assert f"{project / 'pyproject.toml'}: cannot be read ({os.strerror(errno.EACCES)})." in (
             result.output
         )
 
