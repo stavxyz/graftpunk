@@ -266,7 +266,7 @@ git commit -m "feat(skill): the repository is a Claude Code plugin marketplace s
 
 **Interfaces:**
 - Consumes: `gp version --json --at-least VERSION --contract SURFACE=N ...` from the foundations plan, Task 5. When gp can read every value it was given, it prints one line of JSON on stdout and exits 0, or 1 when the installed version is below VERSION, or 3 when a named surface differs (one line per mismatch on stderr naming the older side). When it cannot read VERSION or a `--contract` value, it prints nothing on stdout and exits 1 with its message on stderr. It exits 2 for an option it does not know (`src/graftpunk/cli/main.py:173` (`def version`)); `gp plugin info --json` from the project-tools plan, Task 4; `REPO_ROOT` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9).
-- Produces: `skills/graft/scripts/preflight.sh` with `SKILL_REQUIRES_GRAFTPUNK="1.17.0"`, `SKILL_READS_INFO_SCHEMA=1`, and `SKILL_READS_ENDPOINTS_SCHEMA=1` at the top; it passes all three to gp in one `gp version` call, parses no JSON, and compares nothing itself. On success it prints `{"installation": <gp version --json>, "project": <gp plugin info --json>}` and exits 0; otherwise it prints one message on stderr and exits 1, whatever failed. Each failure has its own message: no `gp` (the install line); `gp version` exited 1 (the message names all three readings, graftpunk below the floor, a floor gp cannot read, or a malformed `--contract` value, relays gp's own message, and gives the upgrade line); a contract mismatch (gp's own lines relayed and the fix for each side); `gp` could not read the project; `gp` rejected an option preflight passed; or `gp version` exited with any other status (relayed with gp's output). Task 4's `SKILL.md` reads zero against non-zero and shows the message; it runs preflight first.
+- Produces: `skills/graft/scripts/preflight.sh` with `SKILL_REQUIRES_GRAFTPUNK="1.17.0"`, `SKILL_READS_INFO_SCHEMA=1`, and `SKILL_READS_ENDPOINTS_SCHEMA=1` at the top; it passes all three to gp in one `gp version` call, parses no JSON, and compares nothing itself. On success it prints `{"installation": <gp version --json>, "project": <gp plugin info --json>}` and exits 0; otherwise it prints one message on stderr and exits 1, whatever failed. Each failure has its own message: no `gp` (the install line); no `uv` (its install page, https://docs.astral.sh/uv/, since the skill runs every command that loads the plugin through `uv run`); `gp version` exited 1 (the message names all three readings, graftpunk below the floor, a floor gp cannot read, or a malformed `--contract` value, relays gp's own message, and gives the upgrade line); a contract mismatch (gp's own lines relayed and the fix for each side); `gp` could not read the project; `gp` rejected an option preflight passed; or `gp version` exited with any other status (relayed with gp's output). Task 4's `SKILL.md` reads zero against non-zero and shows the message; it runs preflight first.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -300,10 +300,11 @@ from tests.unit.guide_harness import REPO_ROOT
 
 PREFLIGHT = REPO_ROOT / "skills" / "graft" / "scripts" / "preflight.sh"
 BASH = shutil.which("bash")
-# The only programs preflight may use besides bash builtins and gp. The PATH the
-# fake-gp tests build holds nothing else, so a preflight that reached for a JSON
-# or text tool would fail there; the real-gp tests also put the environment's own
-# bin directory on the PATH, so they do not prove it.
+# The only programs preflight may use besides bash builtins, gp, and uv (which it
+# only looks for). The PATH the fake-gp tests build holds nothing else, so a
+# preflight that reached for a JSON or text tool would fail there; the real-gp
+# tests also put the environment's own bin directory on the PATH, so they do not
+# prove it.
 _TOOLS = ("mktemp", "cat", "rm")
 _REAL_GP_DIR = Path(sys.executable).parent
 _VERSION_OK = '{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "9.9.9"}'
@@ -324,13 +325,17 @@ def _constant(name: str) -> str:
 
 def _tools(tmp_path: Path) -> Path:
     """A directory holding only the programs preflight needs, so no host binary called
-    gp can stand in for the one a test means."""
+    gp can stand in for the one a test means. Preflight only checks that uv is on
+    the PATH and never runs it, so a stub that exits 99 stands in for it."""
     tools = tmp_path / "tools"
     tools.mkdir()
     for name in _TOOLS:
         found = shutil.which(name)
         assert found, name
         (tools / name).symlink_to(found)
+    uv = tools / "uv"
+    uv.write_text(f"#!{BASH}\nexit 99\n")
+    uv.chmod(0o755)
     return tools
 
 
@@ -484,6 +489,21 @@ class TestPreflightWithAFakeGp:
         assert "uv tool install graftpunk" in result.stderr
         assert result.stdout == ""
 
+    def test_uv_missing_exits_1_with_its_install_page_before_asking_gp(
+        self, tmp_path: Path, dirs: tuple[Path, Path, Path]
+    ) -> None:
+        """The commands that load the plugin run through uv run, so without uv the
+        skill stops at preflight rather than at the harden step."""
+        work, home, tools = dirs
+        (tools / "uv").unlink()
+        fake = _fake_gp(tmp_path)
+        result = _preflight(work, home, fake, tools)
+        assert result.returncode == 1
+        assert "uv is not on PATH" in result.stderr
+        assert "https://docs.astral.sh/uv/" in result.stderr
+        assert not (fake / "version-args").exists()
+        assert result.stdout == ""
+
     def test_gp_version_exit_1_exits_1_with_gps_message_and_the_upgrade_line(
         self, tmp_path: Path, dirs: tuple[Path, Path, Path]
     ) -> None:
@@ -604,6 +624,8 @@ Create `skills/graft/scripts/preflight.sh`:
 # and exits 0. Otherwise prints one message on stderr, naming what failed and
 # what to do, and exits 1. The failures, each with its own message:
 #   gp is not on PATH
+#   uv is not on PATH (the skill runs every command that loads the plugin through
+#     uv run; preflight only looks for it)
 #   gp version exited 1 (graftpunk older than this skill needs, or gp could not
 #     read the floor or a --contract value this script passed)
 #   gp reports a contract mismatch (gp's own lines name the older side)
@@ -620,10 +642,17 @@ SKILL_READS_ENDPOINTS_SCHEMA=1
 
 INSTALL_LINE="uv tool install graftpunk   (or: pip install graftpunk)"
 UPGRADE_LINE="uv tool upgrade graftpunk   (or: pip install --upgrade graftpunk)"
+UV_INSTALL_PAGE="https://docs.astral.sh/uv/"
 SKILL_UPDATE_LINE="/plugin marketplace update graftpunk, then update graftpunk on the Installed tab of /plugin (or run: claude plugin update graftpunk@graftpunk)"
 
 if ! command -v gp >/dev/null 2>&1; then
   printf 'graftpunk is not installed: gp is not on PATH.\nInstall it: %s\n' "$INSTALL_LINE" >&2
+  exit 1
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  printf 'uv is not on PATH. The skill runs every command that loads the plugin through uv run.\n' >&2
+  printf 'Install it: %s\n' "$UV_INSTALL_PAGE" >&2
   exit 1
 fi
 
@@ -771,7 +800,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 from typing import Any
 
 import pytest
@@ -792,9 +820,12 @@ _SKILL_DIR_VAR = "${CLAUDE_SKILL_DIR}/"
 # the turn that invokes the skill (https://code.claude.com/docs/en/skills), and
 # preflight is the one command that turn reliably runs.
 _PREFLIGHT_ENTRY = "${CLAUDE_SKILL_DIR}/scripts/preflight.sh *"
-# The prefix that runs a command in the project's own environment, where the plugin
-# is installed: every command that loads the plugin carries it.
-_PROJECT_ENV = "uv run --project . --extra dev"
+# The prefix the Kick the tires lines and the gate carry. uv builds an environment
+# from the project on each run and writes no lockfile or .venv into it. The Kick the tires lines
+# need the plugin's entry point installed, and the gate runs as one unit where its
+# tools and a graftpunk matching the project's requirement are installed; gp plugin
+# check and ruff do not import the plugin.
+_PROJECT_ENV = "uv run --no-project --with-editable . --with pytest --with ruff"
 # The Harden line that runs the gate, one PROJECT_GATE command at a time.
 _GATE_SLOT = "<gate-command>"
 # The offered rules scoped to the plugin being built, one per declared Kick the
@@ -912,7 +943,7 @@ class TestOfferedAllowRules:
 
     def test_every_rule_is_a_scoped_gp_rule(self) -> None:
         """Never Bash(*), never a bare Bash(gp *), never a command other than gp,
-        whether gp runs from PATH or in the project's environment."""
+        whether gp runs from PATH or through the project runner."""
         for pattern in _offered_rules():
             command = pattern.removeprefix(f"{_PROJECT_ENV} ")
             assert command.startswith("gp "), pattern
@@ -947,8 +978,8 @@ class TestOfferedAllowRules:
     def test_the_gates_gp_commands_have_rules_and_commands_md_says_the_rest_do_not(
         self,
     ) -> None:
-        """The gate is policy.PROJECT_GATE's to list, and runs in the project's
-        environment. Every gp command in it is covered by an offered rule; an
+        """The gate is policy.PROJECT_GATE's to list, and runs through the project
+        runner. Every gp command in it is covered by an offered rule; an
         offered rule is only ever a gp rule (test_every_rule_is_a_scoped_gp_rule),
         so commands.md says in words that the gate's other commands ask each time."""
         rules = _offered_rules()
@@ -960,9 +991,10 @@ class TestOfferedAllowRules:
         assert _GATE_RULE_SENTENCE in commands_md
 
 
-def test_the_commands_that_load_the_plugin_run_in_the_project_environment() -> None:
-    """The kick-the-tires lines and the gate need the plugin installed, which the
-    project's own environment guarantees and the gp on PATH does not."""
+def test_the_kick_the_tires_lines_and_the_gate_run_through_the_project_runner() -> None:
+    """The kick-the-tires lines need the plugin's entry point installed, which the gp
+    on PATH does not have; the gate runs as one unit where its tools and a graftpunk
+    matching the project's requirement are installed."""
     kick = commands_in(_commands_section("### Kick the tires"))
     harden = commands_in(_commands_section("### Harden"))
     assert kick and f"{_PROJECT_ENV} {_GATE_SLOT}" in harden
@@ -1001,9 +1033,6 @@ def test_the_skill_has_invocations_to_check() -> None:
 def test_every_gp_invocation_names_a_real_command_and_options(
     doc: str, line_no: int, invocation: str
 ) -> None:
-    tokens = shlex.split(invocation)[1:]
-    if tokens and tokens[0].startswith("<"):
-        pytest.skip(f"{invocation} addresses the plugin's own command group")
     check_invocation(invocation, f"{doc}:{line_no}")
 ```
 
@@ -1217,10 +1246,10 @@ gp observe -s <session> interactive <url>
 
 ## Run by the skill
 
-The Kick the tires lines and each command of the gate load the plugin, so they
-run in the project's own environment, through `uv run --project . --extra dev`;
-every other `gp` line runs the `gp` on PATH. When `uv` is missing, say that this
-step needs it (https://docs.astral.sh/uv/) and stop there.
+The Kick the tires lines need the plugin's entry point installed; the gate runs
+as one unit where its tools and a graftpunk matching the project's requirement
+are installed. Both run through their `uv run` prefix, which builds an
+environment from the project on each run. Other `gp` lines run the `gp` on PATH.
 
 ### Start
 
@@ -1266,7 +1295,7 @@ the gate asks each time it runs, unless the user's settings allow it.
 ```bash
 gp observe fixtures <session> <run> --match "<METHOD> <template>"
 gp plugin upgrade
-uv run --project . --extra dev <gate-command>
+uv run --no-project --with-editable . --with pytest --with ruff <gate-command>
 ```
 
 ### Kick the tires
@@ -1276,9 +1305,9 @@ first of them runs, whatever the user's settings allow. The last line is one
 read-only command from the agreed proposal.
 
 ```bash
-uv run --project . --extra dev gp <site-name> --help
-uv run --project . --extra dev gp <site-name> login
-uv run --project . --extra dev gp <site-name> <command>
+uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> --help
+uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> login
+uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> <command>
 ```
 
 ## Allow rules for a prompt-free run
@@ -1296,15 +1325,15 @@ Bash(gp observe fixtures *)
 Bash(gp plugin new *)
 Bash(gp plugin add-command *)
 Bash(gp plugin upgrade *)
-Bash(uv run --project . --extra dev gp plugin check *)
-Bash(uv run --project . --extra dev gp <site-name> --help)
-Bash(uv run --project . --extra dev gp <site-name> login)
+Bash(uv run --no-project --with-editable . --with pytest --with ruff gp plugin check *)
+Bash(uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> --help)
+Bash(uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> login)
 ```
 ````
 
 `gp plugin add-command` takes `--run` as `gp plugin new` does (`src/graftpunk/cli/scaffold_project_commands.py:106` (`"--run"`)), so both scaffold lines read the run chosen at the end of the capture step, never whichever run is newest when they run; the walker test resolves both lines against the CLI.
 
-**Which `gp` loads the plugin (probed 2026-10-04 with uv 0.12.18, in a scratch directory, against a project from `gp plugin new myshop --url https://myshop.example`).** A `gp` installed with `uv tool install <graftpunk checkout>` does not list `myshop` in `gp --help`; one installed with `uv tool install <graftpunk checkout> --with-editable <project>` does, and so does `uv run --project <project> gp --help`, which needs no install outside the project because the generated `pyproject.toml` depends on graftpunk. The skill therefore runs every command that loads the plugin (the Kick the tires lines and the gate) as `uv run --project . --extra dev ...`; `--extra dev` brings in the generated project's `dev` extra, without which `uv run --project . pytest` fails with `Failed to spawn: pytest`. The same probe showed that `uv run` re-locks and reinstalls when a lower bound in `pyproject.toml` is raised, which is what `harden.md` relies on for "install the project again". Each such project environment resolves graftpunk from the index at the floor `gp plugin new` writes, so the gate there needs a graftpunk release that ships `gp plugin check` and `graftpunk.testing` (1.17.0, this plan's precondition): in the probe, the project's environment resolved PyPI's 1.16.0, which has neither, and the gate passed its ruff steps while `pytest` failed on the missing `graftpunk.testing` and `gp plugin check` was an unknown command. With the checkout's graftpunk overlaid (`--with <graftpunk checkout>`), `pytest` passed and `gp plugin check` ran and reported the fresh scaffold's `GP-FILL` markers, as the guide says it does.
+**Which `gp` loads the plugin (probed 2026-10-04 with uv 0.12.18, in a scratch directory holding `UV_CACHE_DIR`, `UV_TOOL_DIR`, and `UV_TOOL_BIN_DIR`, against a project from `gp plugin new myshop --url https://myshop.example`).** A `gp` installed with `uv tool install <graftpunk checkout>` does not list `myshop` in `gp --help`, since the plugin's entry point is not installed beside it. In the project directory, `uv run --no-project --with-editable . --with pytest --with ruff gp --help` lists `myshop`, and the same prefix runs `pytest --version` (pytest 9.1.1) and `ruff --version` (ruff 0.16.10). All three still pass after the `dev` extra is deleted from `pyproject.toml`, and afterwards the directory holds no `uv.lock` and no `.venv/`. The prefix reads `pyproject.toml` on every run: after a dependency was added there, the next run imported it, and after graftpunk's floor was raised to `>=99.0.0`, the next run failed to resolve. The skill therefore runs the Kick the tires lines and the gate through that prefix. The Kick the tires lines need the plugin's entry point installed, and the gate runs as one unit where its tools and a graftpunk matching the project's requirement are installed; `gp plugin check` and ruff do not import the plugin. The prefix needs no `dev` extra, which only `gp plugin new` writes, so enhance mode works on a project that has none, and uv writes no `uv.lock` or `.venv/` into the user's project, so `harden.md` has no reinstall step. The environment resolves graftpunk from the index at the floor `gp plugin new` writes, so the gate there needs a graftpunk release that ships `gp plugin check` and `graftpunk.testing` (1.17.0, this plan's precondition): in the probe it resolved PyPI's 1.16.0, which has neither, and `ruff check .` passed while `pytest` failed on the missing `graftpunk.testing` and `gp plugin check` was an unknown command. An earlier probe the same day, through `uv run --project .` with the checkout's graftpunk overlaid (`--with <graftpunk checkout>`), had `pytest` pass and `gp plugin check` run and report the fresh scaffold's `GP-FILL` markers, as the guide says it does.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -1329,7 +1358,7 @@ git commit -m "feat(skill): SKILL.md pre-approves preflight alone, and commands.
 The slug helpers the citation tests use are `slug` and `slugs_of`, both defined in `tests/unit/guide_harness.py` (`def slug`, `def slugs_of`). The project-tools plan's Task 9 moved `_slugs_of` there from `tests/unit/test_plugin_development_guide.py` and extracted `slug` from it, so this task edits no guide test.
 
 **Interfaces:**
-- Consumes: `CTRL_C_REACHES_GP` (Task 1); `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, and `declared_commands` from `tests/unit/skill_harness.py` (Task 4); `GUIDE`, `GUIDE_TEXT`, `REPO_ROOT`, `ROOT_COMMAND`, `gp_invocations`, `outside_fences`, `section`, `slug`, and `slugs_of` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9); `DigestSource` from `src/graftpunk/har/digest.py:202` (`class DigestSource`), `digest` from `src/graftpunk/har/digest.py:1430` (`def digest`), `endpoints_projection` from `src/graftpunk/har/report.py:222` (`def endpoints_projection`), and `LoginForm` from `src/graftpunk/har/documents.py:65` (`class LoginForm`). Fence handling and the section rule have one owner each, in the harness: `_prose` starts from `outside_fences`, and `_without_section` is derived from `section`.
+- Consumes: `CTRL_C_REACHES_GP` (Task 1); `SKILL_DIR`, `SKILL_MD`, `COMMANDS_MD`, `skill_docs`, and `declared_commands` from `tests/unit/skill_harness.py` (Task 4); `GUIDE`, `GUIDE_TEXT`, `REPO_ROOT`, `gp_invocations`, `outside_fences`, `section`, `slug`, and `slugs_of` from `tests/unit/guide_harness.py` (the project-tools plan, Task 9); `DigestSource` from `src/graftpunk/har/digest.py:202` (`class DigestSource`), `digest` from `src/graftpunk/har/digest.py:1430` (`def digest`), `endpoints_projection` from `src/graftpunk/har/report.py:222` (`def endpoints_projection`), and `LoginForm` from `src/graftpunk/har/documents.py:65` (`class LoginForm`). Fence handling and the section rule have one owner each, in the harness: `_prose` starts from `outside_fences`, and `_without_section` is derived from `section`.
 - Produces: the four references `SKILL.md` names, and `tests/unit/test_graft_references.py`, the citation, copy, command-ownership, and digest-list tests. The copy detector (`_words`, `_runs`, `_prose`) and its self-tests' probe (`_probe`, which takes a sentence from `GUIDE_TEXT` at test time) stay in that module, their one user. No reference restates what a `gp` command prints: `harden.md` ("The gate") tells the reader to show gp's output and act on every instruction in it, and the other files point there, so gp's output stays the one owner of the follow-up steps. `capture.md` and `harden.md` carry no fenced command blocks: they point to the step's block in `commands.md`, the one owner of the commands.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1349,7 +1378,6 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-import click
 import pytest
 
 from graftpunk.har.digest import DigestSource, digest
@@ -1359,7 +1387,6 @@ from tests.unit.guide_harness import (
     GUIDE,
     GUIDE_TEXT,
     REPO_ROOT,
-    ROOT_COMMAND,
     gp_invocations,
     outside_fences,
     section,
@@ -1504,11 +1531,6 @@ _NOT_RUN_FROM_COMMANDS_MD = (
     "gp config get --resolve",  # named only to say its output is never printed
     "gp plugin new myshop --from-run myshop",  # digest.md's worked example
 )
-# gp's own top-level commands. A commands.md line whose first word after gp is a
-# placeholder (<site-name>) stands for the plugin's command group, never for one
-# of these, so `gp observe interactive` cannot pass as `gp <site-name> <command>`.
-assert isinstance(ROOT_COMMAND, click.Group)
-_GP_COMMANDS = set(ROOT_COMMAND.commands)
 
 
 def _token_pattern(token: str) -> re.Pattern[str]:
@@ -1526,9 +1548,6 @@ def _is_declared(invocation: str, declared: list[str]) -> bool:
     for line in declared:
         tokens = shlex.split(line)
         if len(words) > len(tokens):
-            continue
-        placeholder_group = len(tokens) > 1 and tokens[1].startswith("<")
-        if placeholder_group and len(words) > 1 and words[1] in _GP_COMMANDS:
             continue
         if not all(_token_pattern(t).fullmatch(w) for t, w in zip(tokens, words, strict=False)):
             continue
@@ -1914,14 +1933,13 @@ the project to be installed again or for its graftpunk requirement to be
 raised, and each finding of the gate's plugin check carries the advice to
 follow.
 
-Installing the project again means the project's own environment, the one the
-`uv run --project .` lines use, and never the `gp` on the user's PATH. `uv run`
-brings that environment in line with `pyproject.toml` before it runs anything,
-so running the gate again in that form is the reinstall. The cases to expect,
-in plain words:
+The Harden block's runner builds its environment from `pyproject.toml` on every
+run, so there is nothing to install: when gp asks for the project to be
+installed again, run the gate again. Never install anything into the `gp` on
+the user's PATH. The cases to expect, in plain words:
 
 - graftpunk's requirement in the project was raised: run the gate again, which
-  installs the project again.
+  picks up the new requirement.
 - the requirement cannot be raised for you: raise it by hand, then run the
   gate again.
 - the fixtures tree or some project wiring is missing: gp says to run
