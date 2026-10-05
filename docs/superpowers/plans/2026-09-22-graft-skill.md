@@ -1,15 +1,15 @@
 ---
 type: plan
 validated:
-  sha: 80a738066bb7d3d8adbcc65437249edcb47cd2a8
-  date: 2026-09-23T07:07:51Z
+  sha: f916b8ebff6e5012646088489eb581dcfa76ae5c
+  date: 2026-10-05T00:23:44Z
   reviewers: [fact-check, solid-hygiene]
   findings:
     critical: 0
     important: 0
-    medium: 2
-    low: 4
-    nitpick: 0
+    medium: 1
+    low: 1
+    nitpick: 1
   net_negative_raised: 0
   net_negative_addressed: 0
   net_negative_remaining: 0
@@ -892,7 +892,7 @@ def _offered_rules() -> list[str]:
 def _matches(pattern: str, command: str) -> bool:
     """Claude Code's Bash permission rule: a trailing " *" matches the prefix with or
     without arguments; anything else matches exactly
-    (https://code.claude.com/docs/en/permissions, wildcard rules).
+    (https://code.claude.com/docs/en/permissions, Wildcard patterns).
 
     Valid only under the restriction test_every_rule_is_a_scoped_gp_rule enforces
     (a "*" only as the trailing " *"); it models no other wildcard form. Re-check
@@ -1355,7 +1355,7 @@ Bash(uv run --no-project --with-editable . gp <site-name> login)
 
 `gp plugin add-command` takes `--run` as `gp plugin new` does (`src/graftpunk/cli/scaffold_project_commands.py:106` (`"--run"`)), so both scaffold lines read the run chosen at the end of the capture step, never whichever run is newest when they run; the walker test resolves both lines against the CLI.
 
-**Which `gp` loads the plugin, and what each runner installs (probed 2026-10-04 with uv 0.12.18, in a scratch directory holding `UV_CACHE_DIR`, `UV_TOOL_DIR`, and `UV_TOOL_BIN_DIR`, against a project from `gp plugin new myshop --url https://myshop.example`).** A `gp` installed with `uv tool install <graftpunk checkout>` does not list `myshop` in `gp --help`, since the plugin's entry point is not installed beside it. In the project directory, the site runner `uv run --no-project --with-editable . gp --help` lists `myshop`. The site runner installs the project and its main dependencies and nothing else: `pytest --version` through it fails with `No such file or directory (os error 2)`, so a change to the gate's tools never changes the Kick the tires lines or their allow rules. The gate runner `uv run --no-project --with-editable '.[dev]' --with pytest --with ruff` installs the project with its main and `dev` dependencies, plus pytest and ruff: with `six` added to the `dev` extra only, `python -c 'import six'` succeeded through the gate runner (six 1.17.0) and failed through the site runner (`ModuleNotFoundError: No module named 'six'`). With the `dev` extra deleted from `pyproject.toml`, the gate runner printed `warning: The package graftpunk-myshop @ file:///... does not have an extra named dev` and still ran `pytest --version` (pytest 9.1.1), `ruff --version` (ruff 0.16.10), and a `gp --help` that lists `myshop`, so enhance mode works on a project with no `dev` extra (only `gp plugin new` writes one). Afterwards the directory held no `uv.lock` and no `.venv/`, so `harden.md` has no reinstall step. Both runners read `pyproject.toml` on every run: in an earlier probe the same day, after a dependency was added there, the next run imported it, and after graftpunk's floor was raised to `>=99.0.0`, the next run failed to resolve. Each run resolves every dependency to the newest release the project's requirements allow, not to the floor and not to the project's `uv.lock`: with `six>=1.10.0` among the main dependencies and a `uv.lock` from `uv lock --resolution lowest-direct` pinning six 1.10.0, the gate runner installed six 1.17.0, PyPI's newest release. The gate therefore judges the plugin against the newest versions the project allows, which may be newer than its lock, and `harden.md` says so as a trade-off. It also needs graftpunk 1.17.0 (this plan's precondition), the first release that ships `gp plugin check` and `graftpunk.testing`, to be published: in the earlier probe the scaffold's `graftpunk[browser]>=1.16.0` resolved PyPI's 1.16.0, its newest release that day, which has neither, and `ruff check .` passed while `pytest` failed on the missing `graftpunk.testing` and `gp plugin check` was an unknown command. Another earlier probe the same day, through `uv run --project .` with the checkout's graftpunk overlaid (`--with <graftpunk checkout>`), had `pytest` pass and `gp plugin check` run and report the fresh scaffold's `GP-FILL` markers, as the guide says it does.
+**Which `gp` loads the plugin, and what each runner installs (probed 2026-10-04 with uv 0.12.18, in a scratch directory holding `UV_CACHE_DIR`, `UV_TOOL_DIR`, and `UV_TOOL_BIN_DIR`, against a project from `gp plugin new myshop --url https://myshop.example`).** A `gp` installed with `uv tool install <graftpunk checkout>` does not list `myshop` in `gp --help`, since the plugin's entry point is not installed beside it. In the project directory, the site runner `uv run --no-project --with-editable . gp --help` lists `myshop`. The site runner installs the project and its main dependencies and nothing else: `pytest --version` through it fails with `No such file or directory (os error 2)`, so a change to the gate's tools never changes the Kick the tires lines or their allow rules. The gate runner `uv run --no-project --with-editable '.[dev]' --with pytest --with ruff` installs the project with its main and `dev` dependencies, plus pytest and ruff: with `six` added to the `dev` extra only, `python -c 'import six'` succeeded through the gate runner (six 1.17.0) and failed through the site runner (`ModuleNotFoundError: No module named 'six'`). With the `dev` extra deleted from `pyproject.toml`, the gate runner printed a warning that the package `graftpunk-myshop @ file:///...` does not have an extra named `dev` and still ran `pytest --version` (pytest 9.1.1), `ruff --version` (ruff 0.16.10), and a `gp --help` that lists `myshop`, so enhance mode works on a project with no `dev` extra (only `gp plugin new` writes one). Afterwards the directory held no `uv.lock` and no `.venv/`, so `harden.md` has no reinstall step. Both runners read `pyproject.toml` on every run: in an earlier probe the same day, after a dependency was added there, the next run imported it, and after graftpunk's floor was raised to `>=99.0.0`, the next run failed to resolve. Each run resolves every dependency to the newest release the project's requirements allow, not to the floor and not to the project's `uv.lock`: with `six>=1.10.0` among the main dependencies and a `uv.lock` from `uv lock --resolution lowest-direct` pinning six 1.10.0, the gate runner installed six 1.17.0, PyPI's newest release. The gate therefore judges the plugin against the newest versions the project allows, which may be newer than its lock, and `harden.md` says so as a trade-off. It also needs graftpunk 1.17.0 (this plan's precondition), the first release that ships `gp plugin check` and `graftpunk.testing`, to be published: in the earlier probe the scaffold's `graftpunk[browser]>=1.16.0` resolved PyPI's 1.16.0, its newest release that day, which has neither, and `ruff check .` passed while `pytest` failed on the missing `graftpunk.testing` and `gp plugin check` was an unknown command. Another earlier probe the same day, through `uv run --project .` with the checkout's graftpunk overlaid (`--with <graftpunk checkout>`), had `pytest` pass and `gp plugin check` run and report the fresh scaffold's `GP-FILL` markers, as the guide says it does.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -1973,6 +1973,9 @@ the user's PATH. The cases to expect, in plain words:
   `gp plugin upgrade`; run it, then the whole gate.
 - an endpoint for which `gp observe fixtures` writes no fixture: write the
   fixture by hand, as above.
+- uv warns that the project has no `dev` extra: the project defines none, the
+  gate's own tools are installed anyway, and nothing needs doing; do not add
+  an extra to the user's project.
 
 ## Before you publish
 
