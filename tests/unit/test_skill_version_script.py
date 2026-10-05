@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -144,3 +145,33 @@ def test_a_base_that_moved_on_after_the_branch_point_is_not_this_branchs_change(
 
 def test_the_script_is_executable() -> None:
     assert os.access(SCRIPT, os.X_OK)
+
+
+def test_a_version_without_a_numeric_last_part_still_fails_in_one_line(repo: _Repo) -> None:
+    """A suffix such as ``0.1.0rc1`` has no next patch to name; the script still
+    refuses with its own line rather than a Python traceback."""
+    repo.manifests("0.1.0rc1")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    base = repo.commit("base")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.commit("change without a bump")
+    result = repo.check(base)
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert result.stderr.strip() == (
+        "skill-version: skills/ or .claude-plugin/ changed, but the version is still "
+        "0.1.0rc1. Bump .claude-plugin/plugin.json to a higher version."
+    )
+
+
+def test_the_workflow_filter_and_the_script_watch_the_same_paths() -> None:
+    """The workflow decides whether to run the script and the script decides what
+    counts as a skill change; a path added to one and not the other would let a
+    change slip past, or run the check for nothing."""
+    workflow = (REPO_ROOT / ".github" / "workflows" / "skill-version.yml").read_text()
+    filtered = set(re.findall(r"- '([^']+)/\*\*'", workflow))
+    script = SCRIPT.read_text()
+    match = re.search(r"grep -E '\^\(([^)]*)\)/'", script)
+    assert match, "the script's path pattern moved"
+    watched = {part.replace("\\.", ".") for part in match.group(1).split("|")}
+    assert filtered == watched == {"skills", ".claude-plugin"}

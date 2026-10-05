@@ -36,7 +36,9 @@ if [ -z "$base_json" ]; then
 fi
 base_version="$(printf '%s' "$base_json" | version_of)"
 if [ "$head_plugin" = "$base_version" ]; then
-  next="$(python3 -c 'import sys; p = sys.argv[1].split("."); p[-1] = str(int(p[-1]) + 1); print(".".join(p))' "$base_version")"
+  # The next patch when the last part is a number; otherwise there is no next
+  # patch to name, so the message asks for a higher version.
+  next="$(python3 -c 'import sys; p = sys.argv[1].split("."); print(".".join([*p[:-1], str(int(p[-1]) + 1)]) if p[-1].isdigit() else "a higher version")' "$base_version")"
   echo "skill-version: skills/ or .claude-plugin/ changed, but the version is still $base_version. Bump $plugin to $next." >&2
   exit 1
 fi
