@@ -800,6 +800,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from typing import Any
 
 import pytest
@@ -820,19 +821,21 @@ _SKILL_DIR_VAR = "${CLAUDE_SKILL_DIR}/"
 # the turn that invokes the skill (https://code.claude.com/docs/en/skills), and
 # preflight is the one command that turn reliably runs.
 _PREFLIGHT_ENTRY = "${CLAUDE_SKILL_DIR}/scripts/preflight.sh *"
-# The prefix the Kick the tires lines and the gate carry. uv builds an environment
-# from the project on each run and writes no lockfile or .venv into it. The Kick the tires lines
-# need the plugin's entry point installed, and the gate runs as one unit where its
-# tools and a graftpunk matching the project's requirement are installed; gp plugin
-# check and ruff do not import the plugin.
-_PROJECT_ENV = "uv run --no-project --with-editable . --with pytest --with ruff"
+# The two uv runners. Each builds an environment from the project's pyproject.toml
+# on every run and writes no lockfile or .venv into it. The site runner, for the
+# Kick the tires lines, installs the project and its main dependencies, so the
+# plugin's entry point, and nothing else. The gate runner, for the Harden gate
+# line, adds the project's dev extra (uv warns and continues when there is none)
+# and the gate's own tools.
+_SITE_RUNNER = "uv run --no-project --with-editable ."
+_GATE_RUNNER = "uv run --no-project --with-editable '.[dev]' --with pytest --with ruff"
 # The Harden line that runs the gate, one PROJECT_GATE command at a time.
 _GATE_SLOT = "<gate-command>"
 # The offered rules scoped to the plugin being built, one per declared Kick the
 # tires line: the skill puts the plugin's site_name in place of <site-name> when
 # it offers them. The live read-only command gets no rule and asks each time.
-_SITE_RULES = [f"{_PROJECT_ENV} gp <site-name> --help", f"{_PROJECT_ENV} gp <site-name> login"]
-_LIVE_READ_ONLY = f"{_PROJECT_ENV} gp <site-name> <command>"
+_SITE_RULES = [f"{_SITE_RUNNER} gp <site-name> --help", f"{_SITE_RUNNER} gp <site-name> login"]
+_LIVE_READ_ONLY = f"{_SITE_RUNNER} gp <site-name> <command>"
 # What the kick-the-tires step asks before the first live call, whatever the
 # user's settings allow: the consent point for the live site and the login.
 _LIVE_CALL_QUESTION = "run a live login and one read-only command now?"
@@ -943,9 +946,11 @@ class TestOfferedAllowRules:
 
     def test_every_rule_is_a_scoped_gp_rule(self) -> None:
         """Never Bash(*), never a bare Bash(gp *), never a command other than gp,
-        whether gp runs from PATH or through the project runner."""
+        whether gp runs from PATH or through a uv runner."""
         for pattern in _offered_rules():
-            command = pattern.removeprefix(f"{_PROJECT_ENV} ")
+            command = pattern
+            for runner in (_SITE_RUNNER, _GATE_RUNNER):
+                command = command.removeprefix(f"{runner} ")
             assert command.startswith("gp "), pattern
             assert command not in ("*", "gp *"), pattern
             assert "*" not in pattern.removesuffix(" *"), pattern
@@ -959,9 +964,12 @@ class TestOfferedAllowRules:
             "gp anything",
             "gp <site-name> delete-everything",
             "uv run anything",
-            f"{_PROJECT_ENV} pytest",
-            f"{_PROJECT_ENV} gp anything",
-            f"{_PROJECT_ENV} gp <site-name> delete-everything",
+            f"{_SITE_RUNNER} pytest",
+            f"{_GATE_RUNNER} pytest",
+            f"{_SITE_RUNNER} gp anything",
+            f"{_GATE_RUNNER} gp anything",
+            f"{_SITE_RUNNER} gp <site-name> delete-everything",
+            f"{_GATE_RUNNER} gp <site-name> delete-everything",
         ):
             assert not any(_matches(pattern, probe) for pattern in _offered_rules()), probe
 
@@ -978,12 +986,12 @@ class TestOfferedAllowRules:
     def test_the_gates_gp_commands_have_rules_and_commands_md_says_the_rest_do_not(
         self,
     ) -> None:
-        """The gate is policy.PROJECT_GATE's to list, and runs through the project
+        """The gate is policy.PROJECT_GATE's to list, and runs through the gate
         runner. Every gp command in it is covered by an offered rule; an
         offered rule is only ever a gp rule (test_every_rule_is_a_scoped_gp_rule),
         so commands.md says in words that the gate's other commands ask each time."""
         rules = _offered_rules()
-        gate_gp = [f"{_PROJECT_ENV} {c}" for c in PROJECT_GATE if c.startswith("gp ")]
+        gate_gp = [f"{_GATE_RUNNER} {c}" for c in PROJECT_GATE if c.startswith("gp ")]
         assert gate_gp
         for command in gate_gp:
             assert any(_matches(pattern, command) for pattern in rules), command
@@ -991,15 +999,28 @@ class TestOfferedAllowRules:
         assert _GATE_RULE_SENTENCE in commands_md
 
 
-def test_the_kick_the_tires_lines_and_the_gate_run_through_the_project_runner() -> None:
+def test_the_kick_the_tires_lines_and_the_gate_run_through_their_runners() -> None:
     """The kick-the-tires lines need the plugin's entry point installed, which the gp
-    on PATH does not have; the gate runs as one unit where its tools and a graftpunk
-    matching the project's requirement are installed."""
+    on PATH does not have; the gate needs the project's dev dependencies and its
+    own tools as well."""
     kick = commands_in(_commands_section("### Kick the tires"))
     harden = commands_in(_commands_section("### Harden"))
-    assert kick and f"{_PROJECT_ENV} {_GATE_SLOT}" in harden
+    assert kick and f"{_GATE_RUNNER} {_GATE_SLOT}" in harden
     for line in kick:
-        assert line.startswith(f"{_PROJECT_ENV} gp "), line
+        assert line.startswith(f"{_SITE_RUNNER} gp "), line
+
+
+def test_the_gate_runner_installs_every_program_the_gate_runs() -> None:
+    """PROJECT_GATE owns the gate's commands; the declared Harden line's --with list
+    must install each program one of them runs, gp aside (the project's graftpunk
+    dependency installs it). A new tool in PROJECT_GATE fails here, not on users."""
+    harden = commands_in(_commands_section("### Harden"))
+    (gate_line,) = [line for line in harden if _GATE_SLOT in line]
+    words = shlex.split(gate_line)
+    installed = {words[i + 1] for i, word in enumerate(words[:-1]) if word == "--with"}
+    for command in PROJECT_GATE:
+        program = command.split()[0]
+        assert program == "gp" or program in installed, command
 
 
 def test_the_live_step_asks_before_the_first_live_call() -> None:
@@ -1246,10 +1267,11 @@ gp observe -s <session> interactive <url>
 
 ## Run by the skill
 
-The Kick the tires lines need the plugin's entry point installed; the gate runs
-as one unit where its tools and a graftpunk matching the project's requirement
-are installed. Both run through their `uv run` prefix, which builds an
-environment from the project on each run. Other `gp` lines run the `gp` on PATH.
+The Kick the tires lines run through the site runner, which installs the
+project and its main dependencies, so the plugin's entry point. The gate runs
+through the gate runner, which adds the project's `dev` extra and the gate's
+own tools. Each builds an environment from `pyproject.toml` on every run. Other
+`gp` lines run the `gp` on PATH.
 
 ### Start
 
@@ -1295,7 +1317,7 @@ the gate asks each time it runs, unless the user's settings allow it.
 ```bash
 gp observe fixtures <session> <run> --match "<METHOD> <template>"
 gp plugin upgrade
-uv run --no-project --with-editable . --with pytest --with ruff <gate-command>
+uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-command>
 ```
 
 ### Kick the tires
@@ -1305,9 +1327,9 @@ first of them runs, whatever the user's settings allow. The last line is one
 read-only command from the agreed proposal.
 
 ```bash
-uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> --help
-uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> login
-uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> <command>
+uv run --no-project --with-editable . gp <site-name> --help
+uv run --no-project --with-editable . gp <site-name> login
+uv run --no-project --with-editable . gp <site-name> <command>
 ```
 
 ## Allow rules for a prompt-free run
@@ -1325,15 +1347,15 @@ Bash(gp observe fixtures *)
 Bash(gp plugin new *)
 Bash(gp plugin add-command *)
 Bash(gp plugin upgrade *)
-Bash(uv run --no-project --with-editable . --with pytest --with ruff gp plugin check *)
-Bash(uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> --help)
-Bash(uv run --no-project --with-editable . --with pytest --with ruff gp <site-name> login)
+Bash(uv run --no-project --with-editable '.[dev]' --with pytest --with ruff gp plugin check *)
+Bash(uv run --no-project --with-editable . gp <site-name> --help)
+Bash(uv run --no-project --with-editable . gp <site-name> login)
 ```
 ````
 
 `gp plugin add-command` takes `--run` as `gp plugin new` does (`src/graftpunk/cli/scaffold_project_commands.py:106` (`"--run"`)), so both scaffold lines read the run chosen at the end of the capture step, never whichever run is newest when they run; the walker test resolves both lines against the CLI.
 
-**Which `gp` loads the plugin (probed 2026-10-04 with uv 0.12.18, in a scratch directory holding `UV_CACHE_DIR`, `UV_TOOL_DIR`, and `UV_TOOL_BIN_DIR`, against a project from `gp plugin new myshop --url https://myshop.example`).** A `gp` installed with `uv tool install <graftpunk checkout>` does not list `myshop` in `gp --help`, since the plugin's entry point is not installed beside it. In the project directory, `uv run --no-project --with-editable . --with pytest --with ruff gp --help` lists `myshop`, and the same prefix runs `pytest --version` (pytest 9.1.1) and `ruff --version` (ruff 0.16.10). All three still pass after the `dev` extra is deleted from `pyproject.toml`, and afterwards the directory holds no `uv.lock` and no `.venv/`. The prefix reads `pyproject.toml` on every run: after a dependency was added there, the next run imported it, and after graftpunk's floor was raised to `>=99.0.0`, the next run failed to resolve. The skill therefore runs the Kick the tires lines and the gate through that prefix. The Kick the tires lines need the plugin's entry point installed, and the gate runs as one unit where its tools and a graftpunk matching the project's requirement are installed; `gp plugin check` and ruff do not import the plugin. The prefix needs no `dev` extra, which only `gp plugin new` writes, so enhance mode works on a project that has none, and uv writes no `uv.lock` or `.venv/` into the user's project, so `harden.md` has no reinstall step. The environment resolves graftpunk from the index at the floor `gp plugin new` writes, so the gate there needs a graftpunk release that ships `gp plugin check` and `graftpunk.testing` (1.17.0, this plan's precondition): in the probe it resolved PyPI's 1.16.0, which has neither, and `ruff check .` passed while `pytest` failed on the missing `graftpunk.testing` and `gp plugin check` was an unknown command. An earlier probe the same day, through `uv run --project .` with the checkout's graftpunk overlaid (`--with <graftpunk checkout>`), had `pytest` pass and `gp plugin check` run and report the fresh scaffold's `GP-FILL` markers, as the guide says it does.
+**Which `gp` loads the plugin, and what each runner installs (probed 2026-10-04 with uv 0.12.18, in a scratch directory holding `UV_CACHE_DIR`, `UV_TOOL_DIR`, and `UV_TOOL_BIN_DIR`, against a project from `gp plugin new myshop --url https://myshop.example`).** A `gp` installed with `uv tool install <graftpunk checkout>` does not list `myshop` in `gp --help`, since the plugin's entry point is not installed beside it. In the project directory, the site runner `uv run --no-project --with-editable . gp --help` lists `myshop`. The site runner installs the project and its main dependencies and nothing else: `pytest --version` through it fails with `No such file or directory (os error 2)`, so a change to the gate's tools never changes the Kick the tires lines or their allow rules. The gate runner `uv run --no-project --with-editable '.[dev]' --with pytest --with ruff` installs the project with its main and `dev` dependencies, plus pytest and ruff: with `six` added to the `dev` extra only, `python -c 'import six'` succeeded through the gate runner (six 1.17.0) and failed through the site runner (`ModuleNotFoundError: No module named 'six'`). With the `dev` extra deleted from `pyproject.toml`, the gate runner printed `warning: The package graftpunk-myshop @ file:///... does not have an extra named dev` and still ran `pytest --version` (pytest 9.1.1), `ruff --version` (ruff 0.16.10), and a `gp --help` that lists `myshop`, so enhance mode works on a project with no `dev` extra (only `gp plugin new` writes one). Afterwards the directory held no `uv.lock` and no `.venv/`, so `harden.md` has no reinstall step. Both runners read `pyproject.toml` on every run: in an earlier probe the same day, after a dependency was added there, the next run imported it, and after graftpunk's floor was raised to `>=99.0.0`, the next run failed to resolve. Each run resolves every dependency to the newest release the project's requirements allow, not to the floor and not to the project's `uv.lock`: with `six>=1.10.0` among the main dependencies and a `uv.lock` from `uv lock --resolution lowest-direct` pinning six 1.10.0, the gate runner installed six 1.17.0, PyPI's newest release. The gate therefore judges the plugin against the newest versions the project allows, which may be newer than its lock, and `harden.md` says so as a trade-off. It also needs graftpunk 1.17.0 (this plan's precondition), the first release that ships `gp plugin check` and `graftpunk.testing`, to be published: in the earlier probe the scaffold's `graftpunk[browser]>=1.16.0` resolved PyPI's 1.16.0, its newest release that day, which has neither, and `ruff check .` passed while `pytest` failed on the missing `graftpunk.testing` and `gp plugin check` was an unknown command. Another earlier probe the same day, through `uv run --project .` with the checkout's graftpunk overlaid (`--with <graftpunk checkout>`), had `pytest` pass and `gp plugin check` run and report the fresh scaffold's `GP-FILL` markers, as the guide says it does.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -1924,8 +1946,8 @@ returned shape (guide: Test against fixtures, not against the site).
 ## The gate
 
 Read the guide's section on the gate (guide: The gate) and run every command it
-lists, in the project's environment as the Harden block of
-`references/commands.md` says, until all of them pass. This section is where
+lists, through the runner the Harden block of `references/commands.md` gives
+it, until all of them pass. This section is where
 the skill's handling of gp's output lives, for the scaffold step and this one:
 show the user gp's output and act on every instruction in it, then run the
 gate again. Both `gp plugin add-command` and `gp plugin upgrade` may ask for
@@ -1933,9 +1955,14 @@ the project to be installed again or for its graftpunk requirement to be
 raised, and each finding of the gate's plugin check carries the advice to
 follow.
 
-The Harden block's runner builds its environment from `pyproject.toml` on every
+That runner installs the project with its main and `dev` dependencies and the
+gate's own tools, and builds the environment from `pyproject.toml` on every
 run, so there is nothing to install: when gp asks for the project to be
-installed again, run the gate again. Never install anything into the `gp` on
+installed again, run the gate again. Each run resolves to the newest versions
+the project's requirements allow, not to the versions in the project's
+`uv.lock` if it has one. That is a trade-off: the gate may judge the plugin
+against newer versions than the project's lock pins, so when a failure points
+at a dependency's version, say that to the user. Never install anything into the `gp` on
 the user's PATH. The cases to expect, in plain words:
 
 - graftpunk's requirement in the project was raised: run the gate again, which
@@ -2305,6 +2332,7 @@ Install it with `/plugin marketplace add stavxyz/graftpunk` and
 `/plugin install graftpunk@graftpunk`. Run
 `/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
 a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
+The skill needs graftpunk 1.17.0 or later and `uv` on your PATH.
 ```
 
 The section holds install and invocation facts and nothing else: the skill's copy check leaves it out of the guide text it compares against, so anything else written here would escape that check.
@@ -2382,7 +2410,7 @@ Expected: PASS.
 Append to `CHANGELOG.md` under `[Unreleased]` / `### Added`. The 1.17.0 release this plan waits for moves the package's lines out of `[Unreleased]`, so the section may be empty now: if `[Unreleased]` has no `### Added` heading, create one directly under `[Unreleased]` and put the line there.
 
 ```markdown
-- **The `/graftpunk:graft` Claude Code skill.** The repository is now a Claude Code plugin marketplace: `/plugin marketplace add stavxyz/graftpunk`, then `/plugin install graftpunk@graftpunk`. `/graftpunk:graft myshop https://myshop.example/` in an empty directory creates a plugin by walking `docs/PLUGIN_DEVELOPMENT.md` (frame, capture, understand, scaffold, implement, harden, a live check, and the publish checklist), running the `gp` commands itself (each subject to your permission settings; the skill offers allow rules for a prompt-free run) and handing you the browser recording and the live login; `/graftpunk:graft` inside a plugin project adds commands to it. The skill is versioned apart from the package (0.1.0) and needs graftpunk 1.17.0 or later.
+- **The `/graftpunk:graft` Claude Code skill.** The repository is now a Claude Code plugin marketplace: `/plugin marketplace add stavxyz/graftpunk`, then `/plugin install graftpunk@graftpunk`. `/graftpunk:graft myshop https://myshop.example/` in an empty directory creates a plugin by walking `docs/PLUGIN_DEVELOPMENT.md` (frame, capture, understand, scaffold, implement, harden, a live check, and the publish checklist), running the `gp` commands itself (each subject to your permission settings; the skill offers allow rules for a prompt-free run) and handing you the browser recording and the live login; `/graftpunk:graft` inside a plugin project adds commands to it. The skill is versioned apart from the package (0.1.0) and needs graftpunk 1.17.0 or later and `uv`.
 ```
 
 - [ ] **Step 6: Run the full gate**
