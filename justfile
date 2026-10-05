@@ -53,6 +53,10 @@ test-cov:
 test-unit:
     uv run pytest tests/unit/ -v
 
+# Check the skill's version bump against a base commit (CI runs the same check)
+skill-version BASE="origin/main":
+    scripts/check-skill-version.sh {{BASE}}
+
 # --------------------------------------------------------------------------
 # Building & Publishing
 # --------------------------------------------------------------------------

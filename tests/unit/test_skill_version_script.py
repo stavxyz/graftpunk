@@ -1,0 +1,146 @@
+"""scripts/check-skill-version.sh against throwaway git repositories
+(graft skill spec, 2026-09-21, "Versioning and release")."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from tests.unit.guide_harness import REPO_ROOT
+
+SCRIPT = REPO_ROOT / "scripts" / "check-skill-version.sh"
+BASH = shutil.which("bash")
+GIT = shutil.which("git")
+
+pytestmark = pytest.mark.skipif(BASH is None or GIT is None, reason="needs bash and git")
+
+
+def _git_env(home: Path) -> dict[str, str]:
+    """No user or system git config: no hooks path, no signing, a fixed identity."""
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "alice",
+        "GIT_AUTHOR_EMAIL": "alice@example.com",
+        "GIT_COMMITTER_NAME": "alice",
+        "GIT_COMMITTER_EMAIL": "alice@example.com",
+    }
+
+
+class _Repo:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.env = _git_env(root.parent)
+        self.git("init", "-q", "-b", "main")
+
+    def git(self, *args: str) -> str:
+        assert GIT is not None
+        return subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [GIT, *args], cwd=self.root, env=self.env, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    def write(self, relative: str, text: str) -> None:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def manifests(self, version: str) -> None:
+        """The two manifests as Task 2 writes them: the version in plugin.json alone."""
+        self.write(
+            ".claude-plugin/marketplace.json",
+            json.dumps({"name": "graftpunk", "plugins": [{"name": "graftpunk"}]}, indent=2),
+        )
+        self.write(
+            ".claude-plugin/plugin.json",
+            json.dumps({"name": "graftpunk", "version": version}, indent=2),
+        )
+
+    def commit(self, message: str) -> str:
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def check(self, base: str) -> subprocess.CompletedProcess[str]:
+        assert BASH is not None
+        return subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [BASH, str(SCRIPT), base], cwd=self.root, env=self.env, capture_output=True, text=True
+        )
+
+
+@pytest.fixture()
+def repo(tmp_path: Path) -> _Repo:
+    root = tmp_path / "repo"
+    root.mkdir()
+    return _Repo(root)
+
+
+def test_a_skill_change_without_a_bump_fails_and_names_the_next_patch(repo: _Repo) -> None:
+    repo.manifests("0.1.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    base = repo.commit("base")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.commit("change without a bump")
+    result = repo.check(base)
+    assert result.returncode == 1
+    assert "0.1.1" in result.stdout + result.stderr
+
+
+def test_a_skill_change_with_a_bump_passes(repo: _Repo) -> None:
+    repo.manifests("0.1.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    base = repo.commit("base")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.manifests("0.1.1")
+    repo.commit("change with a bump")
+    assert repo.check(base).returncode == 0
+
+
+def test_a_change_elsewhere_needs_no_bump(repo: _Repo) -> None:
+    repo.manifests("0.1.0")
+    base = repo.commit("base")
+    repo.write("src/module.py", "x = 1\n")
+    repo.commit("unrelated")
+    assert repo.check(base).returncode == 0
+
+
+def test_a_first_introduction_passes(repo: _Repo) -> None:
+    repo.write("README.md", "before the skill\n")
+    base = repo.commit("base")
+    repo.manifests("0.1.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    repo.commit("introduce the skill")
+    assert repo.check(base).returncode == 0
+
+
+def test_a_base_that_moved_on_after_the_branch_point_is_not_this_branchs_change(
+    repo: _Repo,
+) -> None:
+    """The base bumped the skill after the branch point and the branch never touched
+    skills/: compared against the merge base, the branch changed nothing there, and
+    the base's newer version is not reported as this branch's downgrade."""
+    repo.manifests("0.1.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    repo.commit("branch point")
+    repo.git("checkout", "-q", "-b", "feature")
+    repo.write("src/module.py", "x = 1\n")
+    repo.commit("unrelated, on the branch")
+    repo.git("checkout", "-q", "main")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.manifests("0.1.1")
+    base = repo.commit("the base bumps the skill")
+    repo.git("checkout", "-q", "feature")
+    result = repo.check(base)
+    assert result.returncode == 0, result.stderr
+    assert "no bump needed" in result.stdout
+    assert "0.1.1" not in result.stdout + result.stderr
+
+
+def test_the_script_is_executable() -> None:
+    assert os.access(SCRIPT, os.X_OK)
