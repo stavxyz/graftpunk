@@ -554,11 +554,11 @@ The options:
 - `--url URL` sets `base_url`. Without `--from-run` it is the only source of
   one. With `--from-run`, `base_url` comes from the digest's primary host, and
   an explicit `--url` overrides it (use that when the primary host is a CDN or
-  an API subdomain you do not want as the base). It must be an
-  `http://` or `https://` URL with a valid host and port; `--url myshop.example`
-  is refused, since no path resolves against it. A site whose pages and JSON come
-  from different hosts needs no `--url`: each stub requests the host its endpoint
-  was recorded on (see [What gets filled in](#what-gets-filled-in)).
+  an API subdomain you do not want as the base). It must be an `http://` or
+  `https://` URL with a valid host and port; `--url myshop.example` is refused,
+  since no path resolves against it. A site whose pages and JSON come from
+  different hosts needs no `--url`: each stub requests the host its endpoint was
+  recorded on (see [What gets filled in](#what-gets-filled-in)).
 - `--dir PATH` is the target directory (the working directory by default).
 - `--backend nodriver|selenium` sets the generated `backend` attribute
   (`nodriver` by default).
