@@ -1069,20 +1069,19 @@ def order(self, ctx: CommandContext, order_id: str) -> dict:
 
 ### CLI parameter types
 
-A handler's parameters become CLI options automatically, but the type is carried
-through only when the introspector is handed a real type object: a bare `int`,
-`float`, `bool`, or `str`. The plugin module that `gp plugin new` writes starts with
-`from __future__ import annotations`, which makes every annotation in the module
-a string, so in a generated plugin every option arrives as a string, a bare
-`page: int = 1` included. A union such as `int | None` arrives as a string with
-or without that import. That is harmless when the value goes straight into
-`params` (the site reads it as text anyway), and wrong as soon as you do
-arithmetic on it. To get a real type, declare it explicitly: an explicit
-`params=` list replaces introspection entirely, so it works in a generated
-module as written. `gp plugin new` writes that explicit list itself for every
-stub with an `int`, `float`, or `bool` parameter. A `bool` option that is not a
-flag is refused when the command is registered, so it writes a `bool` parameter
-as a flag with a negative: `click_kwargs={"is_flag": True, "flag":
+A handler's parameters become CLI options automatically, typed by their
+annotations: `int`, `float`, `bool`, and `str`, bare or as `X | None` or
+`Optional[X]`, carry through, with or without `from __future__ import
+annotations` (which the module `gp plugin new` writes starts with). Any other
+annotation, or a name the module imports only under `TYPE_CHECKING`, gives a
+`str` option. A `bool` parameter becomes a flag: `dry: bool = False` gives
+`--dry`, and any other default (`None` from `bool | None`, `True`, or none at
+all) gives the pair `--dry/--no-dry`, so every value the handler accepts can be
+passed. An explicit `params=` list replaces introspection entirely; use it for a
+positional argument, help text, a flag spelled differently from the parameter,
+or a repeatable option. `gp plugin new` writes that explicit list itself for
+every stub with an `int`, `float`, or `bool` parameter. It writes a `bool`
+parameter as a flag with a negative: `click_kwargs={"is_flag": True, "flag":
 "--archived/--no-archived"}`, where the `flag` key replaces the option's
 declared name. `--archived` passes `True`, `--no-archived` passes `False`, and
 with neither the handler receives `None`. `ctx.request_json` sends those as
@@ -1129,8 +1128,6 @@ def orders(self, ctx: CommandContext, page: int = 1, archived: bool = False) -> 
 
 `PluginParamSpec.option` makes a `--flag`; `PluginParamSpec.argument` makes a
 positional argument. A `bool` option with `default=False` becomes a real flag.
-The introspector's handling of string and optional annotations is tracked in
-issue #208.
 
 ### One filter, several spellings
 
