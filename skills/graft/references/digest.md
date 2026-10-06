@@ -7,14 +7,29 @@ per endpoint with `method`, `template`, `host`, `login_flow`, `content_type`,
 summary and the recording's `primary_host`.
 Read that projection only; never read the HAR or `--json`.
 
+## The base host
+
+Each row's `host` is compared with the base host, the host of the plugin's
+`base_url`: the generator writes a relative path for an endpoint on it and an
+absolute URL for any other. In enhance mode it is the host of the plugin's
+`base_url` in `project.plugins`; when that is null or has no host, every row
+shows its host. In create mode it is `primary_host` (the host the digest picks
+as the recording's main one, which can be a CDN or an API subdomain; guide:
+Scaffold) unless the user picks another: when the host of the site URL the user
+gave differs from `primary_host`, ask once, before showing the table, which of
+the two is the plugin's base, naming both. If the user picks the site URL's
+host, the scaffold step runs the `--url` line of the Scaffold block with the
+site URL's scheme and host, and its port if it has one, in place of
+`<base-url>`, with no path and no trailing slash.
+
 ## The rules, in order
 
 1. Drop every entry whose `login_flow` is true. The generator skips exactly the
    same entries, so the proposal and the scaffold agree. Trust the digest for
    the rest: static assets, trackers, and hosts outside the primary host's
    domain never reach the list. A subdomain, such as an API host, does reach
-   it. Each endpoint carries its `host`, and a row on another host than
-   `primary_host` is shown with that host.
+   it. Each endpoint carries its `host`, and a row on another host than the
+   base host is shown with that host.
 2. Keep JSON endpoints, and HTML documents that carry the user's own data (a
    dashboard, an order list, a statement page). Drop navigation chrome.
 3. Name each kept entry as a short verb phrase a person would type at the
@@ -28,20 +43,11 @@ Read that projection only; never read the HAR or `--json`.
    label; the labels include `str`, `int`, `float`, `bool`, `object`, `mixed`,
    and `list[<element>]`, and a `mixed` or list label needs the user's decision
    when the row is proposed) (guide: Understand). When any row's `host` differs
-   from `primary_host`, add a host column filled in for those rows only, so the
+   from the base host, add a host column filled in for those rows only, so the
    user sees which commands call another host. Say which of the user's wants
    each row serves, and name any want with no row.
 5. Ask one question, "keep, rename, or drop any of these?", and apply the
    answer. A want with no endpoint goes back to the capture step for that flow.
-
-In create mode, `primary_host` (the host the digest picks as the recording's
-main one) becomes the plugin's `base_url` unless the scaffold overrides it, and
-it can be a CDN or an API subdomain (guide: Scaffold). When the host of the site URL the
-user gave differs from `primary_host`, ask once, after the keep, rename, or drop
-answer, which of the two is the plugin's base, naming both. If the user picks
-the site URL's host, the scaffold step runs the `--url` line of the Scaffold
-block with `https://` and that host in place of `<base-url>`: scheme and host
-only, no path and no trailing slash. Enhance mode never asks this.
 
 What request call a stub makes (`request_json` or `request_text`, and its role)
 is the generator's decision; the table reports `content_type` and `shape` and

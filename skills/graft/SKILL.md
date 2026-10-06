@@ -95,12 +95,13 @@ at the kick-the-tires step.
    Every later step reads that session and that run.
 3. **Understand** (guide: Understand). Run the command in the Understand block
    of `references/commands.md` on the chosen session and run, then read
-   `references/digest.md` and build the proposal it describes. The user keeps,
-   renames, or drops rows in one answer. A row whose `host` differs from the
-   projection's `primary_host` shows its host, so the user sees which commands
-   call another host; the generator targets each endpoint's own host. When the
-   host of the site URL the user gave differs from `primary_host`, ask once
-   which of the two is the plugin's base, as `references/digest.md` says.
+   `references/digest.md` and build the proposal it describes. When the host of
+   the site URL the user gave differs from the projection's `primary_host`,
+   first ask once which of the two is the plugin's base, as that file says
+   ("The base host"). A row whose `host` differs from the base host shows its
+   host, so the user sees which commands call another host; the generator
+   targets each endpoint's own host. The user keeps, renames, or drops rows in
+   one answer.
 4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
    block in `references/commands.md` without `--url`, or the one with it when
    the user chose the site URL's host at the understand step, with the chosen
@@ -108,8 +109,8 @@ at the kick-the-tires step.
    writes only those stubs, under those names, each with its endpoint declared,
    and prints a `<command> calls <host>` line for each one on another host;
    relay those lines as `references/harden.md` says ("The gate"). Edit nothing
-   it wrote during this step. Then run `gp plugin info --json` and confirm every agreed command
-   is listed with the endpoint it was agreed for.
+   it wrote during this step. Then run `gp plugin info --json` and confirm
+   every agreed command is listed with the endpoint it was agreed for.
 5. **Implement** (guide: Implement). For each stub, fill in the request, name
    the parameters, decide the return shape, and replace every `GP-FILL` marker.
    Raise `CommandError` or `PluginError` on failure. Read `references/rules.md`
@@ -172,10 +173,10 @@ the references hold the details.
   is marked new. Each existing command reported with `endpoint: null` gets a
   row of its own reading "existing command, endpoint not declared", so the user
   can say whether a proposed row duplicates it. Never drop or propose over an
-  undeclared command silently. The host column compares each row's `host` with
-  the host of the chosen plugin's `base_url` in `project.plugins`, not with
-  `primary_host`, since that is the host `gp plugin add-command` compares with,
-  and the question about the plugin's base is not asked.
+  undeclared command silently. The base host is the host of the chosen
+  plugin's `base_url` in `project.plugins`, the host `gp plugin add-command`
+  compares with, and the question about the plugin's base is not asked
+  (`references/digest.md`, "The base host").
 - Scaffold does not run `gp plugin new`. For each agreed command it runs the
   `gp plugin add-command` line of the Scaffold block in
   `references/commands.md`, with the chosen session and run, which adds one stub
