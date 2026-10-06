@@ -898,8 +898,8 @@ Next: gp observe fixtures writes no fixture for this endpoint; write its test ag
 
 The stub requests the host its endpoint was recorded on, by the rule
 `gp plugin new` follows: a path on the host of the plugin's `base_url`, and an absolute
-URL on any other host, with a line after `Added` naming the command and both
-hosts. When the plugin sets no `base_url` that `gp plugin info --json` can
+URL on any other host, with a line after `Added` naming the command and the host it calls,
+and the plugin's base host when the plugin has a readable `base_url`. When the plugin sets no `base_url` that `gp plugin info --json` can
 report as a URL (none, one built from an expression rather than a string, or
 a string with no `http://` or `https://`), every stub it adds requests an
 absolute `https://` URL, and the line says the plugin sets no `base_url` gp
