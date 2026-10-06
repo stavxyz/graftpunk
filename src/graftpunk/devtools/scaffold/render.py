@@ -961,11 +961,13 @@ def _read_base_url(base_url: str | None) -> _BaseUrl | None:
     hostname holds). The one place *base_url* is parsed."""
     if base_url is not None and any(ch.isspace() for ch in base_url):
         return None
-    base = urlsplit(base_url or "")
-    if base.scheme not in ("http", "https") or not _is_hostname(base.hostname):
-        return None
     try:
-        base.port  # noqa: B018 (reading it raises ValueError for a port that is not a number)
+        # urlsplit, .hostname and .port each raise ValueError on input they cannot parse
+        # (a bracketed host that is no IP address, a port that is not a number).
+        base = urlsplit(base_url or "")
+        if base.scheme not in ("http", "https") or not _is_hostname(base.hostname):
+            return None
+        base.port  # noqa: B018
     except ValueError:
         return None
     return _BaseUrl(scheme=base.scheme, host=normal_host(base.scheme, base.netloc))

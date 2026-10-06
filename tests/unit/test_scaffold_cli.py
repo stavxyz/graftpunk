@@ -579,6 +579,7 @@ class TestUrlNeedsAHost:
             "https://user@",
             "https://myshop.example:abc",
             "https://myshop.example:99999",
+            "https://[zz::1]",
             "https://my shop.example",
             " https://myshop.example",
         ],
