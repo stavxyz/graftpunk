@@ -12,12 +12,12 @@ place of `<url>`: in enhance mode, the `-s <session>` line when that list shows
 a session for the plugin, so the recording starts already logged in; otherwise,
 and always in create mode, the `--no-session` line.
 
-Tell the user to run that line in a separate terminal window, not with the
-`!` prefix in this session: ending the recorder takes a Ctrl+C that reaches it,
-and a terminal of its own always delivers one. In that terminal they log in,
-work through every item on the list below, and press Ctrl+C, which ends the
-recorder and saves what it captured. Then they come back here and say it is
-done.
+Tell the user to run that line in a separate terminal window, not with the `!`
+prefix in this session: the recorder saves its capture when Ctrl+C sends it
+SIGINT, and a Ctrl+C here ends a `!` command with SIGTERM instead, which stops
+the recorder without saving. In that terminal they log in, work through every
+item on the list below, and press Ctrl+C, which ends the recorder and saves what
+it captured. Then they come back here and say it is done.
 
 ## What to exercise
 
