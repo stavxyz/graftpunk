@@ -1,17 +1,17 @@
 # The commands each step runs
 
-The one place the commands are written, one fenced block per step. `SKILL.md`
-and the other references name a block here by its step and never spell a
-templated command. Placeholders: `<name>` (passed to `gp plugin new`),
-`<site-name>` (the name gp runs the plugin by, `site_name` in
-`gp plugin info --json`), `<entry-point>` (its `entry_point` there),
-`<command>` (an agreed command name), `<session>` and `<run>` (chosen at the
-end of the capture step), `<gate-command>` (each command of the project's
-gate, in order), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
+The one place the commands are written, one block per step; `SKILL.md` and the
+references name a block by its step and never spell a templated command.
+Placeholders: `<name>` (for `gp plugin new`), `<site-name>` and `<entry-point>`
+(`site_name` and `entry_point` in `gp plugin info --json`), `<command>` (an
+agreed name), `<session>` and `<run>` (from the capture step), `<gate-command>`
+(each gate command, in order), `<fixture>` (the plain-named capture
+`gp observe fixtures` wrote), `<fixtures-dir>` (the tests' `FIXTURES_DIR`),
+`<variable>` and `<value>` (a credential's variable, and a placeholder or
+`$(...)` value), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
 
-Only preflight is pre-approved (`SKILL.md`, "Permissions"); every other command
-asks unless the user's settings allow it. The rules offered at the end are
-drawn from "Run by the skill" alone, and the tests hold each to a line there.
+Only preflight is pre-approved (`SKILL.md`, "Permissions"). The rules offered
+at the end come from "Run by the skill" alone; the tests hold each to a line.
 
 ## Run by preflight
 
@@ -24,20 +24,20 @@ gp plugin info --json
 
 ## Run by the user
 
-The skill prints one of these for the user to run and never runs it.
+The skill prints these for the user to run, and never runs them.
 
 ```bash
 gp observe --no-session interactive <url>
 gp observe -s <session> interactive <url>
+gp config set <variable> '<value>'
 ```
 
 ## Run by the skill
 
-The Kick the tires lines run through the site runner, which installs the
-project and its main dependencies, so the plugin's entry point. The gate runs
-through the gate runner, which adds the project's `dev` extra and the gate's
-own tools. Each builds an environment from `pyproject.toml` on every run. Other
-`gp` lines run the `gp` on PATH.
+Kick the tires runs through the site runner (the project and its main
+dependencies, so its entry point), and the gate through the gate runner (adding
+the `dev` extra and the gate's tools); both build from `pyproject.toml` on every
+run. Other `gp` lines run the `gp` on PATH.
 
 ### Start
 
@@ -100,9 +100,9 @@ uv run --no-project --with-editable . gp <site-name> <command>
 
 ## Allow rules for a prompt-free run
 
-The rules the skill offers, in the settings syntax. `<site-name>` is the
-plugin's `site_name`. The last two cover the plugin's help and login; the live
-read-only command has no rule and asks each time, since it reads the account.
+The rules the skill offers, in the settings syntax. The last two cover the
+plugin's help and login; the live read-only command has no rule and asks each
+time, since it reads the account.
 
 ```text
 Bash(gp plugin info *)

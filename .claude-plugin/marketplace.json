@@ -6,7 +6,7 @@
     {
       "name": "graftpunk",
       "source": "./",
-      "description": "/graftpunk:graft walks the plugin developer guide: record the site, digest the recording, scaffold or extend the plugin, implement, harden, publish"
+      "description": "/graftpunk:graft walks the plugin developer guide: record the site, digest the recording, scaffold or extend the plugin, implement, harden, and publish"
     }
   ]
 }

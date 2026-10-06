@@ -40,13 +40,14 @@ login whose form or post is on another host points to an identity provider
 (guide: Identity-provider redirects). An empty `forms` entry while a credential
 post exists means no login form was recorded (a script-driven login, or a
 recording that missed the form page); confirm the shape with the user. Confirm
-the login shape with the user only when that summary leaves it open.
+the login shape with the user only when that summary leaves it open, and ask it
+together with the keep, rename, or drop question, before the scaffold step.
 
 `forms` holds each login form's `action`, its `fields` selectors by role, its
 `submit` selector, `neutral_roles`, and `unresolved_roles`. Name every
-unresolved role in the proposal: the generated login config carries a
-`GP-FILL` for each, which the implement step fills from the page with the
-user's confirmation (guide: Login).
+unresolved role in the proposal: the generated login config carries a `GP-FILL`
+for each, which the implement step fills with a selector the user reads off the
+login page in their browser (guide: Login).
 
 ## A worked example
 

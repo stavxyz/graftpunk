@@ -7,8 +7,9 @@ allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/preflight.sh *)
 
 # graft: build or extend a graftpunk site plugin
 
-You are taking a developer through `docs/PLUGIN_DEVELOPMENT.md` in the graftpunk
-repository, called "the guide" below. The guide is the reference and this skill
+You are taking a developer through the graftpunk plugin guide, at
+`${CLAUDE_PLUGIN_ROOT}/docs/PLUGIN_DEVELOPMENT.md` (this plugin ships it beside
+the skill), called "the guide" below. The guide is the reference and this skill
 is a route through it: when the two disagree, the guide wins. Two modes share
 one flow. Create mode starts from an empty directory and ends with a new plugin
 project. Enhance mode starts inside an existing plugin project and adds commands
@@ -77,9 +78,9 @@ summarise a failure away. Read a reference only at the step that names it.
    exit 0 means the name is usable, and on exit 1 show the refusal and ask for
    another. Collect the site URL, and what the user wants to do on the site in
    plain words ("see my orders and download invoices" is enough). Do not ask for
-   command names or endpoints; the digest supplies both. The login shape and the
-   backend are decided later from the digest, and confirmed with the user only
-   when the digest is ambiguous.
+   command names or endpoints; the digest supplies both. The login shape is
+   decided later from the digest, and confirmed with the user only when the
+   digest is ambiguous.
 2. **Capture** (guide: Capture). Read `references/capture.md`, hand the
    recording to the user exactly as it says, and choose the session and run as
    its "After the recording" section says. You never run the recorder yourself.
@@ -93,11 +94,20 @@ summarise a failure away. Read a reference only at the step that names it.
    `--command` per row the user kept. The generator writes only those stubs,
    under those names, each with its endpoint declared. Edit nothing it wrote
    during this step. Then run `gp plugin info --json` and confirm every agreed
-   command is listed with the endpoint it was agreed for.
+   command is listed with the endpoint it was agreed for. Compare the plugin's
+   `base_url` with the site URL from the frame step: when their hosts differ
+   (the recording's busiest host was an API or a CDN host), show both and ask
+   which the commands call; the implement step sets `base_url` to the answer.
 5. **Implement** (guide: Implement). For each stub, fill in the request, name
    the parameters, decide the return shape, and replace every `GP-FILL` marker.
    Raise `CommandError` or `PluginError` on failure. Read `references/rules.md`
-   and read the guide section behind any rule the work touches.
+   and read the guide section behind any rule the work touches. The login's
+   markers need what only the user can see: ask them for the exact sentence the
+   site shows after a wrong password (they try one in their own browser), for a
+   CSS selector of an element on the page a successful login lands on, and for a
+   selector of any login field the digest left unresolved, read off the login
+   page in their browser. Wait for the answers; never fetch a page of the site
+   yourself.
 6. **Harden** (guide: Harden). Read `references/harden.md` and follow it: one
    fixture and one test per command, then the project's gate (guide: The gate),
    acting on gp's output as that file says. The gate must pass before the next
@@ -112,18 +122,21 @@ summarise a failure away. Read a reference only at the step that names it.
    underscore, and the field name in capitals (a plugin's `username_envvar` or
    `password_envvar` names that field's variable instead), and prompts on the
    terminal for one it cannot find, which in this session aborts the login.
-   Print one `gp config set` line per field with a placeholder value, never a
+   Print the `gp config set` line of the "Run by the user" block in
+   `references/commands.md` once per field, with a placeholder value, never a
    real one, and wait until the user says they have run them. Then run the help
-   line of the Kick the tires block in `references/commands.md` and confirm
-   every agreed command name is listed, then its login line, then its read-only
-   command line with one read-only command from the agreed proposal, against the
-   live site while the user watches. If the login fails, diagnose it against the
-   guide's Login section, adjust the plugin's `LoginConfig`, and try once more;
-   if it fails again, show the output and stop for the user.
+   line of the Kick the tires block and confirm every agreed command name is
+   listed, then its login line, then its read-only command line with one
+   read-only command from the agreed proposal, against the live site while the
+   user watches. If the login fails, diagnose it against the guide's Login
+   section, adjust the plugin's `LoginConfig`, and try once more; if it fails
+   again, show the output and stop for the user.
 8. **Publish checklist** (guide: Before you publish). Read that section of the
    guide. Its first item, the gate, already holds after the harden step. Walk
-   the rest as the guide lists them, fix what you can, and stop with the items
-   left for the user.
+   the rest as the guide lists them and fix what you can. An item that needs
+   another live call, such as confirming the failure text with a wrong password,
+   or a fact only the user has, such as the account identifier to grep for, is
+   theirs: list it and do not run it. Stop with the items left for the user.
 
 ## Where enhance mode differs
 
@@ -158,5 +171,9 @@ what `gp config get --resolve` returns. Never read a value that came off the
 account: not a cookie or token value, not a HAR body, not a capture, and not a
 fixture until the user says its values are replaced and the suite's check
 passes. From a recording, read the `--endpoints-json` projection and nothing
-else. When the user pastes a secret into the conversation, say where it belongs
-(`gp config set NAME '$(your-secret-tool read ...)'`) and do not use it.
+else. The one exception is the output of the live read-only command the user
+agreed to at the kick-the-tires step: show it to them, confirm it returned data,
+and use no value from it. When the user pastes a secret into the conversation,
+say it belongs in the workstation env file through the `gp config set` line of
+the "Run by the user" block in `references/commands.md`, with a
+`$(your-secret-tool read ...)` value, and do not use it.
