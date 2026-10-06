@@ -710,7 +710,7 @@ class _Declaration:
     """How a stub declares one query or body parameter: the handler annotation (without
     ``| None``), the ``PluginParamSpec.option`` keywords after the name, and whether
     it is a repeatable option. A bool's flag keywords depend on the other options of
-    the stub, so the stub adds them (see ``_bool_flag_kwargs``)."""
+    the stub, so the stub adds them (see ``_negatable_flag``)."""
 
     label: str
     annotation: str
