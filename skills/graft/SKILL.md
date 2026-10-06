@@ -1,0 +1,156 @@
+---
+name: graft
+description: Create a graftpunk site plugin from a browser recording, or add commands to an existing one. Use when asked to build, scaffold, or extend a graftpunk plugin for a site, or to add a command to a plugin.
+argument-hint: "[plugin-name] [site-url]"
+allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/preflight.sh *)
+---
+
+# graft: build or extend a graftpunk site plugin
+
+You are taking a developer through `docs/PLUGIN_DEVELOPMENT.md` in the graftpunk
+repository, called "the guide" below. The guide is the reference and this skill
+is a route through it: when the two disagree, the guide wins. Two modes share one
+flow. Create mode starts from an empty directory and ends with a new plugin
+project. Enhance mode starts inside an existing plugin project and adds commands
+to it.
+
+## Permissions
+
+The frontmatter pre-approves preflight and nothing else. Claude Code keeps an
+`allowed-tools` grant only for the turn that invokes a skill ("The grant clears
+when you send your next message", https://code.claude.com/docs/en/skills), and
+preflight is the one command that turn reliably runs. Every other command asks
+the user's permission each time it runs, unless their settings already allow it.
+
+`references/commands.md` lists every `gp` command the steps run and the
+preflight call, names the project's gate as one unit, and, under "Allow rules
+for a prompt-free run", holds the permission rules this skill offers for them.
+Offer those rules; never add a rule to a settings file yourself.
+
+The live login and the first command against the live site are asked for in
+words at the kick-the-tires step, whatever the user's settings allow. That
+question, not a permission rule, is the consent for the live site and for a
+credential.
+
+## Start with preflight
+
+Run `${CLAUDE_SKILL_DIR}/scripts/preflight.sh` first, on every invocation. If it
+exits non-zero, show its message verbatim and stop. On exit 0 it prints one JSON
+object, `{"installation": ..., "project": ...}`, and `project.directory` picks the
+mode: `empty` is create mode, `plugin` is enhance mode. For `foreign`, stop and
+say: "this directory holds a project that is not a graftpunk plugin; run the
+skill in an empty directory or in the plugin's project".
+
+Your first message after preflight offers the allow rules under "Allow rules
+for a prompt-free run" in `references/commands.md` that hold no `<site-name>`,
+and says that the user can add them to this project's settings with
+`/permissions` for a run without prompts. Say that the skill works either way:
+without the rules, each command asks first. Offer the rules that hold
+`<site-name>` once the plugin's name is fixed, with that name in its place: in
+create mode at the end of the frame step, since the name `gp plugin new` takes
+becomes the plugin's `site_name`; in enhance mode once the plugin is chosen,
+from its `site_name` in `project.plugins`.
+
+This invocation's arguments: plugin name `$0`, site URL `$1`. Claude Code puts
+each argument given in its place, and a position with no argument keeps its
+placeholder as written, a dollar sign followed by a digit. A value that reads
+that way, or is empty, was not given. In create mode, ask for each one not
+given, one question at a time. In enhance mode the plugin comes from
+`project.plugins`, and any argument other than a suite member's name is
+ignored, which you say in one line. With one entry, take it. With several (a
+suite), take the entry whose `entry_point` is the plugin name given above; when
+none was given or none matches, ask which.
+
+## How to run the steps
+
+Begin every turn by naming the step you are on, in one line, by name and never
+by number: "Step: scaffold. Done: ...; next: ...". Ask one question at a time.
+When a `gp` command fails, show its output verbatim, find the cause in the guide
+section the step cites, fix it, and run the step again once. Never skip a step,
+and never summarise a failure away. Read a reference only at the step that names
+it.
+
+## The steps
+
+1. **Frame** (guide: Frame). Collect the plugin name and check it with the
+   command in the Frame block of `references/commands.md`, which writes
+   nothing: exit 0 means the name is usable, and on exit 1 show the refusal and
+   ask for another. Collect
+   the site URL, and what the user wants to do on the site in plain words ("see
+   my orders and download invoices" is enough). Do not ask for command names or
+   endpoints; the digest supplies both. The login shape and the backend are
+   decided later from the digest, and confirmed with the user only when the
+   digest is ambiguous.
+2. **Capture** (guide: Capture). Read `references/capture.md`, hand the
+   recording to the user exactly as it says, and choose the session and run as
+   its "After the recording" section says. You never run the recorder yourself.
+   Every later step reads that session and that run.
+3. **Understand** (guide: Understand). Run the command in the Understand block
+   of `references/commands.md` on the chosen session and run, then read
+   `references/digest.md` and build the proposal it describes. The user keeps,
+   renames, or drops rows in one answer.
+4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
+   block in `references/commands.md`, with the chosen session and run and one
+   `--command` per row the user kept. The generator writes only those stubs,
+   under those names, each with its endpoint declared. Edit nothing it wrote
+   during this step. Then run `gp plugin info --json` and confirm every agreed command is listed with the
+   endpoint it was agreed for.
+5. **Implement** (guide: Implement). For each stub, fill in the request, name
+   the parameters, decide the return shape, and replace every `GP-FILL` marker.
+   Raise `CommandError` or `PluginError` on failure. Read `references/rules.md`
+   and read the guide section behind any rule the work touches.
+6. **Harden** (guide: Harden). Read `references/harden.md` and follow it: one
+   fixture and one test per command, then the project's gate (guide: The gate),
+   acting on gp's output as that file says. The gate must pass before the next
+   step.
+7. **Kick the tires** (guide: Check the CLI surface you shipped) (guide: Login).
+   Before the first live call, ask in words, whatever the user's settings
+   allow: "run a live login and one read-only command now?" Their answer is
+   the consent for the live site and the login; an allow rule does not stand in
+   for it. On yes, run the help line of the Kick the tires block in
+   `references/commands.md` and confirm every agreed command name is listed,
+   then its login line, then its read-only command line with one read-only
+   command from the agreed proposal, against the live site while the user
+   watches. Credentials come from the
+   environment or the workstation env file, which the user fills in: print the
+   `gp config set` lines with placeholder values, never real ones. If the login
+   fails, diagnose it against the guide's Login section, adjust the plugin's
+   `LoginConfig`, and try once more.
+8. **Publish checklist** (guide: Before you publish). Read that section of the
+   guide. Its first item, the gate, already holds after the harden step. Walk
+   the rest as the guide lists them, fix what you can, and stop with the items
+   left for the user.
+
+## Where enhance mode differs
+
+The steps above are written for create mode. Enhance mode runs the same steps
+with these differences. This list is the index of what enhance mode changes;
+the references hold the details.
+
+- Frame collects only the new thing the user wants to do. The plugin's
+  `entry_point` (the name `gp plugin add-command` takes), its `site_name` (the
+  name `gp` runs it by), and its `base_url` come from `project.plugins`.
+- Capture picks the recorder line by whether the plugin has a session, as
+  `references/capture.md` says.
+- Understand leaves out every endpoint an existing command declares, and prints
+  each one it left out beside that command's name and declared endpoint, so a
+  declaration that went stale after a hand edit shows up. Every remaining row
+  is marked new. Each existing command reported with `endpoint: null` gets a
+  row of its own reading "existing command, endpoint not declared", so the user
+  can say whether a proposed row duplicates it. Never drop or propose over an
+  undeclared command silently.
+- Scaffold does not run `gp plugin new`. For each agreed command it runs the
+  `gp plugin add-command` line of the Scaffold block in `references/commands.md`,
+  with the chosen session and run, which adds one stub in the generated shape
+  and writes no test (it prints `Next: write its test against <fixture>`). Act on gp's output as `references/harden.md` says ("The
+  gate"); that file also says what the harden step does for each added command.
+- The publish checklist is limited to the items the new commands touch.
+
+## Secrets
+
+Never ask for a password, never write a credential anywhere, and never print
+what `gp config get --resolve` returns. Never read a value that came off the
+account: not a cookie or token value, not a HAR body, not a capture. From a
+recording, read the `--endpoints-json` projection and nothing else. When the
+user pastes a secret into the conversation, say where it belongs
+(`gp config set NAME '$(your-secret-tool read ...)'`) and do not use it.
