@@ -988,8 +988,9 @@ def _on_base_host(scheme: str, netloc: str, base: _BaseUrl | None) -> bool:
 
 def _fold_host(host: str) -> str:
     """*host* (as ``normal_host`` spells it) for comparison only: one trailing dot
-    dropped from the name and each label in its IDNA 2008 ASCII form (as ``requests`` encodes it, so ``faß.de`` and ``fass.de`` stay apart), the lower-cased text
-    when it does not encode. The port stays. ``normal_host`` is untouched because the
+    dropped from the name and each label in its IDNA 2008 ASCII form (as ``requests``
+    encodes it, so ``faß.de`` and ``fass.de`` stay apart), the lower-cased text when
+    it does not encode. The port stays. ``normal_host`` is untouched because the
     digest is built from it."""
     name, sep, port = host.rpartition(":")
     if not sep or "]" in port or not port.isdigit():
