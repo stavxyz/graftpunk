@@ -1766,17 +1766,104 @@ class Shop(SitePlugin):
 """
 
 
-def _future_plugin(tmp_path: Path) -> Any:
-    """Import the future-annotations plugin module from a file and instantiate it."""
-    import importlib.util
+_FUTURE_HEADER = "from __future__ import annotations\n\n"
 
-    path = tmp_path / "future_plugin.py"
-    path.write_text(_FUTURE_ANNOTATIONS_PLUGIN, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("future_plugin", path)
+# A one-command plugin whose handler takes {params}; no future import of its own.
+_PLAIN_PLUGIN = """\
+from typing import Optional
+
+from graftpunk.plugins import CommandContext, SitePlugin, command
+
+
+class Shop(SitePlugin):
+    site_name = "shop-plain"
+    session_name = "shop-plain"
+    base_url = "https://example.com"
+    requires_session = False
+
+    @command(help="probe")
+    def probe(self, ctx: CommandContext, {params}) -> dict:
+        return {{}}
+"""
+
+# A decorator defined in another module than the plugin, as a shared helper would be.
+_WRAPPING_DECORATOR = """\
+import functools
+
+
+def logged(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    return wrapper
+"""
+
+_RESOLVING_PLUGIN = """\
+from __future__ import annotations
+
+from typing import Annotated
+
+from graftpunk.plugins import CommandContext, SitePlugin, command
+from wrapping import logged
+
+
+class Shop(SitePlugin):
+    site_name = "shop-resolving"
+    session_name = "shop-resolving"
+    base_url = "https://example.com"
+    requires_session = False
+    Count = int
+
+    @command(help="probe")
+    @logged
+    def probe(
+        self,
+        ctx: CommandContext,
+        tagged: Annotated[int, "a note"] = 0,
+        local: Count = 0,
+        page: int = 0,
+    ) -> dict:
+        return {}
+"""
+
+
+def _load_module(tmp_path: Path, name: str, source: str) -> Any:
+    """Import *source* as module *name* from a file under *tmp_path*, so its
+    annotations are whatever the file's own imports make them."""
+    import importlib.util
+    import sys
+
+    path = tmp_path / f"{name}.py"
+    path.write_text(source, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
-    return module.Shop()
+    return module
+
+
+def _future_plugin(tmp_path: Path) -> Any:
+    """The future-annotations plugin module, imported from a file and instantiated."""
+    return _load_module(tmp_path, "future_plugin", _FUTURE_ANNOTATIONS_PLUGIN).Shop()
+
+
+def _invoke(plugin: Any, argv: list[str]) -> tuple[Any, dict[str, Any]]:
+    """Run the plugin's one command through the real factory and Typer; return the
+    result and the keyword arguments the handler body received."""
+    (cmd,) = plugin.get_commands()
+    seen: dict[str, Any] = {}
+    fn = synthesize_command_fn(
+        name=cmd.name,
+        param_specs=cmd.params,
+        body=lambda ctx, **kw: seen.update(kw),
+        include_builtin_options=False,
+    )
+    app = typer.Typer()
+    app.command(cmd.name)(fn)
+    app.command("other")(lambda: None)
+    return TyperCliRunner().invoke(app, [cmd.name, *argv]), seen
 
 
 class TestIntrospectParamsUnderFutureAnnotations:
@@ -1830,54 +1917,89 @@ class TestIntrospectParamsUnderFutureAnnotations:
     def test_the_handler_receives_typed_values(
         self, tmp_path: Path, argv: list[str], expected: dict[str, Any]
     ) -> None:
-        plugin = _future_plugin(tmp_path)
-        (cmd,) = plugin.get_commands()
-        seen: dict[str, Any] = {}
-        fn = synthesize_command_fn(
-            name="probe",
-            param_specs=cmd.params,
-            body=lambda ctx, **kw: seen.update(kw),
-            include_builtin_options=False,
-        )
-        app = typer.Typer()
-        app.command("probe")(fn)
-        app.command("other")(lambda: None)
-        result = TyperCliRunner().invoke(app, ["probe", *argv])
+        result, seen = _invoke(_future_plugin(tmp_path), argv)
         assert result.exit_code == 0, result.output
         got = {name: seen[name] for name in expected}
         assert got == expected
         assert all(type(got[n]) is type(expected[n]) for n in expected)
 
-    def test_a_required_bool_is_a_required_negatable_flag(self) -> None:
-        class Plugin(SitePlugin):
-            site_name = "required-bool"
-            session_name = "required-bool"
-            base_url = "https://example.com"
-            requires_session = False
+    def test_a_required_bool_is_a_required_negatable_flag(self, tmp_path: Path) -> None:
+        plugin = _load_module(
+            tmp_path, "required_bool", _PLAIN_PLUGIN.format(params="confirm: bool")
+        ).Shop()
+        missing, _ = _invoke(plugin, [])
+        assert missing.exit_code == 2
+        assert "Missing option '--confirm'" in missing.output
+        for argv, expected in (["--confirm"], True), (["--no-confirm"], False):
+            result, seen = _invoke(plugin, argv)
+            assert result.exit_code == 0, result.output
+            assert seen["confirm"] is expected
 
-            def probe(self, ctx: object, confirm: bool) -> None:
-                pass
+    @pytest.mark.parametrize(
+        ("params", "argv", "expected"),
+        [
+            pytest.param(
+                "cache: bool = True, no_cache: str = ''", ["--cache-false"], False, id="no-x-taken"
+            ),
+            pytest.param(
+                "cache: bool | None = None, no_cache: str = '', cache_false: str = ''",
+                ["--cache"],
+                True,
+                id="both-taken",
+            ),
+        ],
+    )
+    def test_a_taken_negative_falls_back_as_the_scaffold_does(
+        self, tmp_path: Path, params: str, argv: list[str], expected: bool
+    ) -> None:
+        plugin = _load_module(
+            tmp_path, "taken_negative", _PLAIN_PLUGIN.format(params=params)
+        ).Shop()
+        result, seen = _invoke(plugin, argv)
+        assert result.exit_code == 0, result.output
+        assert seen["cache"] is expected
 
-        plugin = Plugin()
-        (spec,) = plugin._introspect_params(plugin.probe)
-        assert spec.click_kwargs["is_flag"] is True
-        assert spec.click_kwargs["required"] is True
-        assert spec.click_kwargs["flag"] == "--confirm/--no-confirm"
+    def test_optional_annotations_resolve_without_the_future_import(self, tmp_path: Path) -> None:
+        plugin = _load_module(
+            tmp_path,
+            "plain_optional",
+            _PLAIN_PLUGIN.format(
+                params="page: int | None = None, size: Optional[int] = None, "
+                "archived: bool | None = None"
+            ),
+        ).Shop()
+        result, seen = _invoke(plugin, ["--page", "2", "--size", "3", "--no-archived"])
+        assert result.exit_code == 0, result.output
+        assert (seen["page"], seen["size"], seen["archived"]) == (2, 3, False)
 
-    def test_a_negative_taken_by_another_option_leaves_a_plain_flag(self) -> None:
-        class Plugin(SitePlugin):
-            site_name = "taken-negative"
-            session_name = "taken-negative"
-            base_url = "https://example.com"
-            requires_session = False
+    # A mismatched default keeps the str option it had before annotations were
+    # resolved, so the handler gets what it got then: the default through str.
+    @pytest.mark.parametrize(
+        ("params", "argv", "name", "expected"),
+        [
+            pytest.param("limit: int = 'all'", [], "limit", "all", id="str-default-on-int"),
+            pytest.param("n: bool = 0", [], "n", "0", id="int-default-on-bool"),
+            pytest.param("ratio: float = 2", ["--ratio", "0.5"], "ratio", 0.5, id="int-on-float"),
+        ],
+    )
+    def test_a_default_the_type_cannot_take_keeps_the_command_running(
+        self, tmp_path: Path, params: str, argv: list[str], name: str, expected: Any
+    ) -> None:
+        plugin = _load_module(
+            tmp_path, "mismatch", _FUTURE_HEADER + _PLAIN_PLUGIN.format(params=params)
+        ).Shop()
+        result, seen = _invoke(plugin, argv)
+        assert result.exit_code == 0, result.output
+        assert seen[name] == expected
 
-            def probe(self, ctx: object, cache: bool = True, no_cache: str = "") -> None:
-                pass
-
-        plugin = Plugin()
-        specs = {s.name: s.click_kwargs for s in plugin._introspect_params(plugin.probe)}
-        assert specs["cache"]["is_flag"] is True
-        assert "flag" not in specs["cache"]
+    def test_annotated_class_local_and_wrapped_handlers_resolve(self, tmp_path: Path) -> None:
+        _load_module(tmp_path, "wrapping", _WRAPPING_DECORATOR)
+        plugin = _load_module(tmp_path, "resolving", _RESOLVING_PLUGIN).Shop()
+        specs = {s.name: s.click_kwargs["type"] for s in plugin.get_commands()[0].params}
+        assert specs == {"tagged": int, "local": int, "page": int}
+        result, seen = _invoke(plugin, ["--tagged", "1", "--local", "2", "--page", "3"])
+        assert result.exit_code == 0, result.output
+        assert (seen["tagged"], seen["local"], seen["page"]) == (1, 2, 3)
 
 
 class TestIntrospectParamsClickKwargs:

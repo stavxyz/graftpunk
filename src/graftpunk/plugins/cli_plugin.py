@@ -72,26 +72,75 @@ SUPPORTED_API_VERSIONS: frozenset[int] = frozenset({1})
 _OPTION_TYPES: tuple[type, ...] = (int, float, bool, str)
 
 
-def _option_type(annotation: Any, method: Any) -> type:
+def _handler_signature(method: Any) -> inspect.Signature:
+    """*method*'s signature with its annotations unevaluated where Python allows it.
+
+    On Python 3.14 a module without the future import evaluates annotations
+    lazily, and a plain ``inspect.signature`` evaluates them all, so one name
+    imported only under ``TYPE_CHECKING`` would raise ``NameError`` for the whole
+    command. Asking for strings leaves each one to ``_option_type``.
+    """
+    if sys.version_info >= (3, 14):
+        import annotationlib
+
+        return inspect.signature(method, annotation_format=annotationlib.Format.STRING)
+    return inspect.signature(method)
+
+
+def _annotation_locals(method: Any) -> dict[str, Any]:
+    """The body of the class that defines *method*, for names an annotation takes
+    from it (``Local = int`` in the class, then ``n: Local``). Empty for a function
+    that is not a method of a class in its instance's MRO."""
+    owner = getattr(method, "__self__", None)
+    name = getattr(method, "__name__", None)
+    if owner is None or name is None:
+        return {}
+    for cls in type(owner).__mro__:
+        if name in vars(cls):
+            return dict(vars(cls))
+    return {}
+
+
+def _option_type(annotation: Any, method: Any, default: Any) -> type:
     """The option type *annotation* names, or ``str`` when it names none.
 
-    A module with ``from __future__ import annotations`` stores every annotation
-    as a string, so a string is evaluated in the namespace of the module that
-    defines *method*, as ``typing.get_type_hints`` would, one parameter at a time:
-    a name that resolves only under ``TYPE_CHECKING`` costs that parameter its
-    type and no other. ``X | None`` and ``Optional[X]`` give ``X``.
+    A string annotation (every annotation, under ``from __future__ import
+    annotations``) is evaluated in the module that defines *method*, with the
+    defining class's body as locals, one parameter at a time, so a name that
+    resolves only under ``TYPE_CHECKING`` costs that parameter its type and no
+    other. ``Annotated[X, ...]`` gives ``X``, and so do ``X | None`` and
+    ``Optional[X]``. A default the type cannot take (``n: int = "all"``) keeps
+    ``str``, since Click converts the default through the option's type and a
+    command that ran with it would then fail on every call without the option.
     """
     if isinstance(annotation, str):
         namespace = getattr(inspect.unwrap(method), "__globals__", {})
         try:
-            annotation = eval(annotation, namespace)  # noqa: S307 -- the plugin's own annotation
+            annotation = eval(annotation, namespace, _annotation_locals(method))  # noqa: S307 -- the plugin's own annotation
         except Exception:  # noqa: BLE001 -- an unresolvable name keeps the str fallback
             return str
+    if typing.get_origin(annotation) is typing.Annotated:
+        annotation = typing.get_args(annotation)[0]
     if typing.get_origin(annotation) in (typing.Union, types.UnionType):
         members = [a for a in typing.get_args(annotation) if a is not type(None)]
         if len(members) == 1:
             annotation = members[0]
-    return annotation if annotation in _OPTION_TYPES else str
+    if annotation not in _OPTION_TYPES:
+        return str
+    return annotation if _default_fits(annotation, default) else str
+
+
+def _default_fits(option_type: type, default: Any) -> bool:
+    """Whether *default* is a value an option of *option_type* can carry: absent
+    (``None``), or an instance of the type, an ``int`` counting for ``float`` and a
+    ``bool`` counting for nothing but ``bool``."""
+    if default is None:
+        return True
+    if isinstance(default, bool):
+        return option_type is bool
+    if option_type is float:
+        return isinstance(default, (int, float))
+    return isinstance(default, option_type)
 
 
 def _option_flag(name: str) -> str:
@@ -106,17 +155,20 @@ def _bool_flag_kwargs(
 
     A bool option must be a flag. ``option`` makes one for a ``False`` default, and
     that bare flag gives the handler ``False`` or ``True``. Any other default
-    (``None`` from ``bool | None``, ``True``, or none at all) needs the ``--x/--no-x``
-    pair to reach every value, unless another option of the command already takes
-    the negative, in which case it stays a bare flag.
+    (``None`` from ``bool | None``, ``True``, or none at all) needs a negative to
+    reach every value: ``--x/--no-x``, or ``--x/--x-false`` when another option
+    of the command is already ``--no-x``, the order the scaffold's stubs use. When
+    both are taken the flag stays bare, cannot send ``False``, and is logged.
     """
     if param_type is not bool or default is False:
         return None
     flag = _option_flag(name)
-    negative = f"--no-{flag.removeprefix('--')}"
-    if negative in taken:
-        return {"is_flag": True}
-    return {"is_flag": True, "flag": f"{flag}/{negative}"}
+    positive = flag.removeprefix("--")
+    for negative in (f"--no-{positive}", f"--{positive}-false"):
+        if negative not in taken:
+            return {"is_flag": True, "flag": f"{flag}/{negative}"}
+    LOG.warning("introspected_bool_flag_has_no_negative", option=flag)
+    return {"is_flag": True}
 
 
 @dataclass(frozen=True)
@@ -1160,7 +1212,7 @@ class SitePlugin:
             List of PluginParamSpec from the method's parameters.
         """
         params: list[PluginParamSpec] = []
-        sig = inspect.signature(method)
+        sig = _handler_signature(method)
         flags = {_option_flag(name) for name in sig.parameters}
 
         for name, param in sig.parameters.items():
@@ -1168,12 +1220,12 @@ class SitePlugin:
             if name in ("self", "ctx"):
                 continue
 
-            param_type = _option_type(param.annotation, method)
-
             # Determine if required and default
             has_default = param.default != inspect.Parameter.empty
             default = param.default if has_default else None
             required = not has_default
+
+            param_type = _option_type(param.annotation, method, default)
 
             params.append(
                 PluginParamSpec.option(
