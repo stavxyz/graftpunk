@@ -2,13 +2,14 @@
 
 The one place the commands are written, one block per step; `SKILL.md` and the
 references name a block by its step and never spell a templated command.
-Placeholders: `<name>` (for `gp plugin new`), `<site-name>` and `<entry-point>`
+Placeholders: `<name>` (the plugin's name), `<site-name>` and `<entry-point>`
 (`site_name` and `entry_point` in `gp plugin info --json`), `<command>` (an
-agreed name), `<session>` and `<run>` (from the capture step), `<gate-command>`
+agreed command), `<session>` and `<run>` (chosen at capture), `<gate-command>`
 (each gate command, in order), `<fixture>` (the plain-named capture
 `gp observe fixtures` wrote), `<fixtures-dir>` (the tests' `FIXTURES_DIR`),
-`<variable>` and `<value>` (a credential's variable, and a placeholder or
-`$(...)` value), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
+`<variable>` and `<value>` (a credential's variable, and a placeholder, or a
+`$(...)` left in the quotes so it is stored, not run), `<url>`, `<version>`,
+`<n>`, `<METHOD>`, and `<template>`.
 
 Only preflight is pre-approved (`SKILL.md`, "Permissions"). The rules offered
 at the end come from "Run by the skill" alone; the tests hold each to a line.
@@ -88,9 +89,8 @@ uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-com
 
 ### Kick the tires
 
-The last two touch the live site or a credential. The skill asks in words before
-the first of them runs, whatever the user's settings allow. The last line is one
-read-only command from the agreed proposal.
+The last two touch the live site and run only after the question in words,
+whatever the user's settings allow; the last is one agreed read-only command.
 
 ```bash
 uv run --no-project --with-editable . gp <site-name> --help
