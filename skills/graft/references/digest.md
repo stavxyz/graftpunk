@@ -4,7 +4,7 @@ The user should never have to know the commands in advance. The source is the
 projection the Understand block of `references/commands.md` prints: one entry
 per endpoint with `method`, `template`, `login_flow`, `content_type`, `shape`,
 `query_params`, `body_params`, and `custom_headers`, plus a `login` summary.
-Read that projection only; never read the HAR, a capture, or `--json`.
+Read that projection only; never read the HAR or `--json`.
 
 ## The rules, in order
 

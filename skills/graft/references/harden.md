@@ -6,36 +6,36 @@ In enhance mode, first run the gate's plugin check and act on what it reports,
 so the fixtures directory and the suite's fixture check exist before anything is
 copied. For each command, write its capture out of the recording with the
 `gp observe fixtures` line from the Harden block of `references/commands.md`,
-the command's endpoint in place of `<METHOD> <template>`. A capture is the
-account's own data, so never open, print, or read one, nor a copy of one until
-the user has replaced its values and the check below passes for it. Copy the
-capture gp writes under the plain name (not a numbered one) and its sidecar into
-the fixtures directory the generated tests read (their `FIXTURES_DIR`) with the
-`cp` line of the Harden block, keeping both file names: a test finds its fixture
-by that name, and a request with no fixture under it answers 404. Copy those two
-files by name, never with a glob or a whole directory, which would bring
-numbered captures along.
+the command's endpoint in place of `<METHOD> <template>`. Captures land in the
+git-ignored `tests/captures/` on this workstation and hold the account's own
+data: read them as this step needs, and never put a value from one into anything
+that is committed or shared, such as a fixture, a test, code, a comment, a
+docstring, or a commit message. Copy the capture gp writes under the plain name
+(not a numbered one) and its sidecar into the fixtures directory the generated
+tests read (their `FIXTURES_DIR`) with the `cp` line of the Harden block,
+keeping both file names: a test finds its fixture by that name, and a request
+with no fixture under it answers 404. Copy those two files by name, never with a
+glob or a whole directory, which would bring numbered captures along.
 
-Then hand the copies to the user, as with the recording: list each copy's path
-and ask them to replace every value in it with an invented one, keeping its
-structure, and to leave its sidecar alone (guide: Deriving a fixture from a
-capture). Wait until they say every value is replaced. Then run the gate's
-`pytest` line through the runner in the Harden block of
+Then rewrite each copy with invented values, keeping its structure: the same
+keys, nesting, and types, a few list items rather than every one, and values of
+the same kind (an id stays an id-shaped string, a date a date) that belong to no
+real account (guide: Deriving a fixture from a capture). Leave its sidecar
+alone. Then compare the fixture with its capture: apart from the keys, no
+string, and no number longer than two digits, from the capture may be left in
+it. Then run the gate's `pytest` line through the runner in the Harden block of
 `references/commands.md`: the generated suite checks every fixture on every run
 and names each one that is still byte for byte its capture or holds a flagged
-cookie or token name. Give any it names back to the user. Count the check as run
-only when that `pytest` output carries its `fixtures_are_sanitised:` line;
-without it the project lacks the wiring, so run the gate's plugin check and act
-on what it reports first. That check proves only that the user changed the file,
-not that every value is invented, so the user's word is what clears a fixture:
-read one only after they have said its values are replaced and the check passes
-for it, to write its test.
+cookie or token name; rewrite any it names. Count the check as run only when
+that `pytest` output carries its `fixtures_are_sanitised:` line; without it the
+project lacks the wiring, so run the gate's plugin check and act on what it
+reports first.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
 and its sidecar yourself, with invented values in the shape the projection gives
-(guide: Test against fixtures, not against the site); it holds nothing from the
-account. When the projection's shape reads `shape unavailable` (a body too large
-to sample), ask the user to write that fixture by hand.
+(guide: Test against fixtures, not against the site). When that shape reads
+`shape unavailable` too (a body too large to sample), ask the user what the
+response looks like.
 
 ## A test per command
 

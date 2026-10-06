@@ -180,13 +180,15 @@ the references hold the details.
 ## Secrets
 
 Never ask for a password, never write a credential anywhere, and never print
-what `gp config get --resolve` returns. Never read a value that came off the
-account: not a cookie or token value, not a HAR body, not a capture, and not a
-fixture until the user says its values are replaced and the suite's check
-passes. From a recording, read the `--endpoints-json` projection and nothing
-else. The one exception is the output of the live read-only command the user
-agreed to at the kick-the-tires step: show it to them, confirm it returned data,
-and use no value from it. When the user pastes a secret into the conversation,
-say it belongs in the workstation env file through the `gp config set` line of
-the "Run by the user" block in `references/commands.md`, with a
-`$(your-secret-tool read ...)` value, and do not use it.
+what `gp config get --resolve` returns. Never read a cookie or token value or a
+HAR. From a recording, read the `--endpoints-json` projection, and at the harden
+step the captures `gp observe fixtures` writes into the git-ignored
+`tests/captures/`: they hold the account's own data and stay on this
+workstation, so no value from one goes into anything that is committed or
+shared, such as a fixture, a test, code, a comment, a docstring, a commit
+message, or a pull request. The output of the live read-only command the user
+agreed to at the kick-the-tires step is the same: show it to them, confirm it
+returned data, and use no value from it. When the user pastes a secret into the
+conversation, say it belongs in the workstation env file through the
+`gp config set` line of the "Run by the user" block in `references/commands.md`,
+with a `$(your-secret-tool read ...)` value, and do not use it.
