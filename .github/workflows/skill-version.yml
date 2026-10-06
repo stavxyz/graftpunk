@@ -21,6 +21,7 @@ jobs:
             skill:
               - 'skills/**'
               - '.claude-plugin/**'
+              - 'docs/PLUGIN_DEVELOPMENT.md'
 
   skill-version:
     needs: filter-paths

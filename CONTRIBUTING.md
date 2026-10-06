@@ -312,9 +312,11 @@ For YAML plugins, see `examples/templates/yaml_template.yaml`. Both support decl
 ## Releasing the skill
 
 The Claude Code skill under `skills/` is versioned apart from the graftpunk
-package. Any change under `skills/` or `.claude-plugin/` needs a patch bump of
-the `version` field in `.claude-plugin/plugin.json`; a new skill or a changed
-invocation contract is a minor bump. That field pins an installed plugin:
+package. Any change under `skills/` or `.claude-plugin/`, or to
+`docs/PLUGIN_DEVELOPMENT.md` (the installed plugin carries the guide, and the
+skill reads it), needs a patch bump of the `version` field in
+`.claude-plugin/plugin.json`; a new skill or a changed invocation contract is a
+minor bump. That field pins an installed plugin:
 setting it "pins the plugin to that version until you change it"
 ([plugins reference](https://code.claude.com/docs/en/plugins-reference), the
 `version` field), so people who installed the skill from GitHub receive a
@@ -327,8 +329,9 @@ is the marketplace manifest's own version
 top-level fields), and nothing here needs it.
 
 The `Skill version` workflow checks this on every pull request that touches
-those paths, comparing against the commit the branch started from (the merge
-base). Run the same check before pushing with `just skill-version`, which
+those paths: the branch's own changes are measured from the merge base, and its
+version has to be higher than the base branch's, so a bump another merge
+already used fails before both land. Run the same check before pushing with `just skill-version`, which
 compares against `origin/main`, or name another base with
 `just skill-version <commit>`. After a merge, users update with
 `/plugin marketplace update graftpunk`, then update graftpunk on the Installed

@@ -143,6 +143,50 @@ def test_a_base_that_moved_on_after_the_branch_point_is_not_this_branchs_change(
     assert "0.1.1" not in result.stdout + result.stderr
 
 
+def test_a_bump_the_base_already_used_fails_and_names_the_next(repo: _Repo) -> None:
+    """The branch and the base both bumped to 0.1.1 after the branch point: once
+    both land, installed users would see no new version for the branch's change, so
+    the version is compared with the base itself, not with the merge base."""
+    repo.manifests("0.1.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    repo.commit("branch point")
+    repo.git("checkout", "-q", "-b", "feature")
+    repo.write("skills/graft/references/rules.md", "a branch change\n")
+    repo.manifests("0.1.1")
+    repo.commit("the branch bumps")
+    repo.git("checkout", "-q", "main")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.manifests("0.1.1")
+    base = repo.commit("the base bumps too")
+    repo.git("checkout", "-q", "feature")
+    result = repo.check(base)
+    assert result.returncode == 1
+    assert "0.1.2" in result.stderr
+
+
+def test_a_lower_version_fails(repo: _Repo) -> None:
+    repo.manifests("0.2.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    base = repo.commit("base")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.manifests("0.1.9")
+    repo.commit("a downgrade")
+    result = repo.check(base)
+    assert result.returncode == 1
+    assert "0.2.1" in result.stderr
+
+
+def test_a_guide_change_needs_a_bump(repo: _Repo) -> None:
+    """The installed plugin carries the guide the skill reads, so a guide change
+    reaches installed users only with a new version."""
+    repo.manifests("0.1.0")
+    repo.write("docs/PLUGIN_DEVELOPMENT.md", "first\n")
+    base = repo.commit("base")
+    repo.write("docs/PLUGIN_DEVELOPMENT.md", "second\n")
+    repo.commit("a guide change without a bump")
+    assert repo.check(base).returncode == 1
+
+
 def test_the_script_is_executable() -> None:
     assert os.access(SCRIPT, os.X_OK)
 
@@ -159,8 +203,8 @@ def test_a_version_without_a_numeric_last_part_still_fails_in_one_line(repo: _Re
     assert result.returncode == 1
     assert "Traceback" not in result.stderr
     assert result.stderr.strip() == (
-        "skill-version: skills/ or .claude-plugin/ changed, but the version is still "
-        "0.1.0rc1. Bump .claude-plugin/plugin.json to a higher version."
+        "skill-version: the skill changed, but .claude-plugin/plugin.json is 0.1.0rc1 "
+        "and the base is at 0.1.0rc1. Bump it to a higher version."
     )
 
 
@@ -169,9 +213,10 @@ def test_the_workflow_filter_and_the_script_watch_the_same_paths() -> None:
     counts as a skill change; a path added to one and not the other would let a
     change slip past, or run the check for nothing."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "skill-version.yml").read_text()
-    filtered = set(re.findall(r"- '([^']+)/\*\*'", workflow))
+    skill_filter = workflow.split("skill:", 1)[1].split("\n\n", 1)[0]
+    filtered = {entry.removesuffix("**") for entry in re.findall(r"- '([^']+)'", skill_filter)}
     script = SCRIPT.read_text()
-    match = re.search(r"grep -E '\^\(([^)]*)\)/'", script)
+    match = re.search(r"^watched='\^\(([^)]*)\)'$", script, re.MULTILINE)
     assert match, "the script's path pattern moved"
-    watched = {part.replace("\\.", ".") for part in match.group(1).split("|")}
-    assert filtered == watched == {"skills", ".claude-plugin"}
+    watched = {part.replace("\\.", ".").removesuffix("$") for part in match.group(1).split("|")}
+    assert filtered == watched == {"skills/", ".claude-plugin/", "docs/PLUGIN_DEVELOPMENT.md"}
