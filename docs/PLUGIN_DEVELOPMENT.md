@@ -214,9 +214,12 @@ the newest run. `--har PATH` digests a bare HAR file from any tool instead of a
 run. `--json` prints the complete model rather than the markdown summary,
 `--endpoints-json` prints the versioned projection a program reads (uncapped,
 not combinable with `--json`, and listing as the login's URLs only the login's
-own observations, never a logout or a cart redirect recorded beside it), `--all-hosts` models every host instead of
-just the primary one, `--limit N` raises the cap on how many endpoints the
+own observations, never a logout or a cart redirect recorded beside it), `--all-hosts` models every host instead of only
+the primary host's domain, `--limit N` raises the cap on how many endpoints the
 markdown form lists (60 by default), and `--output PATH` writes to a file.
+Each endpoint in `--endpoints-json` carries the `host` it was recorded on,
+beside the run's one `primary_host`, so a program can see a site whose pages
+and JSON come from different hosts.
 
 The digest is redacted by construction. It records header names, cookie names,
 form field names, query parameter names and observed types, and response shapes.
@@ -541,7 +544,11 @@ The options:
 - `--url URL` sets `base_url`. Without `--from-run` it is the only source of
   one. With `--from-run`, `base_url` comes from the digest's primary host, and
   an explicit `--url` overrides it (use that when the recording's busiest host
-  is a CDN or an API subdomain you do not want as the base).
+  is a CDN or an API subdomain you do not want as the base). It must be an
+  `http://` or `https://` URL with a host; `--url myshop.example` is refused,
+  since no path resolves against it. A site whose pages and JSON come from
+  different hosts needs no `--url`: each stub requests the host its endpoint
+  was recorded on (see [What gets filled in](#what-gets-filled-in)).
 - `--dir PATH` is the target directory (the working directory by default).
 - `--backend nodriver|selenium` sets the generated `backend` attribute
   (`nodriver` by default).
@@ -706,8 +713,11 @@ otherwise, either way with only the fields the caller gave, and a body field no
 option can send as recorded, such as a JSON object, left out with a `GP-FILL`
 comment naming it), an explicit `params=` list whenever one of them is an `int`,
 a `float`, a `bool`, or a list (see [CLI parameter
-types](#cli-parameter-types)), the observed custom headers, and the endpoint it
-calls declared as `endpoint=` on its decorator; a docstring recording the
+types](#cli-parameter-types)), the observed custom headers, the endpoint it
+calls declared as `endpoint=` on its decorator (method and path only), and a
+request for a path, which `ctx.request_json` joins to `base_url`, or, for an
+endpoint recorded on a host other than `base_url`'s, for the absolute URL on
+that host; a docstring recording the
 method, the path, how many times it was seen, which run it came from, and the
 response shape. Each path value is percent-encoded before it goes into the URL
 (`_quote_path(order_id, safe="")`, `urllib.parse.quote` imported under a private
@@ -741,6 +751,17 @@ recording is JSON and parses to a falsy value, the test asserts that value
 (`assert result == {}`, `== []`, `== ""`, `== 0`, `is False`, or `is None`),
 with a `GP-FILL` saying to assert on the shape you expect; a text response is
 never read as JSON, so a `text/plain` `0` keeps `assert result`.
+
+A site whose pages are on `myshop.example` and whose JSON is on
+`api.myshop.example` gets `base_url = "https://myshop.example"` and, for each
+JSON endpoint, a request for `f"https://api.myshop.example/api/orders/{order_id}"`
+in place of the path. Its generated test is unchanged, since `FixtureSession`
+finds a fixture by method and path. `gp plugin new` prints one line for each
+such command:
+
+```text
+api-orders-by-order-id calls api.myshop.example, not myshop.example; its request is an absolute URL
+```
 
 Everything the digest could not decide carries a `GP-FILL` marker: the failure
 text (nobody recorded a failed login), the success selector, the help text for
@@ -874,6 +895,15 @@ filled in](#what-gets-filled-in), the second line says so instead:
 Added export to src/graftpunk_myshop/plugin.py
 Next: gp observe fixtures writes no fixture for this endpoint; write its test against a fixture of your own.
 ```
+
+The stub requests the host its endpoint was recorded on, by the rule
+`gp plugin new` follows: a path on the host of the plugin's `base_url`, and an absolute
+URL on any other host, with a line after `Added` naming the command and both
+hosts. When the plugin sets no `base_url` that `gp plugin info --json` can
+report as a URL (none, one built from an expression rather than a string, or
+a string with no `http://` or `https://`), every stub it adds requests an
+absolute `https://` URL, and the line says the plugin sets no `base_url` gp
+can read as a URL.
 
 The stub needs the graftpunk you run the command with. When the project's
 `[project] dependencies` holds a plain `graftpunk>=` lower bound below that
