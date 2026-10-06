@@ -104,11 +104,11 @@ at the kick-the-tires step.
 4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
    block in `references/commands.md` without `--url`, or the one with it when
    the user chose the site URL's host at the understand step, with the chosen
-   session and run and one `--command` per row the user kept. The generator writes only those stubs,
-   under those names, each with its endpoint declared, and prints a
-   `<command> calls <host>` line for each one on another host; relay those lines
-   as `references/harden.md` says ("The gate"). Edit nothing it wrote during
-   this step. Then run `gp plugin info --json` and confirm every agreed command
+   session and run and one `--command` per row the user kept. The generator
+   writes only those stubs, under those names, each with its endpoint declared,
+   and prints a `<command> calls <host>` line for each one on another host;
+   relay those lines as `references/harden.md` says ("The gate"). Edit nothing
+   it wrote during this step. Then run `gp plugin info --json` and confirm every agreed command
    is listed with the endpoint it was agreed for.
 5. **Implement** (guide: Implement). For each stub, fill in the request, name
    the parameters, decide the return shape, and replace every `GP-FILL` marker.

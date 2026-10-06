@@ -553,8 +553,8 @@ The options:
   `--from-run`.
 - `--url URL` sets `base_url`. Without `--from-run` it is the only source of
   one. With `--from-run`, `base_url` comes from the digest's primary host, and
-  an explicit `--url` overrides it (use that when the recording's busiest host
-  is a CDN or an API subdomain you do not want as the base). It must be an
+  an explicit `--url` overrides it (use that when the primary host is a CDN or
+  an API subdomain you do not want as the base). It must be an
   `http://` or `https://` URL with a valid host and port; `--url myshop.example`
   is refused, since no path resolves against it. A site whose pages and JSON come
   from different hosts needs no `--url`: each stub requests the host its endpoint

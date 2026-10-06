@@ -1,16 +1,16 @@
 # The commands each step runs
 
-The one place the commands are written, one block per step; `SKILL.md` and the
-references name a block by its step and never spell a templated command.
-Placeholders: `<name>` (the plugin's name), `<site-name>` and `<entry-point>`
-(`site_name` and `entry_point` in `gp plugin info --json`), `<command>` (an
-agreed command), `<session>` and `<run>` (chosen at capture), `<gate-command>`
-(each gate command, in order), `<fixture>` (the plain-named capture
-`gp observe fixtures` wrote), `<fixtures-dir>` (the tests' `FIXTURES_DIR`),
-`<variable>` and `<value>` (a credential's variable, and a placeholder or a
-`$(...)` kept inside the single quotes, which double quotes would let the shell
-run at once), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`. Only
-preflight is pre-approved; the rules at the end cover "Run by the skill" alone.
+Every command is written here, one block per step; `SKILL.md` and the references
+name a block by its step and never spell a templated command. Placeholders:
+`<name>` (the plugin's name), `<site-name>` and `<entry-point>` (`site_name` and
+`entry_point` in `gp plugin info --json`), `<command>` (an agreed command),
+`<session>` and `<run>` (chosen at capture), `<gate-command>` (each, in order),
+`<fixture>` (the plain-named capture `gp observe fixtures` wrote),
+`<fixtures-dir>` (the tests' `FIXTURES_DIR`), `<variable>` and `<value>` (a
+credential's variable, and a placeholder or a `$(...)` kept inside the single
+quotes, which double quotes would let the shell run at once), `<url>`,
+`<base-url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`. Only preflight
+is pre-approved; the rules at the end cover "Run by the skill" alone.
 
 ## Run by preflight
 
@@ -67,7 +67,7 @@ gp observe digest <session> <run> --endpoints-json
 
 ```bash
 gp plugin new <name> --from-run <session> --run <run> --command "<command>=<METHOD> <template>"
-gp plugin new <name> --from-run <session> --run <run> --url <url> --command "<command>=<METHOD> <template>"
+gp plugin new <name> --from-run <session> --run <run> --url <base-url> --command "<command>=<METHOD> <template>"
 gp plugin add-command <entry-point> --from-run <session> --run <run> --command "<command>=<METHOD> <template>"
 gp plugin info --json
 ```
