@@ -392,6 +392,35 @@ gp observe digest <name>
 gp plugin new mybank --from-run <name>
 ```
 
+`--command "NAME=METHOD template"`, repeatable, scaffolds only the endpoints you
+name, under your names ([Choose the commands
+yourself](docs/PLUGIN_DEVELOPMENT.md#choose-the-commands-yourself)). The
+generated tests read fixtures, which you derive from the recording and then
+sanitise by hand
+([Deriving a fixture from a capture](docs/PLUGIN_DEVELOPMENT.md#deriving-a-fixture-from-a-capture)).
+Run the project's gate before every commit
+([The gate](docs/PLUGIN_DEVELOPMENT.md#the-gate)):
+
+```bash
+gp observe fixtures <name> --match "GET /api/accounts"
+pytest
+ruff check .
+ruff format --check .
+gp plugin check
+```
+
+To keep the project current, `gp plugin upgrade` adds the wiring a newer
+graftpunk expects, and `gp plugin add-command` adds one command from a later
+recording ([Add a command to an existing
+plugin](docs/PLUGIN_DEVELOPMENT.md#add-a-command-to-an-existing-plugin)). Both
+raise a plain `graftpunk>=` requirement below the `major.minor.0` of the
+graftpunk you run them with, and tell you to reinstall the project.
+
+```bash
+gp plugin upgrade
+gp plugin add-command mybank --from-run <name> --command "statements=GET /api/statements"
+```
+
 ## Configuration
 
 | Variable | Default | Description |
