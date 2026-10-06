@@ -88,8 +88,8 @@ uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-com
 
 ### Kick the tires
 
-These touch the live site or a credential. The skill asks in words before the
-first of them runs, whatever the user's settings allow. The last line is one
+The last two touch the live site or a credential. The skill asks in words before
+the first of them runs, whatever the user's settings allow. The last line is one
 read-only command from the agreed proposal.
 
 ```bash
