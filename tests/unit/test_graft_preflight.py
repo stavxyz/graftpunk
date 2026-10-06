@@ -241,6 +241,7 @@ class TestPreflightWithAFakeGp:
         result = _preflight(work, home, fake, tools)
         assert result.returncode == 1
         assert _UNREADABLE_FLOOR in result.stderr
+        assert "gp's message says which:" in result.stderr
         assert "uv tool upgrade graftpunk" in result.stderr
         for reading in ("older than", "version floor", "--contract value"):
             assert reading in result.stderr, reading
@@ -254,6 +255,8 @@ class TestPreflightWithAFakeGp:
         result = _preflight(work, home, _fake_gp(tmp_path, version_exit=1), tools)
         assert result.returncode == 1
         assert "uv tool upgrade graftpunk" in result.stderr
+        # No message from gp, so no lead-in pointing at one.
+        assert "gp's message" not in result.stderr
         for reading in ("older than", "version floor", "--contract value"):
             assert reading in result.stderr, reading
         assert result.stdout == ""

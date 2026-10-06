@@ -39,7 +39,7 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-errfile="$(mktemp)"
+errfile="$(mktemp)" || { printf 'preflight: mktemp could not create a temporary file.\n' >&2; exit 1; }
 trap 'rm -f "$errfile"' EXIT
 
 # Exit 2 from gp means an option it does not know, and nothing else: gp reports
@@ -64,8 +64,10 @@ case "$status" in
     printf 'gp version refused (exit 1): the installed graftpunk is older than %s, or gp\n' \
       "$SKILL_REQUIRES_GRAFTPUNK" >&2
     printf 'could not read the version floor or a --contract value this skill passed.\n' >&2
-    printf "gp's message, when it gave one, says which:\n" >&2
-    cat "$errfile" >&2
+    if [ -s "$errfile" ]; then
+      printf "gp's message says which:\n" >&2
+      cat "$errfile" >&2
+    fi
     printf 'When graftpunk is older, upgrade it: %s\n' "$UPGRADE_LINE" >&2
     exit 1
     ;;
