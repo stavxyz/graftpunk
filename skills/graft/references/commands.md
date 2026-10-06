@@ -90,7 +90,7 @@ uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-com
 ### Kick the tires
 
 The login and command lines touch the live site; the skill asks in words before
-either runs, whatever the settings allow. `<command>` is an agreed read-only one.
+either runs, whatever the settings allow; `<command>` is agreed and read-only.
 
 ```bash
 uv run --no-project --with-editable . gp <site-name> --help
