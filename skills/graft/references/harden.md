@@ -15,15 +15,20 @@ answers 404.
 Then hand the copies to the user, as with the recording: list each copy's path
 and ask them to replace every value in it with an invented one, keeping its
 structure, and to leave its sidecar alone (guide: Deriving a fixture from a
-capture). Wait until they say it is done. Then run the project's tests: the
-generated suite checks every fixture on every run and names each one that is
-still a copy of its capture or holds a flagged name. Give any it names back to
-the user. Read a fixture only once that check passes for it, to write its test.
+capture). Wait until they say every value is replaced. Then run the gate's
+`pytest` line through the runner in the Harden block of
+`references/commands.md`: the generated suite checks every fixture on every run
+and names each one that is still byte for byte its capture or holds a flagged
+cookie or token name. Give any it names back to the user. That check proves only
+that the user changed the file, not that every value is invented, so the user's
+word is what clears a fixture: read one only after they have said its values are
+replaced and the check passes for it, to write its test.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
 and its sidecar yourself, with invented values in the shape the projection gives
 (guide: Test against fixtures, not against the site); it holds nothing from the
-account.
+account. When the projection's shape reads `shape unavailable` (a body too large
+to sample), ask the user to write that fixture by hand.
 
 ## A test per command
 

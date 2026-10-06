@@ -9,8 +9,8 @@ allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/preflight.sh *)
 
 You are taking a developer through `docs/PLUGIN_DEVELOPMENT.md` in the graftpunk
 repository, called "the guide" below. The guide is the reference and this skill
-is a route through it: when the two disagree, the guide wins. Two modes share one
-flow. Create mode starts from an empty directory and ends with a new plugin
+is a route through it: when the two disagree, the guide wins. Two modes share
+one flow. Create mode starts from an empty directory and ends with a new plugin
 project. Enhance mode starts inside an existing plugin project and adds commands
 to it.
 
@@ -36,9 +36,9 @@ credential.
 
 Run `${CLAUDE_SKILL_DIR}/scripts/preflight.sh` first, on every invocation. If it
 exits non-zero, show its message verbatim and stop. On exit 0 it prints one JSON
-object, `{"installation": ..., "project": ...}`, and `project.directory` picks the
-mode: `empty` is create mode, `plugin` is enhance mode. For `foreign`, stop and
-say: "this directory holds a project that is not a graftpunk plugin; run the
+object, `{"installation": ..., "project": ...}`, and `project.directory` picks
+the mode: `empty` is create mode, `plugin` is enhance mode. For `foreign`, stop
+and say: "this directory holds a project that is not a graftpunk plugin; run the
 skill in an empty directory or in the plugin's project".
 
 Your first message after preflight offers the allow rules under "Allow rules
@@ -156,7 +156,7 @@ the references hold the details.
 Never ask for a password, never write a credential anywhere, and never print
 what `gp config get --resolve` returns. Never read a value that came off the
 account: not a cookie or token value, not a HAR body, not a capture, and not a
-fixture until the user has replaced its values and the suite's check passes.
-From a recording, read the `--endpoints-json` projection and nothing else.
-When the user pastes a secret into the conversation, say where it belongs
+fixture until the user says its values are replaced and the suite's check
+passes. From a recording, read the `--endpoints-json` projection and nothing
+else. When the user pastes a secret into the conversation, say where it belongs
 (`gp config set NAME '$(your-secret-tool read ...)'`) and do not use it.
