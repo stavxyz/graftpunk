@@ -68,8 +68,7 @@ by number: "Step: scaffold. Done: ...; next: ...". Ask one question at a time.
 When a `gp` command fails, show its output verbatim, find the cause in the guide
 section the step cites, fix it, and run the step again once. If it fails again,
 show that output too and stop for the user. Never skip a step, and never
-summarise a failure away. Read a reference only at the step that names
-it.
+summarise a failure away. Read a reference only at the step that names it.
 
 ## The steps
 
@@ -109,18 +108,18 @@ it.
    for the live site and the login; an allow rule does not stand in for it. On
    yes, set up the credentials before anything runs: the login reads each field
    of the plugin's `LoginConfig` from an environment variable named for the
-   `site_name` in capitals (hyphens become underscores), an underscore, and the
-   field name in capitals (a plugin's `username_envvar` or `password_envvar`
-   names that field's variable instead), and prompts on the terminal for one it
-   cannot find, which in this session aborts the login. Print one `gp config
-   set` line per field with a placeholder value, never a real one, and wait
-   until the user says they have run them. Then run the help line of the Kick
-   the tires block in `references/commands.md` and confirm every agreed command
-   name is listed, then its login line, then its read-only command line with one
-   read-only command from the agreed proposal, against the live site while the
-   user watches. If the login fails, diagnose it against the guide's Login
-   section, adjust the plugin's `LoginConfig`, and try once more; if it fails
-   again, show the output and stop for the user.
+   `site_name` in capitals (hyphens and spaces become underscores), an
+   underscore, and the field name in capitals (a plugin's `username_envvar` or
+   `password_envvar` names that field's variable instead), and prompts on the
+   terminal for one it cannot find, which in this session aborts the login.
+   Print one `gp config set` line per field with a placeholder value, never a
+   real one, and wait until the user says they have run them. Then run the help
+   line of the Kick the tires block in `references/commands.md` and confirm
+   every agreed command name is listed, then its login line, then its read-only
+   command line with one read-only command from the agreed proposal, against the
+   live site while the user watches. If the login fails, diagnose it against the
+   guide's Login section, adjust the plugin's `LoginConfig`, and try once more;
+   if it fails again, show the output and stop for the user.
 8. **Publish checklist** (guide: Before you publish). Read that section of the
    guide. Its first item, the gate, already holds after the harden step. Walk
    the rest as the guide lists them, fix what you can, and stop with the items
@@ -145,12 +144,12 @@ the references hold the details.
   can say whether a proposed row duplicates it. Never drop or propose over an
   undeclared command silently.
 - Scaffold does not run `gp plugin new`. For each agreed command it runs the
-  `gp plugin add-command` line of the Scaffold block in `references/commands.md`,
-  with the chosen session and run, which adds one stub in the generated shape
-  and writes no test; its `Next:` line names the fixture that test should read,
-  or says `gp observe fixtures` writes none for that endpoint. Act on gp's
-  output as `references/harden.md` says ("The gate"); that file also says what
-  the harden step does for each added command.
+  `gp plugin add-command` line of the Scaffold block in
+  `references/commands.md`, with the chosen session and run, which adds one stub
+  in the generated shape and writes no test; its `Next:` line names the fixture
+  that test should read, or says `gp observe fixtures` writes none for that
+  endpoint. Act on gp's output as `references/harden.md` says ("The gate"); that
+  file also says what the harden step does for each added command.
 - The publish checklist is limited to the items the new commands touch.
 
 ## Secrets
