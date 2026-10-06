@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import pytest
 import requests
-import structlog
-from structlog.testing import capture_logs
 
 import graftpunk.cache as cache_mod
 from graftpunk.cache import (
@@ -37,21 +35,6 @@ from graftpunk.plugins.cli_plugin import SitePlugin
 from graftpunk.session import BrowserSession
 from graftpunk.session_identity import GP_ACCOUNT_ATTR, GP_SESSION_NAME_ATTR
 from graftpunk.session_scope import operating_session
-
-
-@pytest.fixture
-def captured_logs():  # noqa: ANN201
-    """``capture_logs()`` with graftpunk's import-time WARNING filter lifted.
-
-    ``graftpunk.logging.ensure_library_defaults()`` runs at import and installs
-    a filtering bound logger at WARNING, which ``capture_logs`` keeps — so
-    INFO events would never reach the capture. ``reset_defaults()`` restores
-    structlog's unfiltered builtins (the autouse ``_reset_structlog`` fixture
-    does the same after every test, so this changes nothing for its neighbours).
-    """
-    structlog.reset_defaults()
-    with capture_logs() as logs:
-        yield logs
 
 
 def _cached_session(account: str) -> BrowserSession:

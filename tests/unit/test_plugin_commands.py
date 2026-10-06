@@ -1,5 +1,6 @@
 """Tests for plugin CLI command registration."""
 
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +22,7 @@ from graftpunk.plugins.cli_plugin import (
     SitePlugin,
     command,
 )
-from tests.unit.cli_harness import echo_loaded_session
+from tests.unit.cli_harness import echo_loaded_session, strip_ansi
 
 DISCOVER_ALL = "graftpunk.cli.plugin_commands.discover_all_plugins"
 
@@ -1802,7 +1803,7 @@ def logged(fn):
 _RESOLVING_PLUGIN = """\
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Optional
 
 from graftpunk.plugins import CommandContext, SitePlugin, command
 from wrapping import logged
@@ -1821,6 +1822,8 @@ class Shop(SitePlugin):
         self,
         ctx: CommandContext,
         tagged: Annotated[int, "a note"] = 0,
+        nested: Optional[Annotated[int, "a note"]] = None,
+        quoted: "int" = 0,
         local: Count = 0,
         page: int = 0,
     ) -> dict:
@@ -1828,25 +1831,59 @@ class Shop(SitePlugin):
 """
 
 
-def _load_module(tmp_path: Path, name: str, source: str) -> Any:
-    """Import *source* as module *name* from a file under *tmp_path*, so its
-    annotations are whatever the file's own imports make them."""
+_LAZY_PLUGIN = """\
+from typing import TYPE_CHECKING
+
+from graftpunk.plugins import CommandContext, SitePlugin, command
+
+if TYPE_CHECKING:
+    from decimal import Decimal
+
+
+def make():
+    Local = int
+
+    class Shop(SitePlugin):
+        site_name = "shop-lazy"
+        session_name = "shop-lazy"
+        base_url = "https://example.com"
+        requires_session = False
+
+        @command(help="probe")
+        def probe(
+            self, ctx: CommandContext, page: int = 0, local: Local = 0, price: Decimal | None = None
+        ) -> dict:
+            return {}
+
+    return Shop()
+"""
+
+
+@pytest.fixture
+def load_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Import a source string as a named module from a file under *tmp_path*, so its
+    annotations are whatever the file's own imports make them. The module is in
+    ``sys.modules`` (another module can import it) until the test ends."""
     import importlib.util
     import sys
 
-    path = tmp_path / f"{name}.py"
-    path.write_text(source, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    def load(name: str, source: str) -> Any:
+        path = tmp_path / f"{name}.py"
+        path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, name, module)
+        spec.loader.exec_module(module)
+        return module
+
+    return load
 
 
-def _future_plugin(tmp_path: Path) -> Any:
+@pytest.fixture
+def future_plugin(load_module: Any) -> Any:
     """The future-annotations plugin module, imported from a file and instantiated."""
-    return _load_module(tmp_path, "future_plugin", _FUTURE_ANNOTATIONS_PLUGIN).Shop()
+    return load_module("future_plugin", _FUTURE_ANNOTATIONS_PLUGIN).Shop()
 
 
 def _invoke(plugin: Any, argv: list[str]) -> tuple[Any, dict[str, Any]]:
@@ -1869,8 +1906,8 @@ def _invoke(plugin: Any, argv: list[str]) -> tuple[Any, dict[str, Any]]:
 class TestIntrospectParamsUnderFutureAnnotations:
     """String annotations resolve to the types they name (#194, #208)."""
 
-    def test_each_annotation_maps_to_its_option_type(self, tmp_path: Path) -> None:
-        plugin = _future_plugin(tmp_path)
+    def test_each_annotation_maps_to_its_option_type(self, future_plugin: Any) -> None:
+        plugin = future_plugin
         specs = {s.name: s.click_kwargs for s in plugin._introspect_params(plugin.probe)}
         types = {name: kw["type"] for name, kw in specs.items()}
         assert types == {
@@ -1888,8 +1925,8 @@ class TestIntrospectParamsUnderFutureAnnotations:
             "price": str,
         }
 
-    def test_bool_flags_take_the_spelling_their_default_needs(self, tmp_path: Path) -> None:
-        plugin = _future_plugin(tmp_path)
+    def test_bool_flags_take_the_spelling_their_default_needs(self, future_plugin: Any) -> None:
+        plugin = future_plugin
         specs = {s.name: s.click_kwargs for s in plugin._introspect_params(plugin.probe)}
         assert specs["dry"]["is_flag"] is True
         assert "flag" not in specs["dry"]
@@ -1915,53 +1952,53 @@ class TestIntrospectParamsUnderFutureAnnotations:
         ],
     )
     def test_the_handler_receives_typed_values(
-        self, tmp_path: Path, argv: list[str], expected: dict[str, Any]
+        self, future_plugin: Any, argv: list[str], expected: dict[str, Any]
     ) -> None:
-        result, seen = _invoke(_future_plugin(tmp_path), argv)
+        result, seen = _invoke(future_plugin, argv)
         assert result.exit_code == 0, result.output
         got = {name: seen[name] for name in expected}
         assert got == expected
         assert all(type(got[n]) is type(expected[n]) for n in expected)
 
-    def test_a_required_bool_is_a_required_negatable_flag(self, tmp_path: Path) -> None:
-        plugin = _load_module(
-            tmp_path, "required_bool", _PLAIN_PLUGIN.format(params="confirm: bool")
-        ).Shop()
+    def test_a_required_bool_is_a_required_negatable_flag(self, load_module: Any) -> None:
+        plugin = load_module("required_bool", _PLAIN_PLUGIN.format(params="confirm: bool")).Shop()
         missing, _ = _invoke(plugin, [])
         assert missing.exit_code == 2
-        assert "Missing option '--confirm'" in missing.output
+        assert "Missing option '--confirm'" in strip_ansi(missing.output)
         for argv, expected in (["--confirm"], True), (["--no-confirm"], False):
             result, seen = _invoke(plugin, argv)
             assert result.exit_code == 0, result.output
             assert seen["confirm"] is expected
 
-    @pytest.mark.parametrize(
-        ("params", "argv", "expected"),
-        [
-            pytest.param(
-                "cache: bool = True, no_cache: str = ''", ["--cache-false"], False, id="no-x-taken"
-            ),
-            pytest.param(
-                "cache: bool | None = None, no_cache: str = '', cache_false: str = ''",
-                ["--cache"],
-                True,
-                id="both-taken",
-            ),
-        ],
-    )
-    def test_a_taken_negative_falls_back_as_the_scaffold_does(
-        self, tmp_path: Path, params: str, argv: list[str], expected: bool
-    ) -> None:
-        plugin = _load_module(
-            tmp_path, "taken_negative", _PLAIN_PLUGIN.format(params=params)
+    def test_a_taken_no_x_gives_the_x_false_negative(self, load_module: Any) -> None:
+        plugin = load_module(
+            "taken_no_x", _PLAIN_PLUGIN.format(params="cache: bool = True, no_cache: str = ''")
         ).Shop()
-        result, seen = _invoke(plugin, argv)
-        assert result.exit_code == 0, result.output
-        assert seen["cache"] is expected
+        for argv, expected in ([], True), (["--cache-false"], False), (["--cache"], True):
+            result, seen = _invoke(plugin, argv)
+            assert result.exit_code == 0, result.output
+            assert seen["cache"] is expected
 
-    def test_optional_annotations_resolve_without_the_future_import(self, tmp_path: Path) -> None:
-        plugin = _load_module(
-            tmp_path,
+    def test_a_bool_with_no_free_negative_stays_a_str_option_and_says_why(
+        self, load_module: Any, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        plugin = load_module(
+            "taken_both",
+            _PLAIN_PLUGIN.format(
+                params="cache: bool = True, no_cache: str = '', cache_false: str = ''"
+            ),
+        ).Shop()
+        (cache,) = [s for s in plugin.get_commands()[0].params if s.name == "cache"]
+        assert cache.click_kwargs["type"] is str
+        (event,) = [
+            e for e in captured_logs if e["event"] == "introspected_bool_option_kept_as_str"
+        ]
+        assert event["log_level"] == "warning"
+        assert event["handler"] == "Shop.probe"
+        assert event["option"] == "--cache"
+
+    def test_optional_annotations_resolve_without_the_future_import(self, load_module: Any) -> None:
+        plugin = load_module(
             "plain_optional",
             _PLAIN_PLUGIN.format(
                 params="page: int | None = None, size: Optional[int] = None, "
@@ -1972,34 +2009,69 @@ class TestIntrospectParamsUnderFutureAnnotations:
         assert result.exit_code == 0, result.output
         assert (seen["page"], seen["size"], seen["archived"]) == (2, 3, False)
 
-    # A mismatched default keeps the str option it had before annotations were
-    # resolved, so the handler gets what it got then: the default through str.
+    # A default the type cannot take keeps the str option such a command had
+    # before, so the handler gets what it got then: the default through str. A
+    # default the type converts keeps the type, as it did without the future import.
+    @pytest.mark.parametrize("header", ["", _FUTURE_HEADER], ids=["plain", "future"])
     @pytest.mark.parametrize(
         ("params", "argv", "name", "expected"),
         [
             pytest.param("limit: int = 'all'", [], "limit", "all", id="str-default-on-int"),
-            pytest.param("n: bool = 0", [], "n", "0", id="int-default-on-bool"),
             pytest.param("ratio: float = 2", ["--ratio", "0.5"], "ratio", 0.5, id="int-on-float"),
+            pytest.param(
+                "page: int = '1'", ["--page", "5"], "page", 5, id="convertible-str-on-int"
+            ),
+            pytest.param("n: int = 1.0", ["--n", "3"], "n", 3, id="float-on-int"),
+            pytest.param("n: int = True", [], "n", 1, id="bool-on-int"),
         ],
     )
-    def test_a_default_the_type_cannot_take_keeps_the_command_running(
-        self, tmp_path: Path, params: str, argv: list[str], name: str, expected: Any
+    def test_a_default_keeps_the_command_running_as_before(
+        self,
+        load_module: Any,
+        header: str,
+        params: str,
+        argv: list[str],
+        name: str,
+        expected: Any,
     ) -> None:
-        plugin = _load_module(
-            tmp_path, "mismatch", _FUTURE_HEADER + _PLAIN_PLUGIN.format(params=params)
-        ).Shop()
+        plugin = load_module("defaults", header + _PLAIN_PLUGIN.format(params=params)).Shop()
         result, seen = _invoke(plugin, argv)
         assert result.exit_code == 0, result.output
         assert seen[name] == expected
+        assert type(seen[name]) is type(expected)
 
-    def test_annotated_class_local_and_wrapped_handlers_resolve(self, tmp_path: Path) -> None:
-        _load_module(tmp_path, "wrapping", _WRAPPING_DECORATOR)
-        plugin = _load_module(tmp_path, "resolving", _RESOLVING_PLUGIN).Shop()
-        specs = {s.name: s.click_kwargs["type"] for s in plugin.get_commands()[0].params}
-        assert specs == {"tagged": int, "local": int, "page": int}
-        result, seen = _invoke(plugin, ["--tagged", "1", "--local", "2", "--page", "3"])
+    def test_an_int_default_on_a_bool_stays_a_str_option(self, load_module: Any) -> None:
+        # Without the future import this was refused at registration ("bool options
+        # must be flags"); under it, it was a str option. It stays one.
+        plugin = load_module(
+            "int_on_bool", _FUTURE_HEADER + _PLAIN_PLUGIN.format(params="n: bool = 0")
+        ).Shop()
+        result, seen = _invoke(plugin, [])
         assert result.exit_code == 0, result.output
-        assert (seen["tagged"], seen["local"], seen["page"]) == (1, 2, 3)
+        assert seen["n"] == "0"
+
+    def test_annotated_quoted_class_local_and_wrapped_handlers_resolve(
+        self, load_module: Any
+    ) -> None:
+        load_module("wrapping", _WRAPPING_DECORATOR)
+        plugin = load_module("resolving", _RESOLVING_PLUGIN).Shop()
+        specs = {s.name: s.click_kwargs["type"] for s in plugin.get_commands()[0].params}
+        assert specs == {"tagged": int, "nested": int, "quoted": int, "local": int, "page": int}
+        argv = ["--tagged", "1", "--nested", "2", "--quoted", "3", "--local", "4", "--page", "5"]
+        result, seen = _invoke(plugin, argv)
+        assert result.exit_code == 0, result.output
+        got = [seen[n] for n in ("tagged", "nested", "quoted", "local", "page")]
+        assert got == [1, 2, 3, 4, 5]
+
+    @pytest.mark.skipif(sys.version_info < (3, 14), reason="lazy annotations arrived in 3.14")
+    def test_lazy_annotations_resolve_each_on_its_own(self, load_module: Any) -> None:
+        # No future import: on 3.14 the annotations are evaluated lazily, so a
+        # TYPE_CHECKING-only name would fail the whole signature if it were read
+        # eagerly, and a closure name must still resolve.
+        module = load_module("lazy", _LAZY_PLUGIN)
+        plugin = module.make()
+        specs = {s.name: s.click_kwargs["type"] for s in plugin.get_commands()[0].params}
+        assert specs == {"page": int, "local": int, "price": str}
 
 
 class TestIntrospectParamsClickKwargs:

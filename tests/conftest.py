@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import structlog
 from structlog._config import BoundLoggerLazyProxy
+from structlog.testing import capture_logs
 
 # Add src directory to sys.path for test imports
 src_dir = Path(__file__).parent.parent / "src"
@@ -117,3 +118,18 @@ def gp_logging() -> None:
     from graftpunk.logging import configure_logging
 
     configure_logging(level="WARNING")
+
+
+@pytest.fixture
+def captured_logs():  # noqa: ANN201
+    """``capture_logs()`` with graftpunk's import-time WARNING filter lifted.
+
+    ``graftpunk.logging.ensure_library_defaults()`` runs at import and installs
+    a filtering bound logger at WARNING, which ``capture_logs`` keeps, so
+    INFO events would never reach the capture. ``reset_defaults()`` restores
+    structlog's unfiltered builtins (the autouse ``_reset_structlog`` fixture
+    does the same after every test, so this changes nothing for its neighbours).
+    """
+    structlog.reset_defaults()
+    with capture_logs() as logs:
+        yield logs
