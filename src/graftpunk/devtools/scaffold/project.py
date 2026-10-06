@@ -14,12 +14,22 @@ from pathlib import Path
 
 from graftpunk.devtools.captures_rule import CAPTURES_DIR, with_ignored
 from graftpunk.devtools.errors import DevtoolsRefusal
+from graftpunk.devtools.scaffold.policy import FIXTURES_PLACEHOLDER, module_name_for
 from graftpunk.devtools.scaffold.pyproject_edit import (
+    CannotRaiseFloor,
+    DynamicDependencies,
     PyprojectEditError,
+    RaisedFloor,
     with_entry_point,
+    with_graftpunk_floor,
     with_wheel_package,
 )
-from graftpunk.devtools.scaffold.render import ScaffoldSpec, class_name_for, module_name_for, render
+from graftpunk.devtools.scaffold.render import (
+    ScaffoldSpec,
+    class_name_for,
+    graftpunk_version_floor,
+    render,
+)
 from graftpunk.devtools.scaffold.write import (
     ChangeConflictError,
     InvalidChangeError,
@@ -32,6 +42,7 @@ from graftpunk.devtools.scaffold.write import (
     validate_toml,
 )
 from graftpunk.logging import get_logger
+from graftpunk.plugins import PLUGINS_GROUP
 
 LOG = get_logger(__name__)
 
@@ -39,15 +50,34 @@ __all__ = [
     "NotAPluginSuiteError",
     "ScaffoldConflictError",
     "ScaffoldResult",
+    "planned_graftpunk_floor",
     "write_scaffold",
 ]
-
-PLUGINS_ENTRY_POINT_GROUP = "graftpunk.plugins"
 
 
 ScaffoldConflictError = ChangeConflictError
 """A target path already exists; nothing was written. The writer's own error, under
 the name the CLI and callers of ``write_scaffold`` already catch."""
+
+
+def planned_graftpunk_floor(
+    root: Path,
+) -> tuple[RaisedFloor | CannotRaiseFloor | DynamicDependencies | None, list[PlannedChange]]:
+    """What a write adding code that needs the running graftpunk does to *root*'s
+    ``pyproject.toml``: :func:`with_graftpunk_floor`'s verdict at
+    :func:`graftpunk_version_floor`, and the edit to put in the same
+    ``apply_changes`` call as that code (empty unless the verdict is a raise).
+
+    Raises:
+        InvalidChangeError: ``pyproject.toml`` is not UTF-8 text.
+        OSError: ``pyproject.toml`` cannot be read.
+    """
+    path = root / "pyproject.toml"
+    original = read_original(path)
+    verdict = with_graftpunk_floor(original, graftpunk_version_floor())
+    if not isinstance(verdict, RaisedFloor):
+        return verdict, []
+    return verdict, [PlannedChange(path, verdict.text, original=original, validate=validate_toml)]
 
 
 def _validator_for(relative: str) -> Validator | None:
@@ -100,7 +130,7 @@ def _declares_plugin_group(pyproject_text: str, pyproject_path: Path) -> bool:
     # string entry-points would otherwise pass a substring test.
     project = data.get("project")
     entry_points = project.get("entry-points") if isinstance(project, dict) else None
-    return isinstance(entry_points, dict) and PLUGINS_ENTRY_POINT_GROUP in entry_points
+    return isinstance(entry_points, dict) and PLUGINS_GROUP in entry_points
 
 
 def write_scaffold(
@@ -143,7 +173,7 @@ def write_scaffold(
     if existing is not None and not _declares_plugin_group(original, existing):
         raise NotAPluginSuiteError(
             f"{existing} exists but does not declare "
-            f'[project.entry-points."{PLUGINS_ENTRY_POINT_GROUP}"]. '
+            f'[project.entry-points."{PLUGINS_GROUP}"]. '
             "This does not look like a graftpunk plugin suite. Use --new to start a fresh "
             "project in a different directory, or add the entry-point group by hand."
         )
@@ -160,7 +190,10 @@ def write_scaffold(
         files = {
             relative: content
             for relative, content in files.items()
-            if not (relative.endswith("/.gitkeep") and (target_dir / relative).parent.is_dir())
+            if not (
+                relative.endswith(f"/{FIXTURES_PLACEHOLDER}")
+                and (target_dir / relative).parent.is_dir()
+            )
         }
 
     rendered = [

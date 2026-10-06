@@ -7,7 +7,17 @@ import ast
 from pathlib import Path
 
 import graftpunk.devtools.scaffold.policy as policy
-from graftpunk.devtools.scaffold.policy import FIXTURES_TREE, TESTS_DIR, fixtures_root
+from graftpunk.devtools.scaffold.policy import (
+    CONFTEST_PATH,
+    FIXTURES_PLACEHOLDER,
+    FIXTURES_TREE,
+    GP_FILL_MARKER,
+    PROJECT_REQUIREMENTS,
+    TESTS_DIR,
+    ProjectRequirement,
+    fixtures_root,
+    module_name_for,
+)
 
 
 def test_the_tree_lies_under_the_tests_directory() -> None:
@@ -62,3 +72,177 @@ def test_policy_imports_nothing_that_touches_the_filesystem() -> None:
         if name == module or name.startswith(f"{module}.")
     )
     assert touching == []
+
+
+class TestProjectRequirements:
+    def test_the_conftest_binds_the_tree_and_the_check(self) -> None:
+        assert f"{TESTS_DIR}conftest.py" == CONFTEST_PATH
+        assert [(r.path, r.name) for r in PROJECT_REQUIREMENTS] == [
+            (CONFTEST_PATH, "FIXTURES_TREE"),
+            (CONFTEST_PATH, "sanitised_fixtures"),
+        ]
+
+    def test_each_statement_binds_its_own_name(self) -> None:
+        for requirement in PROJECT_REQUIREMENTS:
+            assert requirement.statement.startswith(f"{requirement.name} = ")
+
+    def test_the_tree_statement_names_the_policy_tree(self) -> None:
+        tree = next(r for r in PROJECT_REQUIREMENTS if r.name == "FIXTURES_TREE")
+        assert tree.statement == 'FIXTURES_TREE = Path(__file__).parent / "fixtures"'
+        assert FIXTURES_TREE == "tests/fixtures/"
+
+    def test_the_key(self) -> None:
+        assert ProjectRequirement(path="a.py", name="x", statement="x = 1").key == "a.py:x"
+
+    def test_every_requirement_targets_the_conftest_the_renderer_emits_into(self) -> None:
+        """render.py's _render_conftest filters PROJECT_REQUIREMENTS to the entries
+        whose path is CONFTEST_PATH; a requirement declared for another file would
+        silently not render, so this is the assertion that makes that limit visible
+        before it bites, not after."""
+        assert all(r.path == CONFTEST_PATH for r in PROJECT_REQUIREMENTS)
+
+
+def test_the_placeholder_is_the_testing_layers() -> None:
+    from graftpunk.testing import sidecar
+
+    assert FIXTURES_PLACEHOLDER is sidecar.FIXTURES_PLACEHOLDER
+
+
+def _group_literals(tree: ast.Module, group: str) -> list[int]:
+    """The lines where *tree* spells *group* in one of the group's two uses, outside
+    docstrings: inside a TOML table header (a literal holding the group in double
+    quotes), or as the key of an entry-point lookup (``.get(group)`` or
+    ``group=group``). The same text as an import path is not counted."""
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+    }
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+            and f'"{group}"' in node.value
+        ):
+            lines.append(node.lineno)
+        elif isinstance(node, ast.Call):
+            lookup = isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+            keys = [*(node.args[:1] if lookup else [])]
+            keys += [k.value for k in node.keywords if k.arg == "group"]
+            lines += [k.lineno for k in keys if isinstance(k, ast.Constant) and k.value == group]
+    return lines
+
+
+def test_the_marker_and_the_module_name_rule_live_here() -> None:
+    """Policy is the rule's one home: the renderer calls it through policy and
+    re-exports nothing, so no importer can reach it by a second route."""
+    import graftpunk.devtools.scaffold.render as render_module
+
+    assert GP_FILL_MARKER == "GP-FILL"
+    assert module_name_for("My-Shop.v2") == "my_shop_v2"
+    assert "module_name_for" not in render_module.__all__
+    assert not hasattr(render_module, "module_name_for")
+
+
+def test_the_entry_point_group_is_spelled_in_one_module() -> None:
+    """The group is the runtime's (graftpunk.plugins.PLUGINS_GROUP), and its two uses,
+    a TOML table header and an entry-point lookup, read that constant everywhere.
+    The renderer's _PLUGINS_MODULE, the package a generated plugin imports from,
+    is the same text as an import path, a different fact, and is not counted."""
+    import graftpunk
+    from graftpunk.plugins import PLUGINS_GROUP
+
+    assert PLUGINS_GROUP == "graftpunk.plugins"
+    package = Path(graftpunk.__file__).parent
+    spelled = [
+        f"{path.relative_to(package).as_posix()}:{line}"
+        for path in sorted(package.rglob("*.py"))
+        for line in _group_literals(ast.parse(path.read_text(encoding="utf-8")), PLUGINS_GROUP)
+    ]
+    assert spelled == []
+
+
+def test_the_reserved_command_names_are_the_root_commands_registration_adds() -> None:
+    """devtools does not import graftpunk.cli, so policy keeps its own copy."""
+    from graftpunk.cli.plugin_commands import AUTO_ROOT_COMMAND_NAMES
+
+    assert set(policy._AUTO_ROOT_COMMAND_NAMES) == set(AUTO_ROOT_COMMAND_NAMES)
+
+
+def test_generated_module_names_matches_a_maximal_rendered_modules_top_level() -> None:
+    """GENERATED_MODULE_NAMES names every module-level binding a generated plugin
+    module can carry: a spec with a login form, a paired token, and an endpoint
+    with a typed query parameter and a path placeholder triggers every optional
+    import at once, and this pins the constant against what the render actually
+    binds. Lives here rather than beside the render tests because it pins a
+    policy constant; the endpoint/login-form/token shapes below are the
+    smallest inputs that trigger every optional import together, kept local
+    to this test rather than imported from test_scaffold_render.py's own
+    (private) fixtures."""
+    from graftpunk.devtools.scaffold.render import ScaffoldSpec, render
+    from graftpunk.har.digest import (
+        DigestSource,
+        Endpoint,
+        LoginForm,
+        RunDigest,
+        ShapeNode,
+        TokenCandidate,
+    )
+
+    endpoint = Endpoint(
+        host="api.myshop.example.com",
+        template="/orders/{order_id}",
+        methods=("GET",),
+        count=5,
+        statuses=(200,),
+        content_type="application/json",
+        query_params={"page": "int"},
+        body_params={},
+        body_kind="none",
+        shape=ShapeNode(kind="object", children={"id": ShapeNode(kind="number")}),
+        custom_headers=("X-Shop-Client",),
+        examples=("/orders/1",),
+    )
+    login_form = LoginForm(
+        action="/login",
+        method="POST",
+        fields={"username": "#email", "password": "#pw"},
+        submit="#login-btn",
+        hidden=("_token",),
+        source="page-source.html",
+    )
+    header_token = TokenCandidate(kind="header", name="X-CSRF-Token", seen_on=("GET /dashboard",))
+    cookie_token = TokenCandidate(kind="cookie", name="X-CSRF-Token", seen_on=("GET /dashboard",))
+    run_digest = RunDigest(
+        source=DigestSource(har_path=Path("network.har"), session="myshop", run_id="run-1"),
+        primary_host="api.myshop.example.com",
+        hosts={"api.myshop.example.com": 3},
+        endpoints=(endpoint,),
+        login=(),
+        login_forms=(login_form,),
+        tokens=(header_token, cookie_token),
+        cookies=(),
+        dropped={"static": 0, "third_party": 0, "error": 0},
+    )
+    spec = ScaffoldSpec(
+        name="myshop",
+        mode="new_project",
+        backend="nodriver",
+        base_url="https://myshop.example.com",
+        digest=run_digest,
+    )
+    plugin_code = render(spec)["src/graftpunk_myshop/plugin.py"]
+    tree = ast.parse(plugin_code)
+    bound = {
+        alias.asname or alias.name.split(".")[0]
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
+        for alias in node.names
+    }
+    builtins_referenced = {"int", "float", "bool", "str", "list", "dict"}
+    assert bound | builtins_referenced == policy.GENERATED_MODULE_NAMES

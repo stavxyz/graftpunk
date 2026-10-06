@@ -47,7 +47,12 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
       load() re-reads from THIS test's config dir instead of whatever was
       cached under a previous config dir (collection-time or another test's)
     """
-    config_dir = tmp_path / "graftpunk"
+    # Dot-prefixed: plugin_project.first_party_packages now scans tmp_path's
+    # own top-level entries to match ruff's first-party detection, and a
+    # sibling directory literally named "graftpunk" would be misread as the
+    # project's own first-party package instead of the installed dependency
+    # by any test that builds a scratch project directly in tmp_path.
+    config_dir = tmp_path / ".graftpunk-test-config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     # Set environment variable for config directory
@@ -77,10 +82,17 @@ def _reset_structlog():
     the test, CliRunner closes the file. We reset structlog to prevent stale
     references.
 
+    It also resets before each test: importing ``graftpunk.cli.main`` (which
+    test collection does) runs ``configure_logging()``, so without this the
+    first test on each xdist worker sees the CLI's configuration while every
+    later test sees structlog's defaults, and a test that reads structlog's
+    default stdout output passes or fails by which worker ran it first.
+
     Note: With cache_logger_on_first_use=False (our current setting), the
     bind-cache clearing loop below is no longer strictly necessary, but we
     keep it as defense-in-depth in case caching is re-enabled.
     """
+    structlog.reset_defaults()
     yield
     structlog.reset_defaults()
     for module in list(sys.modules.values()):

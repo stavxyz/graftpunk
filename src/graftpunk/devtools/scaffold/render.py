@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
 
+import graftpunk
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.scaffold import policy
+from graftpunk.devtools.scaffold.policy import GP_FILL_MARKER
 from graftpunk.devtools.scaffold.pysrc import (
     GENERATED_LINE_LENGTH,
     INDENT_STEP,
@@ -33,9 +35,17 @@ from graftpunk.devtools.scaffold.pysrc import (
     literal_lines,
     quoted_literal,
     url_expr_lines,
+    with_bindings,
     wrapped_comment_lines,
     wrapped_docstring_block,
     wrapped_docstring_lines,
+)
+from graftpunk.devtools.scaffold.selection import (
+    MAX_COMMAND_NAME,
+    CommandSelection,
+    CommandSelectionError,
+    PlannedCommand,
+    planned_commands,
 )
 from graftpunk.har.digest import (
     SHAPE_UNAVAILABLE,
@@ -54,16 +64,18 @@ from graftpunk.har.paths import (
     templates_a_segment,
 )
 from graftpunk.har.report import summarize_shape
-from graftpunk.plugins.cli_plugin import SitePlugin
+from graftpunk.plugins import PLUGINS_GROUP
 
 __all__ = [
     "PLUGIN_NAME_RE",
+    "RenderedCommand",
     "ScaffoldSpec",
     "class_name_for",
     "fixture_paths",
     "fixtures_root_for",
-    "module_name_for",
+    "graftpunk_version_floor",
     "render",
+    "render_command",
     "validate_plugin_name",
 ]
 
@@ -80,14 +92,14 @@ _TYPED_LIST_ELEMENTS = ("int", "float")
 _SCAFFOLD_SHAPE_DEPTH = 1
 
 
-# The three caps that bound every identifier the generator derives from site
-# data or from the user's chosen name. Wrapping alone cannot keep a generated
-# line inside the generated width when the line is one identifier (a def, a
-# call, an assignment target): ruff format never splits an identifier and
-# E501 still applies, so the identifiers are bounded at the point they are
-# derived instead.
+# The caps that bound every identifier the generator derives from site data or
+# from the user's chosen name. Wrapping alone cannot keep a generated line
+# inside the generated width when the line is one identifier (a def, a call,
+# an assignment target): ruff format never splits an identifier and E501 still
+# applies, so the identifiers are bounded at the point they are derived
+# instead. MAX_COMMAND_NAME is selection.py's own cap (an explicit selection
+# is checked there too), imported back here for _command_name.
 _MAX_PLUGIN_NAME = 40
-_MAX_COMMAND_NAME = 40
 _MAX_PARAM_NAME = 40
 
 # Where a camelCase site name becomes a snake_case Python identifier: after a
@@ -97,6 +109,11 @@ _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]
 
 # The methods whose stub carries a JSON body dict.
 _MUTATING_METHODS = ("POST", "PUT", "PATCH")
+
+# The package a generated plugin imports its API from: an import path. It is the
+# same text as the entry-point group (graftpunk.plugins.PLUGINS_GROUP), but a
+# different fact, and the group test counts only the group's own uses.
+_PLUGINS_MODULE = "graftpunk.plugins"
 
 # The observed types an explicit PluginParamSpec entry carries, each with the
 # keywords its entry adds after the name. A stub with a parameter of one of these
@@ -148,17 +165,6 @@ def validate_plugin_name(name: str) -> None:
         )
 
 
-def module_name_for(name: str) -> str:
-    """*name*, lowercased with every run of non-alphanumeric characters collapsed to one
-    underscore: the Python module fragment (``graftpunk_{module_name_for(name)}``).
-
-    Total: never raises. A name reaching here through ``ScaffoldSpec`` is
-    already validated by ``validate_plugin_name``, but the function makes no
-    assumption of that on its own.
-    """
-    return re.sub(r"[^a-z0-9]+", "_", name.lower())
-
-
 @dataclass(frozen=True)
 class ScaffoldSpec:
     name: str
@@ -167,9 +173,16 @@ class ScaffoldSpec:
     base_url: str
     digest: RunDigest | None = None
     graftpunk_version: str = ""
+    commands: tuple[CommandSelection, ...] = ()
 
     def __post_init__(self) -> None:
+        # Cheap shape checks only. Planning the selections (and every refusal it
+        # makes) happens once, when render() plans the commands.
         validate_plugin_name(self.name)
+        if self.commands and self.digest is None:
+            raise CommandSelectionError(
+                "An explicit command selection needs a digest to select from."
+            )
 
 
 def class_name_for(name: str) -> str:
@@ -206,7 +219,7 @@ def _command_name(template: str, seen: set[str]) -> str:
     counter is left for a true collision: the same
     template under another method, or two names equal after truncation.
 
-    Truncated to ``_MAX_COMMAND_NAME`` before the uniqueness counter is applied: the
+    Truncated to ``MAX_COMMAND_NAME`` before the uniqueness counter is applied: the
     name lands in a ``def``, a decorator, and the generated test's own ``def`` and
     call, none of which any wrapping helper can split, so a deep captured path must
     not be able to push those past the generated width.
@@ -216,7 +229,7 @@ def _command_name(template: str, seen: set[str]) -> str:
         for segment in template.strip("/").split("/")
         if segment
     ]
-    base = re.sub(r"[^a-z0-9_]", "_", "_".join(parts).lower())[:_MAX_COMMAND_NAME] or "root"
+    base = re.sub(r"[^a-z0-9_]", "_", "_".join(parts).lower())[:MAX_COMMAND_NAME] or "root"
     return _deduped(_safe_identifier(base, digit_prefix="n_"), seen)
 
 
@@ -232,17 +245,6 @@ def _safe_identifier(base: str, *, digit_prefix: str) -> str:
     return base
 
 
-# The root commands graftpunk.cli.plugin_commands adds to a plugin itself (login, for
-# a plugin with login_config). A copy, since devtools does not import graftpunk.cli;
-# a test holds it equal to AUTO_ROOT_COMMAND_NAMES.
-_AUTO_ROOT_COMMAND_NAMES = ("login",)
-# The names a generated command may not take: every public attribute of
-# SitePlugin, the class the generated plugin subclasses, read from the class itself
-# so a new framework attribute is covered without an edit here, and those root
-# commands.
-_TAKEN_COMMAND_NAMES = frozenset(
-    {name for name in dir(SitePlugin) if not name.startswith("_")} | set(_AUTO_ROOT_COMMAND_NAMES)
-)
 # The generated test module's fixed tests, whose names a per-command test may not take.
 _FIXED_TEST_NAMES = frozenset({"plugin_instantiates"})
 
@@ -417,7 +419,7 @@ def _password_login_form(d: RunDigest) -> LoginForm | None:
 def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     if spec.digest is None:
         return [
-            "    # GP-FILL: no run digest available.",
+            f"    # {GP_FILL_MARKER}: no run digest available.",
             '    # login_config = LoginConfig(steps=[LoginStep(fields={...}, submit="...")])',
         ]
     form = _password_login_form(spec.digest)
@@ -453,7 +455,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         # opens, so the hint is a comment and the field stays unset.
         lines.extend(
             wrapped_comment_lines(
-                "GP-FILL: url, the path of the login page. "
+                f"{GP_FILL_MARKER}: url, the path of the login page. "
                 + (
                     "The recorded login page path holds an account value."
                     if form.source.startswith(("http://", "https://"))
@@ -464,7 +466,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         )
     else:
         lines.extend(literal_lines(login_url, indent=len(L2), prefix="url="))
-    lines.append('        failure="GP-FILL: text on the page indicating login failure",')
+    lines.append(f'        failure="{GP_FILL_MARKER}: text on the page indicating login failure",')
     # Nothing observed says which element marks the landing page, and a GP-FILL
     # literal here would be a configured signal: the engine would poll for that
     # selector until the timeout and fail naming it, as a GP-FILL success_url
@@ -473,7 +475,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
     # the intended state.
     lines.extend(
         wrapped_comment_lines(
-            "GP-FILL: success, a CSS selector for an element that is on the page this "
+            f"{GP_FILL_MARKER}: success, a CSS selector for an element that is on the page this "
             "login lands on and not on the login form itself.",
             indent=len(L2),
         )
@@ -489,7 +491,7 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         # success instead. The hint is a comment, and the field stays unset.
         lines.extend(
             wrapped_comment_lines(
-                "GP-FILL: success_url, a glob matched against the whole URL this login "
+                f"{GP_FILL_MARKER}: success_url, a glob matched against the whole URL this login "
                 "lands on, e.g. */dashboard*. "
                 + (
                     "The redirect this run observed after the credential post has no "
@@ -541,13 +543,13 @@ def _render_token_config(spec: ScaffoldSpec) -> list[str]:
         )
     if spec.digest.token_names_dropped_as_ids:
         text = (
-            f"GP-FILL: {spec.digest.token_names_dropped_as_ids} token candidate(s) were left out "
-            "because their names held an account value; configure any this plugin needs "
-            "by hand."
+            f"{GP_FILL_MARKER}: {spec.digest.token_names_dropped_as_ids} token candidate(s) were "
+            "left out because their names held an account value; configure any this plugin "
+            "needs by hand."
         )
         lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     for candidate in unpaired:
-        text = f"GP-FILL: unpaired token candidate: {candidate.kind} '{candidate.name}'"
+        text = f"{GP_FILL_MARKER}: unpaired token candidate: {candidate.kind} '{candidate.name}'"
         lines.extend(wrapped_comment_lines(text, indent=len(L1)))
     return lines
 
@@ -605,8 +607,11 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
     holds an id, and a ``GP-FILL`` where one cannot be."""
     pad = " " * indent
     fields, submit = printable_selectors(form)
-    submit_value = submit or "GP-FILL: submit selector"
-    entries = [(role, selector or f"GP-FILL: {role} selector") for role, selector in fields.items()]
+    submit_value = submit or f"{GP_FILL_MARKER}: submit selector"
+    entries = [
+        (role, selector or f"{GP_FILL_MARKER}: {role} selector")
+        for role, selector in fields.items()
+    ]
     lines: list[str] = []
     for role in form.neutral_roles:
         if role not in form.fields:
@@ -618,15 +623,16 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
         )
         lines.extend(
             wrapped_comment_lines(
-                f"GP-FILL: {role} is a placeholder role: {cause}; rename it to the field it is.",
+                f"{GP_FILL_MARKER}: {role} is a placeholder role: {cause}; rename it to the "
+                "field it is.",
                 indent=indent,
             )
         )
     for role in printable_unresolved_roles(form):
         if role in form.absent_roles:
             text = (
-                f"GP-FILL: {role} is not on the recorded form: a multi-step login asks for "
-                "it on another page; add a LoginStep for that page by hand."
+                f"{GP_FILL_MARKER}: {role} is not on the recorded form: a multi-step login asks "
+                "for it on another page; add a LoginStep for that page by hand."
             )
         else:
             reason = (
@@ -635,7 +641,7 @@ def _render_login_step(form: LoginForm, *, indent: int) -> list[str]:
                 else "the form's action holds an id, and without it none picks one input "
                 "of the recorded page"
             )
-            text = f"GP-FILL: {role} has no selector: {reason}; write one by hand."
+            text = f"{GP_FILL_MARKER}: {role} has no selector: {reason}; write one by hand."
         lines.extend(wrapped_comment_lines(text, indent=indent))
     lines.append(f"{pad}LoginStep(")
     lines.extend(_exploded_literal_dict_lines(entries, indent=indent + INDENT_STEP))
@@ -889,26 +895,36 @@ def _param_spec(
     return "\n".join([*exploded, f"{L3})"])
 
 
-def _decorator_lines(name: str, endpoint_literal: str, param_specs: list[str]) -> list[str]:
+def _decorator_lines(command: PlannedCommand, param_specs: list[str]) -> list[str]:
     """A stub's ``@command(...)``, always exploded one keyword per line. The
     ``endpoint=`` keyword starts a line of its own; a value too wide for that line
     wraps as a parenthesised implicit concatenation, which Python reads back as
-    one string. Each *param_specs* entry is an expression placed at ``L3`` (see
-    ``_param_spec``)."""
+    one string. ``name=`` appears only when *command* carries a pin. Each
+    *param_specs* entry is an expression placed at ``L3`` (see ``_param_spec``)."""
     lines = [f"{L1}@command("]
-    lines.extend(literal_lines(f"GP-FILL: describe {name}", indent=len(L2), prefix="help="))
+    lines.extend(
+        literal_lines(
+            f"{GP_FILL_MARKER}: describe {command.registered_name}",
+            indent=len(L2),
+            prefix="help=",
+        )
+    )
+    if command.name_pin is not None:
+        lines.extend(literal_lines(command.name_pin, indent=len(L2), prefix="name="))
     if param_specs:
         lines.append(f"{L2}params=[")
         lines.extend(f"{L3}{spec}," for spec in param_specs)
         lines.append(f"{L2}],")
+    endpoint_literal = f"{command.method} {command.endpoint.template}"
     lines.extend(literal_lines(endpoint_literal, indent=len(L2), prefix="endpoint="))
     lines.append(f"{L1})")
     return lines
 
 
-def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: str) -> list[str]:
-    method = endpoint.methods[0]
-    name = _command_name(endpoint.template, seen_names)
+def _render_command_stub(command: PlannedCommand, run_label: str) -> list[str]:
+    endpoint = command.endpoint
+    method = command.method
+    name = command.identifier
     # "self" and "ctx" are taken before any site parameter is named, so a site
     # parameter called either cannot shadow the stub's own arguments; so are the
     # CLI's own option names (_RESERVED_OPTION_IDENTIFIERS).
@@ -939,8 +955,8 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
             if "/" not in flag:
                 positive = flag.removeprefix("--")
                 flag_notes.append(
-                    f'GP-FILL: "{extra}" can send true but not false: --no-{positive} and '
-                    f"--{positive}-false are both other options of this command."
+                    f'{GP_FILL_MARKER}: "{extra}" can send true but not false: --no-{positive} '
+                    f"and --{positive}-false are both other options of this command."
                 )
         param_specs.append(
             _param_spec(identifier_for[extra], declaration.keywords, click_kwargs=click_kwargs)
@@ -965,7 +981,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
             # rather than sent as null.
             call_lines.extend(given_entries_dict_lines("json", entries))
     if endpoint.custom_headers:
-        entries = [(h, '"GP-FILL"') for h in endpoint.custom_headers]
+        entries = [(h, f'"{GP_FILL_MARKER}"') for h in endpoint.custom_headers]
         call_lines.extend(exploded_dict_lines("headers", entries))
 
     summary = f"{method} {endpoint.template}: seen {endpoint.count} time(s) in run {run_label}."
@@ -976,11 +992,7 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     # either, so the docstring says nothing rather than guessing.
     shape_known = endpoint.shape is not None and endpoint.shape != SHAPE_UNAVAILABLE
 
-    lines = _decorator_lines(
-        name,
-        f"{method} {endpoint.template}",
-        param_specs if _needs_param_specs(endpoint) else [],
-    )
+    lines = _decorator_lines(command, param_specs if _needs_param_specs(endpoint) else [])
     lines.append(f"{L1}def {name}(")
     lines.extend(f"{L2}{p}," for p in params)
     lines.append(f"{L1}) -> {return_type}:")
@@ -996,8 +1008,8 @@ def _render_command_stub(endpoint: Endpoint, seen_names: set[str], run_label: st
     for field_name, reason in sorted(undeclared.items()):
         lines.extend(
             wrapped_comment_lines(
-                f'GP-FILL: body field "{field_name}" is not an option: the recording sent '
-                f"{reason}, which no command-line option sends as recorded. Add it to the "
+                f'{GP_FILL_MARKER}: body field "{field_name}" is not an option: the recording '
+                f"sent {reason}, which no command-line option sends as recorded. Add it to the "
                 "body by hand if this command needs it.",
                 indent=len(L2),
             )
@@ -1026,11 +1038,64 @@ def _run_label(d: RunDigest) -> str:
     return f"{d.source.session}/{d.source.run_id}" if d.source.session else "the supplied HAR"
 
 
-def _stub_endpoints(spec: ScaffoldSpec) -> list[Endpoint]:
-    """The endpoints this spec renders stubs and generated tests for."""
+@dataclass(frozen=True)
+class RenderedCommand:
+    """One stub, at class-body indentation with no trailing blank line; every
+    ``(module, name)`` import the stub references, which an inserter merges as it is
+    handed them; and the fixture filename its test looks for, or ``None`` when
+    ``_no_fixture_is_written`` says ``gp observe fixtures`` writes no fixture for
+    this endpoint (its test needs a fixture of its own instead)."""
+
+    lines: tuple[str, ...]
+    imports: tuple[tuple[str, str], ...]
+    fixture: str | None
+
+
+def _default_commands(d: RunDigest) -> list[PlannedCommand]:
+    """Every eligible endpoint up to ``_MAX_SCAFFOLD_ENDPOINTS``, under generated names:
+    what a render produces when the spec selects nothing."""
+    seen_names: set[str] = set(policy.RESERVED_COMMAND_NAMES) | set(policy.GENERATED_MODULE_NAMES)
+    return [
+        PlannedCommand(_command_name(e.template, seen_names), None, e.methods[0], e)
+        for e in _ordered_endpoints(d)[:_MAX_SCAFFOLD_ENDPOINTS]
+    ]
+
+
+def _planned(spec: ScaffoldSpec) -> list[PlannedCommand]:
+    """The stubs a render produces: the spec's explicit selections, planned by
+    ``selection.py``, or else the default choice. The renderer makes that choice;
+    ``selection.py`` owns only the explicit case."""
     if spec.digest is None:
         return []
-    return _ordered_endpoints(spec.digest)[:_MAX_SCAFFOLD_ENDPOINTS]
+    if spec.commands:
+        return planned_commands(spec.digest, spec.commands)
+    return _default_commands(spec.digest)
+
+
+def render_command(command: PlannedCommand, d: RunDigest) -> RenderedCommand:
+    """The single-command entry point: the stub ``gp plugin new`` writes for *command*,
+    which ``gp plugin add-command`` inserts on its own."""
+    lines = _render_command_stub(command, _run_label(d))
+    imports = [(_PLUGINS_MODULE, "CommandContext"), (_PLUGINS_MODULE, "command")]
+    if _needs_param_specs(command.endpoint):
+        imports.append((_PLUGINS_MODULE, "PluginParamSpec"))
+    if URL_PLACEHOLDER_RE.search(command.endpoint.template):
+        # Under a private alias, the same reason _render_plugin_module gives one:
+        # a site parameter may be named quote. The stub always calls it when the
+        # endpoint templates a path segment (see _render_command_stub above).
+        imports.append(("urllib.parse", "quote as _quote_path"))
+    fixture = (
+        None
+        if _no_fixture_is_written(command.endpoint)
+        else capture_filename(
+            command.method, command.endpoint.template, _fixture_type(command.endpoint)
+        )
+    )
+    return RenderedCommand(
+        lines=tuple(lines[:-1] if lines[-1] == "" else lines),
+        imports=tuple(imports),
+        fixture=fixture,
+    )
 
 
 def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
@@ -1040,39 +1105,38 @@ def _dropped_name_notes(endpoint: Endpoint) -> list[str]:
     ids = (endpoint.query_keys_dropped_as_ids, endpoint.body_keys_dropped_as_ids)
     if any(ids):
         notes.append(
-            f"GP-FILL: {ids[0]} recorded query field(s) and {ids[1]} body field(s) were left "
-            "out because their names held an account value; add any this command needs "
+            f"{GP_FILL_MARKER}: {ids[0]} recorded query field(s) and {ids[1]} body field(s) were "
+            "left out because their names held an account value; add any this command needs "
             "by hand."
         )
     non_names = (endpoint.query_keys_dropped_as_non_names, endpoint.body_keys_dropped_as_non_names)
     if any(non_names):
         notes.append(
-            f"GP-FILL: {non_names[0]} recorded query field(s) and {non_names[1]} body field(s) "
-            "were left out because their names are not field names (a name starting with "
-            "a digit, holding a character a field name does not, or longer than 64 "
+            f"{GP_FILL_MARKER}: {non_names[0]} recorded query field(s) and {non_names[1]} body "
+            "field(s) were left out because their names are not field names (a name starting "
+            "with a digit, holding a character a field name does not, or longer than 64 "
             "characters); add any this command needs by hand."
         )
     if endpoint.header_names_dropped_as_ids:
         notes.append(
-            f"GP-FILL: {endpoint.header_names_dropped_as_ids} recorded header name(s) were left "
-            "out because they held an account value; add any this command needs by hand."
+            f"{GP_FILL_MARKER}: {endpoint.header_names_dropped_as_ids} recorded header name(s) "
+            "were left out because they held an account value; add any this command needs "
+            "by hand."
         )
     return notes
 
 
-def _render_command_stubs(spec: ScaffoldSpec) -> list[str]:
-    endpoints = _stub_endpoints(spec)
-    if spec.digest is None or not endpoints:
+def _render_command_stubs(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> list[str]:
+    if spec.digest is None or not planned:
         return [
-            '    @command(help="GP-FILL: describe this command")',
+            f'    @command(help="{GP_FILL_MARKER}: describe this command")',
             "    def example(self, ctx: CommandContext) -> dict:",
-            '        """GP-FILL: what this command does."""',
-            '        return ctx.request_json("GET", "/GP-FILL/path")',
+            f'        """{GP_FILL_MARKER}: what this command does."""',
+            f'        return ctx.request_json("GET", "/{GP_FILL_MARKER}/path")',
         ]
-    seen_names: set[str] = set(_TAKEN_COMMAND_NAMES)
     lines: list[str] = []
-    for endpoint in endpoints:
-        lines.extend(_render_command_stub(endpoint, seen_names, _run_label(spec.digest)))
+    for command in planned:
+        lines.extend(_render_command_stub(command, _run_label(spec.digest)))
     return lines
 
 
@@ -1092,12 +1156,12 @@ def _plugins_import_names(*, needs_login_import: bool, needs_param_spec: bool) -
     return sorted(classes) + ["command"]
 
 
-def _render_plugin_module(spec: ScaffoldSpec) -> str:
+def _render_plugin_module(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> str:
     klass = class_name_for(spec.name)
     needs_login_import = _needs_login_import(spec)
     needs_token_import = spec.digest is not None and bool(_paired_token_candidates(spec.digest))
-    needs_param_spec = any(_needs_param_specs(e) for e in _stub_endpoints(spec))
-    needs_quote = any(URL_PLACEHOLDER_RE.search(e.template) for e in _stub_endpoints(spec))
+    needs_param_spec = any(_needs_param_specs(c.endpoint) for c in planned)
+    needs_quote = any(URL_PLACEHOLDER_RE.search(c.endpoint.template) for c in planned)
     plugins_names = _plugins_import_names(
         needs_login_import=needs_login_import, needs_param_spec=needs_param_spec
     )
@@ -1111,12 +1175,12 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         "",
         # Under a private alias: a site parameter may be named quote.
         *(["from urllib.parse import quote as _quote_path", ""] if needs_quote else []),
-        *import_lines("graftpunk.plugins", *plugins_names),
+        *import_lines(_PLUGINS_MODULE, *plugins_names),
     ]
     if needs_token_import:
         lines.append("from graftpunk.tokens import Token, TokenConfig")
     lines += ["", "", f"class {klass}(SitePlugin):"]
-    class_docstring = f"Commands for {spec.base_url or 'GP-FILL: base_url'}."
+    class_docstring = f"Commands for {spec.base_url or f'{GP_FILL_MARKER}: base_url'}."
     lines.extend(wrapped_docstring_block(class_docstring, indent=len(L1)))
     lines.append("")
     lines.append(f'    site_name = "{spec.name}"')
@@ -1130,7 +1194,7 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
         # GP-FILL, but the attribute the author has to edit carried no marker,
         # so a grep for GP-FILL missed the one line that matters (final fix
         # wave, 2026-09-12).
-        base_url_lines[-1] += "  # GP-FILL: base URL"
+        base_url_lines[-1] += f"  # {GP_FILL_MARKER}: base URL"
     lines.extend(base_url_lines)
     lines.append(f'    backend = "{spec.backend}"')
     lines.append("    api_version = 1")
@@ -1139,12 +1203,29 @@ def _render_plugin_module(spec: ScaffoldSpec) -> str:
     lines.append("")
     lines.extend(_render_token_config(spec))
     lines.append("")
-    lines.extend(_render_command_stubs(spec))
+    lines.extend(_render_command_stubs(spec, planned))
     return "\n".join(lines).rstrip() + "\n"
 
 
+_PRERELEASE_SUFFIX_RE = re.compile(r"(a|b|rc|dev)\d*$")
+
+
+def graftpunk_version_floor() -> str:
+    """The running graftpunk's release, floored to ``major.minor.0``: the lower
+    bound ``gp plugin new`` writes for a generated project, and the one
+    ``gp plugin upgrade`` and ``gp plugin add-command`` raise a project to.
+
+    A pre-release or local checkout (``1.17.0.dev3+g1234abc``) floors at its
+    base release (``1.17.0``), per the spec.
+    """
+    version = re.split(r"[-+]", graftpunk.__version__)[0]
+    version = _PRERELEASE_SUFFIX_RE.sub("", version)
+    parts = (version.split(".") + ["0", "0"])[:2]
+    return f"{parts[0]}.{parts[1]}.0"
+
+
 def _render_pyproject(spec: ScaffoldSpec) -> str:
-    package = f"graftpunk_{module_name_for(spec.name)}"
+    package = f"graftpunk_{policy.module_name_for(spec.name)}"
     klass = class_name_for(spec.name)
     floor = spec.graftpunk_version or "0.0.0"
     return (
@@ -1163,7 +1244,7 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
         "[project.optional-dependencies]\n"
         'dev = ["pytest>=8.0.0", "ruff>=0.5.0"]\n'
         "\n"
-        '[project.entry-points."graftpunk.plugins"]\n'
+        f'[project.entry-points."{PLUGINS_GROUP}"]\n'
         f'{spec.name} = "{package}.plugin:{klass}"\n'
         "\n"
         "[tool.hatch.build.targets.wheel]\n"
@@ -1178,24 +1259,29 @@ def _render_pyproject(spec: ScaffoldSpec) -> str:
 
 
 def _render_conftest(spec: ScaffoldSpec) -> str:
-    # The import alone: naming the module in pytest_plugins as well makes pytest
-    # try to rewrite assertions in a module the import has already loaded, which
-    # it reports as a PytestAssertRewriteWarning on every run of the generated
-    # suite. graftpunk.testing.plugin defines no hooks or fixtures of its own, so
-    # loading it as a plugin buys nothing: site_env_scrubber returns the fixture
-    # object, and the assignment below is what registers it.
-    return (
-        "from graftpunk.testing.plugin import site_env_scrubber\n"
-        "\n"
-        f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")\n'
-    )
+    """The site-environment scrubber, then every ``PROJECT_REQUIREMENTS`` statement for
+    the conftest, added by ``pysrc.with_bindings`` exactly as ``gp plugin upgrade``
+    adds them to an existing conftest, so the two outputs are byte-identical.
+
+    The imports alone plus assignments: naming the module in ``pytest_plugins`` as
+    well would make pytest try to rewrite assertions in a module the import has
+    already loaded, which it reports as a warning on every run. Each assignment
+    is what registers its fixture.
+    """
+    scrubber = [
+        *import_lines("graftpunk.testing.plugin", "site_env_scrubber"),
+        "",
+        f'scrub_site_env = site_env_scrubber("{_env_prefix_for(spec.name)}")',
+    ]
+    requirements = [r for r in policy.PROJECT_REQUIREMENTS if r.path == policy.CONFTEST_PATH]
+    return with_bindings("\n".join(scrubber) + "\n", requirements)
 
 
 def fixtures_root_for(spec: ScaffoldSpec) -> str:
     """Where *spec*'s generated tests look for fixtures: the policy's rule, from the
     spec's two facts. Also the directory ``gp plugin new``'s ``Next:`` line names."""
     return policy.fixtures_root(
-        suite_member=spec.mode == "add_to_suite", module_name=module_name_for(spec.name)
+        suite_member=spec.mode == "add_to_suite", module_name=policy.module_name_for(spec.name)
     )
 
 
@@ -1222,17 +1308,18 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
     """
     paths: list[str] = []
     stems: set[str] = set()
-    for endpoint in _stub_endpoints(spec):
+    for command in _planned(spec):
+        endpoint = command.endpoint
         if _no_fixture_is_written(endpoint):
             continue  # no generated test reads one (see _render_test_module)
         # Case-folded, as a case-insensitive filesystem compares them.
-        stem = capture_slug(endpoint.methods[0], endpoint.template).casefold()
+        stem = capture_slug(command.method, endpoint.template).casefold()
         if stem in stems:
             continue  # no generated test reads it (see _render_test_module)
         stems.add(stem)
         paths.append(
             f"{fixtures_root_for(spec)}"
-            f"{capture_filename(endpoint.methods[0], endpoint.template, _fixture_type(endpoint))}"
+            f"{capture_filename(command.method, endpoint.template, _fixture_type(endpoint))}"
         )
     return paths
 
@@ -1245,13 +1332,12 @@ def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
     return "Path(__file__).parent" + "".join(f' / "{part}"' for part in parts)
 
 
-def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
+def _render_test_module(spec: ScaffoldSpec, planned: list[PlannedCommand], *, package: str) -> str:
     klass = class_name_for(spec.name)
     # fixture_context is only used by the per-endpoint tests below: importing
     # it when there is nothing to call it with is an unused import in the
     # generated file's own ruff run (F401).
-    endpoints = _stub_endpoints(spec)
-    has_endpoint_tests = any(not _no_fixture_is_written(e) for e in endpoints)
+    has_endpoint_tests = any(not _no_fixture_is_written(c.endpoint) for c in planned)
     lines = [
         f'"""Tests for the {spec.name} plugin."""',
         "",
@@ -1279,21 +1365,26 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
     ]
     if not has_endpoint_tests:
         marker = (
-            f"# GP-FILL: add a test per command, against a fixture in {fixtures_root_for(spec)}"
+            f"# {GP_FILL_MARKER}: add a test per command, against a fixture in "
+            f"{fixtures_root_for(spec)}"
         )
         lines.append(marker)
         return "\n".join(lines).rstrip() + "\n"
-    seen: set[str] = set(_TAKEN_COMMAND_NAMES)
-    seen_tests: set[str] = set(_FIXED_TEST_NAMES)
+    # Names are already unique on their own terms; seen_tests only has to guard
+    # the collisions this module can still create: a command named the same as
+    # the fixed plugin_instantiates test, or as one of SitePlugin's own attributes.
+    seen_tests: set[str] = set(_FIXED_TEST_NAMES) | set(policy.RESERVED_COMMAND_NAMES)
     stems: dict[str, str] = {}
-    for endpoint in endpoints:
-        name = _command_name(endpoint.template, seen)
-        method = endpoint.methods[0]
+    for command in planned:
+        endpoint = command.endpoint
+        method = command.method
+        name = command.identifier
         if _no_fixture_is_written(endpoint):
             note = (
-                f"GP-FILL: no test for {name} ({method} {endpoint.template}): no recording "
-                "kept any text, and none was a redirect or a 204, so gp observe fixtures "
-                "writes no fixture for it; write its test against a fixture of your own."
+                f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): no "
+                "recording kept any text, and none was a redirect or a 204, so gp observe "
+                "fixtures writes no fixture for it; write its test against a fixture of your "
+                "own."
             )
             lines.extend(wrapped_comment_lines(note, indent=0))
             lines.append("")
@@ -1304,9 +1395,9 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
             # FixtureSession looks a fixture up by stem, so this endpoint's test
             # would read the other endpoint's fixture.
             note = (
-                f"GP-FILL: no test for {name} ({method} {endpoint.template}): its fixture "
-                f"would share the stem {stem} with {stems[stem.casefold()]}; write its test "
-                "against a fixture of its own."
+                f"{GP_FILL_MARKER}: no test for {name} ({method} {endpoint.template}): its "
+                f"fixture would share the stem {stem} with {stems[stem.casefold()]}; write its "
+                "test against a fixture of its own."
             )
             lines.extend(wrapped_comment_lines(note, indent=0))
             lines.append("")
@@ -1347,8 +1438,8 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
             # The fixture is empty, and the command reads it as text.
             lines.extend(
                 wrapped_comment_lines(
-                    "GP-FILL: every recorded response had no body (a redirect or a 204): "
-                    "assert on what the call should return.",
+                    f"{GP_FILL_MARKER}: every recorded response had no body (a redirect or a "
+                    "204): assert on what the call should return.",
                     indent=len(L1),
                 )
             )
@@ -1357,14 +1448,14 @@ def _render_test_module(spec: ScaffoldSpec, *, package: str) -> str:
             # The fixture holds this falsy value, which `assert result` would fail on.
             lines.extend(
                 wrapped_comment_lines(
-                    f"GP-FILL: the recorded response was the falsy JSON value {falsy}: "
+                    f"{GP_FILL_MARKER}: the recorded response was the falsy JSON value {falsy}: "
                     "assert on the shape you expect.",
                     indent=len(L1),
                 )
             )
             lines.append(f"    assert {_falsy_assertion(falsy)}")
         else:
-            lines.append("    assert result  # GP-FILL: assert on the shape you expect")
+            lines.append(f"    assert result  # {GP_FILL_MARKER}: assert on the shape you expect")
         lines.append("")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -1386,6 +1477,7 @@ def _render_gitignore() -> str:
 
 
 def _render_readme(spec: ScaffoldSpec) -> str:
+    checks = "\n".join(policy.PROJECT_GATE)
     return (
         f"# {spec.name}\n\n"
         "A graftpunk plugin.\n\n"
@@ -1395,8 +1487,9 @@ def _render_readme(spec: ScaffoldSpec) -> str:
         f"```bash\ngp {spec.name} login\n```\n\n"
         "## Run a command\n\n"
         f"```bash\ngp {spec.name} --help\n```\n\n"
-        "## Tests\n\n"
-        "```bash\npytest\n```\n\n"
+        "## Checks\n\n"
+        "Run all of these before every commit:\n\n"
+        f"```bash\n{checks}\n```\n\n"
         f"Fixtures under `{policy.FIXTURES_TREE}` are hand-derived from captures in "
         f"`{CAPTURES_DIR}/` (captures are never committed; a fixture copies the "
         "structure and invents the content). See `gp observe fixtures --help`.\n"
@@ -1405,24 +1498,27 @@ def _render_readme(spec: ScaffoldSpec) -> str:
 
 def render(spec: ScaffoldSpec) -> dict[str, str]:
     """Render *spec* into relative-path -> file-content, per its ``mode``."""
-    package = f"graftpunk_{module_name_for(spec.name)}"
-    plugin_module = _render_plugin_module(spec)
+    planned = _planned(spec)
+    package = f"graftpunk_{policy.module_name_for(spec.name)}"
+    plugin_module = _render_plugin_module(spec, planned)
     if spec.mode == "new_project":
         return {
             "pyproject.toml": _render_pyproject(spec),
             f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
             f"src/{package}/plugin.py": plugin_module,
-            f"{policy.TESTS_DIR}conftest.py": _render_conftest(spec),
-            f"{policy.TESTS_DIR}test_plugin.py": _render_test_module(spec, package=package),
-            f"{fixtures_root_for(spec)}.gitkeep": "",
+            policy.CONFTEST_PATH: _render_conftest(spec),
+            f"{policy.TESTS_DIR}test_plugin.py": _render_test_module(
+                spec, planned, package=package
+            ),
+            f"{fixtures_root_for(spec)}{policy.FIXTURES_PLACEHOLDER}": "",
             ".gitignore": _render_gitignore(),
             "README.md": _render_readme(spec),
         }
     return {
         f"src/{package}/__init__.py": f'"""{spec.name}: a graftpunk plugin."""\n',
         f"src/{package}/plugin.py": plugin_module,
-        f"{policy.TESTS_DIR}test_{module_name_for(spec.name)}.py": _render_test_module(
-            spec, package=package
+        f"{policy.TESTS_DIR}test_{policy.module_name_for(spec.name)}.py": _render_test_module(
+            spec, planned, package=package
         ),
-        f"{fixtures_root_for(spec)}.gitkeep": "",
+        f"{fixtures_root_for(spec)}{policy.FIXTURES_PLACEHOLDER}": "",
     }

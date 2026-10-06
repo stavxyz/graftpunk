@@ -38,6 +38,7 @@ from graftpunk.contracts import UnknownSchemaError, current_schema, refuse_unkno
 from graftpunk.exceptions import GraftpunkError
 
 __all__ = [
+    "FIXTURES_PLACEHOLDER",
     "SIDECAR_FIELDS",
     "SIDECAR_SUFFIX",
     "Sidecar",
@@ -46,10 +47,17 @@ __all__ = [
     "load_sidecar",
     "sidecar_path",
     "sidecar_payload",
+    "sidecar_scannable_text",
     "sidecar_text",
 ]
 
 SIDECAR_SUFFIX = ".meta.json"
+
+FIXTURES_PLACEHOLDER = ".gitkeep"
+"""The file gp plugin new writes so git keeps an empty fixtures directory: the one
+file under a fixtures tree that is neither a fixture nor a sidecar. Spelled here,
+in the plugin-facing layer the fixtures check lives in, and re-exported by the
+devtools policy that renders it."""
 
 SIDECAR_FIELDS: dict[int, frozenset[str]] = {
     1: frozenset(
@@ -235,3 +243,19 @@ def _names(data: dict[str, object], key: str, path: Path) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise SidecarError(f"{path}: {key} must be a list of strings, got {value!r}")
     return tuple(value)
+
+
+def sidecar_scannable_text(sidecar: Sidecar) -> str:
+    """The values of the fields of *sidecar* that were copied from the capture,
+    space-separated: the text a flagged name must not appear in. Four fields
+    are exempt. ``flagged_names`` lists the names themselves; ``capture_sha256``
+    and ``redacted_names`` are a digest and a count the writer computed, never
+    text copied from the capture, so scanning either could only produce a false
+    match on a name that happens to be a run of hex digits or a small integer.
+    ``body_params`` holds request field names, never values, and the writer
+    records them unfiltered against ``flagged_names``, so a posted form's own
+    CSRF field is legitimately both a body parameter and a flagged name; a
+    fixture derived exactly as ``gp observe fixtures`` writes it must not fail
+    on that overlap. ``schema`` is the file's number, not a field of the loaded
+    sidecar."""
+    return " ".join([str(sidecar.status), sidecar.content_type])

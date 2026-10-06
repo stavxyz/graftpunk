@@ -1,6 +1,6 @@
-"""Plugin scaffolding: turns a ScaffoldSpec into files, an existing repository
-into a new plugin, and an existing pyproject.toml into one that declares it.
+"""Plugin scaffolding: the generators and mutators of a plugin project that the
+``gp plugin`` commands call.
 
-CLI-only: ``gp plugin new`` is the only caller. Nothing here is imported by
-a generated plugin at runtime (plugin tooling spec, 2026-09-11).
+Nothing here is imported by a generated plugin at runtime (plugin tooling spec,
+2026-09-11).
 """

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import re
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,8 @@ from graftpunk.har.naming import (
     normalize_media_type,
     parse_command_spec,
     parse_endpoint,
+    registered_name,
+    to_cli_name,
 )
 
 
@@ -180,3 +184,21 @@ class TestCaptureText:
         self, body: str | None, status: int, text: str | None
     ) -> None:
         assert capture_text(body, status) == text
+
+
+def test_naming_imports_nothing_from_the_plugin_runtime() -> None:
+    """The kebab-case rule lives in the naming module so the runtime, the reader,
+    and the selection all read one rule without the devtools reaching into
+    cli_plugin; the naming module stays free of that dependency."""
+    import graftpunk.har.naming as naming
+
+    assert naming.__file__ is not None
+    tree = ast.parse(Path(naming.__file__).read_text(encoding="utf-8"))
+    imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+    assert not any(m and m.startswith("graftpunk.plugins") for m in imported)
+    assert to_cli_name("account_statements") == "account-statements"
+
+
+def test_the_registered_name_is_the_pin_else_the_kebab_cased_identifier() -> None:
+    assert registered_name(None, "order_detail") == "order-detail"
+    assert registered_name("Orders", "orders") == "Orders"

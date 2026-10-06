@@ -301,8 +301,11 @@ try:
     from graftpunk.cli.plugin_commands import register_plugin_commands
     from graftpunk.cli.scaffold_commands import register as register_scaffold_commands
 
-    # Attaches plugin_app and snapshots the reserved top-level names from
-    # *app* right before plugin discovery mounts any site plugin's own
+    # register() imports scaffold_project_commands itself (attaching
+    # info/add-command/upgrade/check to plugin_app as a decorator side
+    # effect, the same way importing scaffold_commands attaches "new"), and
+    # then attaches plugin_app and snapshots the reserved top-level names
+    # from *app*, right before plugin discovery mounts any site plugin's own
     # sub-app, so the snapshot never includes an installed plugin's name.
     register_scaffold_commands(app)
 
