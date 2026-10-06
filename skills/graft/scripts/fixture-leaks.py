@@ -49,7 +49,7 @@ from urllib.parse import unquote_plus
 
 _DIGITS = re.compile(r"\d{3,}")
 # Words split at spaces, punctuation, and a URL's separators, so an email in a
-# query string (?m=ann%40shop.example&page=2) is a word of its own.
+# query string (?m=ann%40myshop.example&page=2) is a word of its own.
 _WORD = re.compile(r"[^\s,;:()\[\]{}<>\"'?&=/]+")
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _MIN_LENGTH = 3

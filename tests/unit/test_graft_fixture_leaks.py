@@ -149,7 +149,7 @@ def test_a_copy_in_another_case_is_still_caught(tmp_path: Path) -> None:
 
 
 def test_an_email_kept_under_a_new_domain_is_caught(tmp_path: Path) -> None:
-    capture = json.dumps({"email": "m.okonkwo@fastmail.com"})
+    capture = json.dumps({"email": "m.okonkwo@example.org"})
     result = _run(tmp_path, capture, json.dumps({"email": "m.okonkwo@example.com"}))
     assert result.returncode == 1
     assert "'m.okonkwo'" in result.stdout
@@ -158,11 +158,11 @@ def test_an_email_kept_under_a_new_domain_is_caught(tmp_path: Path) -> None:
 def test_a_python_module_with_escaped_copies_is_checked(tmp_path: Path) -> None:
     """A module is neither JSON nor HTML; its backslash escapes and percent-encoding
     are decoded all the same."""
-    capture = json.dumps({"name": "José García", "url": "/a/b/Q7", "email": "ann@shop.example"})
-    module = 'NAME = "Jos\\u00e9 Garc\\u00eda"\nURL = "\\/a\\/b\\/Q7"\nQ = "ann%40shop.example"\n'
+    capture = json.dumps({"name": "José García", "url": "/a/b/Q7", "email": "ann@myshop.example"})
+    module = 'NAME = "Jos\\u00e9 Garc\\u00eda"\nURL = "\\/a\\/b\\/Q7"\nQ = "ann%40myshop.example"\n'
     result = _run(tmp_path, capture, module)
     assert result.returncode == 1
-    for value in ("José García", "/a/b/Q7", "ann@shop.example"):
+    for value in ("José García", "/a/b/Q7", "ann@myshop.example"):
         assert repr(value) in result.stdout, value
 
 
@@ -217,15 +217,15 @@ def test_an_entity_in_an_html_comment_is_decoded(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "fixture",
     [
-        '<a href="/statements?m=tomasz.w%40proton.me&amp;id=900">next</a>',
+        '<a href="/statements?m=tomasz.w%40example.org&amp;id=900">next</a>',
         '<a href="/statements?m=tomasz.w%40example.net&amp;id=900">next</a>',
-        '{"next": "/orders?email=tomasz.w%40proton.me&page=2"}',
+        '{"next": "/orders?email=tomasz.w%40example.org&page=2"}',
     ],
 )
 def test_an_email_in_a_query_string_is_caught_both_ways(tmp_path: Path, fixture: str) -> None:
     """The capture's link is percent-encoded and so is the fixture's; the email, or
     its local part under a new domain, is still found."""
-    capture = '<a href="/statements?m=tomasz.w%40proton.me&amp;id=4471">next</a>'
+    capture = '<a href="/statements?m=tomasz.w%40example.org&amp;id=4471">next</a>'
     result = _run(tmp_path, capture, fixture)
     assert result.returncode == 1
     assert "'tomasz.w'" in result.stdout
