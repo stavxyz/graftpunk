@@ -981,6 +981,9 @@ class TestAddCommand:
             line = line.replace(f"{recorded}/", "").replace(f"in {recorded};", "in .;")
             line = re.sub(r"tests/fixtures/\S+", "<fixture>", line)
             line = re.sub(r"^Added \w+ to", "Added <name> to", line)
+            # The raised floor is the running release, which moves on every bump; the
+            # guide's example names one release, so the number itself is not compared.
+            line = re.sub(r"graftpunk>=\d+\.\d+\.\d+ \(", "graftpunk>=<release> (", line)
             return re.sub(r"'\w+'", "'<name>'", line)
 
         quoted = {
