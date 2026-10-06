@@ -10,7 +10,9 @@ Read that projection only; never read the HAR, a capture, or `--json`.
 
 1. Drop every entry whose `login_flow` is true. The generator skips exactly the
    same entries, so the proposal and the scaffold agree. Trust the digest for
-   the rest: static assets, trackers, and other hosts never reach the list.
+   the rest: static assets, trackers, and hosts outside the primary host's
+   domain never reach the list. A subdomain, such as an API host, does reach it,
+   and the projection does not say which endpoints came from it.
 2. Keep JSON endpoints, and HTML documents that carry the user's own data (a
    dashboard, an order list, a statement page). Drop navigation chrome.
 3. Name each kept entry as a short verb phrase a person would type at the

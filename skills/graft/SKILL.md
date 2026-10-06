@@ -113,9 +113,10 @@ at the kick-the-tires step.
    sentence the site shows after a wrong password (they try one in their own
    browser), a CSS selector of an element on the page a successful login lands
    on, a selector for any login field or submit button the digest left
-   unresolved, and the login page's path. Ask for the URL a login lands on only
-   when `success` is still unset; once `success` is set, drop a `success_url`
-   marker instead (guide: Getting the signals right).
+   unresolved, and the login page's path, or its full URL when it is not on the
+   base URL's host. Ask for the URL a login lands on only when `success` is
+   still unset; once `success` is set, drop a `success_url` marker instead
+   (guide: Getting the signals right).
 6. **Harden** (guide: Harden). Read `references/harden.md` and follow it: one
    fixture and one test per command, then the project's gate (guide: The gate),
    acting on gp's output as that file says. The gate must pass before the next
