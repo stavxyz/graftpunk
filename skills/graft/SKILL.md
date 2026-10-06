@@ -146,17 +146,17 @@ the references hold the details.
 - Scaffold does not run `gp plugin new`. For each agreed command it runs the
   `gp plugin add-command` line of the Scaffold block in
   `references/commands.md`, with the chosen session and run, which adds one stub
-  in the generated shape and writes no test; its `Next:` line names the fixture
-  that test should read, or says `gp observe fixtures` writes none for that
-  endpoint. Act on gp's output as `references/harden.md` says ("The gate"); that
-  file also says what the harden step does for each added command.
+  in the generated shape and writes no test. Act on gp's output as
+  `references/harden.md` says ("The gate"); that file also says what the harden
+  step does for each added command.
 - The publish checklist is limited to the items the new commands touch.
 
 ## Secrets
 
 Never ask for a password, never write a credential anywhere, and never print
 what `gp config get --resolve` returns. Never read a value that came off the
-account: not a cookie or token value, not a HAR body, not a capture. From a
-recording, read the `--endpoints-json` projection and nothing else. When the
-user pastes a secret into the conversation, say where it belongs
+account: not a cookie or token value, not a HAR body, not a capture, and not a
+fixture until the user has replaced its values and the suite's check passes.
+From a recording, read the `--endpoints-json` projection and nothing else.
+When the user pastes a secret into the conversation, say where it belongs
 (`gp config set NAME '$(your-secret-tool read ...)'`) and do not use it.

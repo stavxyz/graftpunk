@@ -4,38 +4,41 @@
 
 For each command, write its capture out of the recording with the
 `gp observe fixtures` line from the Harden block of `references/commands.md`,
-the command's endpoint in place of `<METHOD> <template>`. Copy each capture gp
-writes, with its sidecar, into the fixtures directory the generated tests read
-(their `FIXTURES_DIR`), keeping its file name: a test finds its fixture by that
-name, and a request with no fixture under it answers 404. When gp writes
-numbered copies of one endpoint, copy the one you want onto the plain name.
-Then edit the copy's response, inventing every value while keeping its
-structure (guide: Deriving a fixture from a capture). Leave the copied sidecar
-alone.
+the command's endpoint in place of `<METHOD> <template>`. A capture is the
+account's own data, so never open, print, or read one, nor a copy of one until
+the user has replaced its values. Copy the capture gp writes under the plain
+name (not a numbered one) and its sidecar into the fixtures directory the
+generated tests read (their `FIXTURES_DIR`) with `cp`, keeping both file names:
+a test finds its fixture by that name, and a request with no fixture under it
+answers 404.
 
-When gp says it can write no fixture for a command's endpoint, write a
-fixture and its sidecar by hand, with invented values in the shape the site
-returns (guide: Test against fixtures, not against the site).
+Then hand the copies to the user, as with the recording: list each copy's path
+and ask them to replace every value in it with an invented one, keeping its
+structure, and to leave its sidecar alone (guide: Deriving a fixture from a
+capture). Wait until they say it is done. Then run the project's tests: the
+generated suite checks every fixture on every run and names each one that is
+still a copy of its capture or holds a flagged name. Give any it names back to
+the user. Read a fixture only once that check passes for it, to write its test.
 
-The generated suite checks every fixture on every run and names each problem it
-finds; act on each line it prints. A passing check does not mean the invented
-values are good ones; read the fixture once more before moving on.
+When gp says it can write no fixture for a command's endpoint, write a fixture
+and its sidecar yourself, with invented values in the shape the projection gives
+(guide: Test against fixtures, not against the site); it holds nothing from the
+account.
 
 ## A test per command
 
 Each generated test builds a context with `fixture_context` over the plugin's
 fixtures directory and calls the command. Replace its `GP-FILL` assertion with
 one on the shape the command returns: the keys a caller relies on, and the
-values you invented. Add one error-path test where a command can fail, by
-copying a fixture and setting its sidecar's `status` to an error.
+values the fixture holds. Add one error-path test where a command can fail,
+over a fixtures directory of its own holding a copy of the fixture whose
+sidecar `status` is an error, since a fixture is found by its name.
 
-In enhance mode `gp plugin add-command` writes no test. Its `Next:` line either
-names the fixture the command's test should read, or says `gp observe fixtures`
-writes no fixture for that endpoint, in which case write the fixture by hand as
-above. For each command it added, write a test in the shape of the tests the
-project already has: the same context over the plugin's fixtures directory, one
-call, and assertions on the returned shape (guide: Test against fixtures, not
-against the site).
+In enhance mode `gp plugin add-command` writes no test; act on its `Next:` line
+as "The gate" below says. For each command it added, derive the fixture as above
+and write a test in the shape of the tests the project already has: the same
+context over the plugin's fixtures directory, one call, and assertions on the
+returned shape (guide: Test against fixtures, not against the site).
 
 ## The gate
 
@@ -66,6 +69,8 @@ the `gp` on the user's PATH. The cases to expect, in plain words:
   `gp plugin upgrade`; run it, then the whole gate.
 - an endpoint for which `gp observe fixtures` writes no fixture: write the
   fixture by hand, as above.
+- the project's dependencies are dynamic: gp names what has to require the
+  newer graftpunk; tell the user, since the fix is outside `pyproject.toml`.
 - uv warns that the project has no `dev` extra: the project defines none, the
   gate's own tools are installed anyway, and nothing needs doing; do not add
   an extra to the user's project.
