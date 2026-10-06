@@ -172,7 +172,10 @@ the references hold the details.
   is marked new. Each existing command reported with `endpoint: null` gets a
   row of its own reading "existing command, endpoint not declared", so the user
   can say whether a proposed row duplicates it. Never drop or propose over an
-  undeclared command silently.
+  undeclared command silently. The host column compares each row's `host` with
+  the host of the chosen plugin's `base_url` in `project.plugins`, not with
+  `primary_host`, since that is the host `gp plugin add-command` compares with,
+  and the question about the plugin's base is not asked.
 - Scaffold does not run `gp plugin new`. For each agreed command it runs the
   `gp plugin add-command` line of the Scaffold block in
   `references/commands.md`, with the chosen session and run, which adds one stub
