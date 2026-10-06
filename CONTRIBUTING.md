@@ -330,8 +330,11 @@ top-level fields), and nothing here needs it.
 
 The `Skill version` workflow checks this on every pull request that touches
 those paths: the branch's own changes are measured from the merge base, and its
-version has to be higher than the base branch's, so a bump another merge
-already used fails before both land. Run the same check before pushing with `just skill-version`, which
+version has to be higher than the base branch's, so a bump another merge already
+used fails whenever the check runs against a base that holds it. Two open pull
+requests can still both pass and both merge, since `main` does not require
+branches to be up to date; rerun the check after rebasing onto a `main` that
+moved. Run the same check before pushing with `just skill-version`, which
 compares against `origin/main`, or name another base with
 `just skill-version <commit>`. After a merge, users update with
 `/plugin marketplace update graftpunk`, then update graftpunk on the Installed

@@ -176,6 +176,20 @@ def test_a_lower_version_fails(repo: _Repo) -> None:
     assert "0.2.1" in result.stderr
 
 
+def test_a_non_numeric_head_over_a_numeric_base_fails(repo: _Repo) -> None:
+    """``0.1.0rc1`` differs from ``0.2.0`` but no order makes it higher, so a
+    numeric base refuses it rather than letting a downgrade through."""
+    repo.manifests("0.2.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    base = repo.commit("base")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.manifests("0.1.0rc1")
+    repo.commit("a non-numeric version")
+    result = repo.check(base)
+    assert result.returncode == 1
+    assert "0.2.1" in result.stderr
+
+
 def test_a_guide_change_needs_a_bump(repo: _Repo) -> None:
     """The installed plugin carries the guide the skill reads, so a guide change
     reaches installed users only with a new version."""

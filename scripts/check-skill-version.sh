@@ -9,7 +9,9 @@
 # people who already installed it. What counts as this branch's change is
 # measured from the merge base, so a base that moved on after the branch point
 # is not this branch's change; the version is compared with BASE itself, so a
-# bump that another merge already used fails here and not after both land.
+# bump another merge already used fails whenever this runs against a BASE that
+# holds it. Two open pull requests can still both pass and both merge unless the
+# repository requires branches to be up to date before merging.
 # Run by .github/workflows/skill-version.yml on pull requests, and by hand as
 # `just skill-version`.
 set -euo pipefail
@@ -39,17 +41,22 @@ if [ -z "$base_json" ]; then
   exit 0
 fi
 base_version="$(printf '%s' "$base_json" | version_of)"
-# Higher when every part of both is a number and the parts compare greater;
-# otherwise the two must at least differ. The next patch is named when the last
-# part is a number.
+# Higher when every part of both is a number and the parts compare greater. A
+# head with a part that is not a number is refused when the base is all numbers,
+# since no order says it is higher; when the base itself is not all numbers, the
+# two must at least differ. The next patch is named when the last part is a
+# number.
 verdict="$(python3 - "$base_version" "$head_version" <<'PY'
 import sys
 
 base, head = sys.argv[1], sys.argv[2]
 parts = lambda v: v.split(".")
-numeric = all(p.isdigit() for p in parts(base) + parts(head))
-if numeric:
+base_numeric = all(p.isdigit() for p in parts(base))
+head_numeric = all(p.isdigit() for p in parts(head))
+if base_numeric and head_numeric:
     higher = tuple(map(int, parts(head))) > tuple(map(int, parts(base)))
+elif base_numeric:
+    higher = False
 else:
     higher = head != base
 last = parts(base)[-1]
