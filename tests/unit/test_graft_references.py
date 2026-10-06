@@ -172,7 +172,7 @@ def test_skill_md_gives_the_scripts_directory_the_references_cannot_expand() -> 
     assert "where a reference file writes the variable `CLAUDE_SKILL_DIR`" in text
 
 
-_OTHER_HOST_LINE ="`<command> calls <host>`"
+_OTHER_HOST_LINE = "`<command> calls <host>`"
 
 
 @pytest.mark.parametrize("base_host", ["myshop.example", None], ids=["with-base", "no-base"])
