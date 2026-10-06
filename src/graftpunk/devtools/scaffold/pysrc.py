@@ -340,6 +340,7 @@ def literal_dict_entry_lines(key: str, value: str, *, indent: int) -> list[str]:
 
 
 URL_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z0-9_]+)\}")
+URL_ORIGIN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/{]*")
 
 
 def _quoted_fstring(text: str) -> str:
@@ -377,9 +378,15 @@ def _url_atoms(text: str, *, width: int) -> list[str]:
 
 def _url_chunks(text: str, *, width: int) -> list[str]:
     """*text* split into chunks that each fit *width*, preferring ``/`` boundaries and
-    never splitting inside a ``{placeholder}``. The chunks rejoin to exactly *text*."""
+    never splitting inside a ``{placeholder}`` or inside a leading ``scheme://host``
+    (that origin is one atom, wider than *width* only when the host alone is). The
+    chunks rejoin to exactly *text*."""
     atoms: list[str] = []
     position = 0
+    origin = URL_ORIGIN_RE.match(text)
+    if origin is not None:
+        atoms.append(origin.group(0))
+        position = origin.end()
     for match in URL_PLACEHOLDER_RE.finditer(text):
         atoms.extend(_url_atoms(text[position : match.start()], width=width))
         atoms.append(match.group(0))

@@ -2976,6 +2976,43 @@ class TestRenderedTreeIsRuffClean:
         tree = self._write_tree(tmp_path / "long_origin", files)
         self._assert_tree_is_clean(tree)
 
+    def test_a_long_absolute_url_wraps_after_its_origin_never_inside_it(
+        self, tmp_path: Path
+    ) -> None:
+        host = "regional-" + "a" * 90 + ".myshop.example"
+        assert len(host) >= 100
+        template = "/api/orders/{order_id}/payment-methods/{payment_method_id}/preferences"
+        endpoint = dataclasses.replace(
+            _ORDERS_ENDPOINT,
+            host=host,
+            template=template,
+            query_params={},
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        files = render(spec)
+        origin = f"https://{host}"
+        chunks = re.findall(
+            r'^\s+f"(.*)"$', files["src/graftpunk_myshop/plugin.py"], flags=re.MULTILINE
+        )
+        assert "".join(chunks) == origin + template
+        assert chunks[0] == origin
+        # The origin alone is past the width, so the width check that _write_tree
+        # makes would fail on that one line; ruff skips an overlong line that is a
+        # single unbroken word, and the gate below is ruff's.
+        for relative_path, content in files.items():
+            path = tmp_path / "long_host" / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        self._assert_tree_is_clean(tmp_path / "long_host")
+
 
 class TestFixturesDirFollowsThePolicy:
     """The generated test module's FIXTURES_DIR is the policy's root for that plugin."""
