@@ -776,6 +776,192 @@ nothing in a generated file that has to stay in step with a graftpunk release.
 Edit any of it freely; rename the commands, merge two stubs, delete the ones you
 do not want.
 
+### Choose the commands yourself
+
+Left to itself, `gp plugin new` writes a stub for each endpoint it keeps, up to
+twelve, under names derived from the path. When you already know which
+endpoints you want and what to call them, name them:
+
+```bash
+gp plugin new myshop --from-run myshop --command "orders=GET /api/orders" --command "order=GET /api/orders/{order_id}"
+```
+
+`--command` takes `"NAME=METHOD template"`, with the method and the template
+written exactly as `gp observe digest` prints them, and it needs `--from-run`.
+It is repeatable. With it, the scaffold holds only the endpoints you named, in
+the order you gave them, under your names, and the twelve-stub cap does not
+apply. A name may use hyphens: `order-detail` becomes the method
+`order_detail` and registers as `gp myshop order-detail`. The command prints
+what it always prints, with only your endpoints in the fixture list:
+
+```text
+New Project:
+  .gitignore
+  README.md
+  pyproject.toml
+  src/graftpunk_myshop/__init__.py
+  src/graftpunk_myshop/plugin.py
+  tests/conftest.py
+  tests/fixtures/.gitkeep
+  tests/test_plugin.py
+Next: the endpoint tests fail until these fixtures exist:
+  tests/fixtures/get_api_orders.json
+  tests/fixtures/get_api_orders_{order_id}.json
+Derive each one from a capture of the same name: gp observe fixtures --help
+```
+
+Every value is checked before anything is written. The first one that fails is
+refused with exit status 1, and nothing is written. A template has to be one
+the digest holds, spelled the same way, so a typo or a glob such as
+`GET /api/ord*` (which `gp observe fixtures --match` would accept) is refused:
+
+```text
+GET /api/order is not an endpoint in this run's digest; gp observe digest lists the ones it holds.
+```
+
+A name has to start with a letter, hold only letters, digits, hyphens, and
+underscores, and be at most 40 characters long. It cannot be a Python keyword,
+a name every generated module binds at its top level (`command`,
+`SitePlugin`, and the like), a name given twice, or a name `SitePlugin` or
+graftpunk already uses:
+
+```text
+Command name 'login' is reserved: every public SitePlugin attribute, and the commands graftpunk registers for every plugin (login), cannot be a command name.
+```
+
+An endpoint the digest marks as part of the login flow is refused as well,
+because `login_config` drives it. A value that does not split into a name, an
+`=`, a method in capitals, and a template is refused with the form spelled out:
+
+```text
+--command: 'get /api/orders' is not a "METHOD template" pair. Write the method in capitals, a space, then the template, as in "GET /orders/{order_id}".
+```
+
+### Add a command to an existing plugin
+
+Once the project exists, a later recording can supply one more command. Say a
+second recording of `myshop` opened the invoices page:
+
+```bash
+gp plugin add-command myshop --from-run myshop --command "invoices=GET /api/invoices"
+```
+
+The first argument is the plugin's entry-point name: the key of its line under
+`[project.entry-points."graftpunk.plugins"]`, which `gp plugin info --json`
+reports as `entry_point`. In a suite it picks the plugin that gets the
+command. `--from-run SESSION` and `--command` are required, and the
+`--command` value follows the rules above, one per call. `--run RUN_ID` picks a
+run other than the newest, and `--dir PATH` is the project directory (the
+working directory by default).
+
+It writes the stub `gp plugin new` would have written for that endpoint, after
+the plugin class's last command, adds any import the stub needs, and prints
+the fixture a test for it reads:
+
+```text
+Added invoices to src/graftpunk_myshop/plugin.py
+Next: its test looks for tests/fixtures/get_api_invoices.json
+```
+
+It writes no test. Add one to the plugin's test module in the shape of the
+generated ones (see [Test against fixtures, not against the
+site](#test-against-fixtures-not-against-the-site)), and derive the fixture
+with `gp observe fixtures` as for the others. When `gp observe fixtures` writes
+no fixture for the endpoint, by the rule in [What gets
+filled in](#what-gets-filled-in), the second line says so instead:
+
+```text
+Added export to src/graftpunk_myshop/plugin.py
+Next: gp observe fixtures writes no fixture for this endpoint; write its test against a fixture of your own.
+```
+
+The stub needs the graftpunk you run the command with. When the project's
+`[project] dependencies` holds a plain `graftpunk>=` lower bound below that
+release's `major.minor.0`, the same write raises it, and a third line says so
+and tells you to reinstall the project:
+
+```text
+Added invoices to src/graftpunk_myshop/plugin.py
+Next: its test looks for tests/fixtures/get_api_invoices.json
+pyproject.toml: graftpunk>=1.17.0 (was >=1.15.0); reinstall the project
+```
+
+That project's requirement was `graftpunk[browser]>=1.15.0`, and it is now
+`graftpunk[browser]>=1.17.0`: extras and an environment marker are kept. What
+happens to any other form of requirement is in [The gate](#the-gate).
+
+The refusals are those of `--command` above, plus a few of its own, each
+writing nothing: a name the plugin already uses, as a command, a class
+attribute, or a module-level name; an entry-point name the project does not
+have; and a directory that is not a plugin project.
+
+```text
+src/graftpunk_myshop/plugin.py already has a command named 'orders'.
+No plugin has the entry-point name 'shop' in .; its entry points are: myshop.
+. is not a graftpunk plugin project (empty).
+```
+
+### Read a project with gp plugin info
+
+`gp plugin info --json` describes the project in the working directory, or in
+`--dir PATH`, as JSON. JSON is its only form; without `--json` it says so and
+exits 1. For the project above, after both commands were added:
+
+```bash
+gp plugin info --json
+```
+
+```json
+{
+  "directory": "plugin",
+  "plugins": [
+    {
+      "base_url": "https://myshop.example",
+      "commands": [
+        {
+          "endpoint": "GET /api/orders",
+          "name": "orders"
+        },
+        {
+          "endpoint": "GET /api/orders/{order_id}",
+          "name": "order"
+        },
+        {
+          "endpoint": "GET /api/invoices",
+          "name": "invoices"
+        },
+        {
+          "endpoint": "GET /api/export",
+          "name": "export"
+        }
+      ],
+      "entry_point": "myshop",
+      "module": "src/graftpunk_myshop/plugin.py",
+      "site_name": "myshop"
+    }
+  ],
+  "schema": 1
+}
+```
+
+`schema` is the version of the `info` payload, now 1. Within one version,
+fields are added and never renamed or removed. `directory` classifies the
+directory itself, and no parent of it: `plugin` when its `pyproject.toml`
+declares the `graftpunk.plugins` entry-point group, `foreign` when it has a
+`pyproject.toml` without that group, and `empty` when it has no
+`pyproject.toml` at all. `plugins` is an empty list for the last two.
+
+Each plugin carries its `entry_point` (the name `gp plugin add-command` takes),
+its `module` (the path of the module, relative to the project), its
+`site_name` and `base_url` (the string the class assigns, or `null` when it
+assigns anything other than a string literal), and its `commands`. A command's
+`name` is the one the CLI registers, and its `endpoint` is its `endpoint=`
+declaration, or `null` for a command that declares none (a hand-written one,
+or a command group). Everything is read from the source: nothing is imported
+or installed, so the answer is the project as it is on disk, installed or not.
+A plugin module that does not hold exactly one plugin class is refused, rather
+than left out of the list.
+
 ## Implement
 
 ### Making requests
@@ -1512,3 +1698,45 @@ Also:
 - [examples/](../examples/README.md): working YAML and Python plugins you can run.
 - [docs/rfcs/2026-07-28-workstation-env.md](rfcs/2026-07-28-workstation-env.md): the workstation env file's design.
 - [README](../README.md): what graftpunk is, installation, and the CLI reference.
+
+### For tools that drive gp
+
+A program that runs `gp` and reads what it prints can ask the installed
+graftpunk what it is before it does anything else:
+
+```bash
+gp version --json
+gp version --at-least 1.17.0
+gp version --contract info=1 --contract endpoints=1
+```
+
+`gp version --json` prints one line:
+
+```json
+{"contracts": {"endpoints": 1, "info": 1}, "graftpunk": "1.17.0"}
+```
+
+`graftpunk` is the installed version, and `contracts` maps each machine-read
+surface a `gp` command prints to the schema version this graftpunk writes:
+`endpoints` is `gp observe digest --endpoints-json`, and `info` is
+`gp plugin info --json`. Both fields are permanent; fields are added to this
+payload and never renamed or removed.
+
+`--at-least VERSION` exits 0 when the installed graftpunk is at least VERSION
+and 1 when it is older, printing nothing either way unless `--json` is also
+given. A VERSION it cannot order is refused with exit status 1 and a message.
+
+`--contract SURFACE=N` is repeatable and asks whether this graftpunk writes
+SURFACE at exactly schema N. When every one matches it exits 0 and prints
+nothing. Otherwise it prints one line per mismatch, naming the side that is
+older so the caller knows which one to update, and exits 3:
+
+```text
+info: the caller reads schema 2 and this graftpunk writes 1; graftpunk is older than the caller.
+info: this graftpunk writes schema 1 and the caller reads 0; the caller is older than graftpunk.
+nosuch: this graftpunk serves no surface by that name to a caller; graftpunk is older than the caller, or the caller misspelled the surface.
+```
+
+The fixture sidecar is versioned too, but no `gp` command prints it, so
+`--contract sidecar=1` exits 3 saying there is no contract to check. A value
+that is not `SURFACE=N` is refused with exit status 1.
