@@ -69,13 +69,16 @@ from graftpunk.plugins import PLUGINS_GROUP
 __all__ = [
     "PLUGIN_NAME_RE",
     "RenderedCommand",
+    "RequestTarget",
     "ScaffoldSpec",
+    "base_host",
     "class_name_for",
     "fixture_paths",
     "fixtures_root_for",
     "graftpunk_version_floor",
     "render",
     "render_command",
+    "request_target",
     "validate_plugin_name",
 ]
 
@@ -586,16 +589,15 @@ def _login_page_url(form: LoginForm, base_url: str) -> str | None:
     ``source``), or, for an identity provider's form page an app GET on another host
     redirected to (``opened_from``), that app GET, since the provider's page opened
     directly lacks the state the redirect gave it. A path when it is on *base_url*'s
-    host (compared through ``normal_host``, so case and a default port do not
-    matter) and absolute otherwise. None when there is no such page to name (the form
+    host (``_on_base_host``, the comparison ``request_target`` makes for a stub's
+    request) and absolute otherwise. None when there is no such page to name (the form
     came from a saved page source) or when its path holds an id or a token
     (``templates_a_segment``)."""
     page = form.opened_from or form.source
     parts = urlsplit(page)
     if parts.scheme not in ("http", "https") or templates_a_segment(page):
         return None
-    base = urlsplit(base_url)
-    if normal_host(parts.scheme, parts.netloc) == normal_host(base.scheme, base.netloc):
+    if _on_base_host(parts.scheme, parts.netloc, _read_base_url(base_url)):
         return parts.path or "/"
     return page
 
@@ -919,6 +921,66 @@ def _decorator_lines(command: PlannedCommand, param_specs: list[str]) -> list[st
     lines.extend(literal_lines(endpoint_literal, indent=len(L2), prefix="endpoint="))
     lines.append(f"{L1})")
     return lines
+
+
+@dataclass(frozen=True)
+class _BaseUrl:
+    """``base_url`` read once: its scheme, and its host spelled by ``normal_host``
+    (lower case, no default port)."""
+
+    scheme: str
+    host: str
+
+
+def _read_base_url(base_url: str | None) -> _BaseUrl | None:
+    """*base_url*'s scheme and host from one ``urlsplit``, or ``None`` when it is not
+    an ``http`` or ``https`` URL with a host: no path resolves against it (``None``,
+    empty, or a bare ``myshop.example``). The one place *base_url* is parsed."""
+    base = urlsplit(base_url or "")
+    if base.scheme not in ("http", "https") or not base.netloc:
+        return None
+    return _BaseUrl(scheme=base.scheme, host=normal_host(base.scheme, base.netloc))
+
+
+def base_host(base_url: str | None) -> str | None:
+    """*base_url*'s host, spelled by ``normal_host``, or ``None`` when it has none
+    (``_read_base_url``)."""
+    base = _read_base_url(base_url)
+    return None if base is None else base.host
+
+
+def _on_base_host(scheme: str, netloc: str, base: _BaseUrl | None) -> bool:
+    """Whether *netloc*, read under *scheme*, is *base*'s host: both spelled by
+    ``normal_host``, and never when ``base_url`` has no host (*base* is ``None``). The
+    one comparison behind a stub's request (``request_target``) and the login page's
+    ``url`` (``_login_page_url``), so the two cannot disagree."""
+    return base is not None and normal_host(scheme, netloc) == base.host
+
+
+@dataclass(frozen=True)
+class RequestTarget:
+    """Where a generated command's request goes. ``origin`` is what the stub puts in
+    front of its templated path, or ``None`` when the stub requests the path and
+    ``SiteRequests`` joins it to ``base_url``; ``host`` is the endpoint's host and
+    ``base_host`` is ``base_url``'s (``None`` when it has none), both spelled by
+    ``normal_host``."""
+
+    origin: str | None
+    host: str
+    base_host: str | None
+
+
+def request_target(endpoint_host: str, base_url: str | None) -> RequestTarget:
+    """The one rule for where a generated command's request goes: a path when
+    *endpoint_host* is *base_url*'s host (``_on_base_host``), and otherwise an origin
+    of *base_url*'s scheme (the digest records none) and the endpoint's host. When
+    *base_url* has no host, no path resolves, so every endpoint gets an ``https://``
+    origin."""
+    base = _read_base_url(base_url)
+    scheme = "https" if base is None else base.scheme
+    host = normal_host(scheme, endpoint_host)
+    origin = None if _on_base_host(scheme, endpoint_host, base) else f"{scheme}://{host}"
+    return RequestTarget(origin=origin, host=host, base_host=None if base is None else base.host)
 
 
 def _render_command_stub(command: PlannedCommand, run_label: str) -> list[str]:

@@ -28,13 +28,16 @@ from graftpunk.devtools.scaffold.render import (
     _MAX_PLUGIN_NAME,
     _MAX_SCAFFOLD_ENDPOINTS,
     PLUGIN_NAME_RE,
+    RequestTarget,
     ScaffoldSpec,
     _command_name,
     _param_identifier,
+    base_host,
     class_name_for,
     fixture_paths,
     render,
     render_command,
+    request_target,
     validate_plugin_name,
 )
 from graftpunk.devtools.scaffold.selection import (
@@ -3514,3 +3517,59 @@ class TestExplicitSelection:
         command = plan_command(d, CommandSelection("orders", "GET", endpoint.template))
         rendered = render_command(command, d)
         assert rendered.fixture is None
+
+
+class TestRequestTarget:
+    """request_target: the one rule for where a generated command's request goes."""
+
+    def test_the_base_urls_own_host_is_a_path(self) -> None:
+        assert request_target("myshop.example", "https://myshop.example") == RequestTarget(
+            origin=None, host="myshop.example", base_host="myshop.example"
+        )
+
+    def test_a_default_port_or_a_case_difference_is_the_same_host(self) -> None:
+        assert request_target("myshop.example", "https://MyShop.example:443").origin is None
+        assert request_target("myshop.example:443", "https://myshop.example").origin is None
+        assert request_target("myshop.example:80", "http://myshop.example").origin is None
+
+    def test_another_host_is_its_origin_under_the_base_urls_scheme(self) -> None:
+        assert request_target("api.myshop.example", "https://myshop.example") == RequestTarget(
+            origin="https://api.myshop.example",
+            host="api.myshop.example",
+            base_host="myshop.example",
+        )
+        assert (
+            request_target("api.myshop.example", "http://myshop.example").origin
+            == "http://api.myshop.example"
+        )
+
+    def test_a_non_default_port_is_kept(self) -> None:
+        assert (
+            request_target("api.myshop.example:8443", "https://myshop.example").origin
+            == "https://api.myshop.example:8443"
+        )
+        assert (
+            request_target("myshop.example", "https://myshop.example:8443").origin
+            == "https://myshop.example"
+        )
+
+    def test_a_base_url_with_a_path_compares_only_its_host(self) -> None:
+        assert request_target("myshop.example", "https://myshop.example/shop/").origin is None
+        assert (
+            request_target("api.myshop.example", "https://myshop.example/shop/").origin
+            == "https://api.myshop.example"
+        )
+
+    @pytest.mark.parametrize("base_url", [None, "", "myshop.example", "ftp://myshop.example"])
+    def test_no_base_url_host_is_an_https_origin_for_every_endpoint(
+        self, base_url: str | None
+    ) -> None:
+        assert base_host(base_url) is None
+        assert request_target("myshop.example", base_url) == RequestTarget(
+            origin="https://myshop.example", host="myshop.example", base_host=None
+        )
+        assert request_target("api.myshop.example", base_url).origin == "https://api.myshop.example"
+
+    def test_base_host_is_spelled_by_normal_host(self) -> None:
+        assert base_host("https://MyShop.example:443/shop/") == "myshop.example"
+        assert base_host("http://myshop.example:8080") == "myshop.example:8080"
