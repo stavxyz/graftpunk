@@ -820,7 +820,7 @@ GET /api/order is not an endpoint in this run's digest; gp observe digest lists 
 ```
 
 A name has to start with a letter, hold only letters, digits, hyphens, and
-underscores, and be at most 40 characters long. It cannot be a Python keyword,
+underscores, and be at most 40 characters long. It cannot be a Python keyword or soft keyword (`match`, `case`, `type`, `_`),
 a name every generated module binds at its top level (`command`,
 `SitePlugin`, and the like), a name given twice, or a name `SitePlugin` or
 graftpunk already uses:
