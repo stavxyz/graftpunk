@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import numbers
 import sys
 import types
 import typing
@@ -138,10 +139,16 @@ def _unwrap_annotation(annotation: Any, method: Any) -> Any:
     in any nesting: ``Optional[Annotated[int, ...]]`` and ``Annotated[int | None,
     ...]`` both give ``int``. A quoted member (``Optional["int"]``), which typing
     keeps as a ``ForwardRef``, is resolved as a string annotation would be. A
-    union of two or more types is returned whole."""
+    union of two or more types is returned whole, and an alias that refers back
+    to itself (``Node = Optional["Node"]``) gives ``None``."""
+    seen: set[str] = set()
     while True:
         if isinstance(annotation, typing.ForwardRef):
-            annotation = _resolve_annotation(annotation.__forward_arg__, method)
+            name = annotation.__forward_arg__
+            if name in seen:
+                return None
+            seen.add(name)
+            annotation = _resolve_annotation(name, method)
             continue
         if typing.get_origin(annotation) is typing.Annotated:
             annotation = typing.get_args(annotation)[0]
@@ -163,11 +170,13 @@ def _option_type(annotation: Any, method: Any, default: Any) -> type:
     its type and no other), and keeps ``str`` when its default is one the type
     cannot take (``n: int = "all"``): Click converts the default through the
     option's type, and a command that ran with the ``str`` option would then fail
-    on every call without the option. A bare ``bool`` takes the same check, since
-    a flag's default must be a ``bool``.
+    on every call without the option. A bare ``bool`` with a default that is not a
+    ``bool`` is kept too, so registration refuses it as it always has.
     """
     if annotation in (int, float, str):
         return annotation
+    if annotation is bool and not (default is None or isinstance(default, bool)):
+        return bool
     annotation = _unwrap_annotation(_resolve_annotation(annotation, method), method)
     if annotation not in _OPTION_TYPES:
         return str
@@ -180,17 +189,19 @@ def _default_fits(option_type: type, default: Any) -> bool:
     ``None`` always fits. A ``bool`` option is a flag, so only a ``bool`` fits it.
     Any value fits ``str``. For ``int`` and ``float``, a value fits when the type
     converts it (``int("1")``, ``int(1.0)``, ``float(2)``), which is how Click
-    converts an ``int`` or ``float`` option's default; any error from that
-    conversion (``int(float("inf"))`` overflows) means it does not."""
+    converts an ``int`` or ``float`` option's default, and a number fits only when
+    the conversion keeps its value (``int(1.5)`` is ``1``, so ``1.5`` does not
+    fit ``int``). Any error from the conversion (``int(float("inf"))`` overflows)
+    means it does not fit."""
     if default is None or option_type is str:
         return True
     if option_type is bool:
         return isinstance(default, bool)
     try:
-        option_type(default)
+        converted = option_type(default)
     except Exception:  # noqa: BLE001 -- whatever the conversion raises, the default does not fit
         return False
-    return True
+    return not isinstance(default, numbers.Number) or converted == default
 
 
 def _option_flag(name: str) -> str:
@@ -1264,7 +1275,13 @@ class SitePlugin:
             # A bool option is a flag. PluginParamSpec.option makes the bare flag a
             # False default needs; any other default needs a negative to reach
             # every value the handler accepts.
-            if param_type is bool and default is not False:
+            # A bare bool with a default that is not a bool stays unflagged, so
+            # registration refuses it as it always has.
+            if (
+                param_type is bool
+                and default is not False
+                and (default is None or isinstance(default, bool))
+            ):
                 flag = _option_flag(name)
                 negatives = _bool_negatives(flag)
                 free = [n for n in negatives if n not in flags]
