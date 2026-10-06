@@ -223,9 +223,10 @@ the newest run. `--har PATH` digests a bare HAR file from any tool instead of a
 run. `--json` prints the complete model rather than the markdown summary,
 `--endpoints-json` prints the versioned projection a program reads (uncapped,
 not combinable with `--json`, and listing as the login's URLs only the login's
-own observations, never a logout or a cart redirect recorded beside it), `--all-hosts` models every host instead of only
-the primary host's domain, `--limit N` raises the cap on how many endpoints the
-markdown form lists (60 by default), and `--output PATH` writes to a file.
+own observations, never a logout or a cart redirect recorded beside it),
+`--all-hosts` models every host instead of only the primary host's domain,
+`--limit N` raises the cap on how many endpoints the markdown form lists (60 by
+default), and `--output PATH` writes to a file.
 Each endpoint in `--endpoints-json` carries the `host` it was recorded on,
 beside the run's one `primary_host`, so a program can see a site whose pages
 and JSON come from different hosts.
