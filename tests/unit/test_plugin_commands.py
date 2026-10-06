@@ -1728,6 +1728,158 @@ class TestIntrospectParams:
         assert len(params) == 0
 
 
+# A plugin module as a developer writes one, and as `gp plugin new` generates it:
+# the future import turns every annotation into a string.
+_FUTURE_ANNOTATIONS_PLUGIN = """\
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
+
+from graftpunk.plugins import CommandContext, SitePlugin, command
+
+if TYPE_CHECKING:
+    from decimal import Decimal
+
+
+class Shop(SitePlugin):
+    site_name = "shop-future"
+    session_name = "shop-future"
+    base_url = "https://example.com"
+    requires_session = False
+
+    @command(help="probe")
+    def probe(
+        self,
+        ctx: CommandContext,
+        page: int = 1,
+        ratio: float = 0.5,
+        dry: bool = False,
+        archived: bool | None = None,
+        notify: bool = True,
+        limit: int | None = None,
+        size: Optional[int] = None,
+        name: str = "x",
+        tags: list[str] | None = None,
+        price: Decimal | None = None,
+    ) -> dict:
+        return dict(locals())
+"""
+
+
+def _future_plugin(tmp_path: Path) -> Any:
+    """Import the future-annotations plugin module from a file and instantiate it."""
+    import importlib.util
+
+    path = tmp_path / "future_plugin.py"
+    path.write_text(_FUTURE_ANNOTATIONS_PLUGIN, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("future_plugin", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Shop()
+
+
+class TestIntrospectParamsUnderFutureAnnotations:
+    """String annotations resolve to the types they name (#194, #208)."""
+
+    def test_each_annotation_maps_to_its_option_type(self, tmp_path: Path) -> None:
+        plugin = _future_plugin(tmp_path)
+        specs = {s.name: s.click_kwargs for s in plugin._introspect_params(plugin.probe)}
+        types = {name: kw["type"] for name, kw in specs.items()}
+        assert types == {
+            "page": int,
+            "ratio": float,
+            "dry": bool,
+            "archived": bool,
+            "notify": bool,
+            "limit": int,
+            "size": int,
+            "name": str,
+            # Neither a list nor a name that resolves only under TYPE_CHECKING
+            # maps to an option type; both stay the str fallback.
+            "tags": str,
+            "price": str,
+        }
+
+    def test_bool_flags_take_the_spelling_their_default_needs(self, tmp_path: Path) -> None:
+        plugin = _future_plugin(tmp_path)
+        specs = {s.name: s.click_kwargs for s in plugin._introspect_params(plugin.probe)}
+        assert specs["dry"]["is_flag"] is True
+        assert "flag" not in specs["dry"]
+        assert specs["archived"]["is_flag"] is True
+        assert specs["archived"]["flag"] == "--archived/--no-archived"
+        assert specs["notify"]["is_flag"] is True
+        assert specs["notify"]["flag"] == "--notify/--no-notify"
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            pytest.param(
+                [],
+                {"page": 1, "dry": False, "archived": None, "notify": True, "limit": None},
+                id="defaults",
+            ),
+            pytest.param(
+                ["--page", "2", "--dry", "--archived", "--no-notify", "--limit", "5"],
+                {"page": 2, "dry": True, "archived": True, "notify": False, "limit": 5},
+                id="given",
+            ),
+            pytest.param(["--no-archived"], {"archived": False}, id="negated-optional"),
+        ],
+    )
+    def test_the_handler_receives_typed_values(
+        self, tmp_path: Path, argv: list[str], expected: dict[str, Any]
+    ) -> None:
+        plugin = _future_plugin(tmp_path)
+        (cmd,) = plugin.get_commands()
+        seen: dict[str, Any] = {}
+        fn = synthesize_command_fn(
+            name="probe",
+            param_specs=cmd.params,
+            body=lambda ctx, **kw: seen.update(kw),
+            include_builtin_options=False,
+        )
+        app = typer.Typer()
+        app.command("probe")(fn)
+        app.command("other")(lambda: None)
+        result = TyperCliRunner().invoke(app, ["probe", *argv])
+        assert result.exit_code == 0, result.output
+        got = {name: seen[name] for name in expected}
+        assert got == expected
+        assert all(type(got[n]) is type(expected[n]) for n in expected)
+
+    def test_a_required_bool_is_a_required_negatable_flag(self) -> None:
+        class Plugin(SitePlugin):
+            site_name = "required-bool"
+            session_name = "required-bool"
+            base_url = "https://example.com"
+            requires_session = False
+
+            def probe(self, ctx: object, confirm: bool) -> None:
+                pass
+
+        plugin = Plugin()
+        (spec,) = plugin._introspect_params(plugin.probe)
+        assert spec.click_kwargs["is_flag"] is True
+        assert spec.click_kwargs["required"] is True
+        assert spec.click_kwargs["flag"] == "--confirm/--no-confirm"
+
+    def test_a_negative_taken_by_another_option_leaves_a_plain_flag(self) -> None:
+        class Plugin(SitePlugin):
+            site_name = "taken-negative"
+            session_name = "taken-negative"
+            base_url = "https://example.com"
+            requires_session = False
+
+            def probe(self, ctx: object, cache: bool = True, no_cache: str = "") -> None:
+                pass
+
+        plugin = Plugin()
+        specs = {s.name: s.click_kwargs for s in plugin._introspect_params(plugin.probe)}
+        assert specs["cache"]["is_flag"] is True
+        assert "flag" not in specs["cache"]
+
+
 class TestIntrospectParamsClickKwargs:
     """Tests for _introspect_params producing click_kwargs."""
 

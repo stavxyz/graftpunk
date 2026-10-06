@@ -39,6 +39,8 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import sys
+import types
+import typing
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -63,6 +65,58 @@ from graftpunk.session_scope import operating_session_for, resolve_load_target
 LOG = get_logger(__name__)
 
 SUPPORTED_API_VERSIONS: frozenset[int] = frozenset({1})
+
+
+# The annotation types an introspected option keeps; any other annotation falls
+# back to str.
+_OPTION_TYPES: tuple[type, ...] = (int, float, bool, str)
+
+
+def _option_type(annotation: Any, method: Any) -> type:
+    """The option type *annotation* names, or ``str`` when it names none.
+
+    A module with ``from __future__ import annotations`` stores every annotation
+    as a string, so a string is evaluated in the namespace of the module that
+    defines *method*, as ``typing.get_type_hints`` would, one parameter at a time:
+    a name that resolves only under ``TYPE_CHECKING`` costs that parameter its
+    type and no other. ``X | None`` and ``Optional[X]`` give ``X``.
+    """
+    if isinstance(annotation, str):
+        namespace = getattr(inspect.unwrap(method), "__globals__", {})
+        try:
+            annotation = eval(annotation, namespace)  # noqa: S307 -- the plugin's own annotation
+        except Exception:  # noqa: BLE001 -- an unresolvable name keeps the str fallback
+            return str
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        members = [a for a in typing.get_args(annotation) if a is not type(None)]
+        if len(members) == 1:
+            annotation = members[0]
+    return annotation if annotation in _OPTION_TYPES else str
+
+
+def _option_flag(name: str) -> str:
+    """The flag an introspected option named *name* registers under."""
+    return f"--{name.replace('_', '-')}"
+
+
+def _bool_flag_kwargs(
+    name: str, param_type: type, default: Any, taken: set[str]
+) -> dict[str, Any] | None:
+    """The flag keys a bool option needs beyond what ``PluginParamSpec.option`` sets.
+
+    A bool option must be a flag. ``option`` makes one for a ``False`` default, and
+    that bare flag gives the handler ``False`` or ``True``. Any other default
+    (``None`` from ``bool | None``, ``True``, or none at all) needs the ``--x/--no-x``
+    pair to reach every value, unless another option of the command already takes
+    the negative, in which case it stays a bare flag.
+    """
+    if param_type is not bool or default is False:
+        return None
+    flag = _option_flag(name)
+    negative = f"--no-{flag.removeprefix('--')}"
+    if negative in taken:
+        return {"is_flag": True}
+    return {"is_flag": True, "flag": f"{flag}/{negative}"}
 
 
 @dataclass(frozen=True)
@@ -1107,21 +1161,14 @@ class SitePlugin:
         """
         params: list[PluginParamSpec] = []
         sig = inspect.signature(method)
+        flags = {_option_flag(name) for name in sig.parameters}
 
         for name, param in sig.parameters.items():
             # Skip self and ctx (injected by framework)
             if name in ("self", "ctx"):
                 continue
 
-            # Determine type (use actual type object, not string)
-            param_type: type = str
-            if param.annotation != inspect.Parameter.empty and param.annotation in (
-                int,
-                float,
-                bool,
-                str,
-            ):
-                param_type = param.annotation
+            param_type = _option_type(param.annotation, method)
 
             # Determine if required and default
             has_default = param.default != inspect.Parameter.empty
@@ -1134,6 +1181,7 @@ class SitePlugin:
                     type=param_type,
                     required=required,
                     default=default,
+                    click_kwargs=_bool_flag_kwargs(name, param_type, default, flags),
                 )
             )
 
