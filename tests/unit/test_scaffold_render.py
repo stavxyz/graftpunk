@@ -3667,7 +3667,18 @@ class TestRequestTarget:
             == "https://api.myshop.example"
         )
 
-    @pytest.mark.parametrize("base_url", [None, "", "myshop.example", "ftp://myshop.example"])
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            None,
+            "",
+            "myshop.example",
+            "ftp://myshop.example",
+            "https://:443",
+            "https://user@",
+            "https://myshop.example:abc",
+        ],
+    )
     def test_no_base_url_host_is_an_https_origin_for_every_endpoint(
         self, base_url: str | None
     ) -> None:
@@ -3676,6 +3687,15 @@ class TestRequestTarget:
             origin="https://myshop.example", host="myshop.example", base_host=None
         )
         assert request_target("api.myshop.example", base_url).origin == "https://api.myshop.example"
+
+    def test_a_trailing_dot_is_the_same_host(self) -> None:
+        assert request_target("myshop.example", "https://myshop.example.").origin is None
+        assert request_target("myshop.example.", "https://myshop.example").origin is None
+
+    def test_an_idna_and_a_unicode_spelling_are_the_same_host(self) -> None:
+        assert request_target("xn--bcher-kva.example", "https://bücher.example").origin is None
+        assert request_target("bücher.example", "https://xn--bcher-kva.example").origin is None
+        assert request_target("api.myshop.example", "https://bücher.example").origin is not None
 
     def test_base_host_is_spelled_by_normal_host(self) -> None:
         assert base_host("https://MyShop.example:443/shop/") == "myshop.example"

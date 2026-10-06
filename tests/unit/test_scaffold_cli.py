@@ -569,7 +569,17 @@ class TestUrlNeedsAHost:
     """gp plugin new refuses a --url no path resolves against, so a generated plugin's
     base_url always has a host and only add-command meets a plugin without one."""
 
-    @pytest.mark.parametrize("url", ["myshop.example", "https://", "ftp://myshop.example"])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "myshop.example",
+            "https://",
+            "ftp://myshop.example",
+            "https://:443",
+            "https://user@",
+            "https://myshop.example:abc",
+        ],
+    )
     def test_a_url_without_an_http_scheme_and_a_host_is_refused(
         self, tmp_path: Path, url: str
     ) -> None:
@@ -581,6 +591,14 @@ class TestUrlNeedsAHost:
         output = strip_ansi(result.output)
         assert f"--url must be an http:// or https:// URL with a host, got '{url}'." in output
         assert not target.exists()
+
+
+class TestUrlHelpNamesTheSchemes:
+    def test_the_url_option_help_says_http_or_https(self) -> None:
+        result = runner.invoke(_build_app(), ["plugin", "new", "--help"])
+        assert result.exit_code == 0
+        words = strip_ansi(result.output).replace("│", " ").split()
+        assert "An http:// or https:// base URL (overrides the host" in " ".join(words)
 
 
 class TestPathListingsDoNotWrapMidWord:

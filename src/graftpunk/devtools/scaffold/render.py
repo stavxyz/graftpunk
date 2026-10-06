@@ -8,6 +8,7 @@ for everything the scaffold emits").
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import glob
 import keyword
@@ -940,7 +941,11 @@ def _read_base_url(base_url: str | None) -> _BaseUrl | None:
     an ``http`` or ``https`` URL with a host: no path resolves against it (``None``,
     empty, or a bare ``myshop.example``). The one place *base_url* is parsed."""
     base = urlsplit(base_url or "")
-    if base.scheme not in ("http", "https") or not base.netloc:
+    if base.scheme not in ("http", "https") or not base.hostname:
+        return None
+    try:
+        base.port  # noqa: B018 (reading it raises ValueError for a port that is not a number)
+    except ValueError:
         return None
     return _BaseUrl(scheme=base.scheme, host=normal_host(base.scheme, base.netloc))
 
@@ -957,7 +962,23 @@ def _on_base_host(scheme: str, netloc: str, base: _BaseUrl | None) -> bool:
     ``normal_host``, and never when ``base_url`` has no host (*base* is ``None``). The
     one comparison behind a stub's request (``request_target``) and the login page's
     ``url`` (``_login_page_url``), so the two cannot disagree."""
-    return base is not None and normal_host(scheme, netloc) == base.host
+    return base is not None and _fold_host(normal_host(scheme, netloc)) == _fold_host(base.host)
+
+
+def _fold_host(host: str) -> str:
+    """*host* (as ``normal_host`` spells it) for comparison only: one trailing dot
+    dropped from the name and each label in its IDNA ASCII form, the lower-cased text
+    when it does not encode. The port stays. ``normal_host`` is untouched because the
+    digest is built from it."""
+    name, sep, port = host.rpartition(":")
+    if not sep or "]" in port or not port.isdigit():
+        name, port = host, ""
+    else:
+        port = f":{port}"
+    name = name.removesuffix(".")
+    with contextlib.suppress(UnicodeError):
+        name = name.encode("idna").decode("ascii")
+    return name.lower() + port
 
 
 @dataclass(frozen=True)

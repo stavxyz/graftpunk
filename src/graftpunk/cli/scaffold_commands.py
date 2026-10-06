@@ -113,7 +113,11 @@ def _name_refusal(name: str) -> tuple[str, str] | None:
 def plugin_new(
     name: Annotated[str, typer.Argument(help="Plugin name: site_name, and the package suffix")],
     url: Annotated[
-        str, typer.Option("--url", help="Base URL (overrides the host taken from --from-run)")
+        str,
+        typer.Option(
+            "--url",
+            help="An http:// or https:// base URL (overrides the host taken from --from-run)",
+        ),
     ] = "",
     from_run: Annotated[
         str | None,
