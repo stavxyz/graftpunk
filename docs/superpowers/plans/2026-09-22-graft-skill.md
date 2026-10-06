@@ -31,6 +31,8 @@ validated:
 
 **Precondition, checked by Task 3's first test:** the graftpunk installed in this checkout's environment reports a version at least `SKILL_REQUIRES_GRAFTPUNK` (`1.17.0`, the release that ships the two package pull requests). The skill must never merge ahead of the package it needs. Until graftpunk 1.17.0 is released (after #216 merges), Task 3's floor test (`test_the_installed_graftpunk_meets_the_skill_floor`) and its real-gp preflight tests (`TestPreflightWithTheRealGp`) fail, and execution stops at Task 3 Step 4 until that release is installed here.
 
+**Note, 2026-10-06:** the floor (`SKILL_REQUIRES_GRAFTPUNK`) became `1.18.0`, and the skill's host question and its `--url <base url>` were removed when graftpunk 1.18.0 added per-endpoint hosts (see the spec's amendments of that date); the skill now passes `--url` only in create mode, when the user picks the site URL's host over `primary_host` as the base. A subdomain, such as an API host, does reach the endpoint list, each endpoint carrying its `host`, so the statement below that other hosts never reach it holds only for hosts outside the primary host's domain. The body of this plan is otherwise unchanged.
+
 ## Global Constraints
 
 - The placement rule in `src/graftpunk/devtools/__init__.py` is untouched: this pull request adds no Python under `src/`. `graftpunk.testing` still imports nothing from `graftpunk.devtools`.
