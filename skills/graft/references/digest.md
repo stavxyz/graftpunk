@@ -76,5 +76,5 @@ chrome unless the user asked for something only it shows. The two kept rows
 reach the scaffold step as:
 
 ```bash
-gp plugin new myshop --from-run myshop --run 20260901-101500-4242 --command "orders=GET /api/orders" --command "order=GET /api/orders/{order_id}"
+gp plugin new myshop --from-run myshop --url https://myshop.example --run 20260901-101500-4242 --command "orders=GET /api/orders" --command "order=GET /api/orders/{order_id}"
 ```

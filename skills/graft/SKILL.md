@@ -91,11 +91,12 @@ at the kick-the-tires step.
 3. **Understand** (guide: Understand). Run the command in the Understand block
    of `references/commands.md` on the chosen session and run, then read
    `references/digest.md` and build the proposal it describes. The user keeps,
-   renames, or drops rows in one answer. Then compare the projection's
-   `primary_host` with the site URL's host: when they differ (the recording's
-   busiest host was an API or a CDN host), show both and ask, as its own
-   question, which one the commands call. The answer, as a URL, is the base URL
-   the scaffold step passes; when they agree, it is the site URL.
+   renames, or drops rows in one answer. Then ask, as its own question, whether
+   the commands' data comes from the projection's `primary_host`: name it, and
+   say the plugin will call every command on that host (the projection does not
+   record each endpoint's host, and the busiest host can be the site's pages
+   rather than its API). The base URL the scaffold step passes is `https://` and
+   the host the user confirms or names, with no path and no trailing slash.
 4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
    block in `references/commands.md`, with the chosen session and run, the base
    URL chosen at the understand step in place of `<url>`, and one `--command`
@@ -112,9 +113,9 @@ at the kick-the-tires step.
    sentence the site shows after a wrong password (they try one in their own
    browser), a CSS selector of an element on the page a successful login lands
    on, a selector for any login field or submit button the digest left
-   unresolved, the login page's path, and the URL a login lands on. Once
-   `success` is set, a `success_url` marker may be dropped instead
-   (guide: Getting the signals right).
+   unresolved, and the login page's path. Ask for the URL a login lands on only
+   when `success` is still unset; once `success` is set, drop a `success_url`
+   marker instead (guide: Getting the signals right).
 6. **Harden** (guide: Harden). Read `references/harden.md` and follow it: one
    fixture and one test per command, then the project's gate (guide: The gate),
    acting on gp's output as that file says. The gate must pass before the next
@@ -154,7 +155,9 @@ the references hold the details.
 - Frame collects only the new thing the user wants to do. The plugin's
   `entry_point` (what you pass to `gp plugin add-command`), its `site_name` (the
   name `gp` runs it by), and its `base_url` come from `project.plugins`, so the
-  understand step asks no host question and the scaffold step passes no URL.
+  scaffold step passes no URL; the understand step instead names that `base_url`
+  and asks whether the new commands' data comes from it, and a "no" stops for
+  the user, since `gp plugin add-command` writes every stub against it.
 - Capture picks the recorder line by whether the plugin has a session, as
   `references/capture.md` says.
 - Understand leaves out every endpoint an existing command declares, and prints
