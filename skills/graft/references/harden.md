@@ -7,16 +7,15 @@ so the fixtures directory and the suite's fixture check exist before anything is
 copied. For each command, write its capture out of the recording with the
 `gp observe fixtures` line from the Harden block of `references/commands.md`,
 the command's endpoint in place of `<METHOD> <template>`. Captures land in the
-git-ignored `tests/captures/` on this workstation and hold the account's own
-data: read them as this step needs, and never put a value from one into anything
-that is committed or shared, such as a fixture, a test, code, a comment, a
-docstring, a commit message, or a pull request. Copy the capture gp writes under
-the plain name (not a numbered one) and its sidecar into the fixtures directory
-the generated tests read (their `FIXTURES_DIR`) with the `cp` line of the Harden
-block, keeping both file names: a test finds its fixture by that name, and a
-request with no fixture under it answers 404. Copy those two files by name,
-never with a glob or a whole directory, which would bring numbered captures
-along.
+git-ignored `tests/captures/` and hold the account's own data: read them as this
+step needs, and put no value from one into anything committed or shared (a
+fixture, a test, code, a comment, a docstring, a commit message, or a pull
+request). Copy the capture gp writes under the plain name (not a numbered one)
+and its sidecar into the fixtures directory the generated tests read (their
+`FIXTURES_DIR`) with the `cp` line of the Harden block, keeping both file names:
+a test finds its fixture by that name, and a request with no fixture under it
+answers 404. Copy those two files by name, never with a glob or a whole
+directory, which would bring numbered captures along.
 
 Then rewrite each copy with invented values, keeping its structure: the same
 keys, nesting, and types, a few list items rather than every one, and values of
@@ -33,23 +32,24 @@ percent-encoded copies included, and the names the sidecar lists. It matches
 text, so read the fixture once more for what it cannot see: a lowercase word
 alone, a number written another way (`12345` as `12,345`), digits split across
 fields, and a copy re-encoded, such as base64. When it exits 2 (a capture that
-is not text, such as a PDF), it compared nothing: write that fixture from
-invented values without copying the capture, and tell the user. Rewrite each
-value it prints unless it holds no account data and the command branches or
-selects on it (a status, a currency code, a class name), or the site shows it to
-every account (a heading, a button label), or it is part of a format (a year, a
-time-zone suffix). When every value it still prints is one of those, the fixture
-is done; tell the user which values you kept and why. A sidecar is committed:
-when one of its names holds an account value, tell the user and do not commit
-that sidecar as it is (guide: Test against fixtures, not against the site). Run
-the same line once more with the plugin module in place of the fixture and with
-no sidecar, and rewrite any captured value it prints there: a docstring and a
-comment hold invented values only. Then run the gate's `pytest` line through the
-runner in the Harden block: the generated suite checks every fixture on every
-run and names each one that is still byte for byte its capture or holds a
-flagged cookie or token name; rewrite any it names. Count the check as run only
-when that `pytest` output carries its `fixtures_are_sanitised:` line; without it
-the project lacks the wiring, so run the gate's plugin check and act on what it
+is not text, such as a PDF), it compared nothing: replace the copied file
+wholesale with invented values, read the plugin module by eye for anything from
+that capture, and tell the user. Rewrite each value it prints unless it holds no
+account data and the command branches or selects on it (a status, a currency
+code, a class name), or the site shows it to every account (a heading, a button
+label), or it is part of a format (a year, a time-zone suffix). When every value
+it still prints is one of those, the fixture is done; tell the user which values
+you kept and why. A sidecar is committed: when one of its names holds an account
+value, tell the user and do not commit that sidecar as it is
+(guide: Test against fixtures, not against the site). Run the same line once
+more with the plugin module in place of the fixture and with no sidecar, and
+rewrite any captured value it prints there: a docstring and a comment hold
+invented values only. Then run the gate's `pytest` line through the runner in
+the Harden block: the generated suite checks every fixture on every run and
+names each one that is still byte for byte its capture or holds a flagged cookie
+or token name; rewrite any it names. Count the check as run only when that
+`pytest` output carries its `fixtures_are_sanitised:` line; without it the
+project lacks the wiring, so run the gate's plugin check and act on what it
 reports first.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
@@ -65,16 +65,17 @@ fixtures directory and calls the command. Replace its `GP-FILL` assertion with
 one on the shape the command returns: the keys a caller relies on, and the
 values the fixture holds. Add one error-path test where a command can fail, over
 a fixtures directory of its own holding a copy of the fixture whose sidecar
-`status` is an error, since a fixture is found by its name.
+`status` is an error, since a fixture is found by its name. In either mode, once
+a command's test is written, run the fixture-leaks line with its capture and the
+test module in place of the fixture, with no sidecar, and rewrite any captured
+value it prints: an assertion holds the fixture's invented values only. When it
+exits 2, read the test module by eye instead.
 
 In enhance mode `gp plugin add-command` writes no test; act on its `Next:` line
 as "The gate" below says. For each command it added, derive the fixture as above
 and write a test in the shape of the tests the project already has: the same
 context over the plugin's fixtures directory, one call, and assertions on the
-returned shape (guide: Test against fixtures, not against the site). Once a
-command's test is written, run the fixture-leaks line with its capture and the
-test module in place of the fixture, with no sidecar, and rewrite any captured
-value it prints: an assertion holds the fixture's invented values only.
+returned shape (guide: Test against fixtures, not against the site).
 
 ## The gate
 

@@ -166,6 +166,47 @@ def test_a_python_module_with_escaped_copies_is_checked(tmp_path: Path) -> None:
         assert repr(value) in result.stdout, value
 
 
+def test_a_decomposed_accent_is_the_same_value(tmp_path: Path) -> None:
+    capture = json.dumps({"name": "Renée Okafor"}, ensure_ascii=False)
+    fixture = json.dumps({"name": "Renée Okafor"}, ensure_ascii=False)
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 1
+    assert "'Renée Okafor'" in result.stdout
+
+
+def test_an_escaped_surrogate_pair_is_rejoined(tmp_path: Path) -> None:
+    capture = json.dumps({"tag": "Ann \U0001f600 Q7"}, ensure_ascii=False)
+    module = 'TAG = "Ann \\ud83d\\ude00 Q7"\n'
+    result = _run(tmp_path, capture, module)
+    assert result.returncode == 1
+    assert repr("Ann \U0001f600 Q7") in result.stdout
+
+
+def test_a_capitalised_word_is_not_found_inside_a_lowercase_name(tmp_path: Path) -> None:
+    """Page words such as Total or Shipping would otherwise flood a plugin module's
+    check through its parameter names."""
+    capture = "<h1>Your Order</h1><p>The Total for Shipping</p>"
+    result = _run(tmp_path, capture, "def your_order(total, shipping):\n    return other\n")
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        '<a href="/statements?m=tomasz.w%40proton.me&amp;id=900">next</a>',
+        '<a href="/statements?m=tomasz.w%40example.net&amp;id=900">next</a>',
+        '{"next": "/orders?email=tomasz.w%40proton.me&page=2"}',
+    ],
+)
+def test_an_email_in_a_query_string_is_caught_both_ways(tmp_path: Path, fixture: str) -> None:
+    """The capture's link is percent-encoded and so is the fixture's; the email, or
+    its local part under a new domain, is still found."""
+    capture = '<a href="/statements?m=tomasz.w%40proton.me&amp;id=4471">next</a>'
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 1
+    assert "'tomasz.w'" in result.stdout
+
+
 def test_two_plain_lowercase_words_are_not_reported(tmp_path: Path) -> None:
     capture = json.dumps({"note": "Leave it at the door"})
     result = _run(tmp_path, capture, json.dumps({"note": "put it at the gate"}))

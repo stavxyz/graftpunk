@@ -12,15 +12,18 @@ account value hides in: each run of three or more digits, each word holding an
 ``@``, a digit, or a capital letter, both halves of an email address, and each pair
 of words with one of those in it.
 
-Where it looks, in the fixture, in any case and in Unicode compatibility form: the
-raw text, its JSON or HTML values decoded, its backslash escapes decoded
-(``\\u00e9``, ``\\/``), and its percent-encoding decoded (``%40``). FIXTURE can be
-any text file, so a plugin module or a test module is checked the same way.
+Where it looks, in the fixture, in Unicode compatibility form: the raw text, its
+JSON or HTML values decoded, its backslash escapes decoded (``\\u00e9``, a
+surrogate pair, ``\\/``), and its percent-encoding decoded (``%40``). A piece with a
+space, a digit, or an ``@`` matches in any case; a single word matches as written
+or in capitals. FIXTURE can be any text file, so a plugin module or a test module
+is checked the same way.
 
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
-number reformatted (``12345`` as ``12,345``), digits split across fields, and a
-copy re-encoded another way (base64). It does one substring search per captured
-value, so a capture of a megabyte or more takes tens of seconds.
+capitalised word copied in lower case, a number reformatted (``12345`` as
+``12,345``), digits split across fields, and a copy re-encoded another way (base64).
+It does one substring search per captured value, so a capture of a megabyte or more
+takes tens of seconds.
 
 A string the command branches or selects on (a status, a currency code, a class
 name) may be kept on purpose; the skill decides, so this reports and never edits.
@@ -34,6 +37,7 @@ Standard library only, so it runs under any Python 3.9 or later.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
@@ -43,7 +47,9 @@ from pathlib import Path
 from urllib.parse import unquote_plus
 
 _DIGITS = re.compile(r"\d{3,}")
-_WORD = re.compile(r"[^\s,;:()\[\]{}<>\"']+")
+# Words split at spaces, punctuation, and a URL's separators, so an email in a
+# query string (?m=ann%40shop.example&page=2) is a word of its own.
+_WORD = re.compile(r"[^\s,;:()\[\]{}<>\"'?&=/]+")
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _MIN_LENGTH = 3
 # A \uXXXX escape as JSON and Python source spell one, decoded wherever it appears.
@@ -111,31 +117,53 @@ def _pieces(value: str) -> list[str]:
 def captured_values(text: str) -> list[str]:
     """What to look for in a fixture, in first-seen order and without repeats."""
     found: dict[str, None] = {}
-    for value in body_values(text):
-        for piece in _pieces(value.strip()):
+    for raw in body_values(text):
+        # A percent-encoded value (a link's query string) is looked for decoded too,
+        # since the fixture side is decoded the same way.
+        decoded = unquote_plus(raw.strip())
+        values = [raw.strip()] + ([decoded] if decoded != raw.strip() else [])
+        for piece in (p for value in values for p in _pieces(value)):
             piece = piece.strip()
             if len(piece) >= _MIN_LENGTH:
                 found[piece] = None
     return list(found)
 
 
-def _fold(text: str) -> str:
-    """*text* in one comparable form: compatibility-normalised and case-folded, so
-    ``OKONKWO`` and ``Okonkwo``, or a composed and a decomposed accent, match."""
-    return unicodedata.normalize("NFKC", text).casefold()
+def _normal(text: str) -> str:
+    """*text* compatibility-normalised, so a composed and a decomposed accent match."""
+    return unicodedata.normalize("NFKC", text)
+
+
+def _unescape(text: str) -> str:
+    """*text* with its ``\\uXXXX`` escapes decoded, a surrogate pair rejoined into
+    the one character it spells, and ``\\/`` read as ``/``."""
+    decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
+    with contextlib.suppress(UnicodeError):
+        decoded = decoded.encode("utf-16", "surrogatepass").decode("utf-16")
+    return decoded.replace("\\/", "/")
 
 
 def _decodings(fixture: str) -> list[str]:
     """*fixture* and the forms a copied value can hide behind in it."""
-    unescaped = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), fixture)
-    unescaped = unescaped.replace("\\/", "/")
-    return [fixture, "\n".join(body_values(fixture)), unescaped, unquote_plus(fixture)]
+    return [fixture, "\n".join(body_values(fixture)), _unescape(fixture), unquote_plus(fixture)]
+
+
+def _found(value: str, haystack: str, folded: str) -> bool:
+    """Whether *value* is in the fixture. A piece with a space, a digit, or an ``@``
+    matches in any case; a single word matches as written or in capitals as a whole
+    word (``OKONKWO`` for ``Okonkwo``), so ``Total`` is not found in ``total=``."""
+    if value in haystack:
+        return True
+    if any(c.isspace() or c.isdigit() or c == "@" for c in value):
+        return value.casefold() in folded
+    return re.search(rf"(?<!\w){re.escape(value.upper())}(?!\w)", haystack) is not None
 
 
 def survivors(capture: str, fixture: str) -> list[str]:
     """Each captured value that still appears in *fixture*, in any of its forms."""
-    haystack = _fold("\n".join(_decodings(fixture)))
-    return [value for value in captured_values(capture) if _fold(value) in haystack]
+    haystack = _normal("\n".join(_decodings(fixture)))
+    folded = haystack.casefold()
+    return [v for v in captured_values(capture) if _found(_normal(v), haystack, folded)]
 
 
 def main(argv: list[str]) -> int:
