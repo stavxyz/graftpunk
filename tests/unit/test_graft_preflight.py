@@ -151,6 +151,37 @@ def test_the_installed_graftpunk_meets_the_skill_floor() -> None:
     )
 
 
+def _unreleased_skill_line() -> str:
+    """The CHANGELOG's [Unreleased] entry for the skill."""
+    text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    (line,) = [line for line in unreleased.splitlines() if "/graftpunk:graft" in line]
+    return line
+
+
+@pytest.mark.parametrize(
+    ("where", "text", "pattern"),
+    [
+        pytest.param(
+            "docs/PLUGIN_DEVELOPMENT.md",
+            (REPO_ROOT / "docs" / "PLUGIN_DEVELOPMENT.md").read_text(encoding="utf-8"),
+            r"The skill needs graftpunk (\S+) or later",
+            id="guide",
+        ),
+        pytest.param(
+            "CHANGELOG.md [Unreleased]",
+            _unreleased_skill_line(),
+            r"needs graftpunk (\S+) or later",
+            id="changelog",
+        ),
+    ],
+)
+def test_the_documented_floor_is_the_preflight_floor(where: str, text: str, pattern: str) -> None:
+    """The floor a reader is told is the one preflight enforces."""
+    found = re.findall(pattern, text)
+    assert found == [_constant("SKILL_REQUIRES_GRAFTPUNK")], f"{where}: {found}"
+
+
 def test_preflight_is_executable() -> None:
     assert os.access(PREFLIGHT, os.X_OK)
 
