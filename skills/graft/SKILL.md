@@ -94,9 +94,10 @@ at the kick-the-tires step.
    renames, or drops rows in one answer. Then ask, as its own question, whether
    the commands' data comes from the projection's `primary_host`: name it, and
    say the plugin will call every command on that host (the projection does not
-   record each endpoint's host, and the busiest host can be the site's pages
-   rather than its API). The base URL the scaffold step passes is `https://` and
-   the host the user confirms or names, with no path and no trailing slash.
+   record each endpoint's host, and the host that served the site's pages is
+   chosen over a busier API host). The base URL the scaffold step passes is
+   `https://` and the host the user confirms or names, with no path and no
+   trailing slash.
 4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
    block in `references/commands.md`, with the chosen session and run, the base
    URL chosen at the understand step in place of `<url>`, and one `--command`
