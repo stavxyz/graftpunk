@@ -667,7 +667,7 @@ class TestAddCommand:
 
     def test_prints_a_gp_fill_note_instead_of_a_fixture_no_one_writes(self, recorded: Path) -> None:
         """An endpoint gp observe fixtures writes no fixture for (a binary
-        response with no captured text) must not be told its test looks for a
+        response with no captured text) must not be told to write its test against a
         fixture that will never exist."""
         _new(recorded, "myshop", "orders=GET /api/orders")
         har_path = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
@@ -697,7 +697,7 @@ class TestAddCommand:
         assert result.exit_code == 0, result.output
         output = _plain(result.output)
         assert "gp observe fixtures writes no fixture for this endpoint" in output
-        assert "its test looks for" not in output
+        assert "write its test against tests/" not in output
 
     def test_crlf_line_endings_are_kept_throughout(self, recorded: Path) -> None:
         module = _hand_written_project(recorded)
@@ -1487,7 +1487,7 @@ def _run_writer(command: str, project: Path, pyproject: str) -> tuple[object, li
         result = _add(project, "myshop", "orders=GET /api/orders")
         own = [
             f"Added orders to {module}",
-            "Next: its test looks for tests/fixtures/get_api_orders.json",
+            "Next: write its test against tests/fixtures/get_api_orders.json",
         ]
     return result, own
 

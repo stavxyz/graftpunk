@@ -138,7 +138,8 @@ def plugin_add_command(
         )
     else:
         console.print(
-            f"[bold]Next:[/bold] its test looks for {escape(added.fixture)}", soft_wrap=True
+            f"[bold]Next:[/bold] write its test against {escape(added.fixture)}",
+            soft_wrap=True,
         )
     _print_floor(added.floor)
 

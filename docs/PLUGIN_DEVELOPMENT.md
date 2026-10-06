@@ -856,11 +856,11 @@ working directory by default).
 
 It writes the stub `gp plugin new` would have written for that endpoint, after
 the plugin class's last command, adds any import the stub needs, and prints
-the fixture a test for it reads:
+the fixture its test should read:
 
 ```text
 Added invoices to src/graftpunk_myshop/plugin.py
-Next: its test looks for tests/fixtures/get_api_invoices.json
+Next: write its test against tests/fixtures/get_api_invoices.json
 ```
 
 It writes no test. Add one to the plugin's test module in the shape of the
@@ -882,7 +882,7 @@ and tells you to reinstall the project:
 
 ```text
 Added invoices to src/graftpunk_myshop/plugin.py
-Next: its test looks for tests/fixtures/get_api_invoices.json
+Next: write its test against tests/fixtures/get_api_invoices.json
 pyproject.toml: graftpunk>=1.17.0 (was >=1.15.0); reinstall the project
 ```
 
