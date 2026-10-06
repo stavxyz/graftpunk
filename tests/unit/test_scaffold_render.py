@@ -28,13 +28,20 @@ from graftpunk.devtools.scaffold.render import (
     _MAX_PLUGIN_NAME,
     _MAX_SCAFFOLD_ENDPOINTS,
     PLUGIN_NAME_RE,
+    OtherHostCommand,
+    RequestTarget,
     ScaffoldSpec,
     _command_name,
+    _on_base_host,
     _param_identifier,
+    _read_base_url,
+    base_host,
     class_name_for,
     fixture_paths,
+    other_host_commands,
     render,
     render_command,
+    request_target,
     validate_plugin_name,
 )
 from graftpunk.devtools.scaffold.selection import (
@@ -68,8 +75,8 @@ def _digest(
         source=DigestSource(
             har_path=__import__("pathlib").Path("network.har"), session="myshop", run_id="run-1"
         ),
-        primary_host="api.myshop.example.com",
-        hosts={"api.myshop.example.com": 3},
+        primary_host="myshop.example.com",
+        hosts={"myshop.example.com": 3},
         endpoints=endpoints,
         login=login,
         login_forms=login_forms,
@@ -80,7 +87,7 @@ def _digest(
 
 
 _ORDERS_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/orders/{order_id}",
     methods=("GET",),
     count=5,
@@ -95,7 +102,7 @@ _ORDERS_ENDPOINT = Endpoint(
 )
 
 _SEARCH_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/search",
     methods=("GET",),
     count=9,
@@ -117,7 +124,7 @@ _SEARCH_ENDPOINT = Endpoint(
 )
 
 _NOTES_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/orders/{order_id}/notes",
     methods=("POST",),
     count=3,
@@ -137,7 +144,7 @@ _NOTES_ENDPOINT = Endpoint(
 )
 
 _FORM_POST_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/newsletter/subscribe",
     methods=("POST",),
     count=1,
@@ -152,7 +159,7 @@ _FORM_POST_ENDPOINT = Endpoint(
 )
 
 _PAYMENT_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/payments",
     methods=("POST",),
     count=2,
@@ -167,7 +174,7 @@ _PAYMENT_ENDPOINT = Endpoint(
 )
 
 _SITE_NAMED_PARAMS_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/results",
     methods=("GET",),
     count=4,
@@ -186,7 +193,7 @@ _SITE_NAMED_PARAMS_ENDPOINT = Endpoint(
 )
 
 _CAMEL_PATH_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/searchResults/{searchResult_id}",
     methods=("GET",),
     count=2,
@@ -203,7 +210,7 @@ _CAMEL_PATH_ENDPOINT = Endpoint(
 # Long enough that its stub's one-line summary pushes the run label past the
 # docstring wrap width, so the label is what the wrapper has to place.
 _LONG_TEMPLATE_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/records/search-results/by-recorded-date-range/detail",
     methods=("GET",),
     count=3,
@@ -221,7 +228,7 @@ _LONG_TEMPLATE_ENDPOINT = Endpoint(
 # and a bool parameter named at the identifier cap, so their params= entries are
 # too wide for one line each.
 _LONG_TYPED_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template=(
         "/accounts/{account_identifier}/statements/by-recorded-date-range/detail/summary/line-items"
     ),
@@ -724,6 +731,21 @@ class TestGeneratedLoginHoldsNoAccountValue:
         )
         assert "The recorded login page path holds an account value." in comments
 
+    def test_the_url_gp_fill_mentions_the_full_url_option(self) -> None:
+        segment = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
+        code = self._plugin_code(
+            self._form("/session", f"https://myshop.example.com/signin/{segment}")
+        )
+        comments = " ".join(
+            line.strip().lstrip("#").strip()
+            for line in code.splitlines()
+            if line.strip().startswith("#")
+        )
+        assert (
+            "GP-FILL: url, the path of the login page, or its full URL when it is not on "
+            "base_url's host."
+        ) in comments
+
     def test_selectors_scoped_to_an_action_holding_an_id_are_unscoped(self) -> None:
         """A name selector the digest found unique on the page prints unscoped; a
         selector by type never does, since it would pick the first such control on
@@ -1121,7 +1143,7 @@ class TestPluginModuleCommandStubs:
     def test_stub_per_endpoint_up_to_the_cap(self) -> None:
         endpoints = tuple(
             Endpoint(
-                host="api.myshop.example.com",
+                host="myshop.example.com",
                 template=f"/item-{i}",
                 methods=("GET",),
                 count=1,
@@ -1219,7 +1241,7 @@ class TestPluginModuleCommandStubs:
         """The method is a captured value like any other: interpolated bare it
         ended its own string literal."""
         endpoint = Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template="/orders",
             methods=('GE"T',),
             count=1,
@@ -1247,7 +1269,7 @@ class TestPluginModuleCommandStubs:
         """The body dict is only emitted for a mutating method, so declaring its
         parameters on a GET gave the stub arguments it never used."""
         endpoint = Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template="/search",
             methods=("GET",),
             count=1,
@@ -1321,7 +1343,7 @@ class TestPluginModuleCommandStubs:
 
     def test_html_endpoint_calls_request_text_with_navigation_role(self) -> None:
         html_endpoint = Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template="/page",
             methods=("GET",),
             count=1,
@@ -1698,7 +1720,7 @@ class TestPluginModuleCommandStubs:
         body_kind: str = "none",
     ) -> Endpoint:
         return Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template=template,
             methods=(method,),
             count=1,
@@ -2182,7 +2204,7 @@ class TestPluginModuleCommandStubs:
 
 
 _LOGIN_PAGE_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/login",
     methods=("GET",),
     count=1,
@@ -2197,7 +2219,7 @@ _LOGIN_PAGE_ENDPOINT = Endpoint(
 )
 
 _CREDENTIAL_POST_ENDPOINT = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/login",
     methods=("POST",),
     count=1,
@@ -2255,7 +2277,7 @@ _REDIRECTING_CREDENTIAL_POST = LoginObservation(
 # /account/login is one member of a family the digest collapsed, so the
 # endpoint's final template no longer spells the login path.
 _COLLAPSED_ACCOUNT_FAMILY = Endpoint(
-    host="api.myshop.example.com",
+    host="myshop.example.com",
     template="/account/{account_id}",
     methods=("GET",),
     count=11,
@@ -2385,7 +2407,7 @@ class TestUnavailableShapeIsOmittedFromTheDocstring:
         """An unavailable shape is not a fact about the site, and the docstring
         used to claim `Shape: non-JSON.` for every body over the threshold."""
         endpoint = Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template="/orders",
             methods=("GET",),
             count=1,
@@ -2478,7 +2500,7 @@ class TestGeneratedPluginModuleParses:
         # "{year-2024}" is not a placeholder (a hyphen cannot appear in one), so the
         # braces are literal text inside an f-string and must be doubled.
         endpoint = Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template="/reports/{year-2024}/orders/{order_id}",
             methods=("GET",),
             count=1,
@@ -2506,7 +2528,7 @@ class TestGeneratedPluginModuleParses:
         # /orders/1/orders/2 templates to the same placeholder name twice, and a
         # `def` with two arguments of one name is a SyntaxError.
         endpoint = Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template="/orders/{order_id}/orders/{order_id}",
             methods=("GET",),
             count=1,
@@ -2753,7 +2775,7 @@ class TestRenderedTreeIsRuffClean:
             source="page-source.html",
         )
         endpoint = Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template='/orders/{order_id}/notes-"quoted"-segment',
             methods=("GET",),
             count=1,
@@ -2791,7 +2813,7 @@ class TestRenderedTreeIsRuffClean:
         base_url = 'https://myshop.example.com/a\\b/"""c\\'
         long_key = "k\\" + "x" * 120 + '"""y'
         endpoint = Endpoint(
-            host="api.myshop.example.com",
+            host="myshop.example.com",
             template="/orders/{order_id}",
             methods=("GET",),
             count=1,
@@ -2854,8 +2876,10 @@ class TestRenderedTreeIsRuffClean:
         body_60 = "delivery_instructions_for_the_courier_at_the_loading_dock_xy"
         header_75 = "X-Myshop-Client-Request-Correlation-Identifier-For-Downstream-Traced-Header"
         assert (len(query_41), len(query_60), len(body_60), len(header_75)) == (41, 60, 60, 75)
+        base_url = "https://" + "x" * 100 + ".example.com"
+        assert len(base_url) == 120
         deep = Endpoint(
-            host="api.myshop.example.com",
+            host=base_url.removeprefix("https://"),
             template=deep_template,
             methods=("GET",),
             count=4,
@@ -2869,7 +2893,7 @@ class TestRenderedTreeIsRuffClean:
             examples=(),
         )
         wide = Endpoint(
-            host="api.myshop.example.com",
+            host=base_url.removeprefix("https://"),
             template=wide_template,
             methods=("POST",),
             count=2,
@@ -2882,8 +2906,6 @@ class TestRenderedTreeIsRuffClean:
             custom_headers=(),
             examples=(),
         )
-        base_url = "https://" + "x" * 100 + ".example.com"
-        assert len(base_url) == 120
         spec = ScaffoldSpec(
             name=name,
             mode="new_project",
@@ -2911,6 +2933,94 @@ class TestRenderedTreeIsRuffClean:
         assert '        account_id="1001",' in test_code  # the wide stub's call exploded
         tree = self._write_tree(tmp_path / "maximal", files)
         self._assert_tree_is_clean(tree)
+
+    def test_a_long_absolute_url_wraps_and_stays_ruff_clean(self, tmp_path: Path) -> None:
+        # An endpoint on another host puts its origin in front of a template that is
+        # already past the width on its own: the wrapped literal must still rejoin to
+        # the whole URL, and the tree must still pass its own gate.
+        origin = "https://regional-api-gateway.customer-services.myshop.example.com"
+        template = (
+            "/api/v2/customer-accounts/{account_id}/payment-methods/{payment_method_id}"
+            "/scheduled-deliveries/recurring-orders/preferences-list/default-billing-addresses"
+        )
+        endpoint = dataclasses.replace(
+            _ORDERS_ENDPOINT,
+            host=origin.removeprefix("https://"),
+            template=template,
+            query_params={},
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        files = render(spec)
+        (url,) = [
+            node.args[1]
+            for node in ast.walk(ast.parse(files["src/graftpunk_myshop/plugin.py"]))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "request_json"
+        ]
+        assert isinstance(url, ast.JoinedStr)
+        rejoined = "".join(
+            part.value if isinstance(part, ast.Constant) else "{" + ast.unparse(part.value) + "}"
+            for part in url.values
+            if isinstance(part, (ast.Constant, ast.FormattedValue))
+        )
+        assert rejoined == origin + template
+        tree = self._write_tree(tmp_path / "long_origin", files)
+        self._assert_tree_is_clean(tree)
+
+    def test_a_long_absolute_url_wraps_after_its_origin_never_inside_it(
+        self, tmp_path: Path
+    ) -> None:
+        host = "regional-" + "a" * 90 + ".myshop.example"
+        assert len(host) >= 100
+        template = "/api/orders/{order_id}/payment-methods/{payment_method_id}/preferences"
+        endpoint = dataclasses.replace(
+            _ORDERS_ENDPOINT,
+            host=host,
+            template=template,
+            query_params={},
+            custom_headers=(),
+            examples=(),
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url="https://myshop.example.com",
+            digest=_digest(endpoints=(endpoint,)),
+        )
+        files = render(spec)
+        origin = f"https://{host}"
+        chunks = re.findall(
+            r'^\s+f"(.*)"$', files["src/graftpunk_myshop/plugin.py"], flags=re.MULTILINE
+        )
+        assert "".join(chunks) == origin + template
+        assert chunks[0] == origin
+        # The origin alone is past the width, so the width check that _write_tree
+        # makes would fail on that one line; ruff skips an overlong line that is a
+        # single unbroken word, and the gate below is ruff's.
+        for relative_path, content in sorted(files.items()):
+            if not relative_path.endswith(".py"):
+                continue
+            for number, line in enumerate(content.splitlines(), start=1):
+                if line.strip() == f'f"{origin}"':
+                    continue
+                assert len(line) <= GENERATED_LINE_LENGTH, (
+                    f"{relative_path}:{number} is {len(line)} characters: {line!r}"
+                )
+        for relative_path, content in files.items():
+            path = tmp_path / "long_host" / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        self._assert_tree_is_clean(tmp_path / "long_host")
 
 
 class TestFixturesDirFollowsThePolicy:
@@ -3492,7 +3602,7 @@ class TestExplicitSelection:
     def test_render_command_matches_the_stub_new_writes(self) -> None:
         d = _digest(endpoints=(_ORDERS_ENDPOINT,))
         command = plan_command(d, CommandSelection("order", "GET", "/orders/{order_id}"))
-        rendered = render_command(command, d)
+        rendered = render_command(command, d, "https://myshop.example.com")
         plugin_code = render(
             self._spec(
                 CommandSelection("order", "GET", "/orders/{order_id}"),
@@ -3512,5 +3622,203 @@ class TestExplicitSelection:
         endpoint = dataclasses.replace(_ORDERS_ENDPOINT, fixture_written=False)
         d = _digest(endpoints=(endpoint,))
         command = plan_command(d, CommandSelection("orders", "GET", endpoint.template))
-        rendered = render_command(command, d)
+        rendered = render_command(command, d, "https://myshop.example.com")
         assert rendered.fixture is None
+
+
+class TestRequestTarget:
+    """request_target: the one rule for where a generated command's request goes."""
+
+    def test_the_base_urls_own_host_is_a_path(self) -> None:
+        assert request_target("myshop.example", "https://myshop.example") == RequestTarget(
+            origin=None, host="myshop.example", base_host="myshop.example"
+        )
+
+    def test_a_default_port_or_a_case_difference_is_the_same_host(self) -> None:
+        assert request_target("myshop.example", "https://MyShop.example:443").origin is None
+        assert request_target("myshop.example:443", "https://myshop.example").origin is None
+        assert request_target("myshop.example:80", "http://myshop.example").origin is None
+
+    def test_another_host_is_its_origin_under_the_base_urls_scheme(self) -> None:
+        assert request_target("api.myshop.example", "https://myshop.example") == RequestTarget(
+            origin="https://api.myshop.example",
+            host="api.myshop.example",
+            base_host="myshop.example",
+        )
+        assert (
+            request_target("api.myshop.example", "http://myshop.example").origin
+            == "http://api.myshop.example"
+        )
+
+    def test_a_non_default_port_is_kept(self) -> None:
+        assert (
+            request_target("api.myshop.example:8443", "https://myshop.example").origin
+            == "https://api.myshop.example:8443"
+        )
+        assert (
+            request_target("myshop.example", "https://myshop.example:8443").origin
+            == "https://myshop.example"
+        )
+
+    def test_a_base_url_with_a_path_compares_only_its_host(self) -> None:
+        assert request_target("myshop.example", "https://myshop.example/shop/").origin is None
+        assert (
+            request_target("api.myshop.example", "https://myshop.example/shop/").origin
+            == "https://api.myshop.example"
+        )
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            None,
+            "",
+            "myshop.example",
+            "ftp://myshop.example",
+            "https://:443",
+            "https://user@",
+            "https://myshop.example:abc",
+            "https://myshop.example:99999",
+            "https://[zz::1]",
+            "https://my shop.example",
+            " https://myshop.example",
+            "https://my!shop.example",
+            "https://my%20shop.example",
+        ],
+    )
+    def test_no_base_url_host_is_an_https_origin_for_every_endpoint(
+        self, base_url: str | None
+    ) -> None:
+        assert base_host(base_url) is None
+        assert request_target("myshop.example", base_url) == RequestTarget(
+            origin="https://myshop.example", host="myshop.example", base_host=None
+        )
+        assert request_target("api.myshop.example", base_url).origin == "https://api.myshop.example"
+
+    def test_a_trailing_dot_is_the_same_host(self) -> None:
+        assert request_target("myshop.example", "https://myshop.example.").origin is None
+        assert request_target("myshop.example.", "https://myshop.example").origin is None
+
+    def test_an_idna_and_a_unicode_spelling_are_the_same_host(self) -> None:
+        assert request_target("xn--bcher-kva.example", "https://bücher.example").origin is None
+        assert request_target("bücher.example", "https://xn--bcher-kva.example").origin is None
+        assert request_target("api.myshop.example", "https://bücher.example").origin is not None
+
+    def test_ipv6_and_unicode_hosts_are_still_readable(self) -> None:
+        assert base_host("https://[::1]:8443/") == "[::1]:8443"
+        assert base_host("https://bücher.example") is not None
+
+    def test_a_host_idna_2008_keeps_apart_is_another_host(self) -> None:
+        assert request_target("faß.de", "https://fass.de").origin is not None
+        assert request_target("fass.de", "https://faß.de").origin is not None
+        assert request_target("faß.de", "https://faß.de").origin is None
+
+    def test_base_host_is_spelled_by_normal_host(self) -> None:
+        assert base_host("https://MyShop.example:443/shop/") == "myshop.example"
+        assert base_host("http://myshop.example:8080") == "myshop.example:8080"
+
+
+_API_ORDERS_ENDPOINT = dataclasses.replace(_ORDERS_ENDPOINT, host="api.myshop.example.com")
+
+
+class TestAnEndpointOnAnotherHost:
+    """A stub for an endpoint recorded on a host other than base_url's requests an
+    absolute URL; one on base_url's host requests a path."""
+
+    @staticmethod
+    def _spec(*endpoints: Endpoint, base_url: str = "https://myshop.example.com") -> ScaffoldSpec:
+        return ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url=base_url,
+            digest=_digest(endpoints=endpoints),
+        )
+
+    def test_the_stub_requests_the_absolute_url(self) -> None:
+        plugin_code = render(self._spec(_API_ORDERS_ENDPOINT))["src/graftpunk_myshop/plugin.py"]
+        assert 'f"https://api.myshop.example.com/orders/{order_id}",' in plugin_code
+        assert 'f"/orders/{order_id}",' not in plugin_code
+
+    def test_a_stub_on_the_base_host_still_requests_a_path(self) -> None:
+        plugin_code = render(self._spec(_ORDERS_ENDPOINT))["src/graftpunk_myshop/plugin.py"]
+        assert 'f"/orders/{order_id}",' in plugin_code
+        assert "https://myshop.example.com/orders" not in plugin_code
+
+    def test_the_endpoint_declaration_stays_a_path(self) -> None:
+        plugin_code = render(self._spec(_API_ORDERS_ENDPOINT))["src/graftpunk_myshop/plugin.py"]
+        assert 'endpoint="GET /orders/{order_id}",' in plugin_code
+
+    def test_the_generated_test_is_unchanged(self) -> None:
+        same = render(self._spec(_ORDERS_ENDPOINT))["tests/test_plugin.py"]
+        other = render(self._spec(_API_ORDERS_ENDPOINT))["tests/test_plugin.py"]
+        assert other == same
+
+    def test_other_host_commands_names_each_one_and_both_hosts(self) -> None:
+        spec = self._spec(_API_ORDERS_ENDPOINT, _SEARCH_ENDPOINT)
+        assert other_host_commands(spec) == [
+            OtherHostCommand(
+                name="orders-by-order-id",
+                host="api.myshop.example.com",
+                base_host="myshop.example.com",
+            )
+        ]
+
+    def test_other_host_commands_is_empty_when_every_endpoint_is_on_the_base_host(self) -> None:
+        assert other_host_commands(self._spec(_ORDERS_ENDPOINT, _SEARCH_ENDPOINT)) == []
+
+    def test_render_command_reports_the_other_host(self) -> None:
+        d = _digest(endpoints=(_API_ORDERS_ENDPOINT,))
+        command = plan_command(d, CommandSelection("order", "GET", "/orders/{order_id}"))
+        rendered = render_command(command, d, "https://myshop.example.com")
+        assert rendered.other_host == OtherHostCommand(
+            name="order", host="api.myshop.example.com", base_host="myshop.example.com"
+        )
+        assert 'f"https://api.myshop.example.com/orders/{order_id}",' in "\n".join(rendered.lines)
+
+    def test_render_command_without_a_base_url_requests_every_endpoint_absolutely(self) -> None:
+        d = _digest(endpoints=(_ORDERS_ENDPOINT,))
+        command = plan_command(d, CommandSelection("order", "GET", "/orders/{order_id}"))
+        rendered = render_command(command, d, None)
+        assert rendered.other_host == OtherHostCommand(
+            name="order", host="myshop.example.com", base_host=None
+        )
+        assert 'f"https://myshop.example.com/orders/{order_id}",' in "\n".join(rendered.lines)
+
+
+class TestTheLoginPageAndTheRequestsShareOneHostRule:
+    """The login page's url and each stub's request come from one comparison, so a
+    login page and an endpoint on the same host are both a path or both absolute,
+    whatever base_url spells."""
+
+    @pytest.mark.parametrize(
+        ("base_url", "same_host"),
+        [
+            ("https://myshop.example.com", True),
+            ("https://MyShop.example.com:443/shop/", True),
+            ("https://api.myshop.example.com", False),
+            ("https://myshop.example.com:8443", False),
+        ],
+    )
+    def test_a_login_page_and_an_endpoint_on_one_host_agree(
+        self, base_url: str, same_host: bool
+    ) -> None:
+        form = LoginForm(
+            action="/session",
+            method="POST",
+            fields={"username": 'input[name="username"]', "password": 'input[name="password"]'},
+            submit='button[type="submit"]',
+            hidden=(),
+            source="https://myshop.example.com/signin",
+        )
+        spec = ScaffoldSpec(
+            name="myshop",
+            mode="new_project",
+            backend="nodriver",
+            base_url=base_url,
+            digest=_digest(endpoints=(_ORDERS_ENDPOINT,), login_forms=(form,)),
+        )
+        code = render(spec)["src/graftpunk_myshop/plugin.py"]
+        origin = "" if same_host else "https://myshop.example.com"
+        assert f'url="{origin}/signin",' in code
+        assert f'f"{origin}/orders/{{order_id}}",' in code
+        assert _on_base_host("https", "myshop.example.com", _read_base_url(base_url)) is same_host

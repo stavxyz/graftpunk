@@ -247,6 +247,7 @@ def endpoints_projection(d: RunDigest) -> dict[str, Any]:
         "endpoints": [
             {
                 "method": method,
+                "host": endpoint.host,
                 "template": endpoint.template,
                 "login_flow": endpoint.login_flow,
                 "content_type": endpoint.content_type,

@@ -41,7 +41,7 @@ from graftpunk.devtools.scaffold.pysrc import (
     source_lines,
     with_import,
 )
-from graftpunk.devtools.scaffold.render import render_command
+from graftpunk.devtools.scaffold.render import OtherHostCommand, render_command
 from graftpunk.devtools.scaffold.selection import CommandSelection, plan_command
 from graftpunk.devtools.scaffold.write import (
     PlannedChange,
@@ -63,14 +63,17 @@ class AddedCommand:
     """What ``add_command`` did: the module it edited, the command's CLI name, and the
     project-relative fixture its test will look for, or ``None`` when
     ``gp observe fixtures`` writes no fixture for this endpoint (see
-    ``render.RenderedCommand.fixture``), and what the write did to the
+    ``render.RenderedCommand.fixture``), what the write did to the
     project's ``graftpunk`` requirement (see
-    ``project.planned_graftpunk_floor``)."""
+    ``project.planned_graftpunk_floor``), and, when the stub requests an absolute
+    URL on a host other than the plugin's ``base_url``'s, which one
+    (``render.OtherHostCommand``)."""
 
     module: Path
     cli_name: str
     fixture: str | None
     floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | None = None
+    other_host: OtherHostCommand | None = None
 
 
 def insertion_line(plugin: PluginView, lines: Sequence[str], class_indent: str) -> int:
@@ -233,7 +236,7 @@ def add_command(
     indent_unit = first_body_line[: len(first_body_line) - len(first_body_line.lstrip(" \t"))]
     if not _body_starts_new_line(original, klass):
         raise CommandInsertError(_layout_refusal(plugin.module_path))
-    rendered = render_command(command, d)
+    rendered = render_command(command, d, plugin.base_url)
     stub_lines = _reindented(rendered.lines, indent_unit)
     at = insertion_line(plugin, lines, indent_unit)
     text = joined_like(original, [*lines[:at], "", *stub_lines, *lines[at:]])
@@ -257,4 +260,5 @@ def add_command(
         cli_name=command.registered_name,
         fixture=fixture,
         floor=floor,
+        other_host=rendered.other_host,
     )

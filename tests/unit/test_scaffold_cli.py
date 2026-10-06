@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -9,8 +10,10 @@ import sys
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
+import requests
 import structlog
 import typer
 from structlog.testing import capture_logs
@@ -19,6 +22,7 @@ from typer.testing import CliRunner
 from graftpunk.cli.scaffold_commands import plugin_app
 from graftpunk.har.parser import HARParseError, parse_har_file
 from graftpunk.logging import configure_logging
+from graftpunk.testing import FixtureSession, make_context
 from graftpunk.testing.sidecar import Sidecar, load_sidecar, sidecar_text
 from tests.unit.cli_harness import strip_ansi
 
@@ -406,6 +410,202 @@ class TestPluginNewFromRun:
         plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
         assert "myshop/run-1" in plugin_code
         assert "myshop/run-2" not in plugin_code
+
+
+class _RecordingSession(FixtureSession):
+    """A FixtureSession that keeps every URL it is asked for: the URL on the wire."""
+
+    def __init__(self, fixtures_dir: Path) -> None:
+        super().__init__(fixtures_dir)
+        self.urls: list[str] = []
+
+    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        self.urls.append(url)
+        return super().request(method, url, **kwargs)
+
+
+def _write_two_host_run(observe_base: Path) -> None:
+    """Pages on myshop.example, JSON on api.myshop.example (#214)."""
+    run_dir = observe_base / "myshop" / "run-1"
+    run_dir.mkdir(parents=True)
+    entries = [
+        _entry(
+            "GET",
+            "https://myshop.example/account",
+            content_type="text/html",
+            body="<html><body>Account</body></html>",
+        ),
+        _entry("GET", "https://api.myshop.example/api/orders/1001", body='{"id": "1001"}'),
+    ]
+    (run_dir / "network.har").write_text(
+        json.dumps({"log": {"version": "1.2", "entries": entries}})
+    )
+
+
+def _write_fixture(fixtures_dir: Path, name: str, body: str, content_type: str) -> None:
+    (fixtures_dir / name).write_text(body)
+    (fixtures_dir / f"{name}.meta.json").write_text(
+        sidecar_text(Sidecar(status=200, content_type=content_type))
+    )
+
+
+class TestATwoHostRecording:
+    """#214's acceptance: a generated command calls the host its endpoint was recorded on."""
+
+    @staticmethod
+    def _generate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_two_host_run(observe_base)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(target)],
+        )
+        assert result.exit_code == 0, result.output
+        return target, strip_ansi(result.output)
+
+    def test_the_generated_command_calls_the_api_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target, _ = self._generate(tmp_path, monkeypatch)
+        fixtures_dir = target / "tests" / "fixtures"
+        _write_fixture(
+            fixtures_dir, "get_api_orders_{order_id}.json", '{"id": "1001"}', "application/json"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "two_host_generated_plugin", target / "src" / "graftpunk_myshop" / "plugin.py"
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        plugin = module.MyshopPlugin()
+        assert plugin.base_url == "https://myshop.example"
+        session = _RecordingSession(fixtures_dir)
+        ctx = make_context(session, plugin_name="myshop", base_url=plugin.base_url)
+        assert plugin.api_orders_by_order_id(ctx, order_id="1001") == {"id": "1001"}
+        assert session.urls == ["https://api.myshop.example/api/orders/1001"]
+
+    def test_the_generated_tests_pass_against_their_fixtures(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target, _ = self._generate(tmp_path, monkeypatch)
+        fixtures_dir = target / "tests" / "fixtures"
+        _write_fixture(
+            fixtures_dir, "get_api_orders_{order_id}.json", '{"id": "1001"}', "application/json"
+        )
+        _write_fixture(
+            fixtures_dir, "get_account.html", "<html><body>Account</body></html>", "text/html"
+        )
+        env = {**os.environ, "PYTHONPATH": str(target / "src")}
+        pytest_result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+            [sys.executable, "-m", "pytest", "tests", "-q"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert pytest_result.returncode == 0, pytest_result.stdout + pytest_result.stderr
+        summary = pytest_result.stdout.strip().splitlines()[-1]
+        assert summary.startswith("3 passed"), pytest_result.stdout
+
+    def test_the_output_names_the_command_on_the_other_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, output = self._generate(tmp_path, monkeypatch)
+        notices = [line for line in output.splitlines() if " calls " in line]
+        assert notices == [
+            "api-orders-by-order-id calls api.myshop.example, not myshop.example; "
+            "its request is an absolute URL"
+        ]
+
+    def test_a_one_host_recording_prints_no_host_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base, "myshop", "run-1", url="https://myshop.example/api/orders", body="{}"
+        )
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(tmp_path / "out")],
+        )
+        assert result.exit_code == 0, result.output
+        assert " calls " not in strip_ansi(result.output)
+
+    def test_url_on_the_api_host_turns_the_page_command_absolute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_two_host_run(observe_base)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--url",
+                "https://api.myshop.example",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert '"https://myshop.example/account",' in plugin_code
+        assert 'f"/api/orders/{order_id}",' in plugin_code
+        assert (
+            "account calls myshop.example, not api.myshop.example; its request is an absolute URL"
+            in strip_ansi(result.output).splitlines()
+        )
+
+
+class TestUrlNeedsAHost:
+    """gp plugin new refuses a --url no path resolves against, so a generated plugin's
+    base_url always has a host and only add-command meets a plugin without one."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "myshop.example",
+            "https://",
+            "ftp://myshop.example",
+            "https://:443",
+            "https://user@",
+            "https://myshop.example:abc",
+            "https://myshop.example:99999",
+            "https://[zz::1]",
+            "https://my shop.example",
+            " https://myshop.example",
+        ],
+    )
+    def test_a_url_without_an_http_scheme_and_a_host_is_refused(
+        self, tmp_path: Path, url: str
+    ) -> None:
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(), ["plugin", "new", "myshop", "--url", url, "--dir", str(target)]
+        )
+        assert result.exit_code == 1
+        output = strip_ansi(result.output)
+        expected = (
+            f"--url must be an http:// or https:// URL with a valid host and port, got '{url}'."
+        )
+        assert expected in output
+        assert not target.exists()
+
+
+class TestUrlHelpNamesTheSchemes:
+    def test_the_url_option_help_says_http_or_https(self) -> None:
+        result = runner.invoke(_build_app(), ["plugin", "new", "--help"])
+        assert result.exit_code == 0
+        words = strip_ansi(result.output).replace("│", " ").split()
+        assert "An http:// or https:// base URL (overrides the host" in " ".join(words)
 
 
 class TestPathListingsDoNotWrapMidWord:

@@ -8,13 +8,17 @@ for everything the scaffold emits").
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import glob
+import ipaddress
 import keyword
 import re
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
+
+import idna
 
 import graftpunk
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
@@ -68,14 +72,19 @@ from graftpunk.plugins import PLUGINS_GROUP
 
 __all__ = [
     "PLUGIN_NAME_RE",
+    "OtherHostCommand",
     "RenderedCommand",
+    "RequestTarget",
     "ScaffoldSpec",
+    "base_host",
     "class_name_for",
     "fixture_paths",
     "fixtures_root_for",
     "graftpunk_version_floor",
+    "other_host_commands",
     "render",
     "render_command",
+    "request_target",
     "validate_plugin_name",
 ]
 
@@ -455,7 +464,8 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         # opens, so the hint is a comment and the field stays unset.
         lines.extend(
             wrapped_comment_lines(
-                f"{GP_FILL_MARKER}: url, the path of the login page. "
+                f"{GP_FILL_MARKER}: url, the path of the login page, or its full URL when it is "
+                "not on base_url's host. "
                 + (
                     "The recorded login page path holds an account value."
                     if form.source.startswith(("http://", "https://"))
@@ -586,16 +596,15 @@ def _login_page_url(form: LoginForm, base_url: str) -> str | None:
     ``source``), or, for an identity provider's form page an app GET on another host
     redirected to (``opened_from``), that app GET, since the provider's page opened
     directly lacks the state the redirect gave it. A path when it is on *base_url*'s
-    host (compared through ``normal_host``, so case and a default port do not
-    matter) and absolute otherwise. None when there is no such page to name (the form
+    host (``_on_base_host``, the comparison ``request_target`` makes for a stub's
+    request) and absolute otherwise. None when there is no such page to name (the form
     came from a saved page source) or when its path holds an id or a token
     (``templates_a_segment``)."""
     page = form.opened_from or form.source
     parts = urlsplit(page)
     if parts.scheme not in ("http", "https") or templates_a_segment(page):
         return None
-    base = urlsplit(base_url)
-    if normal_host(parts.scheme, parts.netloc) == normal_host(base.scheme, base.netloc):
+    if _on_base_host(parts.scheme, parts.netloc, _read_base_url(base_url)):
         return parts.path or "/"
     return page
 
@@ -921,7 +930,139 @@ def _decorator_lines(command: PlannedCommand, param_specs: list[str]) -> list[st
     return lines
 
 
-def _render_command_stub(command: PlannedCommand, run_label: str) -> list[str]:
+@dataclass(frozen=True)
+class _BaseUrl:
+    """``base_url`` read once: its scheme, and its host spelled by ``normal_host``
+    (lower case, no default port)."""
+
+    scheme: str
+    host: str
+
+
+def _is_hostname(hostname: str | None) -> bool:
+    """Whether *hostname* (as ``urlsplit`` reads it) can be a host: an IPv6 literal, or
+    a name of letters, digits, ``-``, ``_`` and ``.`` plus any non-ASCII letters (IDNA
+    hosts)."""
+    if not hostname:
+        return False
+    if ":" in hostname:
+        try:
+            ipaddress.IPv6Address(hostname)
+        except ValueError:
+            return False
+        return True
+    return all(ch.isalnum() or ch in "-_." for ch in hostname)
+
+
+def _read_base_url(base_url: str | None) -> _BaseUrl | None:
+    """*base_url*'s scheme and host from one ``urlsplit``, or ``None`` when it is not
+    an ``http`` or ``https`` URL with a host: no path resolves against it (``None``,
+    empty, a bare ``myshop.example``, a bad port, or whitespace or a character no
+    hostname holds). The one place *base_url* is parsed."""
+    if base_url is not None and any(ch.isspace() for ch in base_url):
+        return None
+    try:
+        # urlsplit, .hostname and .port each raise ValueError on input they cannot parse
+        # (a bracketed host that is no IP address, a port that is not a number).
+        base = urlsplit(base_url or "")
+        if base.scheme not in ("http", "https") or not _is_hostname(base.hostname):
+            return None
+        base.port  # noqa: B018
+    except ValueError:
+        return None
+    return _BaseUrl(scheme=base.scheme, host=normal_host(base.scheme, base.netloc))
+
+
+def base_host(base_url: str | None) -> str | None:
+    """*base_url*'s host, spelled by ``normal_host``, or ``None`` when it has none
+    (``_read_base_url``)."""
+    base = _read_base_url(base_url)
+    return None if base is None else base.host
+
+
+def _on_base_host(scheme: str, netloc: str, base: _BaseUrl | None) -> bool:
+    """Whether *netloc*, read under *scheme*, is *base*'s host: both spelled by
+    ``normal_host``, and never when ``base_url`` has no host (*base* is ``None``). The
+    one comparison behind a stub's request (``request_target``) and the login page's
+    ``url`` (``_login_page_url``), so the two cannot disagree."""
+    return base is not None and _fold_host(normal_host(scheme, netloc)) == _fold_host(base.host)
+
+
+def _fold_host(host: str) -> str:
+    """*host* (as ``normal_host`` spells it) for comparison only: one trailing dot
+    dropped from the name and each label in its IDNA 2008 ASCII form (as ``requests``
+    encodes it, so ``faß.de`` and ``fass.de`` stay apart), the lower-cased text when
+    it does not encode. The port stays. ``normal_host`` is untouched because the
+    digest is built from it."""
+    name, sep, port = host.rpartition(":")
+    if not sep or "]" in port or not port.isdigit():
+        name, port = host, ""
+    else:
+        port = f":{port}"
+    name = name.removesuffix(".")
+    with contextlib.suppress(idna.IDNAError, UnicodeError):
+        name = idna.encode(name, uts46=True).decode("ascii")
+    return name.lower() + port
+
+
+@dataclass(frozen=True)
+class RequestTarget:
+    """Where a generated command's request goes. ``origin`` is what the stub puts in
+    front of its templated path, or ``None`` when the stub requests the path and
+    ``SiteRequests`` joins it to ``base_url``; ``host`` is the endpoint's host and
+    ``base_host`` is ``base_url``'s (``None`` when it has none), both spelled by
+    ``normal_host``."""
+
+    origin: str | None
+    host: str
+    base_host: str | None
+
+
+def request_target(endpoint_host: str, base_url: str | None) -> RequestTarget:
+    """The one rule for where a generated command's request goes: a path when
+    *endpoint_host* is *base_url*'s host (``_on_base_host``), and otherwise an origin
+    of *base_url*'s scheme (the digest records none) and the endpoint's host. When
+    *base_url* has no host, no path resolves, so every endpoint gets an ``https://``
+    origin."""
+    base = _read_base_url(base_url)
+    scheme = "https" if base is None else base.scheme
+    host = normal_host(scheme, endpoint_host)
+    origin = None if _on_base_host(scheme, endpoint_host, base) else f"{scheme}://{host}"
+    return RequestTarget(origin=origin, host=host, base_host=None if base is None else base.host)
+
+
+@dataclass(frozen=True)
+class OtherHostCommand:
+    """A generated command whose request is an absolute URL: its registered name, the
+    host it calls, and ``base_url``'s host (``None`` when the plugin has no
+    ``base_url`` with a host to read). A record only: ``graftpunk.cli`` words the
+    line a writer prints for it."""
+
+    name: str
+    host: str
+    base_host: str | None
+
+
+def _other_host(name: str, target: RequestTarget) -> OtherHostCommand | None:
+    """The command registered as *name*, as an ``OtherHostCommand`` when *target*
+    gives its request an origin, else ``None``: a projection of the one
+    ``request_target`` result its stub was rendered from."""
+    if target.origin is None:
+        return None
+    return OtherHostCommand(name=name, host=target.host, base_host=target.base_host)
+
+
+def _target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget:
+    """Where *command*'s request goes under *base_url*: the one call to
+    ``request_target`` behind ``render_command`` (``gp plugin add-command``),
+    ``_render_command_stubs``, and ``other_host_commands`` (``gp plugin new``), so
+    the two writers agree by construction."""
+    return request_target(command.endpoint.host, base_url)
+
+
+def _render_command_stub(
+    command: PlannedCommand, run_label: str, target: RequestTarget
+) -> list[str]:
     endpoint = command.endpoint
     method = command.method
     name = command.identifier
@@ -930,6 +1071,7 @@ def _render_command_stub(command: PlannedCommand, run_label: str) -> list[str]:
     # CLI's own option names (_RESERVED_OPTION_IDENTIFIERS).
     seen_params = {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
     url_text, path_params = _templated_url(endpoint.template, seen_params)
+    url_text = (target.origin or "") + url_text
     is_json = _is_json_endpoint(endpoint)
     call, role, return_type = (
         ("request_json", "xhr", "dict") if is_json else ("request_text", "navigation", "str")
@@ -1042,13 +1184,15 @@ def _run_label(d: RunDigest) -> str:
 class RenderedCommand:
     """One stub, at class-body indentation with no trailing blank line; every
     ``(module, name)`` import the stub references, which an inserter merges as it is
-    handed them; and the fixture filename its test looks for, or ``None`` when
+    handed them; the fixture filename its test looks for, or ``None`` when
     ``_no_fixture_is_written`` says ``gp observe fixtures`` writes no fixture for
-    this endpoint (its test needs a fixture of its own instead)."""
+    this endpoint (its test needs a fixture of its own instead); and, when its
+    request is an absolute URL on a host other than ``base_url``'s, which one."""
 
     lines: tuple[str, ...]
     imports: tuple[tuple[str, str], ...]
     fixture: str | None
+    other_host: OtherHostCommand | None = None
 
 
 def _default_commands(d: RunDigest) -> list[PlannedCommand]:
@@ -1072,10 +1216,13 @@ def _planned(spec: ScaffoldSpec) -> list[PlannedCommand]:
     return _default_commands(spec.digest)
 
 
-def render_command(command: PlannedCommand, d: RunDigest) -> RenderedCommand:
+def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) -> RenderedCommand:
     """The single-command entry point: the stub ``gp plugin new`` writes for *command*,
-    which ``gp plugin add-command`` inserts on its own."""
-    lines = _render_command_stub(command, _run_label(d))
+    which ``gp plugin add-command`` inserts on its own. *base_url* is the plugin's, or
+    ``None`` when it has none to read; ``_target_for`` is evaluated once, and both
+    the stub's request and ``other_host`` read that one result."""
+    target = _target_for(command, base_url)
+    lines = _render_command_stub(command, _run_label(d), target)
     imports = [(_PLUGINS_MODULE, "CommandContext"), (_PLUGINS_MODULE, "command")]
     if _needs_param_specs(command.endpoint):
         imports.append((_PLUGINS_MODULE, "PluginParamSpec"))
@@ -1095,6 +1242,7 @@ def render_command(command: PlannedCommand, d: RunDigest) -> RenderedCommand:
         lines=tuple(lines[:-1] if lines[-1] == "" else lines),
         imports=tuple(imports),
         fixture=fixture,
+        other_host=_other_host(command.registered_name, target),
     )
 
 
@@ -1136,7 +1284,8 @@ def _render_command_stubs(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
         ]
     lines: list[str] = []
     for command in planned:
-        lines.extend(_render_command_stub(command, _run_label(spec.digest)))
+        target = _target_for(command, spec.base_url)
+        lines.extend(_render_command_stub(command, _run_label(spec.digest), target))
     return lines
 
 
@@ -1322,6 +1471,17 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
             f"{capture_filename(command.method, endpoint.template, _fixture_type(endpoint))}"
         )
     return paths
+
+
+def other_host_commands(spec: ScaffoldSpec) -> list[OtherHostCommand]:
+    """Every stub *spec* renders whose request is an absolute URL, in render order:
+    what ``gp plugin new`` reports after it writes, from the same ``_target_for``
+    the render used, as ``fixture_paths`` plans from the same commands."""
+    found = (
+        _other_host(command.registered_name, _target_for(command, spec.base_url))
+        for command in _planned(spec)
+    )
+    return [other for other in found if other is not None]
 
 
 def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:

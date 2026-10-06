@@ -155,7 +155,8 @@ def digest_cmd(
         ),
     ] = False,
     all_hosts: Annotated[
-        bool, typer.Option("--all-hosts", help="Model every host, not just the primary one")
+        bool,
+        typer.Option("--all-hosts", help="Model every host, not just the primary host's domain"),
     ] = False,
     limit: Annotated[
         int, typer.Option("--limit", min=1, help="Max endpoints in the markdown form")
