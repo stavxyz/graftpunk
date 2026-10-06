@@ -731,7 +731,7 @@ class TestGeneratedLoginHoldsNoAccountValue:
         )
         assert "The recorded login page path holds an account value." in comments
 
-    def test_the_url_gp_fill_names_a_full_url_for_another_hosts_page(self) -> None:
+    def test_the_url_gp_fill_mentions_the_full_url_option(self) -> None:
         segment = "7f3a9c2e8b1d4f60a9e2c3b4d5f6a7b8"
         code = self._plugin_code(
             self._form("/session", f"https://myshop.example.com/signin/{segment}")
