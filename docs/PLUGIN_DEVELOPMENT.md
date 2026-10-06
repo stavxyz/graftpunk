@@ -715,7 +715,7 @@ comment naming it), an explicit `params=` list whenever one of them is an `int`,
 a `float`, a `bool`, or a list (see [CLI parameter
 types](#cli-parameter-types)), the observed custom headers, the endpoint it
 calls declared as `endpoint=` on its decorator (method and path only), and a
-request for a path, which `ctx.request_json` joins to `base_url`, or, for an
+request for a path, which `ctx.request_json` or `ctx.request_text` joins to `base_url`, or, for an
 endpoint recorded on a host other than `base_url`'s, for the absolute URL on
 that host; a docstring recording the
 method, the path, how many times it was seen, which run it came from, and the
@@ -889,7 +889,7 @@ generated ones (see [Test against fixtures, not against the
 site](#test-against-fixtures-not-against-the-site)), and derive the fixture
 with `gp observe fixtures` as for the others. When `gp observe fixtures` writes
 no fixture for the endpoint, by the rule in [What gets
-filled in](#what-gets-filled-in), the second line says so instead:
+filled in](#what-gets-filled-in), the `Next:` line says so instead:
 
 ```text
 Added export to src/graftpunk_myshop/plugin.py
@@ -907,7 +907,7 @@ can read as a URL.
 
 The stub needs the graftpunk you run the command with. When the project's
 `[project] dependencies` holds a plain `graftpunk>=` lower bound below that
-release's `major.minor.0`, the same write raises it, and a third line says so
+release's `major.minor.0`, the same write raises it, and a last line says so
 and tells you to reinstall the project:
 
 ```text
