@@ -1,5 +1,18 @@
 ---
 type: plan
+validated:
+  sha: 3aecda67831e34d92a88266b76f65d382b16e7b2
+  date: 2026-10-06T15:34:57Z
+  reviewers: [fact-check, solid-hygiene]
+  findings:
+    critical: 0
+    important: 0
+    medium: 0
+    low: 3
+    nitpick: 1
+  net_negative_raised: 0
+  net_negative_addressed: 0
+  net_negative_remaining: 0
 ---
 
 # Per-Endpoint Hosts Implementation Plan
