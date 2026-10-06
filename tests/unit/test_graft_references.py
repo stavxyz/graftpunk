@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from graftpunk.cli.scaffold_shared import print_other_host
+from graftpunk.devtools.scaffold.render import OtherHostCommand
 from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.documents import LoginForm
 from graftpunk.har.report import endpoints_projection
@@ -157,6 +159,24 @@ def test_the_references_are_found() -> None:
 def test_each_reference_stays_short(reference: Path) -> None:
     lines = reference.read_text().splitlines()
     assert len(lines) < _MAX_REFERENCE_LINES, f"{reference.name} has {len(lines)} lines"
+
+
+_OTHER_HOST_LINE = "`<command> calls <host>`"
+
+
+@pytest.mark.parametrize("base_host", ["myshop.example", None], ids=["with-base", "no-base"])
+def test_gp_other_host_line_starts_as_the_skill_names_it(
+    base_host: str | None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The skill relays gp's other-host line by the name SKILL.md and harden.md give
+    it, so both forms gp prints start with the command and the host it calls."""
+    print_other_host(
+        OtherHostCommand(name="orders", host="api.myshop.example", base_host=base_host)
+    )
+    (line,) = capsys.readouterr().out.splitlines()
+    assert line.startswith("orders calls api.myshop.example"), line
+    for doc in (SKILL_MD, SKILL_DIR / "references" / "harden.md"):
+        assert _OTHER_HOST_LINE in doc.read_text(encoding="utf-8"), doc.name
 
 
 # gp invocations the skill docs spell that Claude does not run from commands.md:

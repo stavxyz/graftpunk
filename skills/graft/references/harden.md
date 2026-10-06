@@ -84,7 +84,7 @@ Read the guide's section on the gate (guide: The gate) and run every command it
 lists, through the runner the Harden block of `references/commands.md` gives it,
 until all of them pass. This section holds the skill's handling of gp's output,
 for the scaffold step and this one: show the user gp's output, relaying each
-`<name> calls <host>` line, and act on every instruction in it, then run the
+`<command> calls <host>` line, and act on every instruction in it, then run the
 gate again. Both `gp plugin add-command` and `gp plugin upgrade` may ask for the
 project to be installed again or for its graftpunk requirement to be raised, and
 each finding of the gate's plugin check carries the advice to follow.

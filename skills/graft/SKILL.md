@@ -98,7 +98,7 @@ at the kick-the-tires step.
    block in `references/commands.md`, with the chosen session and run and one
    `--command` per row the user kept. The generator writes only those stubs,
    under those names, each with its endpoint declared, and prints a
-   `<name> calls <host>` line for each one on another host; relay those lines
+   `<command> calls <host>` line for each one on another host; relay those lines
    as `references/harden.md` says ("The gate"). Edit nothing it wrote during
    this step. Then run `gp plugin info --json` and confirm every agreed command
    is listed with the endpoint it was agreed for.
