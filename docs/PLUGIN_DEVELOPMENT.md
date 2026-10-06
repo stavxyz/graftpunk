@@ -545,8 +545,8 @@ The options:
   one. With `--from-run`, `base_url` comes from the digest's primary host, and
   an explicit `--url` overrides it (use that when the recording's busiest host
   is a CDN or an API subdomain you do not want as the base). It must be an
-  `http://` or `https://` URL with a host; `--url myshop.example` is refused,
-  since no path resolves against it. A site whose pages and JSON come from
+  `http://` or `https://` URL with a valid host and port; `--url myshop.example`
+  is refused, since no path resolves against it. A site whose pages and JSON come from
   different hosts needs no `--url`: each stub requests the host its endpoint
   was recorded on (see [What gets filled in](#what-gets-filled-in)).
 - `--dir PATH` is the target directory (the working directory by default).
@@ -715,10 +715,10 @@ comment naming it), an explicit `params=` list whenever one of them is an `int`,
 a `float`, a `bool`, or a list (see [CLI parameter
 types](#cli-parameter-types)), the observed custom headers, the endpoint it
 calls declared as `endpoint=` on its decorator (method and path only), and a
-request for a path, which `ctx.request_json` or `ctx.request_text` joins to `base_url`, or, for an
-endpoint recorded on a host other than `base_url`'s, for the absolute URL on
-that host; a docstring recording the
-method, the path, how many times it was seen, which run it came from, and the
+request for a path, which `ctx.request_json` or `ctx.request_text` joins to
+`base_url`, or, for an endpoint recorded on a host other than `base_url`'s, for
+the absolute URL on that host; a docstring recording the method, the path, how
+many times it was seen, which run it came from, and the
 response shape. Each path value is percent-encoded before it goes into the URL
 (`_quote_path(order_id, safe="")`, `urllib.parse.quote` imported under a private
 name so a site parameter called `quote` cannot shadow it), so a `/`, `?`, or `#`
@@ -897,13 +897,16 @@ Next: gp observe fixtures writes no fixture for this endpoint; write its test ag
 ```
 
 The stub requests the host its endpoint was recorded on, by the rule
-`gp plugin new` follows: a path on the host of the plugin's `base_url`, and an absolute
-URL on any other host, with a line after `Added` naming the command and the host it calls,
-and the plugin's base host when the plugin has a readable `base_url`. When the plugin sets no `base_url` that `gp plugin info --json` can
-report as a URL (none, one built from an expression rather than a string, or
-a string with no `http://` or `https://`), every stub it adds requests an
-absolute `https://` URL, and the line says the plugin sets no `base_url` gp
-can read as a URL.
+`gp plugin new` follows: a path on the host of the plugin's `base_url`, and an
+absolute URL on any other host, with a line after `Added` naming the command and
+the host it calls, and the plugin's base host when the plugin has a readable
+`base_url`. A plugin has no readable `base_url` when `gp plugin info --json`
+cannot report one as a URL that `gp plugin new --url` would accept: none, one
+built from an expression rather than a string, or a string that is not an
+`http://` or `https://` URL with a valid host and port (no scheme, no host, a bad
+port, or whitespace in it). Every stub added to such a plugin requests an
+absolute `https://` URL, and the line says the plugin sets no `base_url` gp can
+read as a URL.
 
 The stub needs the graftpunk you run the command with. When the project's
 `[project] dependencies` holds a plain `graftpunk>=` lower bound below that

@@ -29,6 +29,7 @@ The digest records each endpoint's host (`Endpoint.host`, spelled by `graftpunk.
 
 - The digest keys endpoints by `(method, template)`, so one template recorded on two hosts is one endpoint carrying the first host seen. Splitting it is a digest-keying change with consequences for fixture names and declarations; out of scope.
 - The digest does not record a scheme; another host gets `base_url`'s scheme. A site serving its API over plain `http` while its pages use `https` is not handled; none has been seen.
+- A stub that calls another host still sends its role's headers. The `xhr` role sends `Sec-Fetch-Site: same-origin` and no `Origin` (`src/graftpunk/graftpunk_session.py`, around lines 111-118), which a browser would not send cross-site. Out of scope here.
 
 ## Also in this change (noted on #225)
 
