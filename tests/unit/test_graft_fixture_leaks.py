@@ -112,6 +112,60 @@ def test_an_html_capture_checks_text_and_attribute_values(tmp_path: Path) -> Non
     assert result.returncode == 1
     assert "'Alice Example'" in result.stdout
     assert "'4471023'" not in result.stdout
+    # The class a parser selects on is reported too; keeping it is the skill's call.
+    assert "'orders'" in result.stdout
+
+
+def test_an_escaped_copy_is_still_caught(tmp_path: Path) -> None:
+    """json.dumps writes a non-ASCII name as \\u escapes, so a search of the raw text
+    alone misses the copy."""
+    capture = json.dumps({"name": "José García"}, ensure_ascii=False)
+    result = _run(tmp_path, capture, json.dumps({"name": "José García"}))
+    assert result.returncode == 1
+    assert "'José García'" in result.stdout
+
+
+def test_an_entity_escaped_copy_in_html_is_still_caught(tmp_path: Path) -> None:
+    result = _run(tmp_path, "<p>Smith &amp; Sons</p>", "<p>Smith &amp; Sons</p>")
+    assert result.returncode == 1
+    assert "'Smith & Sons'" in result.stdout
+
+
+def test_a_value_inside_a_shortened_string_is_still_caught(tmp_path: Path) -> None:
+    """Cutting an address off a sentence leaves the name; the word pairs and the
+    capitalised words of the original catch it."""
+    capture = json.dumps({"note": "Ship to Jane Doe at Elm Road"})
+    result = _run(tmp_path, capture, json.dumps({"note": "Ship to Jane Doe"}))
+    assert result.returncode == 1
+    assert "'Jane Doe'" in result.stdout
+
+
+def test_an_account_value_used_as_a_key_is_caught(tmp_path: Path) -> None:
+    capture = json.dumps({"alice@example.com": {"plan": "pro"}})
+    result = _run(tmp_path, capture, json.dumps({"alice@example.com": {"plan": "basic"}}))
+    assert result.returncode == 1
+    assert "'alice@example.com'" in result.stdout
+
+
+def test_an_html_comment_is_checked(tmp_path: Path) -> None:
+    capture = "<div><!-- acct 99887766 --><p>hi</p></div>"
+    result = _run(tmp_path, capture, "<div><!-- acct 99887766 --><p>yo</p></div>")
+    assert result.returncode == 1
+    assert "'99887766'" in result.stdout
+
+
+def test_a_sidecar_that_is_not_an_object_exits_2(tmp_path: Path) -> None:
+    for name, text in (("capture.json", "{}"), ("fixture.json", "{}"), ("side.json", "[]")):
+        (tmp_path / name).write_text(text)
+    assert PYTHON is not None
+    names = ("capture.json", "fixture.json", "side.json")
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [PYTHON, "-I", str(SCRIPT), *(str(tmp_path / n) for n in names)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "not a JSON object" in result.stderr
 
 
 def test_the_sidecar_lists_are_printed_for_review(tmp_path: Path) -> None:

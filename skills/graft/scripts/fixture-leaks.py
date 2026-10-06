@@ -3,15 +3,23 @@
 Usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]
 
 The graft skill writes each fixture from a capture on the developer's workstation,
-inventing every value. This reports what survived, so the skill can rewrite it: each
-string leaf of a JSON capture (each text node and attribute value of any other text
-capture) at least three characters long, and each run of three or more digits, that
-appears anywhere in the fixture's text. A string the command branches or selects on
-(a status, a currency code, a class name) may be kept on purpose; the skill decides,
-so this reports and never edits. With SIDECAR, it also prints the names the sidecar
-lists, since a sidecar is committed and the guide asks for both lists to be read.
+inventing every value. This reports what survived, so the skill can rewrite it.
 
-Exit 0 when nothing survived, 1 when something did, 2 on a usage or read error.
+What it looks for, from the capture: each JSON string, number, and key that is not
+a plain identifier (each text node, attribute value, and comment of any other text
+capture), whole, and the pieces of it an account value hides in: each run of three
+or more digits, each word holding an ``@``, a digit, or a capital letter, and each
+pair of words with one of those in it. Where it looks, in the fixture: the raw text
+and the same values decoded, so an escaped copy (``\\u00e9``, ``\\/``, ``&amp;``) is
+found too. FIXTURE can be any text file: a plugin module or a test module is checked
+the same way. It matches text, so a captured lowercase word alone is not reported.
+A string the command branches or selects on (a status, a currency code, a class
+name) may be kept on purpose; the skill decides, so this reports and never edits.
+With SIDECAR, it also prints the names the sidecar lists, since a sidecar is
+committed and the guide asks for both lists to be read.
+
+Exit 0 when nothing survived, 1 when something did, 2 on a usage or read error (a
+capture that is not UTF-8 text, such as a PDF, cannot be compared).
 Standard library only, so it runs under any Python 3.9 or later.
 """
 
@@ -24,11 +32,14 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 _DIGITS = re.compile(r"\d{3,}")
-_MIN_STRING = 3
+_WORD = re.compile(r"[^\s,;:()\[\]{}<>\"']+")
+_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
+_MIN_LENGTH = 3
 
 
-class _TextAndAttributes(HTMLParser):
-    """Text nodes and attribute values of a non-JSON capture, the parts a site fills in."""
+class _TextParts(HTMLParser):
+    """Text nodes, attribute values, and comments of a non-JSON body: the parts a
+    site fills in, as opposed to its markup."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -37,41 +48,66 @@ class _TextAndAttributes(HTMLParser):
     def handle_data(self, data: str) -> None:
         self.values.append(data)
 
+    def handle_comment(self, data: str) -> None:
+        self.values.append(data)
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.values.extend(value for _name, value in attrs if value)
 
 
-def _json_leaves(node: object) -> list[str]:
+def _json_values(node: object) -> list[str]:
     if isinstance(node, dict):
-        return [leaf for value in node.values() for leaf in _json_leaves(value)]
+        keys = [str(k) for k in node if not _IDENTIFIER.match(str(k))]
+        return keys + [leaf for value in node.values() for leaf in _json_values(value)]
     if isinstance(node, list):
-        return [leaf for value in node for leaf in _json_leaves(value)]
+        return [leaf for value in node for leaf in _json_values(value)]
     if isinstance(node, bool) or node is None:
         return []
     return [str(node)]
 
 
-def captured_values(text: str) -> list[str]:
-    """The values in *text* worth looking for in a fixture, in first-seen order."""
+def body_values(text: str) -> list[str]:
+    """The filled-in values of a body, decoded: JSON leaves and non-identifier keys,
+    or the text parts of anything else."""
     try:
-        raw = _json_leaves(json.loads(text))
+        return _json_values(json.loads(text))
     except ValueError:
-        parser = _TextAndAttributes()
+        parser = _TextParts()
         parser.feed(text)
-        raw = parser.values
+        parser.close()
+        return parser.values
+
+
+def _pieces(value: str) -> list[str]:
+    """*value* and the parts of it an account value can hide in."""
+    words = _WORD.findall(value)
+    marked = [any(c == "@" or c.isdigit() or c.isupper() for c in w) for w in words]
+    pieces = [value]
+    pieces += _DIGITS.findall(value)
+    pieces += [words[i] for i in range(len(words)) if marked[i]]
+    # A pair counts when either word is marked, so "Jane Doe" is a piece and a
+    # pair of plain lowercase words ("at the") is not.
+    pieces += [
+        " ".join(words[i : i + 2]) for i in range(len(words) - 1) if marked[i] or marked[i + 1]
+    ]
+    return pieces
+
+
+def captured_values(text: str) -> list[str]:
+    """What to look for in a fixture, in first-seen order and without repeats."""
     found: dict[str, None] = {}
-    for value in raw:
-        value = value.strip()
-        if len(value) >= _MIN_STRING and not value.isdigit():
-            found[value] = None
-        for run in _DIGITS.findall(value):
-            found[run] = None
+    for value in body_values(text):
+        for piece in _pieces(value.strip()):
+            piece = piece.strip()
+            if len(piece) >= _MIN_LENGTH and (not piece.isdigit() or len(piece) >= 3):
+                found[piece] = None
     return list(found)
 
 
 def survivors(capture: str, fixture: str) -> list[str]:
-    """Each captured value that still appears in *fixture*."""
-    return [value for value in captured_values(capture) if value in fixture]
+    """Each captured value that still appears in *fixture*, raw or decoded."""
+    haystack = fixture + "\n" + "\n".join(body_values(fixture))
+    return [value for value in captured_values(capture) if value in haystack]
 
 
 def main(argv: list[str]) -> int:
@@ -84,6 +120,9 @@ def main(argv: list[str]) -> int:
         sidecar = json.loads(Path(argv[3]).read_text(encoding="utf-8")) if len(argv) == 4 else None
     except (OSError, ValueError) as exc:
         print(f"fixture-leaks: cannot read the inputs: {exc}", file=sys.stderr)
+        return 2
+    if sidecar is not None and not isinstance(sidecar, dict):
+        print("fixture-leaks: the sidecar is not a JSON object.", file=sys.stderr)
         return 2
     left = survivors(capture, fixture)
     for value in left:

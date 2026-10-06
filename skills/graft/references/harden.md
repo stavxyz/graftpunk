@@ -25,18 +25,26 @@ real account (guide: Deriving a fixture from a capture). For an HTML capture,
 keep the markup and the classes and attributes a parser selects on, and invent
 the text and the attribute values that carry data. A token value in a capture is
 replaced like any other value. Then run the fixture-leaks line of the Harden
-block on the capture, the fixture, and its sidecar. It prints every captured
-string of three or more characters, and every run of three or more digits, still
-in the fixture, and the names the sidecar lists. Rewrite each value it prints
-unless the command branches or selects on it (a status, a currency code, a class
-name) and it names no person, place, account, or order; tell the user which
-values you kept and why. A sidecar is committed: when one of its names holds an
-account value, tell the user and do not commit that sidecar as it is
-(guide: Test against fixtures, not against the site). Then run the gate's
-`pytest` line through the runner in the Harden block: the generated suite checks
-every fixture on every run and names each one that is still byte for byte its
-capture or holds a flagged cookie or token name; rewrite any it names. Count the
-check as run only when that `pytest` output carries its
+block on the capture, the fixture, and its sidecar. It prints each captured
+value, and each piece of one (a run of three or more digits, a word holding an
+`@`, a digit, or a capital letter, and a pair of words), still in the fixture,
+escaped copies included, and the names the sidecar lists. It matches text, so
+read the fixture once more for anything it cannot know is the account's, such as
+a lowercase single word. When it exits 2 (a capture that is not text, such as a
+PDF), it compared nothing: write that fixture from invented values without
+copying the capture, and tell the user. Rewrite each value it prints unless the
+command branches or selects on it (a status, a currency code, a class name) and
+it names no person, place, account, or order; tell the user which values you
+kept and why. A sidecar is committed: when one of its names holds an account
+value, tell the user and do not commit that sidecar as it is
+(guide: Test against fixtures, not against the site). Run the same line once
+more with the plugin module, and once with each test module, in place of the
+fixture and with no sidecar, and rewrite any captured value it prints there: a
+docstring, a comment, and a test assertion hold invented values only. Then run
+the gate's `pytest` line through the runner in the Harden block: the generated
+suite checks every fixture on every run and names each one that is still byte
+for byte its capture or holds a flagged cookie or token name; rewrite any it
+names. Count the check as run only when that `pytest` output carries its
 `fixtures_are_sanitised:` line; without it the project lacks the wiring, so run
 the gate's plugin check and act on what it reports first.
 
