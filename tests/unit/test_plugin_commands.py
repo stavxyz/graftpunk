@@ -2063,6 +2063,15 @@ class TestIntrospectParamsUnderFutureAnnotations:
         assert seen[name] == expected
 
     @pytest.mark.parametrize("header", ["", _FUTURE_HEADER], ids=["plain", "future"])
+    def test_a_nan_default_keeps_the_float_type(self, load_module: Any, header: str) -> None:
+        plugin = load_module(
+            "nan_default",
+            header + _PLAIN_PLUGIN.format(params="ratio: Optional[float] = float('nan')"),
+        ).Shop()
+        (spec,) = plugin.get_commands()[0].params
+        assert spec.click_kwargs["type"] is float
+
+    @pytest.mark.parametrize("header", ["", _FUTURE_HEADER], ids=["plain", "future"])
     def test_a_lossy_default_keeps_the_str_option(self, load_module: Any, header: str) -> None:
         # int(1.5) is 1: taking the type would change the default's value, so the
         # option stays the str it was, and the handler gets the default as text.

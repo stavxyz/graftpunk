@@ -175,7 +175,7 @@ def _option_type(annotation: Any, method: Any, default: Any) -> type:
     """
     if annotation in (int, float, str):
         return annotation
-    if annotation is bool and not (default is None or isinstance(default, bool)):
+    if annotation is bool and not _flag_default(default):
         return bool
     annotation = _unwrap_annotation(_resolve_annotation(annotation, method), method)
     if annotation not in _OPTION_TYPES:
@@ -191,17 +191,25 @@ def _default_fits(option_type: type, default: Any) -> bool:
     converts it (``int("1")``, ``int(1.0)``, ``float(2)``), which is how Click
     converts an ``int`` or ``float`` option's default, and a number fits only when
     the conversion keeps its value (``int(1.5)`` is ``1``, so ``1.5`` does not
-    fit ``int``). Any error from the conversion (``int(float("inf"))`` overflows)
-    means it does not fit."""
+    fit ``int``; a NaN keeps its value). Any error from the conversion or the
+    comparison (``int(float("inf"))`` overflows) means it does not fit."""
     if default is None or option_type is str:
         return True
     if option_type is bool:
-        return isinstance(default, bool)
+        return _flag_default(default)
     try:
         converted = option_type(default)
-    except Exception:  # noqa: BLE001 -- whatever the conversion raises, the default does not fit
+        if not isinstance(default, numbers.Number):
+            return True
+        # NaN equals nothing, itself included, yet converting it changes nothing.
+        return bool(converted == default) or bool(converted != converted and default != default)
+    except Exception:  # noqa: BLE001 -- whatever the conversion or comparison raises, it does not fit
         return False
-    return not isinstance(default, numbers.Number) or converted == default
+
+
+def _flag_default(default: Any) -> bool:
+    """Whether a bool flag can carry *default*: absent (``None``) or a ``bool``."""
+    return default is None or isinstance(default, bool)
 
 
 def _option_flag(name: str) -> str:
@@ -1277,11 +1285,7 @@ class SitePlugin:
             # every value the handler accepts.
             # A bare bool with a default that is not a bool stays unflagged, so
             # registration refuses it as it always has.
-            if (
-                param_type is bool
-                and default is not False
-                and (default is None or isinstance(default, bool))
-            ):
+            if param_type is bool and default is not False and _flag_default(default):
                 flag = _option_flag(name)
                 negatives = _bool_negatives(flag)
                 free = [n for n in negatives if n not in flags]
