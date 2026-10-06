@@ -77,10 +77,10 @@ def _handler_signature(method: Any) -> inspect.Signature:
 
     On Python 3.14 a module without the future import evaluates annotations
     lazily, and a plain ``inspect.signature`` evaluates them all, so one name
-    imported only under ``TYPE_CHECKING`` would raise ``NameError`` for the whole
-    command. ``FORWARDREF`` evaluates every annotation it can, closure names
-    included, and leaves an unresolvable one as a ``ForwardRef``, which
-    ``_option_type`` maps to ``str``.
+    imported only under ``TYPE_CHECKING`` would raise ``NameError`` from
+    ``get_commands`` and drop every command of the plugin. ``FORWARDREF``
+    evaluates every annotation it can, closure names included, and leaves an
+    unresolvable one as a ``ForwardRef``, which ``_option_type`` maps to ``str``.
     """
     if sys.version_info >= (3, 14):
         import annotationlib
@@ -133,11 +133,16 @@ def _resolve_annotation(annotation: Any, method: Any) -> Any:
     return annotation
 
 
-def _unwrap_annotation(annotation: Any) -> Any:
+def _unwrap_annotation(annotation: Any, method: Any) -> Any:
     """*annotation* without its ``Annotated[...]`` metadata and its ``None`` member,
     in any nesting: ``Optional[Annotated[int, ...]]`` and ``Annotated[int | None,
-    ...]`` both give ``int``. A union of two or more types is returned whole."""
+    ...]`` both give ``int``. A quoted member (``Optional["int"]``), which typing
+    keeps as a ``ForwardRef``, is resolved as a string annotation would be. A
+    union of two or more types is returned whole."""
     while True:
+        if isinstance(annotation, typing.ForwardRef):
+            annotation = _resolve_annotation(annotation.__forward_arg__, method)
+            continue
         if typing.get_origin(annotation) is typing.Annotated:
             annotation = typing.get_args(annotation)[0]
             continue
@@ -152,13 +157,18 @@ def _unwrap_annotation(annotation: Any) -> Any:
 def _option_type(annotation: Any, method: Any, default: Any) -> type:
     """The option type *annotation* names, or ``str`` when it names none.
 
-    Each parameter's annotation is resolved on its own, so a name that resolves
-    only under ``TYPE_CHECKING`` costs that parameter its type and no other. A
-    default the type cannot take (``n: int = "all"``) keeps ``str``, since Click
-    converts the default through the option's type and a command that ran with it
-    would then fail on every call without the option.
+    A bare ``int``, ``float``, or ``str`` annotation object is kept as it is, as
+    it always was. Anything else, which used to give ``str``, is resolved on its
+    own (so a name that resolves only under ``TYPE_CHECKING`` costs that parameter
+    its type and no other), and keeps ``str`` when its default is one the type
+    cannot take (``n: int = "all"``): Click converts the default through the
+    option's type, and a command that ran with the ``str`` option would then fail
+    on every call without the option. A bare ``bool`` takes the same check, since
+    a flag's default must be a ``bool``.
     """
-    annotation = _unwrap_annotation(_resolve_annotation(annotation, method))
+    if annotation in (int, float, str):
+        return annotation
+    annotation = _unwrap_annotation(_resolve_annotation(annotation, method), method)
     if annotation not in _OPTION_TYPES:
         return str
     return annotation if _default_fits(annotation, default) else str
@@ -170,14 +180,15 @@ def _default_fits(option_type: type, default: Any) -> bool:
     ``None`` always fits. A ``bool`` option is a flag, so only a ``bool`` fits it.
     Any value fits ``str``. For ``int`` and ``float``, a value fits when the type
     converts it (``int("1")``, ``int(1.0)``, ``float(2)``), which is how Click
-    converts an ``int`` or ``float`` option's default."""
+    converts an ``int`` or ``float`` option's default; any error from that
+    conversion (``int(float("inf"))`` overflows) means it does not."""
     if default is None or option_type is str:
         return True
     if option_type is bool:
         return isinstance(default, bool)
     try:
         option_type(default)
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 -- whatever the conversion raises, the default does not fit
         return False
     return True
 
@@ -187,15 +198,11 @@ def _option_flag(name: str) -> str:
     return f"--{name.replace('_', '-')}"
 
 
-def _bool_negative(flag: str, taken: set[str]) -> str | None:
-    """The negative a bool *flag* can take: ``--no-x``, or ``--x-false`` when
-    another option already is ``--no-x``, the order the scaffold's stubs use.
-    ``None`` when both are taken."""
+def _bool_negatives(flag: str) -> tuple[str, str]:
+    """The negatives a bool *flag* can take, in the order the scaffold's stubs
+    try them: ``--no-x``, then ``--x-false``."""
     positive = flag.removeprefix("--")
-    for negative in (f"--no-{positive}", f"--{positive}-false"):
-        if negative not in taken:
-            return negative
-    return None
+    return f"--no-{positive}", f"--{positive}-false"
 
 
 @dataclass(frozen=True)
@@ -1259,18 +1266,20 @@ class SitePlugin:
             # every value the handler accepts.
             if param_type is bool and default is not False:
                 flag = _option_flag(name)
-                negative = _bool_negative(flag, flags)
-                if negative is None:
+                negatives = _bool_negatives(flag)
+                free = [n for n in negatives if n not in flags]
+                if free:
+                    click_kwargs = {"is_flag": True, "flag": f"{flag}/{free[0]}"}
+                else:
                     LOG.warning(
                         "introspected_bool_option_kept_as_str",
                         handler=getattr(method, "__qualname__", repr(method)),
                         option=flag,
-                        reason="its --no- and -false negatives are other options",
+                        reason=f"{' and '.join(negatives)} are other options of the command",
+                        effect="the handler receives text, and any non-empty text is truthy",
                         advice="declare params= on @command to spell the flag",
                     )
                     param_type = str
-                else:
-                    click_kwargs = {"is_flag": True, "flag": f"{flag}/{negative}"}
 
             params.append(
                 PluginParamSpec.option(
