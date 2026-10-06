@@ -971,31 +971,45 @@ class TestAddCommand:
 
     def test_the_guide_quotes_what_add_command_prints(self, recorded: Path) -> None:
         """The guide's add-command section pastes this command's output; a wording
-        change here has to reach it. Paths are compared from the project root, and
-        a fixture name as a placeholder, since the guide's recording differs."""
+        change here has to reach it. Every kind of line it quotes is produced here
+        and compared with the guide's after the parts that name this test's
+        recording (command names, fixture names, the project path) are made
+        generic on both sides."""
         from tests.unit.guide_harness import GUIDE_TEXT, blocks, section
 
+        def generic(line: str) -> str:
+            line = line.replace(f"{recorded}/", "").replace(f"in {recorded};", "in .;")
+            line = re.sub(r"tests/fixtures/\S+", "<fixture>", line)
+            line = re.sub(r"^Added \w+ to", "Added <name> to", line)
+            return re.sub(r"'\w+'", "'<name>'", line)
+
         quoted = {
-            re.sub(r"tests/fixtures/\S+", "<fixture>", line)
+            generic(line)
             for _start, body in blocks(
                 section(GUIDE_TEXT, "### Add a command to an existing plugin"), "text"
             )
             for line in body.splitlines()
         }
         _new(recorded, "myshop", "orders=GET /api/orders")
-        added = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
-        refused = _add(recorded, "myshop", "orders=GET /api/orders/{order_id}")
+        pyproject = recorded / "pyproject.toml"
+        pyproject.write_text(
+            re.sub(r"graftpunk(\[\w+\])?>=[0-9.]+", r"graftpunk\1>=1.15.0", pyproject.read_text())
+        )
+        results = [
+            _add(recorded, "myshop", "order=GET /api/orders/{order_id}"),
+            _add(recorded, "myshop", "orders=GET /api/orders/{order_id}"),
+            _add(recorded, "shop", "status=GET /api/orders/{order_id}"),
+        ]
         printed = [
-            re.sub(r"tests/fixtures/\S+", "<fixture>", line.replace(f"{recorded}/", ""))
-            for result in (added, refused)
+            generic(line)
+            for result in results
             for line in _plain(result.output).strip().splitlines()
         ]
-        assert [line for line in printed if line.startswith("Next:")]
-        assert [line for line in printed if "already has a command named" in line]
+        kinds = ("Added ", "Next: ", "pyproject.toml: ", "already has a command", "No plugin has")
+        for kind in kinds:
+            assert any(kind in line for line in printed), (kind, printed)
         for line in printed:
-            if line.startswith("Next:") or "already has a command named" in line:
-                generic = re.sub(r"'\w+'", "'orders'", line)
-                assert generic in quoted, line
+            assert line in quoted, line
 
     def test_a_duplicate_name_is_refused_and_nothing_changes(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
