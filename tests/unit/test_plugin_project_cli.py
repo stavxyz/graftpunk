@@ -969,6 +969,34 @@ class TestAddCommand:
         assert "ruff check --fix" in line
         assert _snapshot(recorded, skip=recorded / "nothing") == before
 
+    def test_the_guide_quotes_what_add_command_prints(self, recorded: Path) -> None:
+        """The guide's add-command section pastes this command's output; a wording
+        change here has to reach it. Paths are compared from the project root, and
+        a fixture name as a placeholder, since the guide's recording differs."""
+        from tests.unit.guide_harness import GUIDE_TEXT, blocks, section
+
+        quoted = {
+            re.sub(r"tests/fixtures/\S+", "<fixture>", line)
+            for _start, body in blocks(
+                section(GUIDE_TEXT, "### Add a command to an existing plugin"), "text"
+            )
+            for line in body.splitlines()
+        }
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        added = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        refused = _add(recorded, "myshop", "orders=GET /api/orders/{order_id}")
+        printed = [
+            re.sub(r"tests/fixtures/\S+", "<fixture>", line.replace(f"{recorded}/", ""))
+            for result in (added, refused)
+            for line in _plain(result.output).strip().splitlines()
+        ]
+        assert [line for line in printed if line.startswith("Next:")]
+        assert [line for line in printed if "already has a command named" in line]
+        for line in printed:
+            if line.startswith("Next:") or "already has a command named" in line:
+                generic = re.sub(r"'\w+'", "'orders'", line)
+                assert generic in quoted, line
+
     def test_a_duplicate_name_is_refused_and_nothing_changes(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
         before = _snapshot(recorded, skip=recorded / "nothing")

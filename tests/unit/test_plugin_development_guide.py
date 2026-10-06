@@ -319,9 +319,13 @@ def test_the_docs_spell_command_values_to_check() -> None:
 @pytest.mark.parametrize(("where", "value"), COMMAND_VALUES, ids=lambda v: str(v)[:60])
 def test_every_command_value_parses(where: str, value: str) -> None:
     """``check_invocation`` checks that ``--command`` exists, not that its value is
-    one the CLI accepts; a value it refuses would fail in the reader's terminal."""
+    one the CLI accepts; a value it refuses would fail in the reader's terminal.
+    The name rules the digest does not decide are all checked here: the
+    identifier rule, the reserved names, and the generated module's own names."""
     name, _method, _template = parse_command_spec(value)
-    command_identifier(name)
+    identifier = command_identifier(name)
+    assert identifier not in policy.RESERVED_COMMAND_NAMES, f"{where}: {value}"
+    assert identifier not in policy.GENERATED_MODULE_NAMES, f"{where}: {value}"
 
 
 def test_the_version_json_example_names_the_current_contracts() -> None:
@@ -364,6 +368,7 @@ def test_the_info_json_example_has_the_payloads_fields(tmp_path: Path) -> None:
     )
     built = info_payload(read_project(tmp_path))
     assert example["schema"] == built["schema"]
+    assert example["directory"] == built["directory"]
     assert set(example) == set(built)
     (example_plugin,) = example["plugins"]
     (built_plugin,) = built["plugins"]
