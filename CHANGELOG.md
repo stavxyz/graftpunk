@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The `/graftpunk:graft` Claude Code skill.** The repository is now a Claude Code plugin marketplace: `/plugin marketplace add stavxyz/graftpunk`, then `/plugin install graftpunk@graftpunk`. `/graftpunk:graft myshop https://myshop.example/` in an empty directory creates a plugin by walking `docs/PLUGIN_DEVELOPMENT.md` (frame, capture, understand, scaffold, implement, harden, a live check, and the publish checklist), running the `gp` commands itself (each subject to your permission settings; the skill offers allow rules for a prompt-free run) and handing you the browser recording and the live login (it asks you to set credentials with `gp config set` first, and asks before the live login and the first live read). It derives each test fixture from a capture on your workstation, inventing every value, and keeps captured values out of everything it writes into the project; `/graftpunk:graft` inside a plugin project adds commands to it. The skill is versioned apart from the package (0.1.0) and needs graftpunk 1.18.0 or later and `uv`.
+
 ## [1.18.0] - 2026-10-06
 
 This is a minor release. A generated command now calls the host its endpoint was recorded on, the endpoints projection carries each endpoint's host, and the scaffold commands say when a command calls another host. Nothing changes for an existing plugin when it runs: only code `gp plugin new` and `gp plugin add-command` write from now on differs.

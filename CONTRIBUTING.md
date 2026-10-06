@@ -309,6 +309,39 @@ For YAML plugins, see `examples/templates/yaml_template.yaml`. Both support decl
 
 5. **Squash commits** if requested before merge
 
+## Releasing the skill
+
+The Claude Code skill under `skills/` is versioned apart from the graftpunk
+package. Any change under `skills/` or `.claude-plugin/`, or to
+`docs/PLUGIN_DEVELOPMENT.md` (the installed plugin carries the guide, and the
+skill reads it), needs a patch bump of the `version` field in
+`.claude-plugin/plugin.json`; a new skill or a changed invocation contract is a
+minor bump. That field pins an installed plugin:
+setting it "pins the plugin to that version until you change it"
+([plugins reference](https://code.claude.com/docs/en/plugins-reference), the
+`version` field), so people who installed the skill from GitHub receive a
+change only when it moves. Three kinds of install are not pinned by it: a
+plugin with a `command` source, a plugin from a marketplace hosted on
+claude.ai, and a plugin loaded in place from a marketplace added from a local
+path. `.claude-plugin/marketplace.json` carries no root `version`: that field
+is the marketplace manifest's own version
+([marketplace reference](https://code.claude.com/docs/en/plugins/marketplace-reference),
+top-level fields), and nothing here needs it.
+
+The `Skill version` workflow checks this on every pull request that touches
+those paths: the branch's own changes are measured from the merge base, and its
+version has to be higher than the base branch's, so a bump another merge already
+used fails whenever the check runs against a base that holds it. Two open pull
+requests can still both pass and both merge, since `main` does not require
+branches to be up to date; rerun the check after rebasing onto a `main` that
+moved. Run the same check before pushing with `just skill-version`, which
+compares against `origin/main`, or name another base with
+`just skill-version <commit>`. After a merge, users update with
+`/plugin marketplace update graftpunk`, then update graftpunk on the Installed
+tab of `/plugin` (or run `claude plugin update graftpunk@graftpunk` in a shell).
+`skills/graft/scripts/preflight.sh` prints the same procedure when the skill is
+older than the installed graftpunk, and a test holds the two to the same words.
+
 ## Reporting Issues
 
 When reporting bugs, please include:

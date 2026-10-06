@@ -106,6 +106,15 @@ Steps 2 and 3 repeat. One recording rarely covers every flow, and a second
 recording aimed at one flow is the fastest way to answer a question the first
 digest left open.
 
+## With the skill
+
+graftpunk's repository is also a Claude Code plugin marketplace with one skill.
+Install it with `/plugin marketplace add stavxyz/graftpunk` and
+`/plugin install graftpunk@graftpunk`. Run
+`/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
+a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
+The skill needs graftpunk 1.18.0 or later and `uv` on your PATH.
+
 ## Frame
 
 Decide the following before you record anything.
@@ -214,9 +223,10 @@ the newest run. `--har PATH` digests a bare HAR file from any tool instead of a
 run. `--json` prints the complete model rather than the markdown summary,
 `--endpoints-json` prints the versioned projection a program reads (uncapped,
 not combinable with `--json`, and listing as the login's URLs only the login's
-own observations, never a logout or a cart redirect recorded beside it), `--all-hosts` models every host instead of only
-the primary host's domain, `--limit N` raises the cap on how many endpoints the
-markdown form lists (60 by default), and `--output PATH` writes to a file.
+own observations, never a logout or a cart redirect recorded beside it),
+`--all-hosts` models every host instead of only the primary host's domain,
+`--limit N` raises the cap on how many endpoints the markdown form lists (60 by
+default), and `--output PATH` writes to a file.
 Each endpoint in `--endpoints-json` carries the `host` it was recorded on,
 beside the run's one `primary_host`, so a program can see a site whose pages
 and JSON come from different hosts.
@@ -543,12 +553,12 @@ The options:
   `--from-run`.
 - `--url URL` sets `base_url`. Without `--from-run` it is the only source of
   one. With `--from-run`, `base_url` comes from the digest's primary host, and
-  an explicit `--url` overrides it (use that when the recording's busiest host
-  is a CDN or an API subdomain you do not want as the base). It must be an
-  `http://` or `https://` URL with a valid host and port; `--url myshop.example`
-  is refused, since no path resolves against it. A site whose pages and JSON come
-  from different hosts needs no `--url`: each stub requests the host its endpoint
-  was recorded on (see [What gets filled in](#what-gets-filled-in)).
+  an explicit `--url` overrides it (use that when the primary host is a CDN or
+  an API subdomain you do not want as the base). It must be an `http://` or
+  `https://` URL with a valid host and port; `--url myshop.example` is refused,
+  since no path resolves against it. A site whose pages and JSON come from
+  different hosts needs no `--url`: each stub requests the host its endpoint was
+  recorded on (see [What gets filled in](#what-gets-filled-in)).
 - `--dir PATH` is the target directory (the working directory by default).
 - `--backend nodriver|selenium` sets the generated `backend` attribute
   (`nodriver` by default).

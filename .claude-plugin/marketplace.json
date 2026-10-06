@@ -1,0 +1,12 @@
+{
+  "name": "graftpunk",
+  "owner": {"name": "stavxyz"},
+  "description": "graftpunk's Claude Code skills: /graftpunk:graft creates or enhances a site plugin",
+  "plugins": [
+    {
+      "name": "graftpunk",
+      "source": "./",
+      "description": "/graftpunk:graft walks the plugin developer guide: record the site, digest the recording, scaffold or extend the plugin, implement, harden, and publish"
+    }
+  ]
+}

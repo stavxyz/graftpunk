@@ -29,6 +29,11 @@ jobs:
               - '.github/workflows/python-quality.yml'
               - 'pyproject.toml'
               - 'uv.lock'
+              - 'skills/**'
+              - '.claude-plugin/**'
+              - 'docs/PLUGIN_DEVELOPMENT.md'
+              - 'scripts/**'
+              - 'CONTRIBUTING.md'
 
   quality:
     needs: filter-paths

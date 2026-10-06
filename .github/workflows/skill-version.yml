@@ -1,0 +1,40 @@
+name: Skill version
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  filter-paths:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skill_changed: ${{ steps.filter.outputs.skill }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            skill:
+              - 'skills/**'
+              - '.claude-plugin/**'
+              - 'docs/PLUGIN_DEVELOPMENT.md'
+
+  skill-version:
+    needs: filter-paths
+    if: needs.filter-paths.outputs.skill_changed == 'true'
+    name: Skill version bumped
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The plugin version bumped
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: scripts/check-skill-version.sh "$BASE_SHA"
