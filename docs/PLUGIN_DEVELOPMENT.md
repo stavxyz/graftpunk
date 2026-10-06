@@ -1074,21 +1074,24 @@ annotations: `int`, `float`, `bool`, and `str`, bare, as `X | None` or
 `Optional[X]`, or as `Annotated[X, ...]`, in any nesting and quoted or not,
 carry through, with or without `from __future__ import annotations` (which the
 module `gp plugin new` writes starts with). Any other annotation gives a `str`
-option. Under the future import, so does a default the type cannot take (`limit:
-int = "all"`), so the command keeps running without the option; a default it
-converts, such as `page: int = "1"`, keeps the type. A name the module imports
-only under `TYPE_CHECKING` gives a `str` option under the future import or on
-Python 3.14 and later, and so does a name local to an enclosing function under
-the future import, and an annotation whose `Annotated` metadata names either; a
-name defined in the plugin class's body resolves. A `bool` parameter becomes a
-flag: `dry: bool = False` gives `--dry`, and any other default (`None` from
-`bool | None`, `True`, or none at all) gives the pair `--dry/--no-dry`, so every
-value the handler accepts can be passed. When another option of the command is
-already `--no-dry`, the negative is `--dry-false`; when that is taken too, the
-parameter stays a `str` option, whose text is truthy whenever it is not empty,
-and graftpunk logs a warning naming the handler. An explicit `params=` list
-replaces introspection entirely; use it for a positional argument, help text, a
-flag spelled differently from the parameter, or a repeatable option.
+option, and so does a default the type cannot take without changing it (`limit:
+int | None = "all"`, or `1.5` on an `int`), so the command keeps running without
+the option; a default it converts, such as `page: int = "1"`, keeps the type. A
+bare `int`, `float`, or `str` written without the future import keeps its type
+whatever the default, as it always has, and a bare `bool` with a default that is
+not a `bool` is still refused when the command is registered. A name the module
+imports only under `TYPE_CHECKING` gives a `str` option under the future import
+or on Python 3.14 and later, and so does a name local to an enclosing function
+under the future import, and an annotation whose `Annotated` metadata names
+either; a name defined in the plugin class's body resolves. A `bool` parameter
+becomes a flag: `dry: bool = False` gives `--dry`, and any other default (`None`
+from `bool | None`, `True`, or none at all) gives the pair `--dry/--no-dry`, so
+every value the handler accepts can be passed. When another option of the
+command is already `--no-dry`, the negative is `--dry-false`; when that is taken
+too, the parameter stays a `str` option, whose text is truthy whenever it is not
+empty, and graftpunk logs a warning naming the handler. An explicit `params=`
+list replaces introspection entirely; use it for a positional argument, help
+text, a flag spelled differently from the parameter, or a repeatable option.
 `gp plugin new` writes that explicit list itself for every stub with an `int`,
 `float`, or `bool` parameter. It writes a `bool` parameter as a flag with a
 negative: `click_kwargs={"is_flag": True, "flag": "--archived/--no-archived"}`,
