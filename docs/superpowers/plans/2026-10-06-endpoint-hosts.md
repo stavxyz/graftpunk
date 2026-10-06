@@ -8,7 +8,7 @@ type: plan
 
 **Goal:** A command `gp plugin new` or `gp plugin add-command` generates calls the host its endpoint was recorded on, the writers say when that host is not `base_url`'s, and `gp observe digest --endpoints-json` carries each endpoint's host (#214, #225).
 
-**Architecture:** One function, `request_target(endpoint_host, base_url)` in `src/graftpunk/devtools/scaffold/render.py`, decides whether a stub requests a path (joined to `base_url` by `SiteRequests`) or an absolute URL on the endpoint's host, and returns that decision as a `RequestTarget` record: the origin to prefix (or `None`), the endpoint's host, and `base_url`'s host (or `None`). One predicate, `_on_base_host`, answers "is this `base_url`'s host" for both `request_target` and the login page's `url`, so the two cannot disagree. The stub renderer prefixes `RequestTarget.origin` onto the templated path, and `OtherHostCommand`, a data-only record of a command that calls another host, is a projection of the same `RequestTarget`. Both writers get the rule through the one renderer: `gp plugin new` passes the spec's `base_url`, and `gp plugin add-command` passes the target plugin's `PluginView.base_url`. One CLI helper, `print_other_host` in `src/graftpunk/cli/scaffold_shared.py`, words the line both writers print. `gp plugin new` refuses a `--url` with no `http`/`https` scheme or no host, so only `add-command` meets a plugin with no readable `base_url`. The projection gains `"host"` per endpoint, additive within schema `endpoints` 1.
+**Architecture:** One function, `request_target(endpoint_host, base_url)` in `src/graftpunk/devtools/scaffold/render.py`, decides whether a stub requests a path (joined to `base_url` by `SiteRequests`) or an absolute URL on the endpoint's host, and returns that decision as a `RequestTarget` record: the origin to prefix (or `None`), the endpoint's host, and `base_url`'s host (or `None`). One function, `_read_base_url`, is the only place `base_url` is parsed, and one predicate, `_on_base_host`, answers "is this `base_url`'s host" for both `request_target` and the login page's `url`, so the two cannot disagree. One helper, `_target_for`, is the only caller of `request_target` for a planned command, so `render_command` (`add-command`) and `gp plugin new`'s stubs and lines get their target from one place. The stub renderer prefixes `RequestTarget.origin` onto the templated path, and `OtherHostCommand`, a data-only record of a command that calls another host, is a projection of the same `RequestTarget`. Both writers get the rule through the one renderer: `gp plugin new` passes the spec's `base_url`, and `gp plugin add-command` passes the target plugin's `PluginView.base_url`. One CLI helper, `print_other_host` in `src/graftpunk/cli/scaffold_shared.py`, words the line both writers print. `gp plugin new` refuses a `--url` with no `http`/`https` scheme or no host, so only `add-command` meets a plugin with no readable `base_url`. The projection gains `"host"` per endpoint, additive within schema `endpoints` 1.
 
 **Tech Stack:** Python 3.11+, Typer, `urllib.parse.urlsplit`, `graftpunk.har.paths.normal_host`, pytest, ruff (run on generated trees through `sys.executable -m ruff`), ty 0.0.75.
 
@@ -53,7 +53,7 @@ type: plan
 
 | File | Responsibility |
 | --- | --- |
-| `src/graftpunk/devtools/scaffold/render.py` (modify, Tasks 1, 2) | `base_host`, `_on_base_host`, `RequestTarget`, `request_target`, and `_login_page_url` calling `_on_base_host` (Task 1); `OtherHostCommand`, `_other_host`, `other_host_commands`, `RenderedCommand.other_host`, the `target` parameter on `_render_command_stub`, the `base_url` parameter on `render_command`, and the login `url` `GP-FILL` wording (Task 2). |
+| `src/graftpunk/devtools/scaffold/render.py` (modify, Tasks 1, 2) | `_BaseUrl`, `_read_base_url`, `base_host`, `_on_base_host`, `RequestTarget`, `request_target`, and `_login_page_url` calling `_on_base_host` (Task 1); `OtherHostCommand`, `_other_host`, `_target_for`, `other_host_commands`, `RenderedCommand.other_host`, the `target` parameter on `_render_command_stub`, the `base_url` parameter on `render_command`, and the login `url` `GP-FILL` wording (Task 2). |
 | `src/graftpunk/devtools/scaffold/insert.py` (modify, Task 2) | Passes `plugin.base_url` to `render_command`; `AddedCommand.other_host`. |
 | `src/graftpunk/cli/scaffold_shared.py` (modify, Task 3) | `print_other_host`, the one wording of the line. |
 | `src/graftpunk/cli/scaffold_commands.py` (modify, Task 3) | `gp plugin new` refuses a `--url` with no host, and prints one line per other-host command. |
@@ -78,11 +78,13 @@ type: plan
 
 **Interfaces:**
 - Consumes: `normal_host(scheme: str, netloc: str) -> str` (`src/graftpunk/har/paths.py:71` (`def normal_host`)), already imported by `render.py`; `urlsplit`, already imported.
-- Produces, all exported in `__all__` except `_on_base_host`:
-  - `render.base_host(base_url: str | None) -> str | None`: `normal_host(scheme, netloc)` of `base_url`, or `None` when its scheme is not `http`/`https` or its netloc is empty.
-  - `render._on_base_host(scheme: str, netloc: str, base_url: str | None) -> bool`: `base_host(base_url) is not None and normal_host(scheme, netloc) == base_host(base_url)`.
+- Produces, all exported in `__all__` except `_BaseUrl`, `_read_base_url`, and `_on_base_host`:
+  - `render._BaseUrl`, `@dataclass(frozen=True)` with `scheme: str` and `host: str` (spelled by `normal_host`).
+  - `render._read_base_url(base_url: str | None) -> _BaseUrl | None`: one `urlsplit` of `base_url`, or `None` when its scheme is not `http`/`https` or its netloc is empty. The only place `base_url` is parsed.
+  - `render.base_host(base_url: str | None) -> str | None`: `_read_base_url(base_url).host`, or `None`.
+  - `render._on_base_host(scheme: str, netloc: str, base: _BaseUrl | None) -> bool`: `base is not None and normal_host(scheme, netloc) == base.host`.
   - `render.RequestTarget`, `@dataclass(frozen=True)` with `origin: str | None`, `host: str`, `base_host: str | None`.
-  - `render.request_target(endpoint_host: str, base_url: str | None) -> RequestTarget`. The scheme is `base_url`'s when `base_host(base_url)` is set, else `"https"`; `host` is `normal_host(scheme, endpoint_host)`; `origin` is `None` when `_on_base_host(scheme, endpoint_host, base_url)`, else `f"{scheme}://{host}"`.
+  - `render.request_target(endpoint_host: str, base_url: str | None) -> RequestTarget`. It reads `base_url` once (`_read_base_url`). The scheme is `base_url`'s when it has a host, else `"https"`; `host` is `normal_host(scheme, endpoint_host)`; `origin` is `None` when `_on_base_host(scheme, endpoint_host, base)`, else `f"{scheme}://{host}"`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -204,7 +206,7 @@ with:
     parts = urlsplit(page)
     if parts.scheme not in ("http", "https") or templates_a_segment(page):
         return None
-    if _on_base_host(parts.scheme, parts.netloc, base_url):
+    if _on_base_host(parts.scheme, parts.netloc, _read_base_url(base_url)):
         return parts.path or "/"
     return page
 ```
@@ -214,23 +216,38 @@ The page keeps its own scheme for the comparison, as before; an endpoint has non
 Insert directly above `def _render_command_stub(` (line 924):
 
 ```python
-def base_host(base_url: str | None) -> str | None:
-    """*base_url*'s host, spelled by ``normal_host`` (lower case, no default port), or
-    ``None`` when *base_url* is not an ``http`` or ``https`` URL with a host: no path
-    resolves against it (``None``, empty, or a bare ``myshop.example``)."""
+@dataclass(frozen=True)
+class _BaseUrl:
+    """``base_url`` read once: its scheme, and its host spelled by ``normal_host``
+    (lower case, no default port)."""
+
+    scheme: str
+    host: str
+
+
+def _read_base_url(base_url: str | None) -> _BaseUrl | None:
+    """*base_url*'s scheme and host from one ``urlsplit``, or ``None`` when it is not
+    an ``http`` or ``https`` URL with a host: no path resolves against it (``None``,
+    empty, or a bare ``myshop.example``). The one place *base_url* is parsed."""
     base = urlsplit(base_url or "")
     if base.scheme not in ("http", "https") or not base.netloc:
         return None
-    return normal_host(base.scheme, base.netloc)
+    return _BaseUrl(scheme=base.scheme, host=normal_host(base.scheme, base.netloc))
 
 
-def _on_base_host(scheme: str, netloc: str, base_url: str | None) -> bool:
-    """Whether *netloc*, read under *scheme*, is *base_url*'s host: both spelled by
-    ``normal_host``, and never when *base_url* has no host (``base_host``). The one
-    comparison behind a stub's request (``request_target``) and the login page's
+def base_host(base_url: str | None) -> str | None:
+    """*base_url*'s host, spelled by ``normal_host``, or ``None`` when it has none
+    (``_read_base_url``)."""
+    base = _read_base_url(base_url)
+    return None if base is None else base.host
+
+
+def _on_base_host(scheme: str, netloc: str, base: _BaseUrl | None) -> bool:
+    """Whether *netloc*, read under *scheme*, is *base*'s host: both spelled by
+    ``normal_host``, and never when ``base_url`` has no host (*base* is ``None``). The
+    one comparison behind a stub's request (``request_target``) and the login page's
     ``url`` (``_login_page_url``), so the two cannot disagree."""
-    base = base_host(base_url)
-    return base is not None and normal_host(scheme, netloc) == base
+    return base is not None and normal_host(scheme, netloc) == base.host
 
 
 @dataclass(frozen=True)
@@ -252,11 +269,11 @@ def request_target(endpoint_host: str, base_url: str | None) -> RequestTarget:
     of *base_url*'s scheme (the digest records none) and the endpoint's host. When
     *base_url* has no host, no path resolves, so every endpoint gets an ``https://``
     origin."""
-    base = base_host(base_url)
-    scheme = urlsplit(base_url or "").scheme if base is not None else "https"
+    base = _read_base_url(base_url)
+    scheme = "https" if base is None else base.scheme
     host = normal_host(scheme, endpoint_host)
-    origin = None if _on_base_host(scheme, endpoint_host, base_url) else f"{scheme}://{host}"
-    return RequestTarget(origin=origin, host=host, base_host=base)
+    origin = None if _on_base_host(scheme, endpoint_host, base) else f"{scheme}://{host}"
+    return RequestTarget(origin=origin, host=host, base_host=None if base is None else base.host)
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -276,6 +293,8 @@ git commit -m "feat(scaffold): request_target, the one rule for where a generate
 
 > **Design note (2026-10-06):** `request_target` returned `str | None` and `_login_page_url` compared hosts on its own. It now returns `RequestTarget` (origin, endpoint host, base host), so Task 2's stub prefix and other-host record read one result, and one predicate, `_on_base_host`, owns the comparison and the host-less rule (`base_host`) for both the requests and the login page's `url`. Task 2 pins the shared behaviour (`TestTheLoginPageAndTheRequestsShareOneHostRule`).
 
+> **Design note (2026-10-06, round 2):** `request_target` parsed `base_url` three times (through `base_host`, again for its scheme, and again inside `_on_base_host`). `_read_base_url` now parses it once and returns its scheme and host together as a private `_BaseUrl`, or `None`; `base_host` and `request_target` each call it once, and `_on_base_host` takes the `_BaseUrl` rather than the string, so it parses nothing. `_login_page_url` reads `base_url` through the same function.
+
 ---
 
 ### Task 2: A stub for an endpoint on another host requests its absolute URL
@@ -286,12 +305,13 @@ git commit -m "feat(scaffold): request_target, the one rule for where a generate
 - Test: `tests/unit/test_scaffold_render.py`, `tests/unit/test_scaffold_cli.py`
 
 **Interfaces:**
-- Consumes: `request_target`, `RequestTarget`, `_on_base_host` (Task 1); `PlannedCommand.registered_name` and `PlannedCommand.endpoint` (`src/graftpunk/devtools/scaffold/selection.py:75` (`class PlannedCommand`)); `Endpoint.host` (`src/graftpunk/har/digest.py:252` (`class Endpoint:`)); `_planned(spec)` (`src/graftpunk/devtools/scaffold/render.py:1064` (`def _planned(spec: ScaffoldSpec)`)); `PluginView.base_url` (`src/graftpunk/devtools/plugin_project.py:272` (`base_url: str | None`)).
+- Consumes: `request_target`, `RequestTarget`, `_read_base_url`, `_on_base_host` (Task 1); `PlannedCommand.registered_name` and `PlannedCommand.endpoint` (`src/graftpunk/devtools/scaffold/selection.py:75` (`class PlannedCommand`)); `Endpoint.host` (`src/graftpunk/har/digest.py:252` (`class Endpoint:`)); `_planned(spec)` (`src/graftpunk/devtools/scaffold/render.py:1064` (`def _planned(spec: ScaffoldSpec)`)); `PluginView.base_url` (`src/graftpunk/devtools/plugin_project.py:272` (`base_url: str | None`)).
 - Produces:
   - `render.OtherHostCommand`, `@dataclass(frozen=True)` with `name: str`, `host: str`, `base_host: str | None`, and no behaviour. Exported.
   - `render._other_host(name: str, target: RequestTarget) -> OtherHostCommand | None`: `None` when `target.origin is None`, else `OtherHostCommand(name, target.host, target.base_host)`.
+  - `render._target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget`: `request_target(command.endpoint.host, base_url)`. The one answer to "which target does this planned command get under this `base_url`", called by `render_command`, `_render_command_stubs`, and `other_host_commands`; none of them calls `request_target` directly.
   - `render.other_host_commands(spec: ScaffoldSpec) -> list[OtherHostCommand]`, in render order. Exported.
-  - `render.render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) -> RenderedCommand` (the third parameter is new and required). It calls `request_target` once and hands that result to both the stub and `_other_host`.
+  - `render.render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) -> RenderedCommand` (the third parameter is new and required). It calls `_target_for` once and hands that result to both the stub and `_other_host`.
   - `RenderedCommand.other_host: OtherHostCommand | None = None`.
   - `insert.AddedCommand.other_host: OtherHostCommand | None = None`.
 
@@ -340,7 +360,7 @@ with:
             template=wide_template,
 ```
 
-and delete the two original lines above `spec = ScaffoldSpec(` in that test:
+and delete the two original `base_url` lines, the two lines directly above `spec = ScaffoldSpec(` in that test (the copies you just inserted above `deep = Endpoint(` stay):
 
 ```python
         base_url = "https://" + "x" * 100 + ".example.com"
@@ -361,7 +381,7 @@ with:
 
 - [ ] **Step 2: Write the failing render tests**
 
-In the `from graftpunk.devtools.scaffold.render import (...)` block of `tests/unit/test_scaffold_render.py`, add `OtherHostCommand,` after `PLUGIN_NAME_RE,`, `_on_base_host,` after `_command_name,`, and `other_host_commands,` after `fixture_paths,`, so the block reads:
+In the `from graftpunk.devtools.scaffold.render import (...)` block of `tests/unit/test_scaffold_render.py`, add `OtherHostCommand,` after `PLUGIN_NAME_RE,`, `_on_base_host,` after `_command_name,`, `_read_base_url,` after `_param_identifier,`, and `other_host_commands,` after `fixture_paths,`, so the block reads:
 
 ```python
 from graftpunk.devtools.scaffold.render import (
@@ -375,6 +395,7 @@ from graftpunk.devtools.scaffold.render import (
     _command_name,
     _on_base_host,
     _param_identifier,
+    _read_base_url,
     base_host,
     class_name_for,
     fixture_paths,
@@ -558,7 +579,7 @@ class TestTheLoginPageAndTheRequestsShareOneHostRule:
         origin = "" if same_host else "https://myshop.example.com"
         assert f'url="{origin}/signin",' in code
         assert f'f"{origin}/orders/{{order_id}}",' in code
-        assert _on_base_host("https", "myshop.example.com", base_url) is same_host
+        assert _on_base_host("https", "myshop.example.com", _read_base_url(base_url)) is same_host
 ```
 
 - [ ] **Step 3: Write the failing end-to-end test (#214's acceptance)**
@@ -740,7 +761,7 @@ with:
                 "not on base_url's host. "
 ```
 
-Directly below `request_target` (Task 1) and above `def _render_command_stub(`, add:
+Directly below `request_target` (Task 1) and above `def _render_command_stub(`, add `OtherHostCommand`, `_other_host`, and `_target_for`:
 
 ```python
 @dataclass(frozen=True)
@@ -762,6 +783,14 @@ def _other_host(name: str, target: RequestTarget) -> OtherHostCommand | None:
     if target.origin is None:
         return None
     return OtherHostCommand(name=name, host=target.host, base_host=target.base_host)
+
+
+def _target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget:
+    """Where *command*'s request goes under *base_url*: the one call to
+    ``request_target`` behind ``render_command`` (``gp plugin add-command``),
+    ``_render_command_stubs``, and ``other_host_commands`` (``gp plugin new``), so
+    the two writers agree by construction."""
+    return request_target(command.endpoint.host, base_url)
 ```
 
 Change `_render_command_stub`'s signature to take the `RequestTarget` and prefix its origin onto the templated path. Replace:
@@ -840,9 +869,9 @@ with:
 def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) -> RenderedCommand:
     """The single-command entry point: the stub ``gp plugin new`` writes for *command*,
     which ``gp plugin add-command`` inserts on its own. *base_url* is the plugin's, or
-    ``None`` when it has none to read; ``request_target`` is evaluated once, and both
+    ``None`` when it has none to read; ``_target_for`` is evaluated once, and both
     the stub's request and ``other_host`` read that one result."""
-    target = request_target(command.endpoint.host, base_url)
+    target = _target_for(command, base_url)
     lines = _render_command_stub(command, _run_label(d), target)
 ```
 
@@ -872,7 +901,7 @@ In `_render_command_stubs` (line 1129), replace:
 with:
 
 ```python
-        target = request_target(command.endpoint.host, spec.base_url)
+        target = _target_for(command, spec.base_url)
         lines.extend(_render_command_stub(command, _run_label(spec.digest), target))
 ```
 
@@ -881,10 +910,10 @@ Directly after `fixture_paths` (it ends at the `return paths` that follows line 
 ```python
 def other_host_commands(spec: ScaffoldSpec) -> list[OtherHostCommand]:
     """Every stub *spec* renders whose request is an absolute URL, in render order:
-    what ``gp plugin new`` reports after it writes, from the same ``request_target``
+    what ``gp plugin new`` reports after it writes, from the same ``_target_for``
     the render used, as ``fixture_paths`` plans from the same commands."""
     found = (
-        _other_host(command.registered_name, request_target(command.endpoint.host, spec.base_url))
+        _other_host(command.registered_name, _target_for(command, spec.base_url))
         for command in _planned(spec)
     )
     return [other for other in found if other is not None]
@@ -973,6 +1002,8 @@ git commit -m "fix(scaffold): a stub for an endpoint on another host requests it
 ```
 
 > **Design note (2026-10-06):** `_other_host` used to call `request_target` again and re-parse the origin and `base_url` to build its record, and `OtherHostCommand` carried a `notice` property with the user-facing wording. `render_command` now evaluates `request_target` once and hands the one `RequestTarget` to both the stub (`target.origin`) and `_other_host`, which only projects it; `OtherHostCommand` is data only (Task 3 words the line in `graftpunk.cli`). `TestTheLoginPageAndTheRequestsShareOneHostRule` pins that the login page's `url` and a stub's request agree for each `base_url` spelling.
+
+> **Design note (2026-10-06, round 2):** `_render_command_stubs` and `other_host_commands` each called `request_target(command.endpoint.host, spec.base_url)` inline, and `render_command` made the same call, so `gp plugin new` agreed with `add-command` by convention only. `_target_for(command, base_url)` is now the one place a planned command gets its `RequestTarget`, and all three call it.
 
 ---
 
@@ -1454,7 +1485,7 @@ git commit -m "feat(har): each endpoint in --endpoints-json carries the host it 
 - Consumes: the CLI output of Task 3 (`api-orders-by-order-id calls api.myshop.example, not myshop.example; its request is an absolute URL`, the line `TestATwoHostRecording` pins), the `--url` refusal of Task 3, and the projection field of Task 4.
 - Produces: documentation only.
 
-The guide's generated-module example (`test_the_generated_plugin_example_matches_the_generator_output`, `tests/unit/test_plugin_development_guide.py:88` (`def test_the_generated_plugin_example_matches_the_generator_output`)) renders a one-host digest (`host="myshop.example"`, `base_url="https://myshop.example"`), so its block does not change. No guide test pins the prose edited here; `test_every_gp_invocation_names_a_real_command_and_options` checks `bash` blocks, and this task adds only `text` blocks.
+The guide's generated-module example (`test_the_generated_plugin_example_matches_the_generator_output`, `tests/unit/test_plugin_development_guide.py:88` (`def test_the_generated_plugin_example_matches_the_generator_output`)) renders a one-host digest (`host="myshop.example"`, `base_url="https://myshop.example"`), so its block does not change. No guide test pins the wording edited here. `test_every_gp_invocation_names_a_real_command_and_options` checks every `gp` invocation in a `bash` block or an inline code span, and the spans this task adds (`gp plugin info --json` and `gp plugin new`) name real commands and options.
 
 - [ ] **Step 1: Edit the guide's digest options paragraph**
 
@@ -1564,8 +1595,8 @@ Added export to src/graftpunk_myshop/plugin.py
 Next: gp observe fixtures writes no fixture for this endpoint; write its test against a fixture of your own.
 ```
 
-The stub requests the host its endpoint was recorded on, by the rule `gp plugin
-new` follows: a path on the host of the plugin's `base_url`, and an absolute
+The stub requests the host its endpoint was recorded on, by the rule
+`gp plugin new` follows: a path on the host of the plugin's `base_url`, and an absolute
 URL on any other host, with a line after `Added` naming the command and both
 hosts. When the plugin sets no `base_url` that `gp plugin info --json` can
 report as a URL (none, one built from an expression rather than a string, or
@@ -1625,6 +1656,6 @@ git commit -m "docs: per-endpoint hosts in the plugin guide and the changelog"
 
 **Placeholder scan.** Every code step carries its code; every run step carries its command and expected result. Hosts used: `myshop.example`, `api.myshop.example`, `myshop.example.com`, `api.myshop.example.com`, `regional-api-gateway.customer-services.myshop.example.com`, and the existing test's `xxx...x.example.com`.
 
-**Type consistency.** `base_host(base_url: str | None) -> str | None`, `_on_base_host(scheme, netloc, base_url) -> bool`, and `request_target(endpoint_host: str, base_url: str | None) -> RequestTarget` in Tasks 1, 2, and 3; `RequestTarget(origin, host, base_host)` in Tasks 1 and 2; `OtherHostCommand(name, host, base_host)` in Tasks 2 and 3, worded by `print_other_host` in Task 3; `_render_command_stub(command, run_label, target)` and `render_command(command, d, base_url)` in Task 2's `render.py`, `insert.py`, and tests; `RenderedCommand.other_host` and `AddedCommand.other_host` typed `OtherHostCommand | None` in Tasks 2 and 3.
+**Type consistency.** `_read_base_url(base_url: str | None) -> _BaseUrl | None`, `base_host(base_url: str | None) -> str | None`, `_on_base_host(scheme, netloc, base: _BaseUrl | None) -> bool`, and `request_target(endpoint_host: str, base_url: str | None) -> RequestTarget` in Tasks 1, 2, and 3; `RequestTarget(origin, host, base_host)` in Tasks 1 and 2; `OtherHostCommand(name, host, base_host)` in Tasks 2 and 3, worded by `print_other_host` in Task 3; `_target_for(command, base_url) -> RequestTarget`, `_render_command_stub(command, run_label, target)`, and `render_command(command, d, base_url)` in Task 2's `render.py`, `insert.py`, and tests; `RenderedCommand.other_host` and `AddedCommand.other_host` typed `OtherHostCommand | None` in Tasks 2 and 3.
 
 **Review Focus.** Each of the five lines has its pinned test in the named task.
