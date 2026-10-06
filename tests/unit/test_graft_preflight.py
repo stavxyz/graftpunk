@@ -151,12 +151,20 @@ def test_the_installed_graftpunk_meets_the_skill_floor() -> None:
     )
 
 
-def _unreleased_skill_line() -> str:
-    """The CHANGELOG's [Unreleased] entry for the skill."""
+def _newest_skill_floor_entry() -> str:
+    """The newest CHANGELOG line that states the skill's floor, empty when none does.
+
+    The newest, not the [Unreleased] one, so the test survives the release that
+    renames the section; and returned rather than unpacked, so a missing entry
+    fails the floor test with what it found instead of failing collection.
+    """
     text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
-    (line,) = [line for line in unreleased.splitlines() if "/graftpunk:graft" in line]
-    return line
+    entries = [
+        line
+        for line in text.splitlines()
+        if "/graftpunk:graft" in line and "needs graftpunk" in line
+    ]
+    return entries[0] if entries else ""
 
 
 @pytest.mark.parametrize(
@@ -169,8 +177,8 @@ def _unreleased_skill_line() -> str:
             id="guide",
         ),
         pytest.param(
-            "CHANGELOG.md [Unreleased]",
-            _unreleased_skill_line(),
+            "CHANGELOG.md, newest skill entry",
+            _newest_skill_floor_entry(),
             r"needs graftpunk (\S+) or later",
             id="changelog",
         ),
