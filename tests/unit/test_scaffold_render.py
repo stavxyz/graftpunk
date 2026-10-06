@@ -3007,6 +3007,15 @@ class TestRenderedTreeIsRuffClean:
         # The origin alone is past the width, so the width check that _write_tree
         # makes would fail on that one line; ruff skips an overlong line that is a
         # single unbroken word, and the gate below is ruff's.
+        for relative_path, content in sorted(files.items()):
+            if not relative_path.endswith(".py"):
+                continue
+            for number, line in enumerate(content.splitlines(), start=1):
+                if host in line:
+                    continue
+                assert len(line) <= GENERATED_LINE_LENGTH, (
+                    f"{relative_path}:{number} is {len(line)} characters: {line!r}"
+                )
         for relative_path, content in files.items():
             path = tmp_path / "long_host" / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)

@@ -13,7 +13,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 import pytest
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from graftpunk.cli.main import app
 from graftpunk.devtools.plugin_info import PluginDefectRefusal, info_payload
@@ -353,7 +353,7 @@ def test_info_payload_refuses_a_view_with_a_defect_and_names_every_one() -> None
     assert caught.value.defects == defects
 
 
-def _add(project: Path, plugin: str, command: str) -> object:
+def _add(project: Path, plugin: str, command: str) -> Result:
     return runner.invoke(
         app,
         [
@@ -1368,7 +1368,7 @@ def _record_api_run(project: Path) -> None:
     )
 
 
-def _add_from(project: Path, session: str, command: str) -> object:
+def _add_from(project: Path, session: str, command: str) -> Result:
     return runner.invoke(
         app,
         [
