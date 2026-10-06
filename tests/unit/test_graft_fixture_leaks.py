@@ -299,3 +299,20 @@ def test_an_unreadable_input_exits_2(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "cannot read" in result.stderr
+
+
+def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
+    """harden.md's exit-2 case: a PDF capture is compared with nothing, and says so."""
+    capture = tmp_path / "invoice.pdf"
+    capture.write_bytes(b"%PDF-1.4\n\xff\xfe")
+    fixture = tmp_path / "fixture.pdf"
+    fixture.write_text("invented\n")
+    assert PYTHON is not None
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [PYTHON, "-I", str(SCRIPT), str(capture), str(fixture)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "fixture-leaks: cannot read the inputs:" in result.stderr
+    assert result.stdout == ""
