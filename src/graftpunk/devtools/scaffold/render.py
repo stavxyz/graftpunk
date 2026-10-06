@@ -68,6 +68,7 @@ from graftpunk.plugins import PLUGINS_GROUP
 
 __all__ = [
     "PLUGIN_NAME_RE",
+    "OtherHostCommand",
     "RenderedCommand",
     "RequestTarget",
     "ScaffoldSpec",
@@ -76,6 +77,7 @@ __all__ = [
     "fixture_paths",
     "fixtures_root_for",
     "graftpunk_version_floor",
+    "other_host_commands",
     "render",
     "render_command",
     "request_target",
@@ -458,7 +460,8 @@ def _render_login_config(spec: ScaffoldSpec) -> list[str]:
         # opens, so the hint is a comment and the field stays unset.
         lines.extend(
             wrapped_comment_lines(
-                f"{GP_FILL_MARKER}: url, the path of the login page. "
+                f"{GP_FILL_MARKER}: url, the path of the login page, or its full URL when it is "
+                "not on base_url's host. "
                 + (
                     "The recorded login page path holds an account value."
                     if form.source.startswith(("http://", "https://"))
@@ -983,7 +986,38 @@ def request_target(endpoint_host: str, base_url: str | None) -> RequestTarget:
     return RequestTarget(origin=origin, host=host, base_host=None if base is None else base.host)
 
 
-def _render_command_stub(command: PlannedCommand, run_label: str) -> list[str]:
+@dataclass(frozen=True)
+class OtherHostCommand:
+    """A generated command whose request is an absolute URL: its registered name, the
+    host it calls, and ``base_url``'s host (``None`` when the plugin has no
+    ``base_url`` with a host to read). A record only: ``graftpunk.cli`` words the
+    line a writer prints for it."""
+
+    name: str
+    host: str
+    base_host: str | None
+
+
+def _other_host(name: str, target: RequestTarget) -> OtherHostCommand | None:
+    """The command registered as *name*, as an ``OtherHostCommand`` when *target*
+    gives its request an origin, else ``None``: a projection of the one
+    ``request_target`` result its stub was rendered from."""
+    if target.origin is None:
+        return None
+    return OtherHostCommand(name=name, host=target.host, base_host=target.base_host)
+
+
+def _target_for(command: PlannedCommand, base_url: str | None) -> RequestTarget:
+    """Where *command*'s request goes under *base_url*: the one call to
+    ``request_target`` behind ``render_command`` (``gp plugin add-command``),
+    ``_render_command_stubs``, and ``other_host_commands`` (``gp plugin new``), so
+    the two writers agree by construction."""
+    return request_target(command.endpoint.host, base_url)
+
+
+def _render_command_stub(
+    command: PlannedCommand, run_label: str, target: RequestTarget
+) -> list[str]:
     endpoint = command.endpoint
     method = command.method
     name = command.identifier
@@ -992,6 +1026,7 @@ def _render_command_stub(command: PlannedCommand, run_label: str) -> list[str]:
     # CLI's own option names (_RESERVED_OPTION_IDENTIFIERS).
     seen_params = {"self", "ctx", *_RESERVED_OPTION_IDENTIFIERS}
     url_text, path_params = _templated_url(endpoint.template, seen_params)
+    url_text = (target.origin or "") + url_text
     is_json = _is_json_endpoint(endpoint)
     call, role, return_type = (
         ("request_json", "xhr", "dict") if is_json else ("request_text", "navigation", "str")
@@ -1104,13 +1139,15 @@ def _run_label(d: RunDigest) -> str:
 class RenderedCommand:
     """One stub, at class-body indentation with no trailing blank line; every
     ``(module, name)`` import the stub references, which an inserter merges as it is
-    handed them; and the fixture filename its test looks for, or ``None`` when
+    handed them; the fixture filename its test looks for, or ``None`` when
     ``_no_fixture_is_written`` says ``gp observe fixtures`` writes no fixture for
-    this endpoint (its test needs a fixture of its own instead)."""
+    this endpoint (its test needs a fixture of its own instead); and, when its
+    request is an absolute URL on a host other than ``base_url``'s, which one."""
 
     lines: tuple[str, ...]
     imports: tuple[tuple[str, str], ...]
     fixture: str | None
+    other_host: OtherHostCommand | None = None
 
 
 def _default_commands(d: RunDigest) -> list[PlannedCommand]:
@@ -1134,10 +1171,13 @@ def _planned(spec: ScaffoldSpec) -> list[PlannedCommand]:
     return _default_commands(spec.digest)
 
 
-def render_command(command: PlannedCommand, d: RunDigest) -> RenderedCommand:
+def render_command(command: PlannedCommand, d: RunDigest, base_url: str | None) -> RenderedCommand:
     """The single-command entry point: the stub ``gp plugin new`` writes for *command*,
-    which ``gp plugin add-command`` inserts on its own."""
-    lines = _render_command_stub(command, _run_label(d))
+    which ``gp plugin add-command`` inserts on its own. *base_url* is the plugin's, or
+    ``None`` when it has none to read; ``_target_for`` is evaluated once, and both
+    the stub's request and ``other_host`` read that one result."""
+    target = _target_for(command, base_url)
+    lines = _render_command_stub(command, _run_label(d), target)
     imports = [(_PLUGINS_MODULE, "CommandContext"), (_PLUGINS_MODULE, "command")]
     if _needs_param_specs(command.endpoint):
         imports.append((_PLUGINS_MODULE, "PluginParamSpec"))
@@ -1157,6 +1197,7 @@ def render_command(command: PlannedCommand, d: RunDigest) -> RenderedCommand:
         lines=tuple(lines[:-1] if lines[-1] == "" else lines),
         imports=tuple(imports),
         fixture=fixture,
+        other_host=_other_host(command.registered_name, target),
     )
 
 
@@ -1198,7 +1239,8 @@ def _render_command_stubs(spec: ScaffoldSpec, planned: list[PlannedCommand]) -> 
         ]
     lines: list[str] = []
     for command in planned:
-        lines.extend(_render_command_stub(command, _run_label(spec.digest)))
+        target = _target_for(command, spec.base_url)
+        lines.extend(_render_command_stub(command, _run_label(spec.digest), target))
     return lines
 
 
@@ -1384,6 +1426,17 @@ def fixture_paths(spec: ScaffoldSpec) -> list[str]:
             f"{capture_filename(command.method, endpoint.template, _fixture_type(endpoint))}"
         )
     return paths
+
+
+def other_host_commands(spec: ScaffoldSpec) -> list[OtherHostCommand]:
+    """Every stub *spec* renders whose request is an absolute URL, in render order:
+    what ``gp plugin new`` reports after it writes, from the same ``_target_for``
+    the render used, as ``fixture_paths`` plans from the same commands."""
+    found = (
+        _other_host(command.registered_name, _target_for(command, spec.base_url))
+        for command in _planned(spec)
+    )
+    return [other for other in found if other is not None]
 
 
 def _fixtures_dir_expression(spec: ScaffoldSpec) -> str:
