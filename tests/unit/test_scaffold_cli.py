@@ -578,6 +578,9 @@ class TestUrlNeedsAHost:
             "https://:443",
             "https://user@",
             "https://myshop.example:abc",
+            "https://myshop.example:99999",
+            "https://my shop.example",
+            " https://myshop.example",
         ],
     )
     def test_a_url_without_an_http_scheme_and_a_host_is_refused(
@@ -589,7 +592,10 @@ class TestUrlNeedsAHost:
         )
         assert result.exit_code == 1
         output = strip_ansi(result.output)
-        assert f"--url must be an http:// or https:// URL with a host, got '{url}'." in output
+        expected = (
+            f"--url must be an http:// or https:// URL with a valid host and port, got '{url}'."
+        )
+        assert expected in output
         assert not target.exists()
 
 

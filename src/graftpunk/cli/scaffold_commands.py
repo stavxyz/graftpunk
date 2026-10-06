@@ -184,7 +184,7 @@ def plugin_new(
     if url and base_host(url) is None:
         LOG.debug("scaffold_refused", reason="url_without_host")
         console.print(
-            "[red]--url must be an http:// or https:// URL with a host, "
+            "[red]--url must be an http:// or https:// URL with a valid host and port, "
             f"got '{escape(url)}'.[/red]",
             soft_wrap=True,
         )

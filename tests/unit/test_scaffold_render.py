@@ -3677,6 +3677,11 @@ class TestRequestTarget:
             "https://:443",
             "https://user@",
             "https://myshop.example:abc",
+            "https://myshop.example:99999",
+            "https://my shop.example",
+            " https://myshop.example",
+            "https://my!shop.example",
+            "https://my%20shop.example",
         ],
     )
     def test_no_base_url_host_is_an_https_origin_for_every_endpoint(
@@ -3696,6 +3701,15 @@ class TestRequestTarget:
         assert request_target("xn--bcher-kva.example", "https://bücher.example").origin is None
         assert request_target("bücher.example", "https://xn--bcher-kva.example").origin is None
         assert request_target("api.myshop.example", "https://bücher.example").origin is not None
+
+    def test_ipv6_and_unicode_hosts_are_still_readable(self) -> None:
+        assert base_host("https://[::1]:8443/") == "[::1]:8443"
+        assert base_host("https://bücher.example") is not None
+
+    def test_a_host_idna_2008_keeps_apart_is_another_host(self) -> None:
+        assert request_target("faß.de", "https://fass.de").origin is not None
+        assert request_target("fass.de", "https://faß.de").origin is not None
+        assert request_target("faß.de", "https://faß.de").origin is None
 
     def test_base_host_is_spelled_by_normal_host(self) -> None:
         assert base_host("https://MyShop.example:443/shop/") == "myshop.example"

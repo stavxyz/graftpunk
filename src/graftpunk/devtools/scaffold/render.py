@@ -11,11 +11,14 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import glob
+import ipaddress
 import keyword
 import re
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
+
+import idna
 
 import graftpunk
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
@@ -936,12 +939,30 @@ class _BaseUrl:
     host: str
 
 
+def _is_hostname(hostname: str | None) -> bool:
+    """Whether *hostname* (as ``urlsplit`` reads it) can be a host: an IPv6 literal, or
+    a name of letters, digits, ``-``, ``_`` and ``.`` plus any non-ASCII letters (IDNA
+    hosts)."""
+    if not hostname:
+        return False
+    if ":" in hostname:
+        try:
+            ipaddress.IPv6Address(hostname)
+        except ValueError:
+            return False
+        return True
+    return all(ch.isalnum() or ch in "-_." for ch in hostname)
+
+
 def _read_base_url(base_url: str | None) -> _BaseUrl | None:
     """*base_url*'s scheme and host from one ``urlsplit``, or ``None`` when it is not
     an ``http`` or ``https`` URL with a host: no path resolves against it (``None``,
-    empty, or a bare ``myshop.example``). The one place *base_url* is parsed."""
+    empty, a bare ``myshop.example``, a bad port, or whitespace or a character no
+    hostname holds). The one place *base_url* is parsed."""
+    if base_url is not None and any(ch.isspace() for ch in base_url):
+        return None
     base = urlsplit(base_url or "")
-    if base.scheme not in ("http", "https") or not base.hostname:
+    if base.scheme not in ("http", "https") or not _is_hostname(base.hostname):
         return None
     try:
         base.port  # noqa: B018 (reading it raises ValueError for a port that is not a number)
@@ -967,7 +988,7 @@ def _on_base_host(scheme: str, netloc: str, base: _BaseUrl | None) -> bool:
 
 def _fold_host(host: str) -> str:
     """*host* (as ``normal_host`` spells it) for comparison only: one trailing dot
-    dropped from the name and each label in its IDNA ASCII form, the lower-cased text
+    dropped from the name and each label in its IDNA 2008 ASCII form (as ``requests`` encodes it, so ``faß.de`` and ``fass.de`` stay apart), the lower-cased text
     when it does not encode. The port stays. ``normal_host`` is untouched because the
     digest is built from it."""
     name, sep, port = host.rpartition(":")
@@ -976,8 +997,8 @@ def _fold_host(host: str) -> str:
     else:
         port = f":{port}"
     name = name.removesuffix(".")
-    with contextlib.suppress(UnicodeError):
-        name = name.encode("idna").decode("ascii")
+    with contextlib.suppress(idna.IDNAError, UnicodeError):
+        name = idna.encode(name, uts46=True).decode("ascii")
     return name.lower() + port
 
 
