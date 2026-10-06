@@ -367,7 +367,7 @@ Commands receive a `CommandContext` (dataclass) with:
 - `config` — The full `PluginConfig` object (or `None`)
 - `observe` — An `ObservabilityContext` for screenshots, logging, and timing
 
-Parameters are auto-introspected from the method signature. Type hints (`int`, `float`, `bool`, `str`) are used for CLI argument parsing. Parameters with defaults become `--option` flags; required parameters become positional arguments.
+Parameters are auto-introspected from the method signature. Type hints (`int`, `float`, `bool`, `str`, also as `X | None`) are used for CLI parsing, with or without `from __future__ import annotations`. Every introspected parameter becomes an `--option`, a required one included, and a `bool` becomes a flag; declare `params=` on `@command` for a positional argument. See the guide's [CLI parameter types](PLUGIN_DEVELOPMENT.md#cli-parameter-types).
 
 **Plugin protocol:** All plugin types implement `CLIPluginProtocol` (a structural typing `Protocol`). This defines the interface: `site_name`, `session_name`, `backend` (typed as `Literal["selenium", "nodriver"]`), `requires_session`, and `get_commands()`. Login capability is detected via duck typing (presence of `login()` method or `LoginConfig`).
 

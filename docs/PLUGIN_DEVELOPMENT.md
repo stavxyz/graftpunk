@@ -1070,16 +1070,20 @@ def order(self, ctx: CommandContext, order_id: str) -> dict:
 ### CLI parameter types
 
 A handler's parameters become CLI options automatically, typed by their
-annotations: `int`, `float`, `bool`, and `str`, bare or as `X | None` or
-`Optional[X]`, carry through, with or without `from __future__ import
-annotations` (which the module `gp plugin new` writes starts with). Any other
-annotation, or a name the module imports only under `TYPE_CHECKING`, gives a
-`str` option. A `bool` parameter becomes a flag: `dry: bool = False` gives
-`--dry`, and any other default (`None` from `bool | None`, `True`, or none at
-all) gives the pair `--dry/--no-dry`, so every value the handler accepts can be
-passed. An explicit `params=` list replaces introspection entirely; use it for a
-positional argument, help text, a flag spelled differently from the parameter,
-or a repeatable option. `gp plugin new` writes that explicit list itself for
+annotations: `int`, `float`, `bool`, and `str`, bare, as `X | None` or
+`Optional[X]`, or as `Annotated[X, ...]`, carry through, with or without
+`from __future__ import annotations` (which the module `gp plugin new` writes
+starts with). Any other annotation gives a `str` option, and so does a default
+the type cannot take (`limit: int = "all"`). Under the future import, so does a
+name the module imports only under `TYPE_CHECKING`, or one local to a function;
+a name defined in the plugin class's body resolves. A `bool` parameter becomes
+a flag: `dry: bool = False` gives `--dry`, and any other default (`None` from
+`bool | None`, `True`, or none at all) gives the pair `--dry/--no-dry`, so every
+value the handler accepts can be passed. When another option of the command is
+already `--no-dry`, the negative is `--dry-false`; when that is taken too, the
+flag is `--dry` alone and cannot pass `False`. An explicit `params=` list
+replaces introspection entirely; use it for a positional argument, help text, a
+flag spelled differently from the parameter, or a repeatable option. `gp plugin new` writes that explicit list itself for
 every stub with an `int`, `float`, or `bool` parameter. It writes a `bool`
 parameter as a flag with a negative: `click_kwargs={"is_flag": True, "flag":
 "--archived/--no-archived"}`, where the `flag` key replaces the option's

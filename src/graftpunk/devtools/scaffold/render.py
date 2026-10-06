@@ -127,10 +127,11 @@ _PLUGINS_MODULE = "graftpunk.plugins"
 # The observed types an explicit PluginParamSpec entry carries, each with the
 # keywords its entry adds after the name. A stub with a parameter of one of these
 # gets an explicit params= list. The introspector resolves string annotations
-# since #208, so for int and float the explicit type only repeats what it would
-# find; the list stays because it also carries a bool's flag spelling and a
-# list's "multiple", which introspection does not derive, and because the
-# generated module then keeps its types on a graftpunk older than that fix.
+# since #208, and it derives a bool's --x/--no-x and --x/--x-false spellings, so
+# for most stubs the list only repeats what it would find. The list stays because
+# it carries a list's "multiple", which introspection does not derive, and the
+# GP-FILL note when no negative is free, and because the generated module then
+# keeps its types on a graftpunk older than that fix.
 #
 # A bool option must be a flag or command_factory refuses the command at
 # registration. The stub's bool is a flag with a negative (--archived and
