@@ -23,7 +23,13 @@ import click
 import pytest
 import typer.main
 
+from graftpunk.contracts import cli_contracts, installation_facts
 from graftpunk.devtools.plugin_check import FINDING_ADVICE
+from graftpunk.devtools.plugin_info import info_payload
+from graftpunk.devtools.plugin_project import read_project
+from graftpunk.devtools.scaffold import policy
+from graftpunk.devtools.scaffold.selection import command_identifier
+from graftpunk.har.naming import parse_command_spec
 from graftpunk.testing.sidecar import Sidecar, sidecar_text
 from tests.unit.guide_harness import (
     GUIDE,
@@ -33,6 +39,7 @@ from tests.unit.guide_harness import (
     check_invocation,
     gp_invocations,
     option_names,
+    section,
     slugs_of,
 )
 
@@ -262,6 +269,108 @@ def test_the_login_options_the_guide_names_exist() -> None:
             f"the guide names {named_in_the_guide} on a login command, "
             f"but create_login_fn builds {sorted(spellings)}"
         )
+
+
+README_TEXT = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+# The README's own walk through the plugin workflow. Its invocations name the
+# guide's sections, so they are held to the same CLI as the guide's.
+README_PLUGIN_FLOW = section(README_TEXT, "### From recording to plugin")
+README_INVOCATIONS = gp_invocations(README_PLUGIN_FLOW)
+
+
+def test_the_readme_plugin_flow_has_invocations_to_check() -> None:
+    assert README_INVOCATIONS, "no gp invocations found in README's plugin flow"
+
+
+@pytest.mark.parametrize(("line_no", "invocation"), README_INVOCATIONS, ids=lambda v: str(v)[:60])
+def test_every_readme_plugin_flow_invocation_names_a_real_command_and_options(
+    line_no: int, invocation: str
+) -> None:
+    check_invocation(invocation, f"README.md (From recording to plugin):{line_no}")
+
+
+def test_the_readme_plugin_flow_quotes_the_gate_in_order() -> None:
+    """The README names the project gate without linking to code that holds it, so a
+    gate entry added in policy has to show up here as well as in the guide."""
+    lines = [
+        line for _start, body in blocks(README_PLUGIN_FLOW, "bash") for line in body.splitlines()
+    ]
+    gate = [line for line in lines if line in policy.PROJECT_GATE]
+    assert gate == list(policy.PROJECT_GATE)
+
+
+def _command_values(invocation: str) -> list[str]:
+    tokens = shlex.split(invocation)
+    return [tokens[i + 1] for i, word in enumerate(tokens[:-1]) if word == "--command"]
+
+
+COMMAND_VALUES = [
+    (where, value)
+    for where, invocations in (("guide", GP_INVOCATIONS), ("README", README_INVOCATIONS))
+    for _line_no, invocation in invocations
+    for value in _command_values(invocation)
+]
+
+
+def test_the_docs_spell_command_values_to_check() -> None:
+    assert COMMAND_VALUES, "no --command value found in the guide or the README"
+
+
+@pytest.mark.parametrize(("where", "value"), COMMAND_VALUES, ids=lambda v: str(v)[:60])
+def test_every_command_value_parses(where: str, value: str) -> None:
+    """``check_invocation`` checks that ``--command`` exists, not that its value is
+    one the CLI accepts; a value it refuses would fail in the reader's terminal."""
+    name, _method, _template = parse_command_spec(value)
+    command_identifier(name)
+
+
+def test_the_version_json_example_names_the_current_contracts() -> None:
+    """A schema bump or a new CLI surface changes what `gp version --json` prints;
+    the guide's example has to change with it. The version string is left out,
+    since it changes on every release and the example's is illustrative."""
+    (_line_no, block) = next(
+        pair for pair in blocks(GUIDE_TEXT, "json") if '"contracts"' in pair[1]
+    )
+    example = json.loads(block)
+    assert set(example) == set(installation_facts())
+    assert example["contracts"] == cli_contracts()
+
+
+def test_the_info_json_example_has_the_payloads_fields(tmp_path: Path) -> None:
+    """The guide's `gp plugin info --json` example is real output pasted in; this
+    reads a minimal project through the same payload builder and holds the
+    example's schema and its field names at every level to what it builds."""
+    (_line_no, block) = next(
+        pair for pair in blocks(GUIDE_TEXT, "json") if '"entry_point"' in pair[1]
+    )
+    example = json.loads(block)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "graftpunk_myshop"\nversion = "0.1.0"\n\n'
+        '[project.entry-points."graftpunk.plugins"]\n'
+        'myshop = "graftpunk_myshop.plugin:MyshopPlugin"\n',
+        encoding="utf-8",
+    )
+    package = tmp_path / "src" / "graftpunk_myshop"
+    package.mkdir(parents=True)
+    (package / "plugin.py").write_text(
+        "from graftpunk.plugins import CommandContext, SitePlugin, command\n\n\n"
+        "class MyshopPlugin(SitePlugin):\n"
+        '    site_name = "myshop"\n'
+        '    base_url = "https://myshop.example"\n\n'
+        '    @command(help="Orders", endpoint="GET /api/orders")\n'
+        "    def orders(self, ctx: CommandContext) -> dict:\n"
+        '        return ctx.request_json("GET", "/api/orders")\n',
+        encoding="utf-8",
+    )
+    built = info_payload(read_project(tmp_path))
+    assert example["schema"] == built["schema"]
+    assert set(example) == set(built)
+    (example_plugin,) = example["plugins"]
+    (built_plugin,) = built["plugins"]
+    assert set(example_plugin) == set(built_plugin)
+    assert {frozenset(c) for c in example_plugin["commands"]} == {
+        frozenset(c) for c in built_plugin["commands"]
+    }
 
 
 def _relative_links(path: Path) -> list[tuple[int, str]]:
