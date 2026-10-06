@@ -32,6 +32,7 @@ classifiers = [
 # usable WASM wheels, so it lives in the optional [browser] extra (see #121).
 dependencies = [
     "requests>=2.28.0",
+    "idna>=3.0",
     "cryptography>=42.0.0",
     "dill>=0.3.0",
     "pydantic-settings>=2.0.0",
