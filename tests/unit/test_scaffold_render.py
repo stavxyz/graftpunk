@@ -3011,7 +3011,7 @@ class TestRenderedTreeIsRuffClean:
             if not relative_path.endswith(".py"):
                 continue
             for number, line in enumerate(content.splitlines(), start=1):
-                if host in line:
+                if line.strip() == f'f"{origin}"':
                     continue
                 assert len(line) <= GENERATED_LINE_LENGTH, (
                     f"{relative_path}:{number} is {len(line)} characters: {line!r}"
