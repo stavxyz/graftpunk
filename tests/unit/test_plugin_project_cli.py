@@ -1349,6 +1349,87 @@ class TestAddCommand:
         assert line.count(str(har)) == 1
 
 
+def _record_api_run(project: Path) -> None:
+    """A second recording, myshop-api, whose page is on myshop.example and whose JSON
+    is on api.myshop.example, beside the one the recorded fixture writes."""
+    run_dir = project.parent / "observe" / "myshop-api" / "run-1"
+    run_dir.mkdir(parents=True)
+    entries = [
+        _entry(
+            "GET",
+            "https://myshop.example/account",
+            content_type="text/html",
+            body="<html><body>Account</body></html>",
+        ),
+        _entry("GET", "https://api.myshop.example/api/orders/1001", body='{"id": "1001"}'),
+    ]
+    (run_dir / "network.har").write_text(
+        json.dumps({"log": {"version": "1.2", "entries": entries}})
+    )
+
+
+def _add_from(project: Path, session: str, command: str) -> object:
+    return runner.invoke(
+        app,
+        [
+            "plugin",
+            "add-command",
+            "myshop",
+            "--from-run",
+            session,
+            "--command",
+            command,
+            "--dir",
+            str(project),
+        ],
+    )
+
+
+@pytest.mark.usefixtures("gp_logging")
+class TestAddCommandTargetsTheEndpointsHost:
+    def test_an_endpoint_on_another_host_is_requested_absolutely(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        _record_api_run(recorded)
+        result = _add_from(recorded, "myshop-api", "order=GET /api/orders/{order_id}")
+        assert result.exit_code == 0, result.output
+        module = (recorded / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert 'f"https://api.myshop.example/api/orders/{order_id}",' in module
+        assert 'endpoint="GET /api/orders/{order_id}",' in module
+        assert (
+            "order calls api.myshop.example, not myshop.example; its request is an absolute URL"
+            in _plain(result.output).splitlines()
+        )
+        _ruff_clean(recorded)
+
+    def test_an_endpoint_on_the_base_host_prints_no_host_line(self, recorded: Path) -> None:
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        result = _add(recorded, "myshop", "order=GET /api/orders/{order_id}")
+        assert result.exit_code == 0, result.output
+        module = (recorded / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert 'f"/api/orders/{order_id}",' in module
+        assert " calls " not in _plain(result.output)
+
+    @pytest.mark.parametrize(
+        "base_url_line",
+        ['base_url = "https://" + "myshop.example"', 'base_url = "myshop.example"'],
+    )
+    def test_a_plugin_with_no_readable_base_url_gets_an_absolute_url(
+        self, recorded: Path, base_url_line: str
+    ) -> None:
+        module = _hand_written_project(
+            recorded,
+            module_text=_HAND_WRITTEN.replace('base_url = "https://myshop.example"', base_url_line),
+        )
+        result = _add(recorded, "myshop", "orders=GET /api/orders")
+        assert result.exit_code == 0, result.output
+        assert '"https://myshop.example/api/orders",' in module.read_text()
+        assert (
+            "orders calls myshop.example; the plugin sets no base_url gp can read as a URL, "
+            "so its request is an absolute URL"
+        ) in " ".join(_plain(result.output).split())
+        _ruff_clean(recorded)
+
+
 def _project_lacking_the_wiring(root: Path) -> Path:
     """A generated project whose conftest predates the sanitisation wiring."""
     from graftpunk.devtools.scaffold.project import write_scaffold

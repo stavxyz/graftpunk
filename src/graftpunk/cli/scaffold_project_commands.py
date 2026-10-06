@@ -18,7 +18,13 @@ import typer
 from rich.markup import escape
 
 from graftpunk.cli.observe_commands import resolve_run
-from graftpunk.cli.scaffold_shared import LOG, command_selections, console, plugin_app
+from graftpunk.cli.scaffold_shared import (
+    LOG,
+    command_selections,
+    console,
+    plugin_app,
+    print_other_host,
+)
 from graftpunk.devtools.errors import DevtoolsRefusal
 from graftpunk.devtools.plugin_check import check_project
 from graftpunk.devtools.plugin_info import info_payload
@@ -130,6 +136,8 @@ def plugin_add_command(
         f"[green]Added[/green] {escape(added.cli_name)} to {escape(str(added.module))}",
         soft_wrap=True,
     )
+    if added.other_host is not None:
+        print_other_host(added.other_host)
     if added.fixture is None:
         console.print(
             "[bold]Next:[/bold] gp observe fixtures writes no fixture for this endpoint; "

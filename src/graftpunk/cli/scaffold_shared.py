@@ -2,9 +2,11 @@
 
 ``scaffold_commands.py`` (``new``) and ``scaffold_project_commands.py``
 (``info``, ``add-command``, ``upgrade``, ``check``) both attach their
-commands to ``plugin_app`` here, and both call :func:`command_selections` to
-parse a ``--command`` value; splitting either of those two per module would
-give the CLI two Typer sub-apps or two parsers instead of one.
+commands to ``plugin_app`` here, both call :func:`command_selections` to
+parse a ``--command`` value, and both call :func:`print_other_host` to word
+a command that calls another host; splitting any of those three per module
+would give the CLI two Typer sub-apps, two parsers, or two wordings instead
+of one.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
+from graftpunk.devtools.scaffold.render import OtherHostCommand
 from graftpunk.devtools.scaffold.selection import CommandSelection
 from graftpunk.har.naming import EndpointSpecError, parse_command_spec
 from graftpunk.logging import get_logger
@@ -39,3 +42,20 @@ def command_selections(values: list[str]) -> tuple[CommandSelection, ...]:
             raise typer.Exit(1) from None
         selections.append(CommandSelection(name=name, method=method, template=template))
     return tuple(selections)
+
+
+def print_other_host(other: OtherHostCommand) -> None:
+    """The line ``gp plugin new`` and ``gp plugin add-command`` print for a command
+    whose request is an absolute URL. ``soft_wrap`` keeps it whole for a reader
+    that matches it; ``highlight=False`` keeps Rich from colouring the hosts."""
+    if other.base_host is None:
+        line = (
+            f"{other.name} calls {other.host}; the plugin sets no base_url gp can read "
+            "as a URL, so its request is an absolute URL"
+        )
+    else:
+        line = (
+            f"{other.name} calls {other.host}, not {other.base_host}; "
+            "its request is an absolute URL"
+        )
+    console.print(escape(line), soft_wrap=True, highlight=False)

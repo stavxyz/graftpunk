@@ -509,6 +509,79 @@ class TestATwoHostRecording:
         summary = pytest_result.stdout.strip().splitlines()[-1]
         assert summary.startswith("3 passed"), pytest_result.stdout
 
+    def test_the_output_names_the_command_on_the_other_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, output = self._generate(tmp_path, monkeypatch)
+        notices = [line for line in output.splitlines() if " calls " in line]
+        assert notices == [
+            "api-orders-by-order-id calls api.myshop.example, not myshop.example; "
+            "its request is an absolute URL"
+        ]
+
+    def test_a_one_host_recording_prints_no_host_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_run(
+            observe_base, "myshop", "run-1", url="https://myshop.example/api/orders", body="{}"
+        )
+        result = runner.invoke(
+            _build_app(),
+            ["plugin", "new", "myshop", "--from-run", "myshop", "--dir", str(tmp_path / "out")],
+        )
+        assert result.exit_code == 0, result.output
+        assert " calls " not in strip_ansi(result.output)
+
+    def test_url_on_the_api_host_turns_the_page_command_absolute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        observe_base = tmp_path / "observe"
+        monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
+        _write_two_host_run(observe_base)
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(),
+            [
+                "plugin",
+                "new",
+                "myshop",
+                "--from-run",
+                "myshop",
+                "--url",
+                "https://api.myshop.example",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plugin_code = (target / "src" / "graftpunk_myshop" / "plugin.py").read_text()
+        assert '"https://myshop.example/account",' in plugin_code
+        assert 'f"/api/orders/{order_id}",' in plugin_code
+        assert (
+            "account calls myshop.example, not api.myshop.example; its request is an absolute URL"
+            in strip_ansi(result.output).splitlines()
+        )
+
+
+class TestUrlNeedsAHost:
+    """gp plugin new refuses a --url no path resolves against, so a generated plugin's
+    base_url always has a host and only add-command meets a plugin without one."""
+
+    @pytest.mark.parametrize("url", ["myshop.example", "https://", "ftp://myshop.example"])
+    def test_a_url_without_an_http_scheme_and_a_host_is_refused(
+        self, tmp_path: Path, url: str
+    ) -> None:
+        target = tmp_path / "out"
+        result = runner.invoke(
+            _build_app(), ["plugin", "new", "myshop", "--url", url, "--dir", str(target)]
+        )
+        assert result.exit_code == 1
+        output = strip_ansi(result.output)
+        assert f"--url must be an http:// or https:// URL with a host, got '{url}'." in output
+        assert not target.exists()
+
 
 class TestPathListingsDoNotWrapMidWord:
     """Console.print's default wrapping breaks a path at 80 columns, so a

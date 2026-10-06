@@ -22,7 +22,13 @@ from rich.markup import escape
 
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.plugin_commands import derive_reserved_cli_names
-from graftpunk.cli.scaffold_shared import LOG, command_selections, console, plugin_app
+from graftpunk.cli.scaffold_shared import (
+    LOG,
+    command_selections,
+    console,
+    plugin_app,
+    print_other_host,
+)
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
 from graftpunk.devtools.errors import ScaffoldWriteError
 from graftpunk.devtools.scaffold.project import (
@@ -33,8 +39,10 @@ from graftpunk.devtools.scaffold.project import (
 from graftpunk.devtools.scaffold.pyproject_edit import PyprojectEditError
 from graftpunk.devtools.scaffold.render import (
     ScaffoldSpec,
+    base_host,
     fixture_paths,
     graftpunk_version_floor,
+    other_host_commands,
     validate_plugin_name,
 )
 from graftpunk.devtools.scaffold.selection import CommandSelectionError
@@ -169,6 +177,15 @@ def plugin_new(
         console.print("[red]--command requires --from-run.[/red]", soft_wrap=True)
         raise typer.Exit(1)
 
+    if url and base_host(url) is None:
+        LOG.debug("scaffold_refused", reason="url_without_host")
+        console.print(
+            "[red]--url must be an http:// or https:// URL with a host, "
+            f"got '{escape(url)}'.[/red]",
+            soft_wrap=True,
+        )
+        raise typer.Exit(1)
+
     digest_result = None
     base_url = url
     if from_run is not None:
@@ -255,6 +272,8 @@ def plugin_new(
         console.print(f"  {escape(str(path))}", soft_wrap=True)
     if result.gitignore_updated:
         console.print(f"[dim]Added {escape(CAPTURES_DIR)}/ to .gitignore[/dim]")
+    for other in other_host_commands(spec):
+        print_other_host(other)
     _print_next_steps(dataclasses.replace(spec, mode=result.mode))
 
 
