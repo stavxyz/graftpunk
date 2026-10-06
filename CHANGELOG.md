@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.17.0] - 2026-10-06
 
 This is a minor release. It adds the plugin development tooling (`gp observe digest`, `gp observe fixtures`, `gp plugin new` and its companion commands, `graftpunk.testing`, and the plugin guide), cleans up orphaned Chrome processes, and replaces the fixed post-login wait with a poll. It removes `gp import-har` and the `graftpunk.har` analyzer and generator APIs, a documented break: that command wrote handlers the framework had already stopped running.
 
