@@ -331,3 +331,19 @@ class TestPreflightWithAFakeGp:
             "installation": json.loads(_VERSION_OK),
             "project": json.loads(_INFO_EMPTY),
         }
+
+
+def test_contributing_gives_the_same_skill_update_as_preflight() -> None:
+    """CONTRIBUTING's "Releasing the skill" and preflight's SKILL_UPDATE_LINE tell a
+    user the same update: the same commands and the same Installed-tab wording."""
+    line = _constant("SKILL_UPDATE_LINE")
+    contributing = " ".join(
+        (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8").replace("`", "").split()
+    )
+    for phrase in (
+        "/plugin marketplace update graftpunk",
+        "update graftpunk on the Installed tab of /plugin",
+        "claude plugin update graftpunk@graftpunk",
+    ):
+        assert phrase in line, phrase
+        assert phrase in contributing, phrase

@@ -106,6 +106,15 @@ Steps 2 and 3 repeat. One recording rarely covers every flow, and a second
 recording aimed at one flow is the fastest way to answer a question the first
 digest left open.
 
+## With the skill
+
+graftpunk's repository is also a Claude Code plugin marketplace with one skill.
+Install it with `/plugin marketplace add stavxyz/graftpunk` and
+`/plugin install graftpunk@graftpunk`. Run
+`/graftpunk:graft myshop https://myshop.example/` in an empty directory to create
+a plugin, or `/graftpunk:graft` inside a plugin project to add commands to it.
+The skill needs graftpunk 1.17.0 or later and `uv` on your PATH.
+
 ## Frame
 
 Decide the following before you record anything.
