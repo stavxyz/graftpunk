@@ -27,10 +27,11 @@ replaced like any other value. Then run the fixture-leaks line of the Harden
 block on the capture, the fixture, and its sidecar. It prints each captured
 value, and each piece of one (a run of three or more digits, a word holding an
 `@`, a digit, or a capital letter, both halves of an email address, and a pair
-of words with one of those in it), still in the fixture in any case, escaped and
-percent-encoded copies included, and the names the sidecar lists. It matches
-text, so read the fixture once more for what it cannot see: a lowercase word
-alone, a number written another way (`12345` as `12,345`), digits split across
+of words with one of those in it), still in the fixture, escaped and
+percent-encoded copies included (a single word in lower case only inside an
+identifier or an address), and the names the sidecar lists. It matches text, so
+read the fixture once more for what it cannot see: a word in lower case on its
+own, a number written another way (`12345` as `12,345`), digits split across
 fields, and a copy re-encoded, such as base64. When it exits 2 (a capture that
 is not text, such as a PDF), it compared nothing: replace the copied file
 wholesale with invented values, read the plugin module by eye for anything from
@@ -114,6 +115,5 @@ the `gp` on the user's PATH. The cases to expect, in plain words:
 
 ## Before you publish
 
-Read the guide's publish checklist (guide: Before you publish) and walk its
-items in order. Keep no copy of that list here or in the conversation; the
-guide is the one place it lives.
+Walk the guide's publish checklist in order (guide: Before you publish), and
+keep no copy of it here or in the conversation.

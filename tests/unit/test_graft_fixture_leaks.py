@@ -176,7 +176,8 @@ def test_a_decomposed_accent_is_the_same_value(tmp_path: Path) -> None:
 
 def test_an_escaped_surrogate_pair_is_rejoined(tmp_path: Path) -> None:
     capture = json.dumps({"tag": "Ann \U0001f600 Q7"}, ensure_ascii=False)
-    module = 'TAG = "Ann \\ud83d\\ude00 Q7"\n'
+    # A lone surrogate elsewhere in the file must not stop the pair being rejoined.
+    module = 'TAG = "Ann \\ud83d\\ude00 Q7"\nX = "\\ud800"\n'
     result = _run(tmp_path, capture, module)
     assert result.returncode == 1
     assert repr("Ann \U0001f600 Q7") in result.stdout
@@ -185,9 +186,32 @@ def test_an_escaped_surrogate_pair_is_rejoined(tmp_path: Path) -> None:
 def test_a_capitalised_word_is_not_found_inside_a_lowercase_name(tmp_path: Path) -> None:
     """Page words such as Total or Shipping would otherwise flood a plugin module's
     check through its parameter names."""
-    capture = "<h1>Your Order</h1><p>The Total for Shipping</p>"
-    result = _run(tmp_path, capture, "def your_order(total, shipping):\n    return other\n")
+    capture = "<h1>Statement</h1><p>The Total for Shipping</p>"
+    result = _run(tmp_path, capture, "def summary(total, shipping):\n    return other\n")
     assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "OKONKWO_ID = 7\n",
+        "def test_okonkwo_order():\n    pass\n",
+        'EMAIL = "okonkwo@example.com"\n',
+    ],
+)
+def test_a_name_in_an_identifier_or_address_is_caught(tmp_path: Path, module: str) -> None:
+    """Constants, test names, and email addresses carry a name in capitals or in
+    lower case joined by an underscore, an at sign, or a dot."""
+    result = _run(tmp_path, json.dumps({"name": "Adaeze Okonkwo"}), module)
+    assert result.returncode == 1
+    assert "'Okonkwo'" in result.stdout
+
+
+def test_an_entity_in_an_html_comment_is_decoded(tmp_path: Path) -> None:
+    capture = "<div><!-- owner Bj&ouml;rn --><p>hi</p></div>"
+    result = _run(tmp_path, capture, "<div><p>Björn</p></div>")
+    assert result.returncode == 1
+    assert "'Björn'" in result.stdout
 
 
 @pytest.mark.parametrize(

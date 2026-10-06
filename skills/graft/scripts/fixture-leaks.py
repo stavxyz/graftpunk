@@ -15,12 +15,13 @@ of words with one of those in it.
 Where it looks, in the fixture, in Unicode compatibility form: the raw text, its
 JSON or HTML values decoded, its backslash escapes decoded (``\\u00e9``, a
 surrogate pair, ``\\/``), and its percent-encoding decoded (``%40``). A piece with a
-space, a digit, or an ``@`` matches in any case; a single word matches as written
-or in capitals. FIXTURE can be any text file, so a plugin module or a test module
-is checked the same way.
+space, a digit, or an ``@`` matches in any case; a single word matches as written,
+in capitals, or in lower case inside an identifier or an address
+(``test_okonkwo_order``, ``okonkwo@example.com``). FIXTURE can be any text file, so
+a plugin module or a test module is checked the same way.
 
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
-capitalised word copied in lower case, a number reformatted (``12345`` as
+capitalised word copied in lower case on its own, a number reformatted (``12345`` as
 ``12,345``), digits split across fields, and a copy re-encoded another way (base64).
 It does one substring search per captured value, so a capture of a megabyte or more
 takes tens of seconds.
@@ -37,11 +38,11 @@ Standard library only, so it runs under any Python 3.9 or later.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import sys
 import unicodedata
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote_plus
@@ -52,8 +53,11 @@ _DIGITS = re.compile(r"\d{3,}")
 _WORD = re.compile(r"[^\s,;:()\[\]{}<>\"'?&=/]+")
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _MIN_LENGTH = 3
-# A \uXXXX escape as JSON and Python source spell one, decoded wherever it appears.
+# A \uXXXX escape as JSON and Python source spell one, decoded wherever it appears,
+# and a high and low surrogate escape side by side, which together spell one
+# character outside the Basic Multilingual Plane.
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+_SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
 
 
 class _TextParts(HTMLParser):
@@ -68,7 +72,8 @@ class _TextParts(HTMLParser):
         self.values.append(data)
 
     def handle_comment(self, data: str) -> None:
-        self.values.append(data)
+        # The parser leaves a comment's entities as written; decode them like text.
+        self.values.append(unescape(data))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.values.extend(value for _name, value in attrs if value)
@@ -137,9 +142,15 @@ def _normal(text: str) -> str:
 def _unescape(text: str) -> str:
     """*text* with its ``\\uXXXX`` escapes decoded, a surrogate pair rejoined into
     the one character it spells, and ``\\/`` read as ``/``."""
-    decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
-    with contextlib.suppress(UnicodeError):
-        decoded = decoded.encode("utf-16", "surrogatepass").decode("utf-16")
+
+    def pair(m: re.Match[str]) -> str:
+        high, low = int(m.group(1), 16), int(m.group(2), 16)
+        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+
+    # Pairs first, each on its own, so a lone surrogate elsewhere in the file
+    # leaves every pair still rejoined.
+    decoded = _SURROGATE_PAIR.sub(pair, text)
+    decoded = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), decoded)
     return decoded.replace("\\/", "/")
 
 
@@ -148,15 +159,31 @@ def _decodings(fixture: str) -> list[str]:
     return [fixture, "\n".join(body_values(fixture)), _unescape(fixture), unquote_plus(fixture)]
 
 
+# Around a single word: no letter or digit on either side. An underscore counts as a
+# separator, so OKONKWO_ID holds the word OKONKWO.
+_BEFORE = r"(?<![^\W_])"
+_AFTER = r"(?![^\W_])"
+
+
 def _found(value: str, haystack: str, folded: str) -> bool:
-    """Whether *value* is in the fixture. A piece with a space, a digit, or an ``@``
-    matches in any case; a single word matches as written or in capitals as a whole
-    word (``OKONKWO`` for ``Okonkwo``), so ``Total`` is not found in ``total=``."""
+    """Whether *value* is in the fixture.
+
+    A piece with a space, a digit, or an ``@`` matches in any case. A single word
+    matches as written; in capitals as a whole word (``OKONKWO_ID``); and in lower
+    case as a whole word joined to an identifier or an address by ``_``, ``@``, or
+    ``.`` (``test_okonkwo_order``, ``okonkwo@example.com``). A lowercase word standing
+    alone is not matched, so ``Total`` on a page is not found in ``total, shipping``.
+    """
     if value in haystack:
         return True
     if any(c.isspace() or c.isdigit() or c == "@" for c in value):
         return value.casefold() in folded
-    return re.search(rf"(?<!\w){re.escape(value.upper())}(?!\w)", haystack) is not None
+    word = re.escape(value.upper())
+    if re.search(rf"{_BEFORE}{word}{_AFTER}", haystack):
+        return True
+    low = re.escape(value.casefold())
+    joined = rf"(?:(?<=[_@.]){low}{_AFTER}|{_BEFORE}{low}(?=[_@.]))"
+    return re.search(joined, folded) is not None
 
 
 def survivors(capture: str, fixture: str) -> list[str]:
