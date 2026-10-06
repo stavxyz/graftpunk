@@ -132,7 +132,7 @@ with these differences. This list is the index of what enhance mode changes;
 the references hold the details.
 
 - Frame collects only the new thing the user wants to do. The plugin's
-  `entry_point` (the name `gp plugin add-command` takes), its `site_name` (the
+  `entry_point` (what you pass to `gp plugin add-command`), its `site_name` (the
   name `gp` runs it by), and its `base_url` come from `project.plugins`.
 - Capture picks the recorder line by whether the plugin has a session, as
   `references/capture.md` says.
