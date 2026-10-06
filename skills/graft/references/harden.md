@@ -2,7 +2,9 @@
 
 ## A fixture per command
 
-For each command, write its capture out of the recording with the
+In enhance mode, first run the gate's plugin check and act on what it reports,
+so the fixtures directory and the suite's fixture check exist before anything is
+copied. For each command, write its capture out of the recording with the
 `gp observe fixtures` line from the Harden block of `references/commands.md`,
 the command's endpoint in place of `<METHOD> <template>`. A capture is the
 account's own data, so never open, print, or read one, nor a copy of one until

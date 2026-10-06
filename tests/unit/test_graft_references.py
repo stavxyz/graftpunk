@@ -159,7 +159,6 @@ def test_each_reference_exists_and_stays_short(name: str) -> None:
 # printed, and a worked example with real values. The one exemption list, so a new
 # exemption shows in review as a change to this test.
 _NOT_RUN_FROM_COMMANDS_MD = (
-    "gp config set",  # printed for the user with placeholder values (SKILL.md, Secrets)
     "gp config get --resolve",  # named only to say its output is never printed
     "gp plugin new myshop --from-run myshop",  # digest.md's worked example
 )

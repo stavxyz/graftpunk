@@ -69,7 +69,10 @@ by number: "Step: scaffold. Done: ...; next: ...". Ask one question at a time.
 When a `gp` command fails, show its output verbatim, find the cause in the guide
 section the step cites, fix it, and run the step again once. If it fails again,
 show that output too and stop for the user. Never skip a step, and never
-summarise a failure away. Read a reference only at the step that names it.
+summarise a failure away. Read a reference only at the step that names it. Never
+fetch a page of the site yourself, at any step: what the site shows comes from
+the user, read off it in their own browser, or from the live calls they agree to
+at the kick-the-tires step.
 
 ## The steps
 
@@ -88,26 +91,30 @@ summarise a failure away. Read a reference only at the step that names it.
 3. **Understand** (guide: Understand). Run the command in the Understand block
    of `references/commands.md` on the chosen session and run, then read
    `references/digest.md` and build the proposal it describes. The user keeps,
-   renames, or drops rows in one answer.
+   renames, or drops rows in one answer. Then compare the projection's
+   `primary_host` with the site URL's host: when they differ (the recording's
+   busiest host was an API or a CDN host), show both and ask, as its own
+   question, which one the commands call. The answer, as a URL, is the base URL
+   the scaffold step passes; when they agree, it is the site URL.
 4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
-   block in `references/commands.md`, with the chosen session and run and one
-   `--command` per row the user kept. The generator writes only those stubs,
-   under those names, each with its endpoint declared. Edit nothing it wrote
-   during this step. Then run `gp plugin info --json` and confirm every agreed
-   command is listed with the endpoint it was agreed for. Compare the plugin's
-   `base_url` with the site URL from the frame step: when their hosts differ
-   (the recording's busiest host was an API or a CDN host), show both and ask
-   which the commands call; the implement step sets `base_url` to the answer.
+   block in `references/commands.md`, with the chosen session and run, the base
+   URL chosen at the understand step in place of `<url>`, and one `--command`
+   per row the user kept. The generator writes only those stubs, under those
+   names, each with its endpoint declared. Edit nothing it wrote during this
+   step. Then run `gp plugin info --json` and confirm every agreed command is
+   listed with the endpoint it was agreed for.
 5. **Implement** (guide: Implement). For each stub, fill in the request, name
    the parameters, decide the return shape, and replace every `GP-FILL` marker.
    Raise `CommandError` or `PluginError` on failure. Read `references/rules.md`
    and read the guide section behind any rule the work touches. The login's
-   markers need what only the user can see: ask them for the exact sentence the
-   site shows after a wrong password (they try one in their own browser), for a
-   CSS selector of an element on the page a successful login lands on, and for a
-   selector of any login field the digest left unresolved, read off the login
-   page in their browser. Wait for the answers; never fetch a page of the site
-   yourself.
+   markers need what only the user can see, so ask for each one the generated
+   config marks, one question at a time, and wait for each answer: the exact
+   sentence the site shows after a wrong password (they try one in their own
+   browser), a CSS selector of an element on the page a successful login lands
+   on, a selector for any login field or submit button the digest left
+   unresolved, the login page's path, and the URL a login lands on. Once
+   `success` is set, a `success_url` marker may be dropped instead
+   (guide: Getting the signals right).
 6. **Harden** (guide: Harden). Read `references/harden.md` and follow it: one
    fixture and one test per command, then the project's gate (guide: The gate),
    acting on gp's output as that file says. The gate must pass before the next
@@ -146,7 +153,8 @@ the references hold the details.
 
 - Frame collects only the new thing the user wants to do. The plugin's
   `entry_point` (what you pass to `gp plugin add-command`), its `site_name` (the
-  name `gp` runs it by), and its `base_url` come from `project.plugins`.
+  name `gp` runs it by), and its `base_url` come from `project.plugins`, so the
+  understand step asks no host question and the scaffold step passes no URL.
 - Capture picks the recorder line by whether the plugin has a session, as
   `references/capture.md` says.
 - Understand leaves out every endpoint an existing command declares, and prints

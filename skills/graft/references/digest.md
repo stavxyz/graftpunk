@@ -41,7 +41,8 @@ login whose form or post is on another host points to an identity provider
 post exists means no login form was recorded (a script-driven login, or a
 recording that missed the form page); confirm the shape with the user. Confirm
 the login shape with the user only when that summary leaves it open, and ask it
-together with the keep, rename, or drop question, before the scaffold step.
+as its own question right after the keep, rename, or drop answer, before the
+scaffold step.
 
 `forms` holds each login form's `action`, its `fields` selectors by role, its
 `submit` selector, `neutral_roles`, and `unresolved_roles`. Name every
