@@ -2062,6 +2062,59 @@ class TestIntrospectParamsUnderFutureAnnotations:
         assert result.exit_code == 0, result.output
         assert seen[name] == expected
 
+    @pytest.mark.parametrize("header", ["", _FUTURE_HEADER], ids=["plain", "future"])
+    def test_a_lossy_default_keeps_the_str_option(self, load_module: Any, header: str) -> None:
+        # int(1.5) is 1: taking the type would change the default's value, so the
+        # option stays the str it was, and the handler gets the default as text.
+        plugin = load_module(
+            "lossy", header + _PLAIN_PLUGIN.format(params="page: Optional[int] = 1.5")
+        ).Shop()
+        result, seen = _invoke(plugin, [])
+        assert result.exit_code == 0, result.output
+        assert seen["page"] == "1.5"
+
+    def test_a_bare_bool_with_a_non_bool_default_is_still_refused(self, load_module: Any) -> None:
+        # Without the future import this was refused at registration ("bool options
+        # must be flags"), and a value-taking str option would hand the handler
+        # truthy text, so it stays refused.
+        plugin = load_module(
+            "bare_bool_int", _PLAIN_PLUGIN.format(params="notify: bool = 0")
+        ).Shop()
+        (cmd,) = plugin.get_commands()
+        with pytest.raises(PluginError, match="bool options must be flags"):
+            synthesize_command_fn(
+                name=cmd.name,
+                param_specs=cmd.params,
+                body=lambda ctx, **kw: None,
+                include_builtin_options=False,
+            )
+
+    @pytest.mark.parametrize(
+        "aliases",
+        [
+            pytest.param("Node = Optional['Node']", id="self"),
+            pytest.param("Node = Optional['Pair']\nPair = Optional['Node']", id="cycle"),
+            pytest.param("Node = typing.ForwardRef('Node')", id="bare-forward-ref"),
+        ],
+    )
+    def test_a_self_referring_alias_gives_str_and_does_not_hang(
+        self, load_module: Any, aliases: str
+    ) -> None:
+        import threading
+
+        source = "import typing\n" + _PLAIN_PLUGIN.format(params="n: Optional['Node'] = None")
+        source = source.replace("\n\nclass Shop", f"\n{aliases}\n\n\nclass Shop", 1)
+        plugin = load_module("self_referring", source).Shop()
+        found: list[Any] = []
+        # A thread, not an alarm: the resolver catches every exception from an
+        # annotation, so an alarm's TimeoutError would read as a str fallback.
+        worker = threading.Thread(target=lambda: found.append(plugin.get_commands()), daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "get_commands() did not return"
+        (cmd,) = found[0]
+        assert cmd.params[0].click_kwargs["type"] is str
+
     def test_a_bare_annotation_keeps_its_type_whatever_the_default(self, load_module: Any) -> None:
         # Without the future import a bare int annotation was always an int option,
         # whose unconvertible default fails only when the option is omitted.
