@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.18.0] - 2026-10-06
 
 This is a minor release. A generated command now calls the host its endpoint was recorded on, the endpoints projection carries each endpoint's host, and the scaffold commands say when a command calls another host. Nothing changes for an existing plugin when it runs: only code `gp plugin new` and `gp plugin add-command` write from now on differs.
 
