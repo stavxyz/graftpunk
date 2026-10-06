@@ -14,9 +14,9 @@ and always in create mode, the `--no-session` line.
 
 Tell the user to run that line in a separate terminal window, not with the
 `!` prefix in this session: ending the recorder takes a Ctrl+C that reaches it,
-and this session's shell mode does not pass one through. In that terminal they
-log in, work through every item on the list below, and press Ctrl+C, which ends
-the recorder and saves what it captured. Then they come back here and say it is
+and a terminal of its own always delivers one. In that terminal they log in,
+work through every item on the list below, and press Ctrl+C, which ends the
+recorder and saves what it captured. Then they come back here and say it is
 done.
 
 ## What to exercise
