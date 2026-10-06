@@ -2,8 +2,9 @@
 
 The user should never have to know the commands in advance. The source is the
 projection the Understand block of `references/commands.md` prints: one entry
-per endpoint with `method`, `template`, `login_flow`, `content_type`, `shape`,
-`query_params`, `body_params`, and `custom_headers`, plus a `login` summary.
+per endpoint with `method`, `template`, `host`, `login_flow`, `content_type`,
+`shape`, `query_params`, `body_params`, and `custom_headers`, plus a `login`
+summary and the recording's `primary_host`.
 Read that projection only; never read the HAR or `--json`.
 
 ## The rules, in order
@@ -11,8 +12,9 @@ Read that projection only; never read the HAR or `--json`.
 1. Drop every entry whose `login_flow` is true. The generator skips exactly the
    same entries, so the proposal and the scaffold agree. Trust the digest for
    the rest: static assets, trackers, and hosts outside the primary host's
-   domain never reach the list. A subdomain, such as an API host, does reach it,
-   and the projection does not say which endpoints came from it.
+   domain never reach the list. A subdomain, such as an API host, does reach
+   it. Each endpoint carries its `host`, and a row on another host than
+   `primary_host` is shown with that host.
 2. Keep JSON endpoints, and HTML documents that carry the user's own data (a
    dashboard, an order list, a statement page). Drop navigation chrome.
 3. Name each kept entry as a short verb phrase a person would type at the
@@ -25,7 +27,9 @@ Read that projection only; never read the HAR or `--json`.
    with their types (each `query_params` and `body_params` value is a type
    label; the labels include `str`, `int`, `float`, `bool`, `object`, `mixed`,
    and `list[<element>]`, and a `mixed` or list label needs the user's decision
-   when the row is proposed) (guide: Understand). Say which of the user's wants
+   when the row is proposed) (guide: Understand). When any row's `host` differs
+   from `primary_host`, add a host column filled in for those rows only, so the
+   user sees which commands call another host. Say which of the user's wants
    each row serves, and name any want with no row.
 5. Ask one question, "keep, rename, or drop any of these?", and apply the
    answer. A want with no endpoint goes back to the capture step for that flow.
@@ -78,5 +82,5 @@ chrome unless the user asked for something only it shows. The two kept rows
 reach the scaffold step as:
 
 ```bash
-gp plugin new myshop --from-run myshop --url https://myshop.example --run 20260901-101500-4242 --command "orders=GET /api/orders" --command "order=GET /api/orders/{order_id}"
+gp plugin new myshop --from-run myshop --run 20260901-101500-4242 --command "orders=GET /api/orders" --command "order=GET /api/orders/{order_id}"
 ```

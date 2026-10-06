@@ -67,7 +67,7 @@ gp observe digest <session> <run> --endpoints-json
 ### Scaffold
 
 ```bash
-gp plugin new <name> --from-run <session> --run <run> --url <url> --command "<command>=<METHOD> <template>"
+gp plugin new <name> --from-run <session> --run <run> --command "<command>=<METHOD> <template>"
 gp plugin add-command <entry-point> --from-run <session> --run <run> --command "<command>=<METHOD> <template>"
 gp plugin info --json
 ```

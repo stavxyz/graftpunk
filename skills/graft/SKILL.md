@@ -91,20 +91,17 @@ at the kick-the-tires step.
 3. **Understand** (guide: Understand). Run the command in the Understand block
    of `references/commands.md` on the chosen session and run, then read
    `references/digest.md` and build the proposal it describes. The user keeps,
-   renames, or drops rows in one answer. Then ask, as its own question, whether
-   the commands' data comes from the projection's `primary_host`: name it, and
-   say the plugin will call every command on that host (the projection does not
-   record each endpoint's host, and when the recording holds pages, the host
-   that served them is chosen over a busier API host). The base URL the scaffold
-   step passes is `https://` and the host the user confirms or names, with no
-   path and no trailing slash.
+   renames, or drops rows in one answer. A row whose `host` differs from the
+   projection's `primary_host` shows its host, so the user sees which commands
+   call another host; the generator targets each endpoint's own host.
 4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
-   block in `references/commands.md`, with the chosen session and run, the base
-   URL chosen at the understand step in place of `<url>`, and one `--command`
-   per row the user kept. The generator writes only those stubs, under those
-   names, each with its endpoint declared. Edit nothing it wrote during this
-   step. Then run `gp plugin info --json` and confirm every agreed command is
-   listed with the endpoint it was agreed for.
+   block in `references/commands.md`, with the chosen session and run and one
+   `--command` per row the user kept. The generator writes only those stubs,
+   under those names, each with its endpoint declared, and prints a
+   `<name> calls <host>` line for each one on another host; relay those lines
+   as `references/harden.md` says ("The gate"). Edit nothing it wrote during
+   this step. Then run `gp plugin info --json` and confirm every agreed command
+   is listed with the endpoint it was agreed for.
 5. **Implement** (guide: Implement). For each stub, fill in the request, name
    the parameters, decide the return shape, and replace every `GP-FILL` marker.
    Raise `CommandError` or `PluginError` on failure. Read `references/rules.md`
@@ -155,11 +152,10 @@ with these differences. This list is the index of what enhance mode changes;
 the references hold the details.
 
 - Frame collects only the new thing the user wants to do. The plugin's
-  `entry_point` (what you pass to `gp plugin add-command`), its `site_name` (the
-  name `gp` runs it by), and its `base_url` come from `project.plugins`, so the
-  scaffold step passes no URL; the understand step instead names that `base_url`
-  and asks whether the new commands' data comes from it, and a "no" stops for
-  the user, since `gp plugin add-command` writes every stub against it.
+  `entry_point` (what you pass to `gp plugin add-command`) and its `site_name`
+  (the name `gp` runs it by) come from `project.plugins`. Nothing is asked about
+  its `base_url`, since `gp plugin add-command` targets each endpoint's own
+  host.
 - Capture picks the recorder line by whether the plugin has a session, as
   `references/capture.md` says.
 - Understand leaves out every endpoint an existing command declares, and prints
