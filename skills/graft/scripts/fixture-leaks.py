@@ -5,14 +5,23 @@ Usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]
 The graft skill writes each fixture from a capture on the developer's workstation,
 inventing every value. This reports what survived, so the skill can rewrite it.
 
-What it looks for, from the capture: each JSON string, number, and key that is not
-a plain identifier (each text node, attribute value, and comment of any other text
-capture), whole, and the pieces of it an account value hides in: each run of three
-or more digits, each word holding an ``@``, a digit, or a capital letter, and each
-pair of words with one of those in it. Where it looks, in the fixture: the raw text
-and the same values decoded, so an escaped copy (``\\u00e9``, ``\\/``, ``&amp;``) is
-found too. FIXTURE can be any text file: a plugin module or a test module is checked
-the same way. It matches text, so a captured lowercase word alone is not reported.
+What it looks for, from the capture: each JSON string, number, and key (a key that
+is a plain identifier without a digit run is skipped), or each text node, attribute
+value, and comment of any other text capture, whole, and the pieces of it an
+account value hides in: each run of three or more digits, each word holding an
+``@``, a digit, or a capital letter, both halves of an email address, and each pair
+of words with one of those in it.
+
+Where it looks, in the fixture, in any case and in Unicode compatibility form: the
+raw text, its JSON or HTML values decoded, its backslash escapes decoded
+(``\\u00e9``, ``\\/``), and its percent-encoding decoded (``%40``). FIXTURE can be
+any text file, so a plugin module or a test module is checked the same way.
+
+What it cannot see, which needs a read by eye: a captured lowercase word alone, a
+number reformatted (``12345`` as ``12,345``), digits split across fields, and a
+copy re-encoded another way (base64). It does one substring search per captured
+value, so a capture of a megabyte or more takes tens of seconds.
+
 A string the command branches or selects on (a status, a currency code, a class
 name) may be kept on purpose; the skill decides, so this reports and never edits.
 With SIDECAR, it also prints the names the sidecar lists, since a sidecar is
@@ -28,13 +37,17 @@ from __future__ import annotations
 import json
 import re
 import sys
+import unicodedata
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 _DIGITS = re.compile(r"\d{3,}")
 _WORD = re.compile(r"[^\s,;:()\[\]{}<>\"']+")
 _IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _MIN_LENGTH = 3
+# A \uXXXX escape as JSON and Python source spell one, decoded wherever it appears.
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 
 
 class _TextParts(HTMLParser):
@@ -57,7 +70,7 @@ class _TextParts(HTMLParser):
 
 def _json_values(node: object) -> list[str]:
     if isinstance(node, dict):
-        keys = [str(k) for k in node if not _IDENTIFIER.match(str(k))]
+        keys = [str(k) for k in node if not _IDENTIFIER.match(str(k)) or _DIGITS.search(str(k))]
         return keys + [leaf for value in node.values() for leaf in _json_values(value)]
     if isinstance(node, list):
         return [leaf for value in node for leaf in _json_values(value)]
@@ -85,6 +98,8 @@ def _pieces(value: str) -> list[str]:
     pieces = [value]
     pieces += _DIGITS.findall(value)
     pieces += [words[i] for i in range(len(words)) if marked[i]]
+    # An address kept under a new domain still leaks its local part, and the reverse.
+    pieces += [part for word in words if "@" in word for part in word.split("@", 1)]
     # A pair counts when either word is marked, so "Jane Doe" is a piece and a
     # pair of plain lowercase words ("at the") is not.
     pieces += [
@@ -99,15 +114,28 @@ def captured_values(text: str) -> list[str]:
     for value in body_values(text):
         for piece in _pieces(value.strip()):
             piece = piece.strip()
-            if len(piece) >= _MIN_LENGTH and (not piece.isdigit() or len(piece) >= 3):
+            if len(piece) >= _MIN_LENGTH:
                 found[piece] = None
     return list(found)
 
 
+def _fold(text: str) -> str:
+    """*text* in one comparable form: compatibility-normalised and case-folded, so
+    ``OKONKWO`` and ``Okonkwo``, or a composed and a decomposed accent, match."""
+    return unicodedata.normalize("NFKC", text).casefold()
+
+
+def _decodings(fixture: str) -> list[str]:
+    """*fixture* and the forms a copied value can hide behind in it."""
+    unescaped = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), fixture)
+    unescaped = unescaped.replace("\\/", "/")
+    return [fixture, "\n".join(body_values(fixture)), unescaped, unquote_plus(fixture)]
+
+
 def survivors(capture: str, fixture: str) -> list[str]:
-    """Each captured value that still appears in *fixture*, raw or decoded."""
-    haystack = fixture + "\n" + "\n".join(body_values(fixture))
-    return [value for value in captured_values(capture) if value in haystack]
+    """Each captured value that still appears in *fixture*, in any of its forms."""
+    haystack = _fold("\n".join(_decodings(fixture)))
+    return [value for value in captured_values(capture) if _fold(value) in haystack]
 
 
 def main(argv: list[str]) -> int:

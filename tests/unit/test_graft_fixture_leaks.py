@@ -21,7 +21,7 @@ _CAPTURE = {
             "id": "ORD-4471023",
             "status": "shipped",
             "total": 12345,
-            "customer": {"name": "Alice Example", "email": "alice@example.com"},
+            "customer": {"name": "Alice Smith", "email": "alice@example.com"},
             "invoice": "/orders/4471023/invoice",
             "gift": False,
         }
@@ -47,7 +47,7 @@ def test_an_unchanged_copy_reports_every_value(tmp_path: Path) -> None:
     text = json.dumps(_CAPTURE)
     result = _run(tmp_path, text, text)
     assert result.returncode == 1
-    for value in ("ORD-4471023", "shipped", "12345", "Alice Example", "alice@example.com"):
+    for value in ("ORD-4471023", "shipped", "12345", "Alice Smith", "alice@example.com"):
         assert repr(value) in result.stdout, value
 
 
@@ -72,7 +72,7 @@ def test_an_id_inside_another_string_is_still_caught(tmp_path: Path) -> None:
     result = _run(tmp_path, json.dumps(_CAPTURE), fixture)
     assert result.returncode == 1
     assert "'4471023'" in result.stdout
-    assert "'Alice Example'" not in result.stdout
+    assert "'Alice Smith'" not in result.stdout
 
 
 def test_a_fully_invented_fixture_reports_only_what_was_kept_on_purpose(tmp_path: Path) -> None:
@@ -138,6 +138,46 @@ def test_a_value_inside_a_shortened_string_is_still_caught(tmp_path: Path) -> No
     result = _run(tmp_path, capture, json.dumps({"note": "Ship to Jane Doe"}))
     assert result.returncode == 1
     assert "'Jane Doe'" in result.stdout
+
+
+def test_a_copy_in_another_case_is_still_caught(tmp_path: Path) -> None:
+    capture = json.dumps({"note": "Leave with Okonkwo, ask for Margaret"})
+    result = _run(tmp_path, capture, json.dumps({"note": "OKONKWO, MARGARET"}))
+    assert result.returncode == 1
+    assert "'Okonkwo'" in result.stdout
+    assert "'Margaret'" in result.stdout
+
+
+def test_an_email_kept_under_a_new_domain_is_caught(tmp_path: Path) -> None:
+    capture = json.dumps({"email": "m.okonkwo@fastmail.com"})
+    result = _run(tmp_path, capture, json.dumps({"email": "m.okonkwo@example.com"}))
+    assert result.returncode == 1
+    assert "'m.okonkwo'" in result.stdout
+
+
+def test_a_python_module_with_escaped_copies_is_checked(tmp_path: Path) -> None:
+    """A module is neither JSON nor HTML; its backslash escapes and percent-encoding
+    are decoded all the same."""
+    capture = json.dumps({"name": "José García", "url": "/a/b/Q7", "email": "ann@shop.example"})
+    module = 'NAME = "Jos\\u00e9 Garc\\u00eda"\nURL = "\\/a\\/b\\/Q7"\nQ = "ann%40shop.example"\n'
+    result = _run(tmp_path, capture, module)
+    assert result.returncode == 1
+    for value in ("José García", "/a/b/Q7", "ann@shop.example"):
+        assert repr(value) in result.stdout, value
+
+
+def test_two_plain_lowercase_words_are_not_reported(tmp_path: Path) -> None:
+    capture = json.dumps({"note": "Leave it at the door"})
+    result = _run(tmp_path, capture, json.dumps({"note": "put it at the gate"}))
+    assert "'at the'" not in result.stdout
+    assert "'it at'" not in result.stdout
+
+
+def test_an_identifier_key_holding_a_number_is_caught(tmp_path: Path) -> None:
+    capture = json.dumps({"acct_99887766": {"plan": "pro"}})
+    result = _run(tmp_path, capture, json.dumps({"acct_99887766": {"plan": "basic"}}))
+    assert result.returncode == 1
+    assert "'99887766'" in result.stdout
 
 
 def test_an_account_value_used_as_a_key_is_caught(tmp_path: Path) -> None:
