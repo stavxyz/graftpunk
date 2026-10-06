@@ -74,14 +74,14 @@ gp plugin info --json
 
 ### Harden
 
-The last line is the project's gate, one unit, run whole: each of its commands
-in place of `<gate-command>`, in order. `policy.PROJECT_GATE` owns those
-commands and the guide's section on it lists them (guide: The gate). The skill
-offers an allow rule only for the gate's `gp` commands; every other command in
-the gate asks each time it runs, unless the user's settings allow it.
+The last line is the gate, each command of it in place of `<gate-command>`, in
+order; `policy.PROJECT_GATE` owns the list (guide: The gate). The skill offers
+an allow rule only for the gate's `gp` commands; every other command in the
+gate asks each time it runs, unless the user's settings allow it.
 
 ```bash
 gp observe fixtures <session> <run> --match "<METHOD> <template>"
+cp 'tests/captures/<fixture>' 'tests/captures/<fixture>.meta.json' '<fixtures-dir>/'
 gp plugin upgrade
 uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-command>
 ```

@@ -8,9 +8,11 @@ the command's endpoint in place of `<METHOD> <template>`. A capture is the
 account's own data, so never open, print, or read one, nor a copy of one until
 the user has replaced its values. Copy the capture gp writes under the plain
 name (not a numbered one) and its sidecar into the fixtures directory the
-generated tests read (their `FIXTURES_DIR`) with `cp`, keeping both file names:
-a test finds its fixture by that name, and a request with no fixture under it
-answers 404.
+generated tests read (their `FIXTURES_DIR`) with the `cp` line of the Harden
+block, keeping both file names: a test finds its fixture by that name, and a
+request with no fixture under it answers 404. Copy those two files by name,
+never with a glob or a whole directory, which would bring numbered captures
+along.
 
 Then hand the copies to the user, as with the recording: list each copy's path
 and ask them to replace every value in it with an invented one, keeping its
