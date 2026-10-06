@@ -10,26 +10,35 @@ the command's endpoint in place of `<METHOD> <template>`. Captures land in the
 git-ignored `tests/captures/` on this workstation and hold the account's own
 data: read them as this step needs, and never put a value from one into anything
 that is committed or shared, such as a fixture, a test, code, a comment, a
-docstring, or a commit message. Copy the capture gp writes under the plain name
-(not a numbered one) and its sidecar into the fixtures directory the generated
-tests read (their `FIXTURES_DIR`) with the `cp` line of the Harden block,
-keeping both file names: a test finds its fixture by that name, and a request
-with no fixture under it answers 404. Copy those two files by name, never with a
-glob or a whole directory, which would bring numbered captures along.
+docstring, a commit message, or a pull request. Copy the capture gp writes under
+the plain name (not a numbered one) and its sidecar into the fixtures directory
+the generated tests read (their `FIXTURES_DIR`) with the `cp` line of the Harden
+block, keeping both file names: a test finds its fixture by that name, and a
+request with no fixture under it answers 404. Copy those two files by name,
+never with a glob or a whole directory, which would bring numbered captures
+along.
 
 Then rewrite each copy with invented values, keeping its structure: the same
 keys, nesting, and types, a few list items rather than every one, and values of
 the same kind (an id stays an id-shaped string, a date a date) that belong to no
-real account (guide: Deriving a fixture from a capture). Leave its sidecar
-alone. Then compare the fixture with its capture: apart from the keys, no
-string, and no number longer than two digits, from the capture may be left in
-it. Then run the gate's `pytest` line through the runner in the Harden block of
-`references/commands.md`: the generated suite checks every fixture on every run
-and names each one that is still byte for byte its capture or holds a flagged
-cookie or token name; rewrite any it names. Count the check as run only when
-that `pytest` output carries its `fixtures_are_sanitised:` line; without it the
-project lacks the wiring, so run the gate's plugin check and act on what it
-reports first.
+real account (guide: Deriving a fixture from a capture). For an HTML capture,
+keep the markup and the classes and attributes a parser selects on, and invent
+the text and the attribute values that carry data. A token value in a capture is
+replaced like any other value. Then run the fixture-leaks line of the Harden
+block on the capture, the fixture, and its sidecar. It prints every captured
+string of three or more characters, and every run of three or more digits, still
+in the fixture, and the names the sidecar lists. Rewrite each value it prints
+unless the command branches or selects on it (a status, a currency code, a class
+name) and it names no person, place, account, or order; tell the user which
+values you kept and why. A sidecar is committed: when one of its names holds an
+account value, tell the user and do not commit that sidecar as it is
+(guide: Test against fixtures, not against the site). Then run the gate's
+`pytest` line through the runner in the Harden block: the generated suite checks
+every fixture on every run and names each one that is still byte for byte its
+capture or holds a flagged cookie or token name; rewrite any it names. Count the
+check as run only when that `pytest` output carries its
+`fixtures_are_sanitised:` line; without it the project lacks the wiring, so run
+the gate's plugin check and act on what it reports first.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
 and its sidecar yourself, with invented values in the shape the projection gives

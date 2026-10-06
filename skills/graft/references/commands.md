@@ -9,10 +9,9 @@ agreed command), `<session>` and `<run>` (chosen at capture), `<gate-command>`
 `gp observe fixtures` wrote), `<fixtures-dir>` (the tests' `FIXTURES_DIR`),
 `<variable>` and `<value>` (a credential's variable, and a placeholder or a
 `$(...)` kept inside the single quotes, which double quotes would let the shell
-run at once), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
-
-Only preflight is pre-approved (`SKILL.md`, "Permissions"). The rules offered
-at the end come from "Run by the skill" alone; the tests hold each to a line.
+run at once), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`. Only
+preflight is pre-approved (`SKILL.md`, "Permissions"). The rules offered at the
+end come from "Run by the skill" alone; the tests hold each to a line.
 
 ## Run by preflight
 
@@ -83,6 +82,7 @@ gate asks each time it runs, unless the user's settings allow it.
 ```bash
 gp observe fixtures <session> <run> --match "<METHOD> <template>"
 cp 'tests/captures/<fixture>' 'tests/captures/<fixture>.meta.json' '<fixtures-dir>/'
+uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/fixture-leaks.py 'tests/captures/<fixture>' '<fixtures-dir>/<fixture>' '<fixtures-dir>/<fixture>.meta.json'
 gp plugin upgrade
 uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-command>
 ```

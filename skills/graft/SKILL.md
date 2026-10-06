@@ -179,16 +179,17 @@ the references hold the details.
 
 ## Secrets
 
-Never ask for a password, never write a credential anywhere, and never print
-what `gp config get --resolve` returns. Never read a cookie or token value or a
-HAR. From a recording, read the `--endpoints-json` projection, and at the harden
-step the captures `gp observe fixtures` writes into the git-ignored
-`tests/captures/`: they hold the account's own data and stay on this
-workstation, so no value from one goes into anything that is committed or
-shared, such as a fixture, a test, code, a comment, a docstring, a commit
-message, or a pull request. The output of the live read-only command the user
-agreed to at the kick-the-tires step is the same: show it to them, confirm it
-returned data, and use no value from it. When the user pastes a secret into the
-conversation, say it belongs in the workstation env file through the
-`gp config set` line of the "Run by the user" block in `references/commands.md`,
-with a `$(your-secret-tool read ...)` value, and do not use it.
+Never ask for a password, and never write a credential anywhere. Never read a
+HAR, a cookie, or what `gp config get --resolve` returns; a token value inside a
+capture is replaced like any other captured value. From a recording, read the
+`--endpoints-json` projection, and at the harden step the captures
+`gp observe fixtures` writes into the git-ignored `tests/captures/`: they hold
+the account's own data and stay on this workstation, so no value from one goes
+into anything that is committed or shared, such as a fixture, a test, code, a
+comment, a docstring, a commit message, or a pull request. The output of the
+live read-only command the user agreed to at the kick-the-tires step is the
+same: show it to them, confirm it returned data, and use no value from it. When
+the user pastes a secret into the conversation, say it belongs in the
+workstation env file through the `gp config set` line of the "Run by the user"
+block in `references/commands.md`, with a `$(your-secret-tool read ...)` value,
+and do not use it.
