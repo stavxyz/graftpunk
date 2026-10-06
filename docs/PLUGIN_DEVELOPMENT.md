@@ -1071,29 +1071,31 @@ def order(self, ctx: CommandContext, order_id: str) -> dict:
 
 A handler's parameters become CLI options automatically, typed by their
 annotations: `int`, `float`, `bool`, and `str`, bare, as `X | None` or
-`Optional[X]`, or as `Annotated[X, ...]`, in any nesting, carry through, with or
-without `from __future__ import annotations` (which the module `gp plugin new`
-writes starts with). Any other annotation gives a `str` option, and so does a
-default the type cannot take (`limit: int = "all"`; a default it converts, such
-as `page: int = "1"`, keeps the type). A name the module imports only under
-`TYPE_CHECKING` gives a `str` option under the future import or on Python 3.14
-and later, and so does a name local to an enclosing function under the future
-import; a name defined in the plugin class's body resolves. A `bool` parameter
-becomes a flag: `dry: bool = False` gives `--dry`, and any other default (`None`
-from `bool | None`, `True`, or none at all) gives the pair `--dry/--no-dry`, so
-every value the handler accepts can be passed. When another option of the
-command is already `--no-dry`, the negative is `--dry-false`; when that is taken
-too, the parameter stays a `str` option and graftpunk logs a warning naming the
-handler. An explicit `params=` list replaces introspection entirely; use it for
-a positional argument, help text, a flag spelled differently from the parameter,
-or a repeatable option. `gp plugin new` writes that explicit list itself for
-every stub with an `int`, `float`, or `bool` parameter. It writes a `bool`
-parameter as a flag with a negative:
-`click_kwargs={"is_flag": True, "flag": "--archived/--no-archived"}`, where the
-`flag` key replaces the option's declared name. `--archived` passes `True`,
-`--no-archived` passes `False`, and with neither the handler receives `None`.
-`ctx.request_json` sends those as `archived=true`, `archived=false`, and no
-`archived` at all; the digest types a parameter as `bool` only when the site
+`Optional[X]`, or as `Annotated[X, ...]`, in any nesting and quoted or not,
+carry through, with or without `from __future__ import annotations` (which the
+module `gp plugin new` writes starts with). Any other annotation gives a `str`
+option. Under the future import, so does a default the type cannot take (`limit:
+int = "all"`), so the command keeps running without the option; a default it
+converts, such as `page: int = "1"`, keeps the type. A name the module imports
+only under `TYPE_CHECKING` gives a `str` option under the future import or on
+Python 3.14 and later, and so does a name local to an enclosing function under
+the future import, and an annotation whose `Annotated` metadata names either; a
+name defined in the plugin class's body resolves. A `bool` parameter becomes a
+flag: `dry: bool = False` gives `--dry`, and any other default (`None` from
+`bool | None`, `True`, or none at all) gives the pair `--dry/--no-dry`, so every
+value the handler accepts can be passed. When another option of the command is
+already `--no-dry`, the negative is `--dry-false`; when that is taken too, the
+parameter stays a `str` option, whose text is truthy whenever it is not empty,
+and graftpunk logs a warning naming the handler. An explicit `params=` list
+replaces introspection entirely; use it for a positional argument, help text, a
+flag spelled differently from the parameter, or a repeatable option.
+`gp plugin new` writes that explicit list itself for every stub with an `int`,
+`float`, or `bool` parameter. It writes a `bool` parameter as a flag with a
+negative: `click_kwargs={"is_flag": True, "flag": "--archived/--no-archived"}`,
+where the `flag` key replaces the option's declared name. `--archived` passes
+`True`, `--no-archived` passes `False`, and with neither the handler receives
+`None`. `ctx.request_json` sends those as `archived=true`, `archived=false`, and
+no `archived` at all; the digest types a parameter as `bool` only when the site
 sent that lowercase spelling, so the request matches the recording. In a JSON
 body the stub sends a JSON boolean, and leaves the field out when neither flag
 is given. When `--no-archived` is already another option of the same command
