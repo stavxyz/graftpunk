@@ -1823,6 +1823,7 @@ class Shop(SitePlugin):
         ctx: CommandContext,
         tagged: Annotated[int, "a note"] = 0,
         nested: Optional[Annotated[int, "a note"]] = None,
+        inner: Optional["int"] = None,
         quoted: "int" = 0,
         local: Count = 0,
         page: int = 0,
@@ -1996,6 +1997,7 @@ class TestIntrospectParamsUnderFutureAnnotations:
         assert event["log_level"] == "warning"
         assert event["handler"] == "Shop.probe"
         assert event["option"] == "--cache"
+        assert "--no-cache and --cache-false" in event["reason"]
 
     def test_optional_annotations_resolve_without_the_future_import(self, load_module: Any) -> None:
         plugin = load_module(
@@ -2009,14 +2011,12 @@ class TestIntrospectParamsUnderFutureAnnotations:
         assert result.exit_code == 0, result.output
         assert (seen["page"], seen["size"], seen["archived"]) == (2, 3, False)
 
-    # A default the type cannot take keeps the str option such a command had
-    # before, so the handler gets what it got then: the default through str. A
-    # default the type converts keeps the type, as it did without the future import.
+    # A default the type converts keeps the type, with or without the future
+    # import, as it always did without it.
     @pytest.mark.parametrize("header", ["", _FUTURE_HEADER], ids=["plain", "future"])
     @pytest.mark.parametrize(
         ("params", "argv", "name", "expected"),
         [
-            pytest.param("limit: int = 'all'", [], "limit", "all", id="str-default-on-int"),
             pytest.param("ratio: float = 2", ["--ratio", "0.5"], "ratio", 0.5, id="int-on-float"),
             pytest.param(
                 "page: int = '1'", ["--page", "5"], "page", 5, id="convertible-str-on-int"
@@ -2025,7 +2025,7 @@ class TestIntrospectParamsUnderFutureAnnotations:
             pytest.param("n: int = True", [], "n", 1, id="bool-on-int"),
         ],
     )
-    def test_a_default_keeps_the_command_running_as_before(
+    def test_a_convertible_default_keeps_the_type(
         self,
         load_module: Any,
         header: str,
@@ -2039,6 +2039,38 @@ class TestIntrospectParamsUnderFutureAnnotations:
         assert result.exit_code == 0, result.output
         assert seen[name] == expected
         assert type(seen[name]) is type(expected)
+
+    # Under the future import a default the type cannot take keeps the str option
+    # the command had before, and the handler gets what it got then: the default
+    # through str. A conversion that overflows counts as one it cannot take,
+    # rather than an error that would drop every command of the plugin.
+    @pytest.mark.parametrize(
+        ("params", "name", "expected"),
+        [
+            pytest.param("limit: int = 'all'", "limit", "all", id="str-on-int"),
+            pytest.param("limit: int = float('inf')", "limit", "inf", id="inf-on-int"),
+            pytest.param("ratio: float = 10**400", "ratio", str(10**400), id="overflow-on-float"),
+        ],
+    )
+    def test_an_unconvertible_default_keeps_the_str_option_under_the_future_import(
+        self, load_module: Any, params: str, name: str, expected: str
+    ) -> None:
+        plugin = load_module(
+            "unconvertible", _FUTURE_HEADER + _PLAIN_PLUGIN.format(params=params)
+        ).Shop()
+        result, seen = _invoke(plugin, [])
+        assert result.exit_code == 0, result.output
+        assert seen[name] == expected
+
+    def test_a_bare_annotation_keeps_its_type_whatever_the_default(self, load_module: Any) -> None:
+        # Without the future import a bare int annotation was always an int option,
+        # whose unconvertible default fails only when the option is omitted.
+        plugin = load_module("bare_int", _PLAIN_PLUGIN.format(params="limit: int = 'all'")).Shop()
+        given, seen = _invoke(plugin, ["--limit", "5"])
+        assert given.exit_code == 0, given.output
+        assert seen["limit"] == 5
+        omitted, _ = _invoke(plugin, [])
+        assert omitted.exit_code == 2
 
     def test_an_int_default_on_a_bool_stays_a_str_option(self, load_module: Any) -> None:
         # Without the future import this was refused at registration ("bool options
@@ -2056,12 +2088,12 @@ class TestIntrospectParamsUnderFutureAnnotations:
         load_module("wrapping", _WRAPPING_DECORATOR)
         plugin = load_module("resolving", _RESOLVING_PLUGIN).Shop()
         specs = {s.name: s.click_kwargs["type"] for s in plugin.get_commands()[0].params}
-        assert specs == {"tagged": int, "nested": int, "quoted": int, "local": int, "page": int}
-        argv = ["--tagged", "1", "--nested", "2", "--quoted", "3", "--local", "4", "--page", "5"]
+        names = ("tagged", "nested", "inner", "quoted", "local", "page")
+        assert specs == dict.fromkeys(names, int)
+        argv = [arg for i, n in enumerate(names) for arg in (f"--{n}", str(i))]
         result, seen = _invoke(plugin, argv)
         assert result.exit_code == 0, result.output
-        got = [seen[n] for n in ("tagged", "nested", "quoted", "local", "page")]
-        assert got == [1, 2, 3, 4, 5]
+        assert [seen[n] for n in names] == list(range(len(names)))
 
     @pytest.mark.skipif(sys.version_info < (3, 14), reason="lazy annotations arrived in 3.14")
     def test_lazy_annotations_resolve_each_on_its_own(self, load_module: Any) -> None:
