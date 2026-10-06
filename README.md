@@ -392,6 +392,47 @@ gp observe digest <name>
 gp plugin new mybank --from-run <name>
 ```
 
+`--command "NAME=METHOD template"`, repeatable, scaffolds only the endpoints you
+name, under your names ([Choose the commands
+yourself](docs/PLUGIN_DEVELOPMENT.md#choose-the-commands-yourself)).
+
+The generated tests read fixtures. Write the recorded bodies out as captures,
+which land in the project's git-ignored `tests/captures/`, then copy each one
+into `tests/fixtures/` with its sidecar and replace every value with an
+invented one
+([Deriving a fixture from a capture](docs/PLUGIN_DEVELOPMENT.md#deriving-a-fixture-from-a-capture)):
+
+```bash
+gp observe fixtures <name> --match "GET /api/accounts"
+```
+
+Install the project with its `dev` extra, which brings pytest and ruff, then
+run the project's gate before every commit
+([The gate](docs/PLUGIN_DEVELOPMENT.md#the-gate)):
+
+```bash
+pip install -e ".[dev]"
+pytest
+ruff check .
+ruff format --check .
+gp plugin check
+```
+
+To keep the project current, `gp plugin upgrade` adds the wiring a newer
+graftpunk expects, and `gp plugin add-command` adds one command from a later
+recording ([Add a command to an existing
+plugin](docs/PLUGIN_DEVELOPMENT.md#add-a-command-to-an-existing-plugin)). When
+the project's plain `graftpunk>=` bound is below the `major.minor.0` of the
+graftpunk you run them with, each one that writes something raises the bound to
+that release and tells you to reinstall the project; [The
+gate](docs/PLUGIN_DEVELOPMENT.md#the-gate) covers every other form of the
+requirement.
+
+```bash
+gp plugin upgrade
+gp plugin add-command mybank --from-run <name> --command "statements=GET /api/statements"
+```
+
 ## Configuration
 
 | Variable | Default | Description |

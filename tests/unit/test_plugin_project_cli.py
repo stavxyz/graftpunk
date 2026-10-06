@@ -667,7 +667,7 @@ class TestAddCommand:
 
     def test_prints_a_gp_fill_note_instead_of_a_fixture_no_one_writes(self, recorded: Path) -> None:
         """An endpoint gp observe fixtures writes no fixture for (a binary
-        response with no captured text) must not be told its test looks for a
+        response with no captured text) must not be told to write its test against a
         fixture that will never exist."""
         _new(recorded, "myshop", "orders=GET /api/orders")
         har_path = recorded.parent / "observe" / "myshop" / "run-1" / "network.har"
@@ -697,7 +697,7 @@ class TestAddCommand:
         assert result.exit_code == 0, result.output
         output = _plain(result.output)
         assert "gp observe fixtures writes no fixture for this endpoint" in output
-        assert "its test looks for" not in output
+        assert "write its test against tests/" not in output
 
     def test_crlf_line_endings_are_kept_throughout(self, recorded: Path) -> None:
         module = _hand_written_project(recorded)
@@ -968,6 +968,48 @@ class TestAddCommand:
         assert "from urllib.parse import quote as _quote_path" in line
         assert "ruff check --fix" in line
         assert _snapshot(recorded, skip=recorded / "nothing") == before
+
+    def test_the_guide_quotes_what_add_command_prints(self, recorded: Path) -> None:
+        """The guide's add-command section pastes this command's output; a wording
+        change here has to reach it. Every kind of line it quotes is produced here
+        and compared with the guide's after the parts that name this test's
+        recording (command names, fixture names, the project path) are made
+        generic on both sides."""
+        from tests.unit.guide_harness import GUIDE_TEXT, blocks, section
+
+        def generic(line: str) -> str:
+            line = line.replace(f"{recorded}/", "").replace(f"in {recorded};", "in .;")
+            line = re.sub(r"tests/fixtures/\S+", "<fixture>", line)
+            line = re.sub(r"^Added \w+ to", "Added <name> to", line)
+            return re.sub(r"'\w+'", "'<name>'", line)
+
+        quoted = {
+            generic(line)
+            for _start, body in blocks(
+                section(GUIDE_TEXT, "### Add a command to an existing plugin"), "text"
+            )
+            for line in body.splitlines()
+        }
+        _new(recorded, "myshop", "orders=GET /api/orders")
+        pyproject = recorded / "pyproject.toml"
+        pyproject.write_text(
+            re.sub(r"graftpunk(\[\w+\])?>=[0-9.]+", r"graftpunk\1>=1.15.0", pyproject.read_text())
+        )
+        results = [
+            _add(recorded, "myshop", "order=GET /api/orders/{order_id}"),
+            _add(recorded, "myshop", "orders=GET /api/orders/{order_id}"),
+            _add(recorded, "shop", "status=GET /api/orders/{order_id}"),
+        ]
+        printed = [
+            generic(line)
+            for result in results
+            for line in _plain(result.output).strip().splitlines()
+        ]
+        kinds = ("Added ", "Next: ", "pyproject.toml: ", "already has a command", "No plugin has")
+        for kind in kinds:
+            assert any(kind in line for line in printed), (kind, printed)
+        for line in printed:
+            assert line in quoted, line
 
     def test_a_duplicate_name_is_refused_and_nothing_changes(self, recorded: Path) -> None:
         _new(recorded, "myshop", "orders=GET /api/orders")
@@ -1487,7 +1529,7 @@ def _run_writer(command: str, project: Path, pyproject: str) -> tuple[object, li
         result = _add(project, "myshop", "orders=GET /api/orders")
         own = [
             f"Added orders to {module}",
-            "Next: its test looks for tests/fixtures/get_api_orders.json",
+            "Next: write its test against tests/fixtures/get_api_orders.json",
         ]
     return result, own
 
