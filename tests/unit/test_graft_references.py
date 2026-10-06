@@ -161,7 +161,18 @@ def test_each_reference_stays_short(reference: Path) -> None:
     assert len(lines) < _MAX_REFERENCE_LINES, f"{reference.name} has {len(lines)} lines"
 
 
-_OTHER_HOST_LINE = "`<command> calls <host>`"
+def test_skill_md_gives_the_scripts_directory_the_references_cannot_expand() -> None:
+    """Claude Code substitutes ${CLAUDE_SKILL_DIR} in the skill's markdown content
+    and its allowed-tools rules, not in a file the skill reads
+    (https://code.claude.com/docs/en/skills), so SKILL.md states the directory with
+    the variable and says what a reference's copy of it stands for."""
+    assert any("${CLAUDE_SKILL_DIR}" in ref.read_text() for ref in _REFERENCES)
+    text = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+    assert "The skill's scripts are in `${CLAUDE_SKILL_DIR}/scripts/`." in text
+    assert "where a reference file writes the variable `CLAUDE_SKILL_DIR`" in text
+
+
+_OTHER_HOST_LINE ="`<command> calls <host>`"
 
 
 @pytest.mark.parametrize("base_host", ["myshop.example", None], ids=["with-base", "no-base"])

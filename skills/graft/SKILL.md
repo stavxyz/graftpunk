@@ -35,6 +35,11 @@ credential.
 
 ## Start with preflight
 
+The skill's scripts are in `${CLAUDE_SKILL_DIR}/scripts/`. Claude Code fills
+in that directory in this file only, so where a reference file writes the
+variable `CLAUDE_SKILL_DIR` (after a dollar sign, in braces), put this skill's
+directory, `${CLAUDE_SKILL_DIR}`, in its place.
+
 Run `${CLAUDE_SKILL_DIR}/scripts/preflight.sh` first, on every invocation. If it
 exits non-zero, show its message verbatim and stop. On exit 0 it prints one JSON
 object, `{"installation": ..., "project": ...}`, and `project.directory` picks
