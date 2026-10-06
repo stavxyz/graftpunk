@@ -10,8 +10,7 @@ agreed command), `<session>` and `<run>` (chosen at capture), `<gate-command>`
 `<variable>` and `<value>` (a credential's variable, and a placeholder or a
 `$(...)` kept inside the single quotes, which double quotes would let the shell
 run at once), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`. Only
-preflight is pre-approved (`SKILL.md`, "Permissions"). The rules offered at the
-end come from "Run by the skill" alone; the tests hold each to a line.
+preflight is pre-approved; the rules at the end cover "Run by the skill" alone.
 
 ## Run by preflight
 
@@ -68,6 +67,7 @@ gp observe digest <session> <run> --endpoints-json
 
 ```bash
 gp plugin new <name> --from-run <session> --run <run> --command "<command>=<METHOD> <template>"
+gp plugin new <name> --from-run <session> --run <run> --url <url> --command "<command>=<METHOD> <template>"
 gp plugin add-command <entry-point> --from-run <session> --run <run> --command "<command>=<METHOD> <template>"
 gp plugin info --json
 ```

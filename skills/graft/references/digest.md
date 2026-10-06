@@ -34,6 +34,15 @@ Read that projection only; never read the HAR or `--json`.
 5. Ask one question, "keep, rename, or drop any of these?", and apply the
    answer. A want with no endpoint goes back to the capture step for that flow.
 
+In create mode, `primary_host` (the recording's busiest host) becomes the
+plugin's `base_url` unless the scaffold overrides it, and the busiest host can be
+a CDN or an API subdomain (guide: Scaffold). When the host of the site URL the
+user gave differs from `primary_host`, ask once, after the keep, rename, or drop
+answer, which of the two is the plugin's base, naming both. If the user picks
+the site URL's host, the scaffold step runs the `--url` line of the Scaffold
+block with `https://` and that host in place of `<url>`: scheme and host only,
+no path and no trailing slash. Enhance mode never asks this.
+
 What request call a stub makes (`request_json` or `request_text`, and its role)
 is the generator's decision; the table reports `content_type` and `shape` and
 never predicts the call.

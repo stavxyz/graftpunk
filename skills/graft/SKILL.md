@@ -98,10 +98,13 @@ at the kick-the-tires step.
    `references/digest.md` and build the proposal it describes. The user keeps,
    renames, or drops rows in one answer. A row whose `host` differs from the
    projection's `primary_host` shows its host, so the user sees which commands
-   call another host; the generator targets each endpoint's own host.
+   call another host; the generator targets each endpoint's own host. When the
+   host of the site URL the user gave differs from `primary_host`, ask once
+   which of the two is the plugin's base, as `references/digest.md` says.
 4. **Scaffold** (guide: Scaffold). Run the `gp plugin new` line of the Scaffold
-   block in `references/commands.md`, with the chosen session and run and one
-   `--command` per row the user kept. The generator writes only those stubs,
+   block in `references/commands.md` without `--url`, or the one with it when
+   the user chose the site URL's host at the understand step, with the chosen
+   session and run and one `--command` per row the user kept. The generator writes only those stubs,
    under those names, each with its endpoint declared, and prints a
    `<command> calls <host>` line for each one on another host; relay those lines
    as `references/harden.md` says ("The gate"). Edit nothing it wrote during
