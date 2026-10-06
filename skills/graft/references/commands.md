@@ -7,9 +7,9 @@ Placeholders: `<name>` (the plugin's name), `<site-name>` and `<entry-point>`
 agreed command), `<session>` and `<run>` (chosen at capture), `<gate-command>`
 (each gate command, in order), `<fixture>` (the plain-named capture
 `gp observe fixtures` wrote), `<fixtures-dir>` (the tests' `FIXTURES_DIR`),
-`<variable>` and `<value>` (a credential's variable, and a placeholder, or a
-`$(...)` left in the quotes so it is stored, not run), `<url>`, `<version>`,
-`<n>`, `<METHOD>`, and `<template>`.
+`<variable>` and `<value>` (a credential's variable, and a placeholder or a
+`$(...)` kept inside the single quotes, which double quotes would let the shell
+run at once), `<url>`, `<version>`, `<n>`, `<METHOD>`, and `<template>`.
 
 Only preflight is pre-approved (`SKILL.md`, "Permissions"). The rules offered
 at the end come from "Run by the skill" alone; the tests hold each to a line.
@@ -89,8 +89,8 @@ uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-com
 
 ### Kick the tires
 
-The last two touch the live site and run only after the question in words,
-whatever the user's settings allow; the last is one agreed read-only command.
+The login and command lines touch the live site; the skill asks in words before
+either runs, whatever the settings allow. `<command>` is an agreed read-only one.
 
 ```bash
 uv run --no-project --with-editable . gp <site-name> --help
