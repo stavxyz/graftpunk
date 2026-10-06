@@ -146,12 +146,17 @@ class TestNothingIsCopied:
                 assert match and slug(match.group(1)) in slugs, line
 
 
-@pytest.mark.parametrize(
-    "name", ["rules.md", "capture.md", "digest.md", "harden.md", "commands.md"]
-)
-def test_each_reference_exists_and_stays_short(name: str) -> None:
-    lines = (SKILL_DIR / "references" / name).read_text().splitlines()
-    assert len(lines) < _MAX_REFERENCE_LINES
+_REFERENCES = sorted((SKILL_DIR / "references").glob("*.md"))
+
+
+def test_the_references_are_found() -> None:
+    assert _REFERENCES
+
+
+@pytest.mark.parametrize("reference", _REFERENCES, ids=lambda p: p.name)
+def test_each_reference_stays_short(reference: Path) -> None:
+    lines = reference.read_text().splitlines()
+    assert len(lines) < _MAX_REFERENCE_LINES, f"{reference.name} has {len(lines)} lines"
 
 
 # gp invocations the skill docs spell that Claude does not run from commands.md:
