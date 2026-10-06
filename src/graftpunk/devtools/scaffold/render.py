@@ -1482,7 +1482,7 @@ def _render_readme(spec: ScaffoldSpec) -> str:
         f"# {spec.name}\n\n"
         "A graftpunk plugin.\n\n"
         "## Install\n\n"
-        "```bash\npip install -e .\n```\n\n"
+        '```bash\npip install -e ".[dev]"\n```\n\n'
         "## Log in\n\n"
         f"```bash\ngp {spec.name} login\n```\n\n"
         "## Run a command\n\n"
