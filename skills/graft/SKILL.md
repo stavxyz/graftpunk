@@ -110,16 +110,17 @@ it.
    yes, set up the credentials before anything runs: the login reads each field
    of the plugin's `LoginConfig` from an environment variable named for the
    `site_name` in capitals (hyphens become underscores), an underscore, and the
-   field name in capitals, and prompts on the terminal for one it cannot find,
-   which in this session aborts the login. Print one `gp config set` line per
-   field with a placeholder value, never a real one, and wait until the user
-   says they have run them. Then run the help line of the Kick the tires block
-   in `references/commands.md` and confirm every agreed command name is listed,
-   then its login line, then its read-only command line with one read-only
-   command from the agreed proposal, against the live site while the user
-   watches. If the login fails, diagnose it against the guide's Login section,
-   adjust the plugin's `LoginConfig`, and try once more; if it fails again, show
-   the output and stop for the user.
+   field name in capitals (a plugin's `username_envvar` or `password_envvar`
+   names that field's variable instead), and prompts on the terminal for one it
+   cannot find, which in this session aborts the login. Print one `gp config
+   set` line per field with a placeholder value, never a real one, and wait
+   until the user says they have run them. Then run the help line of the Kick
+   the tires block in `references/commands.md` and confirm every agreed command
+   name is listed, then its login line, then its read-only command line with one
+   read-only command from the agreed proposal, against the live site while the
+   user watches. If the login fails, diagnose it against the guide's Login
+   section, adjust the plugin's `LoginConfig`, and try once more; if it fails
+   again, show the output and stop for the user.
 8. **Publish checklist** (guide: Before you publish). Read that section of the
    guide. Its first item, the gate, already holds after the harden step. Walk
    the rest as the guide lists them, fix what you can, and stop with the items
