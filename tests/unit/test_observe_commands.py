@@ -1190,3 +1190,11 @@ class TestUnwritableTargetIsARefusal:
             assert "could not write" in result.output.lower()
             assert "Traceback" not in result.output
             assert list(readonly.iterdir()) == []
+
+
+def test_the_all_hosts_help_says_the_default_keeps_the_primary_hosts_domain() -> None:
+    """The default digest keeps every host under the primary host's domain
+    (api.myshop.example beside myshop.example), not the primary host alone."""
+    digest_command = typer.main.get_command(observe_app).commands["digest"]
+    (option,) = [p for p in digest_command.params if "--all-hosts" in p.opts]
+    assert option.help == "Model every host, not just the primary host's domain"

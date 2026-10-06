@@ -256,6 +256,7 @@ _PROJECTION_V1 = {"schema", "source", "primary_host", "endpoints", "login"}
 _SOURCE_V1 = {"session", "run_id", "har"}
 _ENDPOINT_V1 = {
     "method",
+    "host",
     "template",
     "login_flow",
     "content_type",
@@ -323,6 +324,29 @@ def _planted_run(tmp_path: Path) -> Path:
 
 
 class TestEndpointsProjection:
+    def test_each_endpoint_carries_the_host_it_was_recorded_on(self, tmp_path: Path) -> None:
+        entries = [
+            _entry(
+                "GET",
+                "https://myshop.example/account",
+                content_type="text/html",
+                body="<html><body>Account</body></html>",
+            ),
+            _entry("GET", "https://api.myshop.example/api/orders/1001", body='{"id": 1}'),
+        ]
+        result = digest(DigestSource.from_har(_write_har(tmp_path, entries)))
+        payload = endpoints_projection(result)
+        assert payload["schema"] == 1
+        assert payload["primary_host"] == "myshop.example"
+        hosts = {(e["method"], e["template"]): e["host"] for e in payload["endpoints"]}
+        assert hosts == {
+            ("GET", "/account"): "myshop.example",
+            ("GET", "/api/orders/{order_id}"): "api.myshop.example",
+        }
+        assert hosts == {
+            (method, e.template): e.host for e in result.endpoints for method in e.methods
+        }
+
     def test_schema_one_and_its_field_set(self, tmp_path: Path) -> None:
         payload = endpoints_projection(digest(DigestSource.from_har(_planted_run(tmp_path))))
         assert payload["schema"] == 1
