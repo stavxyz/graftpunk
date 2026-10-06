@@ -176,6 +176,20 @@ def test_a_lower_version_fails(repo: _Repo) -> None:
     assert "0.2.1" in result.stderr
 
 
+@pytest.mark.parametrize(("head", "passes"), [("1.0.0", False), ("1.0.1", True)])
+def test_a_trailing_zero_part_is_not_a_bump(repo: _Repo, head: str, passes: bool) -> None:
+    """``1.0`` and ``1.0.0`` name the same version, so a head that only adds a zero
+    part is refused, and one that raises the added part passes."""
+    repo.manifests("1.0")
+    repo.write("skills/graft/SKILL.md", "first\n")
+    base = repo.commit("base")
+    repo.write("skills/graft/SKILL.md", "second\n")
+    repo.manifests(head)
+    repo.commit("a longer version")
+    result = repo.check(base)
+    assert (result.returncode == 0) is passes, result.stderr
+
+
 def test_a_non_numeric_head_over_a_numeric_base_fails(repo: _Repo) -> None:
     """``0.1.0rc1`` differs from ``0.2.0`` but no order makes it higher, so a
     numeric base refuses it rather than letting a downgrade through."""

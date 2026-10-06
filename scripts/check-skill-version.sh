@@ -54,7 +54,10 @@ parts = lambda v: v.split(".")
 base_numeric = all(p.isdigit() for p in parts(base))
 head_numeric = all(p.isdigit() for p in parts(head))
 if base_numeric and head_numeric:
-    higher = tuple(map(int, parts(head))) > tuple(map(int, parts(base)))
+    # Padded with zeros to one length, so 1.0 and 1.0.0 compare equal.
+    width = max(len(parts(base)), len(parts(head)))
+    padded = lambda v: [*map(int, parts(v)), *[0] * (width - len(parts(v)))]
+    higher = padded(head) > padded(base)
 elif base_numeric:
     higher = False
 else:
