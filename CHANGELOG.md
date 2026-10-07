@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This is a patch release. A command's options now keep the types its handler annotates, which a module with `from __future__ import annotations` (every module `gp plugin new` writes) and the `X | None` spelling had lost. The repository also becomes a Claude Code plugin marketplace serving the `/graftpunk:graft` skill, which installs only if you add the marketplace.
+
+### Upgrading
+
+1. **A hand-written command without an explicit `params=` list can change on its first run after the upgrade.** It changes when its module has `from __future__ import annotations`, or when an option is annotated `X | None`, `Optional[X]`, or `Annotated[X, ...]`. Its options then arrive as the annotated `int`, `float`, or `bool` instead of a string, and a `bool` becomes a flag, so a handler that relied on receiving text (comparing `dry` with `"False"`) now gets the typed value. Two kinds of call that used to work are refused with exit status 2:
+   - a non-numeric value for an `int` or `float` option (`--page next`);
+   - a value after a `bool` option (`--dry False`, `--archived true`), since a flag takes none: omit the flag, or pass `--no-dry`.
+
+   To keep a command as it was, declare its options with `params=` on `@command` (`PluginParamSpec.option("dry", type=str)`), which replaces introspection for that command, or pin `graftpunk<1.18.1`. Commands that already declare `params=` are unchanged, and so is every stub `gp plugin new` and `gp plugin add-command` write.
+2. **The skill is opt-in.** Nothing installs `/graftpunk:graft` until you run `/plugin marketplace add stavxyz/graftpunk` and `/plugin install graftpunk@graftpunk` in Claude Code; the Python package is unchanged by it.
+
 ### Added
 
 - **The `/graftpunk:graft` Claude Code skill.** The repository is now a Claude Code plugin marketplace: `/plugin marketplace add stavxyz/graftpunk`, then `/plugin install graftpunk@graftpunk`. `/graftpunk:graft myshop https://myshop.example/` in an empty directory creates a plugin by walking `docs/PLUGIN_DEVELOPMENT.md` (frame, capture, understand, scaffold, implement, harden, a live check, and the publish checklist), running the `gp` commands itself (each subject to your permission settings; the skill offers allow rules for a prompt-free run) and handing you the browser recording and the live login (it asks you to set credentials with `gp config set` first, and asks before the live login and the first live read). It derives each test fixture from a capture on your workstation, inventing every value, and keeps captured values out of everything it writes into the project; `/graftpunk:graft` inside a plugin project adds commands to it. The skill is versioned apart from the package (0.1.1) and needs graftpunk 1.18.0 or later and `uv`.
