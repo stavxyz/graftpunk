@@ -387,11 +387,31 @@ def _relative_links(path: Path) -> list[tuple[int, str]]:
     ]
 
 
+# A link the README carries as an absolute URL into this repository, since PyPI
+# renders the README from the tag and resolves no relative link there.
+_REPO_BLOB_URL = "https://github.com/stavxyz/graftpunk/blob/main/"
+
+
+def _links_into_the_repo(path: Path) -> list[tuple[int, str]]:
+    """*path*'s relative links, plus its absolute links into this repository's
+    main branch with that prefix removed."""
+    text = path.read_text(encoding="utf-8")
+    return [
+        (line_no, target.removeprefix(_REPO_BLOB_URL))
+        for line_no, target in (
+            (text[: match.start()].count("\n") + 1, match.group(1))
+            for match in _LINK_RE.finditer(text)
+        )
+        if target.startswith(_REPO_BLOB_URL)
+        or not target.startswith(("http://", "https://", "mailto:"))
+    ]
+
+
 GUIDE_LINKS = _relative_links(GUIDE)
 INBOUND_LINKS = [
     (source, line_no, target)
     for source in INBOUND_SOURCES
-    for line_no, target in _relative_links(source)
+    for line_no, target in _links_into_the_repo(source)
     if target.partition("#")[0].endswith("PLUGIN_DEVELOPMENT.md") and "#" in target
 ]
 
