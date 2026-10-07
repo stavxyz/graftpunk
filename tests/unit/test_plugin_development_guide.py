@@ -387,8 +387,8 @@ def _relative_links(path: Path) -> list[tuple[int, str]]:
     ]
 
 
-# A link the README carries as an absolute URL into this repository, since PyPI
-# renders the README from the tag and resolves no relative link there.
+# The README links into this repository by absolute URL: PyPI shows the README
+# on pypi.org, where a relative link would resolve against the wrong host.
 _REPO_BLOB_URL = "https://github.com/stavxyz/graftpunk/blob/main/"
 
 
