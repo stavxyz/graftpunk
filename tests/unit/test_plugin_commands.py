@@ -2124,6 +2124,25 @@ class TestIntrospectParamsUnderFutureAnnotations:
         (cmd,) = found[0]
         assert cmd.params[0].click_kwargs["type"] is str
 
+    @pytest.mark.parametrize("header", ["", _FUTURE_HEADER], ids=["plain", "future"])
+    def test_an_annotation_whose_equality_raises_gives_str(
+        self, load_module: Any, header: str
+    ) -> None:
+        # Membership in a tuple of types compares with ==, so the checks use
+        # identity: an annotation object with a hostile __eq__ still registers.
+        # (Optional[W] cannot be tested without the future import: typing
+        # compares a union's members when the module is imported.)
+        source = header + _PLAIN_PLUGIN.format(params="x: W = 1")
+        source = source.replace(
+            "\n\nclass Shop",
+            "\n\nclass Weird:\n    def __eq__(self, other):\n        raise RuntimeError('eq')\n"
+            "\n    __hash__ = object.__hash__\n\n\nW = Weird()\n\n\nclass Shop",
+            1,
+        )
+        plugin = load_module("hostile_eq", source).Shop()
+        specs = {s.name: s.click_kwargs["type"] for s in plugin.get_commands()[0].params}
+        assert specs == {"x": str}
+
     def test_a_bare_annotation_keeps_its_type_whatever_the_default(self, load_module: Any) -> None:
         # Without the future import a bare int annotation was always an int option,
         # whose unconvertible default fails only when the option is omitted.

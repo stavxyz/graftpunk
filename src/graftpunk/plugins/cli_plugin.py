@@ -173,12 +173,12 @@ def _option_type(annotation: Any, method: Any, default: Any) -> type:
     on every call without the option. A bare ``bool`` with a default that is not a
     ``bool`` is kept too, so registration refuses it as it always has.
     """
-    if annotation in (int, float, str):
+    if any(annotation is t for t in (int, float, str)):
         return annotation
     if annotation is bool and not _flag_default(default):
         return bool
     annotation = _unwrap_annotation(_resolve_annotation(annotation, method), method)
-    if annotation not in _OPTION_TYPES:
+    if not any(annotation is t for t in _OPTION_TYPES):
         return str
     return annotation if _default_fits(annotation, default) else str
 
@@ -1274,7 +1274,7 @@ class SitePlugin:
                 continue
 
             # Determine if required and default
-            has_default = param.default != inspect.Parameter.empty
+            has_default = param.default is not inspect.Parameter.empty
             default = param.default if has_default else None
             required = not has_default
 
