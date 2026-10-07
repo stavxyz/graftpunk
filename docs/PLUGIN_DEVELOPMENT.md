@@ -1069,31 +1069,45 @@ def order(self, ctx: CommandContext, order_id: str) -> dict:
 
 ### CLI parameter types
 
-A handler's parameters become CLI options automatically, but the type is carried
-through only when the introspector is handed a real type object: a bare `int`,
-`float`, `bool`, or `str`. The plugin module that `gp plugin new` writes starts with
-`from __future__ import annotations`, which makes every annotation in the module
-a string, so in a generated plugin every option arrives as a string, a bare
-`page: int = 1` included. A union such as `int | None` arrives as a string with
-or without that import. That is harmless when the value goes straight into
-`params` (the site reads it as text anyway), and wrong as soon as you do
-arithmetic on it. To get a real type, declare it explicitly: an explicit
-`params=` list replaces introspection entirely, so it works in a generated
-module as written. `gp plugin new` writes that explicit list itself for every
-stub with an `int`, `float`, or `bool` parameter. A `bool` option that is not a
-flag is refused when the command is registered, so it writes a `bool` parameter
-as a flag with a negative: `click_kwargs={"is_flag": True, "flag":
-"--archived/--no-archived"}`, where the `flag` key replaces the option's
-declared name. `--archived` passes `True`, `--no-archived` passes `False`, and
-with neither the handler receives `None`. `ctx.request_json` sends those as
-`archived=true`, `archived=false`, and no `archived` at all; the digest types a
-parameter as `bool` only when the site sent that lowercase spelling, so the
-request matches the recording. In a JSON body the stub sends a JSON boolean, and
-leaves the field out when neither flag is given. When `--no-archived` is already
-another option of the same command (the site also takes a `no_archived`), the
-negative is `--archived-false` instead, so each option keeps its own value. When
-that is taken too, the flag is `--archived` alone, which sends `true` or nothing,
-and a `GP-FILL` comment in the stub says why `false` cannot be sent.
+A handler's parameters become CLI options automatically, typed by their
+annotations: `int`, `float`, `bool`, and `str`, bare, as `X | None` or
+`Optional[X]`, or as `Annotated[X, ...]`, in any nesting and quoted or not,
+carry through, with or without `from __future__ import annotations` (which the
+module `gp plugin new` writes starts with). Any other annotation gives a `str`
+option, and so does a default the type cannot take without changing it
+(`limit: int | None = "all"`, or `1.5` on an `int`), so the command keeps
+running without the option; a default it converts, such as `page: int = "1"`,
+keeps the type. A bare `int`, `float`, or `str` written without the future
+import keeps its type whatever the default, as it always has, and a bare `bool`
+written without the future import, with a default that is not a `bool`, is still
+refused when the command is registered; under the future import it gives a `str`
+option. A name the module imports only under `TYPE_CHECKING` gives a `str`
+option under the future import or on Python 3.14 and later, and so does a name
+local to an enclosing function under the future import, and an annotation whose
+`Annotated` metadata names either; a name defined in the plugin class's body
+resolves. A `bool` parameter becomes a flag: `dry: bool = False` gives `--dry`,
+and any other default (`None` from `bool | None`, `True`, or none at all) gives
+the pair `--dry/--no-dry`, so every value the handler accepts can be passed.
+When another option of the command is already `--no-dry`, the negative is
+`--dry-false`; when that is taken too, the parameter stays a `str` option, whose
+text is truthy whenever it is not empty, and graftpunk logs a warning naming the
+handler. An explicit `params=` list replaces introspection entirely; use it for
+a positional argument, help text, a flag spelled differently from the parameter,
+or a repeatable option. `gp plugin new` writes that explicit list itself for
+every stub with an `int`, `float`, or `bool` parameter. It writes a `bool`
+parameter as a flag with a negative:
+`click_kwargs={"is_flag": True, "flag": "--archived/--no-archived"}`, where the
+`flag` key replaces the option's declared name. `--archived` passes `True`,
+`--no-archived` passes `False`, and with neither the handler receives `None`.
+`ctx.request_json` sends those as `archived=true`, `archived=false`, and no
+`archived` at all; the digest types a parameter as `bool` only when the site
+sent that lowercase spelling, so the request matches the recording. In a JSON
+body the stub sends a JSON boolean, and leaves the field out when neither flag
+is given. When `--no-archived` is already another option of the same command
+(the site also takes a `no_archived`), the negative is `--archived-false`
+instead, so each option keeps its own value. When that is taken too, the flag is
+`--archived` alone, which sends `true` or nothing, and a `GP-FILL` comment in
+the stub says why `false` cannot be sent.
 
 A `list[...]` parameter is a repeatable option, `click_kwargs={"multiple": True}`
 (`--id 1 --id 2`), typed by its element when that is `int` or `float`; the
@@ -1129,8 +1143,6 @@ def orders(self, ctx: CommandContext, page: int = 1, archived: bool = False) -> 
 
 `PluginParamSpec.option` makes a `--flag`; `PluginParamSpec.argument` makes a
 positional argument. A `bool` option with `default=False` becomes a real flag.
-The introspector's handling of string and optional annotations is tracked in
-issue #208.
 
 ### One filter, several spellings
 

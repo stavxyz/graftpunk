@@ -126,9 +126,12 @@ _PLUGINS_MODULE = "graftpunk.plugins"
 
 # The observed types an explicit PluginParamSpec entry carries, each with the
 # keywords its entry adds after the name. A stub with a parameter of one of these
-# gets an explicit params= list, the one route that keeps the type under the
-# generated module's future-annotations import. This is the compensation for
-# #208: remove it, and the params= emission, when #208 lands.
+# gets an explicit params= list. The introspector resolves string annotations
+# since #208, and it derives a bool's --x/--no-x and --x/--x-false spellings, so
+# for most stubs the list only repeats what it would find. The list stays because
+# it carries a list's "multiple", which introspection does not derive, and the
+# GP-FILL note when no negative is free, and because the generated module then
+# keeps its types on a graftpunk older than that fix.
 #
 # A bool option must be a flag or command_factory refuses the command at
 # registration. The stub's bool is a flag with a negative (--archived and
@@ -707,7 +710,7 @@ class _Declaration:
     """How a stub declares one query or body parameter: the handler annotation (without
     ``| None``), the ``PluginParamSpec.option`` keywords after the name, and whether
     it is a repeatable option. A bool's flag keywords depend on the other options of
-    the stub, so the stub adds them (see ``_bool_flag_kwargs``)."""
+    the stub, so the stub adds them (see ``_negatable_flag``)."""
 
     label: str
     annotation: str
@@ -717,7 +720,7 @@ class _Declaration:
     @property
     def needs_spec(self) -> bool:
         """Whether this parameter needs an explicit ``PluginParamSpec`` entry: a
-        typed scalar (#208) or a repeatable option."""
+        typed scalar (see ``_SPEC_TYPE_BY_OBSERVED``) or a repeatable option."""
         return self.multiple or self.label in _SPEC_TYPE_BY_OBSERVED
 
 

@@ -1,6 +1,6 @@
 {
   "name": "graftpunk",
   "description": "/graftpunk:graft walks the plugin developer guide: record the site, digest the recording, scaffold or extend the plugin, implement, harden, and publish",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {"name": "stavxyz"}
 }

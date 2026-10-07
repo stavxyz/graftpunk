@@ -38,7 +38,10 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import numbers
 import sys
+import types
+import typing
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -63,6 +66,162 @@ from graftpunk.session_scope import operating_session_for, resolve_load_target
 LOG = get_logger(__name__)
 
 SUPPORTED_API_VERSIONS: frozenset[int] = frozenset({1})
+
+
+# The annotation types an introspected option keeps; any other annotation falls
+# back to str.
+_OPTION_TYPES: tuple[type, ...] = (int, float, bool, str)
+
+
+def _handler_signature(method: Any) -> inspect.Signature:
+    """*method*'s signature, with no annotation able to stop it.
+
+    On Python 3.14 a module without the future import evaluates annotations
+    lazily, and a plain ``inspect.signature`` evaluates them all, so one name
+    imported only under ``TYPE_CHECKING`` would raise ``NameError`` from
+    ``get_commands`` and drop every command of the plugin. ``FORWARDREF``
+    evaluates every annotation it can, closure names included, and leaves an
+    unresolvable one as a ``ForwardRef``, which ``_option_type`` maps to ``str``.
+    """
+    if sys.version_info >= (3, 14):
+        import annotationlib
+
+        return inspect.signature(method, annotation_format=annotationlib.Format.FORWARDREF)
+    return inspect.signature(method)
+
+
+def _annotation_locals(method: Any) -> dict[str, Any]:
+    """The body of the class that defines *method*, for names an annotation takes
+    from it (``Local = int`` in the class, then ``n: Local``). Empty for a function
+    the class only holds a reference to, or one that is not a bound method."""
+    owner = getattr(method, "__self__", None)
+    func = getattr(method, "__func__", None)
+    name = getattr(func, "__name__", None)
+    if owner is None or func is None or name is None:
+        return {}
+    for cls in type(owner).__mro__:
+        attr = vars(cls).get(name)
+        if attr is not None and inspect.unwrap(getattr(attr, "__func__", attr)) is (
+            inspect.unwrap(func)
+        ):
+            return dict(vars(cls))
+    return {}
+
+
+def _resolve_annotation(annotation: Any, method: Any) -> Any:
+    """*annotation* evaluated, or ``None`` when it cannot be.
+
+    A string annotation (every annotation, under ``from __future__ import
+    annotations``) is evaluated in the module that defines *method*, with the
+    defining class's body as locals, as Python evaluates it without that import.
+    A quoted annotation under the import is a string inside a string, so a string
+    result is evaluated once more.
+    """
+    for _ in range(2):
+        if not isinstance(annotation, str):
+            return annotation
+        namespace = getattr(inspect.unwrap(method), "__globals__", {})
+        try:
+            annotation = eval(annotation, namespace, _annotation_locals(method))  # noqa: S307 -- the plugin's own annotation
+        except Exception as exc:  # noqa: BLE001 -- an unresolvable name keeps the str fallback
+            LOG.debug(
+                "introspected_annotation_unresolved",
+                handler=getattr(method, "__qualname__", repr(method)),
+                annotation=annotation,
+                error=repr(exc),
+            )
+            return None
+    return annotation
+
+
+def _unwrap_annotation(annotation: Any, method: Any) -> Any:
+    """*annotation* without its ``Annotated[...]`` metadata and its ``None`` member,
+    in any nesting: ``Optional[Annotated[int, ...]]`` and ``Annotated[int | None,
+    ...]`` both give ``int``. A quoted member (``Optional["int"]``), which typing
+    keeps as a ``ForwardRef``, is resolved as a string annotation would be. A
+    union of two or more types is returned whole, and an alias that refers back
+    to itself (``Node = Optional["Node"]``) gives ``None``."""
+    seen: set[str] = set()
+    while True:
+        if isinstance(annotation, typing.ForwardRef):
+            name = annotation.__forward_arg__
+            if name in seen:
+                return None
+            seen.add(name)
+            annotation = _resolve_annotation(name, method)
+            continue
+        if typing.get_origin(annotation) is typing.Annotated:
+            annotation = typing.get_args(annotation)[0]
+            continue
+        if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+            members = [a for a in typing.get_args(annotation) if a is not type(None)]
+            if len(members) == 1:
+                annotation = members[0]
+                continue
+        return annotation
+
+
+def _option_type(annotation: Any, method: Any, default: Any) -> type:
+    """The option type *annotation* names, or ``str`` when it names none.
+
+    A bare ``int``, ``float``, or ``str`` annotation object is kept as it is, as
+    it always was. Anything else, which used to give ``str``, is resolved on its
+    own (so a name that resolves only under ``TYPE_CHECKING`` costs that parameter
+    its type and no other), and keeps ``str`` when its default is one the type
+    cannot take (``n: int = "all"``): Click converts the default through the
+    option's type, and a command that ran with the ``str`` option would then fail
+    on every call without the option. A bare ``bool`` with a default that is not a
+    ``bool`` is kept too, so registration refuses it as it always has.
+    """
+    if any(annotation is t for t in (int, float, str)):
+        return annotation
+    if annotation is bool and not _flag_default(default):
+        return bool
+    annotation = _unwrap_annotation(_resolve_annotation(annotation, method), method)
+    if not any(annotation is t for t in _OPTION_TYPES):
+        return str
+    return annotation if _default_fits(annotation, default) else str
+
+
+def _default_fits(option_type: type, default: Any) -> bool:
+    """Whether an option of *option_type* can carry *default*.
+
+    ``None`` always fits. A ``bool`` option is a flag, so only a ``bool`` fits it.
+    Any value fits ``str``. For ``int`` and ``float``, a value fits when the type
+    converts it (``int("1")``, ``int(1.0)``, ``float(2)``), which is how Click
+    converts an ``int`` or ``float`` option's default, and a number fits only when
+    the conversion keeps its value (``int(1.5)`` is ``1``, so ``1.5`` does not
+    fit ``int``; a NaN keeps its value). Any error from the conversion or the
+    comparison (``int(float("inf"))`` overflows) means it does not fit."""
+    if default is None or option_type is str:
+        return True
+    if option_type is bool:
+        return _flag_default(default)
+    try:
+        converted = option_type(default)
+        if not isinstance(default, numbers.Number):
+            return True
+        # NaN equals nothing, itself included, yet converting it changes nothing.
+        return bool(converted == default) or bool(converted != converted and default != default)
+    except Exception:  # noqa: BLE001 -- whatever the conversion or comparison raises, it does not fit
+        return False
+
+
+def _flag_default(default: Any) -> bool:
+    """Whether a bool flag can carry *default*: absent (``None``) or a ``bool``."""
+    return default is None or isinstance(default, bool)
+
+
+def _option_flag(name: str) -> str:
+    """The flag an introspected option named *name* registers under."""
+    return f"--{name.replace('_', '-')}"
+
+
+def _bool_negatives(flag: str) -> tuple[str, str]:
+    """The negatives a bool *flag* can take, in the order the scaffold's stubs
+    try them: ``--no-x``, then ``--x-false``."""
+    positive = flag.removeprefix("--")
+    return f"--no-{positive}", f"--{positive}-false"
 
 
 @dataclass(frozen=True)
@@ -1106,27 +1265,42 @@ class SitePlugin:
             List of PluginParamSpec from the method's parameters.
         """
         params: list[PluginParamSpec] = []
-        sig = inspect.signature(method)
+        sig = _handler_signature(method)
+        flags = {_option_flag(name) for name in sig.parameters}
 
         for name, param in sig.parameters.items():
             # Skip self and ctx (injected by framework)
             if name in ("self", "ctx"):
                 continue
 
-            # Determine type (use actual type object, not string)
-            param_type: type = str
-            if param.annotation != inspect.Parameter.empty and param.annotation in (
-                int,
-                float,
-                bool,
-                str,
-            ):
-                param_type = param.annotation
-
             # Determine if required and default
-            has_default = param.default != inspect.Parameter.empty
+            has_default = param.default is not inspect.Parameter.empty
             default = param.default if has_default else None
             required = not has_default
+
+            param_type = _option_type(param.annotation, method, default)
+            click_kwargs: dict[str, Any] | None = None
+            # A bool option is a flag. PluginParamSpec.option makes the bare flag a
+            # False default needs; any other default needs a negative to reach
+            # every value the handler accepts.
+            # A bare bool with a default that is not a bool stays unflagged, so
+            # registration refuses it as it always has.
+            if param_type is bool and default is not False and _flag_default(default):
+                flag = _option_flag(name)
+                negatives = _bool_negatives(flag)
+                free = [n for n in negatives if n not in flags]
+                if free:
+                    click_kwargs = {"is_flag": True, "flag": f"{flag}/{free[0]}"}
+                else:
+                    LOG.warning(
+                        "introspected_bool_option_kept_as_str",
+                        handler=getattr(method, "__qualname__", repr(method)),
+                        option=flag,
+                        reason=f"{' and '.join(negatives)} are other options of the command",
+                        effect="the handler receives text, and any non-empty text is truthy",
+                        advice="declare params= on @command to spell the flag",
+                    )
+                    param_type = str
 
             params.append(
                 PluginParamSpec.option(
@@ -1134,6 +1308,7 @@ class SitePlugin:
                     type=param_type,
                     required=required,
                     default=default,
+                    click_kwargs=click_kwargs,
                 )
             )
 
