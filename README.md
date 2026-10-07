@@ -195,7 +195,7 @@ A plugin turns one site into a CLI command group. It declares where the site is,
 
 Plugins are discovered from three sources: Python packages registered on the `graftpunk.plugins` entry-point group, YAML files in `~/.config/graftpunk/plugins/` (`*.yaml`, `*.yml`), and Python files in the same directory (`*.py`). Two plugins sharing a `site_name` is an error naming both sources, never a silent shadowing. **[Writing a graftpunk plugin](docs/PLUGIN_DEVELOPMENT.md)** is the guide: naming, recording a site, reading the recording, scaffolding, implementing, login, secrets, and tests.
 
-In Claude Code, the `/graftpunk:graft` skill walks that guide with you and runs the `gp` commands itself; **[With the skill](docs/PLUGIN_DEVELOPMENT.md#with-the-skill)** says how to install and run it.
+In Claude Code, the `/graftpunk:graft` skill walks that guide with you and runs the `gp` commands itself; **[With the skill](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#with-the-skill)** says how to install and run it.
 
 ### YAML Plugin (Simple REST Calls)
 
