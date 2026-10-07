@@ -193,9 +193,9 @@ Sessions expire. graftpunk can keep them alive in the background with the keepal
 
 A plugin turns one site into a CLI command group. It declares where the site is, how to log in, and what each command fetches; graftpunk supplies the browser login, the cached session, the browser headers, tokens, retries, and output formatting. Write one in Python for anything with logic in it, or in YAML for plain REST calls. Both support declarative login, resource limits, and output formatting.
 
-Plugins are discovered from three sources: Python packages registered on the `graftpunk.plugins` entry-point group, YAML files in `~/.config/graftpunk/plugins/` (`*.yaml`, `*.yml`), and Python files in the same directory (`*.py`). Two plugins sharing a `site_name` is an error naming both sources, never a silent shadowing. **[Writing a graftpunk plugin](docs/PLUGIN_DEVELOPMENT.md)** is the guide: naming, recording a site, reading the recording, scaffolding, implementing, login, secrets, and tests.
+Plugins are discovered from three sources: Python packages registered on the `graftpunk.plugins` entry-point group, YAML files in `~/.config/graftpunk/plugins/` (`*.yaml`, `*.yml`), and Python files in the same directory (`*.py`). Two plugins sharing a `site_name` is an error naming both sources, never a silent shadowing. **[Writing a graftpunk plugin](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md)** is the guide: naming, recording a site, reading the recording, scaffolding, implementing, login, secrets, and tests.
 
-In Claude Code, the `/graftpunk:graft` skill walks that guide with you and runs the `gp` commands itself; **[With the skill](docs/PLUGIN_DEVELOPMENT.md#with-the-skill)** says how to install and run it.
+In Claude Code, the `/graftpunk:graft` skill walks that guide with you and runs the `gp` commands itself; **[With the skill](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#with-the-skill)** says how to install and run it.
 
 ### YAML Plugin (Simple REST Calls)
 
@@ -383,10 +383,10 @@ the stubs and test them against fixtures. A first capture has no cached session
 to name, so it runs `--no-session` and is filed under the name graftpunk infers
 from the host, which `gp observe list` prints (`<name>` below). Each step, with
 the options and the rules, is in
-[Writing a graftpunk plugin](docs/PLUGIN_DEVELOPMENT.md):
-[Capture](docs/PLUGIN_DEVELOPMENT.md#capture),
-[Understand](docs/PLUGIN_DEVELOPMENT.md#understand), and
-[Scaffold](docs/PLUGIN_DEVELOPMENT.md#scaffold).
+[Writing a graftpunk plugin](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md):
+[Capture](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#capture),
+[Understand](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#understand), and
+[Scaffold](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#scaffold).
 
 ```bash
 gp observe --no-session interactive https://secure.mybank.example.com/dashboard
@@ -396,13 +396,13 @@ gp plugin new mybank --from-run <name>
 
 `--command "NAME=METHOD template"`, repeatable, scaffolds only the endpoints you
 name, under your names ([Choose the commands
-yourself](docs/PLUGIN_DEVELOPMENT.md#choose-the-commands-yourself)).
+yourself](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#choose-the-commands-yourself)).
 
 The generated tests read fixtures. Write the recorded bodies out as captures,
 which land in the project's git-ignored `tests/captures/`, then copy each one
 into `tests/fixtures/` with its sidecar and replace every value with an
 invented one
-([Deriving a fixture from a capture](docs/PLUGIN_DEVELOPMENT.md#deriving-a-fixture-from-a-capture)):
+([Deriving a fixture from a capture](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#deriving-a-fixture-from-a-capture)):
 
 ```bash
 gp observe fixtures <name> --match "GET /api/accounts"
@@ -410,7 +410,7 @@ gp observe fixtures <name> --match "GET /api/accounts"
 
 Install the project with its `dev` extra, which brings pytest and ruff, then
 run the project's gate before every commit
-([The gate](docs/PLUGIN_DEVELOPMENT.md#the-gate)):
+([The gate](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#the-gate)):
 
 ```bash
 pip install -e ".[dev]"
@@ -423,11 +423,11 @@ gp plugin check
 To keep the project current, `gp plugin upgrade` adds the wiring a newer
 graftpunk expects, and `gp plugin add-command` adds one command from a later
 recording ([Add a command to an existing
-plugin](docs/PLUGIN_DEVELOPMENT.md#add-a-command-to-an-existing-plugin)). When
+plugin](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#add-a-command-to-an-existing-plugin)). When
 the project's plain `graftpunk>=` bound is below the `major.minor.0` of the
 graftpunk you run them with, each one that writes something raises the bound to
 that release and tells you to reinstall the project; [The
-gate](docs/PLUGIN_DEVELOPMENT.md#the-gate) covers every other form of the
+gate](https://github.com/stavxyz/graftpunk/blob/main/docs/PLUGIN_DEVELOPMENT.md#the-gate) covers every other form of the
 requirement.
 
 ```bash
@@ -525,7 +525,7 @@ just check    # Run lint, typecheck, tests
 just build    # Build for PyPI
 ```
 
-Requires [uv](https://docs.astral.sh/uv/) for development. See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
+Requires [uv](https://docs.astral.sh/uv/) for development. See [CONTRIBUTING.md](https://github.com/stavxyz/graftpunk/blob/main/CONTRIBUTING.md) for full guidelines.
 
 ### Releasing
 
@@ -537,7 +537,7 @@ just bump X.Y.Z   # opens a version-bump PR (pyproject, uv.lock, CHANGELOG)
 just release      # validates, tags vX.Y.Z, and pushes the tag
 ```
 
-Pushing the tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which runs the tests, builds the sdist/wheel, publishes to PyPI via OIDC, and creates the GitHub release. Because build + publish run in CI on a pinned Python, releasing no longer depends on your local interpreter or any local credentials.
+Pushing the tag triggers [`.github/workflows/release.yml`](https://github.com/stavxyz/graftpunk/blob/main/.github/workflows/release.yml), which runs the tests, builds the sdist/wheel, publishes to PyPI via OIDC, and creates the GitHub release. Because build + publish run in CI on a pinned Python, releasing no longer depends on your local interpreter or any local credentials.
 
 To (re)publish a tag that was cut before this workflow existed, or to retry a failed publish, run the workflow manually (**Actions → Release → Run workflow**) with the tag (e.g. `v1.9.0`).
 
@@ -545,7 +545,7 @@ To (re)publish a tag that was cut before this workflow existed, or to retry a fa
 
 ## License
 
-MIT License—see [LICENSE](LICENSE).
+MIT License. See [LICENSE](https://github.com/stavxyz/graftpunk/blob/main/LICENSE).
 
 ## Acknowledgments
 
