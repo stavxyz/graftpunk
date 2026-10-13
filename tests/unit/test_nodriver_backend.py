@@ -2591,6 +2591,60 @@ class TestNoDriverBackendEndingChromeWithoutItsLoop:
         assert [str(u.exc_value) for u in unraisable] == []
         assert not profile.exists()
 
+    def test_a_stop_through_the_loop_closes_the_transport_so_exit_prints_no_noise(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loop has reaped Chrome by then, so closing its transport cannot steal the status.
+
+        Chrome's helper processes hold its stdout and stderr open after it
+        exits, so its transport is not finished when the stop reaps it, and
+        an open transport collected after its loop closed prints "Exception
+        ignored in BaseSubprocessTransport.__del__". The stand-in has exited
+        and a grandchild holds its pipes.
+        """
+        import gc
+        import sys
+
+        unraisable: list[Any] = []
+        monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+        profile = temp_profiles / "uc_loop_stop"
+        profile.mkdir()
+
+        class _StoppableBrowser(_Browser):
+            def stop(self) -> None:
+                """Chrome has already exited."""
+
+        helper = "import time; time.sleep(1)"
+        chrome = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {helper!r}])"
+
+        async def spawn_then_stop() -> asyncio.subprocess.Process:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                chrome,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            while process.returncode is None:
+                await asyncio.sleep(0.01)
+            backend = NoDriverBackend()
+            backend._browser = _StoppableBrowser(
+                process, SimpleNamespace(uses_custom_data_dir=False, user_data_dir=str(profile))
+            )
+            await backend._stop_async()
+            return process
+
+        process = asyncio.run(spawn_then_stop())
+
+        # Something still holds an open one until interpreter exit, which is
+        # when it would print; closed, its collection has nothing to do.
+        assert process._transport.is_closing() is True  # type: ignore[attr-defined]
+        del process
+        gc.collect()
+        assert [str(u.exc_value) for u in unraisable] == []
+        assert not profile.exists()
+
     @pytest.mark.skipif(
         not hasattr(os, "waitid"),
         reason="CPython has no os.waitid on macOS, where asyncio reaps from a thread",

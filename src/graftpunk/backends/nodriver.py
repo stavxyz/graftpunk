@@ -311,17 +311,23 @@ def _close_transport(proc: Any) -> None:
     BaseSubprocessTransport.__del__ ... Event loop is closed``. Closing it here
     marks it closed first: on a closed loop the close itself fails, quietly.
 
-    A transport whose loop is still running is left alone: its close calls
-    ``Popen.poll()``, which reaps an exited Chrome before that loop's child
-    watcher can, and the watcher then logs "exit status already read" at
-    warning level. The running loop finishes the transport once it sees the
-    exit.
+    A transport whose loop is still running and has not collected Chrome's
+    exit status is left alone: its close calls ``Popen.poll()``, which reaps
+    an exited Chrome before that loop's child watcher can, and the watcher
+    then logs "exit status already read" at warning level. The running loop
+    finishes the transport once it sees the exit. Once the status is
+    collected the close does not poll, so it goes ahead, as it must: Chrome's
+    helper processes can hold its pipes open past the loop's end.
     """
     transport = getattr(proc, "_transport", None)
     if transport is None:
         return
     loop = getattr(transport, "_loop", None)
-    if isinstance(loop, asyncio.AbstractEventLoop) and loop.is_running():
+    if (
+        isinstance(loop, asyncio.AbstractEventLoop)
+        and loop.is_running()
+        and not _already_reaped(proc)
+    ):
         return
     try:
         transport.close()
