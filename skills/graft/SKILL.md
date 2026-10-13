@@ -47,11 +47,16 @@ the mode: `empty` is create mode, `plugin` is enhance mode. For `foreign`, stop
 and say: "this directory holds a project that is not a graftpunk plugin; run the
 skill in an empty directory or in the plugin's project".
 
-Your first message after preflight offers the allow rules under "Allow rules
-for a prompt-free run" in `references/commands.md` that hold no `<site-name>`,
-and says that the user can add them to this project's settings with
-`/permissions` for a run without prompts. Say that the skill works either way:
-without the rules, each command asks first. Offer the rules that hold
+Your first message after preflight offers the allow rules under "Allow rules for
+a prompt-free run" in `references/commands.md` that hold no `<site-name>`, and
+says that the user can add them to this project's settings with `/permissions`
+so no `gp` command and no leak check in the harden step asks first; the gate's
+other commands ask, and so does writing a file unless the user accepts edits for
+the session. Offer the leak check's rule with this skill's directory,
+`${CLAUDE_SKILL_DIR}`, in place of the variable: that path names this version of
+the skill, so the rule belongs in the project's local settings, which are not
+committed, and is offered again after an update. Say that the skill works either
+way: without the rules, each command asks first. Offer the rules that hold
 `<site-name>` once the plugin's name is fixed, with that name in its place: in
 create mode at the end of the frame step, since the name `gp plugin new` takes
 becomes the plugin's `site_name`; in enhance mode once the plugin is chosen,
@@ -74,10 +79,16 @@ by number: "Step: scaffold. Done: ...; next: ...". Ask one question at a time.
 When a `gp` command fails, show its output verbatim, find the cause in the guide
 section the step cites, fix it, and run the step again once. If it fails again,
 show that output too and stop for the user. Never skip a step, and never
-summarise a failure away. Read a reference only at the step that names it. Never
-fetch a page of the site yourself, at any step: what the site shows comes from
-the user, read off it in their own browser, or from the live calls they agree to
-at the kick-the-tires step.
+summarise a failure away. Run each command as `references/commands.md` spells
+it, its placeholders filled and an argument a reference says to leave off left
+off, one per Bash call, with nothing chained to it (no `;`, `&&`, pipe,
+loop, or `echo`), since an allow rule matches only the command as written; the
+tool result carries the exit status. Run no command the references do not
+declare, a look-around such as `command -v gp` included, and read and write
+files with the file tools. Read a reference only at the step that names it.
+Never fetch a page of the site yourself, at any step: what the site shows comes
+from the user, read off it in their own browser, or from the live calls they
+agree to at the kick-the-tires step.
 
 ## The steps
 

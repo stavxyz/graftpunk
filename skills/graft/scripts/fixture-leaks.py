@@ -18,7 +18,11 @@ surrogate pair, ``\\/``), and its percent-encoding decoded (``%40``). A piece wi
 space, a digit, or an ``@`` matches in any case; a single word matches as written,
 in capitals, or in lower case inside an identifier or an address
 (``test_okonkwo_order``, ``okonkwo@example.com``). FIXTURE can be any text file, so
-a plugin module or a test module is checked the same way.
+a plugin module or a test module is checked the same way. In the provenance phrase
+gp writes into a generated stub's docstring (``seen 2 time(s) in run <session>/<run
+id>.``), the date and time that start the run id are blanked first, since they are
+gp's and not captured data; the rest of the phrase is still searched. A captured
+digit run written by hand into those 14 digits is therefore not caught.
 
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
 capitalised word copied in lower case on its own, a number reformatted (``12345`` as
@@ -29,10 +33,14 @@ takes tens of seconds.
 A string the command branches or selects on (a status, a currency code, a class
 name) may be kept on purpose; the skill decides, so this reports and never edits.
 With SIDECAR, it also prints the names the sidecar lists, since a sidecar is
-committed and the guide asks for both lists to be read.
+committed and the guide asks for both lists to be read, and compares SIDECAR, as
+parsed JSON, with the sidecar gp wrote beside CAPTURE (``CAPTURE.meta.json``),
+naming each key that differs: the skill writes that text with the Write tool, and
+a slip in it would quietly weaken the suite's checks.
 
-Exit 0 when nothing survived, 1 when something did, 2 on a usage or read error (a
-capture that is not UTF-8 text, such as a PDF, cannot be compared).
+Exit 0 when nothing survived and the sidecar matches, 1 when something survived or
+the sidecar differs, 2 on a usage or read error (a capture that is not UTF-8 text,
+such as a PDF, cannot be compared; nor can gp's sidecar when it is not JSON).
 Standard library only, so it runs under any Python 3.9 or later.
 """
 
@@ -58,6 +66,45 @@ _MIN_LENGTH = 3
 # character outside the Basic Multilingual Plane.
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
+# The provenance phrase gp writes into a generated stub's docstring ("seen 2 time(s)
+# in run myshop/20261006-101500-4242."), wrapped at any space. Its run id starts
+# with the run's date and time, gp's and not captured data, yet the year matches any
+# captured date, so those 14 digits are blanked in place and every other character,
+# the count, the session, and the process id included, stays where it was for the
+# search. A label too long for its line is cut mid-word, and the wrap can leave its
+# closing period alone on the next line, so a candidate may span lines; it is
+# blanked only when, with those breaks taken out, it is the session name given to
+# `--from-run` and a run id `make_run_id` writes (a real date and time, then the
+# process id). A session name with a dot or a space is left alone, and its year
+# reported. A captured digit run written by hand into the 14 digits is not caught.
+_PROVENANCE = re.compile(
+    r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+([A-Za-z0-9@_/-]+(?:\n[ \t]*[A-Za-z0-9@_/-]*)*)\."
+)
+_RUN_LABEL = re.compile(
+    r"[A-Za-z0-9@_-]+/"
+    r"(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])-"
+    r"(?:[01]\d|2[0-3])[0-5]\d[0-5]\d-\d+"
+)
+_DATE_TIME_DIGITS = 14
+
+
+def _without_provenance(text: str) -> str:
+    """*text* with the date and time of each of gp's run ids blanked in place."""
+
+    def blank(match: re.Match[str]) -> str:
+        label = match.group(1)
+        if _RUN_LABEL.fullmatch(re.sub(r"\n[ \t]*", "", label)) is None:
+            return match.group(0)
+        chars = list(label)
+        left = _DATE_TIME_DIGITS
+        for i in range(label.index("/") + 1, len(chars)):
+            if left and chars[i].isdigit():
+                chars[i] = " "
+                left -= 1
+        head = match.group(0)[: match.start(1) - match.start(0)]
+        return head + "".join(chars) + "."
+
+    return _PROVENANCE.sub(blank, text)
 
 
 class _TextParts(HTMLParser):
@@ -197,26 +244,58 @@ def main(argv: list[str]) -> int:
     if len(argv) not in (3, 4):
         print("usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]", file=sys.stderr)
         return 2
+    role, path = "capture", argv[1]
     try:
-        capture = Path(argv[1]).read_text(encoding="utf-8")
-        fixture = Path(argv[2]).read_text(encoding="utf-8")
-        sidecar = json.loads(Path(argv[3]).read_text(encoding="utf-8")) if len(argv) == 4 else None
+        capture = Path(path).read_text(encoding="utf-8")
+        role, path = "fixture", argv[2]
+        fixture = Path(path).read_text(encoding="utf-8")
+        role, path = "sidecar", argv[3] if len(argv) == 4 else ""
+        sidecar = json.loads(Path(path).read_text(encoding="utf-8")) if len(argv) == 4 else None
     except (OSError, ValueError) as exc:
-        print(f"fixture-leaks: cannot read the inputs: {exc}", file=sys.stderr)
+        print(f"fixture-leaks: cannot read the {role} {path}: {exc}", file=sys.stderr)
         return 2
     if sidecar is not None and not isinstance(sidecar, dict):
-        print("fixture-leaks: the sidecar is not a JSON object.", file=sys.stderr)
+        print(f"fixture-leaks: the sidecar {argv[3]} is not a JSON object.", file=sys.stderr)
         return 2
-    left = survivors(capture, fixture)
+    differs = _keys_differing_from_gps(Path(argv[1]), sidecar) if sidecar is not None else []
+    if differs is None:
+        return 2
+    left = survivors(capture, _without_provenance(fixture))
     for value in left:
         print(f"still in the fixture: {value!r}")
+    if differs:
+        print(
+            f"the sidecar differs from the capture's in {', '.join(differs)}: "
+            "write the capture's sidecar text unchanged"
+        )
     if sidecar is not None:
         for key in ("body_params", "flagged_names"):
             names = sidecar.get(key) or []
             print(f"sidecar {key}: {', '.join(map(str, names)) if names else '(none)'}")
     if not left:
         print("fixture-leaks: no captured value is left in the fixture.")
-    return 1 if left else 0
+    return 1 if left or differs else 0
+
+
+def _keys_differing_from_gps(capture: Path, sidecar: dict) -> list[str] | None:
+    """The keys in which *sidecar* differs from the sidecar gp wrote beside
+    *capture*, compared as parsed JSON since the suite reads it that way. A
+    mistyped ``capture_sha256`` would silently switch off the suite's
+    unchanged-copy check, and a dropped flagged name its name check. Empty when no
+    gp sidecar sits beside *capture*; None, after saying why, when it cannot be
+    read as a JSON object."""
+    own = capture.with_name(capture.name + ".meta.json")
+    if not own.exists():
+        return []
+    try:
+        theirs = json.loads(own.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"fixture-leaks: cannot read the capture's sidecar {own}: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(theirs, dict):
+        print(f"fixture-leaks: the capture's sidecar {own} is not a JSON object.", file=sys.stderr)
+        return None
+    return sorted(k for k in theirs.keys() | sidecar.keys() if theirs.get(k) != sidecar.get(k))
 
 
 if __name__ == "__main__":

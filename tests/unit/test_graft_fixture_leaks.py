@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from graftpunk.devtools.scaffold.pysrc import wrapped_docstring_lines
 from tests.unit.guide_harness import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
@@ -103,6 +104,192 @@ def test_nothing_left_exits_0(tmp_path: Path) -> None:
     result = _run(tmp_path, json.dumps({"name": "Alice Example"}), json.dumps({"name": "Pat"}))
     assert result.returncode == 0
     assert "no captured value is left" in result.stdout
+
+
+_DATED_CAPTURE = json.dumps({"orders": [{"placed": "2026-09-30", "status": "shipped"}]})
+
+
+def _stub_module(template: str, body: str = "return ctx", session: str = "myshop") -> str:
+    """A plugin module whose stub docstring carries gp's provenance line, rendered
+    and wrapped the way the generator writes it."""
+    summary = f"GET {template}: seen 2 time(s) in run {session}/20261006-101500-4242."
+    docstring = "\n".join(wrapped_docstring_lines(summary))
+    return (
+        f'class MyshopPlugin:\n    def orders(ctx):\n        """\n{docstring}\n'
+        f'        """\n        {body}\n'
+    )
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["/api/orders", "/api/accounts/{account_id}/orders/{order_id}/invoices/{invoice_id}/lines"],
+    ids=["one-line", "wrapped"],
+)
+def test_the_run_id_in_gps_provenance_line_is_not_a_leak(tmp_path: Path, template: str) -> None:
+    """The run id's year matches a captured date, but the run id is gp's, not the
+    account's."""
+    result = _run(tmp_path, _DATED_CAPTURE, _stub_module(template))
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_run_label_cut_mid_word_by_the_wrap_is_still_gps(tmp_path: Path) -> None:
+    """A session name has no length limit, and the docstring wrap cuts a label longer
+    than its line mid-word; the label still ends at its own period."""
+    module = _stub_module("/api/orders", session="shop" * 25)
+    assert any(line.strip().endswith("shop") for line in module.splitlines()), module
+    result = _run(tmp_path, _DATED_CAPTURE, module)
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_closing_period_the_wrap_left_alone_still_ends_the_label(tmp_path: Path) -> None:
+    module = _stub_module("/a", session="s" * 131)
+    assert any(line.strip() == "." for line in module.splitlines()), module
+    result = _run(tmp_path, _DATED_CAPTURE, module)
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    ("next_line", "reported"),
+    [
+        ("ACCT_4471023.", "4471023"),
+        ("acct_4471023.", "4471023"),
+        ("4471023.", "4471023"),
+        ("see\n4471023.", "4471023"),
+        ("023.", "023"),
+    ],
+)
+def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
+    tmp_path: Path, next_line: str, reported: str
+) -> None:
+    """A hand edit that drops the label's period must not let the phrase swallow what
+    follows: only the run id's date and time are blanked, so an account value
+    there, even one short enough to join the process id, is still reported."""
+    capture = json.dumps({"account": "ACCT_4471023", "code": "023"})
+    module = f"# seen 2 time(s) in run myshop/20261006-101500-4242\n{next_line}\n"
+    result = _run(tmp_path, capture, module)
+    assert result.returncode == 1
+    assert reported in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("capture_value", "phrase"),
+    [
+        pytest.param(
+            "acct-4471023",
+            "seen 2 time(s) in run acct-4471023/20261006-101500-4242.",
+            id="session-slot",
+        ),
+        pytest.param(
+            "4471023", "seen 4471023 time(s) in run myshop/20261006-101500-4242.", id="count-slot"
+        ),
+        pytest.param(
+            "4471023", "seen 2 time(s) in run myshop/20261006-101500-\n4471023.", id="split-pid"
+        ),
+        pytest.param(
+            "ORD-99887766", "seen 2 time(s) in run myshop/99887766-101500-4242.", id="not-a-date"
+        ),
+    ],
+)
+def test_a_captured_value_shaped_into_a_provenance_phrase_is_still_a_leak(
+    tmp_path: Path, capture_value: str, phrase: str
+) -> None:
+    """Only the run id's date and time are blanked: the count, the session, and the
+    process id are still searched, and a label whose date is not a date is left
+    alone."""
+    result = _run(tmp_path, json.dumps({"a": capture_value}), f"# {phrase}\n")
+    assert result.returncode == 1, result.stdout
+
+
+def test_blanking_adds_no_text_the_module_never_held(tmp_path: Path) -> None:
+    """The date and time are blanked in place, so no pair of words is made up from the
+    phrase's parts: a captured "2 myshop" is not reported for an unedited phrase."""
+    result = _run(tmp_path, json.dumps({"a": "2 myshop"}), _stub_module("/api/orders"))
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_session_given_in_capitals_is_still_gps(tmp_path: Path) -> None:
+    """The label is the session name as typed to --from-run, which gp accepts in any case."""
+    result = _run(tmp_path, _DATED_CAPTURE, _stub_module("/api/orders", session="MyShop"))
+    assert result.returncode == 0, result.stdout
+
+
+def test_an_unreadable_fixture_is_named(tmp_path: Path) -> None:
+    (tmp_path / "capture.json").write_text("{}")
+    missing = tmp_path / "plugin.py"
+    assert PYTHON is not None
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [PYTHON, "-I", str(SCRIPT), str(tmp_path / "capture.json"), str(missing)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert f"fixture-leaks: cannot read the fixture {missing}:" in result.stderr
+
+
+def test_a_digit_run_written_into_the_blanked_slot_is_the_documented_blind_spot(
+    tmp_path: Path,
+) -> None:
+    """The run id's date and time are blanked, so a captured digit run written by hand
+    into those 14 digits is not caught, as the script's docstring says. Pinned so a
+    change that widens or narrows the blind spot is seen."""
+    module = "# seen 2 time(s) in run myshop/20261006-101500-9999.\n"
+    result = _run(tmp_path, json.dumps({"t": "101500"}), module)
+    assert result.returncode == 0, result.stdout
+
+
+_GP_SIDECAR = {"capture_sha256": "a" * 64, "flagged_names": ["session_id"]}
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        pytest.param({**_GP_SIDECAR, "capture_sha256": "b" + "a" * 63}, id="mistyped-hash"),
+        pytest.param({**_GP_SIDECAR, "flagged_names": []}, id="dropped-name"),
+        pytest.param({"capture_sha256": _GP_SIDECAR["capture_sha256"]}, id="missing-key"),
+        pytest.param({**_GP_SIDECAR, "extra": 1}, id="extra-key"),
+    ],
+)
+def test_a_sidecar_that_differs_from_gps_is_reported(tmp_path: Path, written: dict) -> None:
+    """The skill writes the sidecar's text with the Write tool; a mistyped hash would
+    switch off the suite's unchanged-copy check, a dropped name its name check."""
+    (tmp_path / "capture.json.meta.json").write_text(json.dumps(_GP_SIDECAR))
+    result = _run(tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}), written)
+    assert result.returncode == 1
+    assert "the sidecar differs from the capture's in" in result.stdout
+    changed = sorted(
+        k for k in written.keys() | _GP_SIDECAR.keys() if written.get(k) != _GP_SIDECAR.get(k)
+    )
+    assert f"differs from the capture's in {', '.join(changed)}:" in result.stdout
+
+
+def test_a_run_without_a_sidecar_ignores_gps(tmp_path: Path) -> None:
+    """The plugin-module and test-module runs pass no sidecar: nothing to compare."""
+    (tmp_path / "capture.json.meta.json").write_text(json.dumps(_GP_SIDECAR))
+    result = _run(tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}))
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("text", ["not json", "[1, 2]"], ids=["not-json", "not-object"])
+def test_an_unreadable_gp_sidecar_exits_2(tmp_path: Path, text: str) -> None:
+    (tmp_path / "capture.json.meta.json").write_text(text)
+    result = _run(
+        tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}), _GP_SIDECAR
+    )
+    assert result.returncode == 2
+    assert "the capture's sidecar" in result.stderr
+
+
+def test_a_sidecar_equal_to_gps_as_json_passes(tmp_path: Path) -> None:
+    (tmp_path / "capture.json.meta.json").write_text(json.dumps(_GP_SIDECAR, indent=2))
+    reordered = dict(reversed(list(_GP_SIDECAR.items())))
+    result = _run(tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}), reordered)
+    assert result.returncode == 0, result.stdout
+
+
+def test_the_same_digits_elsewhere_in_the_module_are_still_a_leak(tmp_path: Path) -> None:
+    result = _run(tmp_path, _DATED_CAPTURE, _stub_module("/api/orders", 'since = "2026"'))
+    assert result.returncode == 1
+    assert "'2026'" in result.stdout
 
 
 def test_an_html_capture_checks_text_and_attribute_values(tmp_path: Path) -> None:
@@ -301,6 +488,33 @@ def test_an_unreadable_input_exits_2(tmp_path: Path) -> None:
     assert "cannot read" in result.stderr
 
 
+def test_a_sidecar_written_as_bad_json_names_the_sidecar(tmp_path: Path) -> None:
+    """harden.md's exit-2 case for a sidecar the skill wrote: the slip is named, so the
+    skill writes that file again rather than treating the capture as unreadable."""
+    (tmp_path / "capture.json").write_text("{}")
+    (tmp_path / "fixture.json").write_text("{}")
+    (tmp_path / "fixture.json.meta.json").write_text("{not json")
+    assert PYTHON is not None
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [
+            PYTHON,
+            "-I",
+            str(SCRIPT),
+            *(
+                str(tmp_path / n)
+                for n in ("capture.json", "fixture.json", "fixture.json.meta.json")
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert (
+        f"fixture-leaks: cannot read the sidecar {tmp_path / 'fixture.json.meta.json'}:"
+        in result.stderr
+    )
+
+
 def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
     """harden.md's exit-2 case: a PDF capture is compared with nothing, and says so."""
     capture = tmp_path / "invoice.pdf"
@@ -314,5 +528,5 @@ def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 2
-    assert "fixture-leaks: cannot read the inputs:" in result.stderr
+    assert f"fixture-leaks: cannot read the capture {capture}:" in result.stderr
     assert result.stdout == ""

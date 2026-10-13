@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.2 and needs graftpunk 1.19.0 or later**, since its guide describes the option types 1.19.0 gives a command. With the offered allow rules added, no `gp` command and no leak check in its harden step asks first (#230); the gate's `pytest` and `ruff` runs still ask, by design, and so does a file write unless you accept edits for the session. It writes each fixture and sidecar with the file tools instead of `cp`, which Claude Code refuses for a capture name holding braces (every endpoint with a path parameter has one), the leak check now reports a sidecar that differs from the one gp wrote, naming the keys, the skill offers an allow rule for that read-only check (its path names the skill's version, so it goes in local settings and is offered again after an update), and it runs each declared command alone in its own Bash call. The leak check no longer reports the year in the run id that `gp plugin new --from-run` and `gp plugin add-command` write into each stub's docstring (#231).
+
 ## [1.19.0] - 2026-10-07
 
 This is a minor release. A command's options now keep the types its handler annotates, which the future import (`from __future__ import annotations`, at the top of the plugin module `gp plugin new` writes) and the `X | None` spelling had lost. It ships in a minor rather than a patch release because it refuses some command-line calls that 1.18.0 accepted (Upgrading, item 1). The repository also becomes a Claude Code plugin marketplace serving the `/graftpunk:graft` skill, which nothing installs unless you add the marketplace and install the plugin.
