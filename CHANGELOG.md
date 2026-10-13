@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Python 3.14 is tested in CI, and the package lists Python 3.13 and 3.14 among its classifiers** (#233). graftpunk already installed on 3.14 (`requires-python = ">=3.11"`), but CI never ran it. The full suite passes on 3.14.6 with the `nodriver` a fresh install resolves (0.50.6). The lock had pinned 0.48.1, whose `nodriver/cdp/network.py` holds a byte that is not UTF-8, which Python 3.14 refuses to compile, so the lock now carries 0.50.6 and CI tests the version a consumer gets. `gp <site> login` now checks for an async login method with `inspect.iscoroutinefunction`, since `asyncio.iscoroutinefunction` is deprecated in 3.14 and removed in 3.16.
+- **Python 3.14 is tested in CI, and the package lists Python 3.13 and 3.14 among its classifiers** (#233). graftpunk already installed on 3.14 (`requires-python = ">=3.11"`), but CI never ran it. The full suite passes on 3.14.6 with the `nodriver` a fresh install resolves (0.50.6). nodriver before 0.50.6 ships `nodriver/cdp/network.py` with a byte that is not UTF-8, which Python 3.14 refuses to compile, so on 3.14 the `browser` extra now requires `nodriver>=0.50.6` (the floor stays 0.48 below 3.14), and the lock carries 0.50.6 so CI tests the version a consumer gets.
+
+### Fixed
+
+- **A request body captured with nodriver 0.50 is recorded as text.** nodriver 0.50 returns `Network.getRequestPostData` as the pair `(postData, base64Encoded)` where 0.48 returned the string, and `gp observe` wrote the pair itself into the HAR's `request.postData.text`; it now writes the text, base64-decoded when the flag is set. A fresh install already resolves nodriver 0.50.
+- **`gp <site> login` awaits an async login whatever its shape.** It ran a login as async only when `asyncio.iscoroutinefunction` said so, so a sync wrapper around an async login, or an object with an async `__call__`, returned an unawaited coroutine and the command printed that it had logged in. It now runs any coroutine the login returns. This also drops `asyncio.iscoroutinefunction`, deprecated in Python 3.14 and scheduled for removal in 3.16.
 
 ### Changed
 
