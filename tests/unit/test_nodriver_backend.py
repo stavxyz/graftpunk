@@ -2889,6 +2889,43 @@ class TestNoDriverBackendInterruptedLifecycle:
         assert len(fake_chrome.browsers) == 1
         backend.stop()
 
+    def test_start_async_after_a_sync_start_keeps_the_running_browser(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        from graftpunk.session import BrowserSession
+
+        backend = NoDriverBackend()
+        backend.start()
+        private = backend._private_loop
+        session = SimpleNamespace(_backend_type="nodriver", _backend_instance=backend)
+
+        asyncio.run(BrowserSession.start_async(session))  # type: ignore[arg-type]
+
+        assert len(fake_chrome.browsers) == 1
+        assert backend._private_loop is private
+        backend.navigate("https://example.com/")
+        assert backend.current_url == "https://example.com/"
+        assert fake_chrome.misuse == []
+        backend.stop()
+        assert fake_chrome.browsers[0].stopped_on is not None
+
+    def test_start_async_twice_launches_one_browser(self, fake_chrome: FakeChrome) -> None:
+        """await session.start_async() and then 'async with session:' start twice."""
+        from graftpunk.session import BrowserSession
+
+        backend = NoDriverBackend()
+        session = SimpleNamespace(_backend_type="nodriver", _backend_instance=backend)
+
+        async def start_twice_then_stop() -> None:
+            await BrowserSession.start_async(session)  # type: ignore[arg-type]
+            await BrowserSession.start_async(session)  # type: ignore[arg-type]
+            await backend.stop_async()
+
+        asyncio.run(start_twice_then_stop())
+
+        assert len(fake_chrome.browsers) == 1
+        assert fake_chrome.browsers[0].stopped_on is not None
+
     def test_a_start_async_releases_an_old_private_loop_off_the_callers_loop(
         self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
     ) -> None:

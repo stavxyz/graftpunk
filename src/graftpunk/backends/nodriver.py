@@ -865,7 +865,14 @@ class NoDriverBackend:
         sometimes isn't enough (Gatekeeper checks, system load, etc.), so we
         retry the entire ``uc.start()`` call up to *_max_attempts* times with
         a short back-off between attempts.
+
+        A no-op when the backend is already started, wherever its loop is:
+        launching again would orphan the running Chrome, and releasing its
+        loop would strand it.
         """
+        if self._started and self._browser is not None:
+            LOG.debug("nodriver_backend_already_started")
+            return
         try:
             import nodriver as uc
         except ImportError as exc:
