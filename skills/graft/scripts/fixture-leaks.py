@@ -67,11 +67,25 @@ _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", r
 # The provenance phrase gp writes into a generated stub's docstring ("seen 2 time(s)
 # in run myshop/20261006-101500-4242."), wrapped at any space. The run id is gp's,
 # not captured data, yet its year matches any captured date, so it is left out.
-# The label holds only a session name's characters, a slash, and the run id's
-# digits and hyphens; a label too long for its line is cut mid-word, and the wrap
-# can leave its closing period alone on the next line.
-_LABEL = r"[a-z0-9@_/-]"
-_PROVENANCE = re.compile(rf"seen\s+\d+\s+time\(s\)\s+in\s+run\s+{_LABEL}+(?:\n[ \t]*{_LABEL}*)*\.")
+# A label too long for its line is cut mid-word, and the wrap can leave its closing
+# period alone on the next line, so a candidate may span lines; it is left out only
+# when, with those breaks taken out, it is a session as `gp observe list` names it
+# and a run id (`make_run_id`: date, time, pid), so nothing else can be swallowed.
+_PROVENANCE = re.compile(
+    r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+([a-z0-9@_/-]+(?:\n[ \t]*[a-z0-9@_/-]*)*)\."
+)
+# A process id has at most seven digits (Linux caps it at 4194304).
+_RUN_LABEL = re.compile(r"[a-z0-9@_-]+/\d{8}-\d{6}-\d{1,7}")
+
+
+def _without_provenance(text: str) -> str:
+    """*text* with each of gp's provenance phrases replaced by a space."""
+
+    def drop(match: re.Match[str]) -> str:
+        label = re.sub(r"\n[ \t]*", "", match.group(1))
+        return " " if _RUN_LABEL.fullmatch(label) else match.group(0)
+
+    return _PROVENANCE.sub(drop, text)
 
 
 class _TextParts(HTMLParser):
@@ -224,7 +238,7 @@ def main(argv: list[str]) -> int:
     differs = _keys_differing_from_gps(Path(argv[1]), sidecar) if sidecar is not None else []
     if differs is None:
         return 2
-    left = survivors(capture, _PROVENANCE.sub(" ", fixture))
+    left = survivors(capture, _without_provenance(fixture))
     for value in left:
         print(f"still in the fixture: {value!r}")
     if differs:

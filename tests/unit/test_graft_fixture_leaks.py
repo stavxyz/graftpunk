@@ -148,13 +148,17 @@ def test_a_closing_period_the_wrap_left_alone_still_ends_the_label(tmp_path: Pat
     assert result.returncode == 0, result.stdout
 
 
+@pytest.mark.parametrize(
+    "next_line", ["ACCT_4471023.", "acct_4471023.", "4471023.", "see\n4471023."]
+)
 def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
-    tmp_path: Path,
+    tmp_path: Path, next_line: str
 ) -> None:
-    """A hand edit that drops the label's period must not let the phrase swallow the
-    next line: an account value there is still reported."""
+    """A hand edit that drops the label's period must not let the phrase swallow what
+    follows: only a session and a run id are left out, so an account value there
+    is still reported."""
     capture = json.dumps({"account": "ACCT_4471023"})
-    module = "# seen 2 time(s) in run myshop/20261006-101500-4242\nACCT_4471023.\n"
+    module = f"# seen 2 time(s) in run myshop/20261006-101500-4242\n{next_line}\n"
     result = _run(tmp_path, capture, module)
     assert result.returncode == 1
     assert "4471023" in result.stdout
@@ -168,6 +172,8 @@ _GP_SIDECAR = {"capture_sha256": "a" * 64, "flagged_names": ["session_id"]}
     [
         pytest.param({**_GP_SIDECAR, "capture_sha256": "b" + "a" * 63}, id="mistyped-hash"),
         pytest.param({**_GP_SIDECAR, "flagged_names": []}, id="dropped-name"),
+        pytest.param({"capture_sha256": _GP_SIDECAR["capture_sha256"]}, id="missing-key"),
+        pytest.param({**_GP_SIDECAR, "extra": 1}, id="extra-key"),
     ],
 )
 def test_a_sidecar_that_differs_from_gps_is_reported(tmp_path: Path, written: dict) -> None:
@@ -177,8 +183,10 @@ def test_a_sidecar_that_differs_from_gps_is_reported(tmp_path: Path, written: di
     result = _run(tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}), written)
     assert result.returncode == 1
     assert "the sidecar differs from the capture's in" in result.stdout
-    changed = next(k for k in written if written[k] != _GP_SIDECAR[k])
-    assert changed in result.stdout
+    changed = sorted(
+        k for k in written.keys() | _GP_SIDECAR.keys() if written.get(k) != _GP_SIDECAR.get(k)
+    )
+    assert f"differs from the capture's in {', '.join(changed)}:" in result.stdout
 
 
 def test_a_run_without_a_sidecar_ignores_gps(tmp_path: Path) -> None:
