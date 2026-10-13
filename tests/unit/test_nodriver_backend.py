@@ -1954,6 +1954,22 @@ class TestNoDriverBackendOneEventLoop:
         assert fake_chrome.browsers[0].tabs[-1].url == "https://example.com/"
         clone.stop()
 
+    def test_a_backend_pickled_before_the_loop_attributes_existed_starts(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        state = NoDriverBackend(headless=True).__getstate__()
+        del state["_loop"]
+        del state["_private_loop"]
+        old = NoDriverBackend.__new__(NoDriverBackend)
+
+        old.__setstate__(state)
+        old.start()
+
+        assert old.is_running is True
+        assert fake_chrome.misuse == []
+        old.stop()
+        assert fake_chrome.browsers[0].stopped_on is not None
+
     def test_a_sync_call_without_a_loop_returns_the_fallback_and_makes_no_loop(
         self, captured_logs: list[dict[str, Any]]
     ) -> None:

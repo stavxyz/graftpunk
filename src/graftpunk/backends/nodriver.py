@@ -647,7 +647,13 @@ class NoDriverBackend:
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        """Restore the configuration, with a lock of the copy's own."""
+        """Restore the configuration, with a lock of the copy's own.
+
+        A backend pickled by an earlier graftpunk has no loop attributes, so
+        they default to "no loop" here.
+        """
+        self._loop = None
+        self._private_loop = None
         self.__dict__.update(state)
         self._lock = threading.RLock()
 
