@@ -2697,6 +2697,96 @@ class TestNoDriverBackendStartThatNeverReturned:
         assert registry == set()
         assert [p.name for p in temp_profiles.iterdir()] == []
 
+    @staticmethod
+    def _slow_end(monkeypatch: pytest.MonkeyPatch, ended: list[Any]) -> None:
+        """Make ending a Chrome take 0.3 s, the way waiting for its exit does."""
+        import time
+
+        def slow_end(browser: Any) -> None:
+            time.sleep(0.3)
+            ended.append(browser)
+
+        monkeypatch.setattr("graftpunk.backends.nodriver._end_browser_without_loop", slow_end)
+
+    @staticmethod
+    async def _ticks_while(awaitable: Any) -> tuple[int, BaseException | None]:
+        """Count 10 ms ticks on this loop while *awaitable* runs, and what it raised."""
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        ticker = asyncio.create_task(tick())
+        raised: BaseException | None = None
+        try:
+            await awaitable
+        except BaseException as exc:  # noqa: BLE001 - returned to the test
+            raised = exc
+        ticker.cancel()
+        return ticks, raised
+
+    async def test_a_failed_connect_ends_its_chrome_off_the_callers_loop(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        registry = self._registry(monkeypatch)
+        ended: list[Any] = []
+        self._slow_end(monkeypatch, ended)
+        spawned: list[Any] = []
+
+        async def start_then_fail(**kwargs: Any) -> None:
+            browser = self._spawned(temp_profiles / "uc_failed", kwargs["browser_args"])
+            registry.add(browser)
+            spawned.append(browser)
+            raise Exception("\nFailed to connect to browser\n")  # noqa: TRY002 - nodriver's own type
+
+        mock_uc = MagicMock()
+        mock_uc.start = start_then_fail
+
+        with patch.dict("sys.modules", {"nodriver": mock_uc}):
+            ticks, raised = await self._ticks_while(NoDriverBackend()._start_async(_max_attempts=1))
+
+        assert isinstance(raised, BrowserError)
+        assert ended == spawned
+        assert ticks >= 10
+
+    async def test_a_cancelled_start_async_ends_its_chrome_off_the_loop_through_a_second_cancel(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        registry = self._registry(monkeypatch)
+        ended: list[Any] = []
+        self._slow_end(monkeypatch, ended)
+        spawned: list[Any] = []
+        connecting = asyncio.Event()
+
+        async def start_then_hang(**kwargs: Any) -> None:
+            browser = self._spawned(temp_profiles / "uc_cancelled", kwargs["browser_args"])
+            registry.add(browser)
+            spawned.append(browser)
+            connecting.set()
+            await asyncio.Event().wait()
+
+        mock_uc = MagicMock()
+        mock_uc.start = start_then_hang
+
+        async def cancel_twice(task: asyncio.Task[None]) -> None:
+            await connecting.wait()
+            task.cancel()
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        with patch.dict("sys.modules", {"nodriver": mock_uc}):
+            task = asyncio.create_task(NoDriverBackend()._start_async())
+            ticks, raised = await self._ticks_while(cancel_twice(task))
+
+        assert raised is None
+        assert ended == spawned
+        assert ticks >= 10
+
     async def test_a_browser_launched_with_a_copy_of_the_arguments_is_still_found(
         self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2879,6 +2969,45 @@ class TestNoDriverBackendInterruptedLifecycle:
 
         assert ended == fake_chrome.browsers
         assert fake_chrome.browsers[0].stopped_on is None
+        assert backend.is_running is False
+
+    def test_a_cancelled_stop_async_ends_chrome_off_the_callers_loop(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        ended: list[Any] = []
+
+        def slow_end(browser: Any) -> None:
+            time.sleep(0.3)
+            ended.append(browser)
+
+        monkeypatch.setattr("graftpunk.backends.nodriver._end_browser_without_loop", slow_end)
+        backend = NoDriverBackend()
+
+        async def stop_that_never_finishes() -> None:
+            await asyncio.Event().wait()
+
+        async def ticks_during_a_cancelled_stop() -> int:
+            await backend._start_async()
+            backend._started = True
+            monkeypatch.setattr(backend, "_stop_async", stop_that_never_finishes)
+            ticks = 0
+
+            async def tick() -> None:
+                nonlocal ticks
+                while True:
+                    ticks += 1
+                    await asyncio.sleep(0.01)
+
+            ticker = asyncio.create_task(tick())
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(backend.stop_async(), 0.05)
+            ticker.cancel()
+            return ticks
+
+        assert asyncio.run(ticks_during_a_cancelled_stop()) >= 10
+        assert ended == fake_chrome.browsers
         assert backend.is_running is False
 
     def test_two_threads_starting_one_backend_launch_one_browser(

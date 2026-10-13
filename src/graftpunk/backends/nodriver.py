@@ -44,7 +44,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -406,24 +406,50 @@ def _launched_with(browser: Any, launch_arg: str) -> bool:
     return isinstance(args, list) and launch_arg in args
 
 
-def _release_unreturned_browsers(
+def _take_unreturned_browsers(
     registry: set[Any] | None, before: set[Any], launch_arg: str
-) -> None:
-    """End the browsers a failed ``uc.start()`` launched but never returned. Never raises.
+) -> list[Any]:
+    """Remove from the registry, and return, the browsers a failed ``uc.start()`` never returned.
 
     nodriver's ``Browser.start()`` spawns Chrome and adds it to the registry,
     then connects to it and attaches, and only then returns. A start that
     raised in between ("Failed to connect to browser" is raised there) or was
     interrupted (Ctrl-C) leaves a running Chrome that no handle outside the
-    registry points at.
+    registry points at. Runs on the loop that owns the registry; the caller
+    ends what it returns.
     """
     if registry is None:
-        return
-    for browser in set(registry) - before:
-        if not _launched_with(browser, launch_arg):
-            continue
+        return []
+    taken = [b for b in set(registry) - before if _launched_with(b, launch_arg)]
+    for browser in taken:
         registry.discard(browser)
+    return taken
+
+
+def _end_browsers_without_loop(browsers: list[Any]) -> None:
+    """``_end_browser_without_loop`` for each of *browsers*. Never raises."""
+    for browser in browsers:
         _end_browser_without_loop(browser)
+
+
+async def _finish_on_worker_thread(work: Callable[[], None]) -> None:
+    """Run *work* on a worker thread and wait for it, even through a cancellation.
+
+    For ending Chrome from a coroutine: the end polls and sleeps for up to a
+    few seconds, which would block the event loop, and abandoning it halfway
+    would leave Chrome running or its profile behind. A cancellation that
+    arrives meanwhile is raised once *work* has finished.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(work))
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    task.result()
 
 
 def _patch_nodriver_cookie_parsing() -> None:
@@ -967,16 +993,26 @@ class NoDriverBackend:
                 last_exc = exc
                 # Release whatever this attempt left running before the next
                 # one overwrites the handle, or before the raise below (#192).
-                self._release_failed_attempt()
-                _release_unreturned_browsers(registry, before, launch_arg)
+                # On a worker thread: this loop may be the caller's.
+                await _finish_on_worker_thread(
+                    self._take_attempt_browsers(registry, before, launch_arg)
+                )
                 if "Failed to connect to browser" not in str(exc):
                     raise
-            except BaseException:
-                # Cancelled (Ctrl-C during a synchronous start) or exiting: no
-                # retry, but the half-started browser still has to go, or it
-                # stays registered with _started False, where stop() skips it.
-                self._release_failed_attempt()
-                _release_unreturned_browsers(registry, before, launch_arg)
+            except BaseException as exc:
+                # Cancelled (Ctrl-C during a synchronous start, or a timeout
+                # around start_async()) or exiting: no retry, but the
+                # half-started browser still has to go, or it stays
+                # registered with _started False, where stop() skips it.
+                end = self._take_attempt_browsers(registry, before, launch_arg)
+                if isinstance(exc, asyncio.CancelledError):
+                    await _finish_on_worker_thread(end)
+                else:
+                    # KeyboardInterrupt or SystemExit raised inside this
+                    # coroutine is stopping the loop with it, so an await
+                    # would hand control to a loop that is unwinding. Ending
+                    # Chrome here blocks it for the few seconds the end takes.
+                    end()
                 raise
             if attempt < max_attempts:
                 LOG.warning(
@@ -1079,16 +1115,43 @@ class NoDriverBackend:
         unbounded work that ``terminate_nodriver_browser`` deliberately leaves
         out.
         """
+        browser = self._detach_browser()
+        if browser is not None:
+            _end_browser_without_loop(browser)
+
+    async def _release_failed_attempt_off_loop(self) -> None:
+        """``_release_failed_attempt()`` from a coroutine, ending Chrome on a worker thread."""
+        browser = self._detach_browser()
+        if browser is not None:
+            await _finish_on_worker_thread(lambda: _end_browser_without_loop(browser))
+
+    def _detach_browser(self) -> Any:
+        """Forget the browser, leaving both registries, and return it (or None)."""
         browser = self._browser
         if browser is None:
-            return
+            return None
         unregister_live_browser(self)
         # Out of nodriver's atexit registry as well, so its handler does not
         # re-stop a browser this code already ended.
         self._deregister_browser()
         self._browser = None
         self._page = None
-        _end_browser_without_loop(browser)
+        return browser
+
+    def _take_attempt_browsers(
+        self, registry: set[Any] | None, before: set[Any], launch_arg: str
+    ) -> Callable[[], None]:
+        """Detach every browser a failed start attempt launched; return the work that ends them.
+
+        The detaching happens here, on the browser's loop; the returned call
+        does the waiting, and can run on a worker thread.
+        """
+        # The returned browser first: detaching it takes it out of nodriver's
+        # registry, so the registry scan below does not find it a second time.
+        attempt = self._detach_browser()
+        browsers = [] if attempt is None else [attempt]
+        browsers.extend(_take_unreturned_browsers(registry, before, launch_arg))
+        return lambda: _end_browsers_without_loop(browsers)
 
     def _deregister_browser(self) -> None:
         """Remove browser from nodriver's global instance registry.
@@ -1274,16 +1337,21 @@ class NoDriverBackend:
                         # must not outlive the loop it was started on. The
                         # release waits for Chrome to exit, so not on the
                         # caller's loop.
-                        await asyncio.to_thread(self._release_failed_attempt)
+                        await self._release_failed_attempt_off_loop()
                     else:
                         await asyncio.wrap_future(
                             asyncio.run_coroutine_threadsafe(self._stop_async(), loop)
                         )
-                except BaseException:
+                except BaseException as exc:
                     # Cancelled before or during _stop_async: _reset_state()
                     # below forgets the browser, so end it now if the stop
-                    # did not.
-                    self._release_failed_attempt()
+                    # did not. Off the caller's loop, as above; a
+                    # KeyboardInterrupt or SystemExit raised in this frame is
+                    # stopping the loop, so that one ends Chrome here.
+                    if isinstance(exc, asyncio.CancelledError):
+                        await self._release_failed_attempt_off_loop()
+                    else:
+                        self._release_failed_attempt()
                     raise
                 finally:
                     if loop is None or loop is current:
