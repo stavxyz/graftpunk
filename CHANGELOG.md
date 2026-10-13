@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The `/graftpunk:graft` skill is 0.1.2 and needs graftpunk 1.19.0 or later**, since its guide describes the option types 1.19.0 gives a command. Its harden step no longer prompts with every offered allow rule added (#230): it writes each fixture and sidecar with the file tools instead of `cp`, which Claude Code refuses for a capture name holding braces (every endpoint with a path parameter has one), it offers an allow rule for its read-only leak check, and it runs each declared command alone in its own Bash call. The leak check no longer reports the year in the run id that `gp plugin new --from-run` and `gp plugin add-command` write into each stub's docstring (#231).
+- **The `/graftpunk:graft` skill is 0.1.2 and needs graftpunk 1.19.0 or later**, since its guide describes the option types 1.19.0 gives a command. With the offered allow rules added, no command in its harden step asks first (#230); a file write still asks unless you accept edits for the session. It writes each fixture and sidecar with the file tools instead of `cp`, which Claude Code refuses for a capture name holding braces (every endpoint with a path parameter has one), the leak check now reports a sidecar that differs from the one gp wrote, the skill offers an allow rule for that read-only check (its path names the skill's version, so it goes in local settings and is offered again after an update), and it runs each declared command alone in its own Bash call. The leak check no longer reports the year in the run id that `gp plugin new --from-run` and `gp plugin add-command` write into each stub's docstring (#231).
 
 ## [1.19.0] - 2026-10-07
 
