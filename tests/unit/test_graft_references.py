@@ -189,6 +189,17 @@ def test_the_harden_step_writes_fixtures_with_the_write_tool_and_runs_no_cp() ->
     assert "`cp`" not in harden
 
 
+def test_skill_md_runs_each_declared_command_on_its_own() -> None:
+    """An allow rule matches only the command as written, so a chained, looped, or
+    undeclared command prompts whatever rules the user added."""
+    text = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+    assert (
+        "Run each command exactly as `references/commands.md` spells it, one per Bash "
+        "call, with nothing chained to it"
+    ) in text
+    assert "Run no command the references do not declare" in text
+
+
 _OTHER_HOST_LINE = "`<command> calls <host>`"
 
 
