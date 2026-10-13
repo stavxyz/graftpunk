@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Python 3.14 is tested in CI, and the package lists Python 3.13 and 3.14 among its classifiers** (#233). graftpunk already installed on 3.14 (`requires-python = ">=3.11"`), but CI never ran it. The full suite passes on 3.14.6 with the `nodriver` a fresh install resolves (0.50.6). The lock had pinned 0.48.1, whose `nodriver/cdp/network.py` holds a byte that is not UTF-8, which Python 3.14 refuses to compile, so the lock now carries 0.50.6 and CI tests the version a consumer gets. `gp <site> login` now checks for an async login method with `inspect.iscoroutinefunction`, since `asyncio.iscoroutinefunction` is deprecated in 3.14 and removed in 3.16.
+
 ### Changed
 
 - **The `/graftpunk:graft` skill is 0.1.2 and needs graftpunk 1.19.0 or later**, since its guide describes the option types 1.19.0 gives a command. With the offered allow rules added, no `gp` command and no leak check in its harden step asks first (#230); the gate's `pytest` and `ruff` runs still ask, by design, and so does a file write unless you accept edits for the session. It writes each fixture and sidecar with the file tools instead of `cp`, which Claude Code refuses for a capture name holding braces (every endpoint with a path parameter has one), the leak check now reports a sidecar that differs from the one gp wrote, naming the keys, the skill offers an allow rule for that read-only check (its path names the skill's version, so it goes in local settings and is offered again after an update), and it runs each declared command alone in its own Bash call. The leak check no longer reports the year in the run id that `gp plugin new --from-run` and `gp plugin add-command` write into each stub's docstring (#231).
