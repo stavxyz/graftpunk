@@ -81,10 +81,10 @@ spells it, one per Bash call, with nothing chained to it (no `;`, `&&`, pipe,
 loop, or `echo`), since an allow rule matches only the command as written; the
 tool result carries the exit status. Run no command the references do not
 declare, a look-around such as `command -v gp` included, and read and write
-files with the file tools. Read a reference only at the step that names it. Never
-fetch a page of the site yourself, at any step: what the site shows comes from
-the user, read off it in their own browser, or from the live calls they agree to
-at the kick-the-tires step.
+files with the file tools. Read a reference only at the step that names it.
+Never fetch a page of the site yourself, at any step: what the site shows comes
+from the user, read off it in their own browser, or from the live calls they
+agree to at the kick-the-tires step.
 
 ## The steps
 
