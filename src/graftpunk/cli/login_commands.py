@@ -272,7 +272,7 @@ def make_login_body(
                 Status("Logging in...", console=gp_console.err_console),
                 operating_session(target_name, identifier),
             ):
-                if asyncio.iscoroutinefunction(login_method):
+                if inspect.iscoroutinefunction(login_method):
                     # Suppress asyncio "Loop ... is closed" warning that fires when
                     # asyncio.run() closes the event loop while nodriver's subprocess
                     # handlers are still pending. Suppression covers the entire
