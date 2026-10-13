@@ -99,9 +99,9 @@ uv run --no-project --with-editable . gp <site-name> <command>
 
 ## Allow rules for a prompt-free run
 
-The rules the skill offers, in the settings syntax. The last two cover the
-plugin's help and login; the live read-only command has no rule and asks each
-time, since it reads the account.
+The rules the skill offers, in the settings syntax, all `gp` but the skill's
+read-only leak check. The last two cover the plugin's help and login; the live
+read-only command has no rule and asks each time, since it reads the account.
 
 ```text
 Bash(gp plugin info *)
@@ -112,6 +112,7 @@ Bash(gp observe fixtures *)
 Bash(gp plugin new *)
 Bash(gp plugin add-command *)
 Bash(gp plugin upgrade *)
+Bash(uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/fixture-leaks.py *)
 Bash(uv run --no-project --with-editable '.[dev]' --with pytest --with ruff gp plugin check *)
 Bash(uv run --no-project --with-editable . gp <site-name> --help)
 Bash(uv run --no-project --with-editable . gp <site-name> login)

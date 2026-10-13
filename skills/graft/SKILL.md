@@ -50,7 +50,9 @@ skill in an empty directory or in the plugin's project".
 Your first message after preflight offers the allow rules under "Allow rules
 for a prompt-free run" in `references/commands.md` that hold no `<site-name>`,
 and says that the user can add them to this project's settings with
-`/permissions` for a run without prompts. Say that the skill works either way:
+`/permissions` for a run without prompts. Offer the leak check's rule with this
+skill's directory, `${CLAUDE_SKILL_DIR}`, in place of the variable, so the rule
+holds an absolute path. Say that the skill works either way:
 without the rules, each command asks first. Offer the rules that hold
 `<site-name>` once the plugin's name is fixed, with that name in its place: in
 create mode at the end of the frame step, since the name `gp plugin new` takes

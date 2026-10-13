@@ -42,6 +42,9 @@ _GATE_SLOT = "<gate-command>"
 # it offers them. The live read-only command gets no rule and asks each time.
 _SITE_RULES = [f"{_SITE_RUNNER} gp <site-name> --help", f"{_SITE_RUNNER} gp <site-name> login"]
 _LIVE_READ_ONLY = f"{_SITE_RUNNER} gp <site-name> <command>"
+# The one offered rule that is not gp: the skill's own leak check, a read-only
+# script. SKILL.md offers it with the skill's directory in place of the variable.
+_LEAK_CHECK_RULE = "uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/fixture-leaks.py *"
 # What the kick-the-tires step asks before the first live call, whatever the
 # user's settings allow: the consent point for the live site and the login.
 _LIVE_CALL_QUESTION = "run a live login and one read-only command now?"
@@ -100,7 +103,8 @@ def _matches(pattern: str, command: str) -> bool:
     without arguments; anything else matches exactly
     (https://code.claude.com/docs/en/permissions, Wildcard patterns).
 
-    Valid only under the restriction test_every_rule_is_a_scoped_gp_rule enforces
+    Valid only under the restriction
+    test_every_rule_is_a_scoped_gp_rule_or_the_leak_check enforces
     (a "*" only as the trailing " *"); it models no other wildcard form. Re-check
     it against that page whenever the page changes."""
     if pattern.endswith(" *"):
@@ -150,16 +154,30 @@ class TestOfferedAllowRules:
         for command in preflight_only:
             assert not any(_matches(p, command) for p in _offered_rules()), command
 
-    def test_every_rule_is_a_scoped_gp_rule(self) -> None:
+    def test_every_rule_is_a_scoped_gp_rule_or_the_leak_check(self) -> None:
         """Never Bash(*), never a bare Bash(gp *), never a command other than gp,
-        whether gp runs from PATH or through a uv runner."""
-        for pattern in _offered_rules():
+        whether gp runs from PATH or through a uv runner, with one exception: the
+        skill's own read-only leak check, offered once."""
+        rules = _offered_rules()
+        assert rules.count(_LEAK_CHECK_RULE) == 1
+        for pattern in rules:
+            assert "*" not in pattern.removesuffix(" *"), pattern
+            if pattern == _LEAK_CHECK_RULE:
+                continue
             command = pattern
             for runner in (_SITE_RUNNER, _GATE_RUNNER):
                 command = command.removeprefix(f"{runner} ")
             assert command.startswith("gp "), pattern
             assert command not in ("*", "gp *"), pattern
-            assert "*" not in pattern.removesuffix(" *"), pattern
+
+    def test_skill_md_offers_the_leak_check_rule_with_its_directory_in_place(self) -> None:
+        """A reference file's ${CLAUDE_SKILL_DIR} is not expanded, so the rule works
+        only when the skill puts its absolute directory in place when offering it."""
+        text = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
+        assert (
+            "Offer the leak check's rule with this skill's directory, `${CLAUDE_SKILL_DIR}`, "
+            "in place of the variable, so the rule holds an absolute path."
+        ) in text
 
     def test_no_offered_rule_reaches_the_recorder_or_every_gp_command(self) -> None:
         """The other direction of containment: no rule matches a command outside
@@ -176,6 +194,8 @@ class TestOfferedAllowRules:
             f"{_GATE_RUNNER} gp anything",
             f"{_SITE_RUNNER} gp <site-name> delete-everything",
             f"{_GATE_RUNNER} gp <site-name> delete-everything",
+            "uv run --no-project python -I other.py",
+            "uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/preflight.sh",
         ):
             assert not any(_matches(pattern, probe) for pattern in _offered_rules()), probe
 
@@ -194,8 +214,9 @@ class TestOfferedAllowRules:
     ) -> None:
         """The gate is policy.PROJECT_GATE's to list, and runs through the gate
         runner. Every gp command in it is covered by an offered rule; an
-        offered rule is only ever a gp rule (test_every_rule_is_a_scoped_gp_rule),
-        so commands.md says in words that the gate's other commands ask each time."""
+        offered rule is a gp rule or the leak check
+        (test_every_rule_is_a_scoped_gp_rule_or_the_leak_check), so commands.md says
+        in words that the gate's other commands ask each time."""
         rules = _offered_rules()
         gate_gp = [f"{_GATE_RUNNER} {c}" for c in PROJECT_GATE if c.startswith("gp ")]
         assert gate_gp
