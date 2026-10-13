@@ -1572,7 +1572,16 @@ class TestNodriverHARCapture:
         assert resp["bodySize"] == len(b'{"ok": true}')
 
     @pytest.mark.asyncio
-    async def test_stop_capture_async_fetches_post_data(self) -> None:
+    @pytest.mark.parametrize(
+        "post_data_result",
+        [
+            pytest.param("user=foo", id="nodriver-0.48-string"),
+            pytest.param(("user=foo", False), id="nodriver-0.50-pair"),
+            pytest.param(("dXNlcj1mb28=", True), id="nodriver-0.50-base64"),
+        ],
+    )
+    async def test_stop_capture_async_fetches_post_data(self, post_data_result: Any) -> None:
+        """Every shape nodriver's getRequestPostData returns becomes the body text."""
         browser = MagicMock()
         tab = MagicMock()
 
@@ -1583,7 +1592,7 @@ class TestNodriverHARCapture:
             call_count += 1
             # First call is get_request_post_data, second is get_response_body
             if call_count == 1:
-                return "user=foo"
+                return post_data_result
             return ("<html></html>", False)
 
         tab.send = mock_send

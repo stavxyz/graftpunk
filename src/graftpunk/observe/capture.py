@@ -185,6 +185,21 @@ def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[s
     return [_build_har_entry(data) for _rid, data in _ordered_request_items(request_map)]
 
 
+def _post_data_text(result: Any) -> str:
+    """The request body text from ``Network.getRequestPostData``'s result.
+
+    nodriver 0.48 returns the ``postData`` string alone; 0.50 returns the pair
+    ``(postData, base64Encoded)``, the body base64-encoded when the flag is set,
+    which is then decoded so the HAR holds the text the browser sent.
+    """
+    if not isinstance(result, tuple):
+        return result
+    text, base64_encoded = result
+    if not base64_encoded:
+        return text
+    return base64.b64decode(text).decode("utf-8", errors="replace")
+
+
 def _is_redirect_hop(data: dict[str, Any]) -> bool:
     """True if ``data`` is a finalized redirect hop; body fetching must skip it.
 
@@ -1215,7 +1230,7 @@ class NodriverCaptureBackend:
                     result = await tab.send(
                         cdp_net.get_request_post_data(cdp_net.RequestId(request_id))
                     )
-                    data["post_data"] = result
+                    data["post_data"] = _post_data_text(result)
                 except ConnectionError as exc:
                     LOG.warning(
                         "nodriver_browser_disconnected_during_stop",
