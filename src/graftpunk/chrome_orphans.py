@@ -608,7 +608,9 @@ def browser_temp_profile(browser: Any) -> Path | None:
         return None
 
 
-def remove_browser_temp_profile(browser: Any) -> Path | None:
+def remove_browser_temp_profile(
+    browser: Any, *, attempts: int = 1, retry_delay_s: float = 0.25
+) -> Path | None:
     """Delete the temp profile *browser* was using, if nodriver created it.
 
     Called right after a browser is stopped. nodriver removes that directory
@@ -622,21 +624,33 @@ def remove_browser_temp_profile(browser: Any) -> Path | None:
     stale sweep use, so no path outside the temp directory is ever deleted
     here.
 
+    Args:
+        browser: A ``nodriver.Browser``, or anything carrying a ``config``.
+        attempts: How many times to try. A Chrome that has just been signalled
+            can still be writing into the directory (``Local State``), which
+            makes one ``rmtree`` leave it behind, so a caller that cannot wait
+            for the process to be reaped retries, as nodriver's own cleanup
+            does.
+        retry_delay_s: The pause between attempts.
+
     Returns:
         The directory removed, or None when there was nothing to remove.
     """
     path = _removable_temp_profile(browser_temp_profile(browser))
     if path is None or not path.exists():
         return None
-    shutil.rmtree(path, ignore_errors=True)
-    if path.exists():
-        LOG.debug("chrome_temp_profile_remove_failed", path=str(path))
-        return None
-    LOG.debug("chrome_temp_profile_removed", path=str(path))
-    return path
+    for attempt in range(1, max(attempts, 1) + 1):
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            LOG.debug("chrome_temp_profile_removed", path=str(path))
+            return path
+        if attempt < attempts:
+            time.sleep(retry_delay_s)
+    LOG.debug("chrome_temp_profile_remove_failed", path=str(path))
+    return None
 
 
-def terminate_nodriver_browser(browser: Any, *, ops: ProcessOps | None = None) -> None:
+def terminate_nodriver_browser(browser: Any, *, ops: ProcessOps | None = None) -> bool:
     """Send the Chrome subprocess behind *browser* one SIGTERM. Never raises.
 
     The whole sequence a signal handler is allowed to run: find the pid, signal
@@ -657,18 +671,24 @@ def terminate_nodriver_browser(browser: Any, *, ops: ProcessOps | None = None) -
     Args:
         browser: A ``nodriver.Browser``, or anything carrying a ``_process``.
         ops: The operating system calls to use, and the seam tests inject.
+
+    Returns:
+        Whether the signal was delivered. False when this process is disarmed,
+        is not POSIX, has no pid to signal, or the kill failed (including a
+        process that had already exited).
     """
     if not _armed_for("terminate"):
-        return
+        return False
     pid = getattr(getattr(browser, "_process", None), "pid", None)
     if not isinstance(pid, int):
-        return
+        return False
     try:
         (ops or DEFAULT_OPS).kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         LOG.debug("chrome_process_already_gone", pid=pid)
-        return
+        return False
     except OSError as exc:
         LOG.debug("chrome_process_terminate_failed", pid=pid, error=str(exc))
-        return
+        return False
     LOG.debug("chrome_process_terminated", pid=pid)
+    return True

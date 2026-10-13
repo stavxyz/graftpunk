@@ -689,6 +689,19 @@ class TestTerminateNodriverBrowser:
 
         assert kernel.signals == []
 
+    def test_it_reports_whether_the_signal_was_delivered(self, armed: None) -> None:
+        """A caller that waits for the exit needs to know a signal went out."""
+        kernel = FakeKernel({}, kill_raises={4343: ProcessLookupError(3, "No such process")})
+
+        assert terminate_nodriver_browser(self._browser(4242), ops=kernel.ops) is True
+        assert terminate_nodriver_browser(self._browser(4343), ops=kernel.ops) is False
+        assert terminate_nodriver_browser(self._browser(None), ops=kernel.ops) is False
+
+    def test_a_disarmed_process_reports_no_signal(self) -> None:
+        kernel = FakeKernel({})
+
+        assert terminate_nodriver_browser(self._browser(4242), ops=kernel.ops) is False
+
 
 class TestBrowserTempProfile:
     """What nodriver made for a browser, and whether it is ours to touch."""
@@ -753,6 +766,34 @@ class TestRemoveBrowserTempProfile:
 
         assert remove_browser_temp_profile(browser) is None
         assert custom.exists()
+
+    def test_a_profile_a_dying_chrome_writes_again_is_removed_on_a_retry(
+        self, temp_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Chrome writes Local State on its way out, after the first rmtree."""
+        import shutil
+
+        profile = _profile_dir(temp_root, "uc_dying")
+        browser = self._browser(custom=False, user_data_dir=str(profile))
+        real_rmtree = shutil.rmtree
+        calls: list[Path] = []
+
+        def rmtree_then_chrome_writes(path: Path, **kwargs: object) -> None:
+            real_rmtree(path, **kwargs)
+            calls.append(path)
+            if len(calls) == 1:
+                profile.mkdir()
+                (profile / "Local State").write_text("{}")
+
+        monkeypatch.setattr(chrome_orphans.shutil, "rmtree", rmtree_then_chrome_writes)
+
+        assert remove_browser_temp_profile(browser) is None
+        assert profile.exists()
+
+        calls.clear()
+        assert remove_browser_temp_profile(browser, attempts=3, retry_delay_s=0) == profile
+        assert len(calls) == 2
+        assert not profile.exists()
 
 
 def _ps_limited_to(pids: set[int]) -> ProcessOps:
