@@ -7,6 +7,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1933,6 +1934,15 @@ class TestNoDriverBackendOneEventLoop:
         assert clone.current_url == ""
         assert backend._started is True
 
+    def test_an_unpickled_backend_starts_on_first_use(self, fake_chrome: FakeChrome) -> None:
+        clone = pickle.loads(pickle.dumps(NoDriverBackend(headless=True)))  # noqa: S301 - round-trips its own bytes
+
+        clone.navigate("https://example.com/")
+
+        assert clone.is_running is True
+        assert fake_chrome.browsers[0].tabs[-1].url == "https://example.com/"
+        clone.stop()
+
     def test_a_sync_call_without_a_loop_returns_the_fallback_and_makes_no_loop(
         self, captured_logs: list[dict[str, Any]]
     ) -> None:
@@ -2205,3 +2215,421 @@ class TestNoDriverBackendLifecycleEdges:
 
         assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
         assert backend._loop is None
+
+
+_CHILD_UNTIL_TERM = """
+import os, signal, sys, time
+profile = sys.argv[1]
+delay = float(sys.argv[2])
+
+def on_term(signum, frame):
+    # Like Chrome, write the profile's last files on the way out.
+    time.sleep(delay)
+    os.makedirs(profile, exist_ok=True)
+    with open(os.path.join(profile, "Local State"), "w") as f:
+        f.write("{}")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, on_term)
+print("ready", flush=True)
+while True:
+    time.sleep(0.05)
+"""
+
+
+@contextmanager
+def _chrome_like_child(profile: Path, exit_delay: float = 0.3) -> Iterator[Any]:
+    """A real child process standing in for Chrome, reaped by a watcher thread.
+
+    It rewrites ``Local State`` in *profile* *exit_delay* seconds after
+    SIGTERM, then exits. The thread waits on it the way asyncio's child
+    watcher does, so a pid that exited stops answering ``kill(pid, 0)``.
+    """
+    import subprocess
+    import sys
+
+    child = subprocess.Popen(  # noqa: S603 - a fixed script run by this interpreter
+        [sys.executable, "-c", _CHILD_UNTIL_TERM, str(profile), str(exit_delay)],
+        stdout=subprocess.PIPE,
+    )
+    assert child.stdout is not None
+    assert child.stdout.readline().strip() == b"ready"
+    reaper = threading.Thread(target=child.wait, daemon=True)
+    reaper.start()
+    try:
+        yield child
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(5)
+        child.stdout.close()
+
+
+class _Browser:
+    """A nodriver Browser stand-in, hashable as nodriver's registry needs."""
+
+    def __init__(self, process: Any, config: SimpleNamespace) -> None:
+        self._process = process
+        self.config = config
+
+
+def _temp_browser(profile: Path, process: Any = None) -> _Browser:
+    """A browser with a temp profile nodriver made."""
+    return _Browser(
+        process, SimpleNamespace(uses_custom_data_dir=False, user_data_dir=str(profile))
+    )
+
+
+class TestNoDriverBackendEndingChromeWithoutItsLoop:
+    """The loop-free stop waits for Chrome before removing its profile, on any OS."""
+
+    def test_the_profile_is_removed_after_chrome_has_written_its_last_files(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        profile = temp_profiles / "uc_live"
+        profile.mkdir()
+        backend = NoDriverBackend()
+
+        with _chrome_like_child(profile) as child:
+            backend._browser = _temp_browser(profile, child)
+            backend._release_failed_attempt()
+
+            assert child.poll() is not None
+            assert not profile.exists()
+        assert backend._browser is None
+
+    def test_without_posix_signals_chrome_is_ended_through_its_process_handle(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """terminate_nodriver_browser does nothing off POSIX, and deregistering
+        took away nodriver's atexit stop, so the handle is what ends Chrome."""
+        monkeypatch.setattr("graftpunk.backends.nodriver._signals_available", lambda: False)
+        profile = temp_profiles / "uc_windows"
+        profile.mkdir()
+        backend = NoDriverBackend()
+
+        with _chrome_like_child(profile, exit_delay=0.0) as child:
+            # asyncio's Process keeps the Popen on its transport.
+            process = SimpleNamespace(
+                pid=child.pid,
+                terminate=child.terminate,
+                _transport=SimpleNamespace(_proc=child, close=lambda: None),
+            )
+            backend._browser = _temp_browser(profile, process)
+            backend._release_failed_attempt()
+
+            assert child.wait(5) == 0
+        assert not profile.exists()
+
+    def test_the_subprocess_transport_is_closed_so_exit_prints_no_noise(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unclosed transport collected after its loop closed prints
+        "Exception ignored in BaseSubprocessTransport.__del__"."""
+        import gc
+        import sys
+        import time
+
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        unraisable: list[Any] = []
+        monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+        profile = temp_profiles / "uc_transport"
+        profile.mkdir()
+
+        async def spawn() -> asyncio.subprocess.Process:
+            return await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                "import time; time.sleep(30)",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+        process = asyncio.run(spawn())
+        pid = process.pid
+        backend = NoDriverBackend()
+        backend._browser = _temp_browser(profile, process)
+
+        backend._release_failed_attempt()
+        # asyncio's child watcher holds the transport until it has reaped the
+        # child, so wait for that before collecting it.
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        del process
+        gc.collect()
+
+        assert [str(u.exc_value) for u in unraisable] == []
+        assert not profile.exists()
+
+
+class TestNoDriverBackendStartThatNeverReturned:
+    """A start that fails or is interrupted inside uc.start() never returns its browser."""
+
+    @staticmethod
+    def _registry(monkeypatch: pytest.MonkeyPatch) -> set[Any]:
+        registry: set[Any] = set()
+        monkeypatch.setattr("graftpunk.backends.nodriver._nodriver_registry", lambda: registry)
+        return registry
+
+    @staticmethod
+    def _spawned(profile: Path, browser_args: Any) -> _Browser:
+        """What nodriver's Browser.start() has registered before it connects."""
+        profile.mkdir()
+        return _Browser(
+            None,
+            SimpleNamespace(
+                uses_custom_data_dir=False,
+                user_data_dir=str(profile),
+                _browser_args=browser_args,
+            ),
+        )
+
+    async def test_an_interrupt_while_connecting_ends_the_launched_chrome(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ended: list[Any] = []
+        monkeypatch.setattr("graftpunk.backends.nodriver.terminate_nodriver_browser", ended.append)
+        registry = self._registry(monkeypatch)
+        spawned: list[Any] = []
+        connecting = asyncio.Event()
+
+        async def start_then_hang(**kwargs: Any) -> None:
+            browser = self._spawned(temp_profiles / "uc_connecting", kwargs["browser_args"])
+            registry.add(browser)
+            spawned.append(browser)
+            connecting.set()
+            await asyncio.Event().wait()
+
+        mock_uc = MagicMock()
+        mock_uc.start = start_then_hang
+        backend = NoDriverBackend()
+
+        with patch.dict("sys.modules", {"nodriver": mock_uc}):
+            task = asyncio.create_task(backend._start_async())
+            await connecting.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert ended == spawned
+        assert registry == set()
+        assert not (temp_profiles / "uc_connecting").exists()
+
+    async def test_each_failed_connect_ends_its_chrome_before_the_retry(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """nodriver raises "Failed to connect to browser" from inside Browser.start()."""
+        ended: list[Any] = []
+        monkeypatch.setattr("graftpunk.backends.nodriver.terminate_nodriver_browser", ended.append)
+        registry = self._registry(monkeypatch)
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+        spawned: list[Any] = []
+
+        async def start_then_fail(**kwargs: Any) -> None:
+            browser = self._spawned(
+                temp_profiles / f"uc_attempt{len(spawned)}", kwargs["browser_args"]
+            )
+            registry.add(browser)
+            spawned.append(browser)
+            raise Exception("\nFailed to connect to browser\n")  # noqa: TRY002 - nodriver's own type
+
+        mock_uc = MagicMock()
+        mock_uc.start = start_then_fail
+        backend = NoDriverBackend()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_uc}),
+            pytest.raises(BrowserError, match="after 3 attempts"),
+        ):
+            await backend._start_async()
+
+        assert len(spawned) == 3
+        assert ended == spawned
+        assert registry == set()
+        assert [p.name for p in temp_profiles.iterdir()] == []
+
+    async def test_a_browser_another_start_launched_meanwhile_is_left_alone(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ended: list[Any] = []
+        monkeypatch.setattr("graftpunk.backends.nodriver.terminate_nodriver_browser", ended.append)
+        registry = self._registry(monkeypatch)
+        spawned: list[Any] = []
+
+        async def start_then_fail(**kwargs: Any) -> None:
+            # Another backend's start, in another thread, registered first.
+            registry.add(self._spawned(temp_profiles / "uc_other", ["--other"]))
+            browser = self._spawned(temp_profiles / "uc_ours", kwargs["browser_args"])
+            registry.add(browser)
+            spawned.append(browser)
+            raise RuntimeError("Chrome crashed")
+
+        mock_uc = MagicMock()
+        mock_uc.start = start_then_fail
+        backend = NoDriverBackend()
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_uc}),
+            pytest.raises(RuntimeError, match="Chrome crashed"),
+        ):
+            await backend._start_async()
+
+        assert ended == spawned
+        assert [b.config.user_data_dir for b in registry] == [str(temp_profiles / "uc_other")]
+        assert (temp_profiles / "uc_other").exists()
+
+
+class TestNoDriverBackendInterruptedLifecycle:
+    """Interrupts that land between the steps of a start or a stop."""
+
+    @staticmethod
+    def _record_terminations(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+        ended: list[Any] = []
+        monkeypatch.setattr("graftpunk.backends.nodriver.terminate_nodriver_browser", ended.append)
+        return ended
+
+    def test_ctrl_c_after_the_browser_started_but_before_start_returned(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.signals import live_browsers
+
+        ended = self._record_terminations(monkeypatch)
+        backend = NoDriverBackend()
+        real_run_async = backend._run_async
+
+        def run_then_interrupt(coro: Any) -> Any:
+            real_run_async(coro)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(backend, "_run_async", run_then_interrupt)
+
+        with pytest.raises(KeyboardInterrupt):
+            backend.start()
+
+        assert len(fake_chrome.browsers) == 1
+        assert ended == fake_chrome.browsers
+        assert backend._browser is None
+        assert backend not in live_browsers()
+        assert backend._loop is None
+
+    def test_ctrl_c_before_a_sync_stop_reached_the_loop_still_ends_chrome(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ended = self._record_terminations(monkeypatch)
+        backend = NoDriverBackend()
+        backend.start()
+
+        def interrupted(coro: Any) -> Any:
+            coro.close()
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(backend, "_run_async", interrupted)
+
+        with pytest.raises(KeyboardInterrupt):
+            backend.stop()
+
+        assert ended == fake_chrome.browsers
+        assert fake_chrome.browsers[0].stopped_on is None
+        assert backend.is_running is False
+        assert backend._loop is None
+
+    def test_a_stop_async_cancelled_before_the_stop_ran_still_ends_chrome(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ended = self._record_terminations(monkeypatch)
+        backend = NoDriverBackend()
+        backend.start()
+        loop = backend._loop
+        assert loop is not None
+        gate = threading.Event()
+        # Keep the browser's loop busy, so the submitted stop has not begun
+        # when wait_for cancels it at 0.1 s; free it soon after, so the
+        # stop's join of the loop thread does not wait out its timeout.
+        loop.call_soon_threadsafe(gate.wait, 5)
+        threading.Timer(0.3, gate.set).start()
+
+        async def stop_with_timeout() -> None:
+            await asyncio.wait_for(backend.stop_async(), 0.1)
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(stop_with_timeout())
+
+        assert ended == fake_chrome.browsers
+        assert fake_chrome.browsers[0].stopped_on is None
+        assert backend.is_running is False
+
+    def test_two_threads_starting_one_backend_launch_one_browser(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import nodriver
+
+        async def slow_start(**kwargs: Any) -> Any:
+            await asyncio.sleep(0.2)
+            return await fake_chrome.start(**kwargs)
+
+        monkeypatch.setattr(nodriver, "start", slow_start)
+        backend = NoDriverBackend()
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def start() -> None:
+            barrier.wait()
+            try:
+                backend.start()
+            except BaseException as exc:  # noqa: BLE001 - reported by the assertion
+                errors.append(exc)
+
+        threads = [threading.Thread(target=start) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+
+        assert errors == []
+        assert len(fake_chrome.browsers) == 1
+        backend.stop()
+
+    def test_a_start_async_releases_an_old_private_loop_off_the_callers_loop(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from graftpunk.backends.nodriver import _PrivateLoop
+
+        backend = with_private_loop(NoDriverBackend())
+        real_close = _PrivateLoop.close
+
+        def slow_close(self: _PrivateLoop) -> None:
+            time.sleep(0.3)
+            real_close(self)
+
+        monkeypatch.setattr(_PrivateLoop, "close", slow_close)
+
+        async def ticks_during_start() -> int:
+            ticks = 0
+
+            async def tick() -> None:
+                nonlocal ticks
+                while True:
+                    ticks += 1
+                    await asyncio.sleep(0.01)
+
+            ticker = asyncio.create_task(tick())
+            await backend._start_async()
+            backend._started = True
+            await backend.stop_async()
+            ticker.cancel()
+            return ticks
+
+        assert asyncio.run(ticks_during_start()) >= 10
+        assert backend._private_loop is None

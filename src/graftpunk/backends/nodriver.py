@@ -14,8 +14,8 @@ Note:
     and a synchronous call fails (the getters return their fallback) rather
     than run on a loop the browser does not belong to. ``stop_async()`` stops
     the browser from inside an event loop. When the browser's loop is gone, or
-    ``stop()`` is called from inside it, the stop ends Chrome with a signal
-    instead of through the loop.
+    ``stop()`` is called from inside it, the stop ends Chrome without the loop
+    (SIGTERM, or the subprocess handle on Windows).
 
 Logging:
     This module uses structured logging with intentional log levels:
@@ -38,8 +38,10 @@ import asyncio
 import concurrent.futures
 import io
 import math
+import os
 import sys
 import threading
+import time
 from collections.abc import Coroutine
 from contextlib import contextmanager
 from pathlib import Path
@@ -82,9 +84,12 @@ _REAP_KILL_TIMEOUT_S: float = 1.0
 _LOOP_JOIN_TIMEOUT_S: float = 5.0
 _LOOP_THREAD_NAME = "graftpunk-nodriver-loop"
 
-# Guards the creation of a backend's private loop, so two threads starting
-# the same backend cannot each make one.
-_PRIVATE_LOOP_LOCK = threading.Lock()
+# Ending Chrome without its event loop: how often to check whether the
+# signalled process has exited (bounded by _REAP_TERM_TIMEOUT_S), and how
+# many times, how far apart, to try removing its temp profile.
+_EXIT_POLL_S: float = 0.05
+_PROFILE_REMOVE_ATTEMPTS = 3
+_PROFILE_REMOVE_RETRY_S: float = 0.25
 
 
 class _PrivateLoop:
@@ -191,6 +196,137 @@ async def _reap_browser_process(proc: asyncio.subprocess.Process | None) -> None
                 pid=proc.pid,
                 returncode=proc.returncode,
             )
+
+
+def _signals_available() -> bool:
+    """Whether Chrome can be ended with SIGTERM, which ``terminate_nodriver_browser`` needs."""
+    return os.name == "posix"
+
+
+def _nodriver_registry() -> set[Any] | None:
+    """nodriver's set of live browsers, which its ``atexit`` handler stops, or None."""
+    try:
+        from nodriver.core.util import get_registered_instances
+
+        return get_registered_instances()
+    except Exception:  # noqa: BLE001 - best-effort: a missing registry only costs the cleanup
+        LOG.debug("nodriver_registry_unavailable", exc_info=True)
+        return None
+
+
+def _terminate_through_handle(proc: Any) -> bool:
+    """End Chrome through its subprocess handle, where there are no POSIX signals. Never raises."""
+    if proc is None:
+        return False
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return False
+    except Exception as exc:  # noqa: BLE001 - best-effort: this runs on cleanup paths
+        LOG.debug("chrome_process_terminate_failed", error=str(exc))
+        return False
+    return True
+
+
+def _has_exited(proc: Any) -> bool:
+    """Whether the Chrome behind *proc* is gone, or there is no way to tell. Never raises.
+
+    On POSIX a process that exited but was not reaped yet still answers
+    ``kill(pid, 0)``; asyncio's child watcher reaps it when it can, and the
+    caller's wait is bounded for when it cannot.
+    """
+    pid = getattr(proc, "pid", None)
+    if not isinstance(pid, int):
+        return True
+    if _signals_available():
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            # EPERM: the pid exists and belongs to someone else now.
+            return True
+        return False
+    popen = getattr(getattr(proc, "_transport", None), "_proc", None)
+    if popen is None:
+        return True
+    try:
+        return popen.poll() is not None
+    except Exception:  # noqa: BLE001 - best-effort: no answer means stop waiting
+        return True
+
+
+def _close_transport(proc: Any) -> None:
+    """Close the asyncio subprocess transport behind *proc*. Never raises.
+
+    nodriver never closes it, so it is closed when garbage collected, and if
+    its loop has closed by then the interpreter prints ``Exception ignored in
+    BaseSubprocessTransport.__del__ ... Event loop is closed``. Closing it here
+    marks it closed first: on a closed loop the close itself fails, quietly.
+    """
+    transport = getattr(proc, "_transport", None)
+    if transport is None:
+        return
+    try:
+        transport.close()
+    except Exception:  # noqa: BLE001 - best-effort: a closed loop makes this raise
+        LOG.debug("chrome_transport_close_failed", exc_info=True)
+
+
+def _end_browser_without_loop(browser: Any) -> None:
+    """End *browser*'s Chrome and remove its temp profile without its event loop. Never raises.
+
+    SIGTERM on POSIX (the signal handler's sequence), the subprocess handle
+    elsewhere. Then it waits up to ``_REAP_TERM_TIMEOUT_S`` for Chrome to
+    exit, because removing the profile while Chrome still writes to it leaves
+    the directory behind, and retries the removal. There is no subprocess
+    reap: that needs the loop.
+    """
+    proc = getattr(browser, "_process", None)
+    if _signals_available():
+        ended = terminate_nodriver_browser(browser)
+    else:
+        ended = _terminate_through_handle(proc)
+    if ended:
+        deadline = time.monotonic() + _REAP_TERM_TIMEOUT_S
+        while not _has_exited(proc) and time.monotonic() < deadline:
+            time.sleep(_EXIT_POLL_S)
+    _close_transport(proc)
+    remove_browser_temp_profile(
+        browser, attempts=_PROFILE_REMOVE_ATTEMPTS, retry_delay_s=_PROFILE_REMOVE_RETRY_S
+    )
+
+
+def _launched_with(browser: Any, browser_args: list[str]) -> bool:
+    """Whether *browser* is the one a ``uc.start(browser_args=...)`` call created.
+
+    nodriver's ``Config`` keeps the ``browser_args`` list it was given, so the
+    identity tells this start's browser from one another thread started at
+    the same time. A browser whose config does not show the list is taken as
+    this start's.
+    """
+    own = getattr(getattr(browser, "config", None), "_browser_args", None)
+    return own is None or own is browser_args
+
+
+def _release_unreturned_browsers(
+    registry: set[Any] | None, before: set[Any], browser_args: list[str]
+) -> None:
+    """End the browsers a failed ``uc.start()`` launched but never returned. Never raises.
+
+    nodriver's ``Browser.start()`` spawns Chrome and adds it to the registry,
+    then connects to it and attaches, and only then returns. A start that
+    raised in between ("Failed to connect to browser" is raised there) or was
+    interrupted (Ctrl-C) leaves a running Chrome that no handle outside the
+    registry points at.
+    """
+    if registry is None:
+        return
+    for browser in set(registry) - before:
+        if not _launched_with(browser, browser_args):
+            continue
+        registry.discard(browser)
+        _end_browser_without_loop(browser)
 
 
 def _patch_nodriver_cookie_parsing() -> None:
@@ -369,8 +505,15 @@ class NoDriverBackend:
         cannot use it: when the loop has stopped or closed (a caller's loop
         that finished), and when ``stop()`` is called from inside the
         browser's own loop, which also logs ``nodriver_backend_stop_in_own_loop``
-        at warning level. That path sends SIGTERM, leaves nodriver's registry,
-        and removes the temp profile, without the subprocess reap.
+        at warning level. That path sends SIGTERM (on Windows it terminates
+        the subprocess through its handle), leaves nodriver's registry, waits
+        up to ``_REAP_TERM_TIMEOUT_S`` for Chrome to exit, and removes the
+        temp profile, without the subprocess reap. A start or stop that is
+        interrupted (Ctrl-C, or a cancelled task) ends its Chrome the same way
+        before the interrupt propagates.
+
+        ``start()`` holds a per-backend lock, so two threads starting one
+        backend launch one Chrome.
 
     Note:
         Default headless=False because nodriver is more detectable in headless
@@ -468,6 +611,9 @@ class NoDriverBackend:
         # when the backend created that loop itself (None for a caller's loop).
         self._loop: asyncio.AbstractEventLoop | None = None
         self._private_loop: _PrivateLoop | None = None
+        # Serializes start(), and the private loop's creation, per backend.
+        # Reentrant: start() creates the loop while holding it.
+        self._lock = threading.RLock()
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle the configuration only, as a stopped backend.
@@ -482,7 +628,13 @@ class NoDriverBackend:
         state["_started"] = False
         state["_browser"] = None
         state["_page"] = None
+        del state["_lock"]
         return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the configuration, with a lock of the copy's own."""
+        self.__dict__.update(state)
+        self._lock = threading.RLock()
 
     def _ensure_private_loop(self) -> None:
         """Create the private loop ``start()`` runs the browser on, if there is no loop.
@@ -493,7 +645,7 @@ class NoDriverBackend:
         Raises:
             RuntimeError: If the loop's thread does not start.
         """
-        with _PRIVATE_LOOP_LOCK:
+        with self._lock:
             if self._loop is not None and not self._loop.is_running():
                 self._release_loop()
             if self._loop is None:
@@ -614,8 +766,12 @@ class NoDriverBackend:
         loop = asyncio.get_running_loop()
         if loop is not self._loop:
             # A private loop left from an earlier start, now superseded by the
-            # caller's loop (BrowserSession.start_async()).
-            self._release_loop()
+            # caller's loop (BrowserSession.start_async()). Joining its
+            # thread blocks, so not on the caller's loop.
+            if self._private_loop is not None:
+                await asyncio.to_thread(self._release_loop)
+            else:
+                self._release_loop()
             self._loop = loop
         try:
             await self._launch(uc, _max_attempts)
@@ -668,8 +824,13 @@ class NoDriverBackend:
         if "lang" in self._options:
             start_kwargs["lang"] = self._options["lang"]
 
+        # A start that fails or is interrupted inside uc.start() never hands
+        # back its browser, so the ones it launched are found in nodriver's
+        # registry instead (_release_unreturned_browsers).
+        registry = _nodriver_registry()
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
+            before = set(registry) if registry is not None else set()
             try:
                 self._browser = await uc.start(**start_kwargs)
                 # Registered before the first tab: a signal arriving during
@@ -683,6 +844,7 @@ class NoDriverBackend:
                 # Release whatever this attempt left running before the next
                 # one overwrites the handle, or before the raise below (#192).
                 self._release_failed_attempt()
+                _release_unreturned_browsers(registry, before, browser_args)
                 if "Failed to connect to browser" not in str(exc):
                     raise
             except BaseException:
@@ -690,6 +852,7 @@ class NoDriverBackend:
                 # retry, but the half-started browser still has to go, or it
                 # stays registered with _started False, where stop() skips it.
                 self._release_failed_attempt()
+                _release_unreturned_browsers(registry, before, browser_args)
                 raise
             if attempt < max_attempts:
                 LOG.warning(
@@ -709,7 +872,10 @@ class NoDriverBackend:
     ) -> None:
         """Start the browser.
 
-        Idempotent - calling when already started is a no-op.
+        Idempotent - calling when already started is a no-op. Two threads
+        starting one backend launch one browser: the second waits for the
+        first and then finds it started. A start that fails or is interrupted
+        (Ctrl-C) ends the Chrome it launched before raising.
 
         Args:
             headless: Override headless setting.
@@ -719,10 +885,16 @@ class NoDriverBackend:
         Raises:
             BrowserError: If browser fails to start.
         """
-        if self._started:
-            LOG.debug("nodriver_backend_already_started")
-            return
+        with self._lock:
+            if self._started:
+                LOG.debug("nodriver_backend_already_started")
+                return
+            self._start_locked(headless, profile_dir, options)
 
+    def _start_locked(
+        self, headless: bool | None, profile_dir: Path | None, options: dict[str, Any]
+    ) -> None:
+        """The body of ``start()``, run under the backend's lock."""
         # Allow overrides at start time
         if headless is not None:
             self._headless = headless
@@ -744,11 +916,15 @@ class NoDriverBackend:
             self._run_async(self._start_async())
             self._started = True
             LOG.info("nodriver_backend_started")
-        except BrowserError:
+        except BaseException as exc:
+            # _launch already released a browser it failed to start. This
+            # covers the gap after the start coroutine returned and before
+            # _started was set, where an interrupt leaves a registered
+            # browser that stop() would skip. A no-op otherwise.
+            self._release_failed_attempt()
             self._release_loop()
-            raise
-        except Exception as exc:
-            self._release_loop()
+            if isinstance(exc, BrowserError) or not isinstance(exc, Exception):
+                raise
             LOG.error(
                 "nodriver_backend_start_failed",
                 error=str(exc),
@@ -756,26 +932,28 @@ class NoDriverBackend:
                 profile_dir=str(self._profile_dir) if self._profile_dir else None,
             )
             raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
-        except BaseException:
-            self._release_loop()
-            raise
 
     def _release_failed_attempt(self) -> None:
         """End the browser without its event loop, and forget it. Never raises.
 
-        Used for a failed start attempt, and by the stops that cannot use the
-        browser's loop.
+        Used for a start attempt that failed after ``uc.start()`` returned,
+        for a start or stop that was interrupted, and by the stops that cannot
+        use the browser's loop.
 
-        ``uc.start()`` returns a live browser whose first CDP call can still
-        fail, and "Failed to connect to browser" is raised by that call rather
-        than by the launch. Retrying then overwrote ``self._browser``, so
-        nothing ever stopped the earlier Chrome or deleted its temp profile,
-        and a start that failed three times left three of each (#192).
+        ``uc.start()`` returns a live browser whose first CDP call (opening
+        the first tab) can still fail. Retrying then overwrote
+        ``self._browser``, so nothing ever stopped the earlier Chrome or
+        deleted its temp profile (#192). A failure inside ``uc.start()``
+        itself, including "Failed to connect to browser", never sets
+        ``self._browser``; ``_launch`` ends that Chrome through nodriver's
+        registry instead.
 
-        The browser is ended the way a signal handler ends one, since there is
-        no working CDP connection to ask it politely, and the profile goes with
-        it: this is not a signal handler, so it may do the unbounded work that
-        ``terminate_nodriver_browser`` deliberately leaves out.
+        The browser is ended without its loop (see
+        ``_end_browser_without_loop``), since there is no working CDP
+        connection to ask it politely, and the profile goes with it: this is
+        not a signal handler, so it may wait for Chrome to exit and do the
+        unbounded work that ``terminate_nodriver_browser`` deliberately leaves
+        out.
         """
         browser = self._browser
         if browser is None:
@@ -786,8 +964,7 @@ class NoDriverBackend:
         self._deregister_browser()
         self._browser = None
         self._page = None
-        terminate_nodriver_browser(browser)
-        remove_browser_temp_profile(browser)
+        _end_browser_without_loop(browser)
 
     def _deregister_browser(self) -> None:
         """Remove browser from nodriver's global instance registry.
@@ -797,13 +974,9 @@ class NoDriverBackend:
         to stdout in the process. By removing our browser after we've already
         stopped it, we prevent duplicate stop attempts and noisy output.
         """
-        try:
-            from nodriver.core.util import get_registered_instances
-
-            instances = get_registered_instances()
-            instances.discard(self._browser)
-        except Exception:  # noqa: BLE001 — best-effort cleanup
-            LOG.debug("deregister_browser_failed", exc_info=True)
+        registry = _nodriver_registry()
+        if registry is not None:
+            registry.discard(self._browser)
 
     async def _stop_async(self) -> None:
         """Stop the browser and reap its process.
@@ -851,6 +1024,9 @@ class NoDriverBackend:
                 # because a reap that raises must not cost the directory.
                 try:
                     await _reap_browser_process(proc)
+                    # While the loop still runs, so a later garbage
+                    # collection does not close it on a closed loop.
+                    _close_transport(proc)
                 finally:
                     # nodriver deletes its temp profile only from the atexit
                     # handler that iterates the registry _deregister_browser
@@ -865,7 +1041,10 @@ class NoDriverBackend:
         Idempotent - calling when already stopped is a no-op. When the
         browser's loop has stopped, or this is called from inside that loop
         (which logs ``nodriver_backend_stop_in_own_loop`` at warning level),
-        Chrome is ended with SIGTERM instead of through the loop.
+        Chrome is ended without the loop: SIGTERM (the subprocess handle on
+        Windows), a wait of up to ``_REAP_TERM_TIMEOUT_S`` for it to exit, and
+        the temp profile's removal. An interrupt (Ctrl-C) while the stop waits
+        on the loop ends Chrome the same way before it propagates.
         """
         if not self._started:
             return
@@ -889,11 +1068,20 @@ class NoDriverBackend:
                             "nodriver_backend_stop_in_own_loop",
                             hint="In async code, await stop_async() (or use "
                             "'async with BrowserSession(...)'); Chrome was ended "
-                            "with SIGTERM, without the subprocess reap.",
+                            "without its event loop, so this stop blocked the "
+                            "loop while Chrome exited and did not reap the "
+                            "subprocess.",
                         )
                         self._release_failed_attempt()
                     else:
-                        self._run_async(self._stop_async())
+                        try:
+                            self._run_async(self._stop_async())
+                        except BaseException:
+                            # Interrupted before or during _stop_async, or the
+                            # loop went away: _reset_state() below forgets the
+                            # browser, so end it now if the stop did not.
+                            self._release_failed_attempt()
+                            raise
                 finally:
                     # Inside the suppression: the private loop's teardown
                     # cancels nodriver's leftover tasks, which can log noise.
@@ -910,9 +1098,12 @@ class NoDriverBackend:
         loop (e.g., from ``BrowserSession.__aexit__``), where ``stop()`` would
         block that loop. The stop runs on the browser's loop: directly when
         that is the current loop, otherwise submitted to it and awaited. When
-        the browser's loop has stopped, Chrome is ended with SIGTERM instead.
-        Joining the private loop's thread happens on a worker thread, so the
-        caller's loop keeps running meanwhile.
+        the browser's loop has stopped, Chrome is ended without it (SIGTERM, or
+        the subprocess handle on Windows) on a worker thread. A cancellation
+        (``asyncio.wait_for``, Ctrl-C under ``asyncio.run``) ends Chrome the
+        same way before it propagates. Joining the private loop's thread
+        happens on a worker thread, so the caller's loop keeps running
+        meanwhile.
         """
         if not self._started:
             return
@@ -927,12 +1118,20 @@ class NoDriverBackend:
                         await self._stop_async()
                     elif loop.is_closed() or not loop.is_running():
                         # Nothing left to run _stop_async on, and the browser
-                        # must not outlive the loop it was started on.
-                        self._release_failed_attempt()
+                        # must not outlive the loop it was started on. The
+                        # release waits for Chrome to exit, so not on the
+                        # caller's loop.
+                        await asyncio.to_thread(self._release_failed_attempt)
                     else:
                         await asyncio.wrap_future(
                             asyncio.run_coroutine_threadsafe(self._stop_async(), loop)
                         )
+                except BaseException:
+                    # Cancelled before or during _stop_async: _reset_state()
+                    # below forgets the browser, so end it now if the stop
+                    # did not.
+                    self._release_failed_attempt()
+                    raise
                 finally:
                     if loop is None or loop is current:
                         # Nothing to join from here: a private loop running
