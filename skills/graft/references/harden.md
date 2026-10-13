@@ -43,15 +43,15 @@ tell the user which values you kept and why. A sidecar is committed: when one of
 its names holds an account value, tell the user and do not commit that sidecar
 as it is (guide: Test against fixtures, not against the site). Run the same line
 once more with the plugin module in place of the fixture and with no sidecar,
-and rewrite any captured value it prints there (a match inside gp's
-`seen N time(s) in run` phrase is gp's run label: tell the user), since a
-docstring and a comment hold invented values only. Then run the gate's `pytest`
-line through the runner in the Harden block: the generated suite checks every
-fixture on every run and names each one that is still byte for byte its capture
-or holds a flagged cookie or token name; rewrite any it names. Count the check
-as run only when that `pytest` output carries its `fixtures_are_sanitised:`
-line; without it the project lacks the wiring, so run the gate's plugin check
-and act on what it reports first.
+and rewrite any captured value it prints there, since a docstring and a comment
+hold invented values only; a match inside gp's `seen N time(s) in run` phrase is
+gp's run label, so keep it and tell the user. Then run the gate's `pytest` line
+through the runner in the Harden block: the generated suite checks every fixture
+on every run and names each one that is still byte for byte its capture or holds
+a flagged cookie or token name; rewrite any it names. Count the check as run
+only when that `pytest` output carries its `fixtures_are_sanitised:` line;
+without it the project lacks the wiring, so run the gate's plugin check and act
+on what it reports first.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
 and its sidecar yourself, with invented values in the shape the projection gives
