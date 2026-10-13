@@ -18,9 +18,11 @@ surrogate pair, ``\\/``), and its percent-encoding decoded (``%40``). A piece wi
 space, a digit, or an ``@`` matches in any case; a single word matches as written,
 in capitals, or in lower case inside an identifier or an address
 (``test_okonkwo_order``, ``okonkwo@example.com``). FIXTURE can be any text file, so
-a plugin module or a test module is checked the same way. The provenance phrase gp
-writes into a generated stub's docstring (``seen 2 time(s) in run <session>/<run
-id>.``) is left out first, since its run id is gp's and not captured data.
+a plugin module or a test module is checked the same way. In the provenance phrase
+gp writes into a generated stub's docstring (``seen 2 time(s) in run <session>/<run
+id>.``), the date and time that start the run id are blanked first, since they are
+gp's and not captured data; the rest of the phrase is still searched. A captured
+compact date written into that slot by hand is therefore not caught.
 
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
 capitalised word copied in lower case on its own, a number reformatted (``12345`` as
@@ -67,30 +69,39 @@ _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", r
 # The provenance phrase gp writes into a generated stub's docstring ("seen 2 time(s)
 # in run myshop/20261006-101500-4242."), wrapped at any space. Its run id starts
 # with the run's date and time, gp's and not captured data, yet the year matches any
-# captured date, so those two fields are blanked; the count, the session, and the
-# process id stay in the text the check searches, so nothing captured is hidden. A
-# label too long for its line is cut mid-word, and the wrap can leave its closing
-# period alone on the next line, so a candidate may span lines and is blanked only
-# when, with those breaks taken out, it is a session as `gp observe list` names it
-# and a run id `make_run_id` writes (a real date and time, then the process id).
+# captured date, so those 14 digits are blanked in place and every other character,
+# the count, the session, and the process id included, stays where it was for the
+# search. A label too long for its line is cut mid-word, and the wrap can leave its
+# closing period alone on the next line, so a candidate may span lines; it is
+# blanked only when, with those breaks taken out, it is the session name given to
+# `--from-run` (a session name with a dot is left alone, and its year reported) and
+# a run id `make_run_id` writes (a real date and time, then the process id).
 _PROVENANCE = re.compile(
-    r"seen\s+(\d+)\s+time\(s\)\s+in\s+run\s+([a-z0-9@_/-]+(?:\n[ \t]*[a-z0-9@_/-]*)*)\."
+    r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+([A-Za-z0-9@_/-]+(?:\n[ \t]*[A-Za-z0-9@_/-]*)*)\."
 )
 _RUN_LABEL = re.compile(
-    r"(?P<session>[a-z0-9@_-]+)/"
+    r"[A-Za-z0-9@_-]+/"
     r"(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])-"
-    r"(?:[01]\d|2[0-3])[0-5]\d[0-5]\d-(?P<pid>\d+)"
+    r"(?:[01]\d|2[0-3])[0-5]\d[0-5]\d-\d+"
 )
+_DATE_TIME_DIGITS = 14
 
 
 def _without_provenance(text: str) -> str:
-    """*text* with the date and time of each of gp's run ids blanked."""
+    """*text* with the date and time of each of gp's run ids blanked in place."""
 
     def blank(match: re.Match[str]) -> str:
-        label = _RUN_LABEL.fullmatch(re.sub(r"\n[ \t]*", "", match.group(2)))
-        if label is None:
+        label = match.group(1)
+        if _RUN_LABEL.fullmatch(re.sub(r"\n[ \t]*", "", label)) is None:
             return match.group(0)
-        return f" {match.group(1)} {label['session']} {label['pid']} "
+        chars = list(label)
+        left = _DATE_TIME_DIGITS
+        for i in range(label.index("/") + 1, len(chars)):
+            if left and chars[i].isdigit():
+                chars[i] = " "
+                left -= 1
+        head = match.group(0)[: match.start(1) - match.start(0)]
+        return head + "".join(chars) + "."
 
     return _PROVENANCE.sub(blank, text)
 
@@ -232,15 +243,15 @@ def main(argv: list[str]) -> int:
     if len(argv) not in (3, 4):
         print("usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]", file=sys.stderr)
         return 2
-    role = "capture"
+    role, path = "capture", argv[1]
     try:
-        capture = Path(argv[1]).read_text(encoding="utf-8")
-        role = "fixture"
-        fixture = Path(argv[2]).read_text(encoding="utf-8")
-        role = "sidecar"
-        sidecar = json.loads(Path(argv[3]).read_text(encoding="utf-8")) if len(argv) == 4 else None
+        capture = Path(path).read_text(encoding="utf-8")
+        role, path = "fixture", argv[2]
+        fixture = Path(path).read_text(encoding="utf-8")
+        role, path = "sidecar", argv[3] if len(argv) == 4 else ""
+        sidecar = json.loads(Path(path).read_text(encoding="utf-8")) if len(argv) == 4 else None
     except (OSError, ValueError) as exc:
-        print(f"fixture-leaks: cannot read the {role}: {exc}", file=sys.stderr)
+        print(f"fixture-leaks: cannot read the {role} {path}: {exc}", file=sys.stderr)
         return 2
     if sidecar is not None and not isinstance(sidecar, dict):
         print("fixture-leaks: the sidecar is not a JSON object.", file=sys.stderr)

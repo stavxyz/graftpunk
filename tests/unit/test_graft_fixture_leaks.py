@@ -149,10 +149,17 @@ def test_a_closing_period_the_wrap_left_alone_still_ends_the_label(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    "next_line", ["ACCT_4471023.", "acct_4471023.", "4471023.", "see\n4471023.", "023."]
+    ("next_line", "reported"),
+    [
+        ("ACCT_4471023.", "4471023"),
+        ("acct_4471023.", "4471023"),
+        ("4471023.", "4471023"),
+        ("see\n4471023.", "4471023"),
+        ("023.", "023"),
+    ],
 )
 def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
-    tmp_path: Path, next_line: str
+    tmp_path: Path, next_line: str, reported: str
 ) -> None:
     """A hand edit that drops the label's period must not let the phrase swallow what
     follows: only the run id's date and time are blanked, so an account value
@@ -161,7 +168,7 @@ def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
     module = f"# seen 2 time(s) in run myshop/20261006-101500-4242\n{next_line}\n"
     result = _run(tmp_path, capture, module)
     assert result.returncode == 1
-    assert next_line.rstrip(".").split("\n")[-1].split("_")[-1] in result.stdout
+    assert reported in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -191,6 +198,32 @@ def test_a_captured_value_shaped_into_a_provenance_phrase_is_still_a_leak(
     alone."""
     result = _run(tmp_path, json.dumps({"a": capture_value}), f"# {phrase}\n")
     assert result.returncode == 1, result.stdout
+
+
+def test_blanking_adds_no_text_the_module_never_held(tmp_path: Path) -> None:
+    """The date and time are blanked in place, so no pair of words is made up from the
+    phrase's parts: a captured "2 myshop" is not reported for an unedited phrase."""
+    result = _run(tmp_path, json.dumps({"a": "2 myshop"}), _stub_module("/api/orders"))
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_session_given_in_capitals_is_still_gps(tmp_path: Path) -> None:
+    """The label is the session name as typed to --from-run, which gp accepts in any case."""
+    result = _run(tmp_path, _DATED_CAPTURE, _stub_module("/api/orders", session="MyShop"))
+    assert result.returncode == 0, result.stdout
+
+
+def test_an_unreadable_fixture_is_named(tmp_path: Path) -> None:
+    (tmp_path / "capture.json").write_text("{}")
+    missing = tmp_path / "plugin.py"
+    assert PYTHON is not None
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [PYTHON, "-I", str(SCRIPT), str(tmp_path / "capture.json"), str(missing)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert f"fixture-leaks: cannot read the fixture {missing}:" in result.stderr
 
 
 _GP_SIDECAR = {"capture_sha256": "a" * 64, "flagged_names": ["session_id"]}
@@ -445,8 +478,8 @@ def test_an_unreadable_input_exits_2(tmp_path: Path) -> None:
 
 
 def test_a_sidecar_written_as_bad_json_names_the_sidecar(tmp_path: Path) -> None:
-    """harden.md's other exit-2 case: a slip writing the sidecar is named, so the skill
-    writes that file again rather than treating the capture as unreadable."""
+    """harden.md's exit-2 case for a sidecar the skill wrote: the slip is named, so the
+    skill writes that file again rather than treating the capture as unreadable."""
     (tmp_path / "capture.json").write_text("{}")
     (tmp_path / "fixture.json").write_text("{}")
     (tmp_path / "fixture.json.meta.json").write_text("{not json")
@@ -465,7 +498,7 @@ def test_a_sidecar_written_as_bad_json_names_the_sidecar(tmp_path: Path) -> None
         text=True,
     )
     assert result.returncode == 2
-    assert "fixture-leaks: cannot read the sidecar:" in result.stderr
+    assert "fixture-leaks: cannot read the sidecar " in result.stderr
 
 
 def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
@@ -481,5 +514,5 @@ def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 2
-    assert "fixture-leaks: cannot read the capture:" in result.stderr
+    assert f"fixture-leaks: cannot read the capture {capture}:" in result.stderr
     assert result.stdout == ""
