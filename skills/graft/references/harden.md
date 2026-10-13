@@ -16,41 +16,41 @@ capture (not a numbered one): a test finds its fixture by that name, and a
 request with none answers 404. Then read the capture's sidecar and write its
 text, unchanged, under its own name beside the fixture with the Write tool. Copy
 nothing with the shell: Claude Code refuses a shell command that writes a file
-whose name holds braces, and every endpoint with a path parameter has one. Take
-those two files by name, never a glob or a directory, which would bring numbered
-captures along. The fixture holds invented values in the capture's structure:
-the same keys, nesting, and types, a few list items rather than every one, and
-values of the same kind (an id stays an id-shaped string, a date a date) that
-belong to no real account (guide: Deriving a fixture from a capture). For an
-HTML capture, keep the markup and the classes and attributes a parser selects
-on, and invent the text and the attribute values that carry data. Then run the
-fixture-leaks line of the Harden block on the capture, the fixture, and its
-sidecar. It prints each captured value, and each piece of one (a run of three or
-more digits, a word holding an `@`, a digit, or a capital letter, both halves of
-an email address, and a pair of words with one of those in it), still in the
-fixture, escaped and percent-encoded copies included (a single word in lower
-case only inside an identifier or an address), and the names the sidecar lists.
-It matches text, so read the fixture once more for what it cannot see: a word in
+whose name holds braces, and every endpoint with a path parameter has one. The
+fixture holds invented values in the capture's structure: the same keys,
+nesting, and types, a few list items rather than every one, and values of the
+same kind (an id stays an id-shaped string, a date a date) that belong to no
+real account (guide: Deriving a fixture from a capture). For an HTML capture,
+keep the markup and the classes and attributes a parser selects on, and invent
+the text and the attribute values that carry data. Then run the fixture-leaks
+line of the Harden block on the capture, the fixture, and its sidecar. It prints
+each captured value, and each piece of one (a run of three or more digits, a
+word holding an `@`, a digit, or a capital letter, both halves of an email
+address, and a pair of words with one of those in it), still in the fixture,
+escaped and percent-encoded copies included (a single word in lower case only
+inside an identifier or an address), and the names the sidecar lists. It exits
+1, naming keys, when the sidecar differs from gp's: rewrite gp's text. It
+matches text, so read the fixture once more for what it cannot see: a word in
 lower case on its own, a number written another way (`12345` as `12,345`),
 digits split across fields, and a copy re-encoded, such as base64. When it exits
-2 (a capture that is not text, such as a PDF), it compared nothing: make sure
-the fixture is invented whole, read the plugin module by eye for anything from
-that capture, and tell the user. Rewrite each value it prints unless it holds no
-account data and the command branches or selects on it (a status, a currency
-code, a class name), or the site shows it to every account (a heading, a button
-label), or it is part of a format (a year, a time-zone suffix). When every value
-it still prints is one of those, the fixture is done; tell the user which values
-you kept and why. A sidecar is committed: when one of its names holds an account
-value, tell the user and do not commit that sidecar as it is
-(guide: Test against fixtures, not against the site). Run the same line once
-more with the plugin module in place of the fixture and with no sidecar, and
-rewrite any captured value it prints there: a docstring and a comment hold
-invented values only. Then run the gate's `pytest` line through the runner in
-the Harden block: the generated suite checks every fixture on every run and
-names each one that is still byte for byte its capture or holds a flagged cookie
-or token name; rewrite any it names. Count the check as run only when that
-`pytest` output carries its `fixtures_are_sanitised:` line; without it the
-project lacks the wiring, so run the gate's plugin check and act on what it
+2 (a capture that is not text, such as a PDF, or an unreadable gp sidecar), it
+compared nothing: make sure the fixture is invented whole, read the plugin
+module by eye for anything from that capture, and tell the user. Rewrite each
+value it prints unless it holds no account data and the command branches or
+selects on it (a status, a currency code, a class name), or the site shows it to
+every account (a heading, a button label), or it is part of a format (a year, a
+time-zone suffix). When every value it still prints is one of those, the fixture
+is done; tell the user which values you kept and why. A sidecar is committed:
+when one of its names holds an account value, tell the user and do not commit
+that sidecar as it is (guide: Test against fixtures, not against the site). Run
+the same line once more with the plugin module in place of the fixture and with
+no sidecar, and rewrite any captured value it prints there: a docstring and a
+comment hold invented values only. Then run the gate's `pytest` line through the
+runner in the Harden block: the generated suite checks every fixture on every
+run and names each one that is still byte for byte its capture or holds a
+flagged cookie or token name; rewrite any it names. Count the check as run only
+when that `pytest` output carries its `fixtures_are_sanitised:` line; without it
+the project lacks the wiring, so run the gate's plugin check and act on what it
 reports first.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
