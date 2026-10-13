@@ -243,6 +243,10 @@ def _cookie_param_from_dict(
     """
     import nodriver.cdp.network as cdp_network
 
+    if not cookie.get("name"):
+        return None, "no name"
+    if cookie.get("value") is None:
+        return None, "no value"
     if not cookie.get("domain"):
         # Storage.setCookies needs a domain or a URL to place the cookie, and
         # the Cookie dict carries no URL.
@@ -253,7 +257,12 @@ def _cookie_param_from_dict(
         same_site = by_name.get(str(raw_same_site).lower())
         if same_site is None:
             return None, f"sameSite {raw_same_site!r} is not Strict, Lax, or None"
-    expires = cookie.get("expires")
+    expires = None
+    if (raw_expires := cookie.get("expires")) is not None:
+        try:
+            expires = cdp_network.TimeSinceEpoch(float(raw_expires))
+        except (TypeError, ValueError):
+            return None, "expires is not a number"
     return (
         cdp_network.CookieParam(
             name=cookie["name"],
@@ -263,22 +272,25 @@ def _cookie_param_from_dict(
             secure=cookie.get("secure"),
             http_only=cookie.get("httponly"),
             same_site=same_site,
-            expires=cdp_network.TimeSinceEpoch(expires) if expires is not None else None,
+            expires=expires,
         ),
         "",
     )
 
 
 def _jar_has(jar: "list[nodriver.cdp.network.Cookie]", cookie: Cookie) -> bool:
-    """Whether ``jar`` holds ``cookie``, matched by name, domain, and path when given.
+    """Whether ``jar`` holds ``cookie``: its name, value, domain, and path when given.
 
-    Domains compare without a leading dot, which marks a domain cookie in the
-    jar and may or may not be present in the requested dict.
+    The value is compared because Chrome can reject an overwrite without an
+    error and keep the old cookie under the same name. Domains compare without
+    a leading dot, which marks a domain cookie in the jar and may or may not be
+    present in the requested dict.
     """
     domain = cookie.get("domain", "").lstrip(".")
     path = cookie.get("path")
     return any(
         c.name == cookie["name"]
+        and c.value == cookie["value"]
         and c.domain.lstrip(".") == domain
         and (path is None or c.path == path)
         for c in jar
@@ -1082,16 +1094,18 @@ class NoDriverBackend:
         Args:
             cookies: List of Cookie dicts to set. Each must have 'name',
                 'value', and 'domain' (CDP cannot place a cookie without a
-                domain or URL, so a cookie without 'domain' is skipped with a
-                ``nodriver_set_cookies_skipped`` warning). 'path' defaults to
-                '/'. The flags are read from 'secure', 'httponly', 'sameSite'
-                ('Strict', 'Lax', or 'None', any case), and 'expires' (Unix
-                seconds; omit it for a session cookie).
+                domain or URL). A cookie missing one of them, or whose
+                'expires' is not a number, is skipped with a
+                ``nodriver_set_cookies_skipped`` warning naming the reason.
+                'path' defaults to '/'. The flags are read from 'secure',
+                'httponly', 'sameSite' ('Strict', 'Lax', or 'None', any case),
+                and 'expires' (Unix seconds; omit it for a session cookie).
 
         Returns:
             How many of the given cookies are present in the browser after
-            setting, matched by name and domain (and path when given). Returns
-            0 if no page is available or a CDP call fails.
+            setting, matched by name, value, and domain (and path when given),
+            so an overwrite the browser refused does not count. Returns 0 if
+            no page is available or a CDP call fails.
         """
         if not self.is_running:
             self.start()

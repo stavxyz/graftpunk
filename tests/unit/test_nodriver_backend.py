@@ -1609,6 +1609,62 @@ class TestNoDriverCookiesThroughCdp:
         assert warning["event"] == "nodriver_set_cookies_skipped"
         assert warning["cookie_name"] == "odd"
 
+    def test_an_overwrite_the_browser_refused_is_not_counted(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        """Chrome can keep the old cookie without an error; the count must say so."""
+        tab = FakeCdpTab()
+        backend = _backend_with_tab(tab)
+        assert backend.set_cookies([{"name": "k", "value": "old", "domain": "example.com"}]) == 1
+        tab.reject = {"k"}
+
+        count = backend.set_cookies(
+            [{"name": "k", "value": self.SECRET, "domain": "example.com", "sameSite": "None"}]
+        )
+
+        assert count == 0
+        assert [(c["name"], c["value"]) for c in backend.get_cookies()] == [("k", "old")]
+        [warning] = _warnings(captured_logs)
+        assert warning["event"] == "nodriver_set_cookies_incomplete"
+        assert warning["missing_names"] == ["k"]
+        assert self.SECRET not in repr(captured_logs)
+
+    @pytest.mark.parametrize(
+        ("cookie", "reason"),
+        [
+            ({"value": "1", "domain": "example.com"}, "no name"),
+            ({"name": "a", "domain": "example.com"}, "no value"),
+            (
+                {"name": "a", "value": "1", "domain": "example.com", "expires": "soon"},
+                "expires is not a number",
+            ),
+        ],
+        ids=["no-name", "no-value", "expires-not-a-number"],
+    )
+    def test_a_malformed_cookie_is_skipped_with_a_warning(
+        self, cookie: Cookie, reason: str, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        tab = FakeCdpTab()
+        backend = _backend_with_tab(tab)
+
+        count = backend.set_cookies([cookie, {"name": "ok", "value": "1", "domain": "example.com"}])
+
+        assert count == 1
+        assert [c["name"] for c in tab.jar] == ["ok"]
+        [warning] = _warnings(captured_logs)
+        assert warning["event"] == "nodriver_set_cookies_skipped"
+        assert warning["reason"] == reason
+
+    def test_a_numeric_string_expires_is_accepted(self) -> None:
+        backend = _backend_with_tab(FakeCdpTab())
+
+        count = backend.set_cookies(
+            [{"name": "a", "value": "1", "domain": "example.com", "expires": "1893456000"}]
+        )
+
+        assert count == 1
+        assert backend.get_cookies()[0]["expires"] == 1893456000.0
+
     def test_no_page_get_returns_empty(self) -> None:
         assert _backend_with_tab(None).get_cookies() == []
 
