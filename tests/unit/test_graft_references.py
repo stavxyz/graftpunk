@@ -172,6 +172,23 @@ def test_skill_md_gives_the_scripts_directory_the_references_cannot_expand() -> 
     assert "where a reference file writes the variable `CLAUDE_SKILL_DIR`" in text
 
 
+def test_the_harden_step_writes_fixtures_with_the_write_tool_and_runs_no_cp() -> None:
+    """Claude Code refuses a shell command that writes a file whose name holds
+    braces, whatever the allow rules (measured with claude -p on 2026-10-13), and a
+    capture of an endpoint with a path parameter has one. So no shell copy is
+    declared, and harden.md has the fixture and its sidecar written with the Write
+    tool, giving that reason."""
+    assert not [line for line in declared_commands() if line.split()[0] == "cp"]
+    harden = " ".join((SKILL_DIR / "references" / "harden.md").read_text().split())
+    assert "Write the fixture with the Write tool" in harden
+    assert "write its text, unchanged, under its own name beside the fixture" in harden
+    assert (
+        "Claude Code refuses a shell command that writes a file whose name holds braces, "
+        "and every endpoint with a path parameter has one."
+    ) in harden
+    assert "`cp`" not in harden
+
+
 _OTHER_HOST_LINE = "`<command> calls <host>`"
 
 

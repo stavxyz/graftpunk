@@ -4,37 +4,37 @@
 
 In enhance mode, first run the gate's plugin check and act on what it reports,
 so the fixtures directory and the suite's fixture check exist before anything is
-copied. For each command, write its capture out of the recording with the
+written. For each command, write its capture out of the recording with the
 `gp observe fixtures` line from the Harden block of `references/commands.md`,
 the command's endpoint in place of `<METHOD> <template>`. Captures land in the
 git-ignored `tests/captures/` and hold the account's own data: read them as this
 step needs, and put no value from one into anything committed or shared (a
 fixture, a test, code, a comment, a docstring, a commit message, or a pull
-request). Copy the capture gp writes under the plain name (not a numbered one)
-and its sidecar into the fixtures directory the generated tests read (their
-`FIXTURES_DIR`) with the `cp` line of the Harden block, keeping both file names:
-a test finds its fixture by that name, and a request with no fixture under it
-answers 404. Copy those two files by name, never with a glob or a whole
-directory, which would bring numbered captures along.
-
-Then rewrite each copy with invented values, keeping its structure: the same
-keys, nesting, and types, a few list items rather than every one, and values of
-the same kind (an id stays an id-shaped string, a date a date) that belong to no
-real account (guide: Deriving a fixture from a capture). For an HTML capture,
-keep the markup and the classes and attributes a parser selects on, and invent
-the text and the attribute values that carry data. A token value in a capture is
-replaced like any other value. Then run the fixture-leaks line of the Harden
-block on the capture, the fixture, and its sidecar. It prints each captured
-value, and each piece of one (a run of three or more digits, a word holding an
-`@`, a digit, or a capital letter, both halves of an email address, and a pair
-of words with one of those in it), still in the fixture, escaped and
-percent-encoded copies included (a single word in lower case only inside an
-identifier or an address), and the names the sidecar lists. It matches text, so
-read the fixture once more for what it cannot see: a word in lower case on its
-own, a number written another way (`12345` as `12,345`), digits split across
-fields, and a copy re-encoded, such as base64. When it exits 2 (a capture that
-is not text, such as a PDF), it compared nothing: replace the copied file
-wholesale with invented values, read the plugin module by eye for anything from
+request). Write the fixture with the Write tool into the fixtures directory the
+generated tests read (their `FIXTURES_DIR`), under the name of the plain-named
+capture (not a numbered one): a test finds its fixture by that name, and a
+request with none answers 404. Then read the capture's sidecar and write its
+text, unchanged, under its own name beside the fixture with the Write tool. Copy
+nothing with the shell: Claude Code refuses a shell command that writes a file
+whose name holds braces, and every endpoint with a path parameter has one. Take
+those two files by name, never a glob or a directory, which would bring numbered
+captures along. The fixture holds invented values in the capture's structure:
+the same keys, nesting, and types, a few list items rather than every one, and
+values of the same kind (an id stays an id-shaped string, a date a date) that
+belong to no real account (guide: Deriving a fixture from a capture). For an
+HTML capture, keep the markup and the classes and attributes a parser selects
+on, and invent the text and the attribute values that carry data. Then run the
+fixture-leaks line of the Harden block on the capture, the fixture, and its
+sidecar. It prints each captured value, and each piece of one (a run of three or
+more digits, a word holding an `@`, a digit, or a capital letter, both halves of
+an email address, and a pair of words with one of those in it), still in the
+fixture, escaped and percent-encoded copies included (a single word in lower
+case only inside an identifier or an address), and the names the sidecar lists.
+It matches text, so read the fixture once more for what it cannot see: a word in
+lower case on its own, a number written another way (`12345` as `12,345`),
+digits split across fields, and a copy re-encoded, such as base64. When it exits
+2 (a capture that is not text, such as a PDF), it compared nothing: make sure
+the fixture is invented whole, read the plugin module by eye for anything from
 that capture, and tell the user. Rewrite each value it prints unless it holds no
 account data and the command branches or selects on it (a status, a currency
 code, a class name), or the site shows it to every account (a heading, a button

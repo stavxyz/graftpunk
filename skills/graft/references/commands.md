@@ -81,7 +81,6 @@ gate asks each time it runs, unless the user's settings allow it.
 
 ```bash
 gp observe fixtures <session> <run> --match "<METHOD> <template>"
-cp 'tests/captures/<fixture>' 'tests/captures/<fixture>.meta.json' '<fixtures-dir>/'
 uv run --no-project python -I ${CLAUDE_SKILL_DIR}/scripts/fixture-leaks.py 'tests/captures/<fixture>' '<fixtures-dir>/<fixture>' '<fixtures-dir>/<fixture>.meta.json'
 gp plugin upgrade
 uv run --no-project --with-editable '.[dev]' --with pytest --with ruff <gate-command>
