@@ -597,17 +597,18 @@ class TestNoDriverBackendMissingCoverage:
         assert backend.page_source == ""
         assert backend.get_user_agent() == ""
 
-    def test_delete_all_cookies_safe_when_page_none(self) -> None:
+    def test_delete_all_cookies_safe_when_page_none(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
         """delete_all_cookies() is safe when _page is None."""
         backend = with_private_loop(NoDriverBackend())
         backend._started = True
         backend._browser = MagicMock()
         backend._page = None
 
-        with capture_logs() as logs:
-            assert backend.delete_all_cookies() is True
+        assert backend.delete_all_cookies() is True
 
-        assert [e["event"] for e in logs] == ["nodriver_delete_cookies_no_page"]
+        assert [e["event"] for e in captured_logs] == ["nodriver_delete_cookies_no_page"]
 
 
 class TestNoDriverBackendFromStateMismatch:
