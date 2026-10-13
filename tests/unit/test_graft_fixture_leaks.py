@@ -226,6 +226,17 @@ def test_an_unreadable_fixture_is_named(tmp_path: Path) -> None:
     assert f"fixture-leaks: cannot read the fixture {missing}:" in result.stderr
 
 
+def test_a_digit_run_written_into_the_blanked_slot_is_the_documented_blind_spot(
+    tmp_path: Path,
+) -> None:
+    """The run id's date and time are blanked, so a captured digit run written by hand
+    into those 14 digits is not caught, as the script's docstring says. Pinned so a
+    change that widens or narrows the blind spot is seen."""
+    module = "# seen 2 time(s) in run myshop/20261006-101500-9999.\n"
+    result = _run(tmp_path, json.dumps({"t": "101500"}), module)
+    assert result.returncode == 0, result.stdout
+
+
 _GP_SIDECAR = {"capture_sha256": "a" * 64, "flagged_names": ["session_id"]}
 
 
@@ -498,7 +509,10 @@ def test_a_sidecar_written_as_bad_json_names_the_sidecar(tmp_path: Path) -> None
         text=True,
     )
     assert result.returncode == 2
-    assert "fixture-leaks: cannot read the sidecar " in result.stderr
+    assert (
+        f"fixture-leaks: cannot read the sidecar {tmp_path / 'fixture.json.meta.json'}:"
+        in result.stderr
+    )
 
 
 def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:

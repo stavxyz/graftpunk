@@ -22,7 +22,7 @@ a plugin module or a test module is checked the same way. In the provenance phra
 gp writes into a generated stub's docstring (``seen 2 time(s) in run <session>/<run
 id>.``), the date and time that start the run id are blanked first, since they are
 gp's and not captured data; the rest of the phrase is still searched. A captured
-compact date written into that slot by hand is therefore not caught.
+digit run written by hand into those 14 digits is therefore not caught.
 
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
 capitalised word copied in lower case on its own, a number reformatted (``12345`` as
@@ -74,8 +74,9 @@ _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", r
 # search. A label too long for its line is cut mid-word, and the wrap can leave its
 # closing period alone on the next line, so a candidate may span lines; it is
 # blanked only when, with those breaks taken out, it is the session name given to
-# `--from-run` (a session name with a dot is left alone, and its year reported) and
-# a run id `make_run_id` writes (a real date and time, then the process id).
+# `--from-run` and a run id `make_run_id` writes (a real date and time, then the
+# process id). A session name with a dot or a space is left alone, and its year
+# reported. A captured digit run written by hand into the 14 digits is not caught.
 _PROVENANCE = re.compile(
     r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+([A-Za-z0-9@_/-]+(?:\n[ \t]*[A-Za-z0-9@_/-]*)*)\."
 )
@@ -254,7 +255,7 @@ def main(argv: list[str]) -> int:
         print(f"fixture-leaks: cannot read the {role} {path}: {exc}", file=sys.stderr)
         return 2
     if sidecar is not None and not isinstance(sidecar, dict):
-        print("fixture-leaks: the sidecar is not a JSON object.", file=sys.stderr)
+        print(f"fixture-leaks: the sidecar {argv[3]} is not a JSON object.", file=sys.stderr)
         return 2
     differs = _keys_differing_from_gps(Path(argv[1]), sidecar) if sidecar is not None else []
     if differs is None:
@@ -289,10 +290,10 @@ def _keys_differing_from_gps(capture: Path, sidecar: dict) -> list[str] | None:
     try:
         theirs = json.loads(own.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        print(f"fixture-leaks: cannot read the capture's sidecar: {exc}", file=sys.stderr)
+        print(f"fixture-leaks: cannot read the capture's sidecar {own}: {exc}", file=sys.stderr)
         return None
     if not isinstance(theirs, dict):
-        print("fixture-leaks: the capture's sidecar is not a JSON object.", file=sys.stderr)
+        print(f"fixture-leaks: the capture's sidecar {own} is not a JSON object.", file=sys.stderr)
         return None
     return sorted(k for k in theirs.keys() | sidecar.keys() if theirs.get(k) != sidecar.get(k))
 
