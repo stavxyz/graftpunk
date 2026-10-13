@@ -149,19 +149,48 @@ def test_a_closing_period_the_wrap_left_alone_still_ends_the_label(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    "next_line", ["ACCT_4471023.", "acct_4471023.", "4471023.", "see\n4471023."]
+    "next_line", ["ACCT_4471023.", "acct_4471023.", "4471023.", "see\n4471023.", "023."]
 )
 def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
     tmp_path: Path, next_line: str
 ) -> None:
     """A hand edit that drops the label's period must not let the phrase swallow what
-    follows: only a session and a run id are left out, so an account value there
-    is still reported."""
-    capture = json.dumps({"account": "ACCT_4471023"})
+    follows: only the run id's date and time are blanked, so an account value
+    there, even one short enough to join the process id, is still reported."""
+    capture = json.dumps({"account": "ACCT_4471023", "code": "023"})
     module = f"# seen 2 time(s) in run myshop/20261006-101500-4242\n{next_line}\n"
     result = _run(tmp_path, capture, module)
     assert result.returncode == 1
-    assert "4471023" in result.stdout
+    assert next_line.rstrip(".").split("\n")[-1].split("_")[-1] in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("capture_value", "phrase"),
+    [
+        pytest.param(
+            "acct-4471023",
+            "seen 2 time(s) in run acct-4471023/20261006-101500-4242.",
+            id="session-slot",
+        ),
+        pytest.param(
+            "4471023", "seen 4471023 time(s) in run myshop/20261006-101500-4242.", id="count-slot"
+        ),
+        pytest.param(
+            "4471023", "seen 2 time(s) in run myshop/20261006-101500-\n4471023.", id="split-pid"
+        ),
+        pytest.param(
+            "ORD-99887766", "seen 2 time(s) in run myshop/99887766-101500-4242.", id="not-a-date"
+        ),
+    ],
+)
+def test_a_captured_value_shaped_into_a_provenance_phrase_is_still_a_leak(
+    tmp_path: Path, capture_value: str, phrase: str
+) -> None:
+    """Only the run id's date and time are blanked: the count, the session, and the
+    process id are still searched, and a label whose date is not a date is left
+    alone."""
+    result = _run(tmp_path, json.dumps({"a": capture_value}), f"# {phrase}\n")
+    assert result.returncode == 1, result.stdout
 
 
 _GP_SIDECAR = {"capture_sha256": "a" * 64, "flagged_names": ["session_id"]}
@@ -415,6 +444,30 @@ def test_an_unreadable_input_exits_2(tmp_path: Path) -> None:
     assert "cannot read" in result.stderr
 
 
+def test_a_sidecar_written_as_bad_json_names_the_sidecar(tmp_path: Path) -> None:
+    """harden.md's other exit-2 case: a slip writing the sidecar is named, so the skill
+    writes that file again rather than treating the capture as unreadable."""
+    (tmp_path / "capture.json").write_text("{}")
+    (tmp_path / "fixture.json").write_text("{}")
+    (tmp_path / "fixture.json.meta.json").write_text("{not json")
+    assert PYTHON is not None
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [
+            PYTHON,
+            "-I",
+            str(SCRIPT),
+            *(
+                str(tmp_path / n)
+                for n in ("capture.json", "fixture.json", "fixture.json.meta.json")
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "fixture-leaks: cannot read the sidecar:" in result.stderr
+
+
 def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
     """harden.md's exit-2 case: a PDF capture is compared with nothing, and says so."""
     capture = tmp_path / "invoice.pdf"
@@ -428,5 +481,5 @@ def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
         text=True,
     )
     assert result.returncode == 2
-    assert "fixture-leaks: cannot read the inputs:" in result.stderr
+    assert "fixture-leaks: cannot read the capture:" in result.stderr
     assert result.stdout == ""

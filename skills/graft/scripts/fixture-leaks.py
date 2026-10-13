@@ -65,27 +65,34 @@ _MIN_LENGTH = 3
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
 # The provenance phrase gp writes into a generated stub's docstring ("seen 2 time(s)
-# in run myshop/20261006-101500-4242."), wrapped at any space. The run id is gp's,
-# not captured data, yet its year matches any captured date, so it is left out.
-# A label too long for its line is cut mid-word, and the wrap can leave its closing
-# period alone on the next line, so a candidate may span lines; it is left out only
+# in run myshop/20261006-101500-4242."), wrapped at any space. Its run id starts
+# with the run's date and time, gp's and not captured data, yet the year matches any
+# captured date, so those two fields are blanked; the count, the session, and the
+# process id stay in the text the check searches, so nothing captured is hidden. A
+# label too long for its line is cut mid-word, and the wrap can leave its closing
+# period alone on the next line, so a candidate may span lines and is blanked only
 # when, with those breaks taken out, it is a session as `gp observe list` names it
-# and a run id (`make_run_id`: date, time, pid), so nothing else can be swallowed.
+# and a run id `make_run_id` writes (a real date and time, then the process id).
 _PROVENANCE = re.compile(
-    r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+([a-z0-9@_/-]+(?:\n[ \t]*[a-z0-9@_/-]*)*)\."
+    r"seen\s+(\d+)\s+time\(s\)\s+in\s+run\s+([a-z0-9@_/-]+(?:\n[ \t]*[a-z0-9@_/-]*)*)\."
 )
-# A process id has at most seven digits (Linux caps it at 4194304).
-_RUN_LABEL = re.compile(r"[a-z0-9@_-]+/\d{8}-\d{6}-\d{1,7}")
+_RUN_LABEL = re.compile(
+    r"(?P<session>[a-z0-9@_-]+)/"
+    r"(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])-"
+    r"(?:[01]\d|2[0-3])[0-5]\d[0-5]\d-(?P<pid>\d+)"
+)
 
 
 def _without_provenance(text: str) -> str:
-    """*text* with each of gp's provenance phrases replaced by a space."""
+    """*text* with the date and time of each of gp's run ids blanked."""
 
-    def drop(match: re.Match[str]) -> str:
-        label = re.sub(r"\n[ \t]*", "", match.group(1))
-        return " " if _RUN_LABEL.fullmatch(label) else match.group(0)
+    def blank(match: re.Match[str]) -> str:
+        label = _RUN_LABEL.fullmatch(re.sub(r"\n[ \t]*", "", match.group(2)))
+        if label is None:
+            return match.group(0)
+        return f" {match.group(1)} {label['session']} {label['pid']} "
 
-    return _PROVENANCE.sub(drop, text)
+    return _PROVENANCE.sub(blank, text)
 
 
 class _TextParts(HTMLParser):
@@ -225,12 +232,15 @@ def main(argv: list[str]) -> int:
     if len(argv) not in (3, 4):
         print("usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]", file=sys.stderr)
         return 2
+    role = "capture"
     try:
         capture = Path(argv[1]).read_text(encoding="utf-8")
+        role = "fixture"
         fixture = Path(argv[2]).read_text(encoding="utf-8")
+        role = "sidecar"
         sidecar = json.loads(Path(argv[3]).read_text(encoding="utf-8")) if len(argv) == 4 else None
     except (OSError, ValueError) as exc:
-        print(f"fixture-leaks: cannot read the inputs: {exc}", file=sys.stderr)
+        print(f"fixture-leaks: cannot read the {role}: {exc}", file=sys.stderr)
         return 2
     if sidecar is not None and not isinstance(sidecar, dict):
         print("fixture-leaks: the sidecar is not a JSON object.", file=sys.stderr)
