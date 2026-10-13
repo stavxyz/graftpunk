@@ -176,8 +176,12 @@ class TestOfferedAllowRules:
         text = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
         assert (
             "Offer the leak check's rule with this skill's directory, `${CLAUDE_SKILL_DIR}`, "
-            "in place of the variable, so the rule holds an absolute path."
+            "in place of the variable"
         ) in text
+        # That directory names this version of the skill, so the rule must not be
+        # committed and is offered again after an update.
+        assert "belongs in the project's local settings" in text
+        assert "offered again after an update" in text
 
     def test_no_offered_rule_reaches_the_recorder_or_every_gp_command(self) -> None:
         """The other direction of containment: no rule matches a command outside

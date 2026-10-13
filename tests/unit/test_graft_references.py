@@ -194,7 +194,8 @@ def test_skill_md_runs_each_declared_command_on_its_own() -> None:
     undeclared command prompts whatever rules the user added."""
     text = " ".join(SKILL_MD.read_text(encoding="utf-8").split())
     assert (
-        "Run each command exactly as `references/commands.md` spells it, one per Bash "
+        "Run each command as `references/commands.md` spells it, its placeholders "
+        "filled and an argument a reference says to leave off left off, one per Bash "
         "call, with nothing chained to it"
     ) in text
     assert "Run no command the references do not declare" in text

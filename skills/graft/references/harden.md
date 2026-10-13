@@ -65,12 +65,12 @@ Each generated test builds a context with `fixture_context` over the plugin's
 fixtures directory and calls the command. Replace its `GP-FILL` assertion with
 one on the shape the command returns: the keys a caller relies on, and the
 values the fixture holds. Add one error-path test where a command can fail, over
-a fixtures directory of its own holding a copy of the fixture whose sidecar
-`status` is an error, since a fixture is found by its name. In either mode, once
-a command's test is written, run the fixture-leaks line with its capture and the
-test module in place of the fixture, with no sidecar, and rewrite any captured
-value it prints: an assertion holds the fixture's invented values only. When it
-exits 2, read the test module by eye instead.
+a fixtures directory of its own holding a copy of the fixture, written with the
+Write tool, whose sidecar `status` is an error, since a fixture is found by its
+name. In either mode, once a command's test is written, run the fixture-leaks
+line with its capture and the test module in place of the fixture, with no
+sidecar, and rewrite any captured value it prints: an assertion holds the
+fixture's invented values only (on exit 2, read the test module by eye).
 
 In enhance mode `gp plugin add-command` writes no test; act on its `Next:` line
 as "The gate" below says. For each command it added, derive the fixture as above
