@@ -609,8 +609,9 @@ class NoDriverBackend:
         interrupted (Ctrl-C, or a cancelled task) ends its Chrome the same way
         before the interrupt propagates.
 
-        ``start()`` holds a per-backend lock, so two threads starting one
-        backend launch one Chrome.
+        ``start()``, ``stop()``, and ``stop_async()`` hold a per-backend lock,
+        so two threads starting one backend launch one Chrome, and a stop
+        racing another thread's start stops the Chrome that start launched.
 
     Note:
         Default headless=False because nodriver is more detectable in headless
@@ -708,8 +709,9 @@ class NoDriverBackend:
         # when the backend created that loop itself (None for a caller's loop).
         self._loop: asyncio.AbstractEventLoop | None = None
         self._private_loop: _PrivateLoop | None = None
-        # Serializes start(), and the private loop's creation, per backend.
-        # Reentrant: start() creates the loop while holding it.
+        # Serializes start(), stop(), stop_async(), and the private loop's
+        # creation, per backend. Reentrant: start() creates the loop while
+        # holding it.
         self._lock = threading.RLock()
 
     def __getstate__(self) -> dict[str, Any]:
@@ -1167,16 +1169,29 @@ class NoDriverBackend:
         Windows), a wait of up to ``_REAP_TERM_TIMEOUT_S`` for it to exit, and
         the temp profile's removal. An interrupt (Ctrl-C) while the stop waits
         on the loop ends Chrome the same way before it propagates.
+
+        A stop called while another thread's ``start()`` is in progress waits
+        for that start and then stops the browser it launched, since both
+        hold the backend's lock. From inside the browser's own loop it does
+        not wait: a start may be holding the lock while it waits on that loop.
         """
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and running is self._loop:
+            self._stop_holding_lock(running)
+            return
+        with self._lock:
+            self._stop_holding_lock(running)
+
+    def _stop_holding_lock(self, running: asyncio.AbstractEventLoop | None) -> None:
+        """The body of ``stop()``. *running* is the calling thread's running loop, if any."""
         if not self._started:
             return
 
         LOG.info("nodriver_backend_stopping")
         loop = self._loop
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
         try:
             with _suppress_nodriver_cleanup_noise():
                 try:
@@ -1226,7 +1241,23 @@ class NoDriverBackend:
         same way before it propagates. Joining the private loop's thread
         happens on a worker thread, so the caller's loop keeps running
         meanwhile.
+
+        Like ``stop()``, it waits for a ``start()`` in progress on another
+        thread and then stops the browser that start launched. It waits by
+        polling the backend's lock, so the caller's loop keeps running (that
+        start may be waiting on it), and holds the lock until the stop is
+        done. A cancellation during that wait propagates without stopping
+        anything, since the stop has not begun.
         """
+        while not self._lock.acquire(blocking=False):
+            await asyncio.sleep(_EXIT_POLL_S)
+        try:
+            await self._stop_async_holding_lock()
+        finally:
+            self._lock.release()
+
+    async def _stop_async_holding_lock(self) -> None:
+        """The body of ``stop_async()``."""
         if not self._started:
             return
 

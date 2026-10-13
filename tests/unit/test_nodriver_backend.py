@@ -2779,6 +2779,29 @@ class TestNoDriverBackendStartThatNeverReturned:
         assert (temp_profiles / "uc_other").exists()
 
 
+class _ContendedLock:
+    """The backend's reentrant lock, which says when a thread had to wait for it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.contended = threading.Event()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if self._lock.acquire(blocking=False):
+            return True
+        self.contended.set()
+        return self._lock.acquire(blocking, timeout) if blocking else False
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
 class TestNoDriverBackendInterruptedLifecycle:
     """Interrupts that land between the steps of a start or a stop."""
 
@@ -2888,6 +2911,63 @@ class TestNoDriverBackendInterruptedLifecycle:
         assert errors == []
         assert len(fake_chrome.browsers) == 1
         backend.stop()
+
+    @staticmethod
+    def _start_in_a_thread_until_a_stop_waits(
+        backend: NoDriverBackend, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[threading.Thread, threading.Event]:
+        """Start *backend* in a thread whose launch finishes only once a stop waits on the lock."""
+        import nodriver
+
+        lock = _ContendedLock()
+        backend._lock = lock  # type: ignore[assignment]
+        launching = threading.Event()
+
+        async def start_once_a_stop_waits(**kwargs: Any) -> Any:
+            launching.set()
+            await asyncio.to_thread(lock.contended.wait, 5)
+            return await fake_chrome.start(**kwargs)
+
+        monkeypatch.setattr(nodriver, "start", start_once_a_stop_waits)
+        starter = threading.Thread(target=backend.start)
+        starter.start()
+        return starter, launching
+
+    def test_a_stop_during_another_threads_start_stops_the_browser_it_launched(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = NoDriverBackend()
+        starter, launching = self._start_in_a_thread_until_a_stop_waits(
+            backend, fake_chrome, monkeypatch
+        )
+        assert launching.wait(5)
+
+        backend.stop()
+        starter.join(5)
+
+        [browser] = fake_chrome.browsers
+        assert browser.stopped_on is not None
+        assert backend.is_running is False
+        assert backend._loop is None
+
+    def test_a_stop_async_during_another_threads_start_stops_the_browser_it_launched(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = NoDriverBackend()
+        starter, launching = self._start_in_a_thread_until_a_stop_waits(
+            backend, fake_chrome, monkeypatch
+        )
+
+        async def stop_during_start() -> None:
+            assert await asyncio.to_thread(launching.wait, 5)
+            await backend.stop_async()
+
+        asyncio.run(stop_during_start())
+        starter.join(5)
+
+        [browser] = fake_chrome.browsers
+        assert browser.stopped_on is not None
+        assert backend.is_running is False
 
     def test_start_async_after_a_sync_start_keeps_the_running_browser(
         self, fake_chrome: FakeChrome
