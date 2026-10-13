@@ -61,7 +61,7 @@ from graftpunk.chrome_orphans import (
     terminate_nodriver_browser,
 )
 from graftpunk.exceptions import BrowserError
-from graftpunk.logging import get_logger
+from graftpunk.logging import get_logger, suppress_asyncio_noise
 from graftpunk.signals import register_live_browser, unregister_live_browser
 
 if TYPE_CHECKING:
@@ -571,31 +571,28 @@ def _jar_has(jar: "list[nodriver.cdp.network.Cookie]", cookie: Cookie) -> bool:
 
 
 @contextmanager
-def _suppress_nodriver_cleanup_noise():
-    """Suppress noisy stdout from nodriver cleanup during browser stop.
+def _capture_nodriver_stdout():
+    """Log, at debug level, whatever nodriver prints to stdout inside the block.
 
-    nodriver's ``deconstruct_browser()`` atexit handler prints "successfully
-    removed temp profile" to stdout. This context manager redirects stdout
-    to capture (and log) that output instead of showing it to the user.
+    nodriver's printing cleanup is ``deconstruct_browser()`` ("successfully
+    removed temp profile"), its ``atexit`` handler, which the stop paths keep
+    out of by deregistering the browser; ``Browser.stop()`` prints nothing in
+    0.48.1 or 0.50.6. This wraps that one synchronous call in case a later
+    version prints there.
 
-    Also suppresses asyncio cleanup warnings via ``suppress_asyncio_noise()``.
-
-    Note: Not thread-safe — redirects ``sys.stdout`` globally. The suppression
-    window should be kept as small as possible (just the browser stop call).
+    Not thread-safe: it replaces ``sys.stdout`` for the whole process, so it
+    only ever wraps a synchronous call, never an await, a join, or a wait.
     """
-    from graftpunk.logging import suppress_asyncio_noise
-
-    with suppress_asyncio_noise():
-        old_stdout = sys.stdout
-        captured = io.StringIO()
-        sys.stdout = captured
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
-            suppressed = captured.getvalue()
-            if suppressed:
-                LOG.debug("suppressed_nodriver_cleanup_output", output=suppressed.strip())
+    old_stdout = sys.stdout
+    captured = io.StringIO()
+    sys.stdout = captured
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+        suppressed = captured.getvalue()
+        if suppressed:
+            LOG.debug("suppressed_nodriver_cleanup_output", output=suppressed.strip())
 
 
 class NoDriverBackend:
@@ -1190,7 +1187,8 @@ class NoDriverBackend:
             # subprocess.
             try:
                 try:
-                    self._browser.stop()
+                    with _capture_nodriver_stdout():
+                        self._browser.stop()
                 except (RuntimeError, OSError) as exc:
                     self._handle_stop_error(exc)
                 # Remove browser from nodriver's global registry so the atexit
@@ -1256,7 +1254,7 @@ class NoDriverBackend:
         LOG.info("nodriver_backend_stopping")
         loop = self._loop
         try:
-            with _suppress_nodriver_cleanup_noise():
+            with suppress_asyncio_noise():
                 try:
                     if loop is None or loop.is_closed() or not loop.is_running():
                         # Nothing left to run _stop_async on (a caller's loop
@@ -1283,8 +1281,9 @@ class NoDriverBackend:
                             self._release_failed_attempt()
                             raise
                 finally:
-                    # Inside the suppression: the private loop's teardown
-                    # cancels nodriver's leftover tasks, which can log noise.
+                    # Inside the asyncio log suppression: the private loop's
+                    # teardown cancels nodriver's leftover tasks, which can
+                    # log noise.
                     self._release_loop()
         except (RuntimeError, OSError) as exc:
             self._handle_stop_error(exc)
@@ -1328,7 +1327,7 @@ class NoDriverBackend:
         loop = self._loop
         current = asyncio.get_running_loop()
         try:
-            with _suppress_nodriver_cleanup_noise():
+            with suppress_asyncio_noise():
                 try:
                     if loop is None or loop is current:
                         await self._stop_async()

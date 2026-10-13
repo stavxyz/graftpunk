@@ -2193,6 +2193,85 @@ class TestNoDriverBackendLifecycleEdges:
         assert asyncio.run(ticks_during_stop()) >= 10
         assert backend._loop is None
 
+    @staticmethod
+    def _printing_stop(browser: Any) -> None:
+        """Make the fake browser's stop print, as nodriver's cleanup does."""
+        real_stop = browser.stop
+
+        def stop() -> None:
+            print("successfully removed temp profile /tmp/uc_example")
+            real_stop()
+
+        browser.stop = stop
+
+    def test_a_stop_keeps_nodrivers_output_but_not_another_threads(
+        self,
+        fake_chrome: FakeChrome,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from graftpunk.backends.nodriver import _PrivateLoop
+
+        backend = NoDriverBackend()
+        backend.start()
+        self._printing_stop(fake_chrome.browsers[0])
+        real_close = _PrivateLoop.close
+
+        def close_while_another_thread_prints(self: _PrivateLoop) -> None:
+            printer = threading.Thread(target=print, args=("another thread's line",))
+            printer.start()
+            printer.join(5)
+            real_close(self)
+
+        monkeypatch.setattr(_PrivateLoop, "close", close_while_another_thread_prints)
+
+        backend.stop()
+
+        out = capsys.readouterr().out
+        assert "another thread's line" in out.splitlines()
+        assert "successfully removed temp profile /tmp/uc_example" not in out.splitlines()
+        assert fake_chrome.browsers[0].stopped_on is not None
+
+    def test_a_stop_async_keeps_nodrivers_output_but_not_the_callers_loops(
+        self,
+        fake_chrome: FakeChrome,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from graftpunk.backends.nodriver import _PrivateLoop
+
+        backend = NoDriverBackend()
+        backend.start()
+        self._printing_stop(fake_chrome.browsers[0])
+        real_close = _PrivateLoop.close
+        callers: list[asyncio.AbstractEventLoop] = []
+
+        def close_while_the_caller_prints(self: _PrivateLoop) -> None:
+            # stop_async joins the private loop on a worker thread, so the
+            # caller's loop runs other work meanwhile.
+            printed = threading.Event()
+
+            def print_on_the_callers_loop() -> None:
+                print("the caller's loop's line")
+                printed.set()
+
+            callers[0].call_soon_threadsafe(print_on_the_callers_loop)
+            assert printed.wait(5)
+            real_close(self)
+
+        monkeypatch.setattr(_PrivateLoop, "close", close_while_the_caller_prints)
+
+        async def stop() -> None:
+            callers.append(asyncio.get_running_loop())
+            await backend.stop_async()
+
+        asyncio.run(stop())
+
+        out = capsys.readouterr().out
+        assert "the caller's loop's line" in out.splitlines()
+        assert "successfully removed temp profile /tmp/uc_example" not in out.splitlines()
+        assert fake_chrome.browsers[0].stopped_on is not None
+
     def test_a_call_cancelled_by_a_stop_on_another_thread_returns_the_fallback(
         self, captured_logs: list[dict[str, Any]]
     ) -> None:
