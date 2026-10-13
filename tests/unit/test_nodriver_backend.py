@@ -3065,23 +3065,35 @@ class TestNoDriverBackendInterruptedLifecycle:
     def test_a_stop_async_cancelled_before_the_stop_ran_still_ends_chrome(
         self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        ended = self._record_terminations(monkeypatch)
+        ended: list[Any] = []
+        gate = threading.Event()
+
+        def end_then_free_the_loop(browser: Any) -> bool:
+            # The cancellation has been handled by the time Chrome is ended,
+            # so the loop can run again: the stop's join of its thread needs it.
+            ended.append(browser)
+            gate.set()
+            return False
+
+        monkeypatch.setattr(
+            "graftpunk.backends.nodriver.terminate_nodriver_browser", end_then_free_the_loop
+        )
         backend = NoDriverBackend()
         backend.start()
         loop = backend._loop
         assert loop is not None
-        gate = threading.Event()
         # Keep the browser's loop busy, so the submitted stop has not begun
-        # when wait_for cancels it at 0.1 s; free it soon after, so the
-        # stop's join of the loop thread does not wait out its timeout.
-        loop.call_soon_threadsafe(gate.wait, 5)
-        threading.Timer(0.3, gate.set).start()
+        # when wait_for cancels it.
+        loop.call_soon_threadsafe(gate.wait, 10)
 
         async def stop_with_timeout() -> None:
             await asyncio.wait_for(backend.stop_async(), 0.1)
 
-        with pytest.raises(TimeoutError):
-            asyncio.run(stop_with_timeout())
+        try:
+            with pytest.raises(TimeoutError):
+                asyncio.run(stop_with_timeout())
+        finally:
+            gate.set()
 
         assert ended == fake_chrome.browsers
         assert fake_chrome.browsers[0].stopped_on is None
