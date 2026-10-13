@@ -39,6 +39,7 @@ import concurrent.futures
 import io
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -242,17 +243,48 @@ def _terminate_through_handle(proc: Any) -> bool:
     return True
 
 
+def _already_reaped(proc: Any) -> bool:
+    """Whether *proc*'s exit status was collected, which frees its pid for reuse."""
+    return isinstance(getattr(proc, "returncode", None), int)
+
+
+def _exited_unreaped(pid: int) -> bool | None:
+    """Whether child *pid* has exited, read without reaping it; None when this cannot tell.
+
+    ``waitid`` with ``WNOWAIT`` leaves the exit status for asyncio's child
+    watcher. On Linux that watcher reaps from a callback on the browser's
+    loop, which is blocked or closed whenever Chrome is ended without it, so
+    an exited Chrome would keep answering ``kill(pid, 0)``. CPython has no
+    ``os.waitid`` on macOS, where asyncio reaps from a thread instead.
+    """
+    waitid = getattr(os, "waitid", None)
+    if waitid is None:
+        return None
+    try:
+        result = waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except OSError:
+        # ChildProcessError: not this process's child, or already reaped.
+        return None
+    return result is not None
+
+
 def _has_exited(proc: Any) -> bool:
     """Whether the Chrome behind *proc* is gone, or there is no way to tell. Never raises.
 
-    On POSIX a process that exited but was not reaped yet still answers
-    ``kill(pid, 0)``; asyncio's child watcher reaps it when it can, and the
-    caller's wait is bounded for when it cannot.
+    An exited child not yet reaped counts as gone where ``waitid`` can tell
+    (``_exited_unreaped``). Elsewhere it answers ``kill(pid, 0)`` until
+    asyncio's child watcher reaps it, and the caller's wait is bounded for
+    when that never happens.
     """
+    if _already_reaped(proc):
+        return True
     pid = getattr(proc, "pid", None)
     if not isinstance(pid, int):
         return True
     if _signals_available():
+        exited = _exited_unreaped(pid)
+        if exited is not None:
+            return exited
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -277,9 +309,18 @@ def _close_transport(proc: Any) -> None:
     its loop has closed by then the interpreter prints ``Exception ignored in
     BaseSubprocessTransport.__del__ ... Event loop is closed``. Closing it here
     marks it closed first: on a closed loop the close itself fails, quietly.
+
+    A transport whose loop is still running is left alone: its close calls
+    ``Popen.poll()``, which reaps an exited Chrome before that loop's child
+    watcher can, and the watcher then logs "exit status already read" at
+    warning level. The running loop finishes the transport once it sees the
+    exit.
     """
     transport = getattr(proc, "_transport", None)
     if transport is None:
+        return
+    loop = getattr(transport, "_loop", None)
+    if isinstance(loop, asyncio.AbstractEventLoop) and loop.is_running():
         return
     try:
         transport.close()
@@ -287,24 +328,65 @@ def _close_transport(proc: Any) -> None:
         LOG.debug("chrome_transport_close_failed", exc_info=True)
 
 
+def _wait_for_exit(proc: Any, timeout_s: float) -> bool:
+    """Poll until the Chrome behind *proc* has exited, for up to *timeout_s*. Whether it did."""
+    deadline = time.monotonic() + timeout_s
+    while not _has_exited(proc):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_EXIT_POLL_S)
+    return True
+
+
+def _kill(proc: Any) -> bool:
+    """SIGKILL the Chrome behind *proc*, or kill it through its handle off POSIX. Never raises.
+
+    Called only while the process is unreaped, so its pid is still Chrome's.
+    Not ``proc.kill()`` on POSIX: ``Popen.send_signal`` polls first, and the
+    poll reaps the child the loop's watcher is waiting for.
+    """
+    try:
+        if _signals_available():
+            os.kill(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception as exc:  # noqa: BLE001 - best-effort: this runs on cleanup paths
+        LOG.debug("chrome_kill_failed", pid=getattr(proc, "pid", None), error=str(exc))
+        return False
+    return True
+
+
 def _end_browser_without_loop(browser: Any) -> None:
     """End *browser*'s Chrome and remove its temp profile without its event loop. Never raises.
 
     SIGTERM on POSIX (the signal handler's sequence), the subprocess handle
-    elsewhere. Then it waits up to ``_REAP_TERM_TIMEOUT_S`` for Chrome to
-    exit, because removing the profile while Chrome still writes to it leaves
-    the directory behind, and retries the removal. There is no subprocess
-    reap: that needs the loop.
+    elsewhere, then up to ``_REAP_TERM_TIMEOUT_S`` for Chrome to exit, then
+    SIGKILL and up to ``_REAP_KILL_TIMEOUT_S`` more, as the stop through the
+    loop does. A Chrome whose exit status was already collected is not
+    signalled, since its pid may belong to another process by now. The
+    profile is removed, with retries, only once Chrome has exited: removing
+    it while Chrome still writes to it leaves the directory behind. There is
+    no subprocess reap: that is the loop's child watcher's job.
     """
     proc = getattr(browser, "_process", None)
-    if _signals_available():
+    if _already_reaped(proc):
+        ended = False
+    elif _signals_available():
         ended = terminate_nodriver_browser(browser)
     else:
         ended = _terminate_through_handle(proc)
-    if ended:
-        deadline = time.monotonic() + _REAP_TERM_TIMEOUT_S
-        while not _has_exited(proc) and time.monotonic() < deadline:
-            time.sleep(_EXIT_POLL_S)
+    if ended and not _wait_for_exit(proc, _REAP_TERM_TIMEOUT_S):
+        LOG.debug("chrome_sigterm_timeout_escalating_to_sigkill", pid=getattr(proc, "pid", None))
+        if _kill(proc):
+            _wait_for_exit(proc, _REAP_KILL_TIMEOUT_S)
+    if not _has_exited(proc):
+        LOG.warning(
+            "chrome_still_running_profile_kept",
+            pid=getattr(proc, "pid", None),
+            hint="Chrome did not exit, so its temp profile was left in place; "
+            "a later launch's stale sweep removes it once no browser uses it.",
+        )
+        return
     _close_transport(proc)
     remove_browser_temp_profile(
         browser, attempts=_PROFILE_REMOVE_ATTEMPTS, retry_delay_s=_PROFILE_REMOVE_RETRY_S

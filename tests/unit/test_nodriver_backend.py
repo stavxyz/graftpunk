@@ -2330,26 +2330,40 @@ while True:
     time.sleep(0.05)
 """
 
+_CHILD_IGNORING_TERM = """
+import signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print("ready", flush=True)
+while True:
+    time.sleep(0.05)
+"""
+
 
 @contextmanager
-def _chrome_like_child(profile: Path, exit_delay: float = 0.3) -> Iterator[Any]:
-    """A real child process standing in for Chrome, reaped by a watcher thread.
+def _chrome_like_child(
+    profile: Path, exit_delay: float = 0.3, *, reaped: bool = True, script: str = _CHILD_UNTIL_TERM
+) -> Iterator[Any]:
+    """A real child process standing in for Chrome.
 
-    It rewrites ``Local State`` in *profile* *exit_delay* seconds after
-    SIGTERM, then exits. The thread waits on it the way asyncio's child
-    watcher does, so a pid that exited stops answering ``kill(pid, 0)``.
+    By default it rewrites ``Local State`` in *profile* *exit_delay* seconds
+    after SIGTERM, then exits. With *reaped*, a thread waits on it the way
+    asyncio's threaded child watcher does (macOS), so a pid that exited stops
+    answering ``kill(pid, 0)``. Without it, nothing reaps the child, which is
+    what Linux's pidfd watcher amounts to while the browser's loop is blocked
+    or closed: an exited Chrome stays a zombie.
     """
     import subprocess
     import sys
 
     child = subprocess.Popen(  # noqa: S603 - a fixed script run by this interpreter
-        [sys.executable, "-c", _CHILD_UNTIL_TERM, str(profile), str(exit_delay)],
+        [sys.executable, "-c", script, str(profile), str(exit_delay)],
         stdout=subprocess.PIPE,
     )
     assert child.stdout is not None
     assert child.stdout.readline().strip() == b"ready"
-    reaper = threading.Thread(target=child.wait, daemon=True)
-    reaper.start()
+    if reaped:
+        reaper = threading.Thread(target=child.wait, daemon=True)
+        reaper.start()
     try:
         yield child
     finally:
@@ -2459,6 +2473,137 @@ class TestNoDriverBackendEndingChromeWithoutItsLoop:
         gc.collect()
 
         assert [str(u.exc_value) for u in unraisable] == []
+        assert not profile.exists()
+
+    @pytest.mark.skipif(
+        not hasattr(os, "waitid"),
+        reason="CPython has no os.waitid on macOS, where asyncio reaps from a thread",
+    )
+    def test_an_exited_chrome_nothing_has_reaped_ends_promptly_and_stays_unreaped(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Linux's pidfd watcher reaps on the browser's loop, which is blocked
+        or closed here, so the exited Chrome is a zombie that answers kill(pid, 0)."""
+        import time
+
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        profile = temp_profiles / "uc_zombie"
+        profile.mkdir()
+        backend = NoDriverBackend()
+
+        with _chrome_like_child(profile, exit_delay=0.0, reaped=False) as child:
+            backend._browser = _temp_browser(profile, child)
+            began = time.monotonic()
+            backend._release_failed_attempt()
+            elapsed = time.monotonic() - began
+
+            # The exit status is still there for the loop's watcher to collect.
+            assert os.waitpid(child.pid, os.WNOHANG) == (child.pid, 0)
+        # _REAP_TERM_TIMEOUT_S is 3 s; a wait that misread the zombie runs it out.
+        assert elapsed < 1.5
+        assert not profile.exists()
+
+    def test_a_chrome_that_ignores_sigterm_is_killed_before_its_profile_goes(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import signal
+
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.3)
+        profile = temp_profiles / "uc_stubborn"
+        profile.mkdir()
+        backend = NoDriverBackend()
+
+        with _chrome_like_child(profile, script=_CHILD_IGNORING_TERM) as child:
+            backend._browser = _temp_browser(profile, child)
+            backend._release_failed_attempt()
+
+            assert child.wait(5) == -signal.SIGKILL
+        assert not profile.exists()
+
+    def test_a_chrome_still_running_after_both_signals_keeps_its_profile(
+        self,
+        temp_profiles: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.2)
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.2)
+        # The SIGKILL is refused, as it is for a process of another user (EPERM).
+        monkeypatch.setattr("graftpunk.backends.nodriver._kill", lambda _proc: False)
+        profile = temp_profiles / "uc_wedged"
+        profile.mkdir()
+        backend = NoDriverBackend()
+
+        with _chrome_like_child(profile, script=_CHILD_IGNORING_TERM) as child:
+            backend._browser = _temp_browser(profile, child)
+            backend._release_failed_attempt()
+
+            assert child.poll() is None
+            assert profile.exists()
+        [warning] = [e for e in captured_logs if e["log_level"] == "warning"]
+        assert warning["event"] == "chrome_still_running_profile_kept"
+        assert warning["pid"] == child.pid
+
+    def test_a_chrome_already_reaped_is_not_signalled_again(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once reaped its pid is free, and the process holding it now is not Chrome."""
+        import subprocess
+
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        profile = temp_profiles / "uc_reaped"
+        profile.mkdir()
+        backend = NoDriverBackend()
+
+        with _chrome_like_child(temp_profiles / "other", exit_delay=0.0) as other:
+            reaped = SimpleNamespace(pid=other.pid, returncode=0)
+            backend._browser = _temp_browser(profile, reaped)
+            backend._release_failed_attempt()
+
+            with pytest.raises(subprocess.TimeoutExpired):
+                other.wait(0.5)
+        assert not profile.exists()
+        assert not (temp_profiles / "other").exists()
+
+    def test_a_running_loop_keeps_the_exit_status_for_its_child_watcher(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The end runs on the loop, blocking it, as a sync stop() inside it
+        does. A transport close there polls the Popen, which reaps Chrome
+        before the watcher can; on Linux the watcher then logs "exit status
+        already read" and reports 255."""
+        import signal
+        import sys
+
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        profile = temp_profiles / "uc_running_loop"
+        profile.mkdir()
+
+        async def spawn() -> asyncio.subprocess.Process:
+            return await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                "import time; time.sleep(30)",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+        backend = NoDriverBackend()
+
+        async def end_on_the_loop_then_wait() -> int:
+            process = await spawn()
+            backend._browser = _temp_browser(profile, process)
+            backend._release_failed_attempt()
+            return await process.wait()
+
+        with _loop_in_thread() as loop:
+            returncode = asyncio.run_coroutine_threadsafe(end_on_the_loop_then_wait(), loop).result(
+                10
+            )
+
+        assert returncode == -signal.SIGTERM
         assert not profile.exists()
 
 
