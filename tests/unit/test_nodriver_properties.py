@@ -99,32 +99,12 @@ class TestNoDriverBackendCookies:
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_set_cookies_starts_if_not_running(self, mock_run: MagicMock) -> None:
         """set_cookies() starts browser if not running."""
-        mock_run.side_effect = close_coro_and_return(True)
+        mock_run.side_effect = close_coro_and_return(1)
         backend = NoDriverBackend()
         result = backend.set_cookies([{"name": "test", "value": "value"}])
 
-        # Should have called start and then set_cookies
-        assert mock_run.call_count >= 1
-        # Returns count of cookies (all succeed when no error)
+        assert backend._started is True
         assert result == 1
-
-    @patch("graftpunk.backends.nodriver.asyncio.run")
-    def test_set_cookies_returns_count(self, mock_run: MagicMock) -> None:
-        """set_cookies() returns number of cookies successfully set."""
-        mock_run.side_effect = close_coro_and_return(True)
-        backend = NoDriverBackend()
-        backend._started = True
-        backend._browser = MagicMock()
-        backend._page = MagicMock()
-
-        result = backend.set_cookies(
-            [
-                {"name": "cookie1", "value": "val1"},
-                {"name": "cookie2", "value": "val2"},
-            ]
-        )
-
-        assert result == 2
 
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_set_cookies_returns_zero_on_failure(self, mock_run: MagicMock) -> None:
@@ -257,7 +237,6 @@ class TestBestEffortGettersOnProtocolError:
             ("_get_current_url_async", "evaluate", ""),
             ("_get_page_title_async", "evaluate", ""),
             ("_get_page_source_async", "get_content", ""),
-            ("_get_cookies_async", "get_cookies", []),
             ("_get_user_agent_async", "evaluate", ""),
         ],
     )
@@ -274,14 +253,3 @@ class TestBestEffortGettersOnProtocolError:
             assert await getattr(backend, method)() == fallback
 
         assert mock_log.warning.call_args.kwargs["exc_type"] == "ProtocolException"
-
-    @pytest.mark.asyncio
-    async def test_set_cookies_returns_false_instead_of_raising(self) -> None:
-        backend = NoDriverBackend()
-        backend._page = MagicMock()
-        backend._page.set_cookies = AsyncMock(side_effect=ProtocolException("[code: -32602]"))
-
-        with patch("graftpunk.backends.nodriver.LOG") as mock_log:
-            assert await backend._set_cookies_async([{"name": "a", "value": "b"}]) is False
-
-        assert mock_log.warning.call_args.args[0] == "nodriver_set_cookies_failed"

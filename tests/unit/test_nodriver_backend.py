@@ -3,12 +3,14 @@
 import asyncio
 import os
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from structlog.testing import capture_logs
 
 from graftpunk.backends import get_backend, list_backends
+from graftpunk.backends.base import Cookie
 from graftpunk.backends.nodriver import NoDriverBackend
 from graftpunk.chrome_orphans import OWNER_SWITCH, base_browser_args
 from graftpunk.exceptions import BrowserError
@@ -475,11 +477,15 @@ class TestNoDriverBackendErrorHandling:
         backend._browser = MagicMock()
         backend._page = MagicMock()
 
-        # Make set_cookies fail
         mock_run.side_effect = close_coro_and_raise(RuntimeError("cookies failed"))
 
-        # Should not raise, but log warning
-        backend.set_cookies([{"name": "test", "value": "value"}])
+        with capture_logs() as logs:
+            result = backend.set_cookies([{"name": "test", "value": "value"}])
+
+        assert result == 0
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == [
+            "nodriver_backend_cookie_set_failed"
+        ]
 
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_delete_cookies_logs_warning_on_failure(self, mock_run: MagicMock) -> None:
@@ -675,20 +681,6 @@ class TestNoDriverBackendMissingCoverage:
         assert backend._options.get("another_option") == 123
 
     @patch("graftpunk.backends.nodriver.asyncio.run")
-    def test_get_cookies_returns_cookies_when_running(self, mock_run: MagicMock) -> None:
-        """get_cookies() returns cookies when running."""
-        backend = NoDriverBackend()
-        backend._started = True
-        backend._browser = MagicMock()
-        backend._page = MagicMock()
-
-        mock_run.side_effect = close_coro_and_return([{"name": "session", "value": "abc123"}])
-
-        cookies = backend.get_cookies()
-        assert len(cookies) == 1
-        assert cookies[0]["name"] == "session"
-
-    @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_get_cookies_returns_empty_on_exception(self, mock_run: MagicMock) -> None:
         """get_cookies() returns empty list on exception."""
         backend = NoDriverBackend()
@@ -715,31 +707,6 @@ class TestNoDriverBackendMissingCoverage:
         assert backend.page_title == ""
         assert backend.page_source == ""
         assert backend.get_user_agent() == ""
-
-    @patch("graftpunk.backends.nodriver.asyncio.run")
-    def test_get_cookies_returns_empty_when_page_none(self, mock_run: MagicMock) -> None:
-        """get_cookies() returns empty list if _page is None."""
-        mock_run.side_effect = close_coro_and_return([])
-        backend = NoDriverBackend()
-        backend._started = True
-        backend._browser = MagicMock()
-        backend._page = None
-
-        assert backend.get_cookies() == []
-
-    @patch("graftpunk.backends.nodriver.asyncio.run")
-    def test_set_cookies_safe_when_page_none(self, mock_run: MagicMock) -> None:
-        """set_cookies() is safe when _page is None."""
-        mock_run.side_effect = close_coro_and_return(False)  # Returns False when page is None
-        backend = NoDriverBackend()
-        backend._started = True
-        backend._browser = MagicMock()
-        backend._page = None
-
-        # Should not raise - _set_cookies_async checks for None page
-        # Returns 0 because page is None
-        result = backend.set_cookies([{"name": "test", "value": "value"}])
-        assert result == 0
 
     @patch("graftpunk.backends.nodriver.asyncio.run")
     def test_delete_all_cookies_safe_when_page_none(self, mock_run: MagicMock) -> None:
@@ -897,32 +864,6 @@ class TestNoDriverNavigateErrorTypes:
 
         with pytest.raises(BrowserError, match="Navigation failed"):
             backend.navigate("https://example.com")
-
-
-class TestNoDriverSetCookiesNoPage:
-    """Tests for set_cookies behavior when page is None."""
-
-    @patch("graftpunk.backends.nodriver.LOG")
-    @patch("graftpunk.backends.nodriver.asyncio.run")
-    def test_set_cookies_returns_zero_when_page_is_none(
-        self, mock_run: MagicMock, mock_log: MagicMock
-    ) -> None:
-        """set_cookies() returns 0 when _page is None."""
-        backend = NoDriverBackend()
-        backend._started = True
-        backend._browser = MagicMock()
-        backend._page = None  # Page is None
-
-        # Make _run_async return False (page was None)
-        mock_run.side_effect = close_coro_and_return(False)
-
-        cookies = [{"name": "test", "value": "value"}]
-        result = backend.set_cookies(cookies)
-
-        assert result == 0
-        mock_log.warning.assert_called()
-        call_args = mock_log.warning.call_args
-        assert call_args[0][0] == "nodriver_backend_cookie_set_no_page"
 
 
 class TestNoDriverExpectedStopPatterns:
@@ -1692,3 +1633,274 @@ class TestKeepOrphanedChromeSetting:
         reset_settings()
 
         assert get_settings().keep_orphaned_chrome is True
+
+
+class _FakeCdpTab:
+    """A tab whose ``send`` drives nodriver's real CDP generator protocol.
+
+    nodriver's ``Tab.send(cmd)`` calls ``next(cmd)`` to get the request dict,
+    then sends the response JSON back into the generator, whose return value
+    is the parsed result. This fake does the same against an in-memory jar
+    speaking CDP's JSON shapes, so the backend's CDP objects are built and
+    parsed by nodriver itself.
+    """
+
+    def __init__(self) -> None:
+        self.jar: list[dict[str, Any]] = []
+        self.reject: set[str] = set()
+        self.fail_with: Exception | None = None
+
+    async def send(self, cmd: Any) -> Any:
+        request = next(cmd)
+        if self.fail_with is not None:
+            cmd.close()
+            raise self.fail_with
+        handler = {
+            "Storage.setCookies": self._set_cookies,
+            "Storage.getCookies": self._get_cookies,
+            "Network.clearBrowserCookies": self._clear,
+        }[request["method"]]
+        try:
+            cmd.send(handler(request.get("params", {})))
+        except StopIteration as stop:
+            return stop.value
+        raise AssertionError(f"{request['method']} did not finish after one response")
+
+    def _set_cookies(self, params: dict[str, Any]) -> dict[str, Any]:
+        for param in params["cookies"]:
+            if param["name"] in self.reject:
+                continue
+            expires = param.get("expires")
+            stored = {
+                "name": param["name"],
+                "value": param["value"],
+                # The jar marks a domain cookie with a leading dot.
+                "domain": "." + param["domain"].lstrip("."),
+                "path": param.get("path", "/"),
+                "size": len(param["name"]) + len(param["value"]),
+                "httpOnly": param.get("httpOnly", False),
+                "secure": param.get("secure", False),
+                "session": expires is None,
+                "expires": -1 if expires is None else expires,
+                "priority": "Medium",
+                "sourceScheme": "Secure",
+                "sourcePort": 443,
+            }
+            if "sameSite" in param:
+                stored["sameSite"] = param["sameSite"]
+            self.jar = [
+                c
+                for c in self.jar
+                if (c["name"], c["domain"], c["path"])
+                != (stored["name"], stored["domain"], stored["path"])
+            ]
+            self.jar.append(stored)
+        return {}
+
+    def _get_cookies(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"cookies": [dict(c) for c in self.jar]}
+
+    def _clear(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.jar = []
+        return {}
+
+
+def _backend_with_tab(tab: _FakeCdpTab | None) -> NoDriverBackend:
+    backend = NoDriverBackend()
+    backend._started = True
+    backend._browser = MagicMock()
+    backend._page = tab
+    return backend
+
+
+def _warnings(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in logs if e["log_level"] == "warning"]
+
+
+class TestNoDriverCookiesThroughCdp:
+    """Cookie read and write go through CDP Storage commands (#193).
+
+    nodriver.Tab has no get_cookies() or set_cookies(), so the backend's old
+    calls to them always failed; these tests run the real coroutines through
+    the backend's ``_run_async`` against a fake tab.
+    """
+
+    SECRET = "s3cr3t-value-do-not-log"  # noqa: S105 - a marker the log must never contain
+
+    def test_set_then_get_round_trips_every_field(self) -> None:
+        backend = _backend_with_tab(_FakeCdpTab())
+        persistent: Cookie = {
+            "name": "sid",
+            "value": self.SECRET,
+            "domain": "myshop.example",
+            "path": "/account",
+            "secure": True,
+            "httponly": True,
+            "sameSite": "Lax",
+            "expires": 1893456000.0,
+        }
+        session_cookie: Cookie = {
+            "name": "pref",
+            "value": "dark",
+            "domain": ".example.com",
+            "secure": False,
+            "httponly": False,
+        }
+
+        assert backend.set_cookies([persistent, session_cookie]) == 2
+
+        by_name = {c["name"]: c for c in backend.get_cookies()}
+        assert by_name["sid"] == {
+            "name": "sid",
+            "value": self.SECRET,
+            "domain": ".myshop.example",
+            "path": "/account",
+            "secure": True,
+            "httponly": True,
+            "sameSite": "Lax",
+            "expires": 1893456000.0,
+        }
+        # A session cookie has no expires, and path defaults to "/".
+        assert by_name["pref"] == {
+            "name": "pref",
+            "value": "dark",
+            "domain": ".example.com",
+            "path": "/",
+            "secure": False,
+            "httponly": False,
+        }
+
+    def test_same_site_is_accepted_in_any_case(self) -> None:
+        backend = _backend_with_tab(_FakeCdpTab())
+
+        count = backend.set_cookies(
+            [{"name": "a", "value": "1", "domain": "example.com", "sameSite": "strict"}]
+        )
+
+        assert count == 1
+        assert backend.get_cookies()[0]["sameSite"] == "Strict"
+
+    def test_set_counts_only_cookies_present_and_warns_with_missing_names(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        tab = _FakeCdpTab()
+        tab.reject = {"blocked"}
+        backend = _backend_with_tab(tab)
+
+        count = backend.set_cookies(
+            [
+                {"name": "kept", "value": "1", "domain": "example.com"},
+                {"name": "blocked", "value": self.SECRET, "domain": "example.com"},
+            ]
+        )
+
+        assert count == 1
+        assert [c["name"] for c in backend.get_cookies()] == ["kept"]
+        [warning] = _warnings(captured_logs)
+        assert warning["event"] == "nodriver_set_cookies_incomplete"
+        assert warning["missing_names"] == ["blocked"]
+        assert warning["requested"] == 2
+        assert warning["present"] == 1
+
+    def test_a_cookie_without_a_domain_is_skipped_with_a_warning(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        tab = _FakeCdpTab()
+        backend = _backend_with_tab(tab)
+
+        count = backend.set_cookies(
+            [
+                {"name": "nodomain", "value": self.SECRET},
+                {"name": "ok", "value": "1", "domain": "example.com"},
+            ]
+        )
+
+        assert count == 1
+        assert [c["name"] for c in tab.jar] == ["ok"]
+        [warning] = _warnings(captured_logs)
+        assert warning["event"] == "nodriver_set_cookies_skipped"
+        assert warning["cookie_name"] == "nodomain"
+        assert warning["reason"] == "no domain"
+
+    def test_an_unknown_same_site_is_skipped_with_a_warning(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        backend = _backend_with_tab(_FakeCdpTab())
+
+        count = backend.set_cookies(
+            [{"name": "odd", "value": "1", "domain": "example.com", "sameSite": "sometimes"}]
+        )
+
+        assert count == 0
+        [warning] = _warnings(captured_logs)
+        assert warning["event"] == "nodriver_set_cookies_skipped"
+        assert warning["cookie_name"] == "odd"
+
+    def test_no_page_get_returns_empty(self) -> None:
+        assert _backend_with_tab(None).get_cookies() == []
+
+    def test_no_page_set_returns_zero_with_the_no_page_warning(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        backend = _backend_with_tab(None)
+
+        assert backend.set_cookies([{"name": "a", "value": "1", "domain": "example.com"}]) == 0
+        assert [e["event"] for e in _warnings(captured_logs)] == [
+            "nodriver_backend_cookie_set_no_page"
+        ]
+
+    @pytest.mark.parametrize("kind", ["ProtocolException", "Exception"])
+    def test_a_cdp_failure_warns_and_returns_nothing(
+        self, kind: str, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        from nodriver.core.connection import ProtocolException
+
+        tab = _FakeCdpTab()
+        tab.fail_with = (
+            ProtocolException({"code": -32602, "message": "Invalid cookie fields"})
+            if kind == "ProtocolException"
+            else Exception("socket gone")
+        )
+        backend = _backend_with_tab(tab)
+
+        assert backend.set_cookies([{"name": "a", "value": "1", "domain": "example.com"}]) == 0
+        assert backend.get_cookies() == []
+        warnings = _warnings(captured_logs)
+        assert [e["event"] for e in warnings] == [
+            "nodriver_set_cookies_failed",
+            "nodriver_get_cookies_failed",
+        ]
+        assert warnings[0]["cookie_names"] == ["a"]
+        assert warnings[0]["exc_type"] == kind
+
+    def test_delete_all_cookies_empties_the_jar(self) -> None:
+        backend = _backend_with_tab(_FakeCdpTab())
+        backend.set_cookies([{"name": "a", "value": "1", "domain": "example.com"}])
+
+        assert backend.delete_all_cookies() is True
+        assert backend.get_cookies() == []
+
+    def test_cookie_values_never_reach_the_log(self, captured_logs: list[dict[str, Any]]) -> None:
+        tab = _FakeCdpTab()
+        tab.reject = {"rejected"}
+        backend = _backend_with_tab(tab)
+        backend.set_cookies(
+            [
+                {"name": "kept", "value": self.SECRET, "domain": "example.com"},
+                {"name": "rejected", "value": self.SECRET, "domain": "example.com"},
+                {"name": "nodomain", "value": self.SECRET},
+            ]
+        )
+        backend.get_cookies()
+        tab.fail_with = RuntimeError("cdp down")
+        backend.set_cookies([{"name": "x", "value": self.SECRET, "domain": "example.com"}])
+        backend._page = None
+        backend.set_cookies([{"name": "y", "value": self.SECRET, "domain": "example.com"}])
+
+        assert {e["event"] for e in captured_logs} >= {
+            "nodriver_set_cookies_incomplete",
+            "nodriver_set_cookies_skipped",
+            "nodriver_set_cookies_failed",
+            "nodriver_backend_cookie_set_no_page",
+        }
+        assert self.SECRET not in repr(captured_logs)

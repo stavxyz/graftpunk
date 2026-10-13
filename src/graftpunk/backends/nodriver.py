@@ -150,6 +150,77 @@ def _patch_nodriver_cookie_parsing() -> None:
     LOG.debug("nodriver_cookie_sameparty_patched")
 
 
+def _cookie_from_cdp(cdp_cookie: "nodriver.cdp.network.Cookie") -> Cookie:
+    """Convert a CDP ``Network.Cookie`` to the backend's Cookie dict."""
+    cookie: Cookie = {
+        "name": cdp_cookie.name,
+        "value": cdp_cookie.value,
+        "domain": cdp_cookie.domain,
+        "path": cdp_cookie.path,
+        "secure": cdp_cookie.secure,
+        "httponly": cdp_cookie.http_only,
+    }
+    if cdp_cookie.same_site is not None:
+        cookie["sameSite"] = cdp_cookie.same_site.value
+    # CDP reports a session cookie with session=True and expires=-1.
+    if not cdp_cookie.session and cdp_cookie.expires is not None:
+        cookie["expires"] = cdp_cookie.expires
+    return cookie
+
+
+def _cookie_param_from_dict(
+    cookie: Cookie,
+) -> tuple["nodriver.cdp.network.CookieParam | None", str]:
+    """Build a CDP ``CookieParam`` from a Cookie dict.
+
+    Returns:
+        ``(param, "")``, or ``(None, reason)`` when CDP cannot set the cookie.
+        The reason never contains the cookie's value.
+    """
+    import nodriver.cdp.network as cdp_network
+
+    if not cookie.get("domain"):
+        # Storage.setCookies needs a domain or a URL to place the cookie, and
+        # the Cookie dict carries no URL.
+        return None, "no domain"
+    same_site = None
+    if (raw_same_site := cookie.get("sameSite")) is not None:
+        by_name = {s.value.lower(): s for s in cdp_network.CookieSameSite}
+        same_site = by_name.get(str(raw_same_site).lower())
+        if same_site is None:
+            return None, f"sameSite {raw_same_site!r} is not Strict, Lax, or None"
+    expires = cookie.get("expires")
+    return (
+        cdp_network.CookieParam(
+            name=cookie["name"],
+            value=cookie["value"],
+            domain=cookie["domain"],
+            path=cookie.get("path") or "/",
+            secure=cookie.get("secure"),
+            http_only=cookie.get("httponly"),
+            same_site=same_site,
+            expires=cdp_network.TimeSinceEpoch(expires) if expires is not None else None,
+        ),
+        "",
+    )
+
+
+def _jar_has(jar: "list[nodriver.cdp.network.Cookie]", cookie: Cookie) -> bool:
+    """Whether ``jar`` holds ``cookie``, matched by name, domain, and path when given.
+
+    Domains compare without a leading dot, which marks a domain cookie in the
+    jar and may or may not be present in the requested dict.
+    """
+    domain = cookie.get("domain", "").lstrip(".")
+    path = cookie.get("path")
+    return any(
+        c.name == cookie["name"]
+        and c.domain.lstrip(".") == domain
+        and (path is None or c.path == path)
+        for c in jar
+    )
+
+
 @contextmanager
 def _suppress_nodriver_cleanup_noise():
     """Suppress noisy stdout from nodriver cleanup during browser stop.
@@ -751,26 +822,34 @@ class NoDriverBackend:
         """Async implementation of cookie retrieval."""
         if self._page is None:
             return []
+        # nodriver.Tab has no get_cookies() (not in 0.48 or 0.50), so read the
+        # jar through CDP (issue #193).
         try:
-            cookies = await self._page.get_cookies()
-            return cookies or []
+            import nodriver.cdp.storage as cdp_storage
+
+            cdp_cookies = await self._page.send(cdp_storage.get_cookies())
         except Exception as exc:  # noqa: BLE001 — best-effort: the documented contract is the fallback + warning
             # nodriver raises ProtocolException (a plain Exception subclass) for
             # CDP-level errors; a transport-only tuple let it escape (#152).
             LOG.warning("nodriver_get_cookies_failed", error=str(exc), exc_type=type(exc).__name__)
             return []
+        return [_cookie_from_cdp(c) for c in cdp_cookies or []]
 
     def get_cookies(self) -> list[Cookie]:
         """Get all cookies from the browser.
+
+        Reads every cookie in the browser's jar with CDP ``Storage.getCookies``.
 
         Note:
             Unlike ``set_cookies()`` and ``navigate()``, this method does NOT
             auto-start the browser.
 
         Returns:
-            List of cookie dicts from nodriver's get_cookies() (CDP format),
-            or empty list if browser is not running or an error occurs
-            (errors logged at warning level).
+            List of Cookie dicts with ``name``, ``value``, ``domain``, ``path``,
+            ``secure``, and ``httponly``, plus ``sameSite`` when the cookie has
+            one and ``expires`` (Unix seconds) unless it is a session cookie.
+            Empty if the browser is not running, there is no page, or the CDP
+            call fails (logged at warning level).
         """
         if not self.is_running:
             return []
@@ -781,51 +860,93 @@ class NoDriverBackend:
             LOG.warning("nodriver_cookies_failed", error=str(exc))
             return []
 
-    async def _set_cookies_async(self, cookies: list[Cookie]) -> bool:
+    async def _set_cookies_async(self, cookies: list[Cookie]) -> int:
         """Async implementation of cookie setting.
 
         Returns:
-            True if cookies were set, False if the page was not available or
-            the CDP call failed (logged at warning level).
+            How many of ``cookies`` are in the jar after setting, read back
+            with ``Storage.getCookies``. 0 if there is no page or a CDP call
+            fails. Each shortfall is logged at warning level.
         """
         if self._page is None:
-            return False
+            LOG.warning(
+                "nodriver_backend_cookie_set_no_page",
+                cookie_count=len(cookies),
+                is_running=self.is_running,
+                browser_present=self._browser is not None,
+            )
+            return 0
+
+        import nodriver.cdp.storage as cdp_storage
+
+        params = []
+        wanted: list[Cookie] = []
+        for cookie in cookies:
+            param, reason = _cookie_param_from_dict(cookie)
+            if param is None:
+                LOG.warning(
+                    "nodriver_set_cookies_skipped",
+                    cookie_name=cookie.get("name", "<unknown>"),
+                    reason=reason,
+                )
+                continue
+            params.append(param)
+            wanted.append(cookie)
+        if not params:
+            return 0
+
+        # nodriver.Tab has no set_cookies() (not in 0.48 or 0.50), so write
+        # through CDP (issue #193), then read the jar back so the count reports
+        # what the browser holds rather than what was requested.
         try:
-            await self._page.set_cookies(cookies)
+            await self._page.send(cdp_storage.set_cookies(params))
+            jar = await self._page.send(cdp_storage.get_cookies())
         except Exception as exc:  # noqa: BLE001 — best-effort: set_cookies() documents no exception
-            LOG.warning("nodriver_set_cookies_failed", error=str(exc), exc_type=type(exc).__name__)
-            return False
-        return True
+            LOG.warning(
+                "nodriver_set_cookies_failed",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                cookie_names=[c.get("name", "<unknown>") for c in wanted],
+            )
+            return 0
+
+        missing = [c.get("name", "<unknown>") for c in wanted if not _jar_has(jar or [], c)]
+        if missing:
+            LOG.warning(
+                "nodriver_set_cookies_incomplete",
+                requested=len(cookies),
+                present=len(wanted) - len(missing),
+                missing_names=missing,
+            )
+        return len(wanted) - len(missing)
 
     def set_cookies(self, cookies: list[Cookie]) -> int:
         """Set cookies in the browser.
 
-        This is a best-effort operation. If setting cookies fails, a warning
-        is logged but no exception is raised.
+        Writes the cookies with CDP ``Storage.setCookies``, then reads the jar
+        back to count them. This is a best-effort operation: failures are
+        logged at warning level but no exception is raised. Cookie values are
+        never logged.
 
         Args:
-            cookies: List of Cookie dicts to set. Each must have 'name' and
-                'value'; other fields are optional.
+            cookies: List of Cookie dicts to set. Each must have 'name',
+                'value', and 'domain' (CDP cannot place a cookie without a
+                domain or URL, so a cookie without 'domain' is skipped with a
+                ``nodriver_set_cookies_skipped`` warning). 'path' defaults to
+                '/'. The flags are read from 'secure', 'httponly', 'sameSite'
+                ('Strict', 'Lax', or 'None', any case), and 'expires' (Unix
+                seconds; omit it for a session cookie).
 
         Returns:
-            Number of cookies successfully set (all or none for nodriver,
-            since it sets cookies in a single CDP call). Returns 0 if no
-            page is available or an error occurs.
+            How many of the given cookies are present in the browser after
+            setting, matched by name and domain (and path when given). Returns
+            0 if no page is available or a CDP call fails.
         """
         if not self.is_running:
             self.start()
 
         try:
-            success = self._run_async(self._set_cookies_async(cookies))
-            if not success:
-                LOG.warning(
-                    "nodriver_backend_cookie_set_no_page",
-                    cookie_count=len(cookies),
-                    is_running=self.is_running,
-                    browser_present=self._browser is not None,
-                )
-                return 0
-            return len(cookies)
+            return self._run_async(self._set_cookies_async(cookies))
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # asyncio.run() can fail if browser crashed; best-effort operation
             LOG.warning(

@@ -28,7 +28,8 @@ class Cookie(TypedDict, total=False):
     Note:
         The duplicate fields accommodate format differences between backends:
         Selenium uses ``httpOnly`` (camelCase) and ``expiry`` (Unix timestamp as int).
-        CDP/nodriver uses ``httponly`` (lowercase) and ``expires`` (Unix timestamp).
+        The nodriver backend uses ``httponly`` (lowercase) and ``expires`` (Unix
+        timestamp), converting to and from CDP's own cookie objects.
 
     Warning:
         Backends do NOT convert between cookie formats. Using the wrong field
@@ -186,7 +187,8 @@ class BrowserBackend(Protocol):
         Returns:
             List of cookie dicts. Keys vary by backend but always include
             'name' and 'value'. Selenium returns keys like 'domain', 'path',
-            'secure', 'httpOnly'. NoDriver returns CDP-format cookies.
+            'secure', 'httpOnly'. NoDriver returns 'domain', 'path', 'secure',
+            'httponly', and 'sameSite' and 'expires' when the cookie has them.
         """
         ...
 
