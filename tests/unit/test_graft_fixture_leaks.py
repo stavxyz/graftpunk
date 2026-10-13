@@ -114,7 +114,10 @@ def _stub_module(template: str, body: str = "return ctx") -> str:
     and wrapped the way the generator writes it."""
     summary = f"GET {template}: seen 2 time(s) in run myshop/20261006-101500-4242."
     docstring = "\n".join(wrapped_docstring_lines(summary))
-    return f'class MyshopPlugin:\n    def orders(ctx):\n        """\n{docstring}\n        """\n        {body}\n'
+    return (
+        f'class MyshopPlugin:\n    def orders(ctx):\n        """\n{docstring}\n'
+        f'        """\n        {body}\n'
+    )
 
 
 @pytest.mark.parametrize(
