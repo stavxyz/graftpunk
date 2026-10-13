@@ -109,10 +109,10 @@ def test_nothing_left_exits_0(tmp_path: Path) -> None:
 _DATED_CAPTURE = json.dumps({"orders": [{"placed": "2026-09-30", "status": "shipped"}]})
 
 
-def _stub_module(template: str, body: str = "return ctx") -> str:
+def _stub_module(template: str, body: str = "return ctx", session: str = "myshop") -> str:
     """A plugin module whose stub docstring carries gp's provenance line, rendered
     and wrapped the way the generator writes it."""
-    summary = f"GET {template}: seen 2 time(s) in run myshop/20261006-101500-4242."
+    summary = f"GET {template}: seen 2 time(s) in run {session}/20261006-101500-4242."
     docstring = "\n".join(wrapped_docstring_lines(summary))
     return (
         f'class MyshopPlugin:\n    def orders(ctx):\n        """\n{docstring}\n'
@@ -129,6 +129,41 @@ def test_the_run_id_in_gps_provenance_line_is_not_a_leak(tmp_path: Path, templat
     """The run id's year matches a captured date, but the run id is gp's, not the
     account's."""
     result = _run(tmp_path, _DATED_CAPTURE, _stub_module(template))
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_run_label_cut_mid_word_by_the_wrap_is_still_gps(tmp_path: Path) -> None:
+    """A session name has no length limit, and the docstring wrap cuts a label longer
+    than its line mid-word; the label still ends at its own period."""
+    module = _stub_module("/api/orders", session="shop" * 25)
+    assert any(line.strip().endswith("shop") for line in module.splitlines()), module
+    result = _run(tmp_path, _DATED_CAPTURE, module)
+    assert result.returncode == 0, result.stdout
+
+
+_GP_SIDECAR = {"capture_sha256": "a" * 64, "flagged_names": ["session_id"]}
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        pytest.param({**_GP_SIDECAR, "capture_sha256": "b" + "a" * 63}, id="mistyped-hash"),
+        pytest.param({**_GP_SIDECAR, "flagged_names": []}, id="dropped-name"),
+    ],
+)
+def test_a_sidecar_that_differs_from_gps_is_reported(tmp_path: Path, written: dict) -> None:
+    """The skill writes the sidecar's text with the Write tool; a mistyped hash would
+    switch off the suite's unchanged-copy check, a dropped name its name check."""
+    (tmp_path / "capture.json.meta.json").write_text(json.dumps(_GP_SIDECAR))
+    result = _run(tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}), written)
+    assert result.returncode == 1
+    assert "the sidecar differs from the capture's" in result.stdout
+
+
+def test_a_sidecar_equal_to_gps_as_json_passes(tmp_path: Path) -> None:
+    (tmp_path / "capture.json.meta.json").write_text(json.dumps(_GP_SIDECAR, indent=2))
+    reordered = dict(reversed(list(_GP_SIDECAR.items())))
+    result = _run(tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}), reordered)
     assert result.returncode == 0, result.stdout
 
 

@@ -63,7 +63,8 @@ _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", r
 # The provenance phrase gp writes into a generated stub's docstring ("seen 2 time(s)
 # in run myshop/20261006-101500-4242."), wrapped at any space. The run id is gp's,
 # not captured data, yet its year matches any captured date, so it is left out.
-_PROVENANCE = re.compile(r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+\S+\.")
+# A session name holds no dot, and a label too long for its line is cut mid-word.
+_PROVENANCE = re.compile(r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+[^\s.]+(?:\n[ \t]*[^\s.]+)*\.")
 
 
 class _TextParts(HTMLParser):
@@ -213,16 +214,38 @@ def main(argv: list[str]) -> int:
     if sidecar is not None and not isinstance(sidecar, dict):
         print("fixture-leaks: the sidecar is not a JSON object.", file=sys.stderr)
         return 2
+    differs = sidecar is not None and _differs_from_captures(Path(argv[1]), sidecar)
+    if differs is None:
+        return 2
     left = survivors(capture, _PROVENANCE.sub(" ", fixture))
     for value in left:
         print(f"still in the fixture: {value!r}")
+    if differs:
+        print("the sidecar differs from the capture's: write the capture's sidecar text unchanged")
     if sidecar is not None:
         for key in ("body_params", "flagged_names"):
             names = sidecar.get(key) or []
             print(f"sidecar {key}: {', '.join(map(str, names)) if names else '(none)'}")
     if not left:
         print("fixture-leaks: no captured value is left in the fixture.")
-    return 1 if left else 0
+    return 1 if left or differs else 0
+
+
+def _differs_from_captures(capture: Path, sidecar: dict) -> bool | None:
+    """Whether *sidecar* says something other than the sidecar gp wrote beside
+    *capture*, compared as parsed JSON since the suite reads it that way. A
+    mistyped ``capture_sha256`` would silently switch off the suite's
+    unchanged-copy check, and a dropped flagged name its name check. False when
+    gp wrote no sidecar there (a fixture written from the projection's shape);
+    None, after saying why, when that sidecar cannot be read."""
+    own = capture.with_name(capture.name + ".meta.json")
+    if not own.exists():
+        return False
+    try:
+        return json.loads(own.read_text(encoding="utf-8")) != sidecar
+    except (OSError, ValueError) as exc:
+        print(f"fixture-leaks: cannot read the capture's sidecar: {exc}", file=sys.stderr)
+        return None
 
 
 if __name__ == "__main__":
