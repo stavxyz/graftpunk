@@ -1,6 +1,7 @@
 """Shared test helpers for unit tests."""
 
 import asyncio
+import threading
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -257,9 +258,12 @@ class LoopBoundTab(_LoopBound, FakeCdpTab):
 class LoopBoundBrowser(_LoopBound):
     """A nodriver Browser stand-in that only works on the loop that created it."""
 
-    def __init__(self, misuse: list[str], start_kwargs: dict[str, Any]) -> None:
+    def __init__(
+        self, misuse: list[str], start_kwargs: dict[str, Any], chrome: "FakeChrome"
+    ) -> None:
         super().__init__(misuse)
         self.start_kwargs = start_kwargs
+        self._chrome = chrome
         self.tabs: list[LoopBoundTab] = []
         self.stopped_on: asyncio.AbstractEventLoop | None = None
         # No subprocess to reap, and a profile the stop path must not touch.
@@ -268,6 +272,10 @@ class LoopBoundBrowser(_LoopBound):
 
     async def get(self, url: str) -> LoopBoundTab:
         await self._on_own_loop("Browser.get")
+        if self._chrome.hang_get:
+            # A page that never loads: only a cancellation ends this.
+            self._chrome.get_entered.set()
+            await asyncio.Event().wait()
         tab = LoopBoundTab(url, self._misuse)
         self.tabs.append(tab)
         return tab
@@ -284,12 +292,16 @@ class FakeChrome:
         self.browsers: list[LoopBoundBrowser] = []
         self.misuse: list[str] = []
         self.fail_with: Exception | None = None
+        # Set hang_get to make Browser.get wait until cancelled; get_entered
+        # is set once it is waiting.
+        self.hang_get = False
+        self.get_entered = threading.Event()
 
     async def start(self, **kwargs: Any) -> LoopBoundBrowser:
         if self.fail_with is not None:
             raise self.fail_with
         await asyncio.sleep(0)
-        browser = LoopBoundBrowser(self.misuse, kwargs)
+        browser = LoopBoundBrowser(self.misuse, kwargs, self)
         self.browsers.append(browser)
         return browser
 
@@ -301,6 +313,17 @@ def fake_chrome(monkeypatch: pytest.MonkeyPatch) -> FakeChrome:
     chrome = FakeChrome()
     monkeypatch.setattr(nodriver, "start", chrome.start)
     return chrome
+
+
+def with_private_loop(backend: Any) -> Any:
+    """Give a hand-built "started" NoDriverBackend the loop ``start()`` would make.
+
+    Only ``start()`` creates the private loop, so a test that sets
+    ``_started`` and a browser by hand has to supply one for its sync calls to
+    reach the coroutine at all.
+    """
+    backend._ensure_private_loop()
+    return backend
 
 
 @pytest.fixture()

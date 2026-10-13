@@ -10,8 +10,12 @@ Note:
     ``start()`` starts a private loop in a daemon thread and the synchronous
     methods submit their work to it. ``BrowserSession.start_async()`` starts
     the browser on the caller's loop instead, and the synchronous methods then
-    submit to that loop from other threads. ``stop_async()`` stops the browser
-    from inside an event loop.
+    submit to that loop from other threads. Before a start there is no loop,
+    and a synchronous call fails (the getters return their fallback) rather
+    than run on a loop the browser does not belong to. ``stop_async()`` stops
+    the browser from inside an event loop. When the browser's loop is gone, or
+    ``stop()`` is called from inside it, the stop ends Chrome with a signal
+    instead of through the loop.
 
 Logging:
     This module uses structured logging with intentional log levels:
@@ -31,6 +35,7 @@ Example:
 """
 
 import asyncio
+import concurrent.futures
 import io
 import sys
 import threading
@@ -75,6 +80,10 @@ _REAP_KILL_TIMEOUT_S: float = 1.0
 # daemon, so one that overruns this cannot hold the interpreter open.
 _LOOP_JOIN_TIMEOUT_S: float = 5.0
 _LOOP_THREAD_NAME = "graftpunk-nodriver-loop"
+
+# Guards the creation of a backend's private loop, so two threads starting
+# the same backend cannot each make one.
+_PRIVATE_LOOP_LOCK = threading.Lock()
 
 
 class _PrivateLoop:
@@ -339,15 +348,24 @@ class NoDriverBackend:
     Event loops:
         nodriver objects only work on the event loop that created them, so the
         backend records that loop in ``_loop`` and runs every synchronous call
-        on it. A synchronous ``start()`` creates a private loop in a daemon
-        thread named ``graftpunk-nodriver-loop``; ``stop()`` stops that loop
-        and joins the thread. ``BrowserSession.start_async()`` starts the
+        on it. Only a synchronous ``start()`` creates a loop: a private one in
+        a daemon thread named ``graftpunk-nodriver-loop``, which ``stop()``
+        stops, joining the thread. ``BrowserSession.start_async()`` starts the
         browser on the caller's loop instead, which the backend uses but never
         stops. A synchronous method works from any thread, including one
         running a different event loop (a FastAPI handler, say), except from
         the browser's own loop, where waiting on the loop would deadlock: it
         raises ``RuntimeError`` there, and async code awaits nodriver's own
-        objects (``driver``) and ``stop_async()`` instead.
+        objects (``driver``) and ``stop_async()`` instead. Without a loop
+        (before a start, or after unpickling) a synchronous call raises
+        ``RuntimeError``, which the getters turn into their fallback.
+
+        ``stop()`` and ``stop_async()`` end Chrome without the loop when they
+        cannot use it: when the loop has stopped or closed (a caller's loop
+        that finished), and when ``stop()`` is called from inside the
+        browser's own loop, which also logs ``nodriver_backend_stop_in_own_loop``
+        at warning level. That path sends SIGTERM, leaves nodriver's registry,
+        and removes the temp profile, without the subprocess reap.
 
     Note:
         Default headless=False because nodriver is more detectable in headless
@@ -373,7 +391,6 @@ class NoDriverBackend:
             "no such process",
             "event loop is closed",
             "target closed",
-            "cannot be used from within an async context",
         ]
     )
 
@@ -446,11 +463,35 @@ class NoDriverBackend:
         self._private_loop: _PrivateLoop | None = None
 
     def __getstate__(self) -> dict[str, Any]:
-        """Pickle state without the event loop and its thread, which cannot be pickled."""
+        """Pickle the configuration only, as a stopped backend.
+
+        The event loop and its thread cannot be pickled, and the browser and
+        tab belong to that loop, so a copy that kept them would run nodriver
+        objects on a loop they were not created on.
+        """
         state = self.__dict__.copy()
         state["_loop"] = None
         state["_private_loop"] = None
+        state["_started"] = False
+        state["_browser"] = None
+        state["_page"] = None
         return state
+
+    def _ensure_private_loop(self) -> None:
+        """Create the private loop ``start()`` runs the browser on, if there is no loop.
+
+        A loop left from an earlier start that is no longer running is
+        released first. Called only on the ``start()`` path.
+
+        Raises:
+            RuntimeError: If the loop's thread does not start.
+        """
+        with _PRIVATE_LOOP_LOCK:
+            if self._loop is not None and not self._loop.is_running():
+                self._release_loop()
+            if self._loop is None:
+                self._private_loop = _PrivateLoop()
+                self._loop = self._private_loop.loop
 
     def _release_loop(self) -> None:
         """Forget the browser's loop, stopping it only if this backend created it.
@@ -467,11 +508,11 @@ class NoDriverBackend:
     def _run_async(self, coro: Coroutine[Any, Any, Any]) -> Any:
         """Run a coroutine on the browser's event loop and wait for its result.
 
-        Without a loop yet, this starts the private one. The wait has no
-        timeout: a start sweeps
-        orphaned Chromes and retries its connection, and a navigation takes as
-        long as the page does, so any fixed limit would cut off a legitimate
-        call. Interrupting the wait (Ctrl-C) cancels the coroutine.
+        The wait has no timeout: a start sweeps orphaned Chromes and retries
+        its connection, and a navigation takes as long as the page does, so
+        any fixed limit would cut off a legitimate call. Interrupting the wait
+        (Ctrl-C) cancels the coroutine and waits up to ``_LOOP_JOIN_TIMEOUT_S``
+        for its cleanup before re-raising.
 
         Args:
             coro: Coroutine to execute.
@@ -480,38 +521,69 @@ class NoDriverBackend:
             Result of the coroutine.
 
         Raises:
-            RuntimeError: If called from the browser's own event loop, which
-                would deadlock waiting on itself, or if the loop the browser
-                was started on has stopped.
+            RuntimeError: If there is no loop (the browser was never started on
+                one), if called from the browser's own event loop, which would
+                deadlock waiting on itself, if that loop has stopped, or if the
+                call was cancelled because the loop is shutting down.
         """
+        loop = self._loop
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
             running = None
-        if running is not None and running is self._loop:
-            # Close the coroutine to avoid a "coroutine was never awaited" warning.
-            coro.close()
-            raise RuntimeError(
+        if loop is None:
+            problem = "NoDriverBackend has no event loop: start() the browser first."
+        elif running is loop:
+            problem = (
                 "NoDriverBackend cannot be used from within an async context "
                 "running on the browser's own event loop: the synchronous "
                 "methods wait on that loop and would deadlock. In async code, "
                 "await nodriver's objects (backend.driver) and stop_async() instead."
             )
-        if self._loop is None:
-            self._private_loop = _PrivateLoop()
-            self._loop = self._private_loop.loop
-        if not self._loop.is_running():
-            coro.close()
-            raise RuntimeError(
+        elif not loop.is_running():
+            problem = (
                 "The event loop this NoDriverBackend's browser was started on is no longer running."
             )
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        else:
+            problem = ""
+        if problem or loop is None:
+            # Close the coroutine to avoid a "coroutine was never awaited" warning.
+            coro.close()
+            raise RuntimeError(problem)
+
+        started = threading.Event()
+        finished = threading.Event()
+
+        async def tracked() -> Any:
+            started.set()
+            try:
+                return await coro
+            finally:
+                finished.set()
+
+        wrapper = tracked()
+        try:
+            future = asyncio.run_coroutine_threadsafe(wrapper, loop)
+        except RuntimeError:
+            # The loop closed after the check above.
+            wrapper.close()
+            coro.close()
+            raise
         try:
             return future.result()
+        except concurrent.futures.CancelledError as exc:
+            # The loop cancelled the call: another thread stopped the backend
+            # and its teardown cancelled what was still running. RuntimeError
+            # is what every caller already treats as "the call could not run".
+            raise RuntimeError("NoDriverBackend call was cancelled (browser stopping)") from exc
         except BaseException:
             # A KeyboardInterrupt while waiting must not leave the coroutine
-            # running on the loop. A no-op when the coroutine itself raised.
+            # running on the loop, and its cleanup (a start releasing a
+            # half-started browser) should finish before the caller moves on.
+            # A no-op when the coroutine itself raised.
             future.cancel()
+            if started.is_set():
+                finished.wait(_LOOP_JOIN_TIMEOUT_S)
             raise
 
     async def _start_async(self, _max_attempts: int = 3) -> None:
@@ -534,11 +606,23 @@ class NoDriverBackend:
         # The browser's objects belong to this loop; every later call runs here.
         loop = asyncio.get_running_loop()
         if loop is not self._loop:
-            # A private loop left from an earlier synchronous call, now
-            # superseded by the caller's loop (BrowserSession.start_async()).
+            # A private loop left from an earlier start, now superseded by the
+            # caller's loop (BrowserSession.start_async()).
             self._release_loop()
             self._loop = loop
+        try:
+            await self._launch(uc, _max_attempts)
+        except BaseException:
+            # A failed start_async() must not leave the caller's loop recorded:
+            # a later synchronous start() would find it stopped. The private
+            # loop is start()'s to release.
+            private = self._private_loop
+            if self._loop is loop and (private is None or private.loop is not loop):
+                self._loop = None
+            raise
 
+    async def _launch(self, uc: Any, max_attempts: int) -> None:
+        """Sweep orphaned Chromes, then start Chrome and open its first tab, with retries."""
         # Arm the termination handlers if the CLI asked for them, on this
         # thread: signal dispositions can only be set from the main thread,
         # and arming inside the to_thread call below would silently do
@@ -578,7 +662,7 @@ class NoDriverBackend:
             start_kwargs["lang"] = self._options["lang"]
 
         last_exc: Exception | None = None
-        for attempt in range(1, _max_attempts + 1):
+        for attempt in range(1, max_attempts + 1):
             try:
                 self._browser = await uc.start(**start_kwargs)
                 # Registered before the first tab: a signal arriving during
@@ -594,15 +678,21 @@ class NoDriverBackend:
                 self._release_failed_attempt()
                 if "Failed to connect to browser" not in str(exc):
                     raise
-                if attempt < _max_attempts:
-                    LOG.warning(
-                        "nodriver_browser_connect_retry",
-                        attempt=attempt,
-                        max_attempts=_max_attempts,
-                    )
-                    await asyncio.sleep(1.0 * attempt)
+            except BaseException:
+                # Cancelled (Ctrl-C during a synchronous start) or exiting: no
+                # retry, but the half-started browser still has to go, or it
+                # stays registered with _started False, where stop() skips it.
+                self._release_failed_attempt()
+                raise
+            if attempt < max_attempts:
+                LOG.warning(
+                    "nodriver_browser_connect_retry",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+                await asyncio.sleep(1.0 * attempt)
 
-        raise BrowserError(browser_connect_failure_message(_max_attempts)) from last_exc
+        raise BrowserError(browser_connect_failure_message(max_attempts)) from last_exc
 
     def start(
         self,
@@ -643,6 +733,7 @@ class NoDriverBackend:
         arm_termination_handlers()
 
         try:
+            self._ensure_private_loop()
             self._run_async(self._start_async())
             self._started = True
             LOG.info("nodriver_backend_started")
@@ -658,9 +749,15 @@ class NoDriverBackend:
                 profile_dir=str(self._profile_dir) if self._profile_dir else None,
             )
             raise BrowserError(f"Failed to start NoDriver browser: {exc}") from exc
+        except BaseException:
+            self._release_loop()
+            raise
 
     def _release_failed_attempt(self) -> None:
-        """End the browser a failed start attempt left behind. Never raises.
+        """End the browser without its event loop, and forget it. Never raises.
+
+        Used for a failed start attempt, and by the stops that cannot use the
+        browser's loop.
 
         ``uc.start()`` returns a live browser whose first CDP call can still
         fail, and "Failed to connect to browser" is raised by that call rather
@@ -758,16 +855,38 @@ class NoDriverBackend:
     def stop(self) -> None:
         """Stop the browser and release resources.
 
-        Idempotent - calling when already stopped is a no-op.
+        Idempotent - calling when already stopped is a no-op. When the
+        browser's loop has stopped, or this is called from inside that loop
+        (which logs ``nodriver_backend_stop_in_own_loop`` at warning level),
+        Chrome is ended with SIGTERM instead of through the loop.
         """
         if not self._started:
             return
 
         LOG.info("nodriver_backend_stopping")
+        loop = self._loop
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
         try:
             with _suppress_nodriver_cleanup_noise():
                 try:
-                    self._run_async(self._stop_async())
+                    if loop is None or loop.is_closed() or not loop.is_running():
+                        # Nothing left to run _stop_async on (a caller's loop
+                        # that finished), and the browser must not outlive it.
+                        self._release_failed_attempt()
+                    elif running is loop:
+                        # Waiting on the loop from inside it would deadlock.
+                        LOG.warning(
+                            "nodriver_backend_stop_in_own_loop",
+                            hint="In async code, await stop_async() (or use "
+                            "'async with BrowserSession(...)'); Chrome was ended "
+                            "with SIGTERM, without the subprocess reap.",
+                        )
+                        self._release_failed_attempt()
+                    else:
+                        self._run_async(self._stop_async())
                 finally:
                     # Inside the suppression: the private loop's teardown
                     # cancels nodriver's leftover tasks, which can log noise.
@@ -783,24 +902,39 @@ class NoDriverBackend:
         Use this instead of ``stop()`` when already running inside an event
         loop (e.g., from ``BrowserSession.__aexit__``), where ``stop()`` would
         block that loop. The stop runs on the browser's loop: directly when
-        that is the current loop, otherwise submitted to it and awaited.
+        that is the current loop, otherwise submitted to it and awaited. When
+        the browser's loop has stopped, Chrome is ended with SIGTERM instead.
+        Joining the private loop's thread happens on a worker thread, so the
+        caller's loop keeps running meanwhile.
         """
         if not self._started:
             return
 
         LOG.info("nodriver_backend_stopping")
+        loop = self._loop
+        current = asyncio.get_running_loop()
         try:
             with _suppress_nodriver_cleanup_noise():
                 try:
-                    loop = self._loop
-                    if loop is None or loop is asyncio.get_running_loop():
+                    if loop is None or loop is current:
                         await self._stop_async()
+                    elif loop.is_closed() or not loop.is_running():
+                        # Nothing left to run _stop_async on, and the browser
+                        # must not outlive the loop it was started on.
+                        self._release_failed_attempt()
                     else:
                         await asyncio.wrap_future(
                             asyncio.run_coroutine_threadsafe(self._stop_async(), loop)
                         )
                 finally:
-                    self._release_loop()
+                    if loop is None or loop is current:
+                        # Nothing to join from here: a private loop running
+                        # this coroutine only schedules its own stop.
+                        self._release_loop()
+                    else:
+                        # Joining the private loop's thread blocks, so not on
+                        # the caller's loop.
+                        await asyncio.to_thread(self._release_loop)
         except (RuntimeError, OSError) as exc:
             self._handle_stop_error(exc)
         finally:

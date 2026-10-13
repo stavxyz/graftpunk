@@ -8,7 +8,7 @@ import pytest
 
 from graftpunk.backends.nodriver import NoDriverBackend
 
-from .conftest import FakeChrome
+from .conftest import FakeChrome, with_private_loop
 
 # The backend module itself imports nodriver only under TYPE_CHECKING, so this
 # file must stay collectable on a browser-free install (repo convention:
@@ -84,7 +84,7 @@ class TestNoDriverBackendCookies:
 
     def test_set_cookies_returns_zero_on_failure(self) -> None:
         """set_cookies() returns 0 when CDP call fails."""
-        backend = NoDriverBackend()
+        backend = with_private_loop(NoDriverBackend())
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
@@ -96,7 +96,7 @@ class TestNoDriverBackendCookies:
 
     def test_delete_all_cookies_returns_true_on_success(self) -> None:
         """delete_all_cookies() returns True when successful."""
-        backend = NoDriverBackend()
+        backend = with_private_loop(NoDriverBackend())
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
@@ -106,7 +106,7 @@ class TestNoDriverBackendCookies:
 
     def test_delete_all_cookies_returns_false_on_failure(self) -> None:
         """delete_all_cookies() returns False when CDP call fails."""
-        backend = NoDriverBackend()
+        backend = with_private_loop(NoDriverBackend())
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
@@ -179,7 +179,7 @@ class TestDeleteAllCookiesAsync:
     def test_public_delete_all_cookies_returns_false_on_protocol_error(self) -> None:
         """The issue's symptom was at the public boundary: run the coroutine for
         real through _run_async and confirm the sync wrapper returns False."""
-        backend = NoDriverBackend()
+        backend = with_private_loop(NoDriverBackend())
         backend._started = True
         backend._browser = MagicMock()
         backend._page = MagicMock()
