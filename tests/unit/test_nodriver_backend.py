@@ -1050,7 +1050,7 @@ class TestNoDriverBackendOrphanCleanup:
             await backend._start_async()
 
         (kwargs,) = started
-        assert kwargs["browser_args"] == ["--test-type", f"{OWNER_SWITCH}={os.getpid()}"]
+        assert kwargs["browser_args"][:2] == ["--test-type", f"{OWNER_SWITCH}={os.getpid()}"]
 
     async def test_configured_browser_args_follow_the_shared_ones(self) -> None:
         started: list = []
@@ -1059,7 +1059,18 @@ class TestNoDriverBackendOrphanCleanup:
         with patch.dict("sys.modules", {"nodriver": self._fake_nodriver(started)}):
             await backend._start_async()
 
-        assert started[0]["browser_args"] == [*base_browser_args(), "--lang=en-US"]
+        assert started[0]["browser_args"][:-1] == [*base_browser_args(), "--lang=en-US"]
+
+    async def test_each_start_marks_its_launch_with_a_switch_of_its_own(self) -> None:
+        started: list = []
+
+        with patch.dict("sys.modules", {"nodriver": self._fake_nodriver(started)}):
+            await NoDriverBackend()._start_async()
+            await NoDriverBackend()._start_async()
+
+        marks = [kwargs["browser_args"][-1] for kwargs in started]
+        assert all(m.startswith("--graftpunk-launch-id=") for m in marks)
+        assert marks[0] != marks[1]
 
     async def test_the_sweep_runs_before_the_browser_starts(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2458,6 +2469,57 @@ class TestNoDriverBackendStartThatNeverReturned:
         assert registry == set()
         assert [p.name for p in temp_profiles.iterdir()] == []
 
+    async def test_a_browser_launched_with_a_copy_of_the_arguments_is_still_found(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Matching is by the launch switch's value, not by which list object nodriver kept."""
+        ended: list[Any] = []
+        monkeypatch.setattr("graftpunk.backends.nodriver.terminate_nodriver_browser", ended.append)
+        registry = self._registry(monkeypatch)
+        spawned: list[Any] = []
+
+        async def start_then_fail(**kwargs: Any) -> None:
+            browser = self._spawned(temp_profiles / "uc_ours", list(kwargs["browser_args"]))
+            registry.add(browser)
+            spawned.append(browser)
+            raise RuntimeError("Chrome crashed")
+
+        mock_uc = MagicMock()
+        mock_uc.start = start_then_fail
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_uc}),
+            pytest.raises(RuntimeError, match="Chrome crashed"),
+        ):
+            await NoDriverBackend()._start_async()
+
+        assert ended == spawned
+        assert registry == set()
+
+    async def test_a_browser_whose_arguments_cannot_be_read_is_left_alone(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ended: list[Any] = []
+        monkeypatch.setattr("graftpunk.backends.nodriver.terminate_nodriver_browser", ended.append)
+        registry = self._registry(monkeypatch)
+
+        async def start_then_fail(**kwargs: Any) -> None:
+            registry.add(self._spawned(temp_profiles / "uc_unknown", None))
+            raise RuntimeError("Chrome crashed")
+
+        mock_uc = MagicMock()
+        mock_uc.start = start_then_fail
+
+        with (
+            patch.dict("sys.modules", {"nodriver": mock_uc}),
+            pytest.raises(RuntimeError, match="Chrome crashed"),
+        ):
+            await NoDriverBackend()._start_async()
+
+        assert ended == []
+        assert len(registry) == 1
+        assert (temp_profiles / "uc_unknown").exists()
+
     async def test_a_browser_another_start_launched_meanwhile_is_left_alone(
         self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2468,7 +2530,7 @@ class TestNoDriverBackendStartThatNeverReturned:
 
         async def start_then_fail(**kwargs: Any) -> None:
             # Another backend's start, in another thread, registered first.
-            registry.add(self._spawned(temp_profiles / "uc_other", ["--other"]))
+            registry.add(self._spawned(temp_profiles / "uc_other", ["--graftpunk-launch-id=other"]))
             browser = self._spawned(temp_profiles / "uc_ours", kwargs["browser_args"])
             registry.add(browser)
             spawned.append(browser)

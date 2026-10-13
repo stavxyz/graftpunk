@@ -42,6 +42,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Coroutine
 from contextlib import contextmanager
 from pathlib import Path
@@ -90,6 +91,10 @@ _LOOP_THREAD_NAME = "graftpunk-nodriver-loop"
 _EXIT_POLL_S: float = 0.05
 _PROFILE_REMOVE_ATTEMPTS = 3
 _PROFILE_REMOVE_RETRY_S: float = 0.25
+
+# Chrome ignores switches it does not know; this one marks which start
+# launched a browser, for a start that fails before uc.start() returns it.
+_LAUNCH_SWITCH = "--graftpunk-launch-id"
 
 
 class _PrivateLoop:
@@ -297,20 +302,21 @@ def _end_browser_without_loop(browser: Any) -> None:
     )
 
 
-def _launched_with(browser: Any, browser_args: list[str]) -> bool:
-    """Whether *browser* is the one a ``uc.start(browser_args=...)`` call created.
+def _launched_with(browser: Any, launch_arg: str) -> bool:
+    """Whether *browser* is the one a ``uc.start()`` given *launch_arg* created.
 
-    nodriver's ``Config`` keeps the ``browser_args`` list it was given, so the
-    identity tells this start's browser from one another thread started at
-    the same time. A browser whose config does not show the list is taken as
-    this start's.
+    Every start adds its own ``--graftpunk-launch-id=<random>`` switch to
+    ``browser_args``, and nodriver's ``Config`` keeps those arguments, so the
+    switch tells this start's browser from one another thread started at the
+    same time. A browser whose arguments cannot be read is left alone: a
+    leaked Chrome is the lesser harm next to ending another caller's.
     """
-    own = getattr(getattr(browser, "config", None), "_browser_args", None)
-    return own is None or own is browser_args
+    args = getattr(getattr(browser, "config", None), "_browser_args", None)
+    return isinstance(args, list) and launch_arg in args
 
 
 def _release_unreturned_browsers(
-    registry: set[Any] | None, before: set[Any], browser_args: list[str]
+    registry: set[Any] | None, before: set[Any], launch_arg: str
 ) -> None:
     """End the browsers a failed ``uc.start()`` launched but never returned. Never raises.
 
@@ -323,7 +329,7 @@ def _release_unreturned_browsers(
     if registry is None:
         return
     for browser in set(registry) - before:
-        if not _launched_with(browser, browser_args):
+        if not _launched_with(browser, launch_arg):
             continue
         registry.discard(browser)
         _end_browser_without_loop(browser)
@@ -808,6 +814,8 @@ class NoDriverBackend:
         browser_args = base_browser_args()
         if "browser_args" in self._options:
             browser_args.extend(self._options["browser_args"])
+        launch_arg = f"{_LAUNCH_SWITCH}={uuid.uuid4().hex}"
+        browser_args.append(launch_arg)
 
         start_kwargs: dict[str, Any] = {
             "headless": self._headless,
@@ -844,7 +852,7 @@ class NoDriverBackend:
                 # Release whatever this attempt left running before the next
                 # one overwrites the handle, or before the raise below (#192).
                 self._release_failed_attempt()
-                _release_unreturned_browsers(registry, before, browser_args)
+                _release_unreturned_browsers(registry, before, launch_arg)
                 if "Failed to connect to browser" not in str(exc):
                     raise
             except BaseException:
@@ -852,7 +860,7 @@ class NoDriverBackend:
                 # retry, but the half-started browser still has to go, or it
                 # stays registered with _started False, where stop() skips it.
                 self._release_failed_attempt()
-                _release_unreturned_browsers(registry, before, browser_args)
+                _release_unreturned_browsers(registry, before, launch_arg)
                 raise
             if attempt < max_attempts:
                 LOG.warning(
