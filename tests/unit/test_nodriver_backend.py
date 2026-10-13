@@ -1592,6 +1592,42 @@ class TestNoDriverCookiesThroughCdp:
         assert warning["requested"] == 2
         assert warning["present"] == 1
 
+    def test_the_incomplete_warning_counts_only_the_cookies_sent(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        tab = FakeCdpTab()
+        tab.reject = {"blocked"}
+        backend = _backend_with_tab(tab)
+
+        count = backend.set_cookies(
+            [
+                {"name": "kept", "value": "1", "domain": "example.com"},
+                {"name": "blocked", "value": "2", "domain": "example.com"},
+                {"name": "nodomain", "value": "3"},
+            ]
+        )
+
+        assert count == 1
+        skipped, incomplete = _warnings(captured_logs)
+        assert skipped["event"] == "nodriver_set_cookies_skipped"
+        assert incomplete["event"] == "nodriver_set_cookies_incomplete"
+        assert incomplete["requested"] == 2
+        assert incomplete["requested"] - incomplete["present"] == len(incomplete["missing_names"])
+
+    def test_an_empty_path_is_set_and_counted_at_the_root(
+        self, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        tab = FakeCdpTab()
+        backend = _backend_with_tab(tab)
+
+        count = backend.set_cookies(
+            [{"name": "a", "value": "1", "domain": "example.com", "path": ""}]
+        )
+
+        assert count == 1
+        assert [c["path"] for c in tab.jar] == ["/"]
+        assert _warnings(captured_logs) == []
+
     def test_a_cookie_without_a_domain_is_skipped_with_a_warning(
         self, captured_logs: list[dict[str, Any]]
     ) -> None:
@@ -1657,11 +1693,11 @@ class TestNoDriverCookiesThroughCdp:
             ),
             (
                 {"name": "a", "value": "1", "domain": "example.com", "expires": float("nan")},
-                "expires is not a number",
+                "expires is not a finite number",
             ),
             (
                 {"name": "a", "value": "1", "domain": "example.com", "expires": "inf"},
-                "expires is not a number",
+                "expires is not a finite number",
             ),
         ],
         ids=["no-name", "no-value", "expires-not-a-number", "expires-nan", "expires-inf"],
