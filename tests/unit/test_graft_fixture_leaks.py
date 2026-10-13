@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from graftpunk.devtools.scaffold.pysrc import wrapped_docstring_lines
 from tests.unit.guide_harness import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "skills" / "graft" / "scripts" / "fixture-leaks.py"
@@ -103,6 +104,35 @@ def test_nothing_left_exits_0(tmp_path: Path) -> None:
     result = _run(tmp_path, json.dumps({"name": "Alice Example"}), json.dumps({"name": "Pat"}))
     assert result.returncode == 0
     assert "no captured value is left" in result.stdout
+
+
+_DATED_CAPTURE = json.dumps({"orders": [{"placed": "2026-09-30", "status": "shipped"}]})
+
+
+def _stub_module(template: str, body: str = "return ctx") -> str:
+    """A plugin module whose stub docstring carries gp's provenance line, rendered
+    and wrapped the way the generator writes it."""
+    summary = f"GET {template}: seen 2 time(s) in run myshop/20261006-101500-4242."
+    docstring = "\n".join(wrapped_docstring_lines(summary))
+    return f'class MyshopPlugin:\n    def orders(ctx):\n        """\n{docstring}\n        """\n        {body}\n'
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["/api/orders", "/api/accounts/{account_id}/orders/{order_id}/invoices/{invoice_id}/lines"],
+    ids=["one-line", "wrapped"],
+)
+def test_the_run_id_in_gps_provenance_line_is_not_a_leak(tmp_path: Path, template: str) -> None:
+    """The run id's year matches a captured date, but the run id is gp's, not the
+    account's."""
+    result = _run(tmp_path, _DATED_CAPTURE, _stub_module(template))
+    assert result.returncode == 0, result.stdout
+
+
+def test_the_same_digits_elsewhere_in_the_module_are_still_a_leak(tmp_path: Path) -> None:
+    result = _run(tmp_path, _DATED_CAPTURE, _stub_module("/api/orders", 'since = "2026"'))
+    assert result.returncode == 1
+    assert "'2026'" in result.stdout
 
 
 def test_an_html_capture_checks_text_and_attribute_values(tmp_path: Path) -> None:

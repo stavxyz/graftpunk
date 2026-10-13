@@ -18,7 +18,9 @@ surrogate pair, ``\\/``), and its percent-encoding decoded (``%40``). A piece wi
 space, a digit, or an ``@`` matches in any case; a single word matches as written,
 in capitals, or in lower case inside an identifier or an address
 (``test_okonkwo_order``, ``okonkwo@example.com``). FIXTURE can be any text file, so
-a plugin module or a test module is checked the same way.
+a plugin module or a test module is checked the same way. The provenance phrase gp
+writes into a generated stub's docstring (``seen 2 time(s) in run <session>/<run
+id>.``) is left out first, since its run id is gp's and not captured data.
 
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
 capitalised word copied in lower case on its own, a number reformatted (``12345`` as
@@ -58,6 +60,10 @@ _MIN_LENGTH = 3
 # character outside the Basic Multilingual Plane.
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.IGNORECASE)
+# The provenance phrase gp writes into a generated stub's docstring ("seen 2 time(s)
+# in run myshop/20261006-101500-4242."), wrapped at any space. The run id is gp's,
+# not captured data, yet its year matches any captured date, so it is left out.
+_PROVENANCE = re.compile(r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+\S+\.")
 
 
 class _TextParts(HTMLParser):
@@ -207,7 +213,7 @@ def main(argv: list[str]) -> int:
     if sidecar is not None and not isinstance(sidecar, dict):
         print("fixture-leaks: the sidecar is not a JSON object.", file=sys.stderr)
         return 2
-    left = survivors(capture, fixture)
+    left = survivors(capture, _PROVENANCE.sub(" ", fixture))
     for value in left:
         print(f"still in the fixture: {value!r}")
     if sidecar is not None:
