@@ -2243,6 +2243,46 @@ class TestNoDriverBackendLifecycleEdges:
         assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
         assert backend._loop is None
 
+    def test_ctrl_c_after_the_loop_dropped_the_call_leaves_no_unawaited_coroutine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A loop that stops between the submit and its next iteration drops
+        the submitted call, so neither coroutine ever runs."""
+        import concurrent.futures
+        import gc
+        import inspect
+        import warnings
+
+        backend = with_private_loop(NoDriverBackend())
+        private = backend._private_loop
+        assert private is not None
+
+        def submit_to_a_stopping_loop(
+            coro: Any, loop: asyncio.AbstractEventLoop
+        ) -> concurrent.futures.Future[Any]:
+            private.close()
+
+            class Interrupted(concurrent.futures.Future[Any]):
+                def result(self, timeout: float | None = None) -> Any:
+                    raise KeyboardInterrupt
+
+            return Interrupted()
+
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", submit_to_a_stopping_loop)
+
+        async def call() -> str:
+            return "unreachable"
+
+        coro = call()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with pytest.raises(KeyboardInterrupt):
+                backend._run_async(coro)
+            gc.collect()
+
+        assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
+        assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
+
     def test_a_loop_thread_that_starts_after_the_timeout_exits(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

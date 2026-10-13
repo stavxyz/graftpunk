@@ -762,8 +762,18 @@ class NoDriverBackend:
             # half-started browser) should finish before the caller moves on.
             # A no-op when the coroutine itself raised.
             future.cancel()
+            # On a running loop the submitted call takes its first step before
+            # the cancel reaches it, so it starts and then unwinds.
+            if not started.is_set() and loop.is_running():
+                started.wait(_LOOP_JOIN_TIMEOUT_S)
             if started.is_set():
                 finished.wait(_LOOP_JOIN_TIMEOUT_S)
+            elif not loop.is_running():
+                # The loop stopped before it ran the submission and never
+                # will: close both coroutines, or each warns "was never
+                # awaited" when collected.
+                wrapper.close()
+                coro.close()
             raise
 
     async def _start_async(self, _max_attempts: int = 3) -> None:
