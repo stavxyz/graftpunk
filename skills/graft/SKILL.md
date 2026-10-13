@@ -50,17 +50,17 @@ skill in an empty directory or in the plugin's project".
 Your first message after preflight offers the allow rules under "Allow rules for
 a prompt-free run" in `references/commands.md` that hold no `<site-name>`, and
 says that the user can add them to this project's settings with `/permissions`
-so no `gp` command and no leak check asks first; the gate's other commands ask,
-and so does writing a file unless the user accepts edits for the session. Offer
-the leak check's rule with this skill's directory, `${CLAUDE_SKILL_DIR}`, in
-place of the variable: that path names this version of the skill, so the rule
-belongs in the project's local settings, which are not committed, and is offered
-again after an update. Say that the skill works either way: without the rules,
-each command asks first. Offer the rules that hold `<site-name>` once the
-plugin's name is fixed, with that name in its place: in create mode at the end
-of the frame step, since the name `gp plugin new` takes becomes the plugin's
-`site_name`; in enhance mode once the plugin is chosen, from its `site_name` in
-`project.plugins`.
+so no `gp` command and no leak check in the harden step asks first; the gate's
+other commands ask, and so does writing a file unless the user accepts edits for
+the session. Offer the leak check's rule with this skill's directory,
+`${CLAUDE_SKILL_DIR}`, in place of the variable: that path names this version of
+the skill, so the rule belongs in the project's local settings, which are not
+committed, and is offered again after an update. Say that the skill works either
+way: without the rules, each command asks first. Offer the rules that hold
+`<site-name>` once the plugin's name is fixed, with that name in its place: in
+create mode at the end of the frame step, since the name `gp plugin new` takes
+becomes the plugin's `site_name`; in enhance mode once the plugin is chosen,
+from its `site_name` in `project.plugins`.
 
 This invocation's arguments: plugin name `$0`, site URL `$1`. Claude Code puts
 each argument given in its place, and a position with no argument keeps its

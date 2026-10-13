@@ -27,13 +27,13 @@ line of the Harden block on the capture, the fixture, and its sidecar. It prints
 each captured value, and each piece of one (a run of three or more digits, a
 word holding an `@`, a digit, or a capital letter, both halves of an email
 address, and a pair of words with one of those in it), still in the fixture,
-escaped and percent-encoded copies included (a single word in lower case only
-inside an identifier or an address), and the names the sidecar lists. It exits
-1, naming keys, when the sidecar differs from gp's: rewrite gp's text. It
-matches text, so read the fixture once more for what it cannot see: a word in
+escaped and percent-encoded copies included, and the names the sidecar lists. It
+exits 1, naming keys, when the sidecar differs from gp's: write gp's text again.
+It matches text, so read the fixture once more for what it cannot see: a word in
 lower case on its own, a number written another way (`12345` as `12,345`),
-digits split across fields, and a copy re-encoded, such as base64. When it exits
-2 (a capture that is not text, such as a PDF, or an unreadable gp sidecar), it
+digits split across fields, and a copy re-encoded, such as base64. On exit 2
+over gp's sidecar, rerun the `gp observe fixtures` line and the check, telling
+the user if it repeats. On exit 2 over a capture that is not text (a PDF), it
 compared nothing: make sure the fixture is invented whole, read the plugin
 module by eye for anything from that capture, and tell the user. Rewrite each
 value it prints unless it holds no account data and the command branches or
