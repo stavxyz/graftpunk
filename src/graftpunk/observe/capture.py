@@ -191,18 +191,18 @@ def _post_data_text(result: Any) -> str:
 
     nodriver 0.48 returns the ``postData`` string alone; nodriver 0.50 returns the
     pair ``(postData, base64Encoded)``, as the raw CDP reply Selenium gets carries
-    both fields. A base64 body is decoded so the HAR holds the text the browser
-    sent. HAR's ``postData`` has no encoding field, so a body that is not UTF-8
-    keeps U+FFFD in place of each byte it cannot decode, and a body that is not
-    valid base64 is kept as the text Chrome sent.
+    both fields. A base64 body is decoded, whitespace inside it ignored, so the HAR
+    holds the text the browser sent. HAR's ``postData`` has no encoding field, so a
+    body that is not UTF-8 keeps U+FFFD in place of each byte it cannot decode, and
+    a body that is not valid base64 is kept as the text Chrome sent.
     """
     if not isinstance(result, tuple):
         return result
     text, base64_encoded = result
-    if not base64_encoded:
+    if not base64_encoded or text is None:
         return text
     try:
-        raw = base64.b64decode(text, validate=True)
+        raw = base64.b64decode("".join(text.split()), validate=True)
     except (binascii.Error, ValueError):
         LOG.warning("post_data_not_base64", length=len(text or ""))
         return text

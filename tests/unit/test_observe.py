@@ -1601,6 +1601,7 @@ class TestNodriverHARCapture:
             pytest.param("user=foo", id="nodriver-0.48-string"),
             pytest.param(("user=foo", False), id="nodriver-0.50-pair"),
             pytest.param(("dXNlcj1mb28=", True), id="nodriver-0.50-base64"),
+            pytest.param(("dXNlcj1m\nb28=", True), id="nodriver-0.50-base64-wrapped"),
             pytest.param(("user=foo", True), id="flagged-but-not-base64"),
         ],
     )
@@ -1636,9 +1637,15 @@ class TestNodriverHARCapture:
                 "mimeType": "text/html",
             },
         }
-        await backend.stop_capture_async()
+        with patch("graftpunk.observe.capture.LOG") as log:
+            await backend.stop_capture_async()
         # Post data should be fetched
         assert backend._request_map["req-600"]["post_data"] == "user=foo"
+        # A flagged body that is not base64 is kept and logged by length only, so no
+        # captured body text reaches the log.
+        not_base64 = [c for c in log.warning.call_args_list if c.args == ("post_data_not_base64",)]
+        expected = [] if post_data_result != ("user=foo", True) else [{"length": 8}]
+        assert [c.kwargs for c in not_base64] == expected
 
     @pytest.mark.asyncio
     async def test_stop_capture_async_streams_binary_to_disk(self, tmp_path: Path) -> None:
