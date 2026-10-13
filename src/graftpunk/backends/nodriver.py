@@ -110,9 +110,16 @@ class _PrivateLoop:
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_requested: asyncio.Event | None = None
+        # Set when __init__ gives up waiting, so a thread that starts late
+        # returns instead of serving a loop nothing holds.
+        self._abandoned = False
         self.thread = threading.Thread(target=self._main, name=_LOOP_THREAD_NAME, daemon=True)
         self.thread.start()
         if not self._ready.wait(_LOOP_JOIN_TIMEOUT_S) or self._loop is None:
+            self._abandoned = True
+            # A thread already waiting to be stopped is stopped; one that is
+            # not there yet sees _abandoned in _serve and returns.
+            self.close()
             raise RuntimeError("NoDriverBackend's event loop thread did not start")
 
     @property
@@ -127,6 +134,8 @@ class _PrivateLoop:
         self._loop = asyncio.get_running_loop()
         self._stop_requested = asyncio.Event()
         self._ready.set()
+        if self._abandoned:
+            return
         await self._stop_requested.wait()
 
     def close(self) -> None:

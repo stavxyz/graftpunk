@@ -2227,6 +2227,33 @@ class TestNoDriverBackendLifecycleEdges:
         assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
         assert backend._loop is None
 
+    def test_a_loop_thread_that_starts_after_the_timeout_exits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from graftpunk.backends.nodriver import _PrivateLoop
+
+        monkeypatch.setattr("graftpunk.backends.nodriver._LOOP_JOIN_TIMEOUT_S", 0.1)
+        gate = threading.Event()
+        threads: list[threading.Thread] = []
+        real_main = _PrivateLoop._main
+
+        def late_main(self: _PrivateLoop) -> None:
+            threads.append(threading.current_thread())
+            gate.wait(5)
+            real_main(self)
+
+        monkeypatch.setattr(_PrivateLoop, "_main", late_main)
+
+        try:
+            with pytest.raises(RuntimeError, match="did not start"):
+                _PrivateLoop()
+        finally:
+            gate.set()
+        [thread] = threads
+        thread.join(5)
+
+        assert thread.is_alive() is False
+
 
 _CHILD_UNTIL_TERM = """
 import os, signal, sys, time
