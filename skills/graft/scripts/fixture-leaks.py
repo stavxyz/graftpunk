@@ -31,10 +31,14 @@ takes tens of seconds.
 A string the command branches or selects on (a status, a currency code, a class
 name) may be kept on purpose; the skill decides, so this reports and never edits.
 With SIDECAR, it also prints the names the sidecar lists, since a sidecar is
-committed and the guide asks for both lists to be read.
+committed and the guide asks for both lists to be read, and compares SIDECAR, as
+parsed JSON, with the sidecar gp wrote beside CAPTURE (``CAPTURE.meta.json``),
+naming each key that differs: the skill writes that text with the Write tool, and
+a slip in it would quietly weaken the suite's checks.
 
-Exit 0 when nothing survived, 1 when something did, 2 on a usage or read error (a
-capture that is not UTF-8 text, such as a PDF, cannot be compared).
+Exit 0 when nothing survived and the sidecar matches, 1 when something survived or
+the sidecar differs, 2 on a usage or read error (a capture that is not UTF-8 text,
+such as a PDF, cannot be compared; nor can gp's sidecar when it is not JSON).
 Standard library only, so it runs under any Python 3.9 or later.
 """
 
@@ -63,8 +67,11 @@ _SURROGATE_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", r
 # The provenance phrase gp writes into a generated stub's docstring ("seen 2 time(s)
 # in run myshop/20261006-101500-4242."), wrapped at any space. The run id is gp's,
 # not captured data, yet its year matches any captured date, so it is left out.
-# A session name holds no dot, and a label too long for its line is cut mid-word.
-_PROVENANCE = re.compile(r"seen\s+\d+\s+time\(s\)\s+in\s+run\s+[^\s.]+(?:\n[ \t]*[^\s.]+)*\.")
+# The label holds only a session name's characters, a slash, and the run id's
+# digits and hyphens; a label too long for its line is cut mid-word, and the wrap
+# can leave its closing period alone on the next line.
+_LABEL = r"[a-z0-9@_/-]"
+_PROVENANCE = re.compile(rf"seen\s+\d+\s+time\(s\)\s+in\s+run\s+{_LABEL}+(?:\n[ \t]*{_LABEL}*)*\.")
 
 
 class _TextParts(HTMLParser):
@@ -214,14 +221,17 @@ def main(argv: list[str]) -> int:
     if sidecar is not None and not isinstance(sidecar, dict):
         print("fixture-leaks: the sidecar is not a JSON object.", file=sys.stderr)
         return 2
-    differs = sidecar is not None and _differs_from_captures(Path(argv[1]), sidecar)
+    differs = _keys_differing_from_gps(Path(argv[1]), sidecar) if sidecar is not None else []
     if differs is None:
         return 2
     left = survivors(capture, _PROVENANCE.sub(" ", fixture))
     for value in left:
         print(f"still in the fixture: {value!r}")
     if differs:
-        print("the sidecar differs from the capture's: write the capture's sidecar text unchanged")
+        print(
+            f"the sidecar differs from the capture's in {', '.join(differs)}: "
+            "write the capture's sidecar text unchanged"
+        )
     if sidecar is not None:
         for key in ("body_params", "flagged_names"):
             names = sidecar.get(key) or []
@@ -231,21 +241,25 @@ def main(argv: list[str]) -> int:
     return 1 if left or differs else 0
 
 
-def _differs_from_captures(capture: Path, sidecar: dict) -> bool | None:
-    """Whether *sidecar* says something other than the sidecar gp wrote beside
+def _keys_differing_from_gps(capture: Path, sidecar: dict) -> list[str] | None:
+    """The keys in which *sidecar* differs from the sidecar gp wrote beside
     *capture*, compared as parsed JSON since the suite reads it that way. A
     mistyped ``capture_sha256`` would silently switch off the suite's
-    unchanged-copy check, and a dropped flagged name its name check. False when
-    gp wrote no sidecar there (a fixture written from the projection's shape);
-    None, after saying why, when that sidecar cannot be read."""
+    unchanged-copy check, and a dropped flagged name its name check. Empty when no
+    gp sidecar sits beside *capture*; None, after saying why, when it cannot be
+    read as a JSON object."""
     own = capture.with_name(capture.name + ".meta.json")
     if not own.exists():
-        return False
+        return []
     try:
-        return json.loads(own.read_text(encoding="utf-8")) != sidecar
+        theirs = json.loads(own.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         print(f"fixture-leaks: cannot read the capture's sidecar: {exc}", file=sys.stderr)
         return None
+    if not isinstance(theirs, dict):
+        print("fixture-leaks: the capture's sidecar is not a JSON object.", file=sys.stderr)
+        return None
+    return sorted(k for k in theirs.keys() | sidecar.keys() if theirs.get(k) != sidecar.get(k))
 
 
 if __name__ == "__main__":

@@ -141,6 +141,25 @@ def test_a_run_label_cut_mid_word_by_the_wrap_is_still_gps(tmp_path: Path) -> No
     assert result.returncode == 0, result.stdout
 
 
+def test_a_closing_period_the_wrap_left_alone_still_ends_the_label(tmp_path: Path) -> None:
+    module = _stub_module("/a", session="s" * 131)
+    assert any(line.strip() == "." for line in module.splitlines()), module
+    result = _run(tmp_path, _DATED_CAPTURE, module)
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_value_after_a_provenance_phrase_missing_its_period_is_still_a_leak(
+    tmp_path: Path,
+) -> None:
+    """A hand edit that drops the label's period must not let the phrase swallow the
+    next line: an account value there is still reported."""
+    capture = json.dumps({"account": "ACCT_4471023"})
+    module = "# seen 2 time(s) in run myshop/20261006-101500-4242\nACCT_4471023.\n"
+    result = _run(tmp_path, capture, module)
+    assert result.returncode == 1
+    assert "4471023" in result.stdout
+
+
 _GP_SIDECAR = {"capture_sha256": "a" * 64, "flagged_names": ["session_id"]}
 
 
@@ -157,7 +176,26 @@ def test_a_sidecar_that_differs_from_gps_is_reported(tmp_path: Path, written: di
     (tmp_path / "capture.json.meta.json").write_text(json.dumps(_GP_SIDECAR))
     result = _run(tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}), written)
     assert result.returncode == 1
-    assert "the sidecar differs from the capture's" in result.stdout
+    assert "the sidecar differs from the capture's in" in result.stdout
+    changed = next(k for k in written if written[k] != _GP_SIDECAR[k])
+    assert changed in result.stdout
+
+
+def test_a_run_without_a_sidecar_ignores_gps(tmp_path: Path) -> None:
+    """The plugin-module and test-module runs pass no sidecar: nothing to compare."""
+    (tmp_path / "capture.json.meta.json").write_text(json.dumps(_GP_SIDECAR))
+    result = _run(tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}))
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("text", ["not json", "[1, 2]"], ids=["not-json", "not-object"])
+def test_an_unreadable_gp_sidecar_exits_2(tmp_path: Path, text: str) -> None:
+    (tmp_path / "capture.json.meta.json").write_text(text)
+    result = _run(
+        tmp_path, json.dumps({"n": "Alice Example"}), json.dumps({"n": "Pat"}), _GP_SIDECAR
+    )
+    assert result.returncode == 2
+    assert "the capture's sidecar" in result.stderr
 
 
 def test_a_sidecar_equal_to_gps_as_json_passes(tmp_path: Path) -> None:
