@@ -15,7 +15,8 @@ Note:
     than run on a loop the browser does not belong to. ``stop_async()`` stops
     the browser from inside an event loop. When the browser's loop is gone, or
     ``stop()`` is called from inside it, the stop ends Chrome without the loop
-    (SIGTERM, or the subprocess handle on Windows).
+    (SIGTERM, then SIGKILL if it has not exited, or the subprocess handle on
+    Windows).
 
 Logging:
     This module uses structured logging with intentional log levels:
@@ -632,14 +633,21 @@ class NoDriverBackend:
         browser's own loop, which also logs ``nodriver_backend_stop_in_own_loop``
         at warning level. That path sends SIGTERM (on Windows it terminates
         the subprocess through its handle), leaves nodriver's registry, waits
-        up to ``_REAP_TERM_TIMEOUT_S`` for Chrome to exit, and removes the
-        temp profile, without the subprocess reap. A start or stop that is
-        interrupted (Ctrl-C, or a cancelled task) ends its Chrome the same way
-        before the interrupt propagates.
+        up to ``_REAP_TERM_TIMEOUT_S`` for Chrome to exit, sends SIGKILL and
+        waits up to ``_REAP_KILL_TIMEOUT_S`` more if it has not, and removes
+        the temp profile once Chrome has exited (a Chrome still running keeps
+        it, with a ``chrome_still_running_profile_kept`` warning). It never
+        reaps the subprocess, which is the loop's child watcher's job, and it
+        does not signal a Chrome whose exit status was already collected. A
+        start or stop that fails partway or is interrupted (Ctrl-C, or a
+        cancelled task) ends its Chrome the same way before the exception
+        propagates; from a coroutine (``start_async()``, ``stop_async()``)
+        that end runs on a worker thread, so the caller's loop keeps running.
 
         ``start()``, ``stop()``, and ``stop_async()`` hold a per-backend lock,
         so two threads starting one backend launch one Chrome, and a stop
         racing another thread's start stops the Chrome that start launched.
+        ``start_async()`` on a backend that is already started does nothing.
 
     Note:
         Default headless=False because nodriver is more detectable in headless
@@ -1098,9 +1106,11 @@ class NoDriverBackend:
     def _release_failed_attempt(self) -> None:
         """End the browser without its event loop, and forget it. Never raises.
 
-        Used for a start attempt that failed after ``uc.start()`` returned,
-        for a start or stop that was interrupted, and by the stops that cannot
-        use the browser's loop.
+        Used by the stops that cannot use the browser's loop, after an
+        interrupted synchronous start or stop, and where a KeyboardInterrupt
+        or SystemExit unwinds a coroutine. A coroutine that can await uses
+        ``_release_failed_attempt_off_loop()`` instead, and ``_launch`` ends a
+        failed attempt through ``_take_attempt_browsers()``.
 
         ``uc.start()`` returns a live browser whose first CDP call (opening
         the first tab) can still fail. Retrying then overwrote
@@ -1232,9 +1242,11 @@ class NoDriverBackend:
         browser's loop has stopped, or this is called from inside that loop
         (which logs ``nodriver_backend_stop_in_own_loop`` at warning level),
         Chrome is ended without the loop: SIGTERM (the subprocess handle on
-        Windows), a wait of up to ``_REAP_TERM_TIMEOUT_S`` for it to exit, and
-        the temp profile's removal. An interrupt (Ctrl-C) while the stop waits
-        on the loop ends Chrome the same way before it propagates.
+        Windows), a wait of up to ``_REAP_TERM_TIMEOUT_S`` for it to exit,
+        SIGKILL if it has not, and the temp profile's removal once it has.
+        Inside the loop that blocks the loop for as long as that takes. An
+        interrupt (Ctrl-C) while the stop waits on the loop ends Chrome the
+        same way before it propagates.
 
         A stop called while another thread's ``start()`` is in progress waits
         for that start and then stops the browser it launched, since both
@@ -1302,12 +1314,13 @@ class NoDriverBackend:
         loop (e.g., from ``BrowserSession.__aexit__``), where ``stop()`` would
         block that loop. The stop runs on the browser's loop: directly when
         that is the current loop, otherwise submitted to it and awaited. When
-        the browser's loop has stopped, Chrome is ended without it (SIGTERM, or
-        the subprocess handle on Windows) on a worker thread. A cancellation
-        (``asyncio.wait_for``, Ctrl-C under ``asyncio.run``) ends Chrome the
-        same way before it propagates. Joining the private loop's thread
-        happens on a worker thread, so the caller's loop keeps running
-        meanwhile.
+        the browser's loop has stopped, Chrome is ended without it (SIGTERM,
+        then SIGKILL if needed, or the subprocess handle on Windows) on a
+        worker thread. A cancellation (``asyncio.wait_for``, Ctrl-C under
+        ``asyncio.run``) ends Chrome the same way, also on a worker thread,
+        before it propagates; a second cancellation meanwhile does not cut
+        that end short. Joining the private loop's thread happens on a worker
+        thread too, so the caller's loop keeps running meanwhile.
 
         Like ``stop()``, it waits for a ``start()`` in progress on another
         thread and then stops the browser that start launched. It waits by
