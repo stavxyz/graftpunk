@@ -1097,13 +1097,19 @@ class TestBrowserSessionContextManager:
 class TestAsyncLoginCommand:
     """Tests for async login method handling in login command."""
 
-    def test_async_login_method_invoked(self) -> None:
-        """An async login method is awaited, and its True result reports success."""
+    @pytest.mark.parametrize("shape", ["bound-method", "sync-wrapper", "async-call-object"])
+    def test_an_async_login_is_awaited_whatever_its_shape(self, shape: str) -> None:
+        """A login that returns a coroutine is awaited, whether it is an async method,
+        a sync wrapper around one, or an object with an async __call__, and its True
+        result reports success."""
+        import functools
         import os
 
         import typer
 
         from graftpunk.cli.login_commands import create_login_fn
+
+        awaited: list[dict[str, str]] = []
 
         class AsyncLoginPlugin(SitePlugin):
             site_name = "asynclogin"
@@ -1111,15 +1117,25 @@ class TestAsyncLoginCommand:
             help_text = "Test"
 
             async def login(self, credentials: dict[str, str]) -> bool:
+                awaited.append(credentials)
+                return True
+
+        class AsyncCall:
+            async def __call__(self, credentials: dict[str, str]) -> bool:
+                awaited.append(credentials)
                 return True
 
         plugin = AsyncLoginPlugin()
-        awaited: list[dict[str, str]] = []
 
-        async def login(credentials: dict[str, str]) -> bool:
-            awaited.append(credentials)
-            return True
+        @functools.wraps(plugin.login)
+        def wrapper(credentials: dict[str, str]) -> Any:
+            return plugin.login(credentials)
 
+        login = {
+            "bound-method": plugin.login,
+            "sync-wrapper": wrapper,
+            "async-call-object": AsyncCall(),
+        }[shape]
         fn = create_login_fn(plugin, login, {"username": "", "password": ""})
 
         with (
@@ -1129,12 +1145,12 @@ class TestAsyncLoginCommand:
         ):
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = TyperCliRunner()
-            result = runner.invoke(app, [])
+            result = TyperCliRunner().invoke(app, [])
 
             assert result.exit_code == 0, result.output
             assert awaited == [{"username": "u", "password": "p"}]
-            mock_console.success.assert_called_once()
+            (message,) = mock_console.success.call_args.args
+            assert "asynclogin" in message
 
 
 class TestYAMLLoginValidation:

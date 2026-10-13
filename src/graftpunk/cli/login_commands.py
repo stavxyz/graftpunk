@@ -272,7 +272,11 @@ def make_login_body(
                 Status("Logging in...", console=gp_console.err_console),
                 operating_session(target_name, identifier),
             ):
-                if inspect.iscoroutinefunction(login_method):
+                result = login_method(credentials, **login_kwargs)
+                # A coroutine back means an async login, whatever shape the callable
+                # had (an async def, or a sync wrapper or callable object around one),
+                # so it is run here rather than read as an unexpected return.
+                if inspect.iscoroutine(result):
                     # Suppress asyncio "Loop ... is closed" warning that fires when
                     # asyncio.run() closes the event loop while nodriver's subprocess
                     # handlers are still pending. Suppression covers the entire
@@ -281,9 +285,7 @@ def make_login_body(
                     from graftpunk.logging import suppress_asyncio_noise
 
                     with suppress_asyncio_noise():
-                        result = asyncio.run(login_method(credentials, **login_kwargs))
-                else:
-                    result = login_method(credentials, **login_kwargs)
+                        result = asyncio.run(result)
 
             if result is False:
                 # The engine logged what it actually detected (failure text,
