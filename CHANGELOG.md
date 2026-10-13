@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Python 3.14 is tested in CI, and the package lists Python 3.13 and 3.14 among its classifiers** (#233). graftpunk already installed on 3.14 (`requires-python = ">=3.11"`), but CI never ran it. The full suite passes on 3.14.6 with the `nodriver` a fresh install resolves (0.50.6). nodriver before 0.50.6 ships `nodriver/cdp/network.py` with a byte that is not UTF-8, which Python 3.14 refuses to compile, so on 3.14 the `browser` extra now requires `nodriver>=0.50.6` (the floor stays 0.48 below 3.14), and the lock carries 0.50.6 so CI tests the version a consumer gets.
+
+### Fixed
+
+- **A request body captured with nodriver 0.50 is recorded as text.** nodriver 0.50 returns `Network.getRequestPostData` as the pair `(postData, base64Encoded)` where 0.48 returned the string, and `gp observe` wrote the pair itself into the HAR's `request.postData.text`; it now writes the text, base64-decoded when the flag is set. A fresh install already resolves nodriver 0.50. The Selenium capture now decodes a base64 body the same way, where it kept the base64 text.
+- **`gp <site> login` awaits an async login whatever its shape.** It ran a login as async only when `asyncio.iscoroutinefunction` said so, so a sync wrapper around an async login, an object with an async `__call__`, or a login returning another kind of awaitable went unawaited, and the command printed that it had logged in. It now awaits any awaitable the login returns. This also drops `asyncio.iscoroutinefunction`, deprecated in Python 3.14 and scheduled for removal in 3.16.
+
 ### Changed
 
 - **The `/graftpunk:graft` skill is 0.1.2 and needs graftpunk 1.19.0 or later**, since its guide describes the option types 1.19.0 gives a command. With the offered allow rules added, no `gp` command and no leak check in its harden step asks first (#230); the gate's `pytest` and `ruff` runs still ask, by design, and so does a file write unless you accept edits for the session. It writes each fixture and sidecar with the file tools instead of `cp`, which Claude Code refuses for a capture name holding braces (every endpoint with a path parameter has one), the leak check now reports a sidecar that differs from the one gp wrote, naming the keys, the skill offers an allow rule for that read-only check (its path names the skill's version, so it goes in local settings and is offered again after an update), and it runs each declared command alone in its own Bash call. The leak check no longer reports the year in the run id that `gp plugin new --from-run` and `gp plugin add-command` write into each stub's docstring (#231).

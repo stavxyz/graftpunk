@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import contextlib
 import datetime
 import inspect
@@ -183,6 +184,29 @@ def _header_roles_in_order(request_map: dict[str, dict[str, Any]]) -> dict[str, 
 def _har_entries_in_order(request_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """HAR entries in chronological order (see ``_ordered_request_items``)."""
     return [_build_har_entry(data) for _rid, data in _ordered_request_items(request_map)]
+
+
+def _post_data_text(result: Any) -> str:
+    """The request body text from ``Network.getRequestPostData``'s result.
+
+    nodriver 0.48 returns the ``postData`` string alone; nodriver 0.50 returns the
+    pair ``(postData, base64Encoded)``, as the raw CDP reply Selenium gets carries
+    both fields. A base64 body is decoded, whitespace inside it ignored, so the HAR
+    holds the text the browser sent. HAR's ``postData`` has no encoding field, so a
+    body that is not UTF-8 keeps U+FFFD in place of each byte it cannot decode, and
+    a body that is not valid base64 is kept as the text Chrome sent.
+    """
+    if not isinstance(result, tuple):
+        return result
+    text, base64_encoded = result
+    if not base64_encoded or text is None:
+        return text
+    try:
+        raw = base64.b64decode("".join(text.split()), validate=True)
+    except (binascii.Error, ValueError):
+        LOG.warning("post_data_not_base64", length=len(text or ""))
+        return text
+    return raw.decode("utf-8", errors="replace")
 
 
 def _is_redirect_hop(data: dict[str, Any]) -> bool:
@@ -878,7 +902,9 @@ class SeleniumCaptureBackend:
                     result = self._driver.execute_cdp_cmd(
                         "Network.getRequestPostData", {"requestId": request_id}
                     )
-                    data["post_data"] = result.get("postData")
+                    data["post_data"] = _post_data_text(
+                        (result.get("postData"), result.get("base64Encoded", False))
+                    )
                 except Exception as exc:  # noqa: BLE001 — CDP body fetch is best-effort
                     LOG.warning(
                         "selenium_post_data_fetch_failed",
@@ -1215,7 +1241,7 @@ class NodriverCaptureBackend:
                     result = await tab.send(
                         cdp_net.get_request_post_data(cdp_net.RequestId(request_id))
                     )
-                    data["post_data"] = result
+                    data["post_data"] = _post_data_text(result)
                 except ConnectionError as exc:
                     LOG.warning(
                         "nodriver_browser_disconnected_during_stop",

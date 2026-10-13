@@ -1097,13 +1097,22 @@ class TestBrowserSessionContextManager:
 class TestAsyncLoginCommand:
     """Tests for async login method handling in login command."""
 
-    def test_async_login_method_invoked(self) -> None:
-        """Test that async login methods are run via asyncio.run."""
+    @pytest.mark.parametrize(
+        "shape", ["bound-method", "sync-wrapper", "async-call-object", "custom-awaitable"]
+    )
+    @pytest.mark.parametrize("outcome", [True, False], ids=["succeeds", "fails"])
+    def test_an_async_login_is_awaited_whatever_its_shape(self, shape: str, outcome: bool) -> None:
+        """A login that returns an awaitable is awaited, whether it is an async method,
+        a sync wrapper around one, an object with an async __call__, or a custom
+        awaitable, and its result decides success or the failure exit."""
+        import functools
         import os
 
         import typer
 
         from graftpunk.cli.login_commands import create_login_fn
+
+        awaited: list[dict[str, str]] = []
 
         class AsyncLoginPlugin(SitePlugin):
             site_name = "asynclogin"
@@ -1111,32 +1120,52 @@ class TestAsyncLoginCommand:
             help_text = "Test"
 
             async def login(self, credentials: dict[str, str]) -> bool:
-                return True
+                awaited.append(credentials)
+                return outcome
+
+        class AsyncCall:
+            async def __call__(self, credentials: dict[str, str]) -> bool:
+                return await plugin.login(credentials)
+
+        class Pending:
+            def __init__(self, credentials: dict[str, str]) -> None:
+                self.credentials = credentials
+
+            def __await__(self) -> Any:
+                return plugin.login(self.credentials).__await__()
 
         plugin = AsyncLoginPlugin()
-        # Wrap the real async login method with a MagicMock so calling it
-        # does not produce an unawaited coroutine (asyncio is mocked, so
-        # the coroutine would never be awaited).
-        mock_login = MagicMock(return_value=True)
-        fn = create_login_fn(plugin, mock_login, {"username": "", "password": ""})
+
+        @functools.wraps(plugin.login)
+        def wrapper(credentials: dict[str, str]) -> Any:
+            return plugin.login(credentials)
+
+        login = {
+            "bound-method": plugin.login,
+            "sync-wrapper": wrapper,
+            "async-call-object": AsyncCall(),
+            "custom-awaitable": Pending,
+        }[shape]
+        fn = create_login_fn(plugin, login, {"username": "", "password": ""})
 
         with (
             patch("graftpunk.cli.login_commands.gp_console") as mock_console,
             patch("graftpunk.cli.login_commands.Status"),
-            patch("graftpunk.cli.login_commands.asyncio") as mock_asyncio,
             patch.dict(os.environ, {"ASYNCLOGIN_USERNAME": "u", "ASYNCLOGIN_PASSWORD": "p"}),
         ):
-            mock_asyncio.iscoroutinefunction.return_value = True
-            mock_asyncio.run.return_value = True
-
             app = typer.Typer()
             app.command(name="login")(fn)
-            runner = TyperCliRunner()
-            result = runner.invoke(app, [])
+            result = TyperCliRunner().invoke(app, [])
 
-            mock_asyncio.run.assert_called_once()
-            mock_console.success.assert_called_once()
-            assert result.exit_code == 0
+            assert awaited == [{"username": "u", "password": "p"}]
+            if outcome:
+                assert result.exit_code == 0, result.output
+                (message,) = mock_console.success.call_args.args
+                assert "asynclogin" in message
+            else:
+                assert result.exit_code == 1, result.output
+                (message,) = mock_console.error.call_args.args
+                assert "Login did not complete" in message
 
 
 class TestYAMLLoginValidation:

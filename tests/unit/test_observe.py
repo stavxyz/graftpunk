@@ -566,8 +566,25 @@ class TestSeleniumHARCapture:
         assert data["response"]["status"] == 200
         assert data["response"]["mimeType"] == "application/json"
 
-    def test_stop_capture_fetches_post_body(self) -> None:
-        """POST body fetched via execute_cdp_cmd for entries with hasPostData."""
+    @pytest.mark.parametrize(
+        ("reply", "expected"),
+        [
+            pytest.param({"postData": "user=foo&pass=bar"}, "user=foo&pass=bar", id="no-flag"),
+            pytest.param(
+                {"postData": "user=foo&pass=bar", "base64Encoded": False},
+                "user=foo&pass=bar",
+                id="plain",
+            ),
+            pytest.param(
+                {"postData": "dXNlcj1mb28mcGFzcz1iYXI=", "base64Encoded": True},
+                "user=foo&pass=bar",
+                id="base64",
+            ),
+        ],
+    )
+    def test_stop_capture_fetches_post_body(self, reply: dict, expected: str) -> None:
+        """POST body fetched via execute_cdp_cmd for entries with hasPostData, a base64
+        body decoded as the nodriver path decodes it."""
         perf_entries = [
             self._make_perf_entry(
                 "Network.requestWillBeSent",
@@ -601,7 +618,7 @@ class TestSeleniumHARCapture:
 
         def cdp_cmd(cmd: str, params: dict) -> dict:
             if cmd == "Network.getRequestPostData":
-                return {"postData": "user=foo&pass=bar"}
+                return reply
             if cmd == "Network.getResponseBody":
                 return {"body": "<html></html>", "base64Encoded": False}
             return {}
@@ -610,7 +627,7 @@ class TestSeleniumHARCapture:
         backend = SeleniumCaptureBackend(driver)
         backend.stop_capture()
 
-        assert backend._request_map["req-3"]["post_data"] == "user=foo&pass=bar"
+        assert backend._request_map["req-3"]["post_data"] == expected
 
     def test_stop_capture_fetches_response_body(self) -> None:
         """Response body fetched via execute_cdp_cmd for text MIME types."""
@@ -1571,8 +1588,25 @@ class TestNodriverHARCapture:
         assert resp["body"] == '{"ok": true}'
         assert resp["bodySize"] == len(b'{"ok": true}')
 
+    def test_a_base64_body_that_is_not_utf8_keeps_replacement_characters(self) -> None:
+        """HAR's postData has no encoding field: undecodable bytes become U+FFFD."""
+        from graftpunk.observe.capture import _post_data_text
+
+        assert _post_data_text(("/w==", True)) == "\ufffd"
+
     @pytest.mark.asyncio
-    async def test_stop_capture_async_fetches_post_data(self) -> None:
+    @pytest.mark.parametrize(
+        "post_data_result",
+        [
+            pytest.param("user=foo", id="nodriver-0.48-string"),
+            pytest.param(("user=foo", False), id="nodriver-0.50-pair"),
+            pytest.param(("dXNlcj1mb28=", True), id="nodriver-0.50-base64"),
+            pytest.param(("dXNlcj1m\nb28=", True), id="nodriver-0.50-base64-wrapped"),
+            pytest.param(("user=foo", True), id="flagged-but-not-base64"),
+        ],
+    )
+    async def test_stop_capture_async_fetches_post_data(self, post_data_result: Any) -> None:
+        """Every shape nodriver's getRequestPostData returns becomes the body text."""
         browser = MagicMock()
         tab = MagicMock()
 
@@ -1583,7 +1617,7 @@ class TestNodriverHARCapture:
             call_count += 1
             # First call is get_request_post_data, second is get_response_body
             if call_count == 1:
-                return "user=foo"
+                return post_data_result
             return ("<html></html>", False)
 
         tab.send = mock_send
@@ -1603,9 +1637,15 @@ class TestNodriverHARCapture:
                 "mimeType": "text/html",
             },
         }
-        await backend.stop_capture_async()
+        with patch("graftpunk.observe.capture.LOG") as log:
+            await backend.stop_capture_async()
         # Post data should be fetched
         assert backend._request_map["req-600"]["post_data"] == "user=foo"
+        # A flagged body that is not base64 is kept and logged by length only, so no
+        # captured body text reaches the log.
+        not_base64 = [c for c in log.warning.call_args_list if c.args == ("post_data_not_base64",)]
+        expected = [] if post_data_result != ("user=foo", True) else [{"length": 8}]
+        assert [c.kwargs for c in not_base64] == expected
 
     @pytest.mark.asyncio
     async def test_stop_capture_async_streams_binary_to_disk(self, tmp_path: Path) -> None:

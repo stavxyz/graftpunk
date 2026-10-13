@@ -8,6 +8,7 @@ on a base install (no [browser] extra). The login bodies import it lazily from
 ``graftpunk`` at call time, so ``graftpunk`` is where the patch has to land.
 """
 
+import inspect
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -100,9 +101,7 @@ class TestDeclarativeLoginEngine:
         plugin = DeclarativeHN()
         login_method = generate_login_method(plugin)
         assert callable(login_method)
-        import asyncio
-
-        assert asyncio.iscoroutinefunction(login_method)
+        assert inspect.iscoroutinefunction(login_method)
 
     def test_generate_login_selenium(self) -> None:
         """Test generating sync login method for selenium backend."""
@@ -111,9 +110,7 @@ class TestDeclarativeLoginEngine:
         plugin = DeclarativeQuotes()
         login_method = generate_login_method(plugin)
         assert callable(login_method)
-        import asyncio
-
-        assert not asyncio.iscoroutinefunction(login_method)
+        assert not inspect.iscoroutinefunction(login_method)
 
     @pytest.mark.asyncio
     async def test_nodriver_login_success(self) -> None:
