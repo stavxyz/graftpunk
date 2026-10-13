@@ -723,6 +723,7 @@ class TestNoDriverExpectedStopPatterns:
             "no such process found",
             "event loop is closed",
             "target closed unexpectedly",
+            "NoDriverBackend call was cancelled (browser stopping)",
         ],
     )
     def test_expected_stop_pattern_detection(self, pattern: str) -> None:
@@ -1641,8 +1642,16 @@ class TestNoDriverCookiesThroughCdp:
                 {"name": "a", "value": "1", "domain": "example.com", "expires": "soon"},
                 "expires is not a number",
             ),
+            (
+                {"name": "a", "value": "1", "domain": "example.com", "expires": float("nan")},
+                "expires is not a number",
+            ),
+            (
+                {"name": "a", "value": "1", "domain": "example.com", "expires": "inf"},
+                "expires is not a number",
+            ),
         ],
-        ids=["no-name", "no-value", "expires-not-a-number"],
+        ids=["no-name", "no-value", "expires-not-a-number", "expires-nan", "expires-inf"],
     )
     def test_a_malformed_cookie_is_skipped_with_a_warning(
         self, cookie: Cookie, reason: str, captured_logs: list[dict[str, Any]]

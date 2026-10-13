@@ -37,6 +37,7 @@ Example:
 import asyncio
 import concurrent.futures
 import io
+import math
 import sys
 import threading
 from collections.abc import Coroutine
@@ -269,9 +270,13 @@ def _cookie_param_from_dict(
     expires = None
     if (raw_expires := cookie.get("expires")) is not None:
         try:
-            expires = cdp_network.TimeSinceEpoch(float(raw_expires))
+            seconds = float(raw_expires)
         except (TypeError, ValueError):
             return None, "expires is not a number"
+        # nan and inf parse, but Storage.setCookies rejects the whole batch.
+        if not math.isfinite(seconds):
+            return None, "expires is not a number"
+        expires = cdp_network.TimeSinceEpoch(seconds)
     return (
         cdp_network.CookieParam(
             name=cookie["name"],
@@ -391,6 +396,8 @@ class NoDriverBackend:
             "no such process",
             "event loop is closed",
             "target closed",
+            # _run_async's message when another thread's stop cancelled the call.
+            "call was cancelled",
         ]
     )
 
