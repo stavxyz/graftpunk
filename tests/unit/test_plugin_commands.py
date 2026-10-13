@@ -1097,11 +1097,14 @@ class TestBrowserSessionContextManager:
 class TestAsyncLoginCommand:
     """Tests for async login method handling in login command."""
 
-    @pytest.mark.parametrize("shape", ["bound-method", "sync-wrapper", "async-call-object"])
-    def test_an_async_login_is_awaited_whatever_its_shape(self, shape: str) -> None:
-        """A login that returns a coroutine is awaited, whether it is an async method,
-        a sync wrapper around one, or an object with an async __call__, and its True
-        result reports success."""
+    @pytest.mark.parametrize(
+        "shape", ["bound-method", "sync-wrapper", "async-call-object", "custom-awaitable"]
+    )
+    @pytest.mark.parametrize("outcome", [True, False], ids=["succeeds", "fails"])
+    def test_an_async_login_is_awaited_whatever_its_shape(self, shape: str, outcome: bool) -> None:
+        """A login that returns an awaitable is awaited, whether it is an async method,
+        a sync wrapper around one, an object with an async __call__, or a custom
+        awaitable, and its result decides success or the failure exit."""
         import functools
         import os
 
@@ -1118,12 +1121,18 @@ class TestAsyncLoginCommand:
 
             async def login(self, credentials: dict[str, str]) -> bool:
                 awaited.append(credentials)
-                return True
+                return outcome
 
         class AsyncCall:
             async def __call__(self, credentials: dict[str, str]) -> bool:
-                awaited.append(credentials)
-                return True
+                return await plugin.login(credentials)
+
+        class Pending:
+            def __init__(self, credentials: dict[str, str]) -> None:
+                self.credentials = credentials
+
+            def __await__(self) -> Any:
+                return plugin.login(self.credentials).__await__()
 
         plugin = AsyncLoginPlugin()
 
@@ -1135,6 +1144,7 @@ class TestAsyncLoginCommand:
             "bound-method": plugin.login,
             "sync-wrapper": wrapper,
             "async-call-object": AsyncCall(),
+            "custom-awaitable": Pending,
         }[shape]
         fn = create_login_fn(plugin, login, {"username": "", "password": ""})
 
@@ -1147,10 +1157,15 @@ class TestAsyncLoginCommand:
             app.command(name="login")(fn)
             result = TyperCliRunner().invoke(app, [])
 
-            assert result.exit_code == 0, result.output
             assert awaited == [{"username": "u", "password": "p"}]
-            (message,) = mock_console.success.call_args.args
-            assert "asynclogin" in message
+            if outcome:
+                assert result.exit_code == 0, result.output
+                (message,) = mock_console.success.call_args.args
+                assert "asynclogin" in message
+            else:
+                assert result.exit_code == 1, result.output
+                (message,) = mock_console.error.call_args.args
+                assert "Login did not complete" in message
 
 
 class TestYAMLLoginValidation:

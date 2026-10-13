@@ -273,10 +273,11 @@ def make_login_body(
                 operating_session(target_name, identifier),
             ):
                 result = login_method(credentials, **login_kwargs)
-                # A coroutine back means an async login, whatever shape the callable
-                # had (an async def, or a sync wrapper or callable object around one),
-                # so it is run here rather than read as an unexpected return.
-                if inspect.iscoroutine(result):
+                # An awaitable back means an async login, whatever shape the callable
+                # had (an async def, a sync wrapper or callable object around one, or
+                # a custom awaitable), so it is run here rather than read as an
+                # unexpected return.
+                if inspect.isawaitable(result):
                     # Suppress asyncio "Loop ... is closed" warning that fires when
                     # asyncio.run() closes the event loop while nodriver's subprocess
                     # handlers are still pending. Suppression covers the entire
@@ -285,7 +286,7 @@ def make_login_body(
                     from graftpunk.logging import suppress_asyncio_noise
 
                     with suppress_asyncio_noise():
-                        result = asyncio.run(result)
+                        result = asyncio.run(_awaited(result))
 
             if result is False:
                 # The engine logged what it actually detected (failure text,
@@ -379,6 +380,12 @@ def make_login_body(
             )
 
     return body
+
+
+async def _awaited(awaitable: Any) -> Any:
+    """*awaitable*'s result: ``asyncio.run`` takes only a coroutine, and a login may
+    return any awaitable."""
+    return await awaitable
 
 
 def create_login_fn(
