@@ -1364,7 +1364,7 @@ class NoDriverBackend:
                     # Handed back, so a stop that ends this browser without
                     # the loop while the reap below is paused can still find
                     # Chrome's process and SIGKILL it.
-                    if getattr(browser, "_process", None) is None:
+                    if proc is not None and getattr(browser, "_process", None) is None:
                         browser._process = proc
                 # Remove browser from nodriver's global registry so the atexit
                 # handler doesn't re-stop it and print cleanup messages to stdout.
