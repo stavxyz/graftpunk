@@ -162,84 +162,10 @@ jobs:
 
       - name: Build graftpunk and graftpunk-lite
         run: |
-          uv build --out-dir dist
-          uv run --no-project --with packaging python scripts/build_lite.py --out-dir dist
-          ls dist/
+          uv build --out-dir dist/full
+          uv run --no-project --with packaging python scripts/build_lite.py --out-dir dist/lite
+          ls dist/full dist/lite
 
-      - name: Install each wheel into its own clean venv
-        run: |
-          uv venv --python 3.12 .lite
-          uv pip install --python .lite/bin/python dist/graftpunk_lite-*.whl
-          uv venv --python 3.12 .full
-          uv pip install --python .full/bin/python dist/graftpunk-*.whl
-
-      - name: Lite lacks the browser stack; graftpunk has it
-        run: |
-          check='
-          import importlib.util, sys
-          mods = ["selenium", "nodriver", "requestium", "webdriver_manager",
-                  "undetected_chromedriver", "selenium_stealth", "httpie"]
-          found = [m for m in mods if importlib.util.find_spec(m) is not None]
-          want = sys.argv[1] == "present"
-          assert found == (mods if want else []), f"{sys.argv[1]}: found {found}"
-          print(sys.argv[1], "OK:", ", ".join(mods))
-          '
-          .lite/bin/python -c "$check" absent
-          .full/bin/python -c "$check" present
-
-      - name: Import graftpunk without pulling the browser stack
-        run: |
-          .lite/bin/python - <<'PY'
-          import sys
-          import graftpunk
-          from graftpunk import load_session_for_api_from_bytes  # noqa: F401
-          for mod in ("graftpunk.session", "graftpunk.stealth", "selenium"):
-              assert mod not in sys.modules, f"{mod} eagerly imported by `import graftpunk`"
-          assert graftpunk.__version__ != "0.0.0+unknown", graftpunk.__version__
-          print("import graftpunk OK", graftpunk.__version__)
-          PY
-
-      - name: "CLI must start (regression: gp was broken on base installs)"
-        run: |
-          .lite/bin/gp --help > /dev/null
-          .lite/bin/gp version > /dev/null
-          .full/bin/gp --help > /dev/null
-          .lite/bin/python - <<'PY'
-          import subprocess, sys
-          # The CLI import itself must not drag in the browser stack.
-          code = ("import graftpunk.cli.main, sys; "
-                  "assert 'graftpunk.session' not in sys.modules; "
-                  "assert 'httpie' not in sys.modules; print('cli import OK')")
-          out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-          assert out.returncode == 0, out.stderr
-          print(out.stdout.strip())
-          PY
-
-      - name: Browser-free session load must work (A4 fixture round-trip)
-        run: |
-          .lite/bin/python - <<'PY'
-          import pathlib
-          from graftpunk import load_session_for_api_from_bytes
-          fix = pathlib.Path("tests/fixtures")
-          enc = (fix / "browserfree_session.enc").read_bytes()
-          key = (fix / "browserfree_session.key").read_bytes().strip()
-          api = load_session_for_api_from_bytes(enc, key=key)
-          cookies = {c.name: c.value for c in api.cookies}
-          assert cookies.get("User") == "dummyuser", cookies
-          assert cookies.get("Password") == "dummypass", cookies
-          assert "Mozilla/5.0 (dummy)" in api.headers["User-Agent"]
-          print("browser-free session load OK:", sorted(cookies))
-          PY
-
-      - name: Missing-browser errors must name lite's extra
-        run: |
-          .lite/bin/python - <<'PY'
-          import graftpunk
-          try:
-              getattr(graftpunk, "BrowserSession")
-          except ImportError as exc:
-              assert "graftpunk-lite[browser]" in str(exc), exc
-              print("actionable error OK")
-          else:
-              raise AssertionError("expected ImportError on graftpunk-lite without [browser]")
-          PY
+      - name: Install each wheel into its own clean venv and check the lite contract
+        # The release build runs the same script before it publishes.
+        run: scripts/smoke_install.sh dist/lite/graftpunk_lite-*.whl dist/full/graftpunk-*.whl .smoke

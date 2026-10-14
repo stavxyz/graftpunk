@@ -11,8 +11,12 @@ name: Release
 #
 # workflow_dispatch (ref: vX.Y.Z) re-runs the pipeline against an existing tag
 # — used to publish a tag that was cut before this workflow existed, or to
-# retry a failed publish (the publish step uses skip-existing, so retries are
+# retry a failed publish (both publish steps use skip-existing, so retries are
 # idempotent).
+#
+# graftpunk-lite publishes first and graftpunk second, in separate steps, so a
+# lite upload that fails (no trusted publisher for it yet) stops the run before
+# graftpunk ships a release that has no matching graftpunk-lite.
 #
 # One-time PyPI setup (repo owner), once per project, each with:
 #     Owner:        stavxyz
@@ -23,7 +27,8 @@ name: Release
 #     publisher.
 #   graftpunk-lite: the project does not exist until its first upload, so add a
 #     "pending publisher" for project name graftpunk-lite (pypi.org, your
-#     account, Publishing). The first release creates the project.
+#     account, Publishing) before the first release that builds graftpunk-lite.
+#     That release creates the project.
 
 on:
   push:
@@ -129,33 +134,46 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      # Separate directories, so each publish step uploads one project's files.
       - name: Build graftpunk (sdist and wheel)
-        run: uvx --from build pyproject-build
+        run: uvx --from build pyproject-build --outdir dist/full
 
       - name: Build graftpunk-lite (sdist and wheel)
-        run: uv run --no-project --with packaging python scripts/build_lite.py --out-dir dist
+        run: uv run --no-project --with packaging python scripts/build_lite.py --out-dir dist/lite
 
       - name: Check distributions
-        run: uvx twine check dist/*
+        run: uvx twine check dist/full/* dist/lite/*
 
       - name: Verify both distributions carry the tag version
         env:
           TAG: ${{ needs.verify.outputs.tag }}
         run: |
           VERSION="${TAG#v}"
-          ls dist/
-          for f in "graftpunk-${VERSION}.tar.gz" "graftpunk-${VERSION}-py3-none-any.whl" \
-                   "graftpunk_lite-${VERSION}.tar.gz" "graftpunk_lite-${VERSION}-py3-none-any.whl"; do
+          ls dist/full dist/lite
+          for f in "full/graftpunk-${VERSION}.tar.gz" "full/graftpunk-${VERSION}-py3-none-any.whl" \
+                   "lite/graftpunk_lite-${VERSION}.tar.gz" "lite/graftpunk_lite-${VERSION}-py3-none-any.whl"; do
             if [ ! -f "dist/${f}" ]; then
               echo "::error::missing dist/${f} for tag ${TAG}"
               exit 1
             fi
           done
-          META=$(unzip -p "dist/graftpunk_lite-${VERSION}-py3-none-any.whl" \
+          META=$(unzip -p "dist/lite/graftpunk_lite-${VERSION}-py3-none-any.whl" \
             "graftpunk_lite-${VERSION}.dist-info/METADATA")
-          echo "$META" | grep -qx "Name: graftpunk-lite"
-          echo "$META" | grep -qx "Version: ${VERSION}"
+          # A here-string, not a pipe: grep -q exits at the first match, and under
+          # pipefail a writer still sending a METADATA past the pipe buffer would
+          # fail the step with SIGPIPE.
+          grep -qx "Name: graftpunk-lite" <<<"$META"
+          grep -qx "Version: ${VERSION}" <<<"$META"
           echo "graftpunk and graftpunk-lite ${VERSION} built"
+
+      - name: Install each wheel into a clean venv and check the lite contract
+        # The same script as the "Lite install" job in python-quality.yml.
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          scripts/smoke_install.sh "dist/lite/graftpunk_lite-${VERSION}-py3-none-any.whl" \
+            "dist/full/graftpunk-${VERSION}-py3-none-any.whl" "${RUNNER_TEMP}/smoke"
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
@@ -164,7 +182,7 @@ jobs:
           path: dist/
 
   pypi-publish:
-    # Uploads everything in dist/: graftpunk and graftpunk-lite.
+    # graftpunk-lite first, then graftpunk (see the header).
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
@@ -180,11 +198,18 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Publish to PyPI
+      - name: Publish graftpunk-lite to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          packages-dir: dist/lite/
           # Idempotent: a workflow_dispatch retry after a partial/failed upload
           # skips files already on PyPI instead of erroring on the whole run.
+          skip-existing: true
+
+      - name: Publish graftpunk to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/full/
           skip-existing: true
 
   github-release:
