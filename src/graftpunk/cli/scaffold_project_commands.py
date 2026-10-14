@@ -53,9 +53,11 @@ def _print_floor(floor: FloorVerdict) -> None:
     # what gp plugin new writes, and a plugin requiring graftpunk-lite would put
     # both distributions into its users' environments.
     wanted = f"graftpunk[browser]>={at}"
+    # graftpunk-lite[browser] records and logs in as graftpunk does.
     full_note = (
-        " Developing a plugin (recording, logging in) needs the full install, graftpunk."
-        if _distribution.name() == "graftpunk-lite"
+        " Developing a plugin (recording, logging in) needs the browser stack: "
+        f"{_distribution.install_command('browser')}, or switch to graftpunk."
+        if _distribution.name() == _distribution.LITE and not _distribution.has_browser_stack()
         else ""
     )
     if isinstance(floor, RaisedFloor):

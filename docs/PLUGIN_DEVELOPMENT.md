@@ -1698,8 +1698,9 @@ allows a release below the floor. A project whose `[project] dependencies` is
 itself listed in `[project] dynamic` has no array here to raise or name; they
 print `Next: this project's dependencies are dynamic; make sure whatever
 supplies them requires graftpunk[browser]>=<floor>, then reinstall.` On
-graftpunk-lite, each of these three lines adds that developing a plugin
-(recording, logging in) needs the full install, `graftpunk`.
+graftpunk-lite without its browser stack, each of these three lines adds that
+developing a plugin (recording, logging in) needs that stack, from
+`pip install 'graftpunk-lite[browser]'` or by switching to `graftpunk`.
 
 A minimal CI workflow to start from, running the same gate:
 

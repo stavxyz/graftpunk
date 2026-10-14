@@ -1618,21 +1618,28 @@ def _run_writer(command: str, project: Path, pyproject: str) -> tuple[object, li
     return result, own
 
 
-# What the floor advice appends, by the distribution gp came from: it always
-# names graftpunk[browser], and on graftpunk-lite says plugin work needs graftpunk.
+# What the floor advice appends, by what gp is installed from: it always names
+# graftpunk[browser], and on graftpunk-lite without the browser stack says plugin
+# work needs that stack.
+_INSTALLS = ["graftpunk", "graftpunk-lite[browser]", "graftpunk-lite"]
 _FULL_NOTE = {
     "graftpunk": "",
+    "graftpunk-lite[browser]": "",
     "graftpunk-lite": (
-        " Developing a plugin (recording, logging in) needs the full install, graftpunk."
+        " Developing a plugin (recording, logging in) needs the browser stack: "
+        "pip install 'graftpunk-lite[browser]', or switch to graftpunk."
     ),
 }
 
 
-def _only_distribution(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    """Make *name* the one graftpunk distribution the metadata lookup finds."""
+def _only_distribution(monkeypatch: pytest.MonkeyPatch, install: str) -> None:
+    """Make *install*'s distribution the one graftpunk distribution the metadata
+    lookup finds, with the browser stack unless it is plain graftpunk-lite."""
     from importlib.metadata import PackageNotFoundError
 
     from graftpunk import _distribution
+
+    name = install.removesuffix("[browser]")
 
     def version(wanted: str) -> str:
         if wanted != name:
@@ -1640,6 +1647,7 @@ def _only_distribution(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
         return "1.17.3"
 
     monkeypatch.setattr(_distribution, "_pkg_version", version)
+    monkeypatch.setattr(_distribution, "has_browser_stack", lambda: install != "graftpunk-lite")
 
 
 @pytest.mark.usefixtures("gp_logging")
@@ -1706,14 +1714,14 @@ class TestGraftpunkFloor:
             "Next: raise graftpunk==1.0 in pyproject.toml to >=1.17.0 and reinstall",
         ]
 
-    @pytest.mark.parametrize("installed", ["graftpunk", "graftpunk-lite"])
+    @pytest.mark.parametrize("installed", _INSTALLS)
     def test_no_graftpunk_dependency_is_named_in_a_next_line(
         self, command: str, recorded: Path, monkeypatch: pytest.MonkeyPatch, installed: str
     ) -> None:
         """The advice names graftpunk[browser] whichever distribution gp came from,
         as gp plugin new writes it: a plugin requiring graftpunk-lite would put both
-        distributions into its users' environments. On graftpunk-lite it adds that
-        plugin work needs the full install."""
+        distributions into its users' environments. On graftpunk-lite without the
+        browser stack it adds that plugin work needs that stack."""
         _only_distribution(monkeypatch, installed)
         pyproject = _floor_pyproject(None)
         result, own = _run_writer(command, recorded, pyproject)
@@ -1727,7 +1735,7 @@ class TestGraftpunkFloor:
             + _FULL_NOTE[installed],
         ]
 
-    @pytest.mark.parametrize("installed", ["graftpunk", "graftpunk-lite"])
+    @pytest.mark.parametrize("installed", _INSTALLS)
     def test_a_project_requiring_both_distributions_is_told_to_keep_graftpunk(
         self, command: str, recorded: Path, monkeypatch: pytest.MonkeyPatch, installed: str
     ) -> None:
@@ -1791,7 +1799,7 @@ class TestGraftpunkFloor:
         assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
         assert _plain(result.output).strip().splitlines() == own
 
-    @pytest.mark.parametrize("installed", ["graftpunk", "graftpunk-lite"])
+    @pytest.mark.parametrize("installed", _INSTALLS)
     def test_dynamic_dependencies_are_named_in_their_own_next_line(
         self, command: str, recorded: Path, monkeypatch: pytest.MonkeyPatch, installed: str
     ) -> None:
