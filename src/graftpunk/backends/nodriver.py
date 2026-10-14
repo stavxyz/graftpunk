@@ -45,7 +45,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -97,6 +97,13 @@ _PROFILE_REMOVE_RETRY_S: float = 0.25
 # Chrome ignores switches it does not know; this one marks which start
 # launched a browser, for a start that fails before uc.start() returns it.
 _LAUNCH_SWITCH = "--graftpunk-launch-id"
+
+_IN_OWN_LOOP_MESSAGE = (
+    "NoDriverBackend cannot be used from within an async context "
+    "running on the browser's own event loop: the synchronous "
+    "methods wait on that loop and would deadlock. In async code, "
+    "await nodriver's objects (backend.driver) and stop_async() instead."
+)
 
 
 class _PrivateLoop:
@@ -796,10 +803,12 @@ class NoDriverBackend:
         # when the backend created that loop itself (None for a caller's loop).
         self._loop: asyncio.AbstractEventLoop | None = None
         self._private_loop: _PrivateLoop | None = None
-        # Serializes start(), stop(), stop_async(), and the private loop's
-        # creation, per backend. Reentrant: start() creates the loop while
-        # holding it.
-        self._lock = threading.RLock()
+        # Serializes start(), stop(), and stop_async(), per backend. Not
+        # reentrant: stop_async() holds it across awaits, so with an RLock a
+        # sync call from another coroutine on the same thread would walk into
+        # a stop in progress. _lock_owner tells that caller apart instead.
+        self._lock = threading.Lock()
+        self._lock_owner: int | None = None
 
     def __getstate__(self) -> dict[str, Any]:
         """Pickle the configuration only, as a stopped backend.
@@ -815,6 +824,7 @@ class NoDriverBackend:
         state["_browser"] = None
         state["_page"] = None
         del state["_lock"]
+        state["_lock_owner"] = None
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -826,23 +836,42 @@ class NoDriverBackend:
         self._loop = None
         self._private_loop = None
         self.__dict__.update(state)
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
+        self._lock_owner = None
 
     def _ensure_private_loop(self) -> None:
         """Create the private loop ``start()`` runs the browser on, if there is no loop.
 
         A loop left from an earlier start that is no longer running is
-        released first. Called only on the ``start()`` path.
+        released first. Called only on the ``start()`` path, which already
+        holds the lock; anywhere else it takes the lock itself.
 
         Raises:
             RuntimeError: If the loop's thread does not start.
         """
+        if not self._held_by_this_thread():
+            with self._locked():
+                self._ensure_private_loop()
+            return
+        if self._loop is not None and not self._loop.is_running():
+            self._release_loop()
+        if self._loop is None:
+            self._private_loop = _PrivateLoop()
+            self._loop = self._private_loop.loop
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Hold the backend's lock, recording this thread as its owner."""
         with self._lock:
-            if self._loop is not None and not self._loop.is_running():
-                self._release_loop()
-            if self._loop is None:
-                self._private_loop = _PrivateLoop()
-                self._loop = self._private_loop.loop
+            self._lock_owner = threading.get_ident()
+            try:
+                yield
+            finally:
+                self._lock_owner = None
+
+    def _held_by_this_thread(self) -> bool:
+        """Whether this thread holds the lock: a ``stop_async()`` paused at an await."""
+        return self._lock_owner == threading.get_ident()
 
     def _release_loop(self) -> None:
         """Forget the browser's loop, stopping it only if this backend created it.
@@ -878,19 +907,11 @@ class NoDriverBackend:
                 call was cancelled because the loop is shutting down.
         """
         loop = self._loop
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
+        running = _running_loop()
         if loop is None:
             problem = "NoDriverBackend has no event loop: start() the browser first."
         elif running is loop:
-            problem = (
-                "NoDriverBackend cannot be used from within an async context "
-                "running on the browser's own event loop: the synchronous "
-                "methods wait on that loop and would deadlock. In async code, "
-                "await nodriver's objects (backend.driver) and stop_async() instead."
-            )
+            problem = _IN_OWN_LOOP_MESSAGE
         elif not loop.is_running():
             problem = (
                 "The event loop this NoDriverBackend's browser was started on is no longer running."
@@ -1105,8 +1126,19 @@ class NoDriverBackend:
 
         Raises:
             BrowserError: If browser fails to start.
+            RuntimeError: If called from inside the browser's own event loop,
+                where waiting for the lock can deadlock (a stop on another
+                thread may hold it while it waits on this loop), or while a
+                ``stop_async()`` on this thread is stopping the backend.
         """
-        with self._lock:
+        if self._loop is not None and _running_loop() is self._loop:
+            raise RuntimeError(_IN_OWN_LOOP_MESSAGE)
+        if self._held_by_this_thread():
+            raise RuntimeError(
+                "NoDriverBackend.start() was called while a stop_async() on this "
+                "thread is stopping the backend; await that stop first."
+            )
+        with self._locked():
             if self._started:
                 LOG.debug("nodriver_backend_already_started")
                 return
@@ -1304,15 +1336,18 @@ class NoDriverBackend:
         for that start and then stops the browser it launched, since both
         hold the backend's lock. From inside the browser's own loop it does
         not wait: a start may be holding the lock while it waits on that loop.
+        Called while a ``stop_async()`` on this thread is stopping the
+        backend (from another coroutine on its loop), it returns at once and
+        leaves the stop to that ``stop_async()``: waiting would deadlock.
         """
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
+        if self._held_by_this_thread():
+            LOG.debug("nodriver_backend_stop_already_in_progress")
+            return
+        running = _running_loop()
         if running is not None and running is self._loop:
             self._stop_holding_lock(running)
             return
-        with self._lock:
+        with self._locked():
             self._stop_holding_lock(running)
 
     def _stop_holding_lock(self, running: asyncio.AbstractEventLoop | None) -> None:
@@ -1379,13 +1414,22 @@ class NoDriverBackend:
         polling the backend's lock, so the caller's loop keeps running (that
         start may be waiting on it), and holds the lock until the stop is
         done. A cancellation during that wait propagates without stopping
-        anything, since the stop has not begun.
+        anything, since the stop has not begun. Two ``stop_async()`` calls on
+        one loop run one after the other; the second finds the backend
+        stopped.
+
+        When the browser's loop cancels the stop submitted to it (the loop is
+        shutting down) and nobody cancelled this call, Chrome is ended without
+        the loop and this returns normally rather than raise a
+        ``CancelledError`` its caller never asked for.
         """
         while not self._lock.acquire(blocking=False):
             await asyncio.sleep(_EXIT_POLL_S)
+        self._lock_owner = threading.get_ident()
         try:
             await self._stop_async_holding_lock()
         finally:
+            self._lock_owner = None
             self._lock.release()
 
     async def _stop_async_holding_lock(self) -> None:
@@ -1417,10 +1461,16 @@ class NoDriverBackend:
                     # did not. Off the caller's loop, as above; a
                     # KeyboardInterrupt or SystemExit raised in this frame is
                     # stopping the loop, so that one ends Chrome here.
-                    if isinstance(exc, asyncio.CancelledError):
-                        await self._release_failed_attempt_off_loop()
-                    else:
+                    if not isinstance(exc, asyncio.CancelledError):
                         self._release_failed_attempt()
+                        raise
+                    await self._release_failed_attempt_off_loop()
+                    task = asyncio.current_task()
+                    if task is not None and task.cancelling() == 0:
+                        # Not this caller's cancellation: the browser's loop
+                        # cancelled the stop it was running.
+                        LOG.debug("nodriver_backend_stop_cancelled_by_its_loop")
+                        return
                     raise
                 finally:
                     if loop is None or loop is current:
