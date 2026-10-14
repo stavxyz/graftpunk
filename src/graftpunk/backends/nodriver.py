@@ -1295,17 +1295,23 @@ class NoDriverBackend:
     async def _release_failed_attempt_off_loop(self) -> None:
         """``_release_failed_attempt()`` from a coroutine, ending Chrome on a worker thread.
 
-        A private loop is detached with the browser and closed by that worker
-        once Chrome has ended, since its child watcher collects Chrome's exit
-        status on Linux: a stop on this thread that runs meanwhile (it skips
-        the lock this one holds) then finds no loop to close early, and
-        closing it early leaves Chrome a zombie with its pipes open.
+        A private loop that is not running this coroutine is detached with the
+        browser and closed by that worker once Chrome has ended, since its
+        child watcher collects Chrome's exit status on Linux: a stop on this
+        thread that runs meanwhile (it skips the lock this one holds) then
+        finds no loop to close early, and closing it early leaves Chrome a
+        zombie with its pipes open. A private loop running this coroutine
+        stays attached: the worker closing it would join the loop's thread
+        while that thread's teardown waits for this coroutine, which waits
+        for the worker. The worker then only ends Chrome, while the loop
+        keeps running and its watcher collects Chrome, and the ``finally`` of
+        ``_stop_async_holding_lock()`` schedules that loop's stop afterwards.
         """
         browser = self._detach_browser()
         if browser is None:
             return
         private = self._private_loop
-        if private is None:
+        if private is None or private.loop is asyncio.get_running_loop():
             await _finish_on_worker_thread(lambda: _end_browser_without_loop(browser))
             return
         self._private_loop = None

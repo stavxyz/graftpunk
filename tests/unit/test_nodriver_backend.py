@@ -3988,6 +3988,79 @@ class TestNoDriverBackendInterruptedLifecycle:
         assert backend.is_running is False
         assert backend._lock.locked() is False
 
+    def test_a_cancelled_stop_async_on_the_private_loop_lets_that_loop_stop_promptly(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stop_async() awaited on the browser's own private loop and
+        cancelled ends Chrome on a worker thread. That worker must not join
+        the loop's thread, whose teardown waits for the stop, which waits for
+        the worker: the join would stall for its whole timeout."""
+        import sys
+        import time
+
+        from graftpunk.backends import nodriver as nodriver_backend
+
+        nodriver = pytest.importorskip("nodriver")
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        monkeypatch.setattr("graftpunk.backends.nodriver.prepare_browser_launch", lambda: None)
+        profile = temp_profiles / "uc_cancelled_on_private"
+        profile.mkdir()
+        processes: list[asyncio.subprocess.Process] = []
+
+        class _SignalledBrowser(_Browser):
+            async def get(self, _url: str) -> SimpleNamespace:
+                return SimpleNamespace()
+
+            def stop(self) -> None:
+                self._process.terminate()
+
+        async def start(**_kwargs: Any) -> _SignalledBrowser:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                _CHILD_UNTIL_TERM,
+                str(profile),
+                "0.5",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            assert process.stdout is not None
+            assert (await process.stdout.readline()).strip() == b"ready"
+            processes.append(process)
+            return _SignalledBrowser(
+                process, SimpleNamespace(uses_custom_data_dir=False, user_data_dir=str(profile))
+            )
+
+        monkeypatch.setattr(nodriver, "start", start)
+        backend = NoDriverBackend()
+        backend.start()
+        private = backend._private_loop
+        assert private is not None
+        caller_saw: list[type[BaseException]] = []
+
+        async def stop_on_the_private_loop() -> None:
+            try:
+                await asyncio.wait_for(backend.stop_async(), 0.05)
+            except TimeoutError as exc:
+                caller_saw.append(type(exc))
+
+        with capture_logs() as logs:
+            started = time.monotonic()
+            future = asyncio.run_coroutine_threadsafe(stop_on_the_private_loop(), private.loop)
+            future.result(10)
+            private.thread.join(10)
+            elapsed = time.monotonic() - started
+
+        assert caller_saw == [TimeoutError]
+        assert not private.thread.is_alive()
+        assert elapsed < nodriver_backend._LOOP_JOIN_TIMEOUT_S / 2
+        assert "nodriver_loop_thread_still_running" not in [log["event"] for log in logs]
+        [process] = processes
+        assert process.returncode == 0
+        assert not profile.exists()
+        assert backend.is_running is False
+        assert backend._lock.locked() is False
+
     def test_a_stop_on_the_thread_of_a_cancelled_one_keeps_the_loop_until_chrome_has_ended(
         self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
     ) -> None:
