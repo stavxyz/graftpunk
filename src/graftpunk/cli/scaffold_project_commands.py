@@ -17,6 +17,7 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
+from graftpunk import _distribution
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.scaffold_shared import (
     LOG,
@@ -46,15 +47,18 @@ def _print_floor(floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | N
     """One line on the project's graftpunk requirement after a write that needs
     the running graftpunk: the raise it got, or how to make it by hand."""
     at = graftpunk_version_floor()
+    # Advice to add a requirement names the distribution this gp came from: the
+    # other one would install a second copy of the same package over it.
+    installed = _distribution.name()
     if isinstance(floor, RaisedFloor):
-        line = f"pyproject.toml: graftpunk>={at} (was >={floor.previous}); reinstall the project"
+        line = f"pyproject.toml: {floor.name}>={at} (was >={floor.previous}); reinstall the project"
         console.print(escape(line), soft_wrap=True, highlight=False)
     elif isinstance(floor, DynamicDependencies):
         console.print(
             "[bold]Next:[/bold] "
             + escape(
                 f"this project's dependencies are dynamic; make sure whatever supplies "
-                f"them requires graftpunk>={at}, then reinstall."
+                f"them requires {installed}>={at}, then reinstall."
             ),
             soft_wrap=True,
         )
@@ -62,18 +66,15 @@ def _print_floor(floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | N
         console.print(
             "[bold]Next:[/bold] "
             + escape(
-                f"add graftpunk>={at} to pyproject.toml's [project] dependencies and "
-                "reinstall; it has no graftpunk requirement"
+                f"add {installed}>={at} to pyproject.toml's [project] dependencies and "
+                "reinstall; it has no graftpunk or graftpunk-lite requirement"
             ),
             soft_wrap=True,
         )
     elif isinstance(floor, CannotRaiseFloor):
         console.print(
             "[bold]Next:[/bold] "
-            + escape(
-                f"raise graftpunk in pyproject.toml to >={at} and reinstall; "
-                f"it reads {floor.requirement}"
-            ),
+            + escape(f"raise {floor.requirement} in pyproject.toml to >={at} and reinstall"),
             soft_wrap=True,
         )
 

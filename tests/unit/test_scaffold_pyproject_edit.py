@@ -272,9 +272,39 @@ class TestWithGraftpunkFloor:
         text = _deps('"httpx>=0.27",', '"graftpunk>=1.0",  # the plugin API')
         result = with_graftpunk_floor(text, "1.17.0")
         assert result == RaisedFloor(
-            text=text.replace('"graftpunk>=1.0"', '"graftpunk>=1.17.0"', 1), previous="1.0"
+            text=text.replace('"graftpunk>=1.0"', '"graftpunk>=1.17.0"', 1),
+            name="graftpunk",
+            previous="1.0",
         )
         assert 'dev = ["graftpunk>=1.0"' in result.text
+
+    @pytest.mark.parametrize(
+        ("requirement", "name"),
+        [
+            ("graftpunk-lite>=1.0", "graftpunk-lite"),
+            ("graftpunk-lite[browser]>=1.0", "graftpunk-lite"),
+            ("graftpunk_lite>=1.0", "graftpunk_lite"),
+        ],
+    )
+    def test_a_graftpunk_lite_lower_bound_is_raised_under_its_own_name(
+        self, requirement: str, name: str
+    ) -> None:
+        """graftpunk-lite is the same package; renaming it to graftpunk would put
+        both distributions in one environment."""
+        text = _deps(f'"{requirement}",')
+        result = with_graftpunk_floor(text, "1.17.0")
+        assert result == RaisedFloor(
+            text=text.replace(">=1.0", ">=1.17.0", 1), name=name, previous="1.0"
+        )
+
+    def test_a_graftpunk_lite_requirement_at_the_floor_is_nothing_to_do(self) -> None:
+        assert with_graftpunk_floor(_deps('"graftpunk-lite>=1.17.0",'), "1.17.0") is None
+
+    def test_graftpunk_and_graftpunk_lite_together_are_reported_not_rewritten(self) -> None:
+        text = _deps('"graftpunk>=1.0",', '"graftpunk-lite>=1.0",')
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
+            requirement="graftpunk>=1.0 and graftpunk-lite>=1.0"
+        )
 
     def test_extras_spacing_and_an_environment_marker_are_kept_byte_for_byte(self) -> None:
         literal = "'graftpunk[browser] >= 1.0 ; python_version >= \"3.11\"',"

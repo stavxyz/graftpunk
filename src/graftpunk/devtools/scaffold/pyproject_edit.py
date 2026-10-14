@@ -195,9 +195,12 @@ _REQUIREMENT_NAME_RE = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 @dataclass(frozen=True)
 class RaisedFloor:
     """The pyproject *text* with its ``graftpunk`` requirement's lower bound
-    raised to the floor; *previous* is that bound's version as it was written."""
+    raised to the floor; *name* is that requirement's distribution name as
+    written (``graftpunk`` or ``graftpunk-lite``), and *previous* is the bound's
+    version as it was written."""
 
     text: str
+    name: str
     previous: str
 
 
@@ -262,9 +265,15 @@ def _dependency_literals(text: str) -> list[tuple[int, int]] | None:
     return _array_literals(text, key.end() - 1)
 
 
+# graftpunk-lite is the same package without the browser stack, so a project
+# requiring it is held to the floor the same way, under the name it chose:
+# rewriting it to graftpunk would install the second distribution over the first.
+_GRAFTPUNK_NAMES = frozenset({"graftpunk", "graftpunk-lite"})
+
+
 def _is_graftpunk(requirement: str) -> bool:
     match = _REQUIREMENT_NAME_RE.match(requirement)
-    return match is not None and canonicalize_name(match.group(1)) == "graftpunk"
+    return match is not None and canonicalize_name(match.group(1)) in _GRAFTPUNK_NAMES
 
 
 # Operators whose version is a lower bound (or the one version an exact pin or
@@ -302,6 +311,8 @@ def with_graftpunk_floor(
     bound raised to *floor*, when that requirement's only version specifier is a
     ``>=`` below it. Only the version is rewritten: the name, extras, spacing, and
     environment marker stay byte for byte, and so do the file's line endings.
+    A ``graftpunk-lite`` requirement is the graftpunk requirement too, and keeps
+    its name.
 
     Returns ``None`` when the requirement already allows nothing below *floor*:
     any specifier with operator ``>=``, ``>``, ``==``, ``===``, or ``~=`` whose
@@ -367,4 +378,8 @@ def with_graftpunk_floor(
     if len(bounds) != 1:
         return cannot
     version_start, version_end = (start + offset for offset in bounds[0].span(1))
-    return RaisedFloor(text=text[:version_start] + floor + text[version_end:], previous=previous)
+    return RaisedFloor(
+        text=text[:version_start] + floor + text[version_end:],
+        name=requirement.name,
+        previous=previous,
+    )
