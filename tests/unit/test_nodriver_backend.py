@@ -4417,6 +4417,39 @@ class TestNoDriverBackendCallTimeout:
         assert warning["error"] == expected
         backend.stop()
 
+    def test_start_and_stop_are_not_limited_by_call_timeout(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A start or stop slower than call_timeout still finishes."""
+        import graftpunk.backends.nodriver as nodriver_module
+
+        start = fake_chrome.start
+
+        async def slow_start(**kwargs: Any) -> Any:
+            await asyncio.sleep(0.3)
+            return await start(**kwargs)
+
+        monkeypatch.setattr("nodriver.start", slow_start)
+        reap = nodriver_module._reap_browser_process
+        reaped: list[bool] = []
+
+        async def slow_reap(proc: Any) -> None:
+            await asyncio.sleep(0.3)
+            await reap(proc)
+            reaped.append(True)
+
+        monkeypatch.setattr(nodriver_module, "_reap_browser_process", slow_reap)
+        backend = NoDriverBackend(call_timeout=0.05)
+
+        backend.start()
+        assert backend.is_running
+        browser = fake_chrome.browsers[0]
+        backend.stop()
+
+        assert not backend.is_running
+        assert browser.stopped_on is not None
+        assert reaped == [True]
+
     def test_navigate_has_its_own_limit(self, fake_chrome: FakeChrome) -> None:
         """A page load slower than call_timeout but within navigate_timeout succeeds."""
         backend = NoDriverBackend(call_timeout=0.05, navigate_timeout=5)

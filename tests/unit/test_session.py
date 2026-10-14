@@ -718,39 +718,27 @@ class TestInitNodriverBackend:
     """Tests for __init__ when backend='nodriver' (lines 104-123)."""
 
     def test_init_nodriver_backend_success(self):
-        """Nodriver backend init calls get_backend and requests.Session.__init__."""
+        """The session builds a nodriver backend with its settings and the default limits."""
+        from graftpunk.backends.nodriver import NoDriverBackend
         from graftpunk.session import BrowserSession
 
-        mock_backend = MagicMock()
-        with (
-            patch("graftpunk.backends.get_backend", return_value=mock_backend) as mock_get,
-            patch("graftpunk.backends.list_backends", return_value=["selenium", "nodriver"]),
-            patch("requests.Session.__init__"),
-        ):
-            session = BrowserSession(backend="nodriver", headless=False)
+        session = BrowserSession(backend="nodriver", headless=False)
 
-        mock_get.assert_called_once_with(
-            "nodriver", headless=False, call_timeout=60.0, navigate_timeout=120.0
-        )
+        backend = session._backend_instance
         assert session._backend_type == "nodriver"
-        assert session._backend_instance is mock_backend
+        assert isinstance(backend, NoDriverBackend)
+        assert backend._headless is False
+        assert backend._call_timeout == 60.0
+        assert backend._navigate_timeout == 120.0
 
     def test_init_nodriver_backend_headless_default(self):
         """Nodriver backend defaults to headless=True."""
         from graftpunk.session import BrowserSession
 
-        mock_backend = MagicMock()
-        with (
-            patch("graftpunk.backends.get_backend", return_value=mock_backend) as mock_get,
-            patch("graftpunk.backends.list_backends", return_value=["selenium", "nodriver"]),
-            patch("requests.Session.__init__"),
-        ):
-            session = BrowserSession(backend="nodriver")
+        session = BrowserSession(backend="nodriver")
 
-        mock_get.assert_called_once_with(
-            "nodriver", headless=True, call_timeout=60.0, navigate_timeout=120.0
-        )
         assert session._backend_type == "nodriver"
+        assert session._backend_instance._headless is True
 
     def test_the_call_timeouts_reach_the_nodriver_backend(self):
         from graftpunk.session import BrowserSession
