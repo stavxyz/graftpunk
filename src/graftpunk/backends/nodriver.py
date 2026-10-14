@@ -400,7 +400,13 @@ def _wait_for_exit(proc: Any, timeout_s: float) -> bool:
 def _kill(proc: Any) -> bool:
     """SIGKILL the Chrome behind *proc*, or kill it through its handle off POSIX. Never raises.
 
-    Called only while the process is unreaped, so its pid is still Chrome's.
+    Sent only when the check made just before (``kill(pid, 0)``, or the
+    ``waitid`` peek on Linux) found Chrome still running. This code never
+    reaps Chrome, but asyncio's child watcher can: its thread on macOS, or
+    the loop on Linux while the loop runs. A Chrome that exited and was
+    reaped between that check and this signal, its pid already reused,
+    would have the SIGKILL go to another process. Nothing rules that out, so
+    this is best effort; the window is one debug log call long.
     Not ``proc.kill()`` on POSIX: ``Popen.send_signal`` polls first, and the
     poll reaps the child the loop's watcher is waiting for.
     """
@@ -680,8 +686,10 @@ class NoDriverBackend:
         stops. A synchronous method works from any thread, including one
         running a different event loop (a FastAPI handler, say), except from
         the browser's own loop, where waiting on the loop would deadlock: it
-        raises ``RuntimeError`` there, and async code awaits nodriver's own
-        objects (``driver``) and ``stop_async()`` instead. Without a loop
+        raises ``RuntimeError`` there (``start()`` included), and async code
+        awaits nodriver's own objects (``driver``) and ``stop_async()``
+        instead. ``stop()`` is the exception: inside the browser's loop it
+        ends Chrome without the loop, as below. Without a loop
         (before a start, or after unpickling) a synchronous call raises
         ``RuntimeError``, which the getters turn into their fallback.
 
@@ -701,11 +709,20 @@ class NoDriverBackend:
         cancelled task) ends its Chrome the same way before the exception
         propagates; from a coroutine (``start_async()``, ``stop_async()``)
         that end runs on a worker thread, so the caller's loop keeps running.
+        Chrome's subprocess transport is closed on its loop's thread once the
+        loop has collected Chrome's exit status (``_close_transport``).
 
         ``start()``, ``stop()``, and ``stop_async()`` hold a per-backend lock,
         so two threads starting one backend launch one Chrome, and a stop
         racing another thread's start stops the Chrome that start launched.
-        ``start_async()`` on a backend that is already started does nothing.
+        A ``stop()`` inside the browser's own loop does not take the lock (a
+        start may hold it while waiting on that loop). The lock is not
+        reentrant: while a ``stop_async()`` paused at an await holds it, a
+        ``stop()`` from another coroutine on that thread returns at once,
+        leaving the stop to it, and a ``start()`` there raises
+        ``RuntimeError``. ``start_async()`` on a backend already started on a
+        running loop, or on the current one, does nothing; one whose loop has
+        finished is ended and replaced.
 
     Note:
         Default headless=False because nodriver is more detectable in headless
@@ -891,8 +908,10 @@ class NoDriverBackend:
         The wait has no timeout: a start sweeps orphaned Chromes and retries
         its connection, and a navigation takes as long as the page does, so
         any fixed limit would cut off a legitimate call. Interrupting the wait
-        (Ctrl-C) cancels the coroutine and waits up to ``_LOOP_JOIN_TIMEOUT_S``
-        for its cleanup before re-raising.
+        (Ctrl-C) cancels the coroutine and waits for its cleanup before
+        re-raising: up to ``_LOOP_JOIN_TIMEOUT_S`` for the loop to begin the
+        call, then up to ``_LOOP_JOIN_TIMEOUT_S`` more for it to finish, so up
+        to twice that in all.
 
         Args:
             coro: Coroutine to execute.
