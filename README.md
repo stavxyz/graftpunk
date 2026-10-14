@@ -110,10 +110,11 @@ uninstall the one you have first (`pip uninstall graftpunk`, then
 
 Plugins depend on `graftpunk` (they log in through a browser), so a plugin is
 installed into an environment with the full install. Installing a plugin where
-`graftpunk-lite` is installed would put `graftpunk` beside it. To use a
-plugin's browser-free parts with lite (under Pyodide or Cloudflare Workers),
-install the plugin without its dependencies and add its other requirements by
-hand:
+`graftpunk-lite` is installed would put `graftpunk` beside it. A plugin's `gp`
+commands do not run on lite (registering them imports the browser stack). To
+use a plugin's own Python code with lite (under Pyodide or Cloudflare Workers,
+with a session loaded through `load_session_for_api_from_bytes`), install the
+plugin without its dependencies and add its other requirements by hand:
 
 ```bash
 pip install graftpunk-lite
