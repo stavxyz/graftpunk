@@ -64,6 +64,27 @@ def has_browser_stack() -> bool:
     return all(find_spec(module) is not None for module in BROWSER_MODULES)
 
 
+def missing_browser_module(exc: BaseException) -> str | None:
+    """The browser module whose absence caused *exc*, or ``None`` when no
+    browser module is missing.
+
+    Follows the cause and context chain, since the library re-raises the
+    original ``ModuleNotFoundError`` under its own ``ImportError`` (as
+    ``load_session`` does). A missing module outside ``BROWSER_MODULES`` is not
+    a browser-stack failure and gives ``None``, so its caller can re-raise it.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ModuleNotFoundError) and current.name:
+            top = current.name.partition(".")[0]
+            if top in BROWSER_MODULES:
+                return top
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def install_command(extra: str) -> str:
     """The pip command that adds *extra* to whichever distribution is installed."""
     return f"pip install '{name()}[{extra}]'"

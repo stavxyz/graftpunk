@@ -14,9 +14,10 @@ from typing import Any
 import typer
 from rich.status import Status
 
+from graftpunk import _distribution, workstation_env
 from graftpunk import console as gp_console
-from graftpunk import workstation_env
 from graftpunk.cache import get_session_metadata
+from graftpunk.cli.errors import exit_missing_browser_stack
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
@@ -309,6 +310,9 @@ def make_login_body(
         except (SystemExit, KeyboardInterrupt):
             raise
         except Exception as exc:  # noqa: BLE001 — CLI boundary: present user-friendly error instead of traceback
+            module = _distribution.missing_browser_module(exc)
+            if module is not None:
+                exit_missing_browser_stack(ctx.command_path, module)
             LOG.exception(
                 "plugin_login_failed",
                 plugin=plugin.site_name,

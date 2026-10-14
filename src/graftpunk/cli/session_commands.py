@@ -16,6 +16,7 @@ from graftpunk import (
     list_sessions_with_metadata,
     load_session,
 )
+from graftpunk.cli.errors import needs_browser_stack
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.exceptions import (
     GraftpunkError,
@@ -231,6 +232,7 @@ def show(
 
 
 @session_app.command("export")
+@needs_browser_stack
 def export(
     ctx: typer.Context,
     name: Annotated[

@@ -1,0 +1,245 @@
+"""Browser-dependent commands on graftpunk-lite stop with the install hint.
+
+Each test hides the browser stack the way an install without ``[browser]``
+lacks it: a ``None`` entry in ``sys.modules`` makes ``import nodriver`` raise
+``ModuleNotFoundError``. graftpunk modules that import the stack at the top are
+evicted too, so they are imported again and fail as they would on lite.
+"""
+
+from __future__ import annotations
+
+import importlib
+import sys
+from importlib.metadata import PackageNotFoundError
+from pathlib import Path
+
+import pytest
+import requests
+import typer
+from typer.testing import CliRunner
+
+from graftpunk import _distribution
+from graftpunk.cli.observe_commands import observe_app
+from graftpunk.cli.session_commands import session_app
+from tests.unit.cli_harness import invoke_plugin_app, strip_ansi
+from tests.unit.test_cache import _setup_local_env
+
+runner = CliRunner()
+
+_FIX = Path(__file__).parent.parent / "fixtures"
+
+# graftpunk modules that import the browser stack when they load.
+_BROWSER_BOUND = ("graftpunk.session", "graftpunk.stealth", "graftpunk.cli.plugin_runtime")
+
+
+def _as(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    def version(wanted: str) -> str:
+        if wanted != name:
+            raise PackageNotFoundError(wanted)
+        return "1.20.0"
+
+    monkeypatch.setattr(_distribution, "_pkg_version", version)
+
+
+def _without_browser_stack(monkeypatch: pytest.MonkeyPatch) -> None:
+    for module in _distribution.BROWSER_MODULES:
+        monkeypatch.setitem(sys.modules, module, None)
+    for module in _BROWSER_BOUND:
+        monkeypatch.delitem(sys.modules, module, raising=False)
+
+
+def _flat(text: str) -> str:
+    """The output on one line: rich wraps a long message at the console width."""
+    return " ".join(strip_ansi(text).split())
+
+
+def _observe() -> typer.Typer:
+    app = typer.Typer()
+    app.add_typer(observe_app)
+    return app
+
+
+def _cache_fixture_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cache the committed fixture as session ``myshop``. Its pickle names
+    ``graftpunk.session.BrowserSession``, as every session gp login caches does."""
+    _setup_local_env(tmp_path, monkeypatch)
+    (tmp_path / ".session_key").write_bytes((_FIX / "browserfree_session.key").read_bytes())
+    session_dir = tmp_path / "sessions" / "myshop"
+    session_dir.mkdir(parents=True)
+    (session_dir / "session.pickle").write_bytes((_FIX / "browserfree_session.enc").read_bytes())
+    (session_dir / "metadata.json").write_text('{"name": "myshop", "domain": "example.com"}')
+
+
+_OBSERVE_COMMANDS = {
+    "go": ["observe", "--no-session", "go", "https://example.com"],
+    "go --interactive": ["observe", "--no-session", "go", "--interactive", "https://example.com"],
+    "interactive": ["observe", "--no-session", "interactive", "https://example.com"],
+}
+
+
+@pytest.mark.parametrize("distribution", ["graftpunk", "graftpunk-lite"])
+@pytest.mark.parametrize("command", sorted(_OBSERVE_COMMANDS))
+def test_observe_without_the_browser_stack_prints_the_install_hint(
+    monkeypatch: pytest.MonkeyPatch, command: str, distribution: str
+) -> None:
+    _as(monkeypatch, distribution)
+    _without_browser_stack(monkeypatch)
+
+    result = runner.invoke(_observe(), _OBSERVE_COMMANDS[command])
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert "needs the browser automation stack" in output, output
+    assert "no module named 'nodriver'" in output, output
+    assert _distribution.install_commands("browser") in output, output
+    assert "Traceback" not in output, output
+    assert not isinstance(result.exception, ImportError)
+
+
+@pytest.mark.parametrize("distribution", ["graftpunk", "graftpunk-lite"])
+def test_session_export_without_the_browser_stack_prints_the_install_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, distribution: str
+) -> None:
+    _cache_fixture_session(tmp_path, monkeypatch)
+    _as(monkeypatch, distribution)
+    _without_browser_stack(monkeypatch)
+
+    result = runner.invoke(session_app, ["export", "myshop", "-o", str(tmp_path / "out.json")])
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert "needs the browser automation stack" in output, output
+    assert _distribution.install_commands("browser") in output, output
+    assert "Traceback" not in output, output
+    assert not isinstance(result.exception, ImportError)
+    assert not (tmp_path / "out.json").exists()
+
+
+def _shop_plugin(backend: str):  # noqa: ANN202
+    from graftpunk.plugins.cli_plugin import LoginConfig, LoginStep, SitePlugin, command
+
+    class ShopPlugin(SitePlugin):
+        site_name = "myshop"
+        base_url = "https://example.com"
+        session_name = "myshop"
+        requires_session = True
+        login_config = LoginConfig(
+            url="/login", steps=[LoginStep(fields={"username": "#user"}, submit="#go")]
+        )
+
+        @command(help="List items")
+        def items(self, ctx):  # noqa: ANN001, ANN202
+            return {"ok": True}
+
+    plugin = ShopPlugin()
+    plugin.backend = backend
+    return plugin
+
+
+@pytest.fixture
+def _no_ambient_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No GRAFTPUNK_SESSION or .gp-session from the developer's shell or the repo."""
+    monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.mark.usefixtures("_no_ambient_session")
+@pytest.mark.parametrize("backend", ["selenium", "nodriver"])
+def test_plugin_login_without_the_browser_stack_prints_the_install_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, backend: str
+) -> None:
+    _setup_local_env(tmp_path, monkeypatch)
+    _without_browser_stack(monkeypatch)
+
+    result = invoke_plugin_app(_shop_plugin(backend), ["myshop", "login"], MYSHOP_USERNAME="u")
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert "myshop login needs the browser automation stack" in output, output
+    assert _distribution.install_commands("browser") in output, output
+    assert "Traceback" not in output, output
+
+
+@pytest.mark.usefixtures("_no_ambient_session")
+def test_plugin_command_with_a_cached_session_prints_the_install_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _cache_fixture_session(tmp_path, monkeypatch)
+    _without_browser_stack(monkeypatch)
+
+    result = invoke_plugin_app(_shop_plugin("nodriver"), ["myshop", "items"])
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert "myshop items needs the browser automation stack" in output, output
+    assert _distribution.install_commands("browser") in output, output
+    assert "Traceback" not in output, output
+
+
+@pytest.mark.usefixtures("_no_ambient_session")
+def test_http_with_a_cached_session_prints_the_install_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from graftpunk.cli.main import app
+
+    _cache_fixture_session(tmp_path, monkeypatch)
+    _without_browser_stack(monkeypatch)
+
+    result = runner.invoke(app, ["http", "get", "--session", "myshop", "https://example.com"])
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert "gp http get with a cached session needs the browser automation stack" in output
+    assert _distribution.install_commands("browser") in output, output
+    assert "Traceback" not in output, output
+
+
+def test_an_unrelated_missing_module_still_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The browser stack is present; a graftpunk module observe go needs is not.
+    monkeypatch.setitem(sys.modules, "graftpunk.observe.capture", None)
+
+    result = runner.invoke(_observe(), _OBSERVE_COMMANDS["go"])
+
+    assert isinstance(result.exception, ModuleNotFoundError)
+    assert result.exception.name == "graftpunk.observe.capture"
+    assert "needs the browser automation stack" not in _flat(result.output)
+
+
+def test_plugin_commands_load_without_the_browser_stack(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Registering any plugin imports plugin_runtime; on lite it must load."""
+    _without_browser_stack(monkeypatch)
+
+    runtime = importlib.import_module("graftpunk.cli.plugin_runtime")
+
+    assert "graftpunk.session" not in sys.modules
+    assert runtime._driver_of(requests.Session()) is None
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        (ModuleNotFoundError("No module named 'nodriver'", name="nodriver"), "nodriver"),
+        (
+            ModuleNotFoundError("No module named 'httpie.sessions'", name="httpie.sessions"),
+            "httpie",
+        ),
+        (ModuleNotFoundError("No module named 'jmespath'", name="jmespath"), None),
+        (ModuleNotFoundError("No module named 'graftpunk.x'", name="graftpunk.x"), None),
+        (ImportError("cannot import name 'x'"), None),
+    ],
+)
+def test_missing_browser_module_names_only_browser_modules(
+    raised: ImportError, expected: str | None
+) -> None:
+    assert _distribution.missing_browser_module(raised) == expected
+
+
+def test_missing_browser_module_follows_the_cause() -> None:
+    """load_session re-raises the unpickler's failure under its own ImportError."""
+    try:
+        try:
+            raise ModuleNotFoundError("No module named 'httpie'", name="httpie")
+        except ModuleNotFoundError as inner:
+            raise ImportError("Loading the cached session requires the browser stack") from inner
+    except ImportError as outer:
+        assert _distribution.missing_browser_module(outer) == "httpie"

@@ -21,8 +21,10 @@ from rich.markup import escape
 if TYPE_CHECKING:
     from graftpunk.graftpunk_session import GraftpunkSession
 
+from graftpunk import _distribution
 from graftpunk import console as gp_console
 from graftpunk.cache import load_session_for_api_resolved, no_account_cached_message
+from graftpunk.cli.errors import exit_missing_browser_stack
 from graftpunk.exceptions import SessionInvalidatedError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
@@ -212,6 +214,11 @@ def _make_request(
                 resolve=(not is_site_name) and split_session_name(resolved)[1] is None,
             )
         except Exception as exc:  # noqa: BLE001 — CLI boundary
+            module = _distribution.missing_browser_module(exc)
+            if module is not None:
+                exit_missing_browser_stack(
+                    f"gp http {method.lower()} with a cached session", module
+                )
             # resolve=False for a registered site name means
             # resolve_session_name_or_exit already exhausted the account
             # listing for this base; the backend's own miss message
