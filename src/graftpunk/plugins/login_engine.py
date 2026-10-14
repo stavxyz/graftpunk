@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 # NOT at module scope. This module is on the CLI's eager import path
 # (cli/main.py -> cli/plugin_commands.py -> cli/login_commands.py -> here), so a
 # module-level `from graftpunk import BrowserSession` pulls in the whole browser
-# stack and makes EVERY `gp` invocation, even `gp --version`, fail on a base
-# install without the [browser] extra. See test_cli_import_stays_browser_free.
+# stack and makes EVERY `gp` invocation, even `gp --version`, fail on
+# graftpunk-lite without its [browser] extra. See test_cli_import_stays_browser_free.
 
 LOG = get_logger(__name__)
 
@@ -603,7 +603,7 @@ def _generate_nodriver_login(plugin: SitePlugin) -> Any:
         failure_text = plugin.login_config.failure
         run_headless = plugin.login_config.headless if headless is None else headless
 
-        from graftpunk import BrowserSession  # lazy: browser stack ([browser] extra)
+        from graftpunk import BrowserSession  # lazy: graftpunk-lite may lack it
 
         async with BrowserSession(backend="nodriver", headless=run_headless) as session:
             try:
@@ -828,7 +828,7 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         failure_text = plugin.login_config.failure
         run_headless = plugin.login_config.headless if headless is None else headless
 
-        from graftpunk import BrowserSession  # lazy: browser stack ([browser] extra)
+        from graftpunk import BrowserSession  # lazy: graftpunk-lite may lack it
 
         # BrowserSession owns observe for selenium (its capture drains Chrome's
         # performance log, which is single-consumer), so hand it the mode and

@@ -50,6 +50,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
+from graftpunk._distribution import install_command
 from graftpunk.backends.base import Cookie
 from graftpunk.browser_launch import (
     arm_termination_handlers,
@@ -1071,7 +1072,7 @@ class NoDriverBackend:
             import nodriver as uc
         except ImportError as exc:
             raise BrowserError(
-                "nodriver package not installed. Install with: pip install graftpunk[nodriver]"
+                f"nodriver package not installed. Install with: {install_command('browser')}"
             ) from exc
 
         _patch_nodriver_cookie_parsing()

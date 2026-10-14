@@ -74,32 +74,60 @@ These aren't real APIs—they're commands defined in graftpunk plugins that repl
 
 ## Installation
 
-Logging in drives a real browser, so the usual install includes the browser stack:
-
-```bash
-pip install 'graftpunk[browser]'
-```
-
-**Lite install** — no browser:
+Logging in drives a real browser, so the default install includes the browser
+stack (Selenium, undetected-chromedriver, nodriver and their tooling):
 
 ```bash
 pip install graftpunk
 ```
 
-This gives you the full `gp` CLI and API replay against an **already-cached**
-session (`load_session_for_api`, `load_session_for_api_from_bytes`). It cannot
-log in, because that needs a browser. Base dependencies are pure-Python or ship
-WASM wheels, so this is also the install that works under Pyodide and Cloudflare
-Python Workers ([#121](https://github.com/stavxyz/graftpunk/issues/121)). Add
-`[browser]` whenever you need `gp <site> login` or `BrowserSession`.
+`pip install 'graftpunk[browser]'` still works and installs the same thing; the
+extra is kept so existing requirements resolve.
+
+**Lite install**, no browser:
+
+```bash
+pip install graftpunk-lite
+```
+
+`graftpunk-lite` is the same package (same `import graftpunk`, same version)
+without the browser stack. It replays an **already-cached** session through
+`load_session_for_api_from_bytes`, given the session's encrypted bytes and its
+key. It cannot log in, because that needs a browser. Its dependencies are
+pure-Python or ship WASM wheels, so this is the install that works under Pyodide
+and Cloudflare Python Workers
+([#121](https://github.com/stavxyz/graftpunk/issues/121)). The `gp` command is
+installed. On graftpunk-lite, `gp version`, `gp session list`,
+`gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, and
+`load_session_for_api_from_bytes` work. Everything that loads a cached session
+from the session store (`load_session_for_api`, `gp http` with a session from
+`--session`, `gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`),
+every command that drives a browser (recording with `gp observe`, and a plugin's
+`login` command), and a plugin's own commands need `graftpunk-lite[browser]` or
+`graftpunk`. `pip install 'graftpunk-lite[browser]'` adds the browser stack and
+is equivalent to `graftpunk`.
+
+Install one or the other, never both. They put the same files in the same
+place, so uninstalling either one deletes files the other needs. To switch,
+uninstall the one you have first (`pip uninstall graftpunk`, then
+`pip install graftpunk-lite`, or the reverse).
+
+Plugins declare `graftpunk[browser]`, so install them where `graftpunk` is
+installed. Installing one where `graftpunk-lite` is installed, with or without
+`[browser]`, pulls `graftpunk` in beside it, the both-installed state to avoid.
+graftpunk-lite is for loading a saved session with
+`load_session_for_api_from_bytes` under Pyodide or Cloudflare Python Workers, and
+for the browser-free `gp` commands above.
 
 **With cloud storage:**
 
 ```bash
 pip install graftpunk[supabase]   # Supabase backend
 pip install graftpunk[s3]         # AWS S3 backend
-pip install graftpunk[all]        # Everything (includes browser)
+pip install graftpunk[all]        # Everything
 ```
+
+On the lite install, name `graftpunk-lite` instead (`graftpunk-lite[s3]`).
 
 ## Quick Start
 
@@ -164,10 +192,12 @@ api = load_session_for_api_from_bytes(encrypted_bytes, key=fernet_key)
 response = api.get("https://app.example.com/api/internal/documents")
 ```
 
-Both work on the lite install (no `[browser]`). `key=` is optional and defaults
-to graftpunk's configured key sources; pass it when the key lives somewhere
-graftpunk can't see, like a Worker secret. A bad key raises `EncryptionError`
-(fix the key); an unusable session raises `SessionExpiredError` (log in again).
+On graftpunk-lite, `load_session_for_api_from_bytes` works, and
+`load_session_for_api` needs `graftpunk-lite[browser]` or `graftpunk`. `key=` is
+optional and defaults to graftpunk's configured key sources; pass it when the
+key lives somewhere graftpunk can't see, like a Worker secret. A bad key raises
+`EncryptionError` (fix the key); an unusable session raises
+`SessionExpiredError` (log in again).
 
 ### 3. Keep It Alive
 
@@ -537,11 +567,11 @@ just bump X.Y.Z   # opens a version-bump PR (pyproject, uv.lock, CHANGELOG)
 just release      # validates, tags vX.Y.Z, and pushes the tag
 ```
 
-Pushing the tag triggers [`.github/workflows/release.yml`](https://github.com/stavxyz/graftpunk/blob/main/.github/workflows/release.yml), which runs the tests, builds the sdist/wheel, publishes to PyPI via OIDC, and creates the GitHub release. Because build + publish run in CI on a pinned Python, releasing no longer depends on your local interpreter or any local credentials.
+Pushing the tag triggers [`.github/workflows/release.yml`](https://github.com/stavxyz/graftpunk/blob/main/.github/workflows/release.yml), which runs the tests, builds an sdist and a wheel each for graftpunk and graftpunk-lite, installs each wheel into a clean venv and checks the lite contract (`scripts/smoke_install.sh`), publishes graftpunk-lite and then graftpunk to PyPI via OIDC, and creates the GitHub release. graftpunk-lite goes first so that a failed lite upload stops the run before graftpunk ships without it. Because build + publish run in CI on a pinned Python, releasing no longer depends on your local interpreter or any local credentials.
 
-To (re)publish a tag that was cut before this workflow existed, or to retry a failed publish, run the workflow manually (**Actions → Release → Run workflow**) with the tag (e.g. `v1.9.0`).
+To (re)publish a tag that was cut before this workflow existed, or to retry a failed publish, run the workflow manually (**Actions → Release → Run workflow**) with the tag (e.g. `v1.9.0`). A tag cut before graftpunk-lite existed has no `scripts/build_lite.py`; the run then logs a notice, skips building, checking, smoke-testing and publishing graftpunk-lite, and publishes graftpunk alone.
 
-**One-time setup** (repo owner, on [pypi.org](https://pypi.org/manage/project/graftpunk/settings/publishing/) → graftpunk → Publishing): add a GitHub Actions trusted publisher with owner `stavxyz`, repository `graftpunk`, workflow `release.yml`, and environment `pypi`.
+**One-time setup** (repo owner, on [pypi.org](https://pypi.org/manage/project/graftpunk/settings/publishing/) → graftpunk → Publishing): add a GitHub Actions trusted publisher with owner `stavxyz`, repository `graftpunk`, workflow `release.yml`, and environment `pypi`. graftpunk-lite needs the same publisher, added as a pending publisher for the project name `graftpunk-lite` (pypi.org → your account → Publishing) before the first release that builds it; that release creates the project.
 
 ## License
 

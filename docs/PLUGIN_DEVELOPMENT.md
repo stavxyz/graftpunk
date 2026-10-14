@@ -68,6 +68,22 @@ editable into that project's virtual environment:
 uv pip install -e .   # or: pip install -e .
 ```
 
+A plugin requires `graftpunk[browser]>=X` (the requirement `gp plugin new`
+writes), since logging in needs the browser stack, so installing a plugin
+installs `graftpunk`, the full install. Install plugins into an environment with
+`graftpunk`, not `graftpunk-lite`: installing one where `graftpunk-lite` is
+already installed puts both distributions in the same environment, and
+uninstalling either then deletes files the other needs. `graftpunk-lite` is for
+loading a saved session with `load_session_for_api_from_bytes` under Pyodide or
+Cloudflare Python Workers. On graftpunk-lite, `gp version`, `gp session list`,
+`gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, and
+`load_session_for_api_from_bytes` work. Everything that loads a cached session
+from the session store (`load_session_for_api`, `gp http` with a session from
+`--session`, `gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`),
+every command that drives a browser (recording with `gp observe`, and a plugin's
+`login` command), and a plugin's own commands need `graftpunk-lite[browser]` or
+`graftpunk`.
+
 The file loader is for a throwaway script that imports nothing but graftpunk.
 It has two failure modes that cost real time:
 
@@ -120,13 +136,16 @@ The skill needs graftpunk 1.19.0 or later and `uv` on your PATH.
 Decide the following before you record anything.
 
 **The name.** It starts with a letter, uses letters, digits, hyphens, and
-underscores, and is at most 40 characters. It cannot be a reserved top-level
-`gp` command name (`plugin`, `plugins`, `session`, `http`, `config`,
-`keepalive`, `observe`, `version`, and anything else registered by the time
-plugins attach). A hyphenated name maps to an importable package: `my-shop` becomes the
-package `graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key
-`my-shop`, and the CLI command `gp my-shop`. `gp plugin new NAME --check-name`
-checks a name against these rules and writes nothing.
+underscores, does not end with a hyphen or underscore, and is at most 40
+characters. It cannot be a reserved top-level `gp` command name (`plugin`,
+`plugins`, `session`, `http`, `config`, `keepalive`, `observe`, `version`, and
+anything else registered by the time plugins attach). It cannot be `lite` (in
+any case), because a standalone project for it would be named `graftpunk_lite`,
+which is graftpunk's own browser-free distribution, `graftpunk-lite`. A
+hyphenated name maps to an importable package: `my-shop` becomes the package
+`graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key `my-shop`,
+and the CLI command `gp my-shop`. `gp plugin new NAME --check-name` checks a
+name against these rules and writes nothing.
 
 **The commands.** Write down what you want to get out of the site, in the words
 you would use at the shell: `gp myshop orders`, `gp myshop order --order-id
@@ -930,7 +949,8 @@ pyproject.toml: graftpunk>=1.17.0 (was >=1.15.0); reinstall the project
 ```
 
 That project's requirement was `graftpunk[browser]>=1.15.0`, and it is now
-`graftpunk[browser]>=1.17.0`: extras and an environment marker are kept. What
+`graftpunk[browser]>=1.17.0`: extras and an environment marker are kept. A
+`graftpunk-lite>=` bound is raised the same way and keeps its name. What
 happens to any other form of requirement is in [The gate](#the-gate).
 
 The refusals are those of `--command` above, plus a few of its own, each
@@ -1659,14 +1679,28 @@ dependencies` holds a plain `graftpunk>=` lower bound below that release (as
 `major.minor.0`, the bound `gp plugin new` writes), they raise it in the same
 write, keeping any extras and environment marker, and print
 `pyproject.toml: graftpunk>=<floor> (was >=<old>); reinstall the project`. A
+`graftpunk-lite>=` bound counts as the graftpunk requirement: it is raised in
+place under its own name, and the line names `graftpunk-lite`. A
 requirement that already allows nothing below the floor gets nothing extra.
-Any other form that allows a release below the floor (a pin, an upper bound,
-a URL, or no graftpunk requirement) is left as it is, and they print a
-`Next:` line naming the floor and the requirement as found, and to reinstall.
-A project whose `[project] dependencies` is itself listed in `[project]
-dynamic` has no array here to raise or name; they print `Next: this
-project's dependencies are dynamic; make sure whatever supplies them
-requires graftpunk>=<floor>, then reinstall.`
+Any other form that allows a release below the floor (a pin, an upper bound, a
+URL, or no graftpunk requirement) is left as it is, and they print a `Next:`
+line naming the floor and the requirement as found, and to reinstall. With no
+graftpunk requirement, that line says to add `graftpunk[browser]>=<floor>`, the
+requirement `gp plugin new` writes, whichever distribution `gp` came from. A
+project that requires both `graftpunk` and `graftpunk-lite`, unless every one of
+those requirements carries an environment marker, gets none raised, whatever
+their bounds, and a `Next:` line that names the requirements and says to keep
+`graftpunk`, replacing them with `graftpunk[browser]>=<floor>`. When every one
+carries a marker (one for Pyodide and one elsewhere, say), they may never
+install together, so they are treated as graftpunk requirements: a `Next:` line
+names them when any allows a release below the floor. A project whose
+`[project] dependencies` is itself listed in `[project] dynamic` has no array
+here to raise or name; they print `Next: this project's dependencies are
+dynamic; make sure whatever supplies them requires graftpunk[browser]>=<floor>,
+then reinstall.` On graftpunk-lite without its browser stack, each of these
+three lines adds that developing a plugin (recording, logging in) needs that
+stack, from `uv tool install --force 'graftpunk-lite[browser]'`
+(or `pip install 'graftpunk-lite[browser]'`) or by switching to `graftpunk`.
 
 A minimal CI workflow to start from, running the same gate:
 

@@ -25,7 +25,7 @@ directly, and the test would pass without ever touching the code it guards.
 
 ```bash
 # Requires the browser stack, since it imports graftpunk.session:
-pip install 'graftpunk[browser]'   # or: uv sync --group dev
+uv sync --group dev   # or: pip install -e .
 python scripts/gen_browserfree_fixture.py
 ```
 

@@ -24,7 +24,7 @@ import graftpunk
 # the second (post-bootstrap) picks up file statics for
 # GRAFTPUNK_LOG_LEVEL/GRAFTPUNK_LOG_FORMAT. get_settings() also calls
 # ensure_bootstrap() — idempotent, order-owned there.
-from graftpunk import signals, workstation_env
+from graftpunk import _distribution, signals, workstation_env
 from graftpunk.cli.config_commands import config_app
 from graftpunk.cli.http_commands import http_app
 from graftpunk.cli.keepalive_commands import keepalive_app
@@ -169,6 +169,22 @@ def main_callback(
     ctx.ensure_object(dict)["observe_mode"] = observe.value
 
 
+def _warn_if_both_installed() -> None:
+    """graftpunk and graftpunk-lite write the same files, so metadata cannot say
+    whose are on disk; the version gp reports is graftpunk's."""
+    found = _distribution.all_installed()
+    if len(found) < 2:
+        return
+    both = " and ".join(f"{name} {version}" for name, version in found)
+    typer.echo(
+        f"Warning: {both} are both installed here. They share one package, so gp "
+        f"reports {found[0][0]}'s version, and uninstalling either deletes the other's "
+        "files. Keep one: pip uninstall graftpunk-lite, then pip install "
+        "--force-reinstall graftpunk (or the reverse).",
+        err=True,
+    )
+
+
 @app.command("version")
 def version(
     as_json: Annotated[
@@ -206,18 +222,28 @@ def version(
             typer.echo(f"--contract: {value!r} is not SURFACE=N, as in endpoints=1.", err=True)
             raise typer.Exit(1)
         expected.append((surface, int(number)))
+    _warn_if_both_installed()
     if as_json:
         typer.echo(json.dumps(installation_facts(), sort_keys=True))
     elif floor is None and not expected:
         # A caller passing --at-least or --contract without --json wants the
         # exit status, not the panel.
         settings = get_settings()
+        # Each phrase the graft skill's preflight matches ("graftpunk-lite 1" and
+        # "Browser: not installed") is one style span, so no color code splits it.
+        browser = (
+            ""
+            if _distribution.has_browser_stack()
+            else "\n[yellow]Browser: not installed[/yellow], so gp cannot record a site "
+            f"or log in; add it: {escape(_distribution.install_commands('browser'))}"
+        )
         console.print(
             Panel(
-                f"[bold cyan]graftpunk[/bold cyan] v{graftpunk.__version__}\n"
+                f"[bold cyan]{_distribution.name()} {graftpunk.__version__}[/bold cyan]\n"
                 f"{escape(graftpunk.DESCRIPTION)}\n\n"
                 f"[dim]Config:[/dim]  {escape(str(settings.config_dir))}\n"
-                f"[dim]Storage:[/dim] {escape(str(settings.storage_backend))}",
+                f"[dim]Storage:[/dim] {escape(str(settings.storage_backend))}"
+                f"{browser}",
                 title="graftpunk",
                 border_style="cyan",
             )

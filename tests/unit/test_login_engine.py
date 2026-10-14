@@ -4,7 +4,7 @@ NOTE ON THE PATCH TARGET: these tests patch ``graftpunk.BrowserSession``, NOT
 ``graftpunk.plugins.login_engine.BrowserSession``. login_engine deliberately has
 no module-level BrowserSession — it is on the CLI's eager import path, so a
 module-level import would drag in the browser stack and break every `gp` command
-on a base install (no [browser] extra). The login bodies import it lazily from
+on graftpunk-lite (no [browser] extra). The login bodies import it lazily from
 ``graftpunk`` at call time, so ``graftpunk`` is where the patch has to land.
 """
 

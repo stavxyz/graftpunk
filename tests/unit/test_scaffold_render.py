@@ -10,7 +10,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -297,6 +297,58 @@ class TestValidatePluginName:
     def test_rejects_a_name_one_over_the_cap(self) -> None:
         with pytest.raises(ValueError, match=f"at most {_MAX_PLUGIN_NAME} characters"):
             validate_plugin_name("a" * (_MAX_PLUGIN_NAME + 1))
+
+    @pytest.mark.parametrize("name", ["lite", "Lite", "LITE"])
+    def test_rejects_a_name_whose_project_would_be_graftpunk_lite(self, name: str) -> None:
+        with pytest.raises(
+            ValueError,
+            match="a standalone project for it would be named graftpunk-lite, a distribution",
+        ):
+            validate_plugin_name(name)
+
+    @pytest.mark.parametrize("name", ["lite2", "litestore", "my-lite"])
+    def test_accepts_a_name_that_only_contains_lite(self, name: str) -> None:
+        validate_plugin_name(name)  # does not raise
+
+    @pytest.mark.parametrize(
+        ("name", "project"),
+        [("shop-", "graftpunk_shop_"), ("shop_", "graftpunk_shop_"), ("lite-", "graftpunk_lite_")],
+    )
+    def test_rejects_a_name_ending_in_a_separator(self, name: str, project: str) -> None:
+        """A distribution name cannot end in a separator, so uv refuses
+        to install a project named graftpunk_shop_."""
+        from packaging.utils import InvalidName, canonicalize_name
+
+        with pytest.raises(InvalidName):
+            canonicalize_name(project, validate=True)
+        with pytest.raises(
+            ValueError,
+            match=(
+                "must not end with a hyphen or underscore: a standalone project for it "
+                f"would be named {project},"
+            ),
+        ):
+            validate_plugin_name(name)
+
+    @pytest.mark.parametrize("mode", ["new_project", "add_to_suite"])
+    @pytest.mark.parametrize(
+        ("name", "message"),
+        [
+            ("shop-", "a standalone project for it would be named graftpunk_shop_,"),
+            ("lite", "a standalone project for it would be named graftpunk-lite,"),
+        ],
+    )
+    def test_a_project_name_refusal_names_a_standalone_project_in_either_mode(
+        self, mode: Literal["new_project", "add_to_suite"], name: str, message: str
+    ) -> None:
+        """A suite member gets no project of its own, so the message must not say
+        "its project": it names what a standalone project would be called."""
+        with pytest.raises(ValueError, match=message) as excinfo:
+            ScaffoldSpec(
+                name=name, mode=mode, backend="nodriver", base_url="https://myshop.example"
+            )
+        assert "its project" not in str(excinfo.value)
+        assert "would name the project" not in str(excinfo.value)
 
 
 class TestCommandName:

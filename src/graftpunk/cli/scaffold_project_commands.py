@@ -17,6 +17,7 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
+from graftpunk import _distribution
 from graftpunk.cli.observe_commands import resolve_run
 from graftpunk.cli.scaffold_shared import (
     LOG,
@@ -32,8 +33,10 @@ from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.insert import add_command
 from graftpunk.devtools.scaffold.pyproject_edit import (
+    BothDistributions,
     CannotRaiseFloor,
     DynamicDependencies,
+    FloorVerdict,
     RaisedFloor,
 )
 from graftpunk.devtools.scaffold.render import graftpunk_version_floor
@@ -42,19 +45,30 @@ from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.parser import HARParseError
 
 
-def _print_floor(floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | None) -> None:
+def _print_floor(floor: FloorVerdict) -> None:
     """One line on the project's graftpunk requirement after a write that needs
     the running graftpunk: the raise it got, or how to make it by hand."""
     at = graftpunk_version_floor()
+    # A plugin requires graftpunk, whichever distribution this gp came from: it is
+    # what gp plugin new writes, and a plugin requiring graftpunk-lite would put
+    # both distributions into its users' environments.
+    wanted = f"graftpunk[browser]>={at}"
+    # graftpunk-lite[browser] records and logs in as graftpunk does.
+    full_note = (
+        " Developing a plugin (recording, logging in) needs the browser stack: "
+        f"{_distribution.install_commands('browser')}, or switch to graftpunk."
+        if _distribution.name() == _distribution.LITE and not _distribution.has_browser_stack()
+        else ""
+    )
     if isinstance(floor, RaisedFloor):
-        line = f"pyproject.toml: graftpunk>={at} (was >={floor.previous}); reinstall the project"
+        line = f"pyproject.toml: {floor.name}>={at} (was >={floor.previous}); reinstall the project"
         console.print(escape(line), soft_wrap=True, highlight=False)
     elif isinstance(floor, DynamicDependencies):
         console.print(
             "[bold]Next:[/bold] "
             + escape(
                 f"this project's dependencies are dynamic; make sure whatever supplies "
-                f"them requires graftpunk>={at}, then reinstall."
+                f"them requires {wanted}, then reinstall.{full_note}"
             ),
             soft_wrap=True,
         )
@@ -62,18 +76,25 @@ def _print_floor(floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | N
         console.print(
             "[bold]Next:[/bold] "
             + escape(
-                f"add graftpunk>={at} to pyproject.toml's [project] dependencies and "
-                "reinstall; it has no graftpunk requirement"
+                f"add {wanted} to pyproject.toml's [project] dependencies and "
+                f"reinstall; it has no graftpunk or graftpunk-lite requirement.{full_note}"
+            ),
+            soft_wrap=True,
+        )
+    elif isinstance(floor, BothDistributions):
+        console.print(
+            "[bold]Next:[/bold] "
+            + escape(
+                f"pyproject.toml requires both graftpunk and graftpunk-lite "
+                f"({' and '.join(floor.requirements)}), which install the same files; "
+                f"keep graftpunk: replace them with {wanted} and reinstall.{full_note}"
             ),
             soft_wrap=True,
         )
     elif isinstance(floor, CannotRaiseFloor):
         console.print(
             "[bold]Next:[/bold] "
-            + escape(
-                f"raise graftpunk in pyproject.toml to >={at} and reinstall; "
-                f"it reads {floor.requirement}"
-            ),
+            + escape(f"raise {floor.requirement} in pyproject.toml to >={at} and reinstall"),
             soft_wrap=True,
         )
 

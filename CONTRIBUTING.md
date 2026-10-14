@@ -191,18 +191,27 @@ them with `python scripts/gen_browserfree_fixture.py` — see
 [`tests/fixtures/README.md`](tests/fixtures/README.md) for why the fixture has
 to be pickled by reference and what that guards.
 
-### The base install must stay browser-free
+### graftpunk-lite must stay browser-free
 
-Browser automation lives behind the `[browser]` extra so graftpunk resolves under
-Pyodide / Cloudflare Python Workers, where that stack has no installable wheels.
-Two rules follow:
+The repository builds two distributions of the same `graftpunk` package from
+one `pyproject.toml`. `graftpunk` installs the browser stack. `graftpunk-lite`,
+built by `scripts/build_lite.py`, leaves out every package that
+`[tool.graftpunk.lite] browser-only` names and offers them as its `[browser]`
+extra, so it resolves under Pyodide / Cloudflare Python Workers, where that
+stack has no installable wheels. `graftpunk[browser]` is an empty extra, kept so
+existing requirements resolve. `just build` builds both, and the "Lite install"
+CI job installs each wheel into a clean venv. Three rules follow:
 
 - Never import browser modules (`graftpunk.session`, `graftpunk.stealth`,
   selenium, requestium, nodriver, httpie) at **module scope** in anything the CLI
-  imports — import them inside the function that needs them. A module-level
-  import there breaks *every* `gp` command on a base install, not just the
+  imports; import them inside the function that needs them. A module-level
+  import there breaks *every* `gp` command on graftpunk-lite, not just the
   browser ones. `test_cli_import_stays_browser_free` guards this.
-- Don't move those packages back into base `dependencies`.
+- A new browser-only dependency goes in `[project] dependencies` **and** in
+  `browser-only`. `tests/unit/test_build_lite.py` fails when a known browser
+  package is missing from `browser-only` or a name there matches no dependency.
+- An install hint names the extra through `graftpunk._distribution.install_command`,
+  so a graftpunk-lite user is told `graftpunk-lite[...]`.
 
 Example:
 

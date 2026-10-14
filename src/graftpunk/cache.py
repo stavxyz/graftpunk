@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 import dill as pickle
 import requests
 
+from graftpunk._distribution import install_command
 from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data
 from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
@@ -414,10 +415,10 @@ def _load_session_with_metadata(
         # NOTE: this deliberately uses the plain unpickler, not
         # _deserialize_browserfree: load_session returns the REAL cached object,
         # which update_session_cookies mutates and re-pickles. Stubbing the class
-        # here would let a lean install silently re-save the session as a stub
-        # type and lose its browser state. Callers that only need cookies/headers
-        # should use load_session_for_api_from_bytes, which is browser-free by
-        # design.
+        # here would let graftpunk-lite without [browser] silently re-save the
+        # session as a stub type and lose its browser state. Callers that only
+        # need cookies/headers should use load_session_for_api_from_bytes, which
+        # is browser-free by design.
         session = pickle.loads(decrypted_data)  # noqa: S301
 
         # Runtime validation: verify unpickled object has expected attributes
@@ -437,7 +438,7 @@ def _load_session_with_metadata(
         raise
     except ModuleNotFoundError as exc:
         # A cached BrowserSession pickle names graftpunk.session, which imports
-        # the browser stack. On a base install (no [browser] extra) that raises
+        # the browser stack. On graftpunk-lite without [browser] that raises
         # ModuleNotFoundError from inside pickle.loads — which is neither an
         # UnpicklingError nor a RuntimeError, so without this it escaped raw as
         # "No module named 'httpie'".
@@ -445,7 +446,7 @@ def _load_session_with_metadata(
         raise ImportError(
             f"Loading the cached session '{name}' requires the browser automation "
             f"stack, which is not installed. Install it with: "
-            f"pip install 'graftpunk[browser]'\n"
+            f"{install_command('browser')}\n"
             f"(To read cookies/headers from a session WITHOUT the browser stack, use "
             f"load_session_for_api_from_bytes.)\n"
             f"(underlying import failure: {exc})"
@@ -705,9 +706,9 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
 
     No browser *process* is started — but this does go through
     :func:`load_session`, which reconstructs the real cached object and so needs
-    the browser *package* importable (the ``[browser]`` extra). For a genuinely
-    browser-free load — e.g. under Pyodide / Cloudflare Workers — use
-    :func:`load_session_for_api_from_bytes`, which stubs the browser classes
+    the browser *package* importable (on graftpunk-lite, its ``[browser]`` extra).
+    For a browser-free load (under Pyodide or Cloudflare Workers, for example),
+    use :func:`load_session_for_api_from_bytes`, which stubs the browser classes
     instead of importing them.
 
     A thin wrapper over :func:`load_session_for_api_resolved`, which owns the

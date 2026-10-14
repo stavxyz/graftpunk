@@ -17,6 +17,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
+from graftpunk._distribution import install_command
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
@@ -64,7 +65,7 @@ class SupabaseSessionStorage:
         except ImportError as exc:
             raise StorageError(
                 "supabase package is required for Supabase storage. "
-                "Install with: pip install graftpunk[supabase]"
+                f"Install with: {install_command('supabase')}"
             ) from exc
 
         # Normalize URL (ensure trailing slash for Supabase client)

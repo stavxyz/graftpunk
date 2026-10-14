@@ -217,7 +217,7 @@ from graftpunk import load_session_for_api_from_bytes
 api = load_session_for_api_from_bytes(r2_object_bytes, key=worker_secret_key)
 ```
 
-Deserialization here never imports the browser stack: an unpickler stubs out classes it cannot import (`graftpunk.session.BrowserSession` and friends) and keeps the plain state — cookies, headers, header roles, cached tokens. That is what makes the lite install (no `[browser]`) usable under Pyodide.
+Deserialization here never imports the browser stack: an unpickler stubs out classes it cannot import (`graftpunk.session.BrowserSession` and friends) and keeps the plain state (cookies, headers, header roles, and cached tokens). That is what makes the lite install (`graftpunk-lite`, which has no browser stack) usable under Pyodide. It is the only browser-free loader. On graftpunk-lite, `gp version`, `gp session list`, `gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, and `load_session_for_api_from_bytes` work. Everything that loads a cached session from the session store (`load_session_for_api`, `gp http` with a session from `--session`, `gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`), every command that drives a browser (recording with `gp observe`, and a plugin's `login` command), and a plugin's own commands need `graftpunk-lite[browser]` or `graftpunk`. The session-store loaders go through `load_session`, which reconstructs the real cached object.
 
 Errors are deliberately distinguishable: `EncryptionError` means the bytes could not be decrypted with that key (malformed, wrong, or rotated — an operator/config problem), while `SessionExpiredError` means the payload decrypted but is not a usable session (log in again).
 
@@ -442,16 +442,22 @@ determine is marked `# GP-FILL: <what to fill in>`. `gp plugin new <name>`
 with no `--from-run` scaffolds a bare project from `--url` alone.
 
 A plugin name starts with a letter, uses letters, digits, hyphens, and
-underscores, and is at most 40 characters; the command refuses anything else
-with a message naming the rule. It is also refused when it collides with a
-reserved top-level `gp` command name, which is any command name registered
-on the CLI at the time plugins attach, including `plugin`, `plugins`,
-`session`, `http`, `config`, `keepalive`, and `observe`. Hyphenated names
-are legal and map to an importable package: `gp plugin new my-shop` writes
-`src/graftpunk_my_shop/plugin.py` and `tests/test_my_shop.py`, registers the
-entry point `my-shop = "graftpunk_my_shop.plugin:MyShopPlugin"`, and the
-plugin's own CLI command stays `gp my-shop`. A generated project passes its
-own `ruff check` and `ruff format --check` as written, whatever the captured
+underscores, does not end with a hyphen or underscore, and is at most 40
+characters; the command refuses anything else with a message naming the
+rule. It is also refused when it collides with a reserved top-level `gp`
+command name, which is any command name registered on the CLI at the time
+plugins attach, including `plugin`, `plugins`, `session`, `http`, `config`,
+`keepalive`, and `observe`. The name `lite` (in any case) is refused because
+a standalone project for it would be named `graftpunk_lite`, which is
+graftpunk's own browser-free distribution, `graftpunk-lite`. A name ending
+in a hyphen or underscore (`shop-`) is refused because a standalone project
+for it would be named `graftpunk_shop_`, which is not a valid distribution
+name. Hyphenated names are legal and map to an importable package:
+`gp plugin new my-shop` writes `src/graftpunk_my_shop/plugin.py` and
+`tests/test_my_shop.py`, registers the entry point
+`my-shop = "graftpunk_my_shop.plugin:MyShopPlugin"`, and the plugin's own
+CLI command stays `gp my-shop`. A generated project passes its own
+`ruff check` and `ruff format --check` as written, whatever the captured
 site facts contain (long paths, long parameter names, quotes in selectors):
 the scaffold bounds generated identifiers and wraps wide literals so the
 developer never starts from a red gate.

@@ -41,7 +41,12 @@ variable `CLAUDE_SKILL_DIR` (after a dollar sign, in braces), put this skill's
 directory, `${CLAUDE_SKILL_DIR}`, in its place.
 
 Run `${CLAUDE_SKILL_DIR}/scripts/preflight.sh` first, on every invocation. If it
-exits non-zero, show its message verbatim and stop. On exit 0 it prints one JSON
+exits non-zero, show its message verbatim and stop. On exit 0 with text on
+stderr, show that text verbatim before going on: preflight passes on whatever
+`gp version` wrote to stderr (gp's warnings, such as that graftpunk and
+graftpunk-lite are both installed or that a plugin failed to load), and adds a
+note when gp comes from graftpunk-lite without its browser stack, since
+recording a site and logging in need that stack. On exit 0 it prints one JSON
 object, `{"installation": ..., "project": ...}`, and `project.directory` picks
 the mode: `empty` is create mode, `plugin` is enhance mode. For `foreign`, stop
 and say: "this directory holds a project that is not a graftpunk plugin; run the

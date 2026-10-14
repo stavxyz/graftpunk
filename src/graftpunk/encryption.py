@@ -22,6 +22,7 @@ from typing import cast
 
 from cryptography.fernet import Fernet
 
+from graftpunk._distribution import install_command
 from graftpunk.config import get_settings
 from graftpunk.exceptions import EncryptionError
 from graftpunk.logging import get_logger
@@ -113,7 +114,7 @@ def _get_key_from_supabase_vault() -> bytes:
     except ImportError as exc:
         raise EncryptionError(
             "supabase package is required for Supabase Vault. "
-            "Install with: pip install graftpunk[supabase]"
+            f"Install with: {install_command('supabase')}"
         ) from exc
 
     settings = get_settings()

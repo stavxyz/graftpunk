@@ -341,16 +341,16 @@ class TestSeleniumBackendErrorHandling:
         """ImportError for stealth dependencies raises BrowserError with install hint."""
         from graftpunk.exceptions import BrowserError
 
-        with patch(
-            "graftpunk.backends.selenium.SeleniumBackend._start_stealth_driver"
-        ) as mock_start:
-            mock_start.side_effect = BrowserError(
-                "Stealth dependencies not installed. Install with: pip install graftpunk[standard]"
-            )
-
-            backend = SeleniumBackend(use_stealth=True)
-            with pytest.raises(BrowserError, match="Stealth dependencies not installed"):
-                backend.start()
+        backend = SeleniumBackend(use_stealth=True)
+        with (
+            patch.dict("sys.modules", {"graftpunk.stealth": None}),
+            pytest.raises(BrowserError) as caught,
+        ):
+            backend.start()
+        assert "Stealth dependencies not installed" in str(caught.value)
+        assert "pip install 'graftpunk[browser]'" in str(caught.value)
+        assert isinstance(caught.value.__cause__, ImportError)
+        assert backend.is_running is False
 
     @patch("graftpunk.stealth.create_stealth_driver")
     def test_navigate_webdriver_exception_raises_browser_error(
@@ -858,8 +858,8 @@ class TestGetBackendImportError:
         """ImportError during backend loading names the extra to install.
 
         "No module named 'nodriver'" alone doesn't tell the caller what to do;
-        every browser backend lives behind the [browser] extra, so the message
-        must say so.
+        on graftpunk-lite every browser backend lives behind its [browser] extra,
+        so the message must say so.
         """
         with patch("graftpunk.backends.import_module") as mock_import:
             mock_import.side_effect = ImportError("No module named 'nodriver'")
