@@ -509,3 +509,62 @@ def test_a_plugin_command_runs_under_captured_stdout_on_the_full_install(
     assert result.returncode == 0, result.stdout + result.stderr
     assert "exit 0" in result.stdout, result.stdout
     assert '"ok": true' in result.stdout, result.stdout
+
+
+_CLIENT_UNDER_STRINGIO_RUN = """
+import io
+import json
+import sys
+
+import graftpunk.client
+from tests.unit.test_lite_cli_hints import _shop_plugin
+
+assert "graftpunk.session" not in sys.modules, "graftpunk.session loaded before the client call"
+real_stdout = sys.stdout
+captured = io.StringIO()
+sys.stdout = captured
+try:
+    graftpunk.client.get_plugin = lambda name: _shop_plugin("nodriver")
+    with graftpunk.client.GraftpunkClient("myshop") as client:
+        result = client.items()
+    captured_stdout_kept = sys.stdout is captured
+finally:
+    sys.stdout = real_stdout
+print(json.dumps({
+    "data": result.data,
+    "session_loaded": "graftpunk.session" in sys.modules,
+    "captured_stdout_kept": captured_stdout_kept,
+}))
+"""
+
+
+def test_the_client_runs_a_command_when_stdout_has_no_file_descriptor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#250: GraftpunkClient loading a cached session under ``sys.stdout =
+    io.StringIO()`` returns the command's result.
+
+    Loading the session makes the first import of graftpunk.session, whose
+    httpie import calls curses.setupterm(), which needs sys.stdout.fileno().
+    A fresh interpreter makes that import happen under the StringIO.
+    """
+    _cache_fixture_session(tmp_path, monkeypatch)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _CLIENT_UNDER_STRINGIO_RUN],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(_REPO)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout.splitlines()[-1]) == {
+        "data": {"ok": True},
+        "session_loaded": True,
+        "captured_stdout_kept": True,
+    }, result.stdout

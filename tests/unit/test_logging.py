@@ -211,3 +211,50 @@ class TestLibraryLoggingDefaults:
         assert proc.returncode == 0, proc.stderr
         assert "plain_marker" in proc.stderr
         assert "\x1b[" not in proc.stderr
+
+
+@pytest.mark.parametrize("color_env", ["unset", "NO_COLOR"])
+def test_importing_graftpunk_works_without_stdout_and_stderr(color_env: str) -> None:
+    """pythonw runs with sys.stdout and sys.stderr set to None; importing graftpunk
+    and logging must still work, and the log line must not reach a stream."""
+    env = {k: v for k, v in os.environ.items() if k not in {"FORCE_COLOR", "NO_COLOR"}}
+    if color_env == "NO_COLOR":
+        env["NO_COLOR"] = "1"
+    code = (
+        "import sys\n"
+        "sys.stdout = sys.stderr = None\n"
+        "import graftpunk\n"
+        "from graftpunk.logging import get_logger\n"
+        "get_logger('probe').warning('probe_event')\n"
+        "sys.exit(0)\n"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    assert "probe_event" not in result.stdout + result.stderr
+
+
+def test_with_only_stderr_missing_log_lines_do_not_reach_stdout() -> None:
+    """stdout may carry a program's output, so a missing stderr must not send logs there."""
+    env = {k: v for k, v in os.environ.items() if k not in {"FORCE_COLOR", "NO_COLOR"}}
+    code = (
+        "import atexit, sys\n"
+        "sys.stderr = None\n"
+        "def at_exit():\n"
+        "    from graftpunk.logging import get_logger\n"
+        "    get_logger('probe').warning('probe_at_exit')\n"
+        "    print('exit handler done')\n"
+        "atexit.register(at_exit)\n"
+        "import graftpunk\n"
+        "from graftpunk.logging import get_logger\n"
+        "get_logger('probe').warning('probe_event')\n"
+        "print('program output')\n"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    # The exit handler was registered before graftpunk, so it runs after anything
+    # graftpunk registers; its log call must still find an open sink.
+    assert result.stdout == "program output\nexit handler done\n"
