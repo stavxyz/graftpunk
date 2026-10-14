@@ -74,8 +74,10 @@ installs `graftpunk`, the full install. Install plugins into an environment
 with `graftpunk`, not `graftpunk-lite`: installing one where `graftpunk-lite`
 is already installed puts both distributions in the same environment, and
 uninstalling either then deletes files the other needs. To use a plugin's
-browser-free parts with `graftpunk-lite` (replaying a cached session under
-Pyodide or Cloudflare Python Workers), install the plugin without its
+browser-free parts with `graftpunk-lite` (replaying a session through
+`load_session_for_api_from_bytes` under Pyodide or Cloudflare Python Workers;
+its `gp` commands need `graftpunk-lite[browser]`),
+install the plugin without its
 dependencies and install its other requirements by hand:
 
 ```bash

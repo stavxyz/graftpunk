@@ -10,9 +10,9 @@ The root pyproject.toml stays the only source: this script derives the lite
 pyproject from it, stages it next to copies of src/graftpunk, LICENSE and
 CHANGELOG.md and a short README written by lite_readme() in a temporary
 directory, and builds there. The README is generated, not a second file in the
-repository, so the only long README stays the root one, linked at the tag. Staging is needed
-because `uv build` builds the wheel from the sdist, and an sdist cannot reach
-files outside its own project directory.
+repository, so the only long README stays the root one, linked at the tag.
+Staging is needed because `uv build` builds the wheel from the sdist, and an
+sdist cannot reach files outside its own project directory.
 
 Usage: python scripts/build_lite.py [--out-dir dist]
 """
@@ -93,10 +93,14 @@ def lite_readme(version: str) -> str:
     return f"""# graftpunk-lite
 
 graftpunk-lite is graftpunk without the browser stack: the same `graftpunk`
-package, `gp` CLI, API and version, with only browser-free dependencies, so it
-installs under Pyodide and Cloudflare Python Workers. It replays an
-already-cached session (`load_session_for_api`, `load_session_for_api_from_bytes`)
-but cannot log in, which needs a browser.
+package and version, with only browser-free dependencies, so it installs under
+Pyodide and Cloudflare Python Workers. It replays a cached session through
+`load_session_for_api_from_bytes`, given the session's encrypted bytes and its
+key. It cannot log in. `load_session_for_api`, which loads from the session
+store, unpickles the browser session object, so it needs
+`graftpunk-lite[browser]`, and so do `gp http` and plugin commands. The `gp`
+command is installed, and commands that need no browser package, such as
+`gp version` and `gp session list`, work.
 
 ```bash
 pip install graftpunk-lite

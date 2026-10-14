@@ -90,13 +90,16 @@ extra is kept so existing requirements resolve.
 pip install graftpunk-lite
 ```
 
-`graftpunk-lite` is the same package (same `import graftpunk`, same `gp` CLI,
-same version) without the browser stack. It gives you the full `gp` CLI and API
-replay against an **already-cached** session (`load_session_for_api`,
-`load_session_for_api_from_bytes`). It cannot log in, because that needs a
-browser. Its dependencies are pure-Python or ship WASM wheels, so this is the
-install that works under Pyodide and Cloudflare Python Workers
-([#121](https://github.com/stavxyz/graftpunk/issues/121)).
+`graftpunk-lite` is the same package (same `import graftpunk`, same version)
+without the browser stack. It replays an **already-cached** session through
+`load_session_for_api_from_bytes`, given the session's encrypted bytes and its
+key. It cannot log in, because that needs a browser. `load_session_for_api`,
+which loads from the session store, unpickles the browser session object, so it
+needs `graftpunk-lite[browser]`, and so do `gp http` and plugin commands. The
+`gp` command is installed, and commands that need no browser package, such as
+`gp version` and `gp session list`, work. Its dependencies are pure-Python or
+ship WASM wheels, so this is the install that works under Pyodide and
+Cloudflare Python Workers ([#121](https://github.com/stavxyz/graftpunk/issues/121)).
 `pip install 'graftpunk-lite[browser]'` adds the browser stack and is equivalent
 to `graftpunk`.
 

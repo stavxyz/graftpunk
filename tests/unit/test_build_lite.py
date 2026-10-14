@@ -165,6 +165,20 @@ def test_lite_readme_leads_with_lite_and_links_the_full_readme_at_the_tag() -> N
     assert "pip install graftpunk " not in readme
 
 
+def test_lite_readme_promises_only_the_browser_free_session_load() -> None:
+    readme = build_lite.lite_readme("1.20.0")
+    assert "`load_session_for_api_from_bytes`" in readme
+    assert "load_session_for_api(" not in readme
+    # load_session_for_api unpickles the browser session object, so the README may
+    # name it only where it says the [browser] extra is needed.
+    store_loaders = [p for p in readme.split("\n\n") if "`load_session_for_api`" in p]
+    assert store_loaders
+    assert all("graftpunk-lite[browser]" in p for p in store_loaders)
+    flat = " ".join(readme.split())
+    assert "full `gp` CLI" not in flat
+    assert "`gp` CLI, API" not in flat
+
+
 def _uv_build(args: list[str]) -> None:
     subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
         ["uv", "build", *args],  # noqa: S607 - uv from PATH, as the build script runs it
