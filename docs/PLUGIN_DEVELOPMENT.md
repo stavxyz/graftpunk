@@ -73,17 +73,11 @@ writes), since logging in needs the browser stack, so installing a plugin
 installs `graftpunk`, the full install. Install plugins into an environment
 with `graftpunk`, not `graftpunk-lite`: installing one where `graftpunk-lite`
 is already installed puts both distributions in the same environment, and
-uninstalling either then deletes files the other needs. To use a plugin's
-browser-free parts with `graftpunk-lite` (replaying a session through
-`load_session_for_api_from_bytes` under Pyodide or Cloudflare Python Workers;
-its `gp` commands need `graftpunk-lite[browser]`), install the plugin without
-its dependencies and install its other requirements by hand:
-
-```bash
-pip install graftpunk-lite
-pip install --no-deps graftpunk-myshop
-pip install <each requirement in graftpunk-myshop's [project] dependencies except graftpunk>
-```
+uninstalling either then deletes files the other needs. A plugin's `gp`
+commands need the full install too. `graftpunk-lite` is for loading a saved
+session with `load_session_for_api_from_bytes` under Pyodide or Cloudflare
+Python Workers, and for the `gp` commands that load no session (`gp version`,
+`gp session list`, and the others the README lists).
 
 The file loader is for a throwaway script that imports nothing but graftpunk.
 It has two failure modes that cost real time:

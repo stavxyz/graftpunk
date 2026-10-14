@@ -179,6 +179,24 @@ def test_lite_readme_promises_only_the_browser_free_session_load() -> None:
     assert "`gp` CLI, API" not in flat
 
 
+def test_lite_readme_names_what_gp_does_without_the_browser_extra() -> None:
+    """Checked against a clean graftpunk-lite venv: these commands run, loading a
+    cached session needs [browser], and a plugin needs graftpunk (installing one
+    --no-deps on lite makes every gp run report it failed to load)."""
+    flat = " ".join(build_lite.lite_readme("1.20.0").split())
+    assert (
+        "`gp version`, `gp session list`, `gp session show`, `gp config`, "
+        "`gp plugins`, and `gp http --no-session` work."
+    ) in flat
+    assert (
+        "`load_session_for_api` and `gp http --session`, which load a session from "
+        "the session store, unpickle the browser session object, so they need "
+        "`graftpunk-lite[browser]`."
+    ) in flat
+    assert "Plugins and their `gp` commands need graftpunk, the full install." in flat
+    assert "--no-deps" not in flat
+
+
 def _uv_build(args: list[str]) -> None:
     subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
         ["uv", "build", *args],  # noqa: S607 - uv from PATH, as the build script runs it

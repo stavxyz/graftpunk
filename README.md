@@ -93,13 +93,14 @@ pip install graftpunk-lite
 `graftpunk-lite` is the same package (same `import graftpunk`, same version)
 without the browser stack. It replays an **already-cached** session through
 `load_session_for_api_from_bytes`, given the session's encrypted bytes and its
-key. It cannot log in, because that needs a browser. `load_session_for_api`,
-which loads from the session store, unpickles the browser session object, so it
-needs `graftpunk-lite[browser]`, and so do `gp http` and plugin commands. The
-`gp` command is installed, and commands that need no browser package, such as
-`gp version` and `gp session list`, work. Its dependencies are pure-Python or
-ship WASM wheels, so this is the install that works under Pyodide and
-Cloudflare Python Workers ([#121](https://github.com/stavxyz/graftpunk/issues/121)).
+key. It cannot log in, because that needs a browser. Its dependencies are
+pure-Python or ship WASM wheels, so this is the install that works under
+Pyodide and Cloudflare Python Workers
+([#121](https://github.com/stavxyz/graftpunk/issues/121)). The `gp` command is
+installed: `gp version`, `gp session list`, `gp session show`, `gp config`,
+`gp plugins`, and `gp http --no-session` work. `load_session_for_api` and
+`gp http --session`, which load a session from the session store, unpickle the
+browser session object, so they need `graftpunk-lite[browser]`.
 `pip install 'graftpunk-lite[browser]'` adds the browser stack and is equivalent
 to `graftpunk`.
 
@@ -108,19 +109,12 @@ place, so uninstalling either one deletes files the other needs. To switch,
 uninstall the one you have first (`pip uninstall graftpunk`, then
 `pip install graftpunk-lite`, or the reverse).
 
-Plugins depend on `graftpunk` (they log in through a browser), so a plugin is
-installed into an environment with the full install. Installing a plugin where
-`graftpunk-lite` is installed would put `graftpunk` beside it. A plugin's `gp`
-commands do not run on lite (registering them imports the browser stack). To
-use a plugin's own Python code with lite (under Pyodide or Cloudflare Workers,
-with a session loaded through `load_session_for_api_from_bytes`), install the
-plugin without its dependencies and add its other requirements by hand:
-
-```bash
-pip install graftpunk-lite
-pip install --no-deps graftpunk-myshop
-pip install <each requirement in graftpunk-myshop's [project] dependencies except graftpunk>
-```
+Plugins depend on `graftpunk` (they log in through a browser), so plugins and
+their `gp` commands need the full install: install a plugin into an environment
+with `graftpunk`. Installing one where `graftpunk-lite` is installed would put
+`graftpunk` beside it. graftpunk-lite is for loading a saved session with
+`load_session_for_api_from_bytes` under Pyodide or Cloudflare Python Workers,
+and for the browser-free `gp` commands above.
 
 **With cloud storage:**
 

@@ -96,11 +96,11 @@ graftpunk-lite is graftpunk without the browser stack: the same `graftpunk`
 package and version, with only browser-free dependencies, so it installs under
 Pyodide and Cloudflare Python Workers. It replays a cached session through
 `load_session_for_api_from_bytes`, given the session's encrypted bytes and its
-key. It cannot log in. `load_session_for_api`, which loads from the session
-store, unpickles the browser session object, so it needs
-`graftpunk-lite[browser]`, and so do `gp http` and plugin commands. The `gp`
-command is installed, and commands that need no browser package, such as
-`gp version` and `gp session list`, work.
+key. It cannot log in. The `gp` command is installed: `gp version`,
+`gp session list`, `gp session show`, `gp config`, `gp plugins`, and
+`gp http --no-session` work. `load_session_for_api` and `gp http --session`,
+which load a session from the session store, unpickle the browser session
+object, so they need `graftpunk-lite[browser]`.
 
 ```bash
 pip install graftpunk-lite
@@ -108,8 +108,8 @@ pip install 'graftpunk-lite[browser]'   # adds the browser stack; equals graftpu
 ```
 
 Install graftpunk-lite or graftpunk, never both: they own the same files, so
-uninstalling either one deletes files the other needs. Plugins require
-graftpunk; the full README says how to use one with graftpunk-lite.
+uninstalling either one deletes files the other needs. Plugins and their `gp`
+commands need graftpunk, the full install.
 
 Full documentation: [{REPOSITORY}/blob/v{version}/README.md]({REPOSITORY}/blob/v{version}/README.md)
 """
