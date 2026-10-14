@@ -133,7 +133,8 @@ jobs:
           uv run --no-sync python -c "import typer; print('typer', typer.__version__)"
 
       - name: Run the test suite
-        run: uv run --no-sync pytest tests/ -q -n auto
+        # -n auto already comes from addopts; -q cancels its -v.
+        run: uv run --no-sync pytest tests/ -q
 
   # The lite-install contract: graftpunk-lite (no extras) must stay importable,
   # keep a working CLI, and still load a cached session browser-free, which is
