@@ -2071,23 +2071,24 @@ class TestNoDriverBackendOneEventLoop:
         assert warning["event"] == "nodriver_page_title_failed"
         assert "no event loop" in warning["error"]
 
-    def test_two_threads_ensuring_the_loop_make_one(self) -> None:
+    def test_threads_starting_at_once_make_one_loop(self, fake_chrome: FakeChrome) -> None:
         backend = NoDriverBackend()
         barrier = threading.Barrier(8)
 
-        def ensure() -> None:
+        def start() -> None:
             barrier.wait()
-            backend._ensure_private_loop()
+            backend.start()
 
         before = _loop_threads()
-        threads = [threading.Thread(target=ensure) for _ in range(8)]
+        threads = [threading.Thread(target=start) for _ in range(8)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join(5)
 
         assert len(_loop_threads() - before) == 1
-        backend._release_loop()
+        assert len(fake_chrome.browsers) == 1
+        backend.stop()
 
     def test_a_sync_start_arms_the_termination_handlers_on_the_calling_thread(
         self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch

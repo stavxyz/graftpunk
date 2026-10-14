@@ -881,16 +881,12 @@ class NoDriverBackend:
         """Create the private loop ``start()`` runs the browser on, if there is no loop.
 
         A loop left from an earlier start that is no longer running is
-        released first. Called only on the ``start()`` path, which already
-        holds the lock; anywhere else it takes the lock itself.
+        released first. The caller (``start()``) holds the lock, so two
+        threads cannot each create one.
 
         Raises:
             RuntimeError: If the loop's thread does not start.
         """
-        if not self._held_by_this_thread():
-            with self._locked():
-                self._ensure_private_loop()
-            return
         if self._loop is not None and not self._loop.is_running():
             self._release_loop()
         if self._loop is None:
