@@ -10,13 +10,14 @@ Note:
     ``start()`` starts a private loop in a daemon thread and the synchronous
     methods submit their work to it. ``BrowserSession.start_async()`` starts
     the browser on the caller's loop instead, and the synchronous methods then
-    submit to that loop from other threads. Before a start there is no loop,
-    and a synchronous call fails (the getters return their fallback) rather
-    than run on a loop the browser does not belong to. ``stop_async()`` stops
-    the browser from inside an event loop. When the browser's loop is gone, or
-    ``stop()`` is called from inside it, the stop ends Chrome without the loop
-    (SIGTERM, then SIGKILL if it has not exited, or the subprocess handle on
-    Windows).
+    submit to that loop from other threads. Before a start there is no loop:
+    ``start()``, ``navigate()``, ``set_cookies()`` and ``driver`` start the
+    browser first, and the other synchronous methods return their fallback
+    rather than run on a loop the browser does not belong to.
+    ``stop_async()`` stops the browser from inside an event loop. When the
+    browser's loop is gone, or ``stop()`` is called from inside it, the stop
+    ends Chrome without the loop (SIGTERM, then SIGKILL if it has not exited,
+    or the subprocess handle on Windows).
 
 Logging:
     This module uses structured logging with intentional log levels:
