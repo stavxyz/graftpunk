@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from importlib.metadata import PackageNotFoundError
 
 import pytest
 from typer.testing import CliRunner
 
 import graftpunk
-from graftpunk import contracts
+from graftpunk import _distribution, contracts
 from graftpunk.cli.main import app
 from graftpunk.contracts import cli_contracts, installation_facts
 
@@ -161,3 +162,51 @@ def test_json_with_an_unreadable_argument_exits_1_before_printing_any_json(
     assert result.exit_code == 1
     assert result.stdout == ""
     assert result.stderr != ""
+
+
+def _only(installed: dict[str, str]):
+    """A metadata lookup that sees exactly *installed*, since one test environment
+    can hold only the distribution it was built with."""
+
+    def version(name: str) -> str:
+        if name not in installed:
+            raise PackageNotFoundError(name)
+        return installed[name]
+
+    return version
+
+
+@pytest.mark.parametrize("name", ["graftpunk", "graftpunk-lite"])
+def test_the_panel_names_the_installed_distribution(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setattr(_distribution, "_pkg_version", _only({name: "1.20.0"}))
+    monkeypatch.setattr(graftpunk, "__version__", "1.20.0")
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0, result.output
+    assert f"{name} 1.20.0" in result.stdout
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("args", [[], ["--json"], ["--at-least", "1.0"]])
+def test_both_distributions_installed_warns_on_stderr_naming_both_and_the_fix(
+    monkeypatch: pytest.MonkeyPatch, args: list[str]
+) -> None:
+    monkeypatch.setattr(
+        _distribution, "_pkg_version", _only({"graftpunk": "1.20.0", "graftpunk-lite": "1.19.0"})
+    )
+    result = runner.invoke(app, ["version", *args])
+    assert result.exit_code == 0, result.output
+    warning = " ".join(result.stderr.split())
+    assert "graftpunk 1.20.0 and graftpunk-lite 1.19.0 are both installed" in warning
+    assert "pip uninstall graftpunk-lite" in warning
+    assert "pip install --force-reinstall graftpunk" in warning
+    if args == ["--json"]:
+        assert json.loads(result.stdout) == installation_facts()
+
+
+def test_one_distribution_prints_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_distribution, "_pkg_version", _only({"graftpunk-lite": "1.20.0"}))
+    result = runner.invoke(app, ["version", "--json"])
+    assert result.exit_code == 0
+    assert result.stderr == ""

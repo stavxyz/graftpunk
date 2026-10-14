@@ -16,20 +16,33 @@ FULL = "graftpunk"
 LITE = "graftpunk-lite"
 
 
+def all_installed() -> list[tuple[str, str]]:
+    """The (name, version) of every graftpunk distribution installed, graftpunk
+    first. More than one is unsupported but possible: both write the same files,
+    and metadata cannot say whose files are on disk."""
+    found: list[tuple[str, str]] = []
+    for name in (FULL, LITE):
+        try:
+            found.append((name, _pkg_version(name)))
+        except PackageNotFoundError:
+            continue
+    return found
+
+
 def installed() -> tuple[str, str] | None:
     """The (name, version) of the installed distribution, or ``None`` when
     neither is installed (running from a source tree). graftpunk wins when
-    both are installed, which is unsupported but possible."""
-    for name in (FULL, LITE):
-        try:
-            return name, _pkg_version(name)
-        except PackageNotFoundError:
-            continue
-    return None
+    both are installed; ``gp version`` warns about that state."""
+    found = all_installed()
+    return found[0] if found else None
+
+
+def name() -> str:
+    """The installed distribution's name, ``graftpunk`` when neither is installed."""
+    found = installed()
+    return found[0] if found else FULL
 
 
 def install_command(extra: str) -> str:
     """The pip command that adds *extra* to whichever distribution is installed."""
-    found = installed()
-    name = found[0] if found else FULL
-    return f"pip install '{name}[{extra}]'"
+    return f"pip install '{name()}[{extra}]'"

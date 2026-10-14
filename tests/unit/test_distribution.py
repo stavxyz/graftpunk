@@ -60,6 +60,26 @@ def test_installed_and_install_command(
     assert _distribution.install_command("browser") == command
 
 
+@pytest.mark.parametrize(
+    ("installed", "expected"),
+    [
+        ({"graftpunk-lite": "1.20.0"}, [("graftpunk-lite", "1.20.0")]),
+        (
+            {"graftpunk": "1.20.0", "graftpunk-lite": "1.19.0"},
+            [("graftpunk", "1.20.0"), ("graftpunk-lite", "1.19.0")],
+        ),
+        ({}, []),
+    ],
+)
+def test_all_installed_reports_every_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+    installed: dict[str, str],
+    expected: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(_distribution, "_pkg_version", _only(installed))
+    assert _distribution.all_installed() == expected
+
+
 def test_missing_browser_error_names_lite_extra_on_lite(monkeypatch: pytest.MonkeyPatch) -> None:
     import graftpunk
 
