@@ -74,32 +74,46 @@ These aren't real APIs—they're commands defined in graftpunk plugins that repl
 
 ## Installation
 
-Logging in drives a real browser, so the usual install includes the browser stack:
-
-```bash
-pip install 'graftpunk[browser]'
-```
-
-**Lite install** — no browser:
+Logging in drives a real browser, so the default install includes the browser
+stack (Selenium, undetected-chromedriver, nodriver and their tooling):
 
 ```bash
 pip install graftpunk
 ```
 
-This gives you the full `gp` CLI and API replay against an **already-cached**
-session (`load_session_for_api`, `load_session_for_api_from_bytes`). It cannot
-log in, because that needs a browser. Base dependencies are pure-Python or ship
-WASM wheels, so this is also the install that works under Pyodide and Cloudflare
-Python Workers ([#121](https://github.com/stavxyz/graftpunk/issues/121)). Add
-`[browser]` whenever you need `gp <site> login` or `BrowserSession`.
+`pip install 'graftpunk[browser]'` still works and installs the same thing; the
+extra is kept so existing requirements resolve.
+
+**Lite install**, no browser:
+
+```bash
+pip install graftpunk-lite
+```
+
+`graftpunk-lite` is the same package (same `import graftpunk`, same `gp` CLI,
+same version) without the browser stack. It gives you the full `gp` CLI and API
+replay against an **already-cached** session (`load_session_for_api`,
+`load_session_for_api_from_bytes`). It cannot log in, because that needs a
+browser. Its dependencies are pure-Python or ship WASM wheels, so this is the
+install that works under Pyodide and Cloudflare Python Workers
+([#121](https://github.com/stavxyz/graftpunk/issues/121)).
+`pip install 'graftpunk-lite[browser]'` adds the browser stack and is equivalent
+to `graftpunk`.
+
+Install one or the other, never both. They put the same files in the same
+place, so uninstalling either one deletes files the other needs. To switch,
+uninstall the one you have first (`pip uninstall graftpunk`, then
+`pip install graftpunk-lite`, or the reverse).
 
 **With cloud storage:**
 
 ```bash
 pip install graftpunk[supabase]   # Supabase backend
 pip install graftpunk[s3]         # AWS S3 backend
-pip install graftpunk[all]        # Everything (includes browser)
+pip install graftpunk[all]        # Everything
 ```
+
+On the lite install, name `graftpunk-lite` instead (`graftpunk-lite[s3]`).
 
 ## Quick Start
 
@@ -164,7 +178,7 @@ api = load_session_for_api_from_bytes(encrypted_bytes, key=fernet_key)
 response = api.get("https://app.example.com/api/internal/documents")
 ```
 
-Both work on the lite install (no `[browser]`). `key=` is optional and defaults
+Both work on the lite install (`graftpunk-lite`). `key=` is optional and defaults
 to graftpunk's configured key sources; pass it when the key lives somewhere
 graftpunk can't see, like a Worker secret. A bad key raises `EncryptionError`
 (fix the key); an unusable session raises `SessionExpiredError` (log in again).

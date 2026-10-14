@@ -217,7 +217,7 @@ from graftpunk import load_session_for_api_from_bytes
 api = load_session_for_api_from_bytes(r2_object_bytes, key=worker_secret_key)
 ```
 
-Deserialization here never imports the browser stack: an unpickler stubs out classes it cannot import (`graftpunk.session.BrowserSession` and friends) and keeps the plain state — cookies, headers, header roles, cached tokens. That is what makes the lite install (no `[browser]`) usable under Pyodide.
+Deserialization here never imports the browser stack: an unpickler stubs out classes it cannot import (`graftpunk.session.BrowserSession` and friends) and keeps the plain state (cookies, headers, header roles, and cached tokens). That is what makes the lite install (`graftpunk-lite`, which has no browser stack) usable under Pyodide.
 
 Errors are deliberately distinguishable: `EncryptionError` means the bytes could not be decrypted with that key (malformed, wrong, or rotated — an operator/config problem), while `SessionExpiredError` means the payload decrypted but is not a usable session (log in again).
 
