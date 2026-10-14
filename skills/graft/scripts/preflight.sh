@@ -24,8 +24,11 @@
 # JSON is relayed exactly as gp printed it. The distribution and the browser
 # stack are read from the plain gp version panel, which names the distribution
 # (graftpunk-lite 1.20.0) and says "Browser: not installed" when the stack is
-# missing; an older gp, from before graftpunk-lite existed, prints graftpunk
-# there and always has the stack.
+# missing. The panel is printed at a fixed width of 200 columns, since Rich wraps
+# it to the terminal and a narrow one splits both phrases across lines. A gp
+# older than the panel's Browser line (graftpunk 1.11.0 to 1.19.0, where the
+# browser stack is the [browser] extra) names graftpunk and prints no Browser
+# line even without the stack, so preflight cannot tell and prints no note.
 set -u
 
 SKILL_REQUIRES_GRAFTPUNK="1.19.0"
@@ -54,7 +57,7 @@ fi
 
 UPGRADE_LINE="$FULL_UPGRADE_LINE"
 lite_without_browser=0
-panel="$(gp version 2>/dev/null)"
+panel="$(COLUMNS=200 gp version 2>/dev/null)"
 case "$panel" in
   *"graftpunk-lite "[0-9]*)
     UPGRADE_LINE="$LITE_UPGRADE_LINE"

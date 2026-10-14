@@ -111,17 +111,23 @@ def _fake_gp(
 ) -> Path:
     """A gp that answers exactly the three calls preflight makes, as told: the plain
     version panel naming *distribution* (with gp's line for a missing browser stack
-    unless *browser*), the version question, and plugin info. It writes the
-    arguments of its version question, one per line, to version-args beside
-    itself."""
+    unless *browser*), the version question, and plugin info. Unless COLUMNS is at
+    least 60, it wraps the panel as Rich does in a narrow terminal, splitting both
+    phrases preflight matches. It writes the arguments of its version question,
+    one per line, to version-args beside itself."""
     browser_line = "" if browser else "| Browser: not installed, so gp cannot record |"
+    narrow_browser_lines = "" if browser else "'| Browser: not |' '| installed, so gp |'"
     fake = tmp_path / "fake"
     fake.mkdir()
     script = fake / "gp"
     script.write_text(
         f"""#!{BASH}
 if [ "$1" = version ] && [ $# -eq 1 ]; then
-  printf '%s\\n' '| {distribution} 9.9.9 |' '{browser_line}'
+  if [ "${{COLUMNS:-0}}" -lt 60 ]; then
+    printf '%s\\n' '| {distribution} |' '| 9.9.9 |' {narrow_browser_lines}
+  else
+    printf '%s\\n' '| {distribution} 9.9.9 |' '{browser_line}'
+  fi
   exit 0
 fi
 if [ "$1" = version ]; then
