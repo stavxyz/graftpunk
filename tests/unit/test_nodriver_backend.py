@@ -816,8 +816,8 @@ class TestNoDriverBackendStopReap:
 
     @staticmethod
     def _make_browser(proc: Any) -> MagicMock:
-        """Build a MagicMock Browser whose .stop() nulls _process (matches
-        nodriver's real behavior in core/browser.py:718)."""
+        """Build a MagicMock Browser whose .stop() nulls _process, as
+        nodriver's stop() does when terminate() and kill() both fail."""
         browser = MagicMock()
         browser._process = proc
 
@@ -873,9 +873,9 @@ class TestNoDriverBackendStopReap:
         """_stop_async must capture _browser._process BEFORE calling stop().
 
         nodriver's Browser.stop() resets self._process = None inside its
-        cleanup loop. If our backend read _process AFTER stop(), it would get
-        None and skip the reap, so a Chrome that ignores SIGTERM would never
-        get the SIGKILL.
+        cleanup loop when terminate() and kill() both fail. If our backend
+        read _process AFTER stop(), it would then get None and skip the reap,
+        so a Chrome that ignores SIGTERM would never get the SIGKILL.
         """
         self._tight_timeouts(monkeypatch)
         proc = self._make_proc(exits_on_term=False)

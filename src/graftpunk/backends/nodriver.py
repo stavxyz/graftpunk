@@ -181,13 +181,14 @@ async def _reap_browser_process(proc: asyncio.subprocess.Process | None) -> None
     """Wait for the loop's child watcher to collect Chrome's exit status.
 
     nodriver's Browser.stop() calls proc.terminate() (or proc.kill() as a
-    fallback) and then sets self._process = None without ever awaiting
-    proc.wait(). asyncio child processes must be waited for, or the kernel
-    keeps them as <defunct> (zombie) entries under the parent. The watcher
-    reaps the child and sets ``proc.returncode``, so this polls that
-    (``_collected``) rather than await ``proc.wait()``: on CPython 3.12 that
-    also waits for every pipe to close, which Chrome's helper processes can
-    hold open after Chrome itself has exited.
+    fallback) and never awaits proc.wait(); only when terminate() and kill()
+    both fail does it set self._process = None (nodriver 0.48.1 and 0.50.6).
+    asyncio child processes must be waited for, or the kernel keeps them as
+    <defunct> (zombie) entries under the parent. The watcher reaps the child
+    and sets ``proc.returncode``, so this polls that (``_collected``) rather
+    than await ``proc.wait()``: on CPython 3.11 and later that also waits for
+    every pipe to close, which Chrome's helper processes can hold open after
+    Chrome itself has exited.
 
     Behavior:
       1. Up to _REAP_TERM_TIMEOUT_S for the exit status: the SIGTERM path.
@@ -1366,8 +1367,9 @@ class NoDriverBackend:
         browser = self._browser
         if browser is not None:
             # Capture the subprocess BEFORE browser.stop(): nodriver's stop()
-            # sets browser._process to None, and reading it after would
-            # silently no-op the reap.
+            # sets browser._process to None when terminate() and kill() both
+            # fail (nodriver 0.48.1 and 0.50.6), and reading it after would
+            # then silently no-op the reap.
             proc = getattr(browser, "_process", None)
             # try/finally guarantees the reap runs even if browser.stop() or
             # _deregister_browser() raise an unexpected exception (anything
@@ -1382,9 +1384,11 @@ class NoDriverBackend:
                 except (RuntimeError, OSError) as exc:
                     self._handle_stop_error(exc)
                 finally:
-                    # Handed back, so a stop that ends this browser without
-                    # the loop while the reap below is paused can still find
-                    # Chrome's process and SIGKILL it.
+                    # Only after nodriver's stop() could not signal Chrome,
+                    # the one case where it sets _process to None: handed
+                    # back, so a stop that ends this browser without the loop
+                    # while the reap below is paused can still find Chrome's
+                    # process and SIGKILL it.
                     if proc is not None and getattr(browser, "_process", None) is None:
                         browser._process = proc
                 # Remove browser from nodriver's global registry so the atexit
