@@ -103,7 +103,7 @@ Everything that loads a cached session from the session store
 (`load_session_for_api`, `gp http` with a session from `--session`,
 `gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`), every command
 that drives a browser (recording with `gp observe`, and a plugin's `login`
-command), and plugin commands need `graftpunk-lite[browser]` or `graftpunk`.
+command), and a plugin's own commands need `graftpunk-lite[browser]` or `graftpunk`.
 
 ```bash
 pip install graftpunk-lite

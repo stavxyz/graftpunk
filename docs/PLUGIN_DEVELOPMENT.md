@@ -81,7 +81,7 @@ Cloudflare Python Workers. On graftpunk-lite, `gp version`, `gp session list`,
 from the session store (`load_session_for_api`, `gp http` with a session from
 `--session`, `gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`),
 every command that drives a browser (recording with `gp observe`, and a plugin's
-`login` command), and plugin commands need `graftpunk-lite[browser]` or
+`login` command), and a plugin's own commands need `graftpunk-lite[browser]` or
 `graftpunk`.
 
 The file loader is for a throwaway script that imports nothing but graftpunk.
@@ -140,8 +140,9 @@ underscores, does not end with a hyphen or underscore, and is at most 40
 characters. It cannot be a reserved top-level `gp` command name (`plugin`,
 `plugins`, `session`, `http`, `config`, `keepalive`, `observe`, `version`, and
 anything else registered by the time plugins attach). It cannot be `lite` (in
-any case), because its project would be named `graftpunk_lite`, which is
-graftpunk's own browser-free distribution, `graftpunk-lite`. A hyphenated name
+any case), because a standalone project for it would be named
+`graftpunk_lite`, which is graftpunk's own browser-free distribution,
+`graftpunk-lite`. A hyphenated name
 maps to an importable package: `my-shop` becomes the package
 `graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key `my-shop`,
 and the CLI command `gp my-shop`. `gp plugin new NAME --check-name` checks a
