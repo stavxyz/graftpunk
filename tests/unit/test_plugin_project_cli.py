@@ -1618,8 +1618,14 @@ def _run_writer(command: str, project: Path, pyproject: str) -> tuple[object, li
     return result, own
 
 
-# The requirement the floor advice names, by the distribution gp came from.
-_WANTED = {"graftpunk": "graftpunk>=1.17.0", "graftpunk-lite": "graftpunk-lite[browser]>=1.17.0"}
+# What the floor advice appends, by the distribution gp came from: it always
+# names graftpunk[browser], and on graftpunk-lite says plugin work needs graftpunk.
+_FULL_NOTE = {
+    "graftpunk": "",
+    "graftpunk-lite": (
+        " Developing a plugin (recording, logging in) needs the full install, graftpunk."
+    ),
+}
 
 
 def _only_distribution(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
@@ -1704,9 +1710,10 @@ class TestGraftpunkFloor:
     def test_no_graftpunk_dependency_is_named_in_a_next_line(
         self, command: str, recorded: Path, monkeypatch: pytest.MonkeyPatch, installed: str
     ) -> None:
-        """The advice names the distribution gp came from: telling a graftpunk-lite
-        user to add graftpunk would install the second distribution over the first.
-        On graftpunk-lite it names the [browser] extra, which logging in needs."""
+        """The advice names graftpunk[browser] whichever distribution gp came from,
+        as gp plugin new writes it: a plugin requiring graftpunk-lite would put both
+        distributions into its users' environments. On graftpunk-lite it adds that
+        plugin work needs the full install."""
         _only_distribution(monkeypatch, installed)
         pyproject = _floor_pyproject(None)
         result, own = _run_writer(command, recorded, pyproject)
@@ -1715,12 +1722,13 @@ class TestGraftpunkFloor:
         lines = _plain(result.output).strip().splitlines()
         assert lines == [
             *own,
-            f"Next: add {_WANTED[installed]} to pyproject.toml's [project] dependencies "
-            "and reinstall; it has no graftpunk or graftpunk-lite requirement",
+            "Next: add graftpunk[browser]>=1.17.0 to pyproject.toml's [project] dependencies "
+            "and reinstall; it has no graftpunk or graftpunk-lite requirement."
+            + _FULL_NOTE[installed],
         ]
 
     @pytest.mark.parametrize("installed", ["graftpunk", "graftpunk-lite"])
-    def test_a_project_requiring_both_distributions_is_told_to_keep_one(
+    def test_a_project_requiring_both_distributions_is_told_to_keep_graftpunk(
         self, command: str, recorded: Path, monkeypatch: pytest.MonkeyPatch, installed: str
     ) -> None:
         _only_distribution(monkeypatch, installed)
@@ -1733,7 +1741,25 @@ class TestGraftpunkFloor:
             *own,
             "Next: pyproject.toml requires both graftpunk and graftpunk-lite "
             "(graftpunk[browser]>=1.0 and graftpunk-lite>=1.0), which install the same "
-            f"files; keep one: replace them with {_WANTED[installed]} and reinstall",
+            "files; keep graftpunk: replace them with graftpunk[browser]>=1.17.0 and "
+            f"reinstall.{_FULL_NOTE[installed]}",
+        ]
+
+    def test_both_distributions_under_markers_are_named_in_a_raise_line(
+        self, command: str, recorded: Path
+    ) -> None:
+        """Under markers the two may never install together (graftpunk-lite for
+        Pyodide, graftpunk elsewhere), so there is no keep-one advice."""
+        full = 'graftpunk[browser]>=1.0; sys_platform != "emscripten"'
+        lite = 'graftpunk-lite>=1.0; sys_platform == "emscripten"'
+        pyproject = _floor_pyproject(f"'{full}', '{lite}'")
+        result, own = _run_writer(command, recorded, pyproject)
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
+        lines = _plain(result.output).strip().splitlines()
+        assert lines == [
+            *own,
+            f"Next: raise {full} and {lite} in pyproject.toml to >=1.17.0 and reinstall",
         ]
 
     def test_a_project_already_at_the_floor_prints_nothing_extra(
@@ -1760,7 +1786,7 @@ class TestGraftpunkFloor:
         assert lines == [
             *own,
             "Next: this project's dependencies are dynamic; make sure whatever supplies "
-            f"them requires {_WANTED[installed]}, then reinstall.",
+            f"them requires graftpunk[browser]>=1.17.0, then reinstall.{_FULL_NOTE[installed]}",
         ]
 
     def test_a_capped_requirement_already_at_the_floor_prints_nothing_extra(

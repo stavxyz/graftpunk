@@ -312,6 +312,28 @@ class TestWithGraftpunkFloor:
             requirements=(f"graftpunk[browser]>={bound}", f"graftpunk_lite>={bound}")
         )
 
+    def test_graftpunk_and_graftpunk_lite_under_markers_are_not_both_distributions(
+        self,
+    ) -> None:
+        """Markers can make the two mutually exclusive (graftpunk-lite under
+        Pyodide, graftpunk elsewhere), so the pair is reported as two graftpunk
+        requirements to raise, not as a project to keep one of."""
+        full = 'graftpunk[browser]>=1.0; sys_platform != "emscripten"'
+        lite = 'graftpunk-lite>=1.0; sys_platform == "emscripten"'
+        text = _deps(f"'{full}',", f"'{lite}',")
+        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
+            requirement=f"{full} and {lite}"
+        )
+
+    def test_graftpunk_and_graftpunk_lite_under_markers_at_the_floor_are_nothing_to_do(
+        self,
+    ) -> None:
+        text = _deps(
+            "'graftpunk[browser]>=1.17.0; sys_platform != \"emscripten\"',",
+            "'graftpunk-lite>=1.17.0; sys_platform == \"emscripten\"',",
+        )
+        assert with_graftpunk_floor(text, "1.17.0") is None
+
     def test_extras_spacing_and_an_environment_marker_are_kept_byte_for_byte(self) -> None:
         literal = "'graftpunk[browser] >= 1.0 ; python_version >= \"3.11\"',"
         text = _deps(literal)

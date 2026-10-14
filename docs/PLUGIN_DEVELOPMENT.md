@@ -1686,18 +1686,21 @@ requirement that already allows nothing below the floor gets nothing extra.
 Any other form that allows a release below the floor (a pin, an upper bound,
 a URL, or no graftpunk requirement) is left as it is, and they print a
 `Next:` line naming the floor and the requirement as found, and to reinstall.
-With no graftpunk requirement, that line says to add one for the distribution
-`gp` came from, never the other one: `graftpunk>=<floor>`, or
-`graftpunk-lite[browser]>=<floor>` when `gp` came from graftpunk-lite, since a
-plugin logs in through the browser stack. A project that requires both
-`graftpunk` and `graftpunk-lite` gets neither raised, whatever their bounds,
-and a `Next:` line that names both requirements and says to keep one, replacing
-them with that same requirement for the distribution `gp` came from. A
-project whose `[project] dependencies` is itself listed in `[project]
-dynamic` has no array here to raise or name; they print `Next: this
-project's dependencies are dynamic; make sure whatever supplies them
-requires graftpunk>=<floor>, then reinstall.`, naming
-`graftpunk-lite[browser]>=<floor>` instead when `gp` came from graftpunk-lite.
+With no graftpunk requirement, that line says to add
+`graftpunk[browser]>=<floor>`, the requirement `gp plugin new` writes, whichever
+distribution `gp` came from. A project that requires both `graftpunk` and
+`graftpunk-lite`, neither under an environment marker, gets neither raised,
+whatever their bounds, and a `Next:` line that names both requirements and says
+to keep `graftpunk`, replacing them with `graftpunk[browser]>=<floor>`. When
+either carries a marker (one for Pyodide and one elsewhere, say), the two may
+never install together, so they are treated as two graftpunk requirements: a
+`Next:` line names both when either allows a release below the floor. A
+project whose `[project] dependencies` is itself listed in `[project] dynamic`
+has no array here to raise or name; they print `Next: this project's
+dependencies are dynamic; make sure whatever supplies them requires
+graftpunk[browser]>=<floor>, then reinstall.` On graftpunk-lite, each of these
+three lines adds that developing a plugin (recording, logging in) needs the
+full install, `graftpunk`.
 
 A minimal CI workflow to start from, running the same gate:
 

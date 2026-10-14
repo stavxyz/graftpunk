@@ -49,14 +49,15 @@ def _print_floor(floor: FloorVerdict) -> None:
     """One line on the project's graftpunk requirement after a write that needs
     the running graftpunk: the raise it got, or how to make it by hand."""
     at = graftpunk_version_floor()
-    # Advice to add a requirement names the distribution this gp came from: the
-    # other one would install a second copy of the same package over it. On
-    # graftpunk-lite it names the [browser] extra, since a plugin logs in through
-    # the browser stack.
-    if _distribution.name() == "graftpunk-lite":
-        wanted = f"graftpunk-lite[browser]>={at}"
-    else:
-        wanted = f"graftpunk>={at}"
+    # A plugin requires graftpunk, whichever distribution this gp came from: it is
+    # what gp plugin new writes, and a plugin requiring graftpunk-lite would put
+    # both distributions into its users' environments.
+    wanted = f"graftpunk[browser]>={at}"
+    full_note = (
+        " Developing a plugin (recording, logging in) needs the full install, graftpunk."
+        if _distribution.name() == "graftpunk-lite"
+        else ""
+    )
     if isinstance(floor, RaisedFloor):
         line = f"pyproject.toml: {floor.name}>={at} (was >={floor.previous}); reinstall the project"
         console.print(escape(line), soft_wrap=True, highlight=False)
@@ -65,7 +66,7 @@ def _print_floor(floor: FloorVerdict) -> None:
             "[bold]Next:[/bold] "
             + escape(
                 f"this project's dependencies are dynamic; make sure whatever supplies "
-                f"them requires {wanted}, then reinstall."
+                f"them requires {wanted}, then reinstall.{full_note}"
             ),
             soft_wrap=True,
         )
@@ -74,7 +75,7 @@ def _print_floor(floor: FloorVerdict) -> None:
             "[bold]Next:[/bold] "
             + escape(
                 f"add {wanted} to pyproject.toml's [project] dependencies and "
-                "reinstall; it has no graftpunk or graftpunk-lite requirement"
+                f"reinstall; it has no graftpunk or graftpunk-lite requirement.{full_note}"
             ),
             soft_wrap=True,
         )
@@ -84,7 +85,7 @@ def _print_floor(floor: FloorVerdict) -> None:
             + escape(
                 f"pyproject.toml requires both graftpunk and graftpunk-lite "
                 f"({' and '.join(floor.requirements)}), which install the same files; "
-                f"keep one: replace them with {wanted} and reinstall"
+                f"keep graftpunk: replace them with {wanted} and reinstall.{full_note}"
             ),
             soft_wrap=True,
         )
