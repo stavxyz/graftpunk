@@ -25,8 +25,6 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-import httpie.context
-import httpie.sessions
 import requestium
 import requests.cookies
 import requests.utils
@@ -35,6 +33,7 @@ import slugify as slugify_lib
 import webdriver_manager.chrome
 
 from graftpunk import console as gp_console
+from graftpunk._stdout_fd import stdout_with_a_file_descriptor
 from graftpunk.chrome import get_chrome_version
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
@@ -42,6 +41,13 @@ from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
+
+# The first import of httpie.context needs a stdout with a file descriptor
+# (#250); this module can be first imported under a captured stdout, by
+# unpickling a cached session inside GraftpunkClient.
+with stdout_with_a_file_descriptor():
+    import httpie.context
+    import httpie.sessions
 
 LOG = get_logger(__name__)
 
