@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`GraftpunkClient` runs commands when `sys.stdout` has no file descriptor** (#250). On the full install, a `GraftpunkClient` command that loaded a cached session raised `io.UnsupportedOperation: fileno` when `sys.stdout` was an `io.StringIO` or another stream without `fileno()`, for example under `contextlib.redirect_stdout`. Loading the session made the process's first import of HTTPie, which sets up the terminal at import time and needs stdout's file descriptor. graftpunk now makes that import with `sys.stdout` pointing at the process's original stdout (or at the null device when that has no descriptor either) and restores it right after; the command's own output still goes to the redirected stream. `gp` was not affected, and neither is a Jupyter notebook: ipykernel 7.4.0's stdout has a file descriptor.
+
 ## [1.20.1] - 2026-10-14
 
 This is a patch release. On graftpunk-lite, plugin commands that need no session load and run, and every command that needs the browser stack prints the command that adds it and exits 1. On both distributions, `gp session export` writes where `--output` says, writes the session's current cookies over an existing file, and prints an `http --session=` line that names the exported file, so the printed command sends the cookies.
