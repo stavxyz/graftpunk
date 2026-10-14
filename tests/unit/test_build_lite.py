@@ -153,6 +153,18 @@ class TestRootConsistency:
         assert root["project"]["optional-dependencies"]["browser"] == []
 
 
+def test_lite_readme_leads_with_lite_and_links_the_full_readme_at_the_tag() -> None:
+    readme = build_lite.lite_readme("1.20.0")
+    assert readme.startswith("# graftpunk-lite\n\ngraftpunk-lite is graftpunk without")
+    assert "pip install graftpunk-lite\n" in readme
+    assert "pip install 'graftpunk-lite[browser]'" in readme
+    assert "never both" in readme
+    assert "https://github.com/stavxyz/graftpunk/blob/v1.20.0/README.md" in readme
+    # It must not tell a lite reader to install the other distribution.
+    assert "pip install graftpunk\n" not in readme
+    assert "pip install graftpunk " not in readme
+
+
 def _uv_build(args: list[str]) -> None:
     subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
         ["uv", "build", *args],  # noqa: S607 - uv from PATH, as the build script runs it
@@ -193,6 +205,9 @@ def test_build_produces_lite_sdist_and_wheel(tmp_path: Path, root: dict[str, Any
     for line in base:
         assert not any(pkg in line for pkg in ("selenium", "nodriver", "requestium")), line
     assert any("selenium>=4.0.0; extra == 'browser'" in line for line in requires)
+    # The long description is lite's own README, not graftpunk's.
+    description = metadata.split("\n\n", 1)[1]
+    assert description.strip() == build_lite.lite_readme(version).strip()
 
     root_out = tmp_path / "root"
     _uv_build(["--wheel", "--out-dir", str(root_out)])

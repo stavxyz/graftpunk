@@ -7,8 +7,10 @@ under Pyodide and Cloudflare Workers (#121). Its [browser] extra holds the
 packages removed, so graftpunk-lite[browser] installs what graftpunk does.
 
 The root pyproject.toml stays the only source: this script derives the lite
-pyproject from it, stages it next to copies of src/graftpunk, README.md, LICENSE
-and CHANGELOG.md in a temporary directory, and builds there. Staging is needed
+pyproject from it, stages it next to copies of src/graftpunk, LICENSE and
+CHANGELOG.md and a short README written by lite_readme() in a temporary
+directory, and builds there. The README is generated, not a second file in the
+repository, so the only long README stays the root one, linked at the tag. Staging is needed
 because `uv build` builds the wheel from the sdist, and an sdist cannot reach
 files outside its own project directory.
 
@@ -38,7 +40,8 @@ LITE_DESCRIPTION_SUFFIX = (
     " Lite install: no browser stack, so it resolves under Pyodide and Cloudflare"
     " Workers; graftpunk-lite[browser] equals graftpunk."
 )
-STAGED_FILES = ("README.md", "LICENSE", "CHANGELOG.md")
+STAGED_FILES = ("LICENSE", "CHANGELOG.md")
+REPOSITORY = "https://github.com/stavxyz/graftpunk"
 STAGED_TREES = ("src/graftpunk",)
 
 # A requirement on the root distribution itself, with extras: graftpunk[...].
@@ -82,6 +85,30 @@ def lite_pyproject(root: dict[str, Any]) -> dict[str, Any]:
         extras[extra] = [_SELF_REFERENCE.sub(LITE_NAME, r) for r in requirements]
     extras["browser"] = removed
     return lite
+
+
+def lite_readme(version: str) -> str:
+    """The README graftpunk-lite's PyPI page shows: what it is, how to install
+    it, and a link to the full README at this version's tag."""
+    return f"""# graftpunk-lite
+
+graftpunk-lite is graftpunk without the browser stack: the same `graftpunk`
+package, `gp` CLI, API and version, with only browser-free dependencies, so it
+installs under Pyodide and Cloudflare Python Workers. It replays an
+already-cached session (`load_session_for_api`, `load_session_for_api_from_bytes`)
+but cannot log in, which needs a browser.
+
+```bash
+pip install graftpunk-lite
+pip install 'graftpunk-lite[browser]'   # adds the browser stack; equals graftpunk
+```
+
+Install graftpunk-lite or graftpunk, never both: they own the same files, so
+uninstalling either one deletes files the other needs. Plugins require
+graftpunk; the full README says how to use one with graftpunk-lite.
+
+Full documentation: [{REPOSITORY}/blob/v{version}/README.md]({REPOSITORY}/blob/v{version}/README.md)
+"""
 
 
 # A small TOML writer for the value shapes pyproject.toml uses: tables, arrays of
@@ -139,6 +166,8 @@ def dumps_toml(data: dict[str, Any]) -> str:
 def stage(root_dir: Path, staging: Path, lite: dict[str, Any]) -> None:
     for name in STAGED_FILES:
         shutil.copy2(root_dir / name, staging / name)
+    readme = lite_readme(lite["project"]["version"])
+    (staging / "README.md").write_text(readme, encoding="utf-8")
     for tree in STAGED_TREES:
         shutil.copytree(
             root_dir / tree,
