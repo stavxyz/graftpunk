@@ -118,8 +118,11 @@ Command: TypeAlias = Any
 
 
 def is_group(command: Command) -> bool:
-    """Whether *command* is a group, on either Click typer builds with."""
-    return hasattr(command, "commands")
+    """Whether *command* is a group, on either Click typer builds with.
+
+    Checked by the group protocol rather than the ``commands`` dict, so a group
+    that loads its subcommands lazily still counts as one."""
+    return callable(getattr(command, "list_commands", None))
 
 
 def subcommand(group: Command, name: str) -> Command | None:
