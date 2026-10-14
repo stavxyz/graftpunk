@@ -61,7 +61,16 @@ def has_browser_stack() -> bool:
     """Whether every browser package is importable here, found without importing
     any. A property of the environment, not of the distribution's name:
     ``graftpunk-lite[browser]`` has the stack, as ``graftpunk`` does."""
-    return all(find_spec(module) is not None for module in BROWSER_MODULES)
+    return absent_browser_module() is None
+
+
+def absent_browser_module(preferred: str = "") -> str | None:
+    """A browser module that is not importable here, or ``None`` when the stack
+    is complete. *preferred* is named when it is one of the absent ones."""
+    absent = [module for module in BROWSER_MODULES if find_spec(module) is None]
+    if preferred in absent:
+        return preferred
+    return absent[0] if absent else None
 
 
 def missing_browser_module(exc: BaseException) -> str | None:

@@ -360,6 +360,30 @@ def test_http_session_load_keeps_other_import_errors(
     assert "needs the browser automation stack" not in output, output
 
 
+@pytest.mark.usefixtures("_no_ambient_session")
+def test_plugin_login_without_the_browser_stack_asks_for_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The hint comes before any prompt or workstation env lookup."""
+    from graftpunk import workstation_env
+
+    def no_lookup() -> None:
+        raise AssertionError("the workstation env file was read")
+
+    _setup_local_env(tmp_path, monkeypatch)
+    _without_browser_stack(monkeypatch)
+    monkeypatch.setattr(workstation_env, "load", no_lookup)
+    monkeypatch.delenv("MYSHOP_USERNAME", raising=False)
+
+    result = invoke_plugin_app(_shop_plugin("selenium"), ["myshop", "login"])
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert "myshop login needs the browser automation stack" in output, output
+    assert "no module named 'selenium'" in output, output
+    assert "Username" not in output, output
+
+
 _CAPTURED_STDOUT_RUN = """
 import sys
 
