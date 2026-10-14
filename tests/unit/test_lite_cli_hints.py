@@ -437,6 +437,22 @@ def test_session_export_quotes_a_path_with_a_space(
     assert target.exists()
 
 
+def test_session_export_prints_the_usage_line_whole_on_a_narrow_terminal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from graftpunk.cli import session_commands
+
+    _cache_fixture_session(tmp_path, monkeypatch)
+    target = tmp_path / "a rather long directory name for exports" / "myshop.json"
+    monkeypatch.setattr(session_commands.console, "width", 40)
+
+    result = runner.invoke(session_app, ["export", "myshop", "-o", str(target)])
+
+    assert result.exit_code == 0, result.output
+    line = f"http --session='{target}' https://example.com/api"
+    assert any(line in row for row in result.output.splitlines()), result.output
+
+
 def test_session_export_to_a_file_httpie_cannot_read_fails_cleanly(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

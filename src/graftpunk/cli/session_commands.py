@@ -256,7 +256,9 @@ def export(
 
     Exports cookies so you can use them with HTTPie:
 
-        http --session=SESSION https://example.com/api
+        http --session=PATH https://example.com/api
+
+    where PATH is the exported file, which the command prints.
     """
     backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
     name = resolve_session_name_or_exit(name, backend_override=backend_override)
@@ -284,7 +286,11 @@ def export(
         # HTTPie reads a --session value containing a path separator as that
         # file; a bare name would be looked up under sessions/<host>/ instead.
         session_arg = shlex.quote(str(httpie_path))
-        console.print(f"  http --session={escape(session_arg)} https://example.com/api")
+        # One line however narrow the terminal: a wrapped path pastes as two
+        # arguments.
+        console.print(
+            f"  http --session={escape(session_arg)} https://example.com/api", soft_wrap=True
+        )
     except (OSError, AttributeError, ConfigFileError) as exc:
         console.print(f"[red]✗ Export failed: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
