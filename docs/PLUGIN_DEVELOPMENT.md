@@ -1687,12 +1687,17 @@ Any other form that allows a release below the floor (a pin, an upper bound,
 a URL, or no graftpunk requirement) is left as it is, and they print a
 `Next:` line naming the floor and the requirement as found, and to reinstall.
 With no graftpunk requirement, that line says to add one for the distribution
-`gp` came from (`graftpunk` or `graftpunk-lite`), never the other one. A
+`gp` came from, never the other one: `graftpunk>=<floor>`, or
+`graftpunk-lite[browser]>=<floor>` when `gp` came from graftpunk-lite, since a
+plugin logs in through the browser stack. A project that requires both
+`graftpunk` and `graftpunk-lite` gets neither raised, whatever their bounds,
+and a `Next:` line that names both requirements and says to keep one, replacing
+them with that same requirement for the distribution `gp` came from. A
 project whose `[project] dependencies` is itself listed in `[project]
 dynamic` has no array here to raise or name; they print `Next: this
 project's dependencies are dynamic; make sure whatever supplies them
-requires graftpunk>=<floor>, then reinstall.`, naming `graftpunk-lite`
-instead when `gp` came from it.
+requires graftpunk>=<floor>, then reinstall.`, naming
+`graftpunk-lite[browser]>=<floor>` instead when `gp` came from graftpunk-lite.
 
 A minimal CI workflow to start from, running the same gate:
 

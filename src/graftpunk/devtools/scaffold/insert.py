@@ -29,9 +29,7 @@ from graftpunk.devtools.plugin_project import PluginDefect, PluginView, require_
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.project import planned_graftpunk_floor
 from graftpunk.devtools.scaffold.pyproject_edit import (
-    CannotRaiseFloor,
-    DynamicDependencies,
-    RaisedFloor,
+    FloorVerdict,
 )
 from graftpunk.devtools.scaffold.pysrc import (
     INDENT_STEP,
@@ -72,7 +70,7 @@ class AddedCommand:
     module: Path
     cli_name: str
     fixture: str | None
-    floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | None = None
+    floor: FloorVerdict = None
     other_host: OtherHostCommand | None = None
 
 

@@ -1618,6 +1618,10 @@ def _run_writer(command: str, project: Path, pyproject: str) -> tuple[object, li
     return result, own
 
 
+# The requirement the floor advice names, by the distribution gp came from.
+_WANTED = {"graftpunk": "graftpunk>=1.17.0", "graftpunk-lite": "graftpunk-lite[browser]>=1.17.0"}
+
+
 def _only_distribution(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     """Make *name* the one graftpunk distribution the metadata lookup finds."""
     from importlib.metadata import PackageNotFoundError
@@ -1701,7 +1705,8 @@ class TestGraftpunkFloor:
         self, command: str, recorded: Path, monkeypatch: pytest.MonkeyPatch, installed: str
     ) -> None:
         """The advice names the distribution gp came from: telling a graftpunk-lite
-        user to add graftpunk would install the second distribution over the first."""
+        user to add graftpunk would install the second distribution over the first.
+        On graftpunk-lite it names the [browser] extra, which logging in needs."""
         _only_distribution(monkeypatch, installed)
         pyproject = _floor_pyproject(None)
         result, own = _run_writer(command, recorded, pyproject)
@@ -1710,8 +1715,25 @@ class TestGraftpunkFloor:
         lines = _plain(result.output).strip().splitlines()
         assert lines == [
             *own,
-            f"Next: add {installed}>=1.17.0 to pyproject.toml's [project] dependencies "
+            f"Next: add {_WANTED[installed]} to pyproject.toml's [project] dependencies "
             "and reinstall; it has no graftpunk or graftpunk-lite requirement",
+        ]
+
+    @pytest.mark.parametrize("installed", ["graftpunk", "graftpunk-lite"])
+    def test_a_project_requiring_both_distributions_is_told_to_keep_one(
+        self, command: str, recorded: Path, monkeypatch: pytest.MonkeyPatch, installed: str
+    ) -> None:
+        _only_distribution(monkeypatch, installed)
+        pyproject = _floor_pyproject('"graftpunk[browser]>=1.0", "graftpunk-lite>=1.0"')
+        result, own = _run_writer(command, recorded, pyproject)
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
+        lines = _plain(result.output).strip().splitlines()
+        assert lines == [
+            *own,
+            "Next: pyproject.toml requires both graftpunk and graftpunk-lite "
+            "(graftpunk[browser]>=1.0 and graftpunk-lite>=1.0), which install the same "
+            f"files; keep one: replace them with {_WANTED[installed]} and reinstall",
         ]
 
     def test_a_project_already_at_the_floor_prints_nothing_extra(
@@ -1738,7 +1760,7 @@ class TestGraftpunkFloor:
         assert lines == [
             *own,
             "Next: this project's dependencies are dynamic; make sure whatever supplies "
-            f"them requires {installed}>=1.17.0, then reinstall.",
+            f"them requires {_WANTED[installed]}, then reinstall.",
         ]
 
     def test_a_capped_requirement_already_at_the_floor_prints_nothing_extra(

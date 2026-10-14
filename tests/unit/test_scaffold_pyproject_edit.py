@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from graftpunk.devtools.scaffold.pyproject_edit import (
+    BothDistributions,
     CannotRaiseFloor,
     DynamicDependencies,
     PyprojectEditError,
@@ -300,10 +301,15 @@ class TestWithGraftpunkFloor:
     def test_a_graftpunk_lite_requirement_at_the_floor_is_nothing_to_do(self) -> None:
         assert with_graftpunk_floor(_deps('"graftpunk-lite>=1.17.0",'), "1.17.0") is None
 
-    def test_graftpunk_and_graftpunk_lite_together_are_reported_not_rewritten(self) -> None:
-        text = _deps('"graftpunk>=1.0",', '"graftpunk-lite>=1.0",')
-        assert with_graftpunk_floor(text, "1.17.0") == CannotRaiseFloor(
-            requirement="graftpunk>=1.0 and graftpunk-lite>=1.0"
+    @pytest.mark.parametrize("bound", ["1.0", "1.17.0"])
+    def test_graftpunk_and_graftpunk_lite_together_are_reported_not_rewritten(
+        self, bound: str
+    ) -> None:
+        """The two install the same files, so a project requiring both is told to
+        keep one, even when both bounds already meet the floor."""
+        text = _deps(f'"graftpunk[browser]>={bound}",', f'"graftpunk_lite>={bound}",')
+        assert with_graftpunk_floor(text, "1.17.0") == BothDistributions(
+            requirements=(f"graftpunk[browser]>={bound}", f"graftpunk_lite>={bound}")
         )
 
     def test_extras_spacing_and_an_environment_marker_are_kept_byte_for_byte(self) -> None:

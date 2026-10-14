@@ -24,8 +24,10 @@ from packaging.version import InvalidVersion, Version
 from graftpunk.plugins import PLUGINS_GROUP
 
 __all__ = [
+    "BothDistributions",
     "CannotRaiseFloor",
     "DynamicDependencies",
+    "FloorVerdict",
     "PyprojectEditError",
     "RaisedFloor",
     "with_entry_point",
@@ -221,6 +223,20 @@ class DynamicDependencies:
     (graft skill spec, amended 2026-10-04)."""
 
 
+@dataclass(frozen=True)
+class BothDistributions:
+    """``[project] dependencies`` requires both ``graftpunk`` and
+    ``graftpunk-lite``, which install the same files, so neither is raised: the
+    project has to keep one. *requirements* are the graftpunk requirements as
+    written, in file order."""
+
+    requirements: tuple[str, ...]
+
+
+FloorVerdict = RaisedFloor | CannotRaiseFloor | DynamicDependencies | BothDistributions | None
+"""What :func:`with_graftpunk_floor` says about a project's graftpunk requirement."""
+
+
 def _array_literals(text: str, open_bracket: int) -> list[tuple[int, int]] | None:
     """The spans of the string literals in the one-level array opening at
     *open_bracket*, or ``None`` when the array holds anything but one-line basic
@@ -271,9 +287,17 @@ def _dependency_literals(text: str) -> list[tuple[int, int]] | None:
 _GRAFTPUNK_NAMES = frozenset({"graftpunk", "graftpunk-lite"})
 
 
-def _is_graftpunk(requirement: str) -> bool:
+def _graftpunk_name(requirement: str) -> str | None:
+    """The canonical graftpunk distribution *requirement* names, or ``None``."""
     match = _REQUIREMENT_NAME_RE.match(requirement)
-    return match is not None and canonicalize_name(match.group(1)) in _GRAFTPUNK_NAMES
+    if match is None:
+        return None
+    name = canonicalize_name(match.group(1))
+    return name if name in _GRAFTPUNK_NAMES else None
+
+
+def _is_graftpunk(requirement: str) -> bool:
+    return _graftpunk_name(requirement) is not None
 
 
 # Operators whose version is a lower bound (or the one version an exact pin or
@@ -304,9 +328,7 @@ def _excludes_everything_below(specifiers: list[Specifier], floor: Version) -> b
     return False
 
 
-def with_graftpunk_floor(
-    text: str, floor: str
-) -> RaisedFloor | CannotRaiseFloor | DynamicDependencies | None:
+def with_graftpunk_floor(text: str, floor: str) -> FloorVerdict:
     """*text* with its ``[project] dependencies`` ``graftpunk`` requirement's lower
     bound raised to *floor*, when that requirement's only version specifier is a
     ``>=`` below it. Only the version is rewritten: the name, extras, spacing, and
@@ -318,6 +340,8 @@ def with_graftpunk_floor(
     any specifier with operator ``>=``, ``>``, ``==``, ``===``, or ``~=`` whose
     version (for ``==X.*``, ``X``) is at or above *floor*, however many other
     specifiers (an upper bound included) sit alongside it. Returns
+    :class:`BothDistributions` when the requirements name both ``graftpunk`` and
+    ``graftpunk-lite``, whatever their bounds. Returns
     :class:`DynamicDependencies` when ``"dependencies"`` is listed in
     ``[project] dynamic``: there is no array here to hold a literal to raise
     or name, whatever ``[project] dependencies`` itself happens to say.
@@ -341,6 +365,8 @@ def with_graftpunk_floor(
     ]
     if not found:
         return CannotRaiseFloor(requirement=None)
+    if {_graftpunk_name(raw) for _, raw in found} == _GRAFTPUNK_NAMES:
+        return BothDistributions(requirements=tuple(raw for _, raw in found))
     if len(found) > 1:
         joined = " and ".join(raw for _, raw in found)
         try:

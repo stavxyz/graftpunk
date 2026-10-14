@@ -33,8 +33,10 @@ from graftpunk.devtools.plugin_project import read_project
 from graftpunk.devtools.scaffold import policy
 from graftpunk.devtools.scaffold.insert import add_command
 from graftpunk.devtools.scaffold.pyproject_edit import (
+    BothDistributions,
     CannotRaiseFloor,
     DynamicDependencies,
+    FloorVerdict,
     RaisedFloor,
 )
 from graftpunk.devtools.scaffold.render import graftpunk_version_floor
@@ -43,13 +45,18 @@ from graftpunk.har.digest import DigestSource, digest
 from graftpunk.har.parser import HARParseError
 
 
-def _print_floor(floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | None) -> None:
+def _print_floor(floor: FloorVerdict) -> None:
     """One line on the project's graftpunk requirement after a write that needs
     the running graftpunk: the raise it got, or how to make it by hand."""
     at = graftpunk_version_floor()
     # Advice to add a requirement names the distribution this gp came from: the
-    # other one would install a second copy of the same package over it.
-    installed = _distribution.name()
+    # other one would install a second copy of the same package over it. On
+    # graftpunk-lite it names the [browser] extra, since a plugin logs in through
+    # the browser stack.
+    if _distribution.name() == "graftpunk-lite":
+        wanted = f"graftpunk-lite[browser]>={at}"
+    else:
+        wanted = f"graftpunk>={at}"
     if isinstance(floor, RaisedFloor):
         line = f"pyproject.toml: {floor.name}>={at} (was >={floor.previous}); reinstall the project"
         console.print(escape(line), soft_wrap=True, highlight=False)
@@ -58,7 +65,7 @@ def _print_floor(floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | N
             "[bold]Next:[/bold] "
             + escape(
                 f"this project's dependencies are dynamic; make sure whatever supplies "
-                f"them requires {installed}>={at}, then reinstall."
+                f"them requires {wanted}, then reinstall."
             ),
             soft_wrap=True,
         )
@@ -66,8 +73,18 @@ def _print_floor(floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | N
         console.print(
             "[bold]Next:[/bold] "
             + escape(
-                f"add {installed}>={at} to pyproject.toml's [project] dependencies and "
+                f"add {wanted} to pyproject.toml's [project] dependencies and "
                 "reinstall; it has no graftpunk or graftpunk-lite requirement"
+            ),
+            soft_wrap=True,
+        )
+    elif isinstance(floor, BothDistributions):
+        console.print(
+            "[bold]Next:[/bold] "
+            + escape(
+                f"pyproject.toml requires both graftpunk and graftpunk-lite "
+                f"({' and '.join(floor.requirements)}), which install the same files; "
+                f"keep one: replace them with {wanted} and reinstall"
             ),
             soft_wrap=True,
         )

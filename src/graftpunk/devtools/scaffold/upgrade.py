@@ -37,9 +37,7 @@ from graftpunk.devtools.scaffold.policy import (
 )
 from graftpunk.devtools.scaffold.project import planned_graftpunk_floor
 from graftpunk.devtools.scaffold.pyproject_edit import (
-    CannotRaiseFloor,
-    DynamicDependencies,
-    RaisedFloor,
+    FloorVerdict,
 )
 from graftpunk.devtools.scaffold.pysrc import ImportPlacementError, with_bindings
 from graftpunk.devtools.scaffold.write import (
@@ -72,7 +70,7 @@ class UpgradeApplied:
 
     requirements: tuple[ProjectRequirement, ...]
     created_fixtures_tree: bool = False
-    floor: RaisedFloor | CannotRaiseFloor | DynamicDependencies | None = None
+    floor: FloorVerdict = None
 
     @property
     def changed(self) -> bool:
