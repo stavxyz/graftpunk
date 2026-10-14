@@ -11,8 +11,8 @@ from __future__ import annotations
 import re
 import shlex
 from pathlib import Path
+from typing import Any, TypeAlias
 
-import click
 import typer.main
 
 from graftpunk.cli.main import app
@@ -110,12 +110,29 @@ def gp_invocations(text: str) -> list[tuple[int, str]]:
     return found
 
 
+# typer>=0.26 builds its commands on a vendored Click (typer._click) whose
+# classes are not the external click's: a TyperGroup there is not a
+# click.Group. So a group is told apart by behavior, and every context comes
+# from the command's own context_class, so the two Clicks never mix.
+Command: TypeAlias = Any
+
+
+def is_group(command: Command) -> bool:
+    """Whether *command* is a group, on either Click typer builds with."""
+    return hasattr(command, "commands")
+
+
+def subcommand(group: Command, name: str) -> Command | None:
+    """The subcommand of *group* called *name*, or None when it has none."""
+    return group.get_command(group.context_class(group), name)
+
+
 # Built once: typer.main.get_command(app) returns a fresh Click object on every
 # call, so an identity check against a second call can never match.
-ROOT_COMMAND: click.Command = typer.main.get_command(app)
+ROOT_COMMAND: Command = typer.main.get_command(app)
 
 
-def option_names(command: click.Command) -> set[str]:
+def option_names(command: Command) -> set[str]:
     """Every option spelling (``--limit``, ``-s``, ``--help``) the command accepts.
 
     The help option is not in ``command.params``: Click builds it from the
@@ -126,13 +143,13 @@ def option_names(command: click.Command) -> set[str]:
     for param in command.params:
         names.update(param.opts)
         names.update(param.secondary_opts)
-    help_option = command.get_help_option(click.Context(command))
+    help_option = command.get_help_option(command.context_class(command))
     if help_option is not None:
         names.update(help_option.opts)
     return names
 
 
-def _takes_a_value(command: click.Command, spelling: str) -> bool:
+def _takes_a_value(command: Command, spelling: str) -> bool:
     """Whether *spelling* on *command* consumes the token after it."""
     for param in command.params:
         if spelling in param.opts or spelling in param.secondary_opts:
@@ -140,7 +157,7 @@ def _takes_a_value(command: click.Command, spelling: str) -> bool:
     return False
 
 
-def _walk_to_command(tokens: list[str]) -> tuple[click.Command, list[tuple[click.Command, int]]]:
+def _walk_to_command(tokens: list[str]) -> tuple[Command, list[tuple[Command, int]]]:
     """The command *tokens* addresses, and each group it descended out of.
 
     Walks the Typer app's Click tree by name. An option token is stepped over,
@@ -158,25 +175,25 @@ def _walk_to_command(tokens: list[str]) -> tuple[click.Command, list[tuple[click
     Raises:
         AssertionError: A token under a group names no subcommand of it.
     """
-    current: click.Command = ROOT_COMMAND
-    groups: list[tuple[click.Command, int]] = [(ROOT_COMMAND, len(tokens))]
+    current: Command = ROOT_COMMAND
+    groups: list[tuple[Command, int]] = [(ROOT_COMMAND, len(tokens))]
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if not isinstance(current, click.Group):
+        if not is_group(current):
             break
         if token.startswith("-"):
             known = [group for group, _exit in groups]
             consumes = any(_takes_a_value(command, token) for command in known)
             index += 2 if consumes else 1
             continue
-        child = current.commands.get(token)
+        child = subcommand(current, token)
         if child is None:
             raise AssertionError(f"`{token}` is not a subcommand of `{current.name}`")
         groups[-1] = (groups[-1][0], index)
         current = child
         index += 1
-        if isinstance(current, click.Group):
+        if is_group(current):
             groups.append((current, len(tokens)))
     return current, groups
 

@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import click
 import pytest
 import typer.main
 
@@ -38,9 +37,11 @@ from tests.unit.guide_harness import (
     blocks,
     check_invocation,
     gp_invocations,
+    is_group,
     option_names,
     section,
     slugs_of,
+    subcommand,
 )
 
 # The documents that link into the guide. A heading rename there is the likeliest
@@ -261,8 +262,8 @@ def test_the_login_options_the_guide_names_exist() -> None:
     probe = typer.Typer()
     probe.command("login")(fn)
     login_command = typer.main.get_command(probe)
-    if isinstance(login_command, click.Group):
-        login_command = login_command.commands["login"]
+    if is_group(login_command):
+        login_command = subcommand(login_command, "login")
     spellings = option_names(login_command)
     for named_in_the_guide in ("--as", "--headless", "--headful"):
         assert named_in_the_guide in spellings, (
