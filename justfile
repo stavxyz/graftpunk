@@ -86,7 +86,7 @@ publish-test: check-dist
 # graftpunk-lite first, so a failed lite upload stops before graftpunk ships.
 publish: check-dist
     @echo "⚠️  Publishing to PyPI (production) — manual fallback"
-    @read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ]
+    @read -p "Continue? [y/N] " confirm && [ "$confirm" = "y" ]
     uvx twine upload dist/graftpunk_lite-*
     uvx twine upload dist/graftpunk-*
     @echo "📦 Uploaded to PyPI"
