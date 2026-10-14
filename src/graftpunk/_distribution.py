@@ -11,9 +11,23 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from importlib.util import find_spec
 
 FULL = "graftpunk"
 LITE = "graftpunk-lite"
+
+# The import name of each package in pyproject.toml's [tool.graftpunk.lite]
+# browser-only list, which graftpunk installs and graftpunk-lite moves into its
+# [browser] extra. scripts/smoke_install.sh checks the built wheels against it.
+BROWSER_MODULES = (
+    "requestium",
+    "selenium",
+    "webdriver_manager",
+    "undetected_chromedriver",
+    "selenium_stealth",
+    "nodriver",
+    "httpie",
+)
 
 
 def all_installed() -> list[tuple[str, str]]:
@@ -41,6 +55,13 @@ def name() -> str:
     """The installed distribution's name, ``graftpunk`` when neither is installed."""
     found = installed()
     return found[0] if found else FULL
+
+
+def has_browser_stack() -> bool:
+    """Whether every browser package is importable here, found without importing
+    any. A property of the environment, not of the distribution's name:
+    ``graftpunk-lite[browser]`` has the stack, as ``graftpunk`` does."""
+    return all(find_spec(module) is not None for module in BROWSER_MODULES)
 
 
 def install_command(extra: str) -> str:

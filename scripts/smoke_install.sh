@@ -35,11 +35,12 @@ full="$root/full/bin"
 echo "== lite lacks the browser stack; graftpunk has it"
 check='
 import importlib.util, sys
-mods = ["selenium", "nodriver", "requestium", "webdriver_manager",
-        "undetected_chromedriver", "selenium_stealth", "httpie"]
+from graftpunk._distribution import BROWSER_MODULES, has_browser_stack
+mods = list(BROWSER_MODULES)
 found = [m for m in mods if importlib.util.find_spec(m) is not None]
 want = sys.argv[1] == "present"
 assert found == (mods if want else []), f"{sys.argv[1]}: found {found}"
+assert has_browser_stack() is want, sys.argv[1]
 print(sys.argv[1], "OK:", ", ".join(mods))
 '
 "$lite/python" -c "$check" absent
