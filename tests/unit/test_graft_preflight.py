@@ -106,14 +106,21 @@ def _fake_gp(
     version_message: str = "",
     info_json: str = _INFO_EMPTY,
     info_exit: int = 0,
+    distribution: str = "graftpunk",
 ) -> Path:
-    """A gp that answers exactly the two calls preflight makes, as told, and writes the
-    arguments of its version call, one per line, to version-args beside itself."""
+    """A gp that answers exactly the three calls preflight makes, as told: the plain
+    version panel naming *distribution*, the version question, and plugin info. It
+    writes the arguments of its version question, one per line, to version-args
+    beside itself."""
     fake = tmp_path / "fake"
     fake.mkdir()
     script = fake / "gp"
     script.write_text(
         f"""#!{BASH}
+if [ "$1" = version ] && [ $# -eq 1 ]; then
+  printf '%s\\n' '| {distribution} 9.9.9 |'
+  exit 0
+fi
 if [ "$1" = version ]; then
   printf '%s\\n' "$@" > "{fake}/version-args"
   if [ {version_exit} -eq 2 ]; then echo "No such option: --contract" >&2; exit 2; fi
@@ -370,6 +377,49 @@ class TestPreflightWithAFakeGp:
             "installation": json.loads(_VERSION_OK),
             "project": json.loads(_INFO_EMPTY),
         }
+        assert result.stderr == ""
+
+    def test_on_graftpunk_lite_success_relays_and_notes_the_full_install(
+        self, tmp_path: Path, dirs: tuple[Path, Path, Path]
+    ) -> None:
+        """graftpunk-lite cannot record or log in, which the skill's steps need."""
+        work, home, tools = dirs
+        result = _preflight(work, home, _fake_gp(tmp_path, distribution="graftpunk-lite"), tools)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {
+            "installation": json.loads(_VERSION_OK),
+            "project": json.loads(_INFO_EMPTY),
+        }
+        assert result.stderr.strip() == _constant("LITE_NOTE")
+        for phrase in ("recording a site and logging in", "uv tool install graftpunk"):
+            assert phrase in result.stderr, phrase
+
+    @pytest.mark.parametrize(
+        ("distribution", "upgrade", "other"),
+        [
+            ("graftpunk", "uv tool upgrade graftpunk ", "graftpunk-lite"),
+            ("graftpunk-lite", "uv tool upgrade graftpunk-lite ", None),
+        ],
+    )
+    def test_the_upgrade_line_names_the_distribution_gp_came_from(
+        self,
+        tmp_path: Path,
+        dirs: tuple[Path, Path, Path],
+        distribution: str,
+        upgrade: str,
+        other: str | None,
+    ) -> None:
+        """Upgrading the other distribution would install it over this one."""
+        work, home, tools = dirs
+        fake = _fake_gp(tmp_path, version_exit=1, distribution=distribution)
+        result = _preflight(work, home, fake, tools)
+        assert result.returncode == 1
+        assert upgrade in result.stderr
+        assert f"pip install --upgrade {distribution})" in result.stderr
+        if other is not None:
+            assert other not in result.stderr
+        else:
+            assert _constant("LITE_NOTE") in result.stderr
 
 
 def test_contributing_gives_the_same_skill_update_as_preflight() -> None:

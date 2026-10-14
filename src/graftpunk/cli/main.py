@@ -231,7 +231,9 @@ def version(
         settings = get_settings()
         console.print(
             Panel(
-                f"[bold cyan]{_distribution.name()}[/bold cyan] {graftpunk.__version__}\n"
+                # One style span, so no color code splits the name from the
+                # version: the graft skill's preflight matches "graftpunk-lite 1".
+                f"[bold cyan]{_distribution.name()} {graftpunk.__version__}[/bold cyan]\n"
                 f"{escape(graftpunk.DESCRIPTION)}\n\n"
                 f"[dim]Config:[/dim]  {escape(str(settings.config_dir))}\n"
                 f"[dim]Storage:[/dim] {escape(str(settings.storage_backend))}",

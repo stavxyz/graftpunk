@@ -5,7 +5,10 @@
 # --json. On success prints
 #   {"installation": <gp version --json>, "project": <gp plugin info --json>}
 # and exits 0. Otherwise prints one message on stderr, naming what failed and
-# what to do, and exits 1. The failures, each with its own message:
+# what to do, and exits 1. When gp comes from graftpunk-lite, which has no
+# browser stack, it also prints LITE_NOTE on stderr, on success or failure, and
+# names graftpunk-lite in the upgrade command. The failures, each with its own
+# message:
 #   gp is not on PATH
 #   uv is not on PATH (the skill runs every command that loads the plugin through
 #     uv run; preflight only looks for it)
@@ -16,7 +19,9 @@
 #   gp rejected an option this script passed
 #   gp version exited with a status this script does not expect
 # It compares nothing and parses no JSON: gp answers by its exit status, and the
-# JSON is relayed exactly as gp printed it.
+# JSON is relayed exactly as gp printed it. The distribution is read from the
+# plain gp version panel, which names it (graftpunk-lite 1.20.0); an older gp,
+# from before graftpunk-lite existed, prints graftpunk there.
 set -u
 
 SKILL_REQUIRES_GRAFTPUNK="1.19.0"
@@ -24,7 +29,9 @@ SKILL_READS_INFO_SCHEMA=1
 SKILL_READS_ENDPOINTS_SCHEMA=1
 
 INSTALL_LINE="uv tool install graftpunk   (or: pip install graftpunk)"
-UPGRADE_LINE="uv tool upgrade graftpunk   (or: pip install --upgrade graftpunk)"
+FULL_UPGRADE_LINE="uv tool upgrade graftpunk   (or: pip install --upgrade graftpunk)"
+LITE_UPGRADE_LINE="uv tool upgrade graftpunk-lite   (or: pip install --upgrade graftpunk-lite)"
+LITE_NOTE="This gp comes from graftpunk-lite, which has no browser stack: recording a site and logging in need the full install. Switch with: uv tool uninstall graftpunk-lite, then uv tool install graftpunk   (or: pip uninstall graftpunk-lite, then pip install --force-reinstall graftpunk)"
 UV_INSTALL_PAGE="https://docs.astral.sh/uv/"
 SKILL_UPDATE_LINE="/plugin marketplace update graftpunk, then update graftpunk on the Installed tab of /plugin (or run: claude plugin update graftpunk@graftpunk)"
 
@@ -39,8 +46,15 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
+UPGRADE_LINE="$FULL_UPGRADE_LINE"
+lite=0
+case "$(gp version 2>/dev/null)" in
+  *"graftpunk-lite "[0-9]*) lite=1; UPGRADE_LINE="$LITE_UPGRADE_LINE" ;;
+esac
+
 errfile="$(mktemp)" || { printf 'preflight: mktemp could not create a temporary file.\n' >&2; exit 1; }
-trap 'rm -f "$errfile"' EXIT
+# The trap keeps the exit status the script exits with.
+trap 'rm -f "$errfile"; if [ "$lite" = 1 ]; then printf "%s\n" "$LITE_NOTE" >&2; fi' EXIT
 
 # Exit 2 from gp means an option it does not know, and nothing else: gp reports
 # an unreadable value with exit 1 and a message of its own.
