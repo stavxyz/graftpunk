@@ -67,7 +67,7 @@ def has_browser_stack() -> bool:
 def absent_browser_module(preferred: str = "") -> str | None:
     """A browser module that is not importable here, or ``None`` when the stack
     is complete. *preferred* is named when it is one of the absent ones."""
-    absent = [module for module in BROWSER_MODULES if find_spec(module) is None]
+    absent = [module for module in BROWSER_MODULES if not _importable(module)]
     if preferred in absent:
         return preferred
     return absent[0] if absent else None

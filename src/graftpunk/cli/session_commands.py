@@ -1,5 +1,6 @@
 """Session management commands — gp session list/show/clear/export."""
 
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, cast
 
@@ -271,16 +272,20 @@ def export(
         console.print(f"[red]✗ Failed to load: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
+    # httpie is part of the browser stack, which load_session above needed.
+    from httpie.config import ConfigFileError
+
     try:
         browser_session = cast("BrowserSession", session)
         httpie_path = browser_session.save_httpie_session(name, output=output)
 
         console.print(f"[green]✓ Exported to:[/green] {escape(str(httpie_path))}\n")
         console.print("[dim]Usage:[/dim]")
-        # HTTPie reads a --session value containing a path separator as a file.
-        session_arg = httpie_path if output is not None else name
-        console.print(f"  http --session={escape(str(session_arg))} https://example.com/api")
-    except (OSError, AttributeError) as exc:
+        # HTTPie reads a --session value containing a path separator as that
+        # file; a bare name would be looked up under sessions/<host>/ instead.
+        session_arg = shlex.quote(str(httpie_path))
+        console.print(f"  http --session={escape(session_arg)} https://example.com/api")
+    except (OSError, AttributeError, ConfigFileError) as exc:
         console.print(f"[red]✗ Export failed: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 

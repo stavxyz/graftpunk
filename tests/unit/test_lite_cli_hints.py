@@ -419,8 +419,38 @@ def test_session_export_defaults_to_the_httpie_sessions_dir(
     output = _flat(result.output)
     assert result.exit_code == 0, output
     assert f"Exported to: {default}" in output, output
-    assert "http --session=myshop " in output, output
+    assert f"http --session={default} " in output, output
     assert "cookies" in json.loads(default.read_text())
+
+
+def test_session_export_quotes_a_path_with_a_space(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _cache_fixture_session(tmp_path, monkeypatch)
+    target = tmp_path / "my exports" / "myshop.json"
+
+    result = runner.invoke(session_app, ["export", "myshop", "-o", str(target)])
+
+    output = _flat(result.output)
+    assert result.exit_code == 0, output
+    assert f"http --session='{target}' " in output, output
+    assert target.exists()
+
+
+def test_session_export_to_a_file_httpie_cannot_read_fails_cleanly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _cache_fixture_session(tmp_path, monkeypatch)
+    target = tmp_path / "notes.json"
+    target.write_text("not json")
+
+    result = runner.invoke(session_app, ["export", "myshop", "-o", str(target)])
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert "Export failed" in output, output
+    assert "Traceback" not in output, output
+    assert target.read_text() == "not json"
 
 
 _CAPTURED_STDOUT_RUN = """

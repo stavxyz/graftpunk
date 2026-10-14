@@ -751,10 +751,8 @@ class BrowserSession(requestium.Session):
             host=None,
         )
 
-        # load() reads an existing file's cookies into the session, so it runs
-        # before this session's cookies are assigned, or a re-export would keep
-        # the old values.
-        httpie_session.load()
+        # get_httpie_session has already read any existing file, so assigning
+        # the jar here replaces that file's cookies with this session's.
         cookiejar_dict = requests.utils.dict_from_cookiejar(self.cookies)
         cookiejar = requests.utils.cookiejar_from_dict(cookiejar_dict)
         httpie_session.cookie_jar = cookiejar

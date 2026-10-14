@@ -652,7 +652,6 @@ class TestSaveHttpieSession:
 
             expected = Path("/tmp/httpie-test") / "sessions" / "test-session.json"  # noqa: S108
             assert result == expected
-            mock_httpie_session.load.assert_called_once()
             mock_httpie_session.save.assert_called_once()
 
     def test_save_httpie_session_uses_provided_name(self):
@@ -686,7 +685,6 @@ class TestSaveHttpieSession:
                 session.save_httpie_session(session_name="custom-name")
 
             # Verify it used the custom name (the path contains it)
-            mock_httpie_session.load.assert_called_once()
             mock_httpie_session.save.assert_called_once()
 
     def test_a_second_export_to_the_same_file_writes_the_new_cookies(self, tmp_path):
