@@ -298,6 +298,17 @@ class TestValidatePluginName:
         with pytest.raises(ValueError, match=f"at most {_MAX_PLUGIN_NAME} characters"):
             validate_plugin_name("a" * (_MAX_PLUGIN_NAME + 1))
 
+    @pytest.mark.parametrize("name", ["lite", "Lite", "LITE"])
+    def test_rejects_a_name_whose_project_would_be_graftpunk_lite(self, name: str) -> None:
+        with pytest.raises(
+            ValueError, match="would name the project graftpunk-lite, a distribution"
+        ):
+            validate_plugin_name(name)
+
+    @pytest.mark.parametrize("name", ["lite2", "litestore", "my-lite", "lite-"])
+    def test_accepts_a_name_that_only_contains_lite(self, name: str) -> None:
+        validate_plugin_name(name)  # does not raise
+
 
 class TestCommandName:
     def test_truncates_a_deep_path_to_the_cap(self) -> None:

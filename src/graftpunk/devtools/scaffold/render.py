@@ -19,6 +19,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 import idna
+from packaging.utils import canonicalize_name
 
 import graftpunk
 from graftpunk.devtools.captures_rule import CAPTURES_DIR
@@ -167,13 +168,31 @@ _ENDPOINT_COMMENT = (
 PLUGIN_NAME_RE = re.compile(rf"[A-Za-z][A-Za-z0-9_-]{{0,{_MAX_PLUGIN_NAME - 1}}}")
 
 
+# The distributions this repository publishes. A generated project is named
+# graftpunk_<module>, so the plugin name "lite" would publish as graftpunk-lite and
+# be taken for graftpunk itself by gp version's both-installed check.
+_GRAFTPUNK_DISTRIBUTIONS = frozenset({"graftpunk", "graftpunk-lite"})
+
+
+def plugin_distribution_name(name: str) -> str:
+    """The ``[project] name`` a generated project for plugin *name* gets."""
+    return f"graftpunk_{policy.module_name_for(name)}"
+
+
 def validate_plugin_name(name: str) -> None:
-    """Raise if *name* cannot become a valid `gp <name>` command and entry-point key."""
+    """Raise if *name* cannot become a valid `gp <name>` command and entry-point key,
+    or would give the project the name of a graftpunk distribution."""
     if not PLUGIN_NAME_RE.fullmatch(name):
         raise ValueError(
             f"Plugin name {name!r} must start with a letter and contain only "
             f"letters, digits, hyphens, and underscores, and be at most "
             f"{_MAX_PLUGIN_NAME} characters"
+        )
+    distribution = canonicalize_name(plugin_distribution_name(name))
+    if distribution in _GRAFTPUNK_DISTRIBUTIONS:
+        raise ValueError(
+            f"Plugin name {name!r} would name the project {distribution}, a "
+            f"distribution graftpunk itself publishes; choose another name"
         )
 
 
@@ -1377,7 +1396,7 @@ def graftpunk_version_floor() -> str:
 
 
 def _render_pyproject(spec: ScaffoldSpec) -> str:
-    package = f"graftpunk_{policy.module_name_for(spec.name)}"
+    package = plugin_distribution_name(spec.name)
     klass = class_name_for(spec.name)
     floor = spec.graftpunk_version or "0.0.0"
     return (

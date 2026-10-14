@@ -141,7 +141,9 @@ Decide the following before you record anything.
 underscores, and is at most 40 characters. It cannot be a reserved top-level
 `gp` command name (`plugin`, `plugins`, `session`, `http`, `config`,
 `keepalive`, `observe`, `version`, and anything else registered by the time
-plugins attach). A hyphenated name maps to an importable package: `my-shop` becomes the
+plugins attach). It cannot be `lite` (in any case), because its project would be
+named `graftpunk_lite`, which is graftpunk's own browser-free distribution,
+`graftpunk-lite`. A hyphenated name maps to an importable package: `my-shop` becomes the
 package `graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key
 `my-shop`, and the CLI command `gp my-shop`. `gp plugin new NAME --check-name`
 checks a name against these rules and writes nothing.

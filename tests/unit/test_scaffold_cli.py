@@ -1780,7 +1780,21 @@ class TestCheckName:
         assert strip_ansi(result.output) == "'myshop' is an acceptable plugin name.\n"
         assert set(tmp_path.iterdir()) == before
 
-    @pytest.mark.parametrize("name", ["observe", "2fa-site", "a" * 41])
+    def test_lite_is_refused_because_its_project_would_be_graftpunk_lite(
+        self, tmp_path: Path
+    ) -> None:
+        from graftpunk.cli.main import app as real_app
+
+        before = set(tmp_path.iterdir())
+        result = runner.invoke(
+            real_app, ["plugin", "new", "lite", "--check-name", "--dir", str(tmp_path)]
+        )
+        assert result.exit_code == 1, result.output
+        flat = " ".join(strip_ansi(result.output).split())
+        assert "would name the project graftpunk-lite, a distribution graftpunk itself" in flat
+        assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.parametrize("name", ["observe", "2fa-site", "a" * 41, "lite"])
     def test_a_refusal_is_the_same_text_gp_plugin_new_prints(
         self, tmp_path: Path, name: str
     ) -> None:
