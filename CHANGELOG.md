@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.21.0] - 2026-10-14
+
+This is a minor release. Synchronous `nodriver` calls now give up on a Chrome that stops answering, with limits that are on by default (Upgrading, item 1). `GraftpunkClient` runs commands when `sys.stdout` has no file descriptor, and `import graftpunk` works with `sys.stderr` set to `None`, as under `pythonw`. It ships in a minor rather than a patch release because a `nodriver` call that used to wait without limit now fails after its timeout on the first run after the upgrade.
+
+### Upgrading
+
+1. **Synchronous `nodriver` calls are limited by default** (#240): `navigate()` raises `BrowserError` after 120 seconds, and the other synchronous `NoDriverBackend` calls return their fallback after 60 seconds, with a warning. A navigation whose server takes longer than 120 seconds to answer, or a getter that takes longer than 60, now fails where it used to wait. To keep 1.20.1's behavior, pass `call_timeout=None, navigate_timeout=None` to `NoDriverBackend` or to `BrowserSession(backend="nodriver", ...)`; either argument also takes a number of seconds. Code that does not use the `nodriver` backend is not affected.
+2. **A CLI install does not upgrade itself.** Run `uv tool upgrade graftpunk` (or `uv tool upgrade graftpunk-lite`), `pipx upgrade graftpunk`, or `pip install -U graftpunk`.
 
 ### Changed
 
