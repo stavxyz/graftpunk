@@ -9,16 +9,18 @@ with the CommandError/PluginError/generic error->exit funnel.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+import sys
+from typing import Any, Literal, NoReturn
 
 import requests
 import typer
 from rich.console import Console
 
+from graftpunk import _distribution
 from graftpunk import console as gp_console
 from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
 from graftpunk.cli.command_factory import BUILTIN_OPTIONS
-from graftpunk.cli.errors import exit_ambiguous_session
+from graftpunk.cli.errors import exit_ambiguous_session, exit_missing_browser_stack
 from graftpunk.exceptions import (
     AmbiguousSessionError,
     BrowserError,
@@ -32,12 +34,37 @@ from graftpunk.logging import get_logger
 from graftpunk.observe import build_observe_context
 from graftpunk.plugins.cli_plugin import CLIPluginProtocol, CommandContext, CommandSpec
 from graftpunk.plugins.formatters import format_output
-from graftpunk.session import BrowserSession
 from graftpunk.session_context import get_active_session
 from graftpunk.session_identity import compute_operating_session_name, split_session_name
 
+if _distribution.has_browser_stack():
+    # Loaded as plugins register, before any command runs, because importing
+    # it imports httpie, whose import calls sys.stdout.fileno(); that raises
+    # under captured stdout (CliRunner, pytest capsys). graftpunk-lite has no
+    # browser stack to import, so there it is skipped.
+    import graftpunk.session  # noqa: F401
+
 LOG = get_logger(__name__)
 _format_console = Console()
+
+
+def _driver_of(session: object) -> Any:
+    """The WebDriver behind a ``BrowserSession``, ``None`` for any other session.
+
+    Looked up in ``sys.modules`` because graftpunk-lite never loads
+    ``graftpunk.session``. An object can be a ``BrowserSession`` only once that
+    module is loaded, so an unloaded module means "not one".
+    """
+    module = sys.modules.get("graftpunk.session")
+    if module is None or not isinstance(session, module.BrowserSession):
+        return None
+    return session.driver
+
+
+def _exit_session_load_failed(plugin: CLIPluginProtocol, exc: Exception) -> NoReturn:
+    gp_console.error(f"Failed to load session: {exc}")
+    LOG.exception("session_load_failed", plugin=plugin.site_name)
+    raise SystemExit(1) from exc
 
 
 def format_source_is_commandline(ctx: typer.Context) -> bool:
@@ -137,14 +164,20 @@ def run_plugin_command(
     except AmbiguousSessionError as exc:
         exit_ambiguous_session(exc)
     except ValueError as exc:
+        if isinstance(exc, OSError):
+            # io.UnsupportedOperation is both: an I/O failure, not a bad name.
+            _exit_session_load_failed(plugin, exc)
         # A pin that cannot name a session (--session ../../x, a garbage
         # GRAFTPUNK_SESSION): a caller/config error, refused before storage.
         gp_console.error(f"Invalid session name: {exc}")
         raise SystemExit(1) from exc
     except Exception as exc:  # noqa: BLE001 — CLI boundary
-        gp_console.error(f"Failed to load session: {exc}")
-        LOG.exception("session_load_failed", plugin=plugin.site_name)
-        raise SystemExit(1) from exc
+        module = _distribution.missing_browser_module(exc)
+        if module is not None:
+            exit_missing_browser_stack(
+                ctx.command_path if ctx is not None else f"gp {plugin.site_name}", module
+            )
+        _exit_session_load_failed(plugin, exc)
 
     # Set gp_base_url for relative Referer resolution
     base_url = getattr(plugin, "base_url", "")
@@ -161,8 +194,7 @@ def run_plugin_command(
 
     backend_type = plugin.backend
     try:
-        # Only a browser-backed session has a driver; a plain requests.Session does not.
-        driver = session.driver if isinstance(session, BrowserSession) else None
+        driver = _driver_of(session)
     except (BrowserError, AttributeError):
         driver = None
         LOG.debug(

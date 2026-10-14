@@ -390,11 +390,11 @@ class TestNamesAreNotMarkup:
         "graftpunk.cli.session_commands.resolve_session_name_or_exit",
         side_effect=lambda n, **_: n,
     )
-    def test_export_usage_hint_keeps_name_verbatim(self, _mock_resolve, mock_load) -> None:
-        mock_load.return_value.save_httpie_session.return_value = "x.json"
-        result = runner.invoke(session_app, ["export", "evil [/x]"])
+    def test_export_usage_hint_keeps_path_verbatim(self, _mock_resolve, mock_load) -> None:
+        mock_load.return_value.save_httpie_session.return_value = "evil [/x].json"
+        result = runner.invoke(session_app, ["export", "evil"])
         assert result.exit_code == 0, result.output
-        assert "http --session=evil [/x]" in strip_ansi(result.output)
+        assert "http --session='evil [/x].json'" in strip_ansi(result.output)
 
 
 class TestAccountColumn:

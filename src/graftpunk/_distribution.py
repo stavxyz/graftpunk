@@ -61,7 +61,50 @@ def has_browser_stack() -> bool:
     """Whether every browser package is importable here, found without importing
     any. A property of the environment, not of the distribution's name:
     ``graftpunk-lite[browser]`` has the stack, as ``graftpunk`` does."""
-    return all(find_spec(module) is not None for module in BROWSER_MODULES)
+    return absent_browser_module() is None
+
+
+def absent_browser_module(preferred: str = "") -> str | None:
+    """A browser module that is not importable here, or ``None`` when the stack
+    is complete. *preferred* is named when it is one of the absent ones."""
+    absent = [module for module in BROWSER_MODULES if not _importable(module)]
+    if preferred in absent:
+        return preferred
+    return absent[0] if absent else None
+
+
+def missing_browser_module(exc: BaseException) -> str | None:
+    """The browser module whose absence caused *exc*, or ``None`` when no
+    browser module is missing.
+
+    Follows the cause and context chain, since the library re-raises the
+    original ``ModuleNotFoundError`` under its own ``ImportError`` (as
+    ``load_session`` does). A missing module outside ``BROWSER_MODULES`` is not
+    a browser-stack failure and gives ``None``, so its caller can re-raise it.
+    Neither is a missing submodule of a browser package that is installed
+    (``selenium.webdriver.x`` with selenium present): reinstalling the extra
+    would not fix that version skew, and its traceback is the useful report.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ModuleNotFoundError) and current.name:
+            top = current.name.partition(".")[0]
+            if top in BROWSER_MODULES and not _importable(top):
+                return top
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _importable(module: str) -> bool:
+    """Whether top-level *module* can be found. A module whose spec lookup
+    itself fails (a ``sys.modules`` entry without ``__spec__``) is loaded, so
+    it counts as importable."""
+    try:
+        return find_spec(module) is not None
+    except (ImportError, ValueError):
+        return True
 
 
 def install_command(extra: str) -> str:

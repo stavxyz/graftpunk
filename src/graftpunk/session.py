@@ -709,11 +709,15 @@ class BrowserSession(requestium.Session):
                         "Failed to restore session. Try clearing cache with: gp clear"
                     ) from exc
 
-    def save_httpie_session(self, session_name: str | None = None) -> Path:
+    def save_httpie_session(
+        self, session_name: str | None = None, output: Path | None = None
+    ) -> Path:
         """Save session cookies to HTTPie format for CLI HTTP requests.
 
         Args:
             session_name: Optional session name. Uses self.session_name if not provided.
+            output: File to write. Defaults to ``sessions/<session_name>.json``
+                in the HTTPie config directory.
 
         Returns:
             Path to the saved HTTPie session file.
@@ -724,7 +728,11 @@ class BrowserSession(requestium.Session):
         LOG.info("saving_httpie_session", name=session_name)
 
         env = httpie.context.Environment()
-        httpie_session_path = Path(env.config.directory) / "sessions" / f"{session_name}.json"
+        httpie_session_path = (
+            output.expanduser().resolve()
+            if output is not None
+            else Path(env.config.directory) / "sessions" / f"{session_name}.json"
+        )
 
         try:
             driver_url = self.driver.current_url
@@ -743,10 +751,11 @@ class BrowserSession(requestium.Session):
             host=None,
         )
 
+        # get_httpie_session has already read any existing file, so assigning
+        # the jar here replaces that file's cookies with this session's.
         cookiejar_dict = requests.utils.dict_from_cookiejar(self.cookies)
         cookiejar = requests.utils.cookiejar_from_dict(cookiejar_dict)
         httpie_session.cookie_jar = cookiejar
-        httpie_session.load()
         httpie_session.post_process_data(httpie_session)
         httpie_session.save()
 

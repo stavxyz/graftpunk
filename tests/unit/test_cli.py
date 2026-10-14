@@ -433,7 +433,7 @@ class TestExportCommand:
         assert result.exit_code == 0
         assert "Exported to" in strip_ansi(result.output)
         assert "/home/user/.httpie/sessions/test.json" in strip_ansi(result.output)
-        mock_session.save_httpie_session.assert_called_once_with("test-session")
+        mock_session.save_httpie_session.assert_called_once_with("test-session", output=None)
 
     @patch("graftpunk.cli.session_commands.load_session")
     def test_export_oserror(self, mock_load):

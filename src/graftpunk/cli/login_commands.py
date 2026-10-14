@@ -14,9 +14,10 @@ from typing import Any
 import typer
 from rich.status import Status
 
+from graftpunk import _distribution, workstation_env
 from graftpunk import console as gp_console
-from graftpunk import workstation_env
 from graftpunk.cache import get_session_metadata
+from graftpunk.cli.errors import exit_missing_browser_stack
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import (
     CLIPluginProtocol,
@@ -200,7 +201,18 @@ def make_login_body(
     if password_envvar:
         envvar_overrides["password"] = password_envvar
 
+    # A login generated from login_config drives a browser; a hand-written
+    # login() may be plain requests, so only the generated one is checked.
+    generated = login_method(plugin) is None and has_declarative_login(plugin)
+
     def body(ctx: typer.Context, **kwargs: Any) -> None:
+        if generated:
+            # Before any prompt or workstation env lookup: a $(...) credential
+            # command must not run, nor a password be typed, for a login that
+            # cannot start.
+            absent = _distribution.absent_browser_module(getattr(plugin, "backend", ""))
+            if absent is not None:
+                exit_missing_browser_stack(ctx.command_path, absent)
         login_method = login_callable
         # --headless -> True, --headful -> False, neither -> None (LoginConfig decides).
         want_headless = bool(kwargs.pop("headless", False))
@@ -309,6 +321,9 @@ def make_login_body(
         except (SystemExit, KeyboardInterrupt):
             raise
         except Exception as exc:  # noqa: BLE001 — CLI boundary: present user-friendly error instead of traceback
+            module = _distribution.missing_browser_module(exc)
+            if module is not None:
+                exit_missing_browser_stack(ctx.command_path, module)
             LOG.exception(
                 "plugin_login_failed",
                 plugin=plugin.site_name,

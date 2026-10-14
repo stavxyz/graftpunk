@@ -1,5 +1,6 @@
 """Session management commands — gp session list/show/clear/export."""
 
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, cast
 
@@ -16,6 +17,7 @@ from graftpunk import (
     list_sessions_with_metadata,
     load_session,
 )
+from graftpunk.cli.errors import needs_browser_stack
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.exceptions import (
     GraftpunkError,
@@ -231,6 +233,7 @@ def show(
 
 
 @session_app.command("export")
+@needs_browser_stack
 def export(
     ctx: typer.Context,
     name: Annotated[
@@ -253,7 +256,9 @@ def export(
 
     Exports cookies so you can use them with HTTPie:
 
-        http --session=SESSION https://example.com/api
+        http --session=PATH https://example.com/api
+
+    where PATH is the exported file, which the command prints.
     """
     backend_override = ctx.obj.get("storage_backend") if ctx.obj else None
     name = resolve_session_name_or_exit(name, backend_override=backend_override)
@@ -269,14 +274,24 @@ def export(
         console.print(f"[red]✗ Failed to load: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 
+    # httpie is part of the browser stack, which load_session above needed.
+    from httpie.config import ConfigFileError
+
     try:
         browser_session = cast("BrowserSession", session)
-        httpie_path = browser_session.save_httpie_session(name)
+        httpie_path = browser_session.save_httpie_session(name, output=output)
 
         console.print(f"[green]✓ Exported to:[/green] {escape(str(httpie_path))}\n")
         console.print("[dim]Usage:[/dim]")
-        console.print(f"  http --session={escape(str(name))} https://example.com/api")
-    except (OSError, AttributeError) as exc:
+        # HTTPie reads a --session value containing a path separator as that
+        # file; a bare name would be looked up under sessions/<host>/ instead.
+        session_arg = shlex.quote(str(httpie_path))
+        # One line however narrow the terminal: a wrapped path pastes as two
+        # arguments.
+        console.print(
+            f"  http --session={escape(session_arg)} https://example.com/api", soft_wrap=True
+        )
+    except (OSError, AttributeError, ConfigFileError) as exc:
         console.print(f"[red]✗ Export failed: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None
 

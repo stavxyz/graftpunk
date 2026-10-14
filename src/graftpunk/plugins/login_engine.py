@@ -792,7 +792,6 @@ async def _run_nodriver_steps(
 
 def _generate_selenium_login(plugin: SitePlugin) -> Any:
     """Generate sync login method for selenium backend."""
-    import selenium.common.exceptions
 
     def login(
         credentials: dict[str, str],
@@ -827,6 +826,10 @@ def _generate_selenium_login(plugin: SitePlugin) -> Any:
         login_target = _resolve_url(base_url, login_url)
         failure_text = plugin.login_config.failure
         run_headless = plugin.login_config.headless if headless is None else headless
+
+        # Imported per call, not when the login is generated: generation runs
+        # as the plugin registers, and graftpunk-lite has no selenium.
+        import selenium.common.exceptions
 
         from graftpunk import BrowserSession  # lazy: graftpunk-lite may lack it
 

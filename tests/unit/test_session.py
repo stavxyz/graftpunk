@@ -652,7 +652,6 @@ class TestSaveHttpieSession:
 
             expected = Path("/tmp/httpie-test") / "sessions" / "test-session.json"  # noqa: S108
             assert result == expected
-            mock_httpie_session.load.assert_called_once()
             mock_httpie_session.save.assert_called_once()
 
     def test_save_httpie_session_uses_provided_name(self):
@@ -686,8 +685,33 @@ class TestSaveHttpieSession:
                 session.save_httpie_session(session_name="custom-name")
 
             # Verify it used the custom name (the path contains it)
-            mock_httpie_session.load.assert_called_once()
             mock_httpie_session.save.assert_called_once()
+
+    def test_a_second_export_to_the_same_file_writes_the_new_cookies(self, tmp_path):
+        """Exporting over an existing file replaces its cookies instead of keeping them."""
+        import json
+
+        import requests
+
+        from graftpunk.session import BrowserSession
+
+        target = tmp_path / "myshop.json"
+        with patch.object(BrowserSession, "__init__", return_value=None):
+            session = BrowserSession.__new__(BrowserSession)
+            session._backend_type = "selenium"
+            session._backend_instance = None
+            session._session_name = "myshop"
+            requests.Session.__init__(session)
+            session._webdriver = MagicMock()
+            session._webdriver.current_url = "https://example.com/"
+
+            session.cookies.set("token", "old")
+            session.save_httpie_session(output=target)
+            session.cookies.set("token", "new")
+            session.save_httpie_session(output=target)
+
+        cookies = json.loads(target.read_text())["cookies"]
+        assert [(c["name"], c["value"]) for c in cookies] == [("token", "new")]
 
 
 class TestInitNodriverBackend:

@@ -21,6 +21,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from graftpunk.cli.errors import needs_browser_stack
 from graftpunk.cli.observe_browser import run_observe_go, run_observe_interactive
 from graftpunk.cli.plugin_commands import resolve_session_name_or_exit
 from graftpunk.console import err_console
@@ -660,6 +661,7 @@ def _resolve_observe_context(ctx: typer.Context, url: str) -> tuple[str, str | N
 
 
 @observe_app.command("go")
+@needs_browser_stack
 def observe_go(
     ctx: typer.Context,
     url: Annotated[
@@ -701,6 +703,7 @@ def observe_go(
 
 
 @observe_app.command("interactive")
+@needs_browser_stack
 def observe_interactive(
     ctx: typer.Context,
     url: Annotated[

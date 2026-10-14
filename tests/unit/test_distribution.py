@@ -115,3 +115,15 @@ def test_browser_modules_name_every_browser_only_package() -> None:
     assert sorted(canonicalize_name(m) for m in _distribution.BROWSER_MODULES) == sorted(
         canonicalize_name(p) for p in browser_only
     )
+
+
+def test_a_browser_module_stubbed_without_a_spec_does_not_break_the_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A test double in sys.modules has no __spec__, which find_spec rejects with ValueError."""
+    stub = type(sys)("nodriver")
+    stub.__spec__ = None
+    monkeypatch.setitem(sys.modules, "nodriver", stub)
+
+    assert _distribution.absent_browser_module() is None
+    assert _distribution.has_browser_stack() is True
