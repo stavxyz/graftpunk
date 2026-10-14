@@ -9,6 +9,8 @@ evicted too, so they are imported again and fail as they would on lite.
 from __future__ import annotations
 
 import importlib
+import os
+import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
@@ -26,7 +28,8 @@ from tests.unit.test_cache import _setup_local_env
 
 runner = CliRunner()
 
-_FIX = Path(__file__).parent.parent / "fixtures"
+_REPO = Path(__file__).parent.parent.parent
+_FIX = _REPO / "tests" / "fixtures"
 
 # graftpunk modules that import the browser stack when they load.
 _BROWSER_BOUND = ("graftpunk.session", "graftpunk.stealth", "graftpunk.cli.plugin_runtime")
@@ -243,3 +246,45 @@ def test_missing_browser_module_follows_the_cause() -> None:
             raise ImportError("Loading the cached session requires the browser stack") from inner
     except ImportError as outer:
         assert _distribution.missing_browser_module(outer) == "httpie"
+
+
+_CAPTURED_STDOUT_RUN = """
+import sys
+
+from tests.unit.cli_harness import invoke_plugin_app
+from tests.unit.test_lite_cli_hints import _shop_plugin
+
+assert "graftpunk.session" not in sys.modules, "graftpunk.session loaded before registration"
+result = invoke_plugin_app(_shop_plugin("nodriver"), ["myshop", "items"])
+print("exit", result.exit_code)
+print(result.output)
+"""
+
+
+def test_a_plugin_command_runs_under_captured_stdout_on_the_full_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A plugin author's CliRunner test, loading a cached session, exits 0.
+
+    Loading the session needs graftpunk.session, whose httpie import calls
+    sys.stdout.fileno(), which CliRunner's captured stdout does not have. Run
+    in a fresh interpreter, so registration makes the first import, as in a
+    plugin author's test process.
+    """
+    _cache_fixture_session(tmp_path, monkeypatch)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("GRAFTPUNK_SESSION", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _CAPTURED_STDOUT_RUN],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(_REPO)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "exit 0" in result.stdout, result.stdout
+    assert '"ok": true' in result.stdout, result.stdout
