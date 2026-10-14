@@ -3,11 +3,12 @@
 #
 # The lite-install contract, checked against built wheels: each wheel goes into
 # its own clean venv under VENV_ROOT (a temporary directory, removed afterwards,
-# when VENV_ROOT is not given; VENV_ROOT/lite and VENV_ROOT/full are recreated on
-# every run); graftpunk-lite (no extras) must import, keep a working gp CLI,
-# load a cached session browser-free and name its own extra in a missing-browser
-# error, all without the browser stack, and graftpunk must have that stack. Run
-# from the repository root (it reads tests/fixtures).
+# when VENV_ROOT is not given; VENV_ROOT/lite, VENV_ROOT/full and
+# VENV_ROOT/lite-config are recreated on every run); graftpunk-lite (no extras)
+# must import, keep a working gp CLI (gp version, gp session list and
+# gp plugins), load a cached session browser-free and name its own extra in a
+# missing-browser error, all without the browser stack, and graftpunk must have
+# that stack. Run from the repository root (it reads tests/fixtures).
 # Used by the "Lite install" job in python-quality.yml and by the release build
 # before anything is published, so both check the same things.
 set -euo pipefail
@@ -63,6 +64,17 @@ case "$lite_version" in
   *"graftpunk-lite "[0-9]*) echo "gp version names graftpunk-lite OK" ;;
   *) printf 'gp version on graftpunk-lite does not name it:\n%s\n' "$lite_version" >&2; exit 1 ;;
 esac
+
+echo "== gp session list and gp plugins run on lite"
+# An empty config directory of the run's own, so the user's sessions and
+# settings are neither read nor written.
+lite_config="$root/lite-config"
+rm -rf "$lite_config"
+GRAFTPUNK_CONFIG_DIR="$lite_config" GRAFTPUNK_STORAGE_BACKEND=local \
+  "$lite/gp" session list > /dev/null
+GRAFTPUNK_CONFIG_DIR="$lite_config" GRAFTPUNK_STORAGE_BACKEND=local \
+  "$lite/gp" plugins > /dev/null
+echo "gp session list and gp plugins OK"
 "$lite/python" - <<'PY'
 import subprocess, sys
 # The CLI import itself must not drag in the browser stack.
