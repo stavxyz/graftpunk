@@ -76,9 +76,8 @@ is already installed puts both distributions in the same environment, and
 uninstalling either then deletes files the other needs. To use a plugin's
 browser-free parts with `graftpunk-lite` (replaying a session through
 `load_session_for_api_from_bytes` under Pyodide or Cloudflare Python Workers;
-its `gp` commands need `graftpunk-lite[browser]`),
-install the plugin without its
-dependencies and install its other requirements by hand:
+its `gp` commands need `graftpunk-lite[browser]`), install the plugin without
+its dependencies and install its other requirements by hand:
 
 ```bash
 pip install graftpunk-lite

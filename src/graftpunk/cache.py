@@ -707,9 +707,8 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
     No browser *process* is started — but this does go through
     :func:`load_session`, which reconstructs the real cached object and so needs
     the browser *package* importable (on graftpunk-lite, its ``[browser]`` extra).
-    For a genuinely
-    browser-free load — e.g. under Pyodide / Cloudflare Workers — use
-    :func:`load_session_for_api_from_bytes`, which stubs the browser classes
+    For a browser-free load (under Pyodide or Cloudflare Workers, for example),
+    use :func:`load_session_for_api_from_bytes`, which stubs the browser classes
     instead of importing them.
 
     A thin wrapper over :func:`load_session_for_api_resolved`, which owns the

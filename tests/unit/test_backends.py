@@ -859,8 +859,7 @@ class TestGetBackendImportError:
 
         "No module named 'nodriver'" alone doesn't tell the caller what to do;
         on graftpunk-lite every browser backend lives behind its [browser] extra,
-        so the message
-        must say so.
+        so the message must say so.
         """
         with patch("graftpunk.backends.import_module") as mock_import:
             mock_import.side_effect = ImportError("No module named 'nodriver'")
