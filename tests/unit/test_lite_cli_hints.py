@@ -521,12 +521,13 @@ from tests.unit.test_lite_cli_hints import _shop_plugin
 
 assert "graftpunk.session" not in sys.modules, "graftpunk.session loaded before the client call"
 real_stdout = sys.stdout
-sys.stdout = io.StringIO()
+captured = io.StringIO()
+sys.stdout = captured
 try:
     graftpunk.client.get_plugin = lambda name: _shop_plugin("nodriver")
     with graftpunk.client.GraftpunkClient("myshop") as client:
         result = client.items()
-    captured_stdout_kept = sys.stdout is not real_stdout
+    captured_stdout_kept = sys.stdout is captured
 finally:
     sys.stdout = real_stdout
 print(json.dumps({
