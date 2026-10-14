@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.20.0] - 2026-10-14
 
 This is a minor release. `graftpunk` is the full install again, with the browser stack among its dependencies, and the browser-free install is a new distribution, `graftpunk-lite`. The synchronous `nodriver` backend works: one event loop for the browser, cookies set and read through CDP, and Chrome and its temp profile ended on every failure and interrupt path. CI tests Python 3.14. It ships in a minor rather than a patch release because what `graftpunk` installs changes on the first run after the upgrade, and plain `graftpunk` no longer installs under Pyodide or Cloudflare Python Workers (Upgrading, item 1).
 
