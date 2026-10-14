@@ -8,9 +8,8 @@
 # what to do, and exits 1. When gp comes from graftpunk-lite, which has no
 # browser stack, it also prints LITE_NOTE on stderr, on success or failure, and
 # names graftpunk-lite in the upgrade command. On success it passes on whatever
-# the version question wrote to stderr, such as gp's warning that graftpunk and
-# graftpunk-lite are both installed. The failures, each with its own
-# message:
+# the version question wrote to stderr, such as gp's warning that graftpunk
+# and graftpunk-lite are both installed. The failures, each with its own message:
 #   gp is not on PATH
 #   uv is not on PATH (the skill runs every command that loads the plugin through
 #     uv run; preflight only looks for it)
