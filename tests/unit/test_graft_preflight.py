@@ -107,18 +107,21 @@ def _fake_gp(
     info_json: str = _INFO_EMPTY,
     info_exit: int = 0,
     distribution: str = "graftpunk",
+    browser: bool = True,
 ) -> Path:
     """A gp that answers exactly the three calls preflight makes, as told: the plain
-    version panel naming *distribution*, the version question, and plugin info. It
-    writes the arguments of its version question, one per line, to version-args
-    beside itself."""
+    version panel naming *distribution* (with gp's line for a missing browser stack
+    unless *browser*), the version question, and plugin info. It writes the
+    arguments of its version question, one per line, to version-args beside
+    itself."""
+    browser_line = "" if browser else "| Browser: not installed, so gp cannot record |"
     fake = tmp_path / "fake"
     fake.mkdir()
     script = fake / "gp"
     script.write_text(
         f"""#!{BASH}
 if [ "$1" = version ] && [ $# -eq 1 ]; then
-  printf '%s\\n' '| {distribution} 9.9.9 |'
+  printf '%s\\n' '| {distribution} 9.9.9 |' '{browser_line}'
   exit 0
 fi
 if [ "$1" = version ]; then
@@ -379,20 +382,36 @@ class TestPreflightWithAFakeGp:
         }
         assert result.stderr == ""
 
-    def test_on_graftpunk_lite_success_relays_and_notes_the_full_install(
+    def test_on_graftpunk_lite_without_the_browser_stack_success_relays_and_notes_it(
         self, tmp_path: Path, dirs: tuple[Path, Path, Path]
     ) -> None:
-        """graftpunk-lite cannot record or log in, which the skill's steps need."""
+        """Without the browser stack gp cannot record or log in, which the skill's
+        steps need."""
         work, home, tools = dirs
-        result = _preflight(work, home, _fake_gp(tmp_path, distribution="graftpunk-lite"), tools)
+        fake = _fake_gp(tmp_path, distribution="graftpunk-lite", browser=False)
+        result = _preflight(work, home, fake, tools)
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {
             "installation": json.loads(_VERSION_OK),
             "project": json.loads(_INFO_EMPTY),
         }
         assert result.stderr.strip() == _constant("LITE_NOTE")
-        for phrase in ("recording a site and logging in", "uv tool install graftpunk"):
+        for phrase in (
+            "cannot record a site or log in",
+            "uv tool install --force 'graftpunk-lite[browser]'",
+            "uv tool install graftpunk ",
+        ):
             assert phrase in result.stderr, phrase
+
+    @pytest.mark.parametrize("distribution", ["graftpunk-lite", "graftpunk"])
+    def test_with_the_browser_stack_success_prints_no_note(
+        self, tmp_path: Path, dirs: tuple[Path, Path, Path], distribution: str
+    ) -> None:
+        """graftpunk-lite[browser] records and logs in as graftpunk does."""
+        work, home, tools = dirs
+        result = _preflight(work, home, _fake_gp(tmp_path, distribution=distribution), tools)
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == ""
 
     def test_on_success_gps_both_installed_warning_reaches_stderr(
         self, tmp_path: Path, dirs: tuple[Path, Path, Path]
@@ -427,7 +446,7 @@ class TestPreflightWithAFakeGp:
     ) -> None:
         """Upgrading the other distribution would install it over this one."""
         work, home, tools = dirs
-        fake = _fake_gp(tmp_path, version_exit=1, distribution=distribution)
+        fake = _fake_gp(tmp_path, version_exit=1, distribution=distribution, browser=False)
         result = _preflight(work, home, fake, tools)
         assert result.returncode == 1
         assert upgrade in result.stderr
