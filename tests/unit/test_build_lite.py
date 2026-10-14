@@ -181,8 +181,10 @@ def test_lite_readme_promises_only_the_browser_free_session_load() -> None:
 
 def test_lite_readme_names_what_gp_does_without_the_browser_extra() -> None:
     """Checked against a clean graftpunk-lite venv: these commands run, loading a
-    cached session needs [browser], and a plugin needs graftpunk (installing one
-    --no-deps on lite makes every gp run report it failed to load)."""
+    cached session needs [browser], and a plugin needs the browser stack
+    (installing one --no-deps on bare lite makes every gp run report it failed to
+    load). Plugins declare graftpunk[browser], so the README sends them to
+    graftpunk."""
     flat = " ".join(build_lite.lite_readme("1.20.0").split())
     assert (
         "On graftpunk-lite, `gp version`, `gp session list`, `gp session show`, "
@@ -198,9 +200,9 @@ def test_lite_readme_names_what_gp_does_without_the_browser_extra() -> None:
         "`graftpunk`."
     ) in flat
     assert (
-        "Plugins and their `gp` commands need the browser stack (graftpunk, or "
-        "`graftpunk-lite[browser]`). Plugins declare `graftpunk[browser]`, so installing "
-        "one where graftpunk-lite is installed pulls graftpunk in beside it."
+        "Plugins declare `graftpunk[browser]`, so install them where graftpunk is "
+        "installed. Installing one where graftpunk-lite is installed, with or without "
+        "`[browser]`, pulls graftpunk in beside it, the both-installed state to avoid."
     ) in flat
     assert "--no-deps" not in flat
 

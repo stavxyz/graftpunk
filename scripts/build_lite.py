@@ -111,10 +111,10 @@ pip install 'graftpunk-lite[browser]'   # adds the browser stack; equals graftpu
 ```
 
 Install graftpunk-lite or graftpunk, never both: they own the same files, so
-uninstalling either one deletes files the other needs. Plugins and their `gp`
-commands need the browser stack (graftpunk, or `graftpunk-lite[browser]`).
-Plugins declare `graftpunk[browser]`, so installing one where graftpunk-lite is
-installed pulls graftpunk in beside it.
+uninstalling either one deletes files the other needs. Plugins declare
+`graftpunk[browser]`, so install them where graftpunk is installed. Installing
+one where graftpunk-lite is installed, with or without `[browser]`, pulls
+graftpunk in beside it, the both-installed state to avoid.
 
 Full documentation: [{REPOSITORY}/blob/v{version}/README.md]({REPOSITORY}/blob/v{version}/README.md)
 """
