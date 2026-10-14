@@ -427,7 +427,8 @@ class GraftpunkClient:
             SessionNotFoundError: If the session cannot be loaded.
             SessionExpiredError: If the cached session cannot be unpickled.
             ImportError: If the browser package needed to reconstruct the
-                cached session is not installed (the ``[browser]`` extra).
+                cached session is not installed (graftpunk-lite without
+                ``[browser]``).
             AmbiguousSessionError: If several sessions are cached for the
                 plugin's base name and nothing selects one -- an unpinned
                 client (resolved here, on first use, never at construction --

@@ -94,7 +94,9 @@ def __getattr__(name: str) -> Any:  # PEP 562 lazy attribute loading
     A missing browser stack is reported as an ImportError naming the extra to
     install. Without that translation the caller sees the raw transitive failure
     (``No module named 'httpie'``), which names a package they never asked for
-    and gives no hint that ``pip install 'graftpunk[browser]'`` is the fix.
+    and gives no hint that the browser stack is the fix. The message names the
+    install command for the installed distribution
+    (``pip install 'graftpunk-lite[browser]'`` on graftpunk-lite).
 
     Note: ImportError (not AttributeError) is deliberate — this is a missing
     dependency, and ``except ImportError`` is what callers reach for. The

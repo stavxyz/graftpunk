@@ -210,7 +210,7 @@ def test_cli_import_stays_browser_free():
     cli/main.py -> cli/plugin_commands.py -> cli/login_commands.py ->
     plugins/login_engine.py used to do a MODULE-LEVEL
     `from graftpunk import BrowserSession`. The lazy __getattr__ doesn't help
-    there — it just moves where the eager chain fires — so on a base install
+    there — it just moves where the eager chain fires — so on graftpunk-lite
     EVERY `gp` invocation (even `gp --version`) died with
     "ModuleNotFoundError: No module named 'httpie'".
     """
@@ -250,7 +250,7 @@ def test_missing_browser_stack_error_names_the_extra(monkeypatch):
     """A missing browser stack must say what to install.
 
     The raw failure is `No module named 'httpie'` — a package the caller never
-    asked for, with no hint that the [browser] extra is the fix.
+    asked for, with no hint that the browser stack is the fix.
     """
     import graftpunk
 

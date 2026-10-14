@@ -91,7 +91,7 @@ class BrowserBackend(Protocol):
 
         Raises:
             BrowserError: If browser fails to start. This includes missing
-                dependencies (e.g., ``pip install graftpunk[nodriver]``) -
+                dependencies (graftpunk-lite without ``[browser]``);
                 the original ``ImportError`` is chained. Note: the Protocol
                 cannot enforce exception types; implementations may vary.
         """

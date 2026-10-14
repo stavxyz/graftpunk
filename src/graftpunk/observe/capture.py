@@ -17,13 +17,14 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from graftpunk._distribution import install_command
 from graftpunk.logging import get_logger
 
 try:
     from selenium.common.exceptions import WebDriverException as _WebDriverError
 
     _HAS_SELENIUM = True
-except ImportError:  # selenium is an optional extra
+except ImportError:  # graftpunk-lite without its [browser] extra
     _HAS_SELENIUM = False
 
     class _WebDriverError(Exception):
@@ -1475,7 +1476,7 @@ def create_capture_backend(
         )
     if backend_type == "selenium":
         if not _HAS_SELENIUM:
-            msg = "Selenium is not installed. Install it with: pip install selenium"
+            msg = f"Selenium is not installed. Install it with: {install_command('browser')}"
             raise ImportError(msg)
         return SeleniumCaptureBackend(
             driver,

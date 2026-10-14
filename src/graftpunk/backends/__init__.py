@@ -86,7 +86,8 @@ def get_backend(name: str = "selenium", **kwargs: Any) -> BrowserBackend:
     try:
         module = import_module(module_path)
     except ImportError as exc:
-        # Name the extra: every browser backend lives behind [browser], and the
+        # Name the extra: on graftpunk-lite every browser backend lives behind
+        # [browser], and the
         # raw failure ("No module named 'selenium'") doesn't tell the caller that.
         raise ImportError(
             f"Backend '{name}' requires the browser automation stack, which is not "

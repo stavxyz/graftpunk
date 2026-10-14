@@ -415,10 +415,10 @@ def _load_session_with_metadata(
         # NOTE: this deliberately uses the plain unpickler, not
         # _deserialize_browserfree: load_session returns the REAL cached object,
         # which update_session_cookies mutates and re-pickles. Stubbing the class
-        # here would let a lean install silently re-save the session as a stub
-        # type and lose its browser state. Callers that only need cookies/headers
-        # should use load_session_for_api_from_bytes, which is browser-free by
-        # design.
+        # here would let graftpunk-lite without [browser] silently re-save the
+        # session as a stub type and lose its browser state. Callers that only
+        # need cookies/headers should use load_session_for_api_from_bytes, which
+        # is browser-free by design.
         session = pickle.loads(decrypted_data)  # noqa: S301
 
         # Runtime validation: verify unpickled object has expected attributes
@@ -706,7 +706,8 @@ def load_session_for_api(name: str, *, resolve: bool = True) -> requests.Session
 
     No browser *process* is started — but this does go through
     :func:`load_session`, which reconstructs the real cached object and so needs
-    the browser *package* importable (the ``[browser]`` extra). For a genuinely
+    the browser *package* importable (on graftpunk-lite, its ``[browser]`` extra).
+    For a genuinely
     browser-free load — e.g. under Pyodide / Cloudflare Workers — use
     :func:`load_session_for_api_from_bytes`, which stubs the browser classes
     instead of importing them.
