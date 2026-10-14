@@ -180,24 +180,25 @@ def test_lite_readme_promises_only_the_browser_free_session_load() -> None:
 
 
 def test_lite_readme_names_what_gp_does_without_the_browser_extra() -> None:
-    """Checked against a clean graftpunk-lite venv: these commands run, loading a
-    cached session needs [browser], and a plugin needs the browser stack
-    (installing one --no-deps on bare lite makes every gp run report it failed to
-    load). Plugins declare graftpunk[browser], so the README sends them to
-    graftpunk."""
+    """Checked against a clean graftpunk-lite venv: these commands run, and so
+    does a plugin command that needs no session (a scaffolded plugin installed
+    --no-deps on bare lite registers); loading a cached session or driving a
+    browser needs [browser]. Plugins declare graftpunk[browser], so the README
+    sends them to graftpunk."""
     flat = " ".join(build_lite.lite_readme("1.20.0").split())
     assert (
         "On graftpunk-lite, `gp version`, `gp session list`, `gp session show`, "
-        "`gp config`, `gp plugins`, `gp http` with `--no-session`, and "
-        "`load_session_for_api_from_bytes` work."
+        "`gp config`, `gp plugins`, `gp http` with `--no-session`, a plugin command "
+        "that needs no session, and `load_session_for_api_from_bytes` work."
     ) in flat
     assert (
         "Everything that loads a cached session from the session store "
         "(`load_session_for_api`, `gp http` with a session from `--session`, "
-        "`gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`), every "
-        "command that drives a browser (recording with `gp observe`, and a plugin's "
-        "`login` command), and a plugin's own commands need `graftpunk-lite[browser]` or "
-        "`graftpunk`."
+        "`gp session use` or `GRAFTPUNK_SESSION`, a plugin command that uses its "
+        "session, and `gp session export`) and every command that drives a browser "
+        "(recording with `gp observe`, and a plugin's `login` command) need "
+        "`graftpunk-lite[browser]` or `graftpunk`; without it, those commands print "
+        "the install command and exit 1."
     ) in flat
     assert (
         "Plugins declare `graftpunk[browser]`, so install them where graftpunk is "

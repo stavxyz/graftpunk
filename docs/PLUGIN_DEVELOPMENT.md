@@ -76,13 +76,14 @@ already installed puts both distributions in the same environment, and
 uninstalling either then deletes files the other needs. `graftpunk-lite` is for
 loading a saved session with `load_session_for_api_from_bytes` under Pyodide or
 Cloudflare Python Workers. On graftpunk-lite, `gp version`, `gp session list`,
-`gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, and
-`load_session_for_api_from_bytes` work. Everything that loads a cached session
-from the session store (`load_session_for_api`, `gp http` with a session from
-`--session`, `gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`),
-every command that drives a browser (recording with `gp observe`, and a plugin's
-`login` command), and a plugin's own commands need `graftpunk-lite[browser]` or
-`graftpunk`.
+`gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, a
+plugin command that needs no session, and `load_session_for_api_from_bytes`
+work. Everything that loads a cached session from the session store
+(`load_session_for_api`, `gp http` with a session from `--session`,
+`gp session use` or `GRAFTPUNK_SESSION`, a plugin command that uses its session,
+and `gp session export`) and every command that drives a browser (recording with
+`gp observe`, and a plugin's `login` command) need `graftpunk-lite[browser]` or
+`graftpunk`; without it, those commands print the install command and exit 1.
 
 The file loader is for a throwaway script that imports nothing but graftpunk.
 It has two failure modes that cost real time:

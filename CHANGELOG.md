@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **On graftpunk-lite without `[browser]`, every `gp` command that needs the browser stack says how to add it** (#246). `gp observe go` and `gp observe interactive` failed with a raw `ModuleNotFoundError: No module named 'nodriver'`, and `gp session export` printed a traceback. They now print `gp observe go needs the browser automation stack, which is not installed (no module named 'nodriver')` followed by the `uv tool install --force 'graftpunk-lite[browser]'` and `pip install 'graftpunk-lite[browser]'` commands, and exit 1. `gp http` with a cached session prints the same message, where it printed a longer error naming only the pip command, and so do a plugin's `login` command and a plugin command that loads a cached session, which the next entry makes reachable. An import failure for a module outside the browser stack still propagates as before.
+- **Plugins load on graftpunk-lite.** Registering any plugin imported `graftpunk.session`, which needs the browser stack, so on graftpunk-lite every plugin failed to load (`No module named 'httpie'`) and `gp <site> ...` answered `No such command`; a plugin with a declarative selenium login also imported selenium at registration. Both imports now happen only when they are needed, so a plugin command that needs no session (`requires_session = false`) runs on graftpunk-lite, and `login` and the session-loading commands print the install hint above.
+
 ## [1.20.0] - 2026-10-14
 
 This is a minor release. `graftpunk` is the full install again, with the browser stack among its dependencies, and the browser-free install is a new distribution, `graftpunk-lite`. The synchronous `nodriver` backend works: one event loop for the browser, cookies set and read through CDP, and Chrome and its temp profile ended on the failure and interrupt paths that used to leave them running (a Chrome still running after SIGKILL keeps its profile, as Fixed describes). CI tests Python 3.14. It ships in a minor rather than a patch release because what `graftpunk` installs changes on the first run after the upgrade, and plain `graftpunk` no longer installs under Pyodide or Cloudflare Python Workers (Upgrading, item 1).
