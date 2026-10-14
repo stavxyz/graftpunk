@@ -808,8 +808,8 @@ class NoDriverBackend:
         ``Page.stopLoading`` (waiting up to 2 s for its answer) before it
         raises. The tab then stays on the page it showed before and answers
         at once. A Chrome too frozen to answer in those 2 s gets the command
-        when it resumes, and a failure to send it is logged as
-        ``nodriver_backend_stop_loading_failed``.
+        when it resumes. When the stop fails, or gets no answer within its
+        2 s, graftpunk logs ``nodriver_backend_stop_loading_failed``.
 
         ``None`` turns a limit off. ``start()``, ``stop()``, ``stop_async()``,
         and async code awaiting nodriver's objects directly are not limited.
@@ -1147,14 +1147,11 @@ class NoDriverBackend:
             # half-started browser) should finish before the caller moves on.
             cancel_and_wait()
             raise
-        # The call finished between wait() returning and this check: it did
-        # not run out of time, so it gets its own outcome.
-        if future.done() and not future.cancelled():
-            return future.result()
         # The call ran out of time. Cancel it so it does not hold the tab,
         # and leave the loop running for the next call.
         cancel_and_wait()
-        # The coroutine ran to the end before the cancel reached it.
+        # The coroutine ran to the end before the cancel reached it (including
+        # between wait() returning and the cancel): it gets its own outcome.
         if "result" in outcome:
             return outcome["result"]
         if "error" in outcome:
@@ -1796,17 +1793,15 @@ class NoDriverBackend:
         """Send ``Page.stopLoading`` to the tab ``navigate()`` navigates."""
         import nodriver.cdp.page as cdp_page
 
-        tab = self._page
+        # Browser.get navigates the browser's first page target, which is not
+        # self._page once the recorded tab has been closed, so the stop goes
+        # to the same target. Browser.tabs lists the page targets in that
+        # order in nodriver 0.48 and 0.50 (main_tab picks differently in 0.48).
+        browser = self._browser
+        tabs = browser.tabs if browser is not None else []
+        tab = tabs[0] if tabs else self._page
         if tab is None:
-            # No tab recorded yet: Browser.get navigates the browser's first
-            # page target, and sets self._page only once Chrome has answered.
-            # Browser.tabs lists the page targets in that order in nodriver
-            # 0.48 and 0.50 (main_tab picks differently in 0.48).
-            browser = self._browser
-            tabs = browser.tabs if browser is not None else []
-            if not tabs:
-                return
-            tab = tabs[0]
+            return
         await tab.send(cdp_page.stop_loading())
 
     def _stop_pending_navigation(self) -> None:
@@ -1840,7 +1835,7 @@ class NoDriverBackend:
             BrowserError: If navigation fails, the browser cannot start, or
                 the navigation does not finish within ``navigate_timeout``.
                 On a timeout, Chrome is told to stop loading the URL first
-                (which can add up to 2 s), so the tab stays on the page it
+                (a wait with its own 2 s limit), so the tab stays on the page it
                 showed before and the next call works.
         """
         if not self.is_running:

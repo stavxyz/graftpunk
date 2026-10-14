@@ -4384,6 +4384,29 @@ class TestNoDriverBackendCallTimeout:
         assert backend.current_url == "https://example.com/"
         backend.stop()
 
+    def test_a_navigate_stops_the_first_page_target_even_when_another_tab_is_recorded(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        """Browser.get navigates the first page target, not a recorded tab since closed."""
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT)
+        backend.start()
+        first_tab = fake_chrome.browsers[0].tabs[0]
+        sent_to_recorded: list[Any] = []
+
+        async def record(command: Any) -> None:
+            sent_to_recorded.append(command)
+
+        backend._page = SimpleNamespace(send=record)
+        fake_chrome.hang_get = True
+
+        with pytest.raises(BrowserError):
+            backend.navigate("https://example.com/slow")
+
+        assert first_tab.stop_loading_calls == 1
+        assert sent_to_recorded == []
+        fake_chrome.hang_get = False
+        backend.stop()
+
     @pytest.mark.parametrize("failure", ["raises", "hangs"])
     def test_a_stop_loading_that_fails_is_logged_and_the_navigate_error_stands(
         self,
@@ -4575,9 +4598,11 @@ class TestNoDriverBackendCallTimeout:
         import concurrent.futures
 
         backend = with_private_loop(NoDriverBackend())
+        entered = threading.Event()
         cancelled = threading.Event()
 
         async def work() -> str:
+            entered.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
@@ -4586,6 +4611,9 @@ class TestNoDriverBackendCallTimeout:
             return "unreachable"
 
         def wait_that_expires(fs: Any, timeout: Any = None) -> Any:
+            # Expire only once the call is running, so the cancel reaches a
+            # started coroutine rather than one the loop never began.
+            entered.wait(timeout=5)
             return SimpleNamespace(done=set(), not_done=set(fs))
 
         monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires)
