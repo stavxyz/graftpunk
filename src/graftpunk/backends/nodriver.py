@@ -741,7 +741,9 @@ class NoDriverBackend:
         propagates; from a coroutine (``start_async()``, ``stop_async()``)
         that end runs on a worker thread, so the caller's loop keeps running.
         Chrome's subprocess transport is closed on its loop's thread once the
-        loop has collected Chrome's exit status (``_close_transport``).
+        loop has collected Chrome's exit status, or after a bounded wait; the
+        close needs that loop to run again, so a loop closed right after the
+        stop without running again leaves it open (``_close_transport``).
 
         ``start()``, ``stop()``, and ``stop_async()`` hold a per-backend lock,
         so two threads starting one backend launch one Chrome, and a stop
@@ -1038,6 +1040,9 @@ class NoDriverBackend:
         has finished (an earlier ``asyncio.run(session.start_async())`` that
         never stopped) cannot be used any more, so it is ended without its
         loop, on a worker thread, and a new one is started here.
+
+        Raises ``RuntimeError`` while a ``stop_async()`` on this thread holds
+        the backend's lock, as ``start()`` does.
         """
         if self._held_by_this_thread():
             raise RuntimeError(_STOPPING_MESSAGE.format(method="start_async"))
@@ -1184,9 +1189,10 @@ class NoDriverBackend:
     ) -> None:
         """Start the browser.
 
-        Idempotent - calling when already started is a no-op. Two threads
-        starting one backend launch one browser: the second waits for the
-        first and then finds it started. A start that fails or is interrupted
+        Calling it when already started is a no-op, except in the two places
+        listed under Raises, where it raises even then. Two threads starting
+        one backend launch one browser: the second waits for the first and
+        then finds it started. A start that fails or is interrupted
         (Ctrl-C) ends the Chrome it launched before raising.
 
         Args:
