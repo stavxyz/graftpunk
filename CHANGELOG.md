@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`gp session export --output` writes the file it names.** The option was ignored: the export always went to `sessions/<session>.json` in HTTPie's config directory (`~/.config/httpie/sessions/` by default), which is still where it goes without `--output`. The printed usage line now names the file when `--output` is given, which is how HTTPie reads a session from a path.
 - **`gp session export` over an existing file writes the session's current cookies.** It read the existing file after setting the cookies, so a second export of a session to the same path kept the cookies from the first.
 
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.4.** Its guide says which `gp` commands run on graftpunk-lite now that plugin commands that need no session load there, and that the rest print the install command.
+
 ## [1.20.0] - 2026-10-14
 
 This is a minor release. `graftpunk` is the full install again, with the browser stack among its dependencies, and the browser-free install is a new distribution, `graftpunk-lite`. The synchronous `nodriver` backend works: one event loop for the browser, cookies set and read through CDP, and Chrome and its temp profile ended on the failure and interrupt paths that used to leave them running (a Chrome still running after SIGKILL keeps its profile, as Fixed describes). CI tests Python 3.14. It ships in a minor rather than a patch release because what `graftpunk` installs changes on the first run after the upgrade, and plain `graftpunk` no longer installs under Pyodide or Cloudflare Python Workers (Upgrading, item 1).
