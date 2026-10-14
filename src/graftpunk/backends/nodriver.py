@@ -754,9 +754,13 @@ class NoDriverBackend:
         reentrant, and no call waits for it while its own thread holds it:
         while a ``stop_async()`` on a thread holds it (paused at an await, or
         suspended on a loop that stopped), a ``stop()`` or ``stop_async()``
-        on that thread ends Chrome without the loop, without the lock, and a
+        on that thread stops the browser itself without the lock (through the
+        browser's loop while that loop runs, and without it otherwise), and a
         ``start()`` or ``start_async()`` there raises ``RuntimeError``. The
         paused ``stop_async()``, if it resumes, finds the backend stopped.
+        Whichever stop finishes first closes the private loop, and only after
+        Chrome has exited, since on Linux its child watcher collects Chrome's
+        exit status.
         ``start_async()`` on a backend already started on a
         running loop, or on the current one, does nothing; one whose loop has
         finished is ended and replaced.
@@ -1524,9 +1528,9 @@ class NoDriverBackend:
         this thread holds: while another ``stop_async()`` on this thread is
         paused at an await (two on one loop, or one left suspended on a loop
         that stopped), it stops the browser itself, as above, and the paused
-        one finds the backend stopped if it resumes. The private loop is
-        closed only after Chrome's exit status is collected, whichever of the
-        two gets there first.
+        one finds the backend stopped if it resumes. Whichever of the two
+        finishes first closes the private loop, and only after Chrome has
+        exited, so the loop's child watcher can still collect its exit status.
 
         When the browser's loop cancels the stop submitted to it (the loop is
         shutting down) and nobody cancelled this call, Chrome is ended without
