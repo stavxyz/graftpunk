@@ -140,10 +140,9 @@ underscores, does not end with a hyphen or underscore, and is at most 40
 characters. It cannot be a reserved top-level `gp` command name (`plugin`,
 `plugins`, `session`, `http`, `config`, `keepalive`, `observe`, `version`, and
 anything else registered by the time plugins attach). It cannot be `lite` (in
-any case), because a standalone project for it would be named
-`graftpunk_lite`, which is graftpunk's own browser-free distribution,
-`graftpunk-lite`. A hyphenated name
-maps to an importable package: `my-shop` becomes the package
+any case), because a standalone project for it would be named `graftpunk_lite`,
+which is graftpunk's own browser-free distribution, `graftpunk-lite`. A
+hyphenated name maps to an importable package: `my-shop` becomes the package
 `graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key `my-shop`,
 and the CLI command `gp my-shop`. `gp plugin new NAME --check-name` checks a
 name against these rules and writes nothing.
@@ -1688,19 +1687,20 @@ URL, or no graftpunk requirement) is left as it is, and they print a `Next:`
 line naming the floor and the requirement as found, and to reinstall. With no
 graftpunk requirement, that line says to add `graftpunk[browser]>=<floor>`, the
 requirement `gp plugin new` writes, whichever distribution `gp` came from. A
-project that requires both `graftpunk` and `graftpunk-lite`, at most one of them
-under an environment marker, gets neither raised, whatever their bounds, and a
-`Next:` line that names both requirements and says to keep `graftpunk`,
-replacing them with `graftpunk[browser]>=<floor>`. When both carry markers (one
-for Pyodide and one elsewhere, say), the two may never install together, so they
-are treated as two graftpunk requirements: a `Next:` line names both when either
-allows a release below the floor. A project whose `[project] dependencies` is
-itself listed in `[project] dynamic` has no array here to raise or name; they
-print `Next: this project's dependencies are dynamic; make sure whatever
-supplies them requires graftpunk[browser]>=<floor>, then reinstall.` On
-graftpunk-lite without its browser stack, each of these three lines adds that
-developing a plugin (recording, logging in) needs that stack, from
-`pip install 'graftpunk-lite[browser]'` or by switching to `graftpunk`.
+project that requires both `graftpunk` and `graftpunk-lite`, unless every one of
+those requirements carries an environment marker, gets none raised, whatever
+their bounds, and a `Next:` line that names the requirements and says to keep
+`graftpunk`, replacing them with `graftpunk[browser]>=<floor>`. When every one
+carries a marker (one for Pyodide and one elsewhere, say), they may never
+install together, so they are treated as graftpunk requirements: a `Next:` line
+names them when any allows a release below the floor. A project whose
+`[project] dependencies` is itself listed in `[project] dynamic` has no array
+here to raise or name; they print `Next: this project's dependencies are
+dynamic; make sure whatever supplies them requires graftpunk[browser]>=<floor>,
+then reinstall.` On graftpunk-lite without its browser stack, each of these
+three lines adds that developing a plugin (recording, logging in) needs that
+stack, from `pip install 'graftpunk-lite[browser]'` or by switching to
+`graftpunk`.
 
 A minimal CI workflow to start from, running the same gate:
 
