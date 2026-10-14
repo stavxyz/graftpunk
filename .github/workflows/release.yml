@@ -12,7 +12,10 @@ name: Release
 # workflow_dispatch (ref: vX.Y.Z) re-runs the pipeline against an existing tag
 # — used to publish a tag that was cut before this workflow existed, or to
 # retry a failed publish (both publish steps use skip-existing, so retries are
-# idempotent).
+# idempotent). A tag cut before graftpunk-lite existed has no
+# scripts/build_lite.py: the build then logs a notice and skips building,
+# checking, smoke-testing and publishing graftpunk-lite, and graftpunk is built
+# and published as before.
 #
 # graftpunk-lite publishes first and graftpunk second, in separate steps, so a
 # lite upload that fails (no trusted publisher for it yet) stops the run before
@@ -120,6 +123,8 @@ jobs:
     name: Build distribution
     needs: [verify, test]
     runs-on: ubuntu-latest
+    outputs:
+      lite: ${{ steps.lite.outputs.build }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -134,29 +139,59 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      # A tag cut before graftpunk-lite existed (published by workflow_dispatch)
+      # has no build script for it; every lite step below is skipped then.
+      - name: Is graftpunk-lite built at this ref
+        id: lite
+        run: |
+          if [ -f scripts/build_lite.py ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::scripts/build_lite.py is absent at this ref, which predates graftpunk-lite: building and publishing graftpunk only."
+          fi
+
       # Separate directories, so each publish step uploads one project's files.
       - name: Build graftpunk (sdist and wheel)
         run: uvx --from build pyproject-build --outdir dist/full
 
       - name: Build graftpunk-lite (sdist and wheel)
+        if: steps.lite.outputs.build == 'true'
         run: uv run --no-project --with packaging python scripts/build_lite.py --out-dir dist/lite
 
       - name: Check distributions
-        run: uvx twine check dist/full/* dist/lite/*
+        env:
+          LITE: ${{ steps.lite.outputs.build }}
+        run: |
+          if [ "$LITE" = true ]; then
+            uvx twine check dist/full/* dist/lite/*
+          else
+            uvx twine check dist/full/*
+          fi
 
-      - name: Verify both distributions carry the tag version
+      - name: Verify the distributions carry the tag version
+        # shell: bash adds pipefail, which the here-strings below are written for.
+        shell: bash
         env:
           TAG: ${{ needs.verify.outputs.tag }}
+          LITE: ${{ steps.lite.outputs.build }}
         run: |
           VERSION="${TAG#v}"
-          ls dist/full dist/lite
-          for f in "full/graftpunk-${VERSION}.tar.gz" "full/graftpunk-${VERSION}-py3-none-any.whl" \
-                   "lite/graftpunk_lite-${VERSION}.tar.gz" "lite/graftpunk_lite-${VERSION}-py3-none-any.whl"; do
+          expected=("full/graftpunk-${VERSION}.tar.gz" "full/graftpunk-${VERSION}-py3-none-any.whl")
+          if [ "$LITE" = true ]; then
+            expected+=("lite/graftpunk_lite-${VERSION}.tar.gz" "lite/graftpunk_lite-${VERSION}-py3-none-any.whl")
+          fi
+          ls dist/*
+          for f in "${expected[@]}"; do
             if [ ! -f "dist/${f}" ]; then
               echo "::error::missing dist/${f} for tag ${TAG}"
               exit 1
             fi
           done
+          if [ "$LITE" != true ]; then
+            echo "graftpunk ${VERSION} built (graftpunk-lite skipped at this ref)"
+            exit 0
+          fi
           META=$(unzip -p "dist/lite/graftpunk_lite-${VERSION}-py3-none-any.whl" \
             "graftpunk_lite-${VERSION}.dist-info/METADATA")
           # A here-string, not a pipe: grep -q exits at the first match, and under
@@ -167,7 +202,9 @@ jobs:
           echo "graftpunk and graftpunk-lite ${VERSION} built"
 
       - name: Install each wheel into a clean venv and check the lite contract
-        # The same script as the "Lite install" job in python-quality.yml.
+        # The same script as the "Lite install" job in python-quality.yml; it
+        # arrived with graftpunk-lite, so it is skipped with it.
+        if: steps.lite.outputs.build == 'true'
         env:
           TAG: ${{ needs.verify.outputs.tag }}
         run: |
@@ -199,6 +236,7 @@ jobs:
           path: dist/
 
       - name: Publish graftpunk-lite to PyPI
+        if: needs.build.outputs.lite == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/lite/
