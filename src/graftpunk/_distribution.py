@@ -72,6 +72,9 @@ def missing_browser_module(exc: BaseException) -> str | None:
     original ``ModuleNotFoundError`` under its own ``ImportError`` (as
     ``load_session`` does). A missing module outside ``BROWSER_MODULES`` is not
     a browser-stack failure and gives ``None``, so its caller can re-raise it.
+    Neither is a missing submodule of a browser package that is installed
+    (``selenium.webdriver.x`` with selenium present): reinstalling the extra
+    would not fix that version skew, and its traceback is the useful report.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -79,10 +82,20 @@ def missing_browser_module(exc: BaseException) -> str | None:
         seen.add(id(current))
         if isinstance(current, ModuleNotFoundError) and current.name:
             top = current.name.partition(".")[0]
-            if top in BROWSER_MODULES:
+            if top in BROWSER_MODULES and not _importable(top):
                 return top
         current = current.__cause__ or current.__context__
     return None
+
+
+def _importable(module: str) -> bool:
+    """Whether top-level *module* can be found. A module whose spec lookup
+    itself fails (a ``sys.modules`` entry without ``__spec__``) is loaded, so
+    it counts as importable."""
+    try:
+        return find_spec(module) is not None
+    except (ImportError, ValueError):
+        return True
 
 
 def install_command(extra: str) -> str:

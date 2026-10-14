@@ -232,13 +232,27 @@ def test_plugin_commands_load_without_the_browser_stack(monkeypatch: pytest.Monk
     ],
 )
 def test_missing_browser_module_names_only_browser_modules(
-    raised: ImportError, expected: str | None
+    monkeypatch: pytest.MonkeyPatch, raised: ImportError, expected: str | None
 ) -> None:
+    _without_browser_stack(monkeypatch)
+
     assert _distribution.missing_browser_module(raised) == expected
 
 
-def test_missing_browser_module_follows_the_cause() -> None:
+@pytest.mark.parametrize(
+    "name", ["selenium.webdriver.nonexistent", "httpie.nonexistent", "nodriver"]
+)
+def test_a_module_missing_from_an_installed_browser_package_is_not_the_stack(name: str) -> None:
+    """With the stack installed, a missing submodule is version skew: reinstalling
+    the extra would not fix it, so its error must reach the user as it is."""
+    assert _distribution.has_browser_stack()
+
+    assert _distribution.missing_browser_module(ModuleNotFoundError(name=name)) is None
+
+
+def test_missing_browser_module_follows_the_cause(monkeypatch: pytest.MonkeyPatch) -> None:
     """load_session re-raises the unpickler's failure under its own ImportError."""
+    _without_browser_stack(monkeypatch)
     try:
         try:
             raise ModuleNotFoundError("No module named 'httpie'", name="httpie")
@@ -246,6 +260,104 @@ def test_missing_browser_module_follows_the_cause() -> None:
             raise ImportError("Loading the cached session requires the browser stack") from inner
     except ImportError as outer:
         assert _distribution.missing_browser_module(outer) == "httpie"
+
+
+def test_a_missing_submodule_of_an_installed_browser_package_propagates() -> None:
+    """Version skew on the full install: the real error and its traceback, not the hint."""
+    from graftpunk.cli.errors import needs_browser_stack
+
+    app = typer.Typer()
+
+    @app.command()
+    @needs_browser_stack
+    def go(ctx: typer.Context) -> None:
+        import selenium.webdriver.no_such_submodule  # noqa: F401
+
+    result = runner.invoke(app, [])
+
+    assert isinstance(result.exception, ModuleNotFoundError)
+    assert result.exception.name == "selenium.webdriver.no_such_submodule"
+    assert "needs the browser automation stack" not in _flat(result.output)
+
+
+# Neither is the browser stack missing: jmespath is not a browser module, and a
+# missing submodule of an installed selenium is version skew.
+_NOT_THE_STACK = ["jmespath", "selenium.webdriver.no_such_submodule"]
+
+
+@pytest.mark.usefixtures("_no_ambient_session")
+@pytest.mark.parametrize("module", _NOT_THE_STACK)
+def test_plugin_login_keeps_other_import_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, module: str
+) -> None:
+    from graftpunk.plugins.cli_plugin import SitePlugin
+
+    class HandWritten(SitePlugin):
+        site_name = "myshop"
+        base_url = "https://example.com"
+        session_name = "myshop"
+
+        def login(self, credentials: dict[str, str]) -> bool:
+            raise ModuleNotFoundError(f"No module named {module!r}", name=module)
+
+    _setup_local_env(tmp_path, monkeypatch)
+
+    result = invoke_plugin_app(
+        HandWritten(),
+        ["myshop", "login"],
+        MYSHOP_USERNAME="u",
+        MYSHOP_PASSWORD="p",  # noqa: S106
+    )
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert f"Login failed: No module named '{module}'" in output, output
+    assert "needs the browser automation stack" not in output, output
+
+
+@pytest.mark.usefixtures("_no_ambient_session")
+@pytest.mark.parametrize("module", _NOT_THE_STACK)
+def test_plugin_session_load_keeps_other_import_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, module: str
+) -> None:
+    # Not "import ... as": other tests here re-import plugin_runtime, which
+    # leaves graftpunk.cli's attribute on a copy registration does not use.
+    runtime = importlib.import_module("graftpunk.cli.plugin_runtime")
+
+    def load(*_args: object, **_kwargs: object) -> None:
+        raise ModuleNotFoundError(f"No module named {module!r}", name=module)
+
+    _cache_fixture_session(tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime, "load_session_for_api_resolved", load)
+
+    result = invoke_plugin_app(_shop_plugin("nodriver"), ["myshop", "items"])
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert f"Failed to load session: No module named '{module}'" in output, output
+    assert "needs the browser automation stack" not in output, output
+
+
+@pytest.mark.usefixtures("_no_ambient_session")
+@pytest.mark.parametrize("module", _NOT_THE_STACK)
+def test_http_session_load_keeps_other_import_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, module: str
+) -> None:
+    import graftpunk.cli.http_commands as http_commands
+    from graftpunk.cli.main import app
+
+    def load(*_args: object, **_kwargs: object) -> None:
+        raise ModuleNotFoundError(f"No module named {module!r}", name=module)
+
+    _cache_fixture_session(tmp_path, monkeypatch)
+    monkeypatch.setattr(http_commands, "load_session_for_api_resolved", load)
+
+    result = runner.invoke(app, ["http", "get", "--session", "myshop", "https://example.com"])
+
+    output = _flat(result.output)
+    assert result.exit_code == 1, output
+    assert f"Failed to load session 'myshop': No module named '{module}'" in output, output
+    assert "needs the browser automation stack" not in output, output
 
 
 _CAPTURED_STDOUT_RUN = """
