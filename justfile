@@ -61,13 +61,14 @@ skill-version BASE="origin/main":
 # Building & Publishing
 # --------------------------------------------------------------------------
 
-# Build package (sdist and wheel)
+# Build graftpunk and graftpunk-lite (an sdist and a wheel each)
 build: clean
     uvx --from build pyproject-build
+    uv run --no-project --with packaging python scripts/build_lite.py --out-dir dist
     @echo "✅ Built dist/"
     @ls -la dist/
 
-# Check package before upload
+# Check both distributions before upload
 check-dist: build
     uvx twine check dist/*
 
