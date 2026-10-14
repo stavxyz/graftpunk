@@ -7,7 +7,9 @@
 # and exits 0. Otherwise prints one message on stderr, naming what failed and
 # what to do, and exits 1. When gp comes from graftpunk-lite, which has no
 # browser stack, it also prints LITE_NOTE on stderr, on success or failure, and
-# names graftpunk-lite in the upgrade command. The failures, each with its own
+# names graftpunk-lite in the upgrade command. On success it passes on whatever
+# the version question wrote to stderr, such as gp's warning that graftpunk and
+# graftpunk-lite are both installed. The failures, each with its own
 # message:
 #   gp is not on PATH
 #   uv is not on PATH (the skill runs every command that loads the plugin through
@@ -73,7 +75,11 @@ installation="$(gp version --json --at-least "$SKILL_REQUIRES_GRAFTPUNK" \
   --contract "endpoints=$SKILL_READS_ENDPOINTS_SCHEMA" 2>"$errfile")"
 status=$?
 case "$status" in
-  0) ;;
+  0)
+    # gp warns here, and still exits 0, when graftpunk and graftpunk-lite are
+    # both installed; uninstalling either would delete files the other needs.
+    cat "$errfile" >&2
+    ;;
   1)
     printf 'gp version refused (exit 1): the installed graftpunk is older than %s, or gp\n' \
       "$SKILL_REQUIRES_GRAFTPUNK" >&2

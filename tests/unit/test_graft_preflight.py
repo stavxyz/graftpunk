@@ -394,6 +394,22 @@ class TestPreflightWithAFakeGp:
         for phrase in ("recording a site and logging in", "uv tool install graftpunk"):
             assert phrase in result.stderr, phrase
 
+    def test_on_success_gps_both_installed_warning_reaches_stderr(
+        self, tmp_path: Path, dirs: tuple[Path, Path, Path]
+    ) -> None:
+        """gp version warns, and exits 0, when both distributions are installed;
+        preflight is the skill's only installation check, so it must pass that on."""
+        work, home, tools = dirs
+        warning = "Warning: graftpunk 9.9.9 and graftpunk-lite 9.9.9 are both installed here."
+        fake = _fake_gp(tmp_path, version_message=warning)
+        result = _preflight(work, home, fake, tools)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {
+            "installation": json.loads(_VERSION_OK),
+            "project": json.loads(_INFO_EMPTY),
+        }
+        assert result.stderr == warning + "\n"
+
     @pytest.mark.parametrize(
         ("distribution", "upgrade", "other"),
         [
