@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# smoke_install.sh LITE_WHEEL FULL_WHEEL VENV_ROOT
+# smoke_install.sh LITE_WHEEL FULL_WHEEL [VENV_ROOT]
 #
 # The lite-install contract, checked against built wheels: each wheel goes into
-# its own clean venv under VENV_ROOT; graftpunk-lite (no extras) must import, keep
-# a working gp CLI, load a cached session browser-free and name its own extra in
-# a missing-browser error, all without the browser stack, and graftpunk must have
-# that stack. Run from the repository root (it reads tests/fixtures).
+# its own clean venv under VENV_ROOT (a temporary directory, removed afterwards,
+# when VENV_ROOT is not given; VENV_ROOT/lite and VENV_ROOT/full are recreated on
+# every run); graftpunk-lite (no extras) must import, keep a working gp CLI,
+# load a cached session browser-free and name its own extra in a missing-browser
+# error, all without the browser stack, and graftpunk must have that stack. Run
+# from the repository root (it reads tests/fixtures).
 # Used by the "Lite install" job in python-quality.yml and by the release build
 # before anything is published, so both check the same things.
 set -euo pipefail
 
-lite_wheel="${1:?usage: scripts/smoke_install.sh LITE_WHEEL FULL_WHEEL VENV_ROOT}"
-full_wheel="${2:?usage: scripts/smoke_install.sh LITE_WHEEL FULL_WHEEL VENV_ROOT}"
-root="${3:?usage: scripts/smoke_install.sh LITE_WHEEL FULL_WHEEL VENV_ROOT}"
+usage="usage: scripts/smoke_install.sh LITE_WHEEL FULL_WHEEL [VENV_ROOT]"
+lite_wheel="${1:?$usage}"
+full_wheel="${2:?$usage}"
+if [ -n "${3:-}" ]; then
+  root="$3"
+else
+  root="$(mktemp -d)"
+  trap 'rm -rf "$root"' EXIT
+fi
 python="${UV_PYTHON:-3.12}"
 
+rm -rf "$root/lite" "$root/full"
 uv venv -q --python "$python" "$root/lite"
 uv pip install -q --python "$root/lite/bin/python" "$lite_wheel"
 uv venv -q --python "$python" "$root/full"

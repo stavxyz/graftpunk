@@ -168,4 +168,4 @@ jobs:
 
       - name: Install each wheel into its own clean venv and check the lite contract
         # The release build runs the same script before it publishes.
-        run: scripts/smoke_install.sh dist/lite/graftpunk_lite-*.whl dist/full/graftpunk-*.whl .smoke
+        run: scripts/smoke_install.sh dist/lite/graftpunk_lite-*.whl dist/full/graftpunk-*.whl
