@@ -42,9 +42,13 @@ from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
 
-# The first import of httpie.context needs a stdout with a file descriptor
-# (#250); this module can be first imported under a captured stdout, by
-# unpickling a cached session inside GraftpunkClient.
+# At module scope, not in save_httpie_session: importing httpie replaces
+# http.cookiejar.DefaultCookiePolicy process-wide with one that treats
+# localhost as secure, and every cookie jar created after this import (and
+# every session pickled from one) carries that policy. The first import of
+# httpie.context needs a stdout with a file descriptor (#250); this module can
+# be first imported under a captured stdout, by unpickling a cached session
+# inside GraftpunkClient.
 with stdout_with_a_file_descriptor():
     import httpie.context
     import httpie.sessions
