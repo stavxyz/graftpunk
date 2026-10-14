@@ -10,13 +10,14 @@ Note:
     ``start()`` starts a private loop in a daemon thread and the synchronous
     methods submit their work to it. ``BrowserSession.start_async()`` starts
     the browser on the caller's loop instead, and the synchronous methods then
-    submit to that loop from other threads. Before a start there is no loop,
-    and a synchronous call fails (the getters return their fallback) rather
-    than run on a loop the browser does not belong to. ``stop_async()`` stops
-    the browser from inside an event loop. When the browser's loop is gone, or
-    ``stop()`` is called from inside it, the stop ends Chrome without the loop
-    (SIGTERM, then SIGKILL if it has not exited, or the subprocess handle on
-    Windows).
+    submit to that loop from other threads. Before a start there is no loop:
+    ``start()``, ``navigate()``, ``set_cookies()`` and ``driver`` start the
+    browser first, and the other synchronous methods return their fallback
+    rather than run on a loop the browser does not belong to.
+    ``stop_async()`` stops the browser from inside an event loop. When the
+    browser's loop is gone, or ``stop()`` is called from inside it, the stop
+    ends Chrome without the loop (SIGTERM, then SIGKILL if it has not exited,
+    or the subprocess handle on Windows).
 
 Logging:
     This module uses structured logging with intentional log levels:
@@ -718,13 +719,16 @@ class NoDriverBackend:
         browser on the caller's loop instead, which the backend uses but never
         stops. A synchronous method works from any thread, including one
         running a different event loop (a FastAPI handler, say), except from
-        the browser's own loop, where waiting on the loop would deadlock: it
-        raises ``RuntimeError`` there (``start()`` included), and async code
+        the browser's own loop, where waiting on the loop would deadlock.
+        There ``start()`` raises ``RuntimeError``, ``navigate()`` raises
+        ``BrowserError``, and the other synchronous methods log a warning and
+        return their fallback (``''``, ``[]``, ``0``, ``False``); async code
         awaits nodriver's own objects (``driver``) and ``stop_async()``
         instead. ``stop()`` is the exception: inside the browser's loop it
-        ends Chrome without the loop, as below. Without a loop
-        (before a start, or after unpickling) a synchronous call raises
-        ``RuntimeError``, which the getters turn into their fallback.
+        ends Chrome without the loop, as below. Before a start, and after
+        unpickling, the backend is stopped: ``start()``, ``navigate()``,
+        ``set_cookies()`` and ``driver`` start it, and the read methods return
+        their fallback until then.
 
         ``stop()`` and ``stop_async()`` end Chrome without the loop when they
         cannot use it: when the loop has stopped or closed (a caller's loop
