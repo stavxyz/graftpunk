@@ -27,6 +27,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
+from graftpunk._distribution import install_command
 from graftpunk.exceptions import SessionExpiredError, SessionNotFoundError, StorageError
 from graftpunk.logging import get_logger
 from graftpunk.storage.base import (
@@ -127,7 +128,7 @@ class S3SessionStorage:
         except ImportError as exc:
             raise StorageError(
                 "boto3 is required for S3 storage. "
-                "Install with: pip install graftpunk[s3] or pip install boto3"
+                f"Install with: {install_command('s3')} or pip install boto3"
             ) from exc
 
         # Build client kwargs

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import selenium.common.exceptions
 import webdriver_manager.chrome
 
+from graftpunk._distribution import install_command
 from graftpunk.backends.base import Cookie
 from graftpunk.chrome import get_chrome_version
 from graftpunk.exceptions import BrowserError, ChromeDriverError
@@ -183,7 +184,7 @@ class SeleniumBackend:
             from graftpunk.stealth import create_stealth_driver
         except ImportError as exc:
             raise BrowserError(
-                "Stealth dependencies not installed. Install with: pip install graftpunk[standard]"
+                f"Stealth dependencies not installed. Install with: {install_command('browser')}"
             ) from exc
 
         self._driver = create_stealth_driver(

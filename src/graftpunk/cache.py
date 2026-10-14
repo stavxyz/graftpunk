@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 import dill as pickle
 import requests
 
+from graftpunk._distribution import install_command
 from graftpunk.config import get_settings
 from graftpunk.encryption import decrypt_data, encrypt_data
 from graftpunk.exceptions import EncryptionError, SessionExpiredError, SessionNotFoundError
@@ -437,7 +438,7 @@ def _load_session_with_metadata(
         raise
     except ModuleNotFoundError as exc:
         # A cached BrowserSession pickle names graftpunk.session, which imports
-        # the browser stack. On a base install (no [browser] extra) that raises
+        # the browser stack. On graftpunk-lite without [browser] that raises
         # ModuleNotFoundError from inside pickle.loads — which is neither an
         # UnpicklingError nor a RuntimeError, so without this it escaped raw as
         # "No module named 'httpie'".
@@ -445,7 +446,7 @@ def _load_session_with_metadata(
         raise ImportError(
             f"Loading the cached session '{name}' requires the browser automation "
             f"stack, which is not installed. Install it with: "
-            f"pip install 'graftpunk[browser]'\n"
+            f"{install_command('browser')}\n"
             f"(To read cookies/headers from a session WITHOUT the browser stack, use "
             f"load_session_for_api_from_bytes.)\n"
             f"(underlying import failure: {exc})"

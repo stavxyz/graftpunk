@@ -24,10 +24,10 @@ Example:
 """
 
 from importlib import import_module as _import_module
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
 from typing import TYPE_CHECKING, Any
 
+from graftpunk._distribution import install_command as _install_command
+from graftpunk._distribution import installed as _installed_distribution
 from graftpunk.backends import BrowserBackend, get_backend, list_backends, register_backend
 from graftpunk.cache import (
     cache_session,
@@ -113,7 +113,7 @@ def __getattr__(name: str) -> Any:  # PEP 562 lazy attribute loading
     except ImportError as exc:
         raise ImportError(
             f"graftpunk.{name} requires the browser automation stack, which is not "
-            f"installed. Install it with: pip install 'graftpunk[browser]'"
+            f"installed. Install it with: {_install_command('browser')}"
         ) from exc
     return getattr(module, attr)
 
@@ -128,12 +128,12 @@ def __dir__() -> list[str]:
 
 
 # Single source of truth: the version lives in pyproject.toml and is read back
-# from the installed package metadata. There is no literal to bump (or forget),
-# so __version__ can never drift from the packaged version.
-try:
-    __version__ = _pkg_version("graftpunk")
-except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "0.0.0+unknown"
+# from the installed package metadata (graftpunk's or graftpunk-lite's, which
+# share it). There is no literal to bump (or forget), so __version__ can never
+# drift from the packaged version.
+_installed = _installed_distribution()
+# None: running from a source tree without an install.
+__version__ = _installed[1] if _installed else "0.0.0+unknown"
 
 __all__ = [
     # Version and description

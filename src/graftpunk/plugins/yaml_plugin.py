@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from graftpunk import console as gp_console
+from graftpunk._distribution import install_command
 from graftpunk.exceptions import PluginError
 from graftpunk.logging import get_logger
 from graftpunk.plugins.cli_plugin import (
@@ -167,10 +168,10 @@ def _create_handler(
             if not HAS_JMESPATH:
                 LOG.warning(
                     "jmespath_not_installed",
-                    hint="Install jmespath: pip install 'graftpunk[jmespath]'",
+                    hint=f"Install jmespath: {install_command('jmespath')}",
                 )
                 gp_console.warn(
-                    "jmespath filter ignored (install with: pip install 'graftpunk[jmespath]')"
+                    f"jmespath filter ignored (install with: {install_command('jmespath')})"
                 )
                 if cmd_def.output_config:
                     return CommandResult(data=data, output_config=cmd_def.output_config)

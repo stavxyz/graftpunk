@@ -345,7 +345,7 @@ class TestSeleniumBackendErrorHandling:
             "graftpunk.backends.selenium.SeleniumBackend._start_stealth_driver"
         ) as mock_start:
             mock_start.side_effect = BrowserError(
-                "Stealth dependencies not installed. Install with: pip install graftpunk[standard]"
+                "Stealth dependencies not installed. Install with: pip install 'graftpunk[browser]'"
             )
 
             backend = SeleniumBackend(use_stealth=True)
