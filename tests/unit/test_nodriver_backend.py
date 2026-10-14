@@ -3654,6 +3654,41 @@ class TestNoDriverBackendInterruptedLifecycle:
         assert second.stopped_on is not None
         assert fake_chrome.misuse == []
 
+    def test_a_start_async_cancelled_while_it_ends_a_finished_loops_browser_leaves_it_stopped(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        from graftpunk.session import BrowserSession
+
+        ended: list[Any] = []
+
+        def slow_end(browser: Any) -> None:
+            time.sleep(0.5)
+            ended.append(browser)
+
+        monkeypatch.setattr("graftpunk.backends.nodriver._end_browser_without_loop", slow_end)
+        backend = NoDriverBackend()
+        session = SimpleNamespace(_backend_type="nodriver", _backend_instance=backend)
+        asyncio.run(BrowserSession.start_async(session))  # type: ignore[arg-type]
+
+        async def cancelled_start() -> None:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(BrowserSession.start_async(session), 0.1)  # type: ignore[arg-type]
+
+        asyncio.run(cancelled_start())
+
+        assert ended == fake_chrome.browsers
+        assert backend._started is False
+        assert backend.is_running is False
+        backend.start()
+        backend.navigate("https://example.com/")
+        assert backend.current_url == "https://example.com/"
+        assert len(fake_chrome.browsers) == 2
+        backend.stop()
+        assert fake_chrome.browsers[1].stopped_on is not None
+        assert fake_chrome.misuse == []
+
     def test_a_sync_start_inside_the_browsers_loop_raises_rather_than_wait_for_a_stop(
         self, fake_chrome: FakeChrome
     ) -> None:

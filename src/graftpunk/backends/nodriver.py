@@ -1018,8 +1018,11 @@ class NoDriverBackend:
                 LOG.debug("nodriver_backend_already_started")
                 return
             LOG.info("nodriver_backend_replacing_browser_of_finished_loop")
-            await self._release_failed_attempt_off_loop()
+            # Forgotten before the await, so a cancellation during the end
+            # leaves the backend stopped rather than started with no browser.
+            browser = self._detach_browser()
             self._reset_state()
+            await _finish_on_worker_thread(lambda: _end_browser_without_loop(browser))
         try:
             import nodriver as uc
         except ImportError as exc:
