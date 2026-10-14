@@ -4378,11 +4378,19 @@ class TestNoDriverBackendCallTimeout:
         assert backend._call_timeout == 60.0
         assert backend._navigate_timeout == 120.0
 
-    @pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "5"])
+    @pytest.mark.parametrize(
+        "value",
+        [0, -1, float("nan"), float("inf"), True, "5", threading.TIMEOUT_MAX * 2, 1e300],
+    )
     @pytest.mark.parametrize("name", ["call_timeout", "navigate_timeout"])
     def test_an_invalid_timeout_is_refused(self, name: str, value: Any) -> None:
         with pytest.raises(ValueError, match=f"{name} must be None or a positive number"):
             NoDriverBackend(**{name: value})
+
+    def test_the_largest_timeout_the_wait_accepts_is_allowed(self) -> None:
+        backend = NoDriverBackend(call_timeout=threading.TIMEOUT_MAX)
+
+        assert backend._call_timeout == threading.TIMEOUT_MAX
 
     def test_a_call_that_finishes_as_the_wait_expires_returns_its_result(
         self, monkeypatch: pytest.MonkeyPatch

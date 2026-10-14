@@ -895,16 +895,21 @@ class NoDriverBackend:
 
         Raises:
             ValueError: If ``call_timeout`` or ``navigate_timeout`` is not
-                None and not a positive finite number.
+                None and not a positive number no larger than
+                ``threading.TIMEOUT_MAX``.
         """
         for name, value in (("call_timeout", call_timeout), ("navigate_timeout", navigate_timeout)):
+            # concurrent.futures.wait() raises OverflowError above TIMEOUT_MAX.
             if value is not None and not (
                 isinstance(value, int | float)
                 and not isinstance(value, bool)
                 and math.isfinite(value)
-                and value > 0
+                and 0 < value <= threading.TIMEOUT_MAX
             ):
-                raise ValueError(f"{name} must be None or a positive number of seconds: {value!r}")
+                raise ValueError(
+                    f"{name} must be None or a positive number of seconds"
+                    f" no larger than {threading.TIMEOUT_MAX:g}: {value!r}"
+                )
         self._headless = headless
         self._profile_dir = profile_dir
         self._default_timeout = default_timeout
