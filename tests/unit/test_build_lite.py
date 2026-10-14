@@ -185,13 +185,17 @@ def test_lite_readme_names_what_gp_does_without_the_browser_extra() -> None:
     --no-deps on lite makes every gp run report it failed to load)."""
     flat = " ".join(build_lite.lite_readme("1.20.0").split())
     assert (
-        "`gp version`, `gp session list`, `gp session show`, `gp config`, "
-        "`gp plugins`, and `gp http --no-session` work."
+        "On graftpunk-lite, `gp version`, `gp session list`, `gp session show`, "
+        "`gp config`, `gp plugins`, `gp http` with `--no-session`, and "
+        "`load_session_for_api_from_bytes` work."
     ) in flat
     assert (
-        "`load_session_for_api` and `gp http --session`, which load a session from "
-        "the session store, unpickle the browser session object, so they need "
-        "`graftpunk-lite[browser]`."
+        "Everything that loads a cached session from the session store "
+        "(`load_session_for_api`, `gp http` with a session from `--session`, "
+        "`gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`), every "
+        "command that drives a browser (recording with `gp observe`, and a plugin's "
+        "`login` command), and plugin commands need `graftpunk-lite[browser]` or "
+        "`graftpunk`."
     ) in flat
     assert "Plugins and their `gp` commands need graftpunk, the full install." in flat
     assert "--no-deps" not in flat

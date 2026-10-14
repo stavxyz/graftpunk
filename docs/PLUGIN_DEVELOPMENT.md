@@ -70,14 +70,19 @@ uv pip install -e .   # or: pip install -e .
 
 A plugin requires `graftpunk[browser]>=X` (the requirement `gp plugin new`
 writes), since logging in needs the browser stack, so installing a plugin
-installs `graftpunk`, the full install. Install plugins into an environment
-with `graftpunk`, not `graftpunk-lite`: installing one where `graftpunk-lite`
-is already installed puts both distributions in the same environment, and
-uninstalling either then deletes files the other needs. A plugin's `gp`
-commands need the full install too. `graftpunk-lite` is for loading a saved
-session with `load_session_for_api_from_bytes` under Pyodide or Cloudflare
-Python Workers, and for the `gp` commands that load no session (`gp version`,
-`gp session list`, and the others the README lists).
+installs `graftpunk`, the full install. Install plugins into an environment with
+`graftpunk`, not `graftpunk-lite`: installing one where `graftpunk-lite` is
+already installed puts both distributions in the same environment, and
+uninstalling either then deletes files the other needs. `graftpunk-lite` is for
+loading a saved session with `load_session_for_api_from_bytes` under Pyodide or
+Cloudflare Python Workers. On graftpunk-lite, `gp version`, `gp session list`,
+`gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, and
+`load_session_for_api_from_bytes` work. Everything that loads a cached session
+from the session store (`load_session_for_api`, `gp http` with a session from
+`--session`, `gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`),
+every command that drives a browser (recording with `gp observe`, and a plugin's
+`login` command), and plugin commands need `graftpunk-lite[browser]` or
+`graftpunk`.
 
 The file loader is for a throwaway script that imports nothing but graftpunk.
 It has two failure modes that cost real time:

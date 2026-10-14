@@ -94,15 +94,18 @@ pip install graftpunk-lite
 without the browser stack. It replays an **already-cached** session through
 `load_session_for_api_from_bytes`, given the session's encrypted bytes and its
 key. It cannot log in, because that needs a browser. Its dependencies are
-pure-Python or ship WASM wheels, so this is the install that works under
-Pyodide and Cloudflare Python Workers
+pure-Python or ship WASM wheels, so this is the install that works under Pyodide
+and Cloudflare Python Workers
 ([#121](https://github.com/stavxyz/graftpunk/issues/121)). The `gp` command is
-installed: `gp version`, `gp session list`, `gp session show`, `gp config`,
-`gp plugins`, and `gp http --no-session` work. `load_session_for_api` and
-`gp http --session`, which load a session from the session store, unpickle the
-browser session object, so they need `graftpunk-lite[browser]`.
-`pip install 'graftpunk-lite[browser]'` adds the browser stack and is equivalent
-to `graftpunk`.
+installed. On graftpunk-lite, `gp version`, `gp session list`,
+`gp session show`, `gp config`, `gp plugins`, `gp http` with `--no-session`, and
+`load_session_for_api_from_bytes` work. Everything that loads a cached session
+from the session store (`load_session_for_api`, `gp http` with a session from
+`--session`, `gp session use` or `GRAFTPUNK_SESSION`, and `gp session export`),
+every command that drives a browser (recording with `gp observe`, and a plugin's
+`login` command), and plugin commands need `graftpunk-lite[browser]` or
+`graftpunk`. `pip install 'graftpunk-lite[browser]'` adds the browser stack and
+is equivalent to `graftpunk`.
 
 Install one or the other, never both. They put the same files in the same
 place, so uninstalling either one deletes files the other needs. To switch,
@@ -189,10 +192,12 @@ api = load_session_for_api_from_bytes(encrypted_bytes, key=fernet_key)
 response = api.get("https://app.example.com/api/internal/documents")
 ```
 
-Both work on the lite install (`graftpunk-lite`). `key=` is optional and defaults
-to graftpunk's configured key sources; pass it when the key lives somewhere
-graftpunk can't see, like a Worker secret. A bad key raises `EncryptionError`
-(fix the key); an unusable session raises `SessionExpiredError` (log in again).
+On graftpunk-lite, `load_session_for_api_from_bytes` works, and
+`load_session_for_api` needs `graftpunk-lite[browser]` or `graftpunk`. `key=` is
+optional and defaults to graftpunk's configured key sources; pass it when the
+key lives somewhere graftpunk can't see, like a Worker secret. A bad key raises
+`EncryptionError` (fix the key); an unusable session raises
+`SessionExpiredError` (log in again).
 
 ### 3. Keep It Alive
 
