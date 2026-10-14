@@ -1,6 +1,8 @@
 name: Release
 
-# Publishes graftpunk to PyPI via Trusted Publishing (OIDC) — no stored token.
+# Publishes graftpunk and graftpunk-lite to PyPI via Trusted Publishing (OIDC),
+# with no stored token. Both are built from this repository at the same version:
+# graftpunk from pyproject.toml, graftpunk-lite by scripts/build_lite.py.
 #
 # Cutting a release is just pushing a tag:
 #   just release        # validates, tags vX.Y.Z, pushes the tag
@@ -12,12 +14,16 @@ name: Release
 # retry a failed publish (the publish step uses skip-existing, so retries are
 # idempotent).
 #
-# One-time PyPI setup (repo owner, on pypi.org → graftpunk → Publishing):
-#   Add a GitHub Actions trusted publisher:
+# One-time PyPI setup (repo owner), once per project, each with:
 #     Owner:        stavxyz
 #     Repository:   graftpunk
 #     Workflow:     release.yml
 #     Environment:  pypi
+#   graftpunk: pypi.org, graftpunk, Publishing, add a GitHub Actions trusted
+#     publisher.
+#   graftpunk-lite: the project does not exist until its first upload, so add a
+#     "pending publisher" for project name graftpunk-lite (pypi.org, your
+#     account, Publishing). The first release creates the project.
 
 on:
   push:
@@ -123,11 +129,33 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Build sdist and wheel
+      - name: Build graftpunk (sdist and wheel)
         run: uvx --from build pyproject-build
+
+      - name: Build graftpunk-lite (sdist and wheel)
+        run: uv run --no-project --with packaging python scripts/build_lite.py --out-dir dist
 
       - name: Check distributions
         run: uvx twine check dist/*
+
+      - name: Verify both distributions carry the tag version
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          ls dist/
+          for f in "graftpunk-${VERSION}.tar.gz" "graftpunk-${VERSION}-py3-none-any.whl" \
+                   "graftpunk_lite-${VERSION}.tar.gz" "graftpunk_lite-${VERSION}-py3-none-any.whl"; do
+            if [ ! -f "dist/${f}" ]; then
+              echo "::error::missing dist/${f} for tag ${TAG}"
+              exit 1
+            fi
+          done
+          META=$(unzip -p "dist/graftpunk_lite-${VERSION}-py3-none-any.whl" \
+            "graftpunk_lite-${VERSION}.dist-info/METADATA")
+          echo "$META" | grep -qx "Name: graftpunk-lite"
+          echo "$META" | grep -qx "Version: ${VERSION}"
+          echo "graftpunk and graftpunk-lite ${VERSION} built"
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
@@ -136,6 +164,7 @@ jobs:
           path: dist/
 
   pypi-publish:
+    # Uploads everything in dist/: graftpunk and graftpunk-lite.
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest

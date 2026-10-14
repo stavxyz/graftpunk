@@ -133,17 +133,18 @@ jobs:
       - name: Run plugin CLI tests
         run: uv run --no-sync pytest tests/unit/test_plugin_commands.py tests/unit/test_command_factory.py tests/unit/test_plugin_runtime.py tests/unit/test_cli_no_external_click.py -v
 
-  # The lean-install contract: `pip install graftpunk` (NO extras) must stay
-  # importable, keep a working CLI, and still load a cached session browser-free.
-  # Every other job runs `uv sync --all-extras`, so nothing there can catch a
-  # browser dependency creeping back into the base install or onto the CLI's
-  # eager import path — which is exactly how a release once shipped a `gp` that
-  # tracebacked on every invocation. This job installs the built wheel into a
-  # clean venv with no extras and exercises the contract for real.
-  lean-install:
+  # The lite-install contract: graftpunk-lite (no extras) must stay importable,
+  # keep a working CLI, and still load a cached session browser-free, which is
+  # what lets it resolve under Pyodide and Cloudflare Workers (#121). Every other
+  # job runs `uv sync --all-extras`, so nothing there can catch a browser
+  # dependency creeping into lite's base install or onto the CLI's eager import
+  # path; that is how a release once shipped a `gp` that tracebacked on every
+  # invocation. This job builds both distributions, installs each wheel into its
+  # own clean venv, and checks lite lacks the browser stack and graftpunk has it.
+  lite-install:
     needs: filter-paths
     if: needs.filter-paths.outputs.python_changed == 'true'
-    name: Lean install (no browser extra)
+    name: Lite install
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -157,42 +158,53 @@ jobs:
           enable-cache: true
 
       - name: Set up Python
-        run: uv python install 3.13
+        run: uv python install 3.12
 
-      - name: Build the wheel
-        run: uv build --wheel --out-dir dist
-
-      - name: Install the wheel with NO extras into a clean venv
+      - name: Build graftpunk and graftpunk-lite
         run: |
-          uv venv --python 3.13 .lean
-          uv pip install --python .lean/bin/python dist/*.whl
+          uv build --out-dir dist
+          uv run --no-project --with packaging python scripts/build_lite.py --out-dir dist
+          ls dist/
 
-      - name: Assert the browser stack is absent
+      - name: Install each wheel into its own clean venv
         run: |
-          .lean/bin/python - <<'PY'
-          import importlib.util
-          absent = ["selenium", "requestium", "nodriver", "webdriver_manager",
-                    "undetected_chromedriver", "selenium_stealth", "httpie"]
-          present = [m for m in absent if importlib.util.find_spec(m) is not None]
-          assert not present, f"browser deps leaked into the base install: {present}"
-          print("browser stack absent:", ", ".join(absent))
-          PY
+          uv venv --python 3.12 .lite
+          uv pip install --python .lite/bin/python dist/graftpunk_lite-*.whl
+          uv venv --python 3.12 .full
+          uv pip install --python .full/bin/python dist/graftpunk-*.whl
+
+      - name: Lite lacks the browser stack; graftpunk has it
+        run: |
+          check='
+          import importlib.util, sys
+          mods = ["selenium", "nodriver", "requestium", "webdriver_manager",
+                  "undetected_chromedriver", "selenium_stealth", "httpie"]
+          found = [m for m in mods if importlib.util.find_spec(m) is not None]
+          want = sys.argv[1] == "present"
+          assert found == (mods if want else []), f"{sys.argv[1]}: found {found}"
+          print(sys.argv[1], "OK:", ", ".join(mods))
+          '
+          .lite/bin/python -c "$check" absent
+          .full/bin/python -c "$check" present
 
       - name: Import graftpunk without pulling the browser stack
         run: |
-          .lean/bin/python - <<'PY'
+          .lite/bin/python - <<'PY'
           import sys
           import graftpunk
+          from graftpunk import load_session_for_api_from_bytes  # noqa: F401
           for mod in ("graftpunk.session", "graftpunk.stealth", "selenium"):
               assert mod not in sys.modules, f"{mod} eagerly imported by `import graftpunk`"
-          print("import graftpunk OK")
+          assert graftpunk.__version__ != "0.0.0+unknown", graftpunk.__version__
+          print("import graftpunk OK", graftpunk.__version__)
           PY
 
       - name: "CLI must start (regression: gp was broken on base installs)"
         run: |
-          .lean/bin/gp --help > /dev/null
-          .lean/bin/gp version > /dev/null
-          .lean/bin/python - <<'PY'
+          .lite/bin/gp --help > /dev/null
+          .lite/bin/gp version > /dev/null
+          .full/bin/gp --help > /dev/null
+          .lite/bin/python - <<'PY'
           import subprocess, sys
           # The CLI import itself must not drag in the browser stack.
           code = ("import graftpunk.cli.main, sys; "
@@ -205,7 +217,7 @@ jobs:
 
       - name: Browser-free session load must work (A4 fixture round-trip)
         run: |
-          .lean/bin/python - <<'PY'
+          .lite/bin/python - <<'PY'
           import pathlib
           from graftpunk import load_session_for_api_from_bytes
           fix = pathlib.Path("tests/fixtures")
@@ -219,15 +231,15 @@ jobs:
           print("browser-free session load OK:", sorted(cookies))
           PY
 
-      - name: Missing-browser errors must name the extra
+      - name: Missing-browser errors must name lite's extra
         run: |
-          .lean/bin/python - <<'PY'
+          .lite/bin/python - <<'PY'
           import graftpunk
           try:
               getattr(graftpunk, "BrowserSession")
           except ImportError as exc:
-              assert "graftpunk[browser]" in str(exc), exc
+              assert "graftpunk-lite[browser]" in str(exc), exc
               print("actionable error OK")
           else:
-              raise AssertionError("expected ImportError without the [browser] extra")
+              raise AssertionError("expected ImportError on graftpunk-lite without [browser]")
           PY
