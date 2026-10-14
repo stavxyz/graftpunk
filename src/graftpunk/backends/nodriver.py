@@ -98,6 +98,12 @@ _LOOP_THREAD_NAME = "graftpunk-nodriver-loop"
 DEFAULT_CALL_TIMEOUT_S: float = 60.0
 DEFAULT_NAVIGATE_TIMEOUT_S: float = 120.0
 
+# How long a timed-out navigate() waits for Chrome to answer the
+# Page.stopLoading it sends. Cancelling the wait on Page.navigate leaves
+# Chrome loading the URL, and until that load ends the tab answers no
+# Runtime.evaluate, so every getter would wait out its own limit.
+_STOP_LOADING_TIMEOUT_S: float = 2.0
+
 # Ending Chrome without its event loop: how often to check whether the
 # signalled process has exited (bounded by _REAP_TERM_TIMEOUT_S), and how
 # many times, how far apart, to try removing its temp profile.
@@ -788,14 +794,25 @@ class NoDriverBackend:
         so a Chrome that stops answering without closing its websocket would
         block the caller indefinitely. ``navigate()`` waits up to
         ``navigate_timeout`` (default 120 s) and the other synchronous methods
-        up to ``call_timeout`` (default 60 s). When the limit passes, the call
-        is cancelled on the browser's loop, and the method fails as it does
-        for any other CDP failure: ``navigate()`` raises ``BrowserError``, and
-        the others log their usual warning (its ``error`` names the method
-        and the limit) and return their fallback. The loop keeps running, so
-        the next call works. ``None`` turns a limit off. ``start()``,
-        ``stop()``, ``stop_async()``, and async code awaiting nodriver's
-        objects directly are not limited.
+        up to ``call_timeout`` (default 60 s). When the limit passes,
+        graftpunk stops waiting and cancels the call on the browser's loop,
+        and the method fails as it does for any other CDP failure:
+        ``navigate()`` raises ``BrowserError``, and the others log their usual
+        warning (its ``error`` names the method and the limit) and return
+        their fallback. The loop keeps running, so the next call works.
+
+        Cancelling ends graftpunk's wait, not a command Chrome has already
+        received. A navigation Chrome is still loading would keep the tab
+        from answering any other call until the load ends, and then put the
+        tab on that URL, so a ``navigate()`` that times out also sends Chrome
+        ``Page.stopLoading`` (waiting up to 2 s for its answer) before it
+        raises. The tab then stays on the page it showed before and answers
+        at once. A Chrome too frozen to answer in those 2 s gets the command
+        when it resumes, and a failure to send it is logged as
+        ``nodriver_backend_stop_loading_failed``.
+
+        ``None`` turns a limit off. ``start()``, ``stop()``, ``stop_async()``,
+        and async code awaiting nodriver's objects directly are not limited.
 
     Note:
         Default headless=False because nodriver is more detectable in headless
@@ -885,9 +902,10 @@ class NoDriverBackend:
                 ``get_user_agent()``) waits for the browser before it cancels
                 the call and returns its fallback with a warning. None waits
                 without a limit. Default 60.
-            navigate_timeout: Seconds ``navigate()`` waits before it cancels
-                the navigation and raises ``BrowserError``. None waits
-                without a limit. Default 120.
+            navigate_timeout: Seconds ``navigate()`` waits before it stops
+                waiting, tells Chrome to stop loading the URL, and raises
+                ``BrowserError``; the tab stays on the page it showed
+                before. None waits without a limit. Default 120.
             **options: Additional options passed to nodriver.start():
                 - browser_args: List of Chrome arguments
                 - browser_executable_path: Path to Chrome binary
@@ -1774,6 +1792,44 @@ class NoDriverBackend:
         assert self._browser is not None  # Type narrowing for ty
         self._page = await self._browser.get(url)
 
+    async def _stop_loading_async(self) -> None:
+        """Send ``Page.stopLoading`` to the tab ``navigate()`` navigates."""
+        import nodriver.cdp.page as cdp_page
+
+        tab = self._page
+        if tab is None:
+            # No tab recorded yet: Browser.get navigates the browser's first
+            # page target, and sets self._page only once Chrome has answered.
+            # Browser.tabs lists the page targets in that order in nodriver
+            # 0.48 and 0.50 (main_tab picks differently in 0.48).
+            browser = self._browser
+            tabs = browser.tabs if browser is not None else []
+            if not tabs:
+                return
+            tab = tabs[0]
+        await tab.send(cdp_page.stop_loading())
+
+    def _stop_pending_navigation(self) -> None:
+        """Stop the load a timed-out ``navigate()`` left running in Chrome.
+
+        Best effort: a Chrome that does not answer within
+        ``_STOP_LOADING_TIMEOUT_S`` (a frozen one) gets the command when it
+        resumes, and any failure is logged and swallowed, so the caller still
+        sees the navigate's own ``BrowserError``.
+        """
+        try:
+            self._run_async(
+                self._stop_loading_async(),
+                timeout=_STOP_LOADING_TIMEOUT_S,
+                method="navigate() stopping the load",
+            )
+        except Exception as exc:  # noqa: BLE001 - best effort; the navigate's error is what the caller gets
+            LOG.warning(
+                "nodriver_backend_stop_loading_failed",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+
     def navigate(self, url: str) -> None:
         """Navigate to a URL.
 
@@ -1782,8 +1838,10 @@ class NoDriverBackend:
 
         Raises:
             BrowserError: If navigation fails, the browser cannot start, or
-                the navigation does not finish within ``navigate_timeout``
-                (it is then cancelled; the browser stays usable).
+                the navigation does not finish within ``navigate_timeout``.
+                On a timeout, Chrome is told to stop loading the URL first
+                (which can add up to 2 s), so the tab stays on the page it
+                showed before and the next call works.
         """
         if not self.is_running:
             self.start()
@@ -1794,6 +1852,8 @@ class NoDriverBackend:
                 self._navigate_async(url), timeout=self._navigate_timeout, method="navigate()"
             )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
+            if isinstance(exc, TimeoutError):
+                self._stop_pending_navigation()
             LOG.error("nodriver_backend_navigation_failed", url=url, error=str(exc))
             raise BrowserError(f"Navigation failed: {exc}") from exc
 

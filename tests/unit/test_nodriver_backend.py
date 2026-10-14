@@ -4337,6 +4337,86 @@ class TestNoDriverBackendCallTimeout:
         assert backend.current_url == "https://example.com/"
         backend.stop()
 
+    def test_a_timed_out_navigate_stops_the_load_so_the_tab_answers_at_once(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        """Chrome keeps loading after the wait is cancelled; Page.stopLoading ends it.
+
+        Without it, the tab answers no evaluate until the load ends, so the
+        getters wait out call_timeout and return "".
+        """
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT, call_timeout=30)
+        tab = self._started(backend)
+        fake_chrome.hang_get = True
+
+        with pytest.raises(BrowserError, match=r"NoDriverBackend\.navigate\(\) did not finish"):
+            backend.navigate("https://example.com/slow")
+        began = time.monotonic()
+        url = backend.current_url
+        elapsed = time.monotonic() - began
+
+        assert url == "https://example.com/"
+        assert elapsed < self.SLACK
+        assert tab.stop_loading_calls == 1
+        fake_chrome.hang_get = False
+        backend.navigate("https://example.com/next")
+        assert backend.current_url == "https://example.com/next"
+        backend.stop()
+
+    def test_a_navigate_with_no_tab_recorded_stops_the_load_in_the_first_page_target(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        """Browser.get navigates the first page target; with no _page, stop that one."""
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT)
+        backend.start()
+        first_tab = fake_chrome.browsers[0].tabs[0]
+        backend._page = None
+        fake_chrome.hang_get = True
+
+        with pytest.raises(BrowserError):
+            backend.navigate("https://example.com/slow")
+
+        assert backend._page is None
+        assert first_tab.stop_loading_calls == 1
+        assert first_tab.idle.is_set()
+        fake_chrome.hang_get = False
+        backend.navigate("https://example.com/")
+        assert backend.current_url == "https://example.com/"
+        backend.stop()
+
+    @pytest.mark.parametrize("failure", ["raises", "hangs"])
+    def test_a_stop_loading_that_fails_is_logged_and_the_navigate_error_stands(
+        self,
+        fake_chrome: FakeChrome,
+        captured_logs: list[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+        failure: str,
+    ) -> None:
+        monkeypatch.setattr("graftpunk.backends.nodriver._STOP_LOADING_TIMEOUT_S", self.TIMEOUT)
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT)
+        tab = self._started(backend)
+        if failure == "raises":
+            tab.fail_with = RuntimeError("target closed")
+        else:
+            tab.hang = True
+        fake_chrome.hang_get = True
+
+        began = time.monotonic()
+        with pytest.raises(BrowserError, match=r"NoDriverBackend\.navigate\(\) did not finish"):
+            backend.navigate("https://example.com/slow")
+        elapsed = time.monotonic() - began
+
+        assert elapsed < 2 * self.TIMEOUT + self.SLACK
+        [warning] = _warnings(captured_logs)
+        assert warning["event"] == "nodriver_backend_stop_loading_failed"
+        expected = (
+            "target closed"
+            if failure == "raises"
+            else "NoDriverBackend.navigate() stopping the load did not finish within 0.2 s"
+        )
+        assert warning["error"] == expected
+        backend.stop()
+
     def test_navigate_has_its_own_limit(self, fake_chrome: FakeChrome) -> None:
         """A page load slower than call_timeout but within navigate_timeout succeeds."""
         backend = NoDriverBackend(call_timeout=0.05, navigate_timeout=5)
