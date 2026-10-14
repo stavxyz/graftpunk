@@ -4592,7 +4592,9 @@ class TestNoDriverBackendCallTimeout:
 
         with pytest.raises(TimeoutError, match=r"NoDriverBackend\.x did not finish within 1 s"):
             backend._run_async(work(), timeout=1, method="x")
-        assert cancelled.is_set()
+        # The patched wait also stands in for the wait on the cancellation, so
+        # the cancel may land on the loop thread after the raise; it must land.
+        assert cancelled.wait(timeout=5)
 
     def test_the_timeouts_survive_get_state_and_stay_out_of_the_start_options(self) -> None:
         original = NoDriverBackend(call_timeout=7.5, navigate_timeout=None, lang="en-US")
