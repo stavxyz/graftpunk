@@ -303,21 +303,33 @@ def _has_exited(proc: Any) -> bool:
         return True
 
 
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    """The calling thread's running event loop, or None."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 def _close_transport(proc: Any) -> None:
-    """Close the asyncio subprocess transport behind *proc*. Never raises.
+    """Close the asyncio subprocess transport behind *proc*, now or on its loop. Never raises.
 
-    nodriver never closes it, so it is closed when garbage collected, and if
-    its loop has closed by then the interpreter prints ``Exception ignored in
-    BaseSubprocessTransport.__del__ ... Event loop is closed``. Closing it here
-    marks it closed first: on a closed loop the close itself fails, quietly.
+    nodriver never closes it, and Chrome's helper processes can hold its
+    pipes open after Chrome exits, so it outlives the loop unless closed; a
+    transport collected after its loop closed makes the interpreter print
+    ``Exception ignored in BaseSubprocessTransport.__del__ ... Event loop is
+    closed``.
 
-    A transport whose loop is still running and has not collected Chrome's
-    exit status is left alone: its close calls ``Popen.poll()``, which reaps
-    an exited Chrome before that loop's child watcher can, and the watcher
-    then logs "exit status already read" at warning level. The running loop
-    finishes the transport once it sees the exit. Once the status is
-    collected the close does not poll, so it goes ahead, as it must: Chrome's
-    helper processes can hold its pipes open past the loop's end.
+    While the loop runs, the close happens on the loop's thread, since
+    asyncio transports are not thread-safe, and only after that loop's child
+    watcher has collected Chrome's exit status: before that, the close calls
+    ``Popen.poll()``, which reaps Chrome ahead of the watcher, and the watcher
+    then logs "exit status already read". ``Process.wait()`` is no signal
+    for that, since it also waits for the helpers to release the pipes, so
+    the scheduled close checks the status on the loop instead
+    (``_close_once_collected``). On a loop that has stopped or closed it
+    closes here: no watcher callback will run, and on a closed loop the close
+    marks the transport closed and then fails, quietly.
     """
     transport = getattr(proc, "_transport", None)
     if transport is None:
@@ -326,9 +338,42 @@ def _close_transport(proc: Any) -> None:
     if (
         isinstance(loop, asyncio.AbstractEventLoop)
         and loop.is_running()
-        and not _already_reaped(proc)
+        and (_running_loop() is not loop or not _already_reaped(proc))
     ):
+        deadline = time.monotonic() + _REAP_TERM_TIMEOUT_S + _REAP_KILL_TIMEOUT_S
+        try:
+            loop.call_soon_threadsafe(_close_once_collected, proc, transport, deadline, 0)
+            return
+        except RuntimeError:
+            # The loop closed after the check.
+            pass
+    _close_transport_now(transport)
+
+
+# Checks of the exit status a scheduled close makes on consecutive loop
+# iterations before it falls back to one every _EXIT_POLL_S: the watcher's
+# callback is usually queued already, and a loop shutting down runs only a
+# few more iterations.
+_CLOSE_QUICK_CHECKS = 20
+
+
+def _close_once_collected(proc: Any, transport: Any, deadline: float, checks: int) -> None:
+    """On the transport's loop: close it once the loop has collected Chrome's exit status.
+
+    Past *deadline* it closes anyway: a watcher that has not collected the
+    status by then is not going to, and an open transport is the worse leak.
+    """
+    if _already_reaped(proc) or time.monotonic() >= deadline:
+        _close_transport_now(transport)
         return
+    delay = 0.0 if checks < _CLOSE_QUICK_CHECKS else _EXIT_POLL_S
+    asyncio.get_running_loop().call_later(
+        delay, _close_once_collected, proc, transport, deadline, checks + 1
+    )
+
+
+def _close_transport_now(transport: Any) -> None:
+    """``transport.close()``, logging rather than raising what it raises."""
     try:
         transport.close()
     except Exception:  # noqa: BLE001 - best-effort: a closed loop makes this raise
@@ -1231,7 +1276,8 @@ class NoDriverBackend:
                 try:
                     await _reap_browser_process(proc)
                     # While the loop still runs, so a later garbage
-                    # collection does not close it on a closed loop.
+                    # collection does not close it on a closed loop. Reaped,
+                    # it closes at once; a wedged Chrome's close is scheduled.
                     _close_transport(proc)
                 finally:
                     # nodriver deletes its temp profile only from the atexit

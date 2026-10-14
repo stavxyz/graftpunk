@@ -4,7 +4,7 @@ import asyncio
 import os
 import pickle
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -2775,6 +2775,232 @@ class TestNoDriverBackendEndingChromeWithoutItsLoop:
 
         assert returncode == -signal.SIGTERM
         assert not profile.exists()
+
+
+# Chrome stand-in: exits on SIGTERM and leaves a helper holding its pipes, as
+# Chrome's own helper processes do, so its transport does not finish by itself.
+_CHROME_WITH_HELPER = """
+import signal, subprocess, sys, time
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"])
+signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
+print("ready", flush=True)
+time.sleep(30)
+"""
+
+
+class _TransportWatch:
+    """Spawns the stand-in on the running loop and records every close of its transport."""
+
+    def __init__(self) -> None:
+        self.process: Any = None
+        self.loop_thread: int | None = None
+        # (thread ident, repr of what the close raised, or None)
+        self.closes: list[tuple[int, str | None]] = []
+
+    async def spawn(self) -> asyncio.subprocess.Process:
+        import sys
+
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            _CHROME_WITH_HELPER,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert process.stdout is not None
+        await process.stdout.readline()
+        self.loop_thread = threading.get_ident()
+        transport = process._transport  # type: ignore[attr-defined]
+        real_close = transport.close
+
+        def close() -> None:
+            try:
+                real_close()
+            except BaseException as exc:
+                self.closes.append((threading.get_ident(), repr(exc)))
+                raise
+            self.closes.append((threading.get_ident(), None))
+
+        transport.close = close
+        self.process = process
+        return process
+
+    def is_closing(self) -> bool:
+        return bool(self.process._transport.is_closing())
+
+    async def until_closing(self) -> None:
+        for _ in range(300):
+            if self.is_closing():
+                return
+            await asyncio.sleep(0.01)
+
+    def assert_closed_on_its_loop(self, captured_logs: list[dict[str, Any]]) -> None:
+        assert self.is_closing() is True
+        assert self.closes
+        assert all(close == (self.loop_thread, None) for close in self.closes)
+        assert [e for e in captured_logs if e["event"] == "chrome_transport_close_failed"] == []
+
+
+class TestNoDriverBackendTransportClosedOnItsLoop:
+    """Chrome's transport is closed on its loop's thread, after the loop collected its exit.
+
+    asyncio transports are not thread-safe: in debug mode a close from another
+    thread raises "Non-thread-safe operation", and outside it mutates the loop
+    from the wrong thread. Left open, the transport is collected after its
+    loop closed, and exit prints "Exception ignored in
+    BaseSubprocessTransport.__del__ ... Event loop is closed".
+    """
+
+    @pytest.fixture(autouse=True)
+    def _armed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+
+    @staticmethod
+    def _spawning_start(
+        fake_chrome: FakeChrome,
+        watch: _TransportWatch,
+        monkeypatch: pytest.MonkeyPatch,
+        get: Callable[[str], Coroutine[Any, Any, Any]] | None = None,
+    ) -> None:
+        """Make each start's browser own a real stand-in process, and optionally its own get()."""
+        import nodriver
+
+        async def start(**kwargs: Any) -> Any:
+            browser = await fake_chrome.start(**kwargs)
+            browser._process = await watch.spawn()
+            if get is not None:
+                browser.get = get
+            return browser
+
+        monkeypatch.setattr(nodriver, "start", start)
+
+    def test_a_sync_stop_inside_the_loop_closes_the_transport_before_the_loop_closes(
+        self, monkeypatch: pytest.MonkeyPatch, captured_logs: list[dict[str, Any]]
+    ) -> None:
+        import gc
+        import sys
+
+        unraisable: list[Any] = []
+        monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+        watch = _TransportWatch()
+
+        async def stop_inside_the_loop() -> None:
+            process = await watch.spawn()
+            backend = NoDriverBackend()
+            backend._browser = _Browser(
+                process, SimpleNamespace(uses_custom_data_dir=True, user_data_dir=None)
+            )
+            backend._loop = asyncio.get_running_loop()
+            backend._started = True
+            backend.stop()
+            # Returns at once, as an 'async with' body ending here would.
+
+        asyncio.run(stop_inside_the_loop())
+
+        watch.assert_closed_on_its_loop(captured_logs)
+        watch.process = None
+        gc.collect()
+        assert [str(u.exc_value) for u in unraisable] == []
+
+    def test_a_failed_start_attempt_closes_the_transport_on_its_loop(
+        self,
+        fake_chrome: FakeChrome,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        watch = _TransportWatch()
+
+        async def first_tab_fails(url: str) -> Any:
+            raise RuntimeError("the first tab did not open")
+
+        self._spawning_start(fake_chrome, watch, monkeypatch, get=first_tab_fails)
+        backend = NoDriverBackend()
+
+        async def start() -> None:
+            with pytest.raises(RuntimeError, match="first tab"):
+                await backend._start_async()
+            await watch.until_closing()
+
+        asyncio.run(start(), debug=True)
+
+        watch.assert_closed_on_its_loop(captured_logs)
+
+    def test_a_cancelled_start_attempt_closes_the_transport_on_its_loop(
+        self,
+        fake_chrome: FakeChrome,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        watch = _TransportWatch()
+        self._spawning_start(fake_chrome, watch, monkeypatch)
+        fake_chrome.hang_get = True
+        backend = NoDriverBackend()
+
+        async def start_then_cancel() -> None:
+            task = asyncio.ensure_future(backend._start_async())
+            assert await asyncio.to_thread(fake_chrome.get_entered.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await watch.until_closing()
+
+        asyncio.run(start_then_cancel(), debug=True)
+
+        watch.assert_closed_on_its_loop(captured_logs)
+
+    def test_a_cancelled_stop_async_closes_the_transport_on_its_loop(
+        self,
+        fake_chrome: FakeChrome,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        watch = _TransportWatch()
+        self._spawning_start(fake_chrome, watch, monkeypatch)
+        backend = NoDriverBackend()
+
+        async def stop_that_never_finishes() -> None:
+            await asyncio.Event().wait()
+
+        async def start_then_cancel_the_stop() -> None:
+            await backend._start_async()
+            backend._started = True
+            monkeypatch.setattr(backend, "_stop_async", stop_that_never_finishes)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(backend.stop_async(), 0.05)
+            await watch.until_closing()
+
+        asyncio.run(start_then_cancel_the_stop(), debug=True)
+
+        watch.assert_closed_on_its_loop(captured_logs)
+        assert backend.is_running is False
+
+    def test_an_interrupted_sync_stop_closes_the_transport_on_the_private_loop(
+        self,
+        fake_chrome: FakeChrome,
+        monkeypatch: pytest.MonkeyPatch,
+        captured_logs: list[dict[str, Any]],
+    ) -> None:
+        watch = _TransportWatch()
+        self._spawning_start(fake_chrome, watch, monkeypatch)
+        backend = with_private_loop(NoDriverBackend())
+        loop = backend._loop
+        assert loop is not None
+        loop.call_soon_threadsafe(loop.set_debug, True)
+        backend.start()
+
+        def interrupted(coro: Any) -> Any:
+            coro.close()
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(backend, "_run_async", interrupted)
+
+        with pytest.raises(KeyboardInterrupt):
+            backend.stop()
+
+        # The stop joined the loop's thread, so the loop has closed by now.
+        assert loop.is_closed()
+        watch.assert_closed_on_its_loop(captured_logs)
 
 
 class TestNoDriverBackendStartThatNeverReturned:
