@@ -345,16 +345,24 @@ def _close_transport(proc: Any) -> None:
     ``Exception ignored in BaseSubprocessTransport.__del__ ... Event loop is
     closed``.
 
-    While the loop runs, the close happens on the loop's thread, since
-    asyncio transports are not thread-safe, and only after that loop's child
-    watcher has collected Chrome's exit status: before that, the close calls
-    ``Popen.poll()``, which reaps Chrome ahead of the watcher, and the watcher
-    then logs "exit status already read". ``Process.wait()`` is no signal
+    The close happens on the loop's thread, since asyncio transports are
+    not thread-safe, and only after that loop's child watcher has collected
+    Chrome's exit status: before that, the close calls ``Popen.poll()``,
+    which reaps Chrome ahead of the watcher, and the watcher then logs "exit
+    status already read" (on Linux, where the watcher runs on the loop, the
+    process then reports exit status 255). ``Process.wait()`` is no signal
     for that, since it also waits for the helpers to release the pipes, so
-    the scheduled close checks the status on the loop instead
-    (``_close_once_collected``). On a loop that has stopped or closed it
-    closes here: no watcher callback will run, and on a closed loop the close
-    marks the transport closed and then fails, quietly.
+    the close is scheduled on the loop and checks the status there
+    (``_close_once_collected``). That includes a loop that has stopped but
+    is not closed (a hand-managed loop between ``run_until_complete()``
+    calls): its watcher still runs once the loop runs again.
+
+    The trade-off: a scheduled close runs only if its loop runs again. A
+    stopped loop that is closed without running again leaves the transport
+    open, and collecting it later prints the ``__del__`` noise above. Only
+    on the loop's own thread with the status already collected, or on a
+    loop already closed, does this close at once; on a closed loop the
+    close marks the transport closed and then fails, quietly.
     """
     transport = getattr(proc, "_transport", None)
     if transport is None:
@@ -362,12 +370,11 @@ def _close_transport(proc: Any) -> None:
     loop = getattr(transport, "_loop", None)
     if (
         isinstance(loop, asyncio.AbstractEventLoop)
-        and loop.is_running()
+        and not loop.is_closed()
         and (_running_loop() is not loop or not _already_reaped(proc))
     ):
-        deadline = time.monotonic() + _REAP_TERM_TIMEOUT_S + _REAP_KILL_TIMEOUT_S
         try:
-            loop.call_soon_threadsafe(_close_once_collected, proc, transport, deadline, 0)
+            loop.call_soon_threadsafe(_close_once_collected, proc, transport, None, 0)
             return
         except RuntimeError:
             # The loop closed after the check.
@@ -382,13 +389,19 @@ def _close_transport(proc: Any) -> None:
 _CLOSE_QUICK_CHECKS = 20
 
 
-def _close_once_collected(proc: Any, transport: Any, deadline: float, checks: int) -> None:
+def _close_once_collected(proc: Any, transport: Any, deadline: float | None, checks: int) -> None:
     """On the transport's loop: close it once the loop has collected Chrome's exit status.
 
     Past *deadline* it closes anyway: a watcher that has not collected the
     status by then is not going to, and an open transport is the worse leak.
+    The first run sets the deadline (``_REAP_TERM_TIMEOUT_S`` plus
+    ``_REAP_KILL_TIMEOUT_S`` from then), so a loop that was blocked or
+    stopped after the close was scheduled still gives its watcher that long.
     """
-    if _already_reaped(proc) or time.monotonic() >= deadline:
+    now = time.monotonic()
+    if deadline is None:
+        deadline = now + _REAP_TERM_TIMEOUT_S + _REAP_KILL_TIMEOUT_S
+    if _already_reaped(proc) or now >= deadline:
         _close_transport_now(transport)
         return
     delay = 0.0 if checks < _CLOSE_QUICK_CHECKS else _EXIT_POLL_S

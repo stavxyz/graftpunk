@@ -3049,6 +3049,71 @@ class TestNoDriverBackendTransportClosedOnItsLoop:
         assert loop.is_closed()
         watch.assert_closed_on_its_loop(captured_logs)
 
+    class _RecordingTransport:
+        """A subprocess transport stand-in that records when its close ran."""
+
+        def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+            self._loop = loop
+            self.closed_at: float | None = None
+
+        def close(self) -> None:
+            import time
+
+            if self.closed_at is None:
+                self.closed_at = time.monotonic()
+
+    def test_the_give_up_clock_starts_when_the_loop_first_runs_the_close(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loop is blocked for longer than the whole give-up wait right
+        after the close is scheduled: the watcher still gets that wait once
+        the loop runs, and the close then gives up and closes."""
+        import time
+
+        from graftpunk.backends.nodriver import _close_transport
+
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.2)
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.1)
+        monkeypatch.setattr("graftpunk.backends.nodriver._EXIT_POLL_S", 0.01)
+
+        async def schedule_then_block() -> tuple[float, float | None]:
+            transport = self._RecordingTransport(asyncio.get_running_loop())
+            # Never collected: the watcher is wedged.
+            proc = SimpleNamespace(returncode=None, _transport=transport)
+            _close_transport(proc)
+            time.sleep(0.5)
+            unblocked = time.monotonic()
+            deadline = unblocked + 3
+            while transport.closed_at is None and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            return unblocked, transport.closed_at
+
+        unblocked, closed_at = asyncio.run(schedule_then_block())
+
+        assert closed_at is not None
+        assert closed_at - unblocked >= 0.25
+
+    def test_a_stopped_loop_closes_the_transport_when_it_runs_again(self) -> None:
+        """A hand-managed loop between run_until_complete() calls: closing now
+        would reap Chrome ahead of the watcher that runs when the loop does."""
+        from graftpunk.backends.nodriver import _close_transport
+
+        loop = asyncio.new_event_loop()
+        try:
+            transport = self._RecordingTransport(loop)
+            proc = SimpleNamespace(returncode=None, _transport=transport)
+
+            _close_transport(proc)
+            closed_while_stopped = transport.closed_at is not None
+            # The watcher collects the exit once the loop runs.
+            proc.returncode = 0
+            loop.run_until_complete(asyncio.sleep(0.05))
+        finally:
+            loop.close()
+
+        assert closed_while_stopped is False
+        assert transport.closed_at is not None
+
 
 class TestNoDriverBackendStartThatNeverReturned:
     """A start that fails or is interrupted inside uc.start() never returns its browser."""
