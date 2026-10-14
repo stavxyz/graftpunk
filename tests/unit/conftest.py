@@ -233,9 +233,26 @@ class LoopBoundTab(_LoopBound, FakeCdpTab):
         _LoopBound.__init__(self, misuse)
         FakeCdpTab.__init__(self)
         self.url = url
+        # Set hang to make every CDP call wait until cancelled, like a Chrome
+        # that stopped answering without closing its websocket. hung_calls
+        # counts the calls that started waiting, cancelled_calls the ones a
+        # cancellation ended.
+        self.hang = False
+        self.hung_calls = 0
+        self.cancelled_calls = 0
+
+    async def _maybe_hang(self) -> None:
+        if self.hang:
+            self.hung_calls += 1
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled_calls += 1
+                raise
 
     async def evaluate(self, expression: str) -> str:
         await self._on_own_loop("Tab.evaluate")
+        await self._maybe_hang()
         return {
             "window.location.href": self.url,
             "document.title": "Example Domain",
@@ -244,12 +261,18 @@ class LoopBoundTab(_LoopBound, FakeCdpTab):
 
     async def get_content(self) -> str:
         await self._on_own_loop("Tab.get_content")
+        await self._maybe_hang()
         return "<html><body>Example Domain</body></html>"
 
     async def send(self, cmd: Any) -> Any:
         try:
             await self._on_own_loop("Tab.send")
         except AssertionError:
+            cmd.close()
+            raise
+        try:
+            await self._maybe_hang()
+        except asyncio.CancelledError:
             cmd.close()
             raise
         return await FakeCdpTab.send(self, cmd)

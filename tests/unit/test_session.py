@@ -729,7 +729,9 @@ class TestInitNodriverBackend:
         ):
             session = BrowserSession(backend="nodriver", headless=False)
 
-        mock_get.assert_called_once_with("nodriver", headless=False)
+        mock_get.assert_called_once_with(
+            "nodriver", headless=False, call_timeout=60.0, navigate_timeout=120.0
+        )
         assert session._backend_type == "nodriver"
         assert session._backend_instance is mock_backend
 
@@ -745,8 +747,26 @@ class TestInitNodriverBackend:
         ):
             session = BrowserSession(backend="nodriver")
 
-        mock_get.assert_called_once_with("nodriver", headless=True)
+        mock_get.assert_called_once_with(
+            "nodriver", headless=True, call_timeout=60.0, navigate_timeout=120.0
+        )
         assert session._backend_type == "nodriver"
+
+    def test_the_call_timeouts_reach_the_nodriver_backend(self):
+        from graftpunk.session import BrowserSession
+
+        session = BrowserSession(backend="nodriver", call_timeout=5, navigate_timeout=None)
+
+        backend = session._backend_instance
+        assert backend._call_timeout == 5
+        assert backend._navigate_timeout is None
+
+    def test_an_invalid_call_timeout_fails_the_session(self):
+        from graftpunk.exceptions import BrowserError
+        from graftpunk.session import BrowserSession
+
+        with pytest.raises(BrowserError, match="call_timeout must be None or a positive"):
+            BrowserSession(backend="nodriver", call_timeout=0)
 
     def test_init_nodriver_backend_failure_raises_browser_error(self):
         """Nodriver backend init wraps exceptions in BrowserError."""

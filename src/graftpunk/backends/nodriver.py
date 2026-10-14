@@ -89,6 +89,15 @@ _REAP_KILL_TIMEOUT_S: float = 1.0
 _LOOP_JOIN_TIMEOUT_S: float = 5.0
 _LOOP_THREAD_NAME = "graftpunk-nodriver-loop"
 
+# How long a synchronous call waits for the browser's loop, in seconds (None
+# waits without a limit). nodriver 0.50.6 bounds none of the CDP calls these
+# wrap: Connection.send awaits Chrome's reply with no timeout, and its
+# websocket's ping timeout is 15 minutes. Browser.get awaits the
+# Page.navigate reply, which can take as long as the server takes to answer,
+# so navigate gets the longer limit.
+DEFAULT_CALL_TIMEOUT_S: float = 60.0
+DEFAULT_NAVIGATE_TIMEOUT_S: float = 120.0
+
 # Ending Chrome without its event loop: how often to check whether the
 # signalled process has exited (bounded by _REAP_TERM_TIMEOUT_S), and how
 # many times, how far apart, to try removing its temp profile.
@@ -774,6 +783,20 @@ class NoDriverBackend:
         running loop, or on the current one, does nothing; one whose loop has
         finished is ended and replaced.
 
+    Timeouts:
+        nodriver bounds none of the CDP calls the synchronous methods wait on,
+        so a Chrome that stops answering without closing its websocket would
+        block the caller indefinitely. ``navigate()`` waits up to
+        ``navigate_timeout`` (default 120 s) and the other synchronous methods
+        up to ``call_timeout`` (default 60 s). When the limit passes, the call
+        is cancelled on the browser's loop, and the method fails as it does
+        for any other CDP failure: ``navigate()`` raises ``BrowserError``, and
+        the others log their usual warning (its ``error`` names the method
+        and the limit) and return their fallback. The loop keeps running, so
+        the next call works. ``None`` turns a limit off. ``start()``,
+        ``stop()``, ``stop_async()``, and async code awaiting nodriver's
+        objects directly are not limited.
+
     Note:
         Default headless=False because nodriver is more detectable in headless
         mode. For best anti-detection, run in visible (headed) mode.
@@ -838,6 +861,8 @@ class NoDriverBackend:
         headless: bool = False,
         profile_dir: Path | None = None,
         default_timeout: int = 15,
+        call_timeout: float | None = DEFAULT_CALL_TIMEOUT_S,
+        navigate_timeout: float | None = DEFAULT_NAVIGATE_TIMEOUT_S,
         **options: Any,
     ) -> None:
         """Initialize the NoDriver backend.
@@ -854,14 +879,37 @@ class NoDriverBackend:
             default_timeout: Default timeout for operations in seconds.
                 Note: Currently stored for serialization but not actively
                 enforced for all operations. Reserved for future use.
+            call_timeout: Seconds a synchronous getter or cookie call
+                (``current_url``, ``page_title``, ``page_source``,
+                ``get_cookies()``, ``set_cookies()``, ``delete_all_cookies()``,
+                ``get_user_agent()``) waits for the browser before it cancels
+                the call and returns its fallback with a warning. None waits
+                without a limit. Default 60.
+            navigate_timeout: Seconds ``navigate()`` waits before it cancels
+                the navigation and raises ``BrowserError``. None waits
+                without a limit. Default 120.
             **options: Additional options passed to nodriver.start():
                 - browser_args: List of Chrome arguments
                 - browser_executable_path: Path to Chrome binary
                 - lang: Browser language (e.g., "en-US")
+
+        Raises:
+            ValueError: If ``call_timeout`` or ``navigate_timeout`` is not
+                None and not a positive finite number.
         """
+        for name, value in (("call_timeout", call_timeout), ("navigate_timeout", navigate_timeout)):
+            if value is not None and not (
+                isinstance(value, int | float)
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value > 0
+            ):
+                raise ValueError(f"{name} must be None or a positive number of seconds: {value!r}")
         self._headless = headless
         self._profile_dir = profile_dir
         self._default_timeout = default_timeout
+        self._call_timeout = call_timeout
+        self._navigate_timeout = navigate_timeout
         self._options = options
         self._browser: nodriver.Browser | None = None
         self._page: nodriver.Tab | None = None
@@ -897,11 +945,14 @@ class NoDriverBackend:
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore the configuration, with a lock of the copy's own.
 
-        A backend pickled by an earlier graftpunk has no loop attributes, so
-        they default to "no loop" here.
+        A backend pickled by an earlier graftpunk has no loop attributes and
+        no call timeouts, so they default to "no loop" and the default
+        timeouts here.
         """
         self._loop = None
         self._private_loop = None
+        self._call_timeout = DEFAULT_CALL_TIMEOUT_S
+        self._navigate_timeout = DEFAULT_NAVIGATE_TIMEOUT_S
         self.__dict__.update(state)
         self._lock = threading.Lock()
         self._lock_owner = None
@@ -955,19 +1006,32 @@ class NoDriverBackend:
         if private is not None:
             private.close()
 
-    def _run_async(self, coro: Coroutine[Any, Any, Any]) -> Any:
+    def _run_async(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        timeout: float | None = None,
+        method: str = "call",
+    ) -> Any:
         """Run a coroutine on the browser's event loop and wait for its result.
 
-        The wait has no timeout: a start sweeps orphaned Chromes and retries
-        its connection, and a navigation takes as long as the page does, so
-        any fixed limit would cut off a legitimate call. Interrupting the wait
-        (Ctrl-C) cancels the coroutine and waits for its cleanup before
-        re-raising: up to ``_LOOP_JOIN_TIMEOUT_S`` for the loop to begin the
-        call, then up to ``_LOOP_JOIN_TIMEOUT_S`` more for it to finish, so up
-        to twice that in all.
+        With ``timeout`` None the wait has no limit, which is what ``start()``
+        and ``stop()`` use: a start sweeps orphaned Chromes and retries its
+        connection, and a stop bounds its own waits. The other synchronous
+        methods pass ``call_timeout`` or ``navigate_timeout``. When the
+        timeout passes, the coroutine is cancelled on the loop and the call
+        raises ``TimeoutError``; the loop keeps running, so the next call
+        works. Interrupting the wait (Ctrl-C) cancels the coroutine the same
+        way and re-raises. Either way the call waits for the cancellation to
+        land: up to ``_LOOP_JOIN_TIMEOUT_S`` for the loop to begin the call,
+        then up to ``_LOOP_JOIN_TIMEOUT_S`` more for it to finish, so up to
+        twice that in all.
 
         Args:
             coro: Coroutine to execute.
+            timeout: Seconds to wait for the result, or None for no limit.
+            method: The public method making the call, named in the
+                ``TimeoutError`` message.
 
         Returns:
             Result of the coroutine.
@@ -977,6 +1041,7 @@ class NoDriverBackend:
                 one), if called from the browser's own event loop, which would
                 deadlock waiting on itself, if that loop has stopped, or if the
                 call was cancelled because the loop is shutting down.
+            TimeoutError: If the coroutine did not finish within ``timeout``.
         """
         loop = self._loop
         running = _running_loop()
@@ -1013,18 +1078,9 @@ class NoDriverBackend:
             wrapper.close()
             coro.close()
             raise
-        try:
-            return future.result()
-        except concurrent.futures.CancelledError as exc:
-            # The loop cancelled the call: another thread stopped the backend
-            # and its teardown cancelled what was still running. RuntimeError
-            # is what every caller already treats as "the call could not run".
-            raise RuntimeError("NoDriverBackend call was cancelled (browser stopping)") from exc
-        except BaseException:
-            # A KeyboardInterrupt while waiting must not leave the coroutine
-            # running on the loop, and its cleanup (a start releasing a
-            # half-started browser) should finish before the caller moves on.
-            # A no-op when the coroutine itself raised.
+
+        def cancel_and_wait() -> None:
+            # A no-op when the coroutine already finished.
             future.cancel()
             # On a running loop the submitted call takes its first step before
             # the cancel reaches it, so it starts and then unwinds.
@@ -1038,7 +1094,27 @@ class NoDriverBackend:
                 # awaited" when collected.
                 wrapper.close()
                 coro.close()
+
+        try:
+            # wait() rather than result(timeout): a TimeoutError the coroutine
+            # raises itself must not read as the call running out of time.
+            if timeout is None or concurrent.futures.wait((future,), timeout).done:
+                return future.result()
+        except concurrent.futures.CancelledError as exc:
+            # The loop cancelled the call: another thread stopped the backend
+            # and its teardown cancelled what was still running. RuntimeError
+            # is what every caller already treats as "the call could not run".
+            raise RuntimeError("NoDriverBackend call was cancelled (browser stopping)") from exc
+        except BaseException:
+            # A KeyboardInterrupt while waiting must not leave the coroutine
+            # running on the loop, and its cleanup (a start releasing a
+            # half-started browser) should finish before the caller moves on.
+            cancel_and_wait()
             raise
+        # The call ran out of time. Cancel it so it does not hold the tab,
+        # and leave the loop running for the next call.
+        cancel_and_wait()
+        raise TimeoutError(f"NoDriverBackend.{method} did not finish within {timeout:g} s")
 
     async def _start_async(self, _max_attempts: int = 3) -> None:
         """Async implementation of browser start.
@@ -1678,14 +1754,18 @@ class NoDriverBackend:
             url: URL to navigate to.
 
         Raises:
-            BrowserError: If navigation fails or browser not started.
+            BrowserError: If navigation fails, the browser cannot start, or
+                the navigation does not finish within ``navigate_timeout``
+                (it is then cancelled; the browser stays usable).
         """
         if not self.is_running:
             self.start()
 
         LOG.debug("nodriver_backend_navigating", url=url)
         try:
-            self._run_async(self._navigate_async(url))
+            self._run_async(
+                self._navigate_async(url), timeout=self._navigate_timeout, method="navigate()"
+            )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             LOG.error("nodriver_backend_navigation_failed", url=url, error=str(exc))
             raise BrowserError(f"Navigation failed: {exc}") from exc
@@ -1718,7 +1798,9 @@ class NoDriverBackend:
         if not self.is_running:
             return ""
         try:
-            return self._run_async(self._get_current_url_async())
+            return self._run_async(
+                self._get_current_url_async(), timeout=self._call_timeout, method="current_url"
+            )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # the CDP call can fail if the browser crashed; warn user
             LOG.warning("nodriver_current_url_failed", error=str(exc))
@@ -1752,7 +1834,9 @@ class NoDriverBackend:
         if not self.is_running:
             return ""
         try:
-            return self._run_async(self._get_page_title_async())
+            return self._run_async(
+                self._get_page_title_async(), timeout=self._call_timeout, method="page_title"
+            )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # the CDP call can fail if the browser crashed; warn user
             LOG.warning("nodriver_page_title_failed", error=str(exc))
@@ -1785,7 +1869,9 @@ class NoDriverBackend:
         if not self.is_running:
             return ""
         try:
-            return self._run_async(self._get_page_source_async())
+            return self._run_async(
+                self._get_page_source_async(), timeout=self._call_timeout, method="page_source"
+            )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # the CDP call can fail if the browser crashed; warn user
             LOG.warning("nodriver_page_source_failed", error=str(exc))
@@ -1844,7 +1930,9 @@ class NoDriverBackend:
         if not self.is_running:
             return []
         try:
-            return self._run_async(self._get_cookies_async())
+            return self._run_async(
+                self._get_cookies_async(), timeout=self._call_timeout, method="get_cookies()"
+            )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # the CDP call can fail if the browser crashed; warn user
             LOG.warning("nodriver_cookies_failed", error=str(exc))
@@ -1940,7 +2028,11 @@ class NoDriverBackend:
             self.start()
 
         try:
-            return self._run_async(self._set_cookies_async(cookies))
+            return self._run_async(
+                self._set_cookies_async(cookies),
+                timeout=self._call_timeout,
+                method="set_cookies()",
+            )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # the CDP call can fail if the browser crashed; best-effort operation
             LOG.warning(
@@ -1989,7 +2081,11 @@ class NoDriverBackend:
         if not self.is_running:
             return True  # No cookies to delete
         try:
-            return self._run_async(self._delete_all_cookies_async())
+            return self._run_async(
+                self._delete_all_cookies_async(),
+                timeout=self._call_timeout,
+                method="delete_all_cookies()",
+            )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # the CDP call can fail if the browser crashed; best-effort operation
             LOG.warning(
@@ -2025,7 +2121,9 @@ class NoDriverBackend:
         if not self.is_running:
             return ""
         try:
-            return self._run_async(self._get_user_agent_async())
+            return self._run_async(
+                self._get_user_agent_async(), timeout=self._call_timeout, method="get_user_agent()"
+            )
         except (RuntimeError, ConnectionError, TimeoutError) as exc:
             # the CDP call can fail if the browser crashed; warn user
             LOG.warning("nodriver_user_agent_failed", error=str(exc))
@@ -2041,6 +2139,8 @@ class NoDriverBackend:
             "backend_type": self.BACKEND_TYPE,
             "headless": self._headless,
             "default_timeout": self._default_timeout,
+            "call_timeout": self._call_timeout,
+            "navigate_timeout": self._navigate_timeout,
         }
         if self._profile_dir is not None:
             state["profile_dir"] = str(self._profile_dir)
@@ -2071,19 +2171,30 @@ class NoDriverBackend:
         # Extract known parameters
         headless = state.get("headless", False)
         default_timeout = state.get("default_timeout", 15)
+        call_timeout = state.get("call_timeout", DEFAULT_CALL_TIMEOUT_S)
+        navigate_timeout = state.get("navigate_timeout", DEFAULT_NAVIGATE_TIMEOUT_S)
 
         profile_dir = state.get("profile_dir")
         if profile_dir is not None:
             profile_dir = Path(profile_dir)
 
         # Remaining items are additional options
-        known_keys = ("backend_type", "headless", "default_timeout", "profile_dir")
+        known_keys = (
+            "backend_type",
+            "headless",
+            "default_timeout",
+            "call_timeout",
+            "navigate_timeout",
+            "profile_dir",
+        )
         options = {k: v for k, v in state.items() if k not in known_keys}
 
         return cls(
             headless=headless,
             profile_dir=profile_dir,
             default_timeout=default_timeout,
+            call_timeout=call_timeout,
+            navigate_timeout=navigate_timeout,
             **options,
         )
 

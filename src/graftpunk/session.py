@@ -34,6 +34,7 @@ import webdriver_manager.chrome
 
 from graftpunk import console as gp_console
 from graftpunk._stdout_fd import stdout_with_a_file_descriptor
+from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
 from graftpunk.chrome import get_chrome_version
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
@@ -121,6 +122,8 @@ class BrowserSession(requestium.Session):
         use_stealth: bool = True,
         backend: str = "selenium",
         observe_mode: str = "off",
+        call_timeout: float | None = DEFAULT_CALL_TIMEOUT_S,
+        navigate_timeout: float | None = DEFAULT_NAVIGATE_TIMEOUT_S,
         **kwargs: Any,
     ) -> None:
         """Initialize browser session.
@@ -134,10 +137,19 @@ class BrowserSession(requestium.Session):
                 Available: "selenium" (default), "nodriver".
             observe_mode: Observability capture mode. One of "off", "full".
                 Default "off".
+            call_timeout: nodriver backend only. Seconds a synchronous
+                backend call other than ``navigate()`` waits before it is
+                cancelled and returns its fallback; None waits without a
+                limit. Default 60. See ``NoDriverBackend``.
+            navigate_timeout: nodriver backend only. Seconds a synchronous
+                ``navigate()`` waits before it is cancelled and raises
+                ``BrowserError``; None waits without a limit. Default 120.
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
         Raises:
-            BrowserError: If browser session creation fails.
+            BrowserError: If browser session creation fails, including a
+                ``call_timeout`` or ``navigate_timeout`` that is not None or a
+                positive number (nodriver backend).
             ValueError: If unknown backend is specified.
         """
         # Validate backend
@@ -164,7 +176,11 @@ class BrowserSession(requestium.Session):
             try:
                 from graftpunk.config import get_settings
 
-                nodriver_opts: dict[str, Any] = {"headless": headless}
+                nodriver_opts: dict[str, Any] = {
+                    "headless": headless,
+                    "call_timeout": call_timeout,
+                    "navigate_timeout": navigate_timeout,
+                }
                 # Allow pointing nodriver at a specific Chrome/Chromium binary
                 # (e.g. Chrome-for-Testing) via GRAFTPUNK_BROWSER_EXECUTABLE_PATH,
                 # for machines/CI without a system Chrome install.
