@@ -3898,6 +3898,65 @@ class TestNoDriverBackendInterruptedLifecycle:
         assert backend._lock.locked() is False
         assert len(fake_chrome.browsers) == 1
 
+    def test_a_sync_stop_stops_chrome_on_the_private_loop_while_a_stop_async_is_stranded(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stranded stop_async() was on a hand-managed caller loop that
+        stopped, while the browser's private loop still runs: a stop on its
+        thread stops Chrome through that private loop, and must not hang."""
+        ended: list[Any] = []
+        monkeypatch.setattr("graftpunk.backends.nodriver._end_browser_without_loop", ended.append)
+        backend = NoDriverBackend()
+        backend.start()
+        private_loop = backend._loop
+        assert private_loop is not None
+        real_stop = backend._stop_async
+        calls = 0
+
+        async def first_stop_hangs() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await asyncio.Event().wait()
+            await real_stop()
+
+        monkeypatch.setattr(backend, "_stop_async", first_stop_hangs)
+        steps: list[str] = []
+        failures: list[BaseException] = []
+
+        def on_one_thread() -> None:
+            # The holder, the sync stop, and the later stops share this
+            # thread, which is what makes the stop skip the lock.
+            caller = asyncio.new_event_loop()
+            try:
+                stranded = caller.create_task(backend.stop_async())
+                caller.run_until_complete(asyncio.sleep(0.05))
+                assert backend._held_by_this_thread()
+                backend.stop()
+                steps.append("sync stop returned")
+                assert backend.is_running is False
+                asyncio.run(asyncio.wait_for(backend.stop_async(), 2))
+                steps.append("stop_async returned")
+                assert caller.run_until_complete(asyncio.wait_for(stranded, 2)) is None
+                steps.append("stranded stop resumed")
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                caller.close()
+
+        worker = threading.Thread(target=on_one_thread, daemon=True)
+        worker.start()
+        worker.join(10)
+
+        assert not worker.is_alive(), f"hung after {steps}"
+        assert failures == []
+        assert steps == ["sync stop returned", "stop_async returned", "stranded stop resumed"]
+        assert fake_chrome.browsers[0].stopped_on is private_loop
+        assert ended == []
+        assert private_loop.is_closed()
+        assert backend.is_running is False
+        assert backend._lock.locked() is False
+
     def test_a_second_stop_async_on_the_thread_of_a_paused_one_stops_chrome_on_its_loop(
         self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
     ) -> None:
