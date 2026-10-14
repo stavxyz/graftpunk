@@ -442,16 +442,22 @@ determine is marked `# GP-FILL: <what to fill in>`. `gp plugin new <name>`
 with no `--from-run` scaffolds a bare project from `--url` alone.
 
 A plugin name starts with a letter, uses letters, digits, hyphens, and
-underscores, and is at most 40 characters; the command refuses anything else
-with a message naming the rule. It is also refused when it collides with a
-reserved top-level `gp` command name, which is any command name registered
-on the CLI at the time plugins attach, including `plugin`, `plugins`,
-`session`, `http`, `config`, `keepalive`, and `observe`. Hyphenated names
-are legal and map to an importable package: `gp plugin new my-shop` writes
-`src/graftpunk_my_shop/plugin.py` and `tests/test_my_shop.py`, registers the
-entry point `my-shop = "graftpunk_my_shop.plugin:MyShopPlugin"`, and the
-plugin's own CLI command stays `gp my-shop`. A generated project passes its
-own `ruff check` and `ruff format --check` as written, whatever the captured
+underscores, does not end with a hyphen or underscore, and is at most 40
+characters; the command refuses anything else with a message naming the
+rule. It is also refused when it collides with a reserved top-level `gp`
+command name, which is any command name registered on the CLI at the time
+plugins attach, including `plugin`, `plugins`, `session`, `http`, `config`,
+`keepalive`, and `observe`. The name `lite` (in any case) is refused because
+a standalone project for it would be named `graftpunk_lite`, which is
+graftpunk's own browser-free distribution, `graftpunk-lite`. A name ending
+in a hyphen or underscore (`shop-`) is refused because a standalone project
+for it would be named `graftpunk_shop_`, which is not a valid distribution
+name. Hyphenated names are legal and map to an importable package:
+`gp plugin new my-shop` writes `src/graftpunk_my_shop/plugin.py` and
+`tests/test_my_shop.py`, registers the entry point
+`my-shop = "graftpunk_my_shop.plugin:MyShopPlugin"`, and the plugin's own
+CLI command stays `gp my-shop`. A generated project passes its own
+`ruff check` and `ruff format --check` as written, whatever the captured
 site facts contain (long paths, long parameter names, quotes in selectors):
 the scaffold bounds generated identifiers and wraps wide literals so the
 developer never starts from a red gate.
