@@ -44,6 +44,64 @@ class TestSuppressAsyncioNoise:
         # Reset
         asyncio_logger.setLevel(logging.WARNING)
 
+    def test_overlapping_windows_on_one_loop_restore_the_original_level(self) -> None:
+        """Two backends' stop_async() gathered on one loop end in the other order."""
+        import asyncio
+
+        asyncio_logger = logging.getLogger("asyncio")
+        asyncio_logger.setLevel(logging.INFO)
+        levels_inside: list[int] = []
+
+        async def window(delay: float) -> None:
+            with suppress_asyncio_noise():
+                await asyncio.sleep(delay)
+                levels_inside.append(asyncio_logger.level)
+
+        async def overlap() -> None:
+            await asyncio.gather(window(0.05), window(0.1))
+
+        try:
+            asyncio.run(overlap())
+            assert levels_inside == [logging.CRITICAL, logging.CRITICAL]
+            assert asyncio_logger.level == logging.INFO
+        finally:
+            asyncio_logger.setLevel(logging.NOTSET)
+
+    def test_overlapping_windows_on_two_threads_restore_the_original_level(self) -> None:
+        """The first window in is the first out, the second restores last."""
+        import threading
+
+        asyncio_logger = logging.getLogger("asyncio")
+        asyncio_logger.setLevel(logging.INFO)
+        first_in = threading.Event()
+        second_in = threading.Event()
+        first_out = threading.Event()
+        level_after_first_out: list[int] = []
+
+        def first() -> None:
+            with suppress_asyncio_noise():
+                first_in.set()
+                second_in.wait(5)
+            first_out.set()
+
+        def second() -> None:
+            first_in.wait(5)
+            with suppress_asyncio_noise():
+                second_in.set()
+                first_out.wait(5)
+                level_after_first_out.append(asyncio_logger.level)
+
+        threads = [threading.Thread(target=first), threading.Thread(target=second)]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(5)
+            assert level_after_first_out == [logging.CRITICAL]
+            assert asyncio_logger.level == logging.INFO
+        finally:
+            asyncio_logger.setLevel(logging.NOTSET)
+
 
 _HIDE_JMESPATH = """
 import builtins

@@ -2,6 +2,7 @@
 
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from typing import Any
 
@@ -107,6 +108,14 @@ def ensure_library_defaults() -> None:
 ensure_library_defaults()
 
 
+# suppress_asyncio_noise() windows can overlap (two backends stopping at once,
+# on one loop or on two threads) and end in any order, so the level is saved
+# by the first one in and restored by the last one out.
+_asyncio_noise_lock = threading.Lock()
+_asyncio_noise_depth = 0
+_asyncio_noise_saved_level = 0
+
+
 @contextmanager
 def suppress_asyncio_noise():
     """Suppress asyncio 'Loop is closed' warnings during event loop shutdown.
@@ -115,19 +124,30 @@ def suppress_asyncio_noise():
     the event loop closes. This context manager temporarily raises the asyncio
     logger level to CRITICAL to suppress this harmless cleanup noise.
 
+    Overlapping uses, from coroutines or threads, share one suppression: the
+    first saves the logger's level and the last restores it, whatever order
+    they end in.
+
     Note: This suppresses ALL asyncio log messages below CRITICAL for the
-    duration of the context. The suppression window should be kept as small
-    as possible (just the asyncio.run() call).
+    duration of the context, process-wide. The suppression window should be
+    kept as small as possible (just the asyncio.run() call).
     """
     import logging
 
+    global _asyncio_noise_depth, _asyncio_noise_saved_level  # noqa: PLW0603
     asyncio_logger = logging.getLogger("asyncio")
-    prev_level = asyncio_logger.level
-    asyncio_logger.setLevel(logging.CRITICAL)
+    with _asyncio_noise_lock:
+        if _asyncio_noise_depth == 0:
+            _asyncio_noise_saved_level = asyncio_logger.level
+            asyncio_logger.setLevel(logging.CRITICAL)
+        _asyncio_noise_depth += 1
     try:
         yield
     finally:
-        asyncio_logger.setLevel(prev_level)
+        with _asyncio_noise_lock:
+            _asyncio_noise_depth -= 1
+            if _asyncio_noise_depth == 0:
+                asyncio_logger.setLevel(_asyncio_noise_saved_level)
 
 
 def enable_network_debug() -> None:
