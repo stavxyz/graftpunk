@@ -10,7 +10,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -301,7 +301,8 @@ class TestValidatePluginName:
     @pytest.mark.parametrize("name", ["lite", "Lite", "LITE"])
     def test_rejects_a_name_whose_project_would_be_graftpunk_lite(self, name: str) -> None:
         with pytest.raises(
-            ValueError, match="would name the project graftpunk-lite, a distribution"
+            ValueError,
+            match="a standalone project for it would be named graftpunk-lite, a distribution",
         ):
             validate_plugin_name(name)
 
@@ -322,9 +323,32 @@ class TestValidatePluginName:
             canonicalize_name(project, validate=True)
         with pytest.raises(
             ValueError,
-            match=f"must not end with a hyphen or underscore: its project would be named {project}",
+            match=(
+                "must not end with a hyphen or underscore: a standalone project for it "
+                f"would be named {project},"
+            ),
         ):
             validate_plugin_name(name)
+
+    @pytest.mark.parametrize("mode", ["new_project", "add_to_suite"])
+    @pytest.mark.parametrize(
+        ("name", "message"),
+        [
+            ("shop-", "a standalone project for it would be named graftpunk_shop_,"),
+            ("lite", "a standalone project for it would be named graftpunk-lite,"),
+        ],
+    )
+    def test_a_project_name_refusal_names_a_standalone_project_in_either_mode(
+        self, mode: Literal["new_project", "add_to_suite"], name: str, message: str
+    ) -> None:
+        """A suite member gets no project of its own, so the message must not say
+        "its project": it names what a standalone project would be called."""
+        with pytest.raises(ValueError, match=message) as excinfo:
+            ScaffoldSpec(
+                name=name, mode=mode, backend="nodriver", base_url="https://myshop.example"
+            )
+        assert "its project" not in str(excinfo.value)
+        assert "would name the project" not in str(excinfo.value)
 
 
 class TestCommandName:

@@ -1791,8 +1791,45 @@ class TestCheckName:
         )
         assert result.exit_code == 1, result.output
         flat = " ".join(strip_ansi(result.output).split())
-        assert "would name the project graftpunk-lite, a distribution graftpunk itself" in flat
+        assert (
+            "a standalone project for it would be named graftpunk-lite, a distribution "
+            "graftpunk itself publishes"
+        ) in flat
         assert set(tmp_path.iterdir()) == before
+
+    @pytest.mark.parametrize(
+        ("name", "message"),
+        [
+            ("shop-", "a standalone project for it would be named graftpunk_shop_,"),
+            ("lite", "a standalone project for it would be named graftpunk-lite,"),
+        ],
+    )
+    def test_a_suite_member_refusal_names_a_standalone_project(
+        self, tmp_path: Path, name: str, message: str
+    ) -> None:
+        """Adding to a suite creates no graftpunk_<name> project, so the refusal
+        must not say the member's project would get that name."""
+        from graftpunk.cli.main import app as real_app
+
+        suite = tmp_path / "suite"
+        suite.mkdir()
+        pyproject = suite / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "graftpunk_myshop"\n\n'
+            '[project.entry-points."graftpunk.plugins"]\n'
+            'myshop = "graftpunk_myshop.plugin:MyshopPlugin"\n'
+        )
+        before = pyproject.read_bytes()
+        result = runner.invoke(
+            real_app,
+            ["plugin", "new", name, "--url", "https://myshop.example", "--dir", str(suite)],
+        )
+        assert result.exit_code == 1, result.output
+        flat = " ".join(strip_ansi(result.output).split())
+        assert message in flat
+        assert "its project" not in flat
+        assert pyproject.read_bytes() == before
+        assert {p.name for p in suite.iterdir()} == {"pyproject.toml"}
 
     @pytest.mark.parametrize("name", ["observe", "2fa-site", "a" * 41, "lite"])
     def test_a_refusal_is_the_same_text_gp_plugin_new_prints(

@@ -189,19 +189,22 @@ def validate_plugin_name(name: str) -> None:
             f"letters, digits, hyphens, and underscores, and be at most "
             f"{_MAX_PLUGIN_NAME} characters"
         )
-    # The project is named graftpunk_<module>, and a distribution name cannot end
-    # in a separator (PEP 508), so uv refuses to install graftpunk_shop_.
+    # A standalone project is named graftpunk_<module>, and a distribution name
+    # cannot end in a separator (PEP 508), so uv refuses to install graftpunk_shop_.
+    # This check has no scaffold mode (--check-name calls it with none), so the
+    # messages say what a standalone project would be named, true in suite mode too.
     if name[-1] in "-_":
         raise ValueError(
-            f"Plugin name {name!r} must not end with a hyphen or underscore: its "
-            f"project would be named {plugin_distribution_name(name)}, which is not a "
-            f"valid distribution name"
+            f"Plugin name {name!r} must not end with a hyphen or underscore: a "
+            f"standalone project for it would be named {plugin_distribution_name(name)}, "
+            f"which is not a valid distribution name"
         )
     distribution = canonicalize_name(plugin_distribution_name(name))
     if distribution in _GRAFTPUNK_DISTRIBUTIONS:
         raise ValueError(
-            f"Plugin name {name!r} would name the project {distribution}, a "
-            f"distribution graftpunk itself publishes; choose another name"
+            f"Plugin name {name!r} is refused: a standalone project for it would be "
+            f"named {distribution}, a distribution graftpunk itself publishes; choose "
+            f"another name"
         )
 
 
