@@ -197,7 +197,11 @@ def test_lite_readme_names_what_gp_does_without_the_browser_extra() -> None:
         "`login` command), and a plugin's own commands need `graftpunk-lite[browser]` or "
         "`graftpunk`."
     ) in flat
-    assert "Plugins and their `gp` commands need graftpunk, the full install." in flat
+    assert (
+        "Plugins and their `gp` commands need the browser stack (graftpunk, or "
+        "`graftpunk-lite[browser]`). Plugins declare `graftpunk[browser]`, so installing "
+        "one where graftpunk-lite is installed pulls graftpunk in beside it."
+    ) in flat
     assert "--no-deps" not in flat
 
 

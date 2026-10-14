@@ -112,10 +112,10 @@ place, so uninstalling either one deletes files the other needs. To switch,
 uninstall the one you have first (`pip uninstall graftpunk`, then
 `pip install graftpunk-lite`, or the reverse).
 
-Plugins depend on `graftpunk` (they log in through a browser), so plugins and
-their `gp` commands need the full install: install a plugin into an environment
-with `graftpunk`. Installing one where `graftpunk-lite` is installed would put
-`graftpunk` beside it. graftpunk-lite is for loading a saved session with
+Plugins and their `gp` commands need the browser stack (`graftpunk`, or
+`graftpunk-lite[browser]`). Plugins declare `graftpunk[browser]`, so installing
+one where `graftpunk-lite` is installed pulls `graftpunk` in beside it.
+graftpunk-lite is for loading a saved session with
 `load_session_for_api_from_bytes` under Pyodide or Cloudflare Python Workers,
 and for the browser-free `gp` commands above.
 
