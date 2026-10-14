@@ -976,13 +976,22 @@ class NoDriverBackend:
         retry the entire ``uc.start()`` call up to *_max_attempts* times with
         a short back-off between attempts.
 
-        A no-op when the backend is already started, wherever its loop is:
-        launching again would orphan the running Chrome, and releasing its
-        loop would strand it.
+        A no-op when the backend is already started on a loop that is still
+        running, or on this one: launching again would orphan the running
+        Chrome, and releasing its loop would strand it. A browser whose loop
+        has finished (an earlier ``asyncio.run(session.start_async())`` that
+        never stopped) cannot be used any more, so it is ended without its
+        loop, on a worker thread, and a new one is started here.
         """
         if self._started and self._browser is not None:
-            LOG.debug("nodriver_backend_already_started")
-            return
+            current = asyncio.get_running_loop()
+            old = self._loop
+            if old is current or (old is not None and old.is_running()):
+                LOG.debug("nodriver_backend_already_started")
+                return
+            LOG.info("nodriver_backend_replacing_browser_of_finished_loop")
+            await self._release_failed_attempt_off_loop()
+            self._reset_state()
         try:
             import nodriver as uc
         except ImportError as exc:
