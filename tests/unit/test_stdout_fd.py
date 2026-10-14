@@ -123,7 +123,13 @@ def test_a_session_exports_under_a_stringio_stdout(tmp_path: Path, original_stdo
         text=True,
         timeout=60,
         cwd=tmp_path,
-        env={**os.environ, **home, "PYTHONPATH": str(_REPO / "src")},
+        # NO_COLOR and FORCE_COLOR change which stream graftpunk's logging probes
+        # at import, so the child runs without them, as CI does.
+        env={
+            **{k: v for k, v in os.environ.items() if k not in {"NO_COLOR", "FORCE_COLOR"}},
+            **home,
+            "PYTHONPATH": str(_REPO / "src"),
+        },
     )
 
     assert result.returncode == 0, result.stdout + result.stderr

@@ -23,11 +23,11 @@ import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import IO, Any
+from typing import Any, TextIO
 
 # The devnull stand-in, opened at most once and closed only at exit: httpie's
 # Environment keeps the stdout and stderr it saw at import as class attributes.
-_devnull: IO[str] | None = None
+_devnull: TextIO | None = None
 
 
 def _has_file_descriptor(stream: Any) -> bool:
@@ -40,7 +40,8 @@ def _has_file_descriptor(stream: Any) -> bool:
     return True
 
 
-def _open_devnull() -> IO[str]:
+def open_devnull() -> TextIO:
+    """One null-device file for the process, closed at exit."""
     global _devnull
     if _devnull is None:
         _devnull = open(os.devnull, "w")  # noqa: SIM115
@@ -48,11 +49,11 @@ def _open_devnull() -> IO[str]:
     return _devnull
 
 
-def _stand_in() -> IO[str]:
+def _stand_in() -> TextIO:
     process_stdout = sys.__stdout__
     if process_stdout is not None and _has_file_descriptor(process_stdout):
         return process_stdout
-    return _open_devnull()
+    return open_devnull()
 
 
 @contextmanager
@@ -69,10 +70,14 @@ def stdout_with_a_file_descriptor() -> Iterator[None]:
     original_stderr = sys.stderr
     swap_stdout = not _has_file_descriptor(original_stdout)
     swap_stderr = original_stderr is None
-    if swap_stdout:
-        sys.stdout = _stand_in()
-    if swap_stderr:
-        sys.stderr = _open_devnull()
+    # Both stand-ins exist before either stream is replaced, so a failure to
+    # open devnull leaves the caller's streams as they were.
+    stdout_stand_in = _stand_in() if swap_stdout else None
+    stderr_stand_in = open_devnull() if swap_stderr else None
+    if stdout_stand_in is not None:
+        sys.stdout = stdout_stand_in
+    if stderr_stand_in is not None:
+        sys.stderr = stderr_stand_in
     try:
         yield
     finally:

@@ -33,7 +33,12 @@ def _stderr_wants_color() -> bool:
         return force != ""
     if os.environ.get("NO_COLOR"):
         return False
-    return sys.stderr.isatty()
+    # pythonw and some embedding hosts run with sys.stderr set to None.
+    isatty = getattr(sys.stderr, "isatty", None)
+    try:
+        return bool(isatty and isatty())
+    except (OSError, ValueError):
+        return False
 
 
 def configured_by_consumer() -> bool:
@@ -74,7 +79,15 @@ def configure_logging(
 
     import logging as stdlib_logging
 
-    _owned_factory = structlog.PrintLoggerFactory(file=sys.stderr)
+    # With no stderr (pythonw), log lines go nowhere rather than to stdout,
+    # which may carry a program's output.
+    if sys.stderr is not None:
+        stream = sys.stderr
+    else:
+        from graftpunk._stdout_fd import open_devnull
+
+        stream = open_devnull()
+    _owned_factory = structlog.PrintLoggerFactory(file=stream)
     structlog.configure(
         processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(
