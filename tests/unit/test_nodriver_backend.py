@@ -3795,17 +3795,20 @@ class TestNoDriverBackendInterruptedLifecycle:
         assert fake_chrome.browsers[0].stopped_on is not None
         assert backend.is_running is False
 
-    def test_sync_calls_during_this_threads_stop_async_end_chrome_and_refuse_to_start(
+    def test_sync_calls_during_this_threads_stop_async_stop_chrome_and_refuse_to_start(
         self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Another coroutine on the loop running stop_async() calls stop(),
-        start(), and start_async() while that stop is paused at an await."""
+        start(), and start_async() while that stop is paused at an await.
+        The browser's loop is the private one, which still runs, so the sync
+        stop stops Chrome there rather than without it."""
         from graftpunk.session import BrowserSession
 
         ended: list[Any] = []
         monkeypatch.setattr("graftpunk.backends.nodriver._end_browser_without_loop", ended.append)
         backend = NoDriverBackend()
         backend.start()
+        loop = backend._loop
         real_stop = backend._stop_async
         stopping = threading.Event()
 
@@ -3837,7 +3840,8 @@ class TestNoDriverBackendInterruptedLifecycle:
         asyncio.run(stop_with_sync_calls_meanwhile())
 
         assert running_after_sync_stop == [False]
-        assert ended == fake_chrome.browsers
+        assert fake_chrome.browsers[0].stopped_on is loop
+        assert ended == []
         assert len(start_errors) == 2
         assert all("still stopping" in error for error in start_errors)
         assert len(fake_chrome.browsers) == 1
@@ -3894,38 +3898,178 @@ class TestNoDriverBackendInterruptedLifecycle:
         assert backend._lock.locked() is False
         assert len(fake_chrome.browsers) == 1
 
-    def test_a_second_stop_async_on_the_thread_of_a_paused_one_ends_chrome_without_waiting(
+    def test_a_second_stop_async_on_the_thread_of_a_paused_one_stops_chrome_on_its_loop(
         self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The first never finishes; the second does not wait for it."""
+        ended: list[Any] = []
+        monkeypatch.setattr("graftpunk.backends.nodriver._end_browser_without_loop", ended.append)
+        backend = NoDriverBackend()
+        backend.start()
+        loop = backend._loop
+        real_stop = backend._stop_async
+        calls = 0
+
+        async def first_stop_hangs() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await asyncio.Event().wait()
+            await real_stop()
+
+        monkeypatch.setattr(backend, "_stop_async", first_stop_hangs)
+
+        async def stop_twice() -> None:
+            first = asyncio.ensure_future(backend.stop_async())
+            await asyncio.sleep(0.05)
+            await asyncio.wait_for(backend.stop_async(), 2)
+            # Its call on the private loop was cancelled when the loop closed.
+            return await first
+
+        assert asyncio.run(stop_twice()) is None
+        assert fake_chrome.browsers[0].stopped_on is loop
+        assert ended == []
+        assert backend.is_running is False
+        assert backend._lock.locked() is False
+
+    def test_two_stop_async_calls_at_once_collect_chromes_exit_status(
+        self, temp_profiles: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Linux the private loop's child watcher reaps Chrome, so a loop
+        closed while either stop is still ending Chrome leaves it a zombie,
+        with its pipes open. The stand-in exits 0.3 s after SIGTERM, as
+        Chrome takes a moment to."""
+        import sys
+
+        nodriver = pytest.importorskip("nodriver")
+        monkeypatch.setattr("graftpunk.chrome_orphans._ARMED", True)
+        monkeypatch.setattr("graftpunk.backends.nodriver.prepare_browser_launch", lambda: None)
+        profile = temp_profiles / "uc_two_stops"
+        profile.mkdir()
+        processes: list[asyncio.subprocess.Process] = []
+
+        class _SignalledBrowser(_Browser):
+            async def get(self, _url: str) -> SimpleNamespace:
+                return SimpleNamespace()
+
+            def stop(self) -> None:
+                self._process.terminate()
+
+        async def start(**_kwargs: Any) -> _SignalledBrowser:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                _CHILD_UNTIL_TERM,
+                str(profile),
+                "0.3",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            assert process.stdout is not None
+            assert (await process.stdout.readline()).strip() == b"ready"
+            processes.append(process)
+            return _SignalledBrowser(
+                process, SimpleNamespace(uses_custom_data_dir=False, user_data_dir=str(profile))
+            )
+
+        monkeypatch.setattr(nodriver, "start", start)
+        backend = NoDriverBackend()
+        backend.start()
+
+        async def stop_twice() -> None:
+            await asyncio.gather(backend.stop_async(), backend.stop_async())
+
+        asyncio.run(stop_twice())
+
+        [process] = processes
+        assert process.returncode == 0
+        assert process._transport.is_closing() is True  # type: ignore[attr-defined]
+        assert not profile.exists()
+        assert backend.is_running is False
+        assert backend._lock.locked() is False
+
+    def test_a_stop_on_the_thread_of_a_cancelled_one_keeps_the_loop_until_chrome_has_ended(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cancelled stop ends Chrome without the loop, on a worker thread.
+        The loop's child watcher collects Chrome's exit status on Linux, so the
+        loop must still be open when that end finishes."""
+        import time
+
+        backend = NoDriverBackend()
+        backend.start()
+        loop = backend._loop
+        assert loop is not None
+        ending = threading.Event()
+        loop_closed_when_ended: list[bool] = []
+
+        def slow_end(_browser: Any) -> None:
+            ending.set()
+            time.sleep(0.3)
+            loop_closed_when_ended.append(loop.is_closed())
+
+        monkeypatch.setattr("graftpunk.backends.nodriver._end_browser_without_loop", slow_end)
+        real_stop = backend._stop_async
+
+        async def stop_that_hangs_on_a_live_browser() -> None:
+            if backend._browser is not None:
+                await asyncio.Event().wait()
+            await real_stop()
+
+        monkeypatch.setattr(backend, "_stop_async", stop_that_hangs_on_a_live_browser)
+
+        async def cancel_one_then_stop_again() -> None:
+            first = asyncio.ensure_future(asyncio.wait_for(backend.stop_async(), 0.05))
+            assert await asyncio.to_thread(ending.wait, 5)
+            await asyncio.wait_for(backend.stop_async(), 2)
+            with pytest.raises(TimeoutError):
+                await first
+
+        asyncio.run(cancel_one_then_stop_again())
+
+        assert loop_closed_when_ended == [False]
+        assert loop.is_closed()
+        assert backend.is_running is False
+        assert backend._lock.locked() is False
+
+    def test_a_stop_on_the_thread_of_one_closing_the_loop_does_not_stop_chrome_again(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first has stopped Chrome and waits for the private loop to
+        close; the browser must not be stopped again on the caller's loop,
+        which it does not belong to."""
         import time
 
         ended: list[Any] = []
         monkeypatch.setattr("graftpunk.backends.nodriver._end_browser_without_loop", ended.append)
         backend = NoDriverBackend()
         backend.start()
-        real_stop = backend._stop_async
-        stops = 0
+        loop = backend._loop
+        private = backend._private_loop
+        assert private is not None
+        browser = fake_chrome.browsers[0]
+        stopped_on: list[asyncio.AbstractEventLoop] = []
+        monkeypatch.setattr(browser, "stop", lambda: stopped_on.append(asyncio.get_running_loop()))
+        real_close = private.close
+        closing = threading.Event()
 
-        async def slow_stop() -> None:
-            nonlocal stops
-            stops += 1
-            await asyncio.sleep(3)
-            await real_stop()
+        def slow_close() -> None:
+            closing.set()
+            time.sleep(0.3)
+            real_close()
 
-        monkeypatch.setattr(backend, "_stop_async", slow_stop)
+        monkeypatch.setattr(private, "close", slow_close)
 
-        async def stop_twice() -> float:
+        async def stop_again_while_the_first_closes_the_loop() -> None:
             first = asyncio.ensure_future(backend.stop_async())
-            await asyncio.sleep(0.05)
-            began = time.monotonic()
-            await asyncio.gather(first, backend.stop_async())
-            return time.monotonic() - began
+            assert await asyncio.to_thread(closing.wait, 5)
+            await asyncio.wait_for(backend.stop_async(), 2)
+            await first
 
-        took = asyncio.run(stop_twice())
+        asyncio.run(stop_again_while_the_first_closes_the_loop())
 
-        assert took < 2
-        assert stops == 1
-        assert ended == fake_chrome.browsers
+        assert stopped_on == [loop]
+        assert ended == []
         assert backend.is_running is False
         assert backend._lock.locked() is False
 

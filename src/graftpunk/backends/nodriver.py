@@ -1288,10 +1288,31 @@ class NoDriverBackend:
             _end_browser_without_loop(browser)
 
     async def _release_failed_attempt_off_loop(self) -> None:
-        """``_release_failed_attempt()`` from a coroutine, ending Chrome on a worker thread."""
+        """``_release_failed_attempt()`` from a coroutine, ending Chrome on a worker thread.
+
+        A private loop is detached with the browser and closed by that worker
+        once Chrome has ended, since its child watcher collects Chrome's exit
+        status on Linux: a stop on this thread that runs meanwhile (it skips
+        the lock this one holds) then finds no loop to close early, and
+        closing it early leaves Chrome a zombie with its pipes open.
+        """
         browser = self._detach_browser()
-        if browser is not None:
+        if browser is None:
+            return
+        private = self._private_loop
+        if private is None:
             await _finish_on_worker_thread(lambda: _end_browser_without_loop(browser))
+            return
+        self._private_loop = None
+        self._loop = None
+
+        def end_then_close() -> None:
+            try:
+                _end_browser_without_loop(browser)
+            finally:
+                private.close()
+
+        await _finish_on_worker_thread(end_then_close)
 
     def _detach_browser(self) -> Any:
         """Forget the browser, leaving both registries, and return it (or None)."""
@@ -1416,14 +1437,14 @@ class NoDriverBackend:
         Called while a ``stop_async()`` on this thread holds the lock (paused
         at an await, from another coroutine on its loop, or left suspended on
         a loop that stopped) it does not wait either, since that stop cannot
-        resume while this call blocks the thread: it ends Chrome without the
-        loop, and that ``stop_async()`` finds the backend stopped if it
+        resume while this call blocks the thread: it stops the browser itself,
+        as above, and that ``stop_async()`` finds the backend stopped if it
         resumes.
         """
         running = _running_loop()
         if self._held_by_this_thread():
             LOG.info("nodriver_backend_stop_during_stop_async")
-            self._stop_holding_lock(running, without_loop=True)
+            self._stop_holding_lock(running)
             return
         if running is not None and running is self._loop:
             self._stop_holding_lock(running)
@@ -1431,15 +1452,8 @@ class NoDriverBackend:
         with self._locked():
             self._stop_holding_lock(running)
 
-    def _stop_holding_lock(
-        self, running: asyncio.AbstractEventLoop | None, *, without_loop: bool = False
-    ) -> None:
-        """The body of ``stop()``. *running* is the calling thread's running loop, if any.
-
-        *without_loop* ends Chrome without its loop even when the loop runs:
-        for a stop on the thread of a paused ``stop_async()``, which holds the
-        lock, so this runs without it.
-        """
+    def _stop_holding_lock(self, running: asyncio.AbstractEventLoop | None) -> None:
+        """The body of ``stop()``. *running* is the calling thread's running loop, if any."""
         if not self._started:
             return
 
@@ -1462,8 +1476,6 @@ class NoDriverBackend:
                             "loop while Chrome exited and did not reap the "
                             "subprocess.",
                         )
-                        self._release_failed_attempt()
-                    elif without_loop:
                         self._release_failed_attempt()
                     else:
                         try:
@@ -1507,8 +1519,10 @@ class NoDriverBackend:
         anything, since the stop has not begun. It never waits for a lock
         this thread holds: while another ``stop_async()`` on this thread is
         paused at an await (two on one loop, or one left suspended on a loop
-        that stopped), it ends Chrome without the loop on a worker thread, and
-        the paused one finds the backend stopped if it resumes.
+        that stopped), it stops the browser itself, as above, and the paused
+        one finds the backend stopped if it resumes. The private loop is
+        closed only after Chrome's exit status is collected, whichever of the
+        two gets there first.
 
         When the browser's loop cancels the stop submitted to it (the loop is
         shutting down) and nobody cancelled this call, Chrome is ended without
@@ -1517,7 +1531,7 @@ class NoDriverBackend:
         """
         if self._held_by_this_thread():
             LOG.info("nodriver_backend_stop_during_stop_async")
-            await self._stop_async_holding_lock(without_loop=True)
+            await self._stop_async_holding_lock()
             return
         while not self._lock.acquire(blocking=False):
             await asyncio.sleep(_EXIT_POLL_S)
@@ -1528,13 +1542,8 @@ class NoDriverBackend:
             self._lock_owner = None
             self._lock.release()
 
-    async def _stop_async_holding_lock(self, *, without_loop: bool = False) -> None:
-        """The body of ``stop_async()``.
-
-        *without_loop* ends Chrome without its loop, on a worker thread: for a
-        stop on the thread of a paused ``stop_async()``, which holds the lock,
-        so this runs without it.
-        """
+    async def _stop_async_holding_lock(self) -> None:
+        """The body of ``stop_async()``."""
         if not self._started:
             return
 
@@ -1544,9 +1553,7 @@ class NoDriverBackend:
         try:
             with suppress_asyncio_noise():
                 try:
-                    if without_loop:
-                        await self._release_failed_attempt_off_loop()
-                    elif loop is None or loop is current:
+                    if loop is None or loop is current:
                         await self._stop_async()
                     elif loop.is_closed() or not loop.is_running():
                         # Nothing left to run _stop_async on, and the browser
@@ -1576,6 +1583,12 @@ class NoDriverBackend:
                         return
                     raise
                 finally:
+                    # Chrome is stopped or being ended by now. Forgotten
+                    # before the loop is released, so a stop on this thread
+                    # that runs during the release (it skips the lock) does
+                    # not stop the browser again, on a loop it does not
+                    # belong to.
+                    self._detach_browser()
                     if loop is None or loop is current:
                         # Nothing to join from here: a private loop running
                         # this coroutine only schedules its own stop.
