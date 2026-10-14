@@ -233,3 +233,28 @@ def test_importing_graftpunk_works_without_stdout_and_stderr(color_env: str) -> 
     )
     assert result.returncode == 0, result.stderr
     assert "probe_event" not in result.stdout + result.stderr
+
+
+def test_with_only_stderr_missing_log_lines_do_not_reach_stdout() -> None:
+    """stdout may carry a program's output, so a missing stderr must not send logs there."""
+    env = {k: v for k, v in os.environ.items() if k not in {"FORCE_COLOR", "NO_COLOR"}}
+    code = (
+        "import atexit, sys\n"
+        "sys.stderr = None\n"
+        "def at_exit():\n"
+        "    from graftpunk.logging import get_logger\n"
+        "    get_logger('probe').warning('probe_at_exit')\n"
+        "    print('exit handler done')\n"
+        "atexit.register(at_exit)\n"
+        "import graftpunk\n"
+        "from graftpunk.logging import get_logger\n"
+        "get_logger('probe').warning('probe_event')\n"
+        "print('program output')\n"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    # The exit handler was registered before graftpunk, so it runs after anything
+    # graftpunk registers; its log call must still find an open sink.
+    assert result.stdout == "program output\nexit handler done\n"

@@ -18,7 +18,6 @@ httpie's first import, so at most once per process in practice.
 
 from __future__ import annotations
 
-import atexit
 import os
 import sys
 from collections.abc import Iterator
@@ -41,11 +40,12 @@ def _has_file_descriptor(stream: Any) -> bool:
 
 
 def open_devnull() -> TextIO:
-    """One null-device file for the process, closed at exit."""
+    """One null-device file for the process. It is never closed: graftpunk's
+    logging may write to it from an exit handler that runs after any close
+    graftpunk could register, and the process releases it on exit."""
     global _devnull
     if _devnull is None:
         _devnull = open(os.devnull, "w")  # noqa: SIM115
-        atexit.register(_devnull.close)
     return _devnull
 
 
