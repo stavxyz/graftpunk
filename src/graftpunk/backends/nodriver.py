@@ -1021,7 +1021,9 @@ class NoDriverBackend:
         methods pass ``call_timeout`` or ``navigate_timeout``. When the
         timeout passes, the coroutine is cancelled on the loop and the call
         raises ``TimeoutError``; the loop keeps running, so the next call
-        works. Interrupting the wait (Ctrl-C) cancels the coroutine the same
+        works. A coroutine that finishes before the cancel reaches it has not
+        timed out: the call returns its result, or raises its exception.
+        Interrupting the wait (Ctrl-C) cancels the coroutine the same
         way and re-raises. Either way the call waits for the cancellation to
         land: up to ``_LOOP_JOIN_TIMEOUT_S`` for the loop to begin the call,
         then up to ``_LOOP_JOIN_TIMEOUT_S`` more for it to finish, so up to
@@ -1062,11 +1064,22 @@ class NoDriverBackend:
 
         started = threading.Event()
         finished = threading.Event()
+        # How the coroutine itself ended, for a call that finishes after the
+        # wait gave up on it: future.cancel() marks the future cancelled at
+        # once, even when the coroutine then runs to the end before the
+        # cancel reaches its task, so the future no longer carries the result.
+        outcome: dict[str, Any] = {}
 
         async def tracked() -> Any:
             started.set()
             try:
-                return await coro
+                outcome["result"] = await coro
+                return outcome["result"]
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                outcome["error"] = exc
+                raise
             finally:
                 finished.set()
 
@@ -1111,9 +1124,18 @@ class NoDriverBackend:
             # half-started browser) should finish before the caller moves on.
             cancel_and_wait()
             raise
+        # The call finished between wait() returning and this check: it did
+        # not run out of time, so it gets its own outcome.
+        if future.done() and not future.cancelled():
+            return future.result()
         # The call ran out of time. Cancel it so it does not hold the tab,
         # and leave the loop running for the next call.
         cancel_and_wait()
+        # The coroutine ran to the end before the cancel reached it.
+        if "result" in outcome:
+            return outcome["result"]
+        if "error" in outcome:
+            raise outcome["error"]
         raise TimeoutError(f"NoDriverBackend.{method} did not finish within {timeout:g} s")
 
     async def _start_async(self, _max_attempts: int = 3) -> None:

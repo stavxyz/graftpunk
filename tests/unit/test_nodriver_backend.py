@@ -4384,6 +4384,95 @@ class TestNoDriverBackendCallTimeout:
         with pytest.raises(ValueError, match=f"{name} must be None or a positive number"):
             NoDriverBackend(**{name: value})
 
+    def test_a_call_that_finishes_as_the_wait_expires_returns_its_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """wait() reports not done, but the call finished before the recheck."""
+        import concurrent.futures
+
+        backend = with_private_loop(NoDriverBackend())
+        release = threading.Event()
+
+        async def work() -> str:
+            await asyncio.to_thread(release.wait)
+            return "done"
+
+        real_wait = concurrent.futures.wait
+
+        def wait_that_expires_as_the_call_finishes(fs: Any, timeout: Any = None) -> Any:
+            release.set()
+            real_wait(fs)
+            return SimpleNamespace(done=set(), not_done=set(fs))
+
+        monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires_as_the_call_finishes)
+
+        assert backend._run_async(work(), timeout=1, method="x") == "done"
+
+    @pytest.mark.parametrize(
+        ("ending", "expected"), [("return", "done"), ("raise", ValueError("own error"))]
+    )
+    def test_a_call_that_finishes_before_the_cancel_reaches_it_keeps_its_outcome(
+        self, monkeypatch: pytest.MonkeyPatch, ending: str, expected: Any
+    ) -> None:
+        """The cancel loses the race: the coroutine runs to the end after cancel().
+
+        The coroutine blocks the loop thread, so the cancel cannot reach its
+        task, and it is released by the cancel itself (the future's done
+        callback runs in the cancelling thread).
+        """
+        import concurrent.futures
+
+        backend = with_private_loop(NoDriverBackend())
+        entered = threading.Event()
+        release = threading.Event()
+
+        async def work() -> str:
+            entered.set()
+            release.wait(5)  # blocks the loop, so the cancel cannot land
+            if ending == "raise":
+                raise ValueError("own error")
+            return "done"
+
+        def wait_that_expires(fs: Any, timeout: Any = None) -> Any:
+            assert entered.wait(5)
+            for future in fs:
+                future.add_done_callback(lambda _f: release.set())
+            return SimpleNamespace(done=set(), not_done=set(fs))
+
+        monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires)
+
+        if isinstance(expected, Exception):
+            with pytest.raises(ValueError, match="own error"):
+                backend._run_async(work(), timeout=1, method="x")
+        else:
+            assert backend._run_async(work(), timeout=1, method="x") == expected
+        assert release.is_set()
+
+    def test_a_call_still_running_after_the_cancel_times_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import concurrent.futures
+
+        backend = with_private_loop(NoDriverBackend())
+        cancelled = threading.Event()
+
+        async def work() -> str:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return "unreachable"
+
+        def wait_that_expires(fs: Any, timeout: Any = None) -> Any:
+            return SimpleNamespace(done=set(), not_done=set(fs))
+
+        monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires)
+
+        with pytest.raises(TimeoutError, match=r"NoDriverBackend\.x did not finish within 1 s"):
+            backend._run_async(work(), timeout=1, method="x")
+        assert cancelled.is_set()
+
     def test_the_timeouts_survive_get_state_and_stay_out_of_the_start_options(self) -> None:
         original = NoDriverBackend(call_timeout=7.5, navigate_timeout=None, lang="en-US")
 
