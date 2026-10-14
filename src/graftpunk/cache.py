@@ -441,8 +441,10 @@ def _load_session_with_metadata(
         # the browser stack. On graftpunk-lite without [browser] that raises
         # ModuleNotFoundError from inside pickle.loads — which is neither an
         # UnpicklingError nor a RuntimeError, so without this it escaped raw as
-        # "No module named 'httpie'".
-        LOG.error("failed_to_load_session_missing_browser_stack", name=name, error=str(exc))
+        # "No module named 'httpie'". Info, not error: the ImportError below
+        # carries the same facts, and the CLI turns it into the install hint,
+        # so an error line here would only repeat it above that hint.
+        LOG.info("failed_to_load_session_missing_browser_stack", name=name, error=str(exc))
         raise ImportError(
             f"Loading the cached session '{name}' requires the browser automation "
             f"stack, which is not installed. Install it with: "
