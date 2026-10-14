@@ -764,53 +764,58 @@ class TestNoDriverExpectedStopPatterns:
 class TestNoDriverBackendStopReap:
     """Tests that NoDriverBackend.stop() reaps the Chrome subprocess.
 
-    nodriver's Browser.stop() sends SIGTERM but never awaits proc.wait(),
-    leaving Chrome as a zombie under the live python parent. The backend's
-    _stop_async() compensates by awaiting the subprocess after browser.stop()
-    via the _reap_browser_process helper.
+    nodriver's Browser.stop() sends SIGTERM but never waits for the
+    subprocess, leaving Chrome as a zombie under the live python parent. The
+    backend's _stop_async() compensates by waiting, after browser.stop(), for
+    the loop's child watcher to collect the exit status
+    (_reap_browser_process).
     """
 
-    @staticmethod
-    def _make_proc(
-        wait_behavior: list,
-        kill_raises: OSError | None = None,
-    ) -> MagicMock:
-        """Build a MagicMock asyncio subprocess.
+    class _Proc:
+        """An asyncio subprocess stand-in whose watcher collects the exit status
+        (sets ``returncode``) once SIGTERM or SIGKILL has made it exit."""
 
-        wait_behavior: list consumed in order on each .wait() call. Each entry
-            is either an int (returned exit code), an Exception (raised), or
-            the string "block" (wait blocks until cancelled by wait_for).
+        def __init__(
+            self, *, exits_on_term: bool, exits_on_kill: bool, kill_raises: OSError | None
+        ) -> None:
+            self.pid = 12345
+            self._exits_on_term = exits_on_term
+            self._exits_on_kill = exits_on_kill
+            self._kill_raises = kill_raises
+            self.kill_called = False
+
+        @property
+        def returncode(self) -> int | None:
+            if self._exits_on_term:
+                return 0
+            if self.kill_called and self._exits_on_kill:
+                return -9
+            return None
+
+        def kill(self) -> None:
+            self.kill_called = True
+            if self._kill_raises is not None:
+                raise self._kill_raises
+
+    @classmethod
+    def _make_proc(
+        cls,
+        exits_on_term: bool = True,
+        exits_on_kill: bool = True,
+        kill_raises: OSError | None = None,
+    ) -> "TestNoDriverBackendStopReap._Proc":
+        """Build a fake subprocess.
+
         kill_raises: if not None, .kill() raises this OSError. Typed as
             OSError because the helper only handles ProcessLookupError and
             other OSError subclasses on the kill path.
         """
-        proc = MagicMock()
-        proc.pid = 12345
-        proc.returncode = None
-        proc.wait_call_count = 0
-        proc.kill_called = False
-        results_iter = iter(wait_behavior)
-
-        async def fake_wait():
-            proc.wait_call_count += 1
-            r = next(results_iter)
-            if r == "block":
-                await asyncio.Event().wait()
-            if isinstance(r, BaseException):
-                raise r
-            return r
-
-        def fake_kill():
-            proc.kill_called = True
-            if kill_raises is not None:
-                raise kill_raises
-
-        proc.wait = fake_wait
-        proc.kill = fake_kill
-        return proc
+        return cls._Proc(
+            exits_on_term=exits_on_term, exits_on_kill=exits_on_kill, kill_raises=kill_raises
+        )
 
     @staticmethod
-    def _make_browser(proc: MagicMock | None) -> MagicMock:
+    def _make_browser(proc: Any) -> MagicMock:
         """Build a MagicMock Browser whose .stop() nulls _process (matches
         nodriver's real behavior in core/browser.py:718)."""
         browser = MagicMock()
@@ -822,17 +827,25 @@ class TestNoDriverBackendStopReap:
         browser.stop = fake_stop
         return browser
 
+    @staticmethod
+    def _tight_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
+        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05)
+        monkeypatch.setattr("graftpunk.backends.nodriver._EXIT_POLL_S", 0.01)
+
     async def test_stop_async_reaps_process(self) -> None:
-        """_stop_async awaits proc.wait() so the kernel reaps Chrome."""
-        proc = self._make_proc(wait_behavior=[0])
+        """A Chrome that exits on SIGTERM is collected without a SIGKILL."""
+        proc = self._make_proc()
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = self._make_browser(proc)
 
-        await backend._stop_async()
+        with capture_logs() as cap:
+            await backend._stop_async()
 
-        assert proc.wait_call_count == 1, "proc.wait() should have been awaited exactly once"
+        assert proc.returncode == 0
         assert proc.kill_called is False, "kill() should not be needed on success"
+        assert not any(e["event"] == "chrome_sigterm_timeout_escalating_to_sigkill" for e in cap)
 
     async def test_stop_async_no_op_when_no_browser(self) -> None:
         """_stop_async returns immediately when _browser is None — helper
@@ -854,58 +867,33 @@ class TestNoDriverBackendStopReap:
         # Should not raise.
         await backend._stop_async()
 
-    async def test_stop_async_captures_proc_before_browser_stop_nulls_it(self) -> None:
+    async def test_stop_async_captures_proc_before_browser_stop_nulls_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """_stop_async must capture _browser._process BEFORE calling stop().
 
         nodriver's Browser.stop() resets self._process = None inside its
-        cleanup loop. If our backend reads _process AFTER stop(), it gets
-        None and the helper no-ops, leaving the subprocess as a zombie.
+        cleanup loop. If our backend read _process AFTER stop(), it would get
+        None and skip the reap, so a Chrome that ignores SIGTERM would never
+        get the SIGKILL.
         """
-        proc = self._make_proc(wait_behavior=[0])
+        self._tight_timeouts(monkeypatch)
+        proc = self._make_proc(exits_on_term=False)
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = self._make_browser(proc)
 
         await backend._stop_async()
 
-        assert proc.wait_call_count == 1, (
-            "wait() not awaited — capture-before-stop ordering may be broken"
-        )
-        # Sanity: fake_stop nulled _process. If our backend read _process
-        # after stop(), it would have received None and skipped wait() —
-        # which is exactly the bug this test guards against.
-        assert backend._browser._process is None
+        assert proc.kill_called is True
+        assert proc.returncode == -9
 
     async def test_stop_async_escalates_to_sigkill_on_term_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """When SIGTERM times out, helper escalates to SIGKILL and re-waits."""
-        # Tighten timeouts so the test runs in milliseconds.
-        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
-        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05)
-
-        # First wait blocks (simulates Chrome ignoring SIGTERM); second wait
-        # returns immediately (simulates exit after SIGKILL).
-        proc = self._make_proc(wait_behavior=["block", 0])
-        backend = NoDriverBackend()
-        backend._started = True
-        backend._browser = self._make_browser(proc)
-
-        await backend._stop_async()
-
-        assert proc.wait_call_count == 2, "Expected two wait() calls (SIGTERM + SIGKILL)"
-        assert proc.kill_called is True, "kill() should have been called after SIGTERM timeout"
-
-    async def test_stop_async_logs_when_sigkill_also_times_out(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """When even SIGKILL doesn't unblock wait(), log a warning and return."""
-        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
-        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05)
-
-        # Both wait() calls block — simulates a kernel-level wedge.
-        proc = self._make_proc(wait_behavior=["block", "block"])
+        self._tight_timeouts(monkeypatch)
+        proc = self._make_proc(exits_on_term=False)
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = self._make_browser(proc)
@@ -913,7 +901,25 @@ class TestNoDriverBackendStopReap:
         with capture_logs() as cap:
             await backend._stop_async()
 
-        assert proc.wait_call_count == 2
+        assert proc.kill_called is True, "kill() should have been called after SIGTERM timeout"
+        assert proc.returncode == -9
+        assert not any(e["event"] == "chrome_failed_to_exit_after_sigkill" for e in cap)
+
+    async def test_stop_async_logs_when_sigkill_also_times_out(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When even SIGKILL is not collected, log a warning and return."""
+        self._tight_timeouts(monkeypatch)
+        # Never collected: simulates a kernel-level wedge.
+        proc = self._make_proc(exits_on_term=False, exits_on_kill=False)
+        backend = NoDriverBackend()
+        backend._started = True
+        backend._browser = self._make_browser(proc)
+
+        with capture_logs() as cap:
+            await backend._stop_async()
+
         assert proc.kill_called is True
         # capture_logs() returns event_dicts where 'log_level' is the level
         # key (structlog's testing processor normalises method name → log_level)
@@ -930,60 +936,61 @@ class TestNoDriverBackendStopReap:
     ) -> None:
         """ProcessLookupError on kill() is a successful reap (race-tight).
 
-        SIGTERM wait timed out; Chrome exited in the window between the
-        wait_for timeout and our kill() call. kill() raises
-        ProcessLookupError because the PID is gone. This is success — the
-        process IS reaped, the wait_for just missed the exit by microseconds.
+        The SIGTERM wait timed out; Chrome exited in the window between the
+        timeout and our kill() call, so kill() raises ProcessLookupError
+        because the PID is gone. That is success: no second wait and no
+        warning.
         """
-        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
-
-        # First wait blocks; kill raises ProcessLookupError; helper returns
-        # without making a second wait call.
+        self._tight_timeouts(monkeypatch)
         proc = self._make_proc(
-            wait_behavior=["block"], kill_raises=ProcessLookupError(3, "No such process")
+            exits_on_term=False,
+            exits_on_kill=False,
+            kill_raises=ProcessLookupError(3, "No such process"),
         )
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = self._make_browser(proc)
 
-        # Should not raise.
-        await backend._stop_async()
+        with capture_logs() as cap:
+            await backend._stop_async()
 
-        assert proc.wait_call_count == 1, (
-            "Helper should not call wait() a second time after ProcessLookupError"
-        )
         assert proc.kill_called is True
+        assert [e for e in cap if e["log_level"] == "warning"] == []
 
-    def test_sync_stop_also_reaps_process(self) -> None:
+    def test_sync_stop_also_reaps_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The sync stop() path inherits the reap via _run_async->_stop_async.
 
         Regression guard against a future refactor that splits the sync and
         async stop paths and forgets to wire the reap into both.
         """
-        proc = self._make_proc(wait_behavior=[0])
+        self._tight_timeouts(monkeypatch)
+        proc = self._make_proc(exits_on_term=False)
         backend = with_private_loop(NoDriverBackend())
         backend._started = True
         backend._browser = self._make_browser(proc)
 
         backend.stop()  # sync path
 
-        assert proc.wait_call_count == 1, "sync stop() should also reap via _stop_async"
+        assert proc.kill_called is True, "sync stop() should also reap via _stop_async"
 
-    async def test_stop_async_public_api_reaps_process(self) -> None:
+    async def test_stop_async_public_api_reaps_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The public async stop_async() inherits the reap via _stop_async.
 
         Symmetric regression guard to test_sync_stop_also_reaps_process —
         BrowserSession.__aexit__ calls stop_async() (not _stop_async()),
         so the public path is production-critical.
         """
-        proc = self._make_proc(wait_behavior=[0])
+        self._tight_timeouts(monkeypatch)
+        proc = self._make_proc(exits_on_term=False)
         backend = NoDriverBackend()
         backend._started = True
         backend._browser = self._make_browser(proc)
 
         await backend.stop_async()
 
-        assert proc.wait_call_count == 1, "stop_async() should reap via _stop_async"
+        assert proc.kill_called is True, "stop_async() should reap via _stop_async"
 
     async def test_stop_async_still_reaps_when_browser_stop_raises(
         self, monkeypatch: pytest.MonkeyPatch
@@ -997,13 +1004,10 @@ class TestNoDriverBackendStopReap:
         finally, a stop()-side exception would leak the very subprocess
         the reap exists to collect.
         """
-        # Tighten timeouts so SIGTERM-then-SIGKILL completes in milliseconds.
-        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_TERM_TIMEOUT_S", 0.05)
-        monkeypatch.setattr("graftpunk.backends.nodriver._REAP_KILL_TIMEOUT_S", 0.05)
-
-        # First wait blocks (no SIGTERM was sent because stop() raised);
-        # second wait returns 0 after our SIGKILL escalation.
-        proc = self._make_proc(wait_behavior=["block", 0])
+        self._tight_timeouts(monkeypatch)
+        # No SIGTERM was sent because stop() raised, so only the SIGKILL
+        # escalation ends it.
+        proc = self._make_proc(exits_on_term=False)
         backend = NoDriverBackend()
         backend._started = True
         browser = self._make_browser(proc)
@@ -1020,7 +1024,49 @@ class TestNoDriverBackendStopReap:
         assert proc.kill_called is True, (
             "SIGKILL escalation should reap the process when browser.stop() raised"
         )
-        assert proc.wait_call_count == 2, "Both wait() calls (SIGTERM + SIGKILL) should have run"
+        assert proc.returncode == -9
+
+    @pytest.mark.skipif(os.name != "posix", reason="SIGTERM handler in the stand-in")
+    async def test_the_reap_does_not_wait_for_helpers_holding_chromes_pipes(self) -> None:
+        """A Chrome stand-in exits on SIGTERM at once while a helper it spawned
+        keeps its pipes open for 6 s: the reap returns once the exit status is
+        collected, with no SIGKILL escalation."""
+        import sys
+        import time
+
+        from graftpunk.backends.nodriver import _reap_browser_process
+
+        child = (
+            "import signal, subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(6)'])\n"
+            "signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            child,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            assert proc.stdout is not None
+            await proc.stdout.readline()
+            proc.terminate()
+            began = time.monotonic()
+            with capture_logs() as cap:
+                await _reap_browser_process(proc)
+            took = time.monotonic() - began
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            proc._transport.close()  # type: ignore[attr-defined]
+
+        assert proc.returncode == 0
+        assert took < 1.5
+        assert [e["event"] for e in cap] == []
 
 
 class TestNoDriverBackendOrphanCleanup:

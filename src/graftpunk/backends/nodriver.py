@@ -169,23 +169,25 @@ class _PrivateLoop:
 
 
 async def _reap_browser_process(proc: asyncio.subprocess.Process | None) -> None:
-    """Await Chrome subprocess exit so the kernel can reap it.
+    """Wait for the loop's child watcher to collect Chrome's exit status.
 
     nodriver's Browser.stop() calls proc.terminate() (or proc.kill() as a
     fallback) and then sets self._process = None without ever awaiting
-    proc.wait(). asyncio child processes must be wait()ed for the kernel to
-    collect their exit status; otherwise they accumulate as <defunct>
-    (zombie) entries under the parent.
+    proc.wait(). asyncio child processes must be waited for, or the kernel
+    keeps them as <defunct> (zombie) entries under the parent. The watcher
+    reaps the child and sets ``proc.returncode``, so this polls that
+    (``_collected``) rather than await ``proc.wait()``: on CPython 3.12 that
+    also waits for every pipe to close, which Chrome's helper processes can
+    hold open after Chrome itself has exited.
 
     Behavior:
-      1. await wait_for(proc.wait(), _REAP_TERM_TIMEOUT_S) — normal SIGTERM path.
-      2. On timeout: log debug, then proc.kill() (SIGKILL), then await
-         wait_for(proc.wait(), _REAP_KILL_TIMEOUT_S). SIGKILL cannot be
-         caught/ignored, so the second wait should always return.
-      3. On second timeout (kernel-level wedge): log a warning and return.
-         The zombie persists until the python process exits.
-      4. ProcessLookupError from proc.kill() is swallowed — Chrome exited in
-         the race window between the first wait timeout and our kill call.
+      1. Up to _REAP_TERM_TIMEOUT_S for the exit status: the SIGTERM path.
+      2. Not collected by then: log debug, proc.kill() (SIGKILL), and up to
+         _REAP_KILL_TIMEOUT_S more. SIGKILL cannot be caught or ignored.
+      3. Still not collected (a kernel-level wedge): log a warning and
+         return. The zombie persists until the python process exits.
+      4. ProcessLookupError from proc.kill() is swallowed: Chrome exited in
+         the race window between the first wait and the kill.
       5. Other OSError from proc.kill() (e.g. EPERM under sandboxed runs):
          log a distinct warning and return.
 
@@ -195,30 +197,37 @@ async def _reap_browser_process(proc: asyncio.subprocess.Process | None) -> None
     """
     if proc is None:
         return
+    if await _collected(proc, _REAP_TERM_TIMEOUT_S):
+        return
+    LOG.debug("chrome_sigterm_timeout_escalating_to_sigkill", pid=proc.pid)
     try:
-        await asyncio.wait_for(proc.wait(), _REAP_TERM_TIMEOUT_S)
-    except TimeoutError:
-        LOG.debug("chrome_sigterm_timeout_escalating_to_sigkill", pid=proc.pid)
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            return
-        except OSError as exc:
-            LOG.warning(
-                "chrome_kill_failed",
-                pid=proc.pid,
-                errno=exc.errno,
-                error=str(exc),
-            )
-            return
-        try:
-            await asyncio.wait_for(proc.wait(), _REAP_KILL_TIMEOUT_S)
-        except TimeoutError:
-            LOG.warning(
-                "chrome_failed_to_exit_after_sigkill",
-                pid=proc.pid,
-                returncode=proc.returncode,
-            )
+        proc.kill()
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        LOG.warning(
+            "chrome_kill_failed",
+            pid=proc.pid,
+            errno=exc.errno,
+            error=str(exc),
+        )
+        return
+    if not await _collected(proc, _REAP_KILL_TIMEOUT_S):
+        LOG.warning(
+            "chrome_failed_to_exit_after_sigkill",
+            pid=proc.pid,
+            returncode=proc.returncode,
+        )
+
+
+async def _collected(proc: asyncio.subprocess.Process, timeout_s: float) -> bool:
+    """Whether the loop's child watcher collects *proc*'s exit status within *timeout_s*."""
+    deadline = time.monotonic() + timeout_s
+    while proc.returncode is None:
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(_EXIT_POLL_S)
+    return True
 
 
 def _signals_available() -> bool:
