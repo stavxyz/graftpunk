@@ -226,8 +226,8 @@ class DynamicDependencies:
 @dataclass(frozen=True)
 class BothDistributions:
     """``[project] dependencies`` requires both ``graftpunk`` and
-    ``graftpunk-lite``, neither under an environment marker, which install the
-    same files, so neither is raised: the project has to keep one.
+    ``graftpunk-lite``, not every one under an environment marker, which install
+    the same files, so neither is raised: the project has to keep one.
     *requirements* are the graftpunk requirements as written, in file order."""
 
     requirements: tuple[str, ...]
@@ -302,9 +302,9 @@ def _is_graftpunk(requirement: str) -> bool:
 
 def _has_marker(requirement: str) -> bool:
     """Whether *requirement* carries an environment marker, or cannot be parsed
-    to tell. Requirements on graftpunk and graftpunk-lite under markers may be
-    mutually exclusive (one for Pyodide, one elsewhere), so only unmarked ones
-    are known to install both."""
+    to tell. Requirements on graftpunk and graftpunk-lite that both carry markers
+    may be mutually exclusive (one for Pyodide, one elsewhere); with one of them
+    unmarked, both install wherever the other's marker holds."""
     try:
         return Requirement(requirement).marker is not None
     except InvalidRequirement:
@@ -352,9 +352,9 @@ def with_graftpunk_floor(text: str, floor: str) -> FloorVerdict:
     version (for ``==X.*``, ``X``) is at or above *floor*, however many other
     specifiers (an upper bound included) sit alongside it. Returns
     :class:`BothDistributions` when the requirements name both ``graftpunk`` and
-    ``graftpunk-lite``, whatever their bounds, and none carries an environment
-    marker; with a marker the two may never install together, so they are
-    treated as several graftpunk requirements. Returns
+    ``graftpunk-lite``, whatever their bounds, unless every one carries an
+    environment marker; when all do, the two may never install together, so they
+    are treated as several graftpunk requirements. Returns
     :class:`DynamicDependencies` when ``"dependencies"`` is listed in
     ``[project] dynamic``: there is no array here to hold a literal to raise
     or name, whatever ``[project] dependencies`` itself happens to say.
@@ -378,7 +378,7 @@ def with_graftpunk_floor(text: str, floor: str) -> FloorVerdict:
     ]
     if not found:
         return CannotRaiseFloor(requirement=None)
-    if {_graftpunk_name(raw) for _, raw in found} == _GRAFTPUNK_NAMES and not any(
+    if {_graftpunk_name(raw) for _, raw in found} == _GRAFTPUNK_NAMES and not all(
         _has_marker(raw) for _, raw in found
     ):
         return BothDistributions(requirements=tuple(raw for _, raw in found))

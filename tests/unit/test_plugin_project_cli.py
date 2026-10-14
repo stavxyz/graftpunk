@@ -1748,8 +1748,9 @@ class TestGraftpunkFloor:
     def test_both_distributions_under_markers_are_named_in_a_raise_line(
         self, command: str, recorded: Path
     ) -> None:
-        """Under markers the two may never install together (graftpunk-lite for
-        Pyodide, graftpunk elsewhere), so there is no keep-one advice."""
+        """With both under markers the two may never install together
+        (graftpunk-lite for Pyodide, graftpunk elsewhere), so there is no keep-one
+        advice."""
         full = 'graftpunk[browser]>=1.0; sys_platform != "emscripten"'
         lite = 'graftpunk-lite>=1.0; sys_platform == "emscripten"'
         pyproject = _floor_pyproject(f"'{full}', '{lite}'")
@@ -1760,6 +1761,25 @@ class TestGraftpunkFloor:
         assert lines == [
             *own,
             f"Next: raise {full} and {lite} in pyproject.toml to >=1.17.0 and reinstall",
+        ]
+
+    def test_both_distributions_with_one_marker_are_told_to_keep_graftpunk(
+        self, command: str, recorded: Path
+    ) -> None:
+        """Only graftpunk-lite is marked, so on emscripten both install: one
+        marker gets the keep-one advice."""
+        lite = 'graftpunk-lite>=1.0; sys_platform == "emscripten"'
+        pyproject = _floor_pyproject(f"'graftpunk[browser]>=1.0', '{lite}'")
+        result, own = _run_writer(command, recorded, pyproject)
+        assert result.exit_code == 0, result.output
+        assert (recorded / "pyproject.toml").read_bytes() == pyproject.encode()
+        lines = _plain(result.output).strip().splitlines()
+        assert lines == [
+            *own,
+            "Next: pyproject.toml requires both graftpunk and graftpunk-lite "
+            f"(graftpunk[browser]>=1.0 and {lite}), which install the same "
+            "files; keep graftpunk: replace them with graftpunk[browser]>=1.17.0 and "
+            "reinstall.",
         ]
 
     def test_a_project_already_at_the_floor_prints_nothing_extra(

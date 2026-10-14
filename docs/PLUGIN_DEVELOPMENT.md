@@ -1682,24 +1682,23 @@ write, keeping any extras and environment marker, and print
 `graftpunk-lite>=` bound counts as the graftpunk requirement: it is raised in
 place under its own name, and the line names `graftpunk-lite`. A
 requirement that already allows nothing below the floor gets nothing extra.
-Any other form that allows a release below the floor (a pin, an upper bound,
-a URL, or no graftpunk requirement) is left as it is, and they print a
-`Next:` line naming the floor and the requirement as found, and to reinstall.
-With no graftpunk requirement, that line says to add
-`graftpunk[browser]>=<floor>`, the requirement `gp plugin new` writes, whichever
-distribution `gp` came from. A project that requires both `graftpunk` and
-`graftpunk-lite`, neither under an environment marker, gets neither raised,
-whatever their bounds, and a `Next:` line that names both requirements and says
-to keep `graftpunk`, replacing them with `graftpunk[browser]>=<floor>`. When
-either carries a marker (one for Pyodide and one elsewhere, say), the two may
-never install together, so they are treated as two graftpunk requirements: a
-`Next:` line names both when either allows a release below the floor. A
-project whose `[project] dependencies` is itself listed in `[project] dynamic`
-has no array here to raise or name; they print `Next: this project's
-dependencies are dynamic; make sure whatever supplies them requires
-graftpunk[browser]>=<floor>, then reinstall.` On graftpunk-lite, each of these
-three lines adds that developing a plugin (recording, logging in) needs the
-full install, `graftpunk`.
+Any other form that allows a release below the floor (a pin, an upper bound, a
+URL, or no graftpunk requirement) is left as it is, and they print a `Next:`
+line naming the floor and the requirement as found, and to reinstall. With no
+graftpunk requirement, that line says to add `graftpunk[browser]>=<floor>`, the
+requirement `gp plugin new` writes, whichever distribution `gp` came from. A
+project that requires both `graftpunk` and `graftpunk-lite`, at most one of them
+under an environment marker, gets neither raised, whatever their bounds, and a
+`Next:` line that names both requirements and says to keep `graftpunk`,
+replacing them with `graftpunk[browser]>=<floor>`. When both carry markers (one
+for Pyodide and one elsewhere, say), the two may never install together, so they
+are treated as two graftpunk requirements: a `Next:` line names both when either
+allows a release below the floor. A project whose `[project] dependencies` is
+itself listed in `[project] dynamic` has no array here to raise or name; they
+print `Next: this project's dependencies are dynamic; make sure whatever
+supplies them requires graftpunk[browser]>=<floor>, then reinstall.` On
+graftpunk-lite, each of these three lines adds that developing a plugin
+(recording, logging in) needs the full install, `graftpunk`.
 
 A minimal CI workflow to start from, running the same gate:
 

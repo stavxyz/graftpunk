@@ -325,6 +325,21 @@ class TestWithGraftpunkFloor:
             requirement=f"{full} and {lite}"
         )
 
+    @pytest.mark.parametrize("marked", ["graftpunk", "graftpunk-lite"])
+    def test_graftpunk_and_graftpunk_lite_with_one_marker_are_both_distributions(
+        self, marked: str
+    ) -> None:
+        """One marker cannot make the pair exclusive: wherever it holds, the
+        unmarked requirement installs too, so the project still has to keep one."""
+        full = "graftpunk[browser]>=1.0"
+        lite = "graftpunk-lite>=1.0"
+        if marked == "graftpunk":
+            full += '; sys_platform != "emscripten"'
+        else:
+            lite += '; sys_platform == "emscripten"'
+        text = _deps(f"'{full}',", f"'{lite}',")
+        assert with_graftpunk_floor(text, "1.17.0") == BothDistributions(requirements=(full, lite))
+
     def test_graftpunk_and_graftpunk_lite_under_markers_at_the_floor_are_nothing_to_do(
         self,
     ) -> None:
