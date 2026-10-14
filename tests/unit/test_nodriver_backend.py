@@ -4,6 +4,7 @@ import asyncio
 import os
 import pickle
 import threading
+import time
 from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -4237,3 +4238,416 @@ class TestNoDriverBackendInterruptedLifecycle:
 
         assert ended == fake_chrome.browsers
         assert backend.is_running is False
+
+
+class TestNoDriverBackendCallTimeout:
+    """A synchronous call gives up on a CDP call that never answers (#240).
+
+    The fakes' tab can be told to hang, like a Chrome that stopped answering
+    without closing its websocket. Before the timeout, such a call blocked its
+    caller forever.
+    """
+
+    TIMEOUT = 0.2
+    # Generous: the call should return a hair after TIMEOUT, but a loaded CI
+    # machine can be slow to schedule the threads involved.
+    SLACK = 3.0
+
+    @staticmethod
+    def _started(backend: NoDriverBackend) -> Any:
+        backend.start()
+        backend.navigate("https://example.com/")
+        tab = backend._page
+        assert tab is not None
+        return tab
+
+    @pytest.mark.parametrize(
+        ("method", "call", "fallback", "event"),
+        [
+            ("current_url", lambda b: b.current_url, "", "nodriver_current_url_failed"),
+            ("page_title", lambda b: b.page_title, "", "nodriver_page_title_failed"),
+            ("page_source", lambda b: b.page_source, "", "nodriver_page_source_failed"),
+            ("get_user_agent()", lambda b: b.get_user_agent(), "", "nodriver_user_agent_failed"),
+            ("get_cookies()", lambda b: b.get_cookies(), [], "nodriver_cookies_failed"),
+            (
+                "set_cookies()",
+                lambda b: b.set_cookies([{"name": "a", "value": "1", "domain": "example.com"}]),
+                0,
+                "nodriver_backend_cookie_set_failed",
+            ),
+            (
+                "delete_all_cookies()",
+                lambda b: b.delete_all_cookies(),
+                False,
+                "nodriver_backend_delete_cookies_failed",
+            ),
+        ],
+    )
+    def test_a_hung_call_returns_its_fallback_and_the_next_call_works(
+        self,
+        fake_chrome: FakeChrome,
+        captured_logs: list[dict[str, Any]],
+        method: str,
+        call: Callable[[NoDriverBackend], Any],
+        fallback: Any,
+        event: str,
+    ) -> None:
+        backend = NoDriverBackend(call_timeout=self.TIMEOUT)
+        tab = self._started(backend)
+        assert backend._private_loop is not None
+        loop_thread = backend._private_loop.thread
+        tab.hang = True
+
+        began = time.monotonic()
+        result = call(backend)
+        elapsed = time.monotonic() - began
+
+        assert result == fallback
+        assert self.TIMEOUT <= elapsed < self.TIMEOUT + self.SLACK
+        assert tab.hung_calls == 1
+        assert tab.cancelled_calls == 1
+        [warning] = _warnings(captured_logs)
+        assert warning["event"] == event
+        assert warning["error"] == f"NoDriverBackend.{method} did not finish within 0.2 s"
+
+        tab.hang = False
+        assert backend.page_title == "Example Domain"
+        assert backend.set_cookies([{"name": "a", "value": "1", "domain": "example.com"}]) == 1
+        assert backend._private_loop is not None
+        assert backend._private_loop.thread is loop_thread
+        assert loop_thread.is_alive()
+        assert fake_chrome.misuse == []
+        backend.stop()
+
+    def test_a_hung_navigate_raises_browser_error_and_the_next_one_works(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT)
+        backend.start()
+        fake_chrome.hang_get = True
+
+        began = time.monotonic()
+        with pytest.raises(BrowserError, match=r"NoDriverBackend\.navigate\(\) did not finish"):
+            backend.navigate("https://example.com/slow")
+        elapsed = time.monotonic() - began
+
+        assert self.TIMEOUT <= elapsed < self.TIMEOUT + self.SLACK
+        fake_chrome.hang_get = False
+        backend.navigate("https://example.com/")
+        assert backend.current_url == "https://example.com/"
+        backend.stop()
+
+    def test_a_timed_out_navigate_stops_the_load_so_the_tab_answers_at_once(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        """Chrome keeps loading after the wait is cancelled; Page.stopLoading ends it.
+
+        Without it, the tab answers no evaluate until the load ends, so the
+        getters wait out call_timeout and return "".
+        """
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT, call_timeout=30)
+        tab = self._started(backend)
+        fake_chrome.hang_get = True
+
+        with pytest.raises(BrowserError, match=r"NoDriverBackend\.navigate\(\) did not finish"):
+            backend.navigate("https://example.com/slow")
+        began = time.monotonic()
+        url = backend.current_url
+        elapsed = time.monotonic() - began
+
+        assert url == "https://example.com/"
+        assert elapsed < self.SLACK
+        assert tab.stop_loading_calls == 1
+        fake_chrome.hang_get = False
+        backend.navigate("https://example.com/next")
+        assert backend.current_url == "https://example.com/next"
+        backend.stop()
+
+    def test_a_navigate_with_no_tab_recorded_stops_the_load_in_the_first_page_target(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        """Browser.get navigates the first page target; with no _page, stop that one."""
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT)
+        backend.start()
+        first_tab = fake_chrome.browsers[0].tabs[0]
+        backend._page = None
+        fake_chrome.hang_get = True
+
+        with pytest.raises(BrowserError):
+            backend.navigate("https://example.com/slow")
+
+        assert backend._page is None
+        assert first_tab.stop_loading_calls == 1
+        assert first_tab.idle.is_set()
+        fake_chrome.hang_get = False
+        backend.navigate("https://example.com/")
+        assert backend.current_url == "https://example.com/"
+        backend.stop()
+
+    def test_a_navigate_stops_the_first_page_target_even_when_another_tab_is_recorded(
+        self, fake_chrome: FakeChrome
+    ) -> None:
+        """Browser.get navigates the first page target, not a recorded tab since closed."""
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT)
+        backend.start()
+        first_tab = fake_chrome.browsers[0].tabs[0]
+        sent_to_recorded: list[Any] = []
+
+        async def record(command: Any) -> None:
+            sent_to_recorded.append(command)
+
+        backend._page = SimpleNamespace(send=record)
+        fake_chrome.hang_get = True
+
+        with pytest.raises(BrowserError):
+            backend.navigate("https://example.com/slow")
+
+        assert first_tab.stop_loading_calls == 1
+        assert sent_to_recorded == []
+        fake_chrome.hang_get = False
+        backend.stop()
+
+    @pytest.mark.parametrize("failure", ["raises", "hangs"])
+    def test_a_stop_loading_that_fails_is_logged_and_the_navigate_error_stands(
+        self,
+        fake_chrome: FakeChrome,
+        captured_logs: list[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+        failure: str,
+    ) -> None:
+        monkeypatch.setattr("graftpunk.backends.nodriver._STOP_LOADING_TIMEOUT_S", self.TIMEOUT)
+        backend = NoDriverBackend(navigate_timeout=self.TIMEOUT)
+        tab = self._started(backend)
+        if failure == "raises":
+            tab.fail_with = RuntimeError("target closed")
+        else:
+            tab.hang = True
+        fake_chrome.hang_get = True
+
+        began = time.monotonic()
+        with pytest.raises(BrowserError, match=r"NoDriverBackend\.navigate\(\) did not finish"):
+            backend.navigate("https://example.com/slow")
+        elapsed = time.monotonic() - began
+
+        assert elapsed < 2 * self.TIMEOUT + self.SLACK
+        [warning] = _warnings(captured_logs)
+        assert warning["event"] == "nodriver_backend_stop_loading_failed"
+        expected = (
+            "target closed"
+            if failure == "raises"
+            else "NoDriverBackend.navigate() stopping the load did not finish within 0.2 s"
+        )
+        assert warning["error"] == expected
+        backend.stop()
+
+    def test_start_and_stop_are_not_limited_by_call_timeout(
+        self, fake_chrome: FakeChrome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A start or stop slower than call_timeout still finishes."""
+        import graftpunk.backends.nodriver as nodriver_module
+
+        start = fake_chrome.start
+
+        async def slow_start(**kwargs: Any) -> Any:
+            await asyncio.sleep(0.3)
+            return await start(**kwargs)
+
+        monkeypatch.setattr("nodriver.start", slow_start)
+        reap = nodriver_module._reap_browser_process
+        reaped: list[bool] = []
+
+        async def slow_reap(proc: Any) -> None:
+            await asyncio.sleep(0.3)
+            await reap(proc)
+            reaped.append(True)
+
+        monkeypatch.setattr(nodriver_module, "_reap_browser_process", slow_reap)
+        backend = NoDriverBackend(call_timeout=0.05)
+
+        backend.start()
+        assert backend.is_running
+        browser = fake_chrome.browsers[0]
+        backend.stop()
+
+        assert not backend.is_running
+        assert browser.stopped_on is not None
+        assert reaped == [True]
+
+    def test_navigate_has_its_own_limit(self, fake_chrome: FakeChrome) -> None:
+        """A page load slower than call_timeout but within navigate_timeout succeeds."""
+        backend = NoDriverBackend(call_timeout=0.05, navigate_timeout=5)
+        backend.start()
+        browser = fake_chrome.browsers[0]
+        get = browser.get
+
+        async def slow_get(url: str) -> Any:
+            await asyncio.sleep(0.3)
+            return await get(url)
+
+        browser.get = slow_get  # type: ignore[method-assign]
+
+        backend.navigate("https://example.com/")
+
+        assert backend.current_url == "https://example.com/"
+        backend.stop()
+
+    @pytest.mark.parametrize(("call_timeout", "expected"), [(0.1, ""), (None, "Example Domain")])
+    def test_none_waits_for_a_slow_call(
+        self, fake_chrome: FakeChrome, call_timeout: float | None, expected: str
+    ) -> None:
+        backend = NoDriverBackend(call_timeout=call_timeout)
+        tab = self._started(backend)
+        evaluate = tab.evaluate
+
+        async def slow_evaluate(expression: str) -> str:
+            await asyncio.sleep(0.4)
+            return await evaluate(expression)
+
+        tab.evaluate = slow_evaluate
+
+        assert backend.page_title == expected
+        backend.stop()
+
+    def test_the_defaults(self) -> None:
+        backend = NoDriverBackend()
+
+        assert backend._call_timeout == 60.0
+        assert backend._navigate_timeout == 120.0
+
+    @pytest.mark.parametrize(
+        "value",
+        [0, -1, float("nan"), float("inf"), True, "5", threading.TIMEOUT_MAX * 2, 1e300],
+    )
+    @pytest.mark.parametrize("name", ["call_timeout", "navigate_timeout"])
+    def test_an_invalid_timeout_is_refused(self, name: str, value: Any) -> None:
+        with pytest.raises(ValueError, match=f"{name} must be None or a positive number"):
+            NoDriverBackend(**{name: value})
+
+    def test_the_largest_timeout_the_wait_accepts_is_allowed(self) -> None:
+        backend = NoDriverBackend(call_timeout=threading.TIMEOUT_MAX)
+
+        assert backend._call_timeout == threading.TIMEOUT_MAX
+
+    def test_a_call_that_finishes_as_the_wait_expires_returns_its_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """wait() reports not done, but the call finished before the recheck."""
+        import concurrent.futures
+
+        backend = with_private_loop(NoDriverBackend())
+        release = threading.Event()
+
+        async def work() -> str:
+            await asyncio.to_thread(release.wait)
+            return "done"
+
+        real_wait = concurrent.futures.wait
+
+        def wait_that_expires_as_the_call_finishes(fs: Any, timeout: Any = None) -> Any:
+            release.set()
+            real_wait(fs)
+            return SimpleNamespace(done=set(), not_done=set(fs))
+
+        monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires_as_the_call_finishes)
+
+        assert backend._run_async(work(), timeout=1, method="x") == "done"
+
+    @pytest.mark.parametrize(
+        ("ending", "expected"), [("return", "done"), ("raise", ValueError("own error"))]
+    )
+    def test_a_call_that_finishes_before_the_cancel_reaches_it_keeps_its_outcome(
+        self, monkeypatch: pytest.MonkeyPatch, ending: str, expected: Any
+    ) -> None:
+        """The cancel loses the race: the coroutine runs to the end after cancel().
+
+        The coroutine blocks the loop thread, so the cancel cannot reach its
+        task, and it is released by the cancel itself (the future's done
+        callback runs in the cancelling thread).
+        """
+        import concurrent.futures
+
+        backend = with_private_loop(NoDriverBackend())
+        entered = threading.Event()
+        release = threading.Event()
+
+        async def work() -> str:
+            entered.set()
+            release.wait(5)  # blocks the loop, so the cancel cannot land
+            if ending == "raise":
+                raise ValueError("own error")
+            return "done"
+
+        def wait_that_expires(fs: Any, timeout: Any = None) -> Any:
+            assert entered.wait(5)
+            for future in fs:
+                future.add_done_callback(lambda _f: release.set())
+            return SimpleNamespace(done=set(), not_done=set(fs))
+
+        monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires)
+
+        if isinstance(expected, Exception):
+            with pytest.raises(ValueError, match="own error"):
+                backend._run_async(work(), timeout=1, method="x")
+        else:
+            assert backend._run_async(work(), timeout=1, method="x") == expected
+        assert release.is_set()
+
+    def test_a_call_still_running_after_the_cancel_times_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import concurrent.futures
+
+        backend = with_private_loop(NoDriverBackend())
+        entered = threading.Event()
+        cancelled = threading.Event()
+
+        async def work() -> str:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return "unreachable"
+
+        def wait_that_expires(fs: Any, timeout: Any = None) -> Any:
+            # Expire only once the call is running, so the cancel reaches a
+            # started coroutine rather than one the loop never began.
+            entered.wait(timeout=5)
+            return SimpleNamespace(done=set(), not_done=set(fs))
+
+        monkeypatch.setattr(concurrent.futures, "wait", wait_that_expires)
+
+        with pytest.raises(TimeoutError, match=r"NoDriverBackend\.x did not finish within 1 s"):
+            backend._run_async(work(), timeout=1, method="x")
+        # The patched wait also stands in for the wait on the cancellation, so
+        # the cancel may land on the loop thread after the raise; it must land.
+        assert cancelled.wait(timeout=5)
+
+    def test_the_timeouts_survive_get_state_and_stay_out_of_the_start_options(self) -> None:
+        original = NoDriverBackend(call_timeout=7.5, navigate_timeout=None, lang="en-US")
+
+        recreated = NoDriverBackend.from_state(original.get_state())
+
+        assert recreated._call_timeout == 7.5
+        assert recreated._navigate_timeout is None
+        assert recreated._options == {"lang": "en-US"}
+
+    def test_the_timeouts_survive_a_pickle(self) -> None:
+        original = NoDriverBackend(call_timeout=3, navigate_timeout=None)
+
+        copy = pickle.loads(pickle.dumps(original))  # noqa: S301 - round-trips its own bytes
+
+        assert copy._call_timeout == 3
+        assert copy._navigate_timeout is None
+
+    def test_a_backend_pickled_before_the_timeouts_existed_gets_the_defaults(self) -> None:
+        state = NoDriverBackend().__getstate__()
+        del state["_call_timeout"]
+        del state["_navigate_timeout"]
+        restored = NoDriverBackend.__new__(NoDriverBackend)
+
+        restored.__setstate__(state)
+
+        assert restored._call_timeout == 60.0
+        assert restored._navigate_timeout == 120.0

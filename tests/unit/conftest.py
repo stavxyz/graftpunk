@@ -151,6 +151,7 @@ class FakeCdpTab:
         self.jar: list[dict[str, Any]] = []
         self.reject: set[str] = set()
         self.fail_with: Exception | None = None
+        self.stop_loading_calls = 0
 
     async def send(self, cmd: Any) -> Any:
         request = next(cmd)
@@ -161,6 +162,7 @@ class FakeCdpTab:
             "Storage.setCookies": self._set_cookies,
             "Storage.getCookies": self._get_cookies,
             "Network.clearBrowserCookies": self._clear,
+            "Page.stopLoading": self._stop_loading,
         }[request["method"]]
         try:
             cmd.send(handler(request.get("params", {})))
@@ -206,6 +208,10 @@ class FakeCdpTab:
         self.jar = []
         return {}
 
+    def _stop_loading(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.stop_loading_calls += 1
+        return {}
+
 
 class _LoopBound:
     """Remembers the event loop it was created on, like nodriver's objects.
@@ -233,9 +239,37 @@ class LoopBoundTab(_LoopBound, FakeCdpTab):
         _LoopBound.__init__(self, misuse)
         FakeCdpTab.__init__(self)
         self.url = url
+        # Set hang to make every CDP call wait until cancelled, like a Chrome
+        # that stopped answering without closing its websocket. hung_calls
+        # counts the calls that started waiting, cancelled_calls the ones a
+        # cancellation ended.
+        self.hang = False
+        self.hung_calls = 0
+        self.cancelled_calls = 0
+        self.target = SimpleNamespace(type_="page")
+        # Cleared while Chrome is still loading a URL in this tab (a
+        # Browser.get that timed out). Like Chrome, the tab then answers no
+        # evaluate until Page.stopLoading ends the load.
+        self.idle = asyncio.Event()
+        self.idle.set()
+
+    def _stop_loading(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.idle.set()
+        return super()._stop_loading(params)
+
+    async def _maybe_hang(self) -> None:
+        if self.hang:
+            self.hung_calls += 1
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled_calls += 1
+                raise
 
     async def evaluate(self, expression: str) -> str:
         await self._on_own_loop("Tab.evaluate")
+        await self.idle.wait()
+        await self._maybe_hang()
         return {
             "window.location.href": self.url,
             "document.title": "Example Domain",
@@ -244,12 +278,19 @@ class LoopBoundTab(_LoopBound, FakeCdpTab):
 
     async def get_content(self) -> str:
         await self._on_own_loop("Tab.get_content")
+        await self.idle.wait()
+        await self._maybe_hang()
         return "<html><body>Example Domain</body></html>"
 
     async def send(self, cmd: Any) -> Any:
         try:
             await self._on_own_loop("Tab.send")
         except AssertionError:
+            cmd.close()
+            raise
+        try:
+            await self._maybe_hang()
+        except asyncio.CancelledError:
             cmd.close()
             raise
         return await FakeCdpTab.send(self, cmd)
@@ -264,7 +305,8 @@ class LoopBoundBrowser(_LoopBound):
         super().__init__(misuse)
         self.start_kwargs = start_kwargs
         self._chrome = chrome
-        self.tabs: list[LoopBoundTab] = []
+        # Like Chrome, one tab to start with, which Browser.get navigates.
+        self.tabs: list[LoopBoundTab] = [LoopBoundTab("about:blank", misuse)]
         self.stopped_on: asyncio.AbstractEventLoop | None = None
         # No subprocess to reap, and a profile the stop path must not touch.
         self._process = None
@@ -272,12 +314,14 @@ class LoopBoundBrowser(_LoopBound):
 
     async def get(self, url: str) -> LoopBoundTab:
         await self._on_own_loop("Browser.get")
+        tab = self.tabs[0]
         if self._chrome.hang_get:
-            # A page that never loads: only a cancellation ends this.
+            # A page that never loads: only a cancellation ends this, and
+            # the tab stays busy loading it until Page.stopLoading.
+            tab.idle.clear()
             self._chrome.get_entered.set()
             await asyncio.Event().wait()
-        tab = LoopBoundTab(url, self._misuse)
-        self.tabs.append(tab)
+        tab.url = url
         return tab
 
     def stop(self) -> None:

@@ -524,6 +524,8 @@ session = BrowserSession(backend="nodriver", headless=False)
 
 **Custom Chrome binary:** the `nodriver` backend auto-detects a system Chrome. Set `GRAFTPUNK_BROWSER_EXECUTABLE_PATH` to point it at a specific Chrome/Chromium binary (e.g. Chrome-for-Testing) on machines or CI without a system Chrome install.
 
+**Call timeouts:** a synchronous `nodriver` call gives up on a Chrome that stops answering. `navigate()` waits up to 120 seconds and then raises `BrowserError`; the other synchronous calls (`current_url`, `page_source`, `get_cookies()`, and the rest) wait up to 60 seconds and then log a warning and return their empty fallback. A `navigate()` that times out also tells Chrome to stop loading the URL, so the tab stays on the page it showed before and the next call answers at once. Change the limits with `BrowserSession(backend="nodriver", call_timeout=..., navigate_timeout=...)` (or the same arguments to `NoDriverBackend`), in seconds; `None` waits without a limit.
+
 ## Security
 
 ### Your Data, Your Rules
