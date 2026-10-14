@@ -138,18 +138,21 @@ class BrowserSession(requestium.Session):
             observe_mode: Observability capture mode. One of "off", "full".
                 Default "off".
             call_timeout: nodriver backend only. Seconds a synchronous
-                backend call other than ``navigate()`` waits before it is
-                cancelled and returns its fallback; None waits without a
+                backend call other than ``navigate()`` waits before it stops
+                waiting and returns its fallback; None waits without a
                 limit. Default 60. See ``NoDriverBackend``.
             navigate_timeout: nodriver backend only. Seconds a synchronous
-                ``navigate()`` waits before it is cancelled and raises
-                ``BrowserError``; None waits without a limit. Default 120.
+                ``navigate()`` waits before it tells Chrome to stop loading
+                the URL and raises ``BrowserError``; the tab stays on the
+                page it showed before. None waits without a limit. Default
+                120.
             **kwargs: Additional keyword arguments passed to requestium.Session.
 
         Raises:
             BrowserError: If browser session creation fails, including a
                 ``call_timeout`` or ``navigate_timeout`` that is not None or a
-                positive number (nodriver backend).
+                positive number no larger than ``threading.TIMEOUT_MAX``
+                (nodriver backend).
             ValueError: If unknown backend is specified.
         """
         # Validate backend
