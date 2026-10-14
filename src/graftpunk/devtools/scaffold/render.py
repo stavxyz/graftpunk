@@ -181,12 +181,21 @@ def plugin_distribution_name(name: str) -> str:
 
 def validate_plugin_name(name: str) -> None:
     """Raise if *name* cannot become a valid `gp <name>` command and entry-point key,
-    or would give the project the name of a graftpunk distribution."""
+    would give the project an invalid distribution name, or would give it the name of
+    a graftpunk distribution."""
     if not PLUGIN_NAME_RE.fullmatch(name):
         raise ValueError(
             f"Plugin name {name!r} must start with a letter and contain only "
             f"letters, digits, hyphens, and underscores, and be at most "
             f"{_MAX_PLUGIN_NAME} characters"
+        )
+    # The project is named graftpunk_<module>, and a distribution name cannot end
+    # in a separator (PEP 508), so uv refuses to install graftpunk_shop_.
+    if name[-1] in "-_":
+        raise ValueError(
+            f"Plugin name {name!r} must not end with a hyphen or underscore: its "
+            f"project would be named {plugin_distribution_name(name)}, which is not a "
+            f"valid distribution name"
         )
     distribution = canonicalize_name(plugin_distribution_name(name))
     if distribution in _GRAFTPUNK_DISTRIBUTIONS:

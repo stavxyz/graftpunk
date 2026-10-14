@@ -305,9 +305,26 @@ class TestValidatePluginName:
         ):
             validate_plugin_name(name)
 
-    @pytest.mark.parametrize("name", ["lite2", "litestore", "my-lite", "lite-"])
+    @pytest.mark.parametrize("name", ["lite2", "litestore", "my-lite"])
     def test_accepts_a_name_that_only_contains_lite(self, name: str) -> None:
         validate_plugin_name(name)  # does not raise
+
+    @pytest.mark.parametrize(
+        ("name", "project"),
+        [("shop-", "graftpunk_shop_"), ("shop_", "graftpunk_shop_"), ("lite-", "graftpunk_lite_")],
+    )
+    def test_rejects_a_name_ending_in_a_separator(self, name: str, project: str) -> None:
+        """A distribution name cannot end in a separator, so uv refuses
+        to install a project named graftpunk_shop_."""
+        from packaging.utils import InvalidName, canonicalize_name
+
+        with pytest.raises(InvalidName):
+            canonicalize_name(project, validate=True)
+        with pytest.raises(
+            ValueError,
+            match=f"must not end with a hyphen or underscore: its project would be named {project}",
+        ):
+            validate_plugin_name(name)
 
 
 class TestCommandName:

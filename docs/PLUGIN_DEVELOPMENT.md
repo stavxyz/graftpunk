@@ -137,15 +137,16 @@ The skill needs graftpunk 1.19.0 or later and `uv` on your PATH.
 Decide the following before you record anything.
 
 **The name.** It starts with a letter, uses letters, digits, hyphens, and
-underscores, and is at most 40 characters. It cannot be a reserved top-level
-`gp` command name (`plugin`, `plugins`, `session`, `http`, `config`,
-`keepalive`, `observe`, `version`, and anything else registered by the time
-plugins attach). It cannot be `lite` (in any case), because its project would be
-named `graftpunk_lite`, which is graftpunk's own browser-free distribution,
-`graftpunk-lite`. A hyphenated name maps to an importable package: `my-shop` becomes the
-package `graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key
-`my-shop`, and the CLI command `gp my-shop`. `gp plugin new NAME --check-name`
-checks a name against these rules and writes nothing.
+underscores, does not end with a hyphen or underscore, and is at most 40
+characters. It cannot be a reserved top-level `gp` command name (`plugin`,
+`plugins`, `session`, `http`, `config`, `keepalive`, `observe`, `version`, and
+anything else registered by the time plugins attach). It cannot be `lite` (in
+any case), because its project would be named `graftpunk_lite`, which is
+graftpunk's own browser-free distribution, `graftpunk-lite`. A hyphenated name
+maps to an importable package: `my-shop` becomes the package
+`graftpunk_my_shop`, the class `MyShopPlugin`, the entry-point key `my-shop`,
+and the CLI command `gp my-shop`. `gp plugin new NAME --check-name` checks a
+name against these rules and writes nothing.
 
 **The commands.** Write down what you want to get out of the site, in the words
 you would use at the shell: `gp myshop orders`, `gp myshop order --order-id
