@@ -273,11 +273,13 @@ def export(
 
     try:
         browser_session = cast("BrowserSession", session)
-        httpie_path = browser_session.save_httpie_session(name)
+        httpie_path = browser_session.save_httpie_session(name, output=output)
 
         console.print(f"[green]✓ Exported to:[/green] {escape(str(httpie_path))}\n")
         console.print("[dim]Usage:[/dim]")
-        console.print(f"  http --session={escape(str(name))} https://example.com/api")
+        # HTTPie reads a --session value containing a path separator as a file.
+        session_arg = httpie_path if output is not None else name
+        console.print(f"  http --session={escape(str(session_arg))} https://example.com/api")
     except (OSError, AttributeError) as exc:
         console.print(f"[red]✗ Export failed: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from None

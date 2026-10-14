@@ -9,6 +9,7 @@ evicted too, so they are imported again and fail as they would on lite.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -64,8 +65,14 @@ def _observe() -> typer.Typer:
 
 def _cache_fixture_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Cache the committed fixture as session ``myshop``. Its pickle names
-    ``graftpunk.session.BrowserSession``, as every session gp login caches does."""
+    ``graftpunk.session.BrowserSession``, as every session gp login caches does.
+    HOME and HTTPie's config dir point into *tmp_path*, so an export cannot
+    write into the real home directory."""
     _setup_local_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HTTPIE_CONFIG_DIR", str(tmp_path / "httpie"))
+    # httpie reads HTTPIE_CONFIG_DIR once, when it is first imported.
+    monkeypatch.setattr("httpie.context.Environment.config_dir", tmp_path / "httpie")
     (tmp_path / ".session_key").write_bytes((_FIX / "browserfree_session.key").read_bytes())
     session_dir = tmp_path / "sessions" / "myshop"
     session_dir.mkdir(parents=True)
@@ -116,6 +123,7 @@ def test_session_export_without_the_browser_stack_prints_the_install_hint(
     assert "Traceback" not in output, output
     assert not isinstance(result.exception, ImportError)
     assert not (tmp_path / "out.json").exists()
+    assert not (tmp_path / "httpie").exists()
 
 
 def _shop_plugin(backend: str):  # noqa: ANN202
@@ -382,6 +390,37 @@ def test_plugin_login_without_the_browser_stack_asks_for_nothing(
     assert "myshop login needs the browser automation stack" in output, output
     assert "no module named 'selenium'" in output, output
     assert "Username" not in output, output
+
+
+def test_session_export_writes_where_output_says(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _cache_fixture_session(tmp_path, monkeypatch)
+    target = tmp_path / "out" / "myshop-httpie.json"
+
+    result = runner.invoke(session_app, ["export", "myshop", "-o", str(target)])
+
+    output = _flat(result.output)
+    assert result.exit_code == 0, output
+    assert f"Exported to: {target}" in output, output
+    assert f"http --session={target}" in output, output
+    assert "cookies" in json.loads(target.read_text())
+    assert not (tmp_path / "httpie" / "sessions").exists()
+
+
+def test_session_export_defaults_to_the_httpie_sessions_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _cache_fixture_session(tmp_path, monkeypatch)
+    default = tmp_path / "httpie" / "sessions" / "myshop.json"
+
+    result = runner.invoke(session_app, ["export", "myshop"])
+
+    output = _flat(result.output)
+    assert result.exit_code == 0, output
+    assert f"Exported to: {default}" in output, output
+    assert "http --session=myshop " in output, output
+    assert "cookies" in json.loads(default.read_text())
 
 
 _CAPTURED_STDOUT_RUN = """
