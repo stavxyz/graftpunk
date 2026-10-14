@@ -1,5 +1,9 @@
 """Shared test helpers for unit tests."""
 
+import asyncio
+import threading
+from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -108,50 +112,6 @@ def fresh_backend(tmp_path, monkeypatch):  # noqa: ANN001, ANN201
     cache_mod._reset_session_storage_backend()
 
 
-def close_coro_and_return(return_value: Any = None) -> Any:
-    """Create a side_effect function that closes coroutines to avoid RuntimeWarnings.
-
-    When mocking asyncio.run(), the coroutine passed to it is created but never
-    awaited. This creates RuntimeWarnings about unawaited coroutines. This helper
-    creates a side_effect that properly closes the coroutine before returning.
-
-    Args:
-        return_value: Value to return from the mock.
-
-    Returns:
-        A function suitable for use as side_effect on a Mock.
-    """
-
-    def _side_effect(coro: Any) -> Any:
-        # Close the coroutine to prevent "never awaited" warnings
-        if hasattr(coro, "close"):
-            coro.close()
-        return return_value
-
-    return _side_effect
-
-
-def close_coro_and_raise(exc: Exception) -> Any:
-    """Create a side_effect function that closes coroutines then raises an exception.
-
-    Similar to close_coro_and_return, but raises an exception after closing
-    the coroutine. Used for tests that verify error handling paths.
-
-    Args:
-        exc: Exception instance to raise.
-
-    Returns:
-        A function suitable for use as side_effect on a Mock.
-    """
-
-    def _side_effect(coro: Any) -> Any:
-        if hasattr(coro, "close"):
-            coro.close()
-        raise exc
-
-    return _side_effect
-
-
 @pytest.fixture()
 def _fast_login_timings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch login engine timing constants so tests don't wait real time.
@@ -175,3 +135,216 @@ def _fast_login_timings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("graftpunk.plugins.login_engine._ELEMENT_RETRY_INTERVAL", 0.001)
     monkeypatch.setattr("graftpunk.plugins.login_engine._LOGIN_NAV_TIMEOUT", 0.05)
     monkeypatch.setattr("graftpunk.plugins.login_engine._FIELD_SETTLE_DELAY", 0.001)
+
+
+class FakeCdpTab:
+    """A tab whose ``send`` drives nodriver's real CDP generator protocol.
+
+    nodriver's ``Tab.send(cmd)`` calls ``next(cmd)`` to get the request dict,
+    then sends the response JSON back into the generator, whose return value
+    is the parsed result. This fake does the same against an in-memory jar
+    speaking CDP's JSON shapes, so the backend's CDP objects are built and
+    parsed by nodriver itself.
+    """
+
+    def __init__(self) -> None:
+        self.jar: list[dict[str, Any]] = []
+        self.reject: set[str] = set()
+        self.fail_with: Exception | None = None
+
+    async def send(self, cmd: Any) -> Any:
+        request = next(cmd)
+        if self.fail_with is not None:
+            cmd.close()
+            raise self.fail_with
+        handler = {
+            "Storage.setCookies": self._set_cookies,
+            "Storage.getCookies": self._get_cookies,
+            "Network.clearBrowserCookies": self._clear,
+        }[request["method"]]
+        try:
+            cmd.send(handler(request.get("params", {})))
+        except StopIteration as stop:
+            return stop.value
+        raise AssertionError(f"{request['method']} did not finish after one response")
+
+    def _set_cookies(self, params: dict[str, Any]) -> dict[str, Any]:
+        for param in params["cookies"]:
+            if param["name"] in self.reject:
+                continue
+            expires = param.get("expires")
+            stored = {
+                "name": param["name"],
+                "value": param["value"],
+                # The jar marks a domain cookie with a leading dot.
+                "domain": "." + param["domain"].lstrip("."),
+                "path": param.get("path", "/"),
+                "size": len(param["name"]) + len(param["value"]),
+                "httpOnly": param.get("httpOnly", False),
+                "secure": param.get("secure", False),
+                "session": expires is None,
+                "expires": -1 if expires is None else expires,
+                "priority": "Medium",
+                "sourceScheme": "Secure",
+                "sourcePort": 443,
+            }
+            if "sameSite" in param:
+                stored["sameSite"] = param["sameSite"]
+            self.jar = [
+                c
+                for c in self.jar
+                if (c["name"], c["domain"], c["path"])
+                != (stored["name"], stored["domain"], stored["path"])
+            ]
+            self.jar.append(stored)
+        return {}
+
+    def _get_cookies(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"cookies": [dict(c) for c in self.jar]}
+
+    def _clear(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.jar = []
+        return {}
+
+
+class _LoopBound:
+    """Remembers the event loop it was created on, like nodriver's objects.
+
+    A real nodriver object used from another loop hangs or raises "attached to
+    a different loop"; this records the misuse and raises, so a test sees it
+    even where the backend's best-effort handlers swallow the exception.
+    """
+
+    def __init__(self, misuse: list[str]) -> None:
+        self.loop = asyncio.get_running_loop()
+        self._misuse = misuse
+
+    async def _on_own_loop(self, what: str) -> None:
+        if asyncio.get_running_loop() is not self.loop:
+            self._misuse.append(what)
+            raise AssertionError(f"{what} used from an event loop it was not created on")
+        await asyncio.sleep(0)
+
+
+class LoopBoundTab(_LoopBound, FakeCdpTab):
+    """A nodriver Tab stand-in that only works on the loop that created it."""
+
+    def __init__(self, url: str, misuse: list[str]) -> None:
+        _LoopBound.__init__(self, misuse)
+        FakeCdpTab.__init__(self)
+        self.url = url
+
+    async def evaluate(self, expression: str) -> str:
+        await self._on_own_loop("Tab.evaluate")
+        return {
+            "window.location.href": self.url,
+            "document.title": "Example Domain",
+            "navigator.userAgent": "FakeChrome/1.0",
+        }[expression]
+
+    async def get_content(self) -> str:
+        await self._on_own_loop("Tab.get_content")
+        return "<html><body>Example Domain</body></html>"
+
+    async def send(self, cmd: Any) -> Any:
+        try:
+            await self._on_own_loop("Tab.send")
+        except AssertionError:
+            cmd.close()
+            raise
+        return await FakeCdpTab.send(self, cmd)
+
+
+class LoopBoundBrowser(_LoopBound):
+    """A nodriver Browser stand-in that only works on the loop that created it."""
+
+    def __init__(
+        self, misuse: list[str], start_kwargs: dict[str, Any], chrome: "FakeChrome"
+    ) -> None:
+        super().__init__(misuse)
+        self.start_kwargs = start_kwargs
+        self._chrome = chrome
+        self.tabs: list[LoopBoundTab] = []
+        self.stopped_on: asyncio.AbstractEventLoop | None = None
+        # No subprocess to reap, and a profile the stop path must not touch.
+        self._process = None
+        self.config = SimpleNamespace(uses_custom_data_dir=True, user_data_dir=None)
+
+    async def get(self, url: str) -> LoopBoundTab:
+        await self._on_own_loop("Browser.get")
+        if self._chrome.hang_get:
+            # A page that never loads: only a cancellation ends this.
+            self._chrome.get_entered.set()
+            await asyncio.Event().wait()
+        tab = LoopBoundTab(url, self._misuse)
+        self.tabs.append(tab)
+        return tab
+
+    def stop(self) -> None:
+        # nodriver's Browser.stop() is synchronous; record where it ran.
+        self.stopped_on = asyncio.get_running_loop()
+
+
+class FakeChrome:
+    """What ``fake_chrome`` patched in: every browser started, and every misuse."""
+
+    def __init__(self) -> None:
+        self.browsers: list[LoopBoundBrowser] = []
+        self.misuse: list[str] = []
+        self.fail_with: Exception | None = None
+        # Set hang_get to make Browser.get wait until cancelled; get_entered
+        # is set once it is waiting.
+        self.hang_get = False
+        self.get_entered = threading.Event()
+
+    async def start(self, **kwargs: Any) -> LoopBoundBrowser:
+        if self.fail_with is not None:
+            raise self.fail_with
+        await asyncio.sleep(0)
+        browser = LoopBoundBrowser(self.misuse, kwargs, self)
+        self.browsers.append(browser)
+        return browser
+
+
+@pytest.fixture()
+def fake_chrome(monkeypatch: pytest.MonkeyPatch) -> FakeChrome:
+    """Replace ``nodriver.start`` with loop-bound fakes, so a real start runs."""
+    nodriver = pytest.importorskip("nodriver")
+    chrome = FakeChrome()
+    monkeypatch.setattr(nodriver, "start", chrome.start)
+    return chrome
+
+
+def with_private_loop(backend: Any) -> Any:
+    """Give a hand-built "started" NoDriverBackend the loop ``start()`` would make.
+
+    Only ``start()`` creates the private loop, so a test that sets
+    ``_started`` and a browser by hand has to supply one for its sync calls to
+    reach the coroutine at all.
+    """
+    with backend._locked():
+        backend._ensure_private_loop()
+    return backend
+
+
+@pytest.fixture()
+def release_nodriver_loops(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Stop the private event loop of every NoDriverBackend a test made.
+
+    A test that leaves a backend started, or drives a sync call on a
+    hand-built "running" backend, leaves the backend's loop thread alive. It
+    is a daemon, so it would not hang the run, but one per test adds up.
+    """
+    from graftpunk.backends.nodriver import NoDriverBackend
+
+    created: list[NoDriverBackend] = []
+    original_init = NoDriverBackend.__init__
+
+    def tracking_init(self: NoDriverBackend, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(NoDriverBackend, "__init__", tracking_init)
+    yield
+    for backend in created:
+        backend._release_loop()

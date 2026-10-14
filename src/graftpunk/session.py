@@ -358,6 +358,8 @@ class BrowserSession(requestium.Session):
 
         Raises:
             BrowserError: If backend is not nodriver or backend instance is missing.
+            RuntimeError: While a ``stop_async()`` on this thread is still
+                stopping the nodriver backend.
 
         Example:
             >>> session = BrowserSession(backend="nodriver")
