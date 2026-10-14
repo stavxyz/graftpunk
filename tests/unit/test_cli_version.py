@@ -210,3 +210,26 @@ def test_one_distribution_prints_no_warning(monkeypatch: pytest.MonkeyPatch) -> 
     result = runner.invoke(app, ["version", "--json"])
     assert result.exit_code == 0
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize("has_stack", [True, False])
+def test_the_panel_says_when_the_browser_stack_is_missing(
+    monkeypatch: pytest.MonkeyPatch, has_stack: bool
+) -> None:
+    """The graft skill's preflight reads this line; graftpunk-lite[browser] has the stack."""
+    monkeypatch.setattr(_distribution, "_pkg_version", _only({"graftpunk-lite": "1.20.0"}))
+    monkeypatch.setattr(_distribution, "has_browser_stack", lambda: has_stack)
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0, result.output
+    panel = " ".join(result.stdout.replace("│", " ").split())
+    if has_stack:
+        assert "Browser:" not in panel
+    else:
+        assert "Browser: not installed, so gp cannot record a site or log in" in panel
+        assert "pip install 'graftpunk-lite[browser]'" in panel
+
+
+def test_the_panel_on_this_environment_has_no_browser_line() -> None:
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0, result.output
+    assert "Browser:" not in result.stdout

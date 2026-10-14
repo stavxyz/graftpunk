@@ -229,14 +229,21 @@ def version(
         # A caller passing --at-least or --contract without --json wants the
         # exit status, not the panel.
         settings = get_settings()
+        # Each phrase the graft skill's preflight matches ("graftpunk-lite 1" and
+        # "Browser: not installed") is one style span, so no color code splits it.
+        browser = (
+            ""
+            if _distribution.has_browser_stack()
+            else "\n[yellow]Browser: not installed[/yellow], so gp cannot record a site "
+            f"or log in; add it: {escape(_distribution.install_command('browser'))}"
+        )
         console.print(
             Panel(
-                # One style span, so no color code splits the name from the
-                # version: the graft skill's preflight matches "graftpunk-lite 1".
                 f"[bold cyan]{_distribution.name()} {graftpunk.__version__}[/bold cyan]\n"
                 f"{escape(graftpunk.DESCRIPTION)}\n\n"
                 f"[dim]Config:[/dim]  {escape(str(settings.config_dir))}\n"
-                f"[dim]Storage:[/dim] {escape(str(settings.storage_backend))}",
+                f"[dim]Storage:[/dim] {escape(str(settings.storage_backend))}"
+                f"{browser}",
                 title="graftpunk",
                 border_style="cyan",
             )
