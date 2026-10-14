@@ -757,10 +757,14 @@ class NoDriverBackend:
         on that thread stops the browser itself without the lock (through the
         browser's loop while that loop runs, and without it otherwise), and a
         ``start()`` or ``start_async()`` there raises ``RuntimeError``. The
-        paused ``stop_async()``, if it resumes, finds the backend stopped.
-        Whichever stop finishes first closes the private loop, and only after
-        Chrome has exited, since on Linux its child watcher collects Chrome's
-        exit status.
+        paused ``stop_async()``, if it resumes, finds the backend stopped. If
+        that ``stop_async()`` is already ending Chrome without the loop (it
+        was cancelled, or the browser's loop had stopped), the call finds
+        nothing left to stop and returns before Chrome has exited (up to
+        about 4 s before), and the paused ``stop_async()`` finishes ending
+        Chrome. Either way the private loop is closed only after Chrome has
+        exited or the stop has given up on it, since on Linux its child
+        watcher collects Chrome's exit status.
         ``start_async()`` on a backend already started on a
         running loop, or on the current one, does nothing; one whose loop has
         finished is ended and replaced.
@@ -1453,7 +1457,11 @@ class NoDriverBackend:
         a loop that stopped) it does not wait either, since that stop cannot
         resume while this call blocks the thread: it stops the browser itself,
         as above, and that ``stop_async()`` finds the backend stopped if it
-        resumes.
+        resumes. If that ``stop_async()`` is already ending Chrome without the
+        loop (it was cancelled, or the browser's loop had stopped), this call
+        finds nothing left to stop and returns before Chrome has exited (up
+        to about 4 s before), while that ``stop_async()`` finishes ending
+        Chrome.
         """
         running = _running_loop()
         if self._held_by_this_thread():
@@ -1534,9 +1542,13 @@ class NoDriverBackend:
         this thread holds: while another ``stop_async()`` on this thread is
         paused at an await (two on one loop, or one left suspended on a loop
         that stopped), it stops the browser itself, as above, and the paused
-        one finds the backend stopped if it resumes. Whichever of the two
-        finishes first closes the private loop, and only after Chrome has
-        exited, so the loop's child watcher can still collect its exit status.
+        one finds the backend stopped if it resumes. If the paused one is
+        already ending Chrome without the loop (it was cancelled, or the
+        browser's loop had stopped), this call finds nothing left to stop and
+        returns before Chrome has exited (up to about 4 s before), while the
+        paused one finishes ending Chrome. Either way the private loop is
+        closed only after Chrome has exited or the stop has given up on it,
+        so the loop's child watcher can still collect Chrome's exit status.
 
         When the browser's loop cancels the stop submitted to it (the loop is
         shutting down) and nobody cancelled this call, Chrome is ended without
