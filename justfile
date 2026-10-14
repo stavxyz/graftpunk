@@ -74,18 +74,21 @@ check-dist: build
 
 # Upload to Test PyPI
 publish-test: check-dist
-    uvx twine upload --repository testpypi dist/*
+    uvx twine upload --repository testpypi dist/graftpunk_lite-*
+    uvx twine upload --repository testpypi dist/graftpunk-*
     @echo "📦 Uploaded to Test PyPI"
     @echo "🔗 https://test.pypi.org/project/graftpunk/"
 
 # Upload to PyPI (production) — MANUAL FALLBACK ONLY.
 # The normal path is `just release` → the tag triggers CI, which publishes via
 # Trusted Publishing (no token). Use this only if you must publish by hand with
-# a local token (e.g. CI is unavailable).
+# a local token (e.g. CI is unavailable). Like release.yml, it uploads
+# graftpunk-lite first, so a failed lite upload stops before graftpunk ships.
 publish: check-dist
     @echo "⚠️  Publishing to PyPI (production) — manual fallback"
     @read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ]
-    uvx twine upload dist/*
+    uvx twine upload dist/graftpunk_lite-*
+    uvx twine upload dist/graftpunk-*
     @echo "📦 Uploaded to PyPI"
     @echo "🔗 https://pypi.org/project/graftpunk/"
 
