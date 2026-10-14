@@ -61,6 +61,8 @@ def test_installed_and_install_command(
     monkeypatch.setattr(_distribution, "_pkg_version", _only(installed))
     assert _distribution.installed() == expected
     assert _distribution.install_command("browser") == command
+    uv_form = command.replace("pip install", "uv tool install --force")
+    assert _distribution.install_commands("browser") == f"{uv_form} (or: {command})"
 
 
 @pytest.mark.parametrize(

@@ -1627,7 +1627,8 @@ _FULL_NOTE = {
     "graftpunk-lite[browser]": "",
     "graftpunk-lite": (
         " Developing a plugin (recording, logging in) needs the browser stack: "
-        "pip install 'graftpunk-lite[browser]', or switch to graftpunk."
+        "uv tool install --force 'graftpunk-lite[browser]' "
+        "(or: pip install 'graftpunk-lite[browser]'), or switch to graftpunk."
     ),
 }
 

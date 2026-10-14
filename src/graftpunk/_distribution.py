@@ -67,3 +67,10 @@ def has_browser_stack() -> bool:
 def install_command(extra: str) -> str:
     """The pip command that adds *extra* to whichever distribution is installed."""
     return f"pip install '{name()}[{extra}]'"
+
+
+def install_commands(extra: str) -> str:
+    """The uv tool command, then the pip one, that add *extra* to whichever
+    distribution is installed. A gp from ``uv tool install`` runs in its own
+    environment, which the ``pip`` on PATH does not reach."""
+    return f"uv tool install --force '{name()}[{extra}]' (or: {install_command(extra)})"

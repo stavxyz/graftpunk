@@ -226,7 +226,10 @@ def test_the_panel_says_when_the_browser_stack_is_missing(
         assert "Browser:" not in panel
     else:
         assert "Browser: not installed, so gp cannot record a site or log in" in panel
-        assert "pip install 'graftpunk-lite[browser]'" in panel
+        assert (
+            "add it: uv tool install --force 'graftpunk-lite[browser]' "
+            "(or: pip install 'graftpunk-lite[browser]')"
+        ) in panel
 
 
 def test_the_panel_on_this_environment_has_no_browser_line() -> None:

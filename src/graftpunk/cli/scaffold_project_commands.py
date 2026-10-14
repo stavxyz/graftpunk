@@ -56,7 +56,7 @@ def _print_floor(floor: FloorVerdict) -> None:
     # graftpunk-lite[browser] records and logs in as graftpunk does.
     full_note = (
         " Developing a plugin (recording, logging in) needs the browser stack: "
-        f"{_distribution.install_command('browser')}, or switch to graftpunk."
+        f"{_distribution.install_commands('browser')}, or switch to graftpunk."
         if _distribution.name() == _distribution.LITE and not _distribution.has_browser_stack()
         else ""
     )

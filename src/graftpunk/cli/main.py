@@ -235,7 +235,7 @@ def version(
             ""
             if _distribution.has_browser_stack()
             else "\n[yellow]Browser: not installed[/yellow], so gp cannot record a site "
-            f"or log in; add it: {escape(_distribution.install_command('browser'))}"
+            f"or log in; add it: {escape(_distribution.install_commands('browser'))}"
         )
         console.print(
             Panel(

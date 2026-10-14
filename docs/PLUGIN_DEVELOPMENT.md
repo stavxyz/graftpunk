@@ -1699,8 +1699,8 @@ here to raise or name; they print `Next: this project's dependencies are
 dynamic; make sure whatever supplies them requires graftpunk[browser]>=<floor>,
 then reinstall.` On graftpunk-lite without its browser stack, each of these
 three lines adds that developing a plugin (recording, logging in) needs that
-stack, from `pip install 'graftpunk-lite[browser]'` or by switching to
-`graftpunk`.
+stack, from `uv tool install --force 'graftpunk-lite[browser]'`
+(or `pip install 'graftpunk-lite[browser]'`) or by switching to `graftpunk`.
 
 A minimal CI workflow to start from, running the same gate:
 
