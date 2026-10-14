@@ -68,6 +68,22 @@ editable into that project's virtual environment:
 uv pip install -e .   # or: pip install -e .
 ```
 
+A plugin requires `graftpunk[browser]>=X` (the requirement `gp plugin new`
+writes), since logging in needs the browser stack, so installing a plugin
+installs `graftpunk`, the full install. Install plugins into an environment
+with `graftpunk`, not `graftpunk-lite`: installing one where `graftpunk-lite`
+is already installed puts both distributions in the same environment, and
+uninstalling either then deletes files the other needs. To use a plugin's
+browser-free parts with `graftpunk-lite` (replaying a cached session under
+Pyodide or Cloudflare Python Workers), install the plugin without its
+dependencies and install its other requirements by hand:
+
+```bash
+pip install graftpunk-lite
+pip install --no-deps graftpunk-myshop
+pip install <each requirement in graftpunk-myshop's [project] dependencies except graftpunk>
+```
+
 The file loader is for a throwaway script that imports nothing but graftpunk.
 It has two failure modes that cost real time:
 
@@ -930,7 +946,8 @@ pyproject.toml: graftpunk>=1.17.0 (was >=1.15.0); reinstall the project
 ```
 
 That project's requirement was `graftpunk[browser]>=1.15.0`, and it is now
-`graftpunk[browser]>=1.17.0`: extras and an environment marker are kept. What
+`graftpunk[browser]>=1.17.0`: extras and an environment marker are kept. A
+`graftpunk-lite>=` bound is raised the same way and keeps its name. What
 happens to any other form of requirement is in [The gate](#the-gate).
 
 The refusals are those of `--command` above, plus a few of its own, each
@@ -1659,14 +1676,19 @@ dependencies` holds a plain `graftpunk>=` lower bound below that release (as
 `major.minor.0`, the bound `gp plugin new` writes), they raise it in the same
 write, keeping any extras and environment marker, and print
 `pyproject.toml: graftpunk>=<floor> (was >=<old>); reinstall the project`. A
+`graftpunk-lite>=` bound counts as the graftpunk requirement: it is raised in
+place under its own name, and the line names `graftpunk-lite`. A
 requirement that already allows nothing below the floor gets nothing extra.
 Any other form that allows a release below the floor (a pin, an upper bound,
 a URL, or no graftpunk requirement) is left as it is, and they print a
 `Next:` line naming the floor and the requirement as found, and to reinstall.
-A project whose `[project] dependencies` is itself listed in `[project]
+With no graftpunk requirement, that line says to add one for the distribution
+`gp` came from (`graftpunk` or `graftpunk-lite`), never the other one. A
+project whose `[project] dependencies` is itself listed in `[project]
 dynamic` has no array here to raise or name; they print `Next: this
 project's dependencies are dynamic; make sure whatever supplies them
-requires graftpunk>=<floor>, then reinstall.`
+requires graftpunk>=<floor>, then reinstall.`, naming `graftpunk-lite`
+instead when `gp` came from it.
 
 A minimal CI workflow to start from, running the same gate:
 

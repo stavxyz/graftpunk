@@ -105,6 +105,19 @@ place, so uninstalling either one deletes files the other needs. To switch,
 uninstall the one you have first (`pip uninstall graftpunk`, then
 `pip install graftpunk-lite`, or the reverse).
 
+Plugins depend on `graftpunk` (they log in through a browser), so a plugin is
+installed into an environment with the full install. Installing a plugin where
+`graftpunk-lite` is installed would put `graftpunk` beside it. To use a
+plugin's browser-free parts with lite (under Pyodide or Cloudflare Workers),
+install the plugin without its dependencies and add its other requirements by
+hand:
+
+```bash
+pip install graftpunk-lite
+pip install --no-deps graftpunk-myshop
+pip install <each requirement in graftpunk-myshop's [project] dependencies except graftpunk>
+```
+
 **With cloud storage:**
 
 ```bash
