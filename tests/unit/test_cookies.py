@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import email.message
 import os
 import pathlib
 import socket
 import subprocess
 import sys
 import threading
+import types
+import urllib.request
 from collections.abc import Callable, Iterator
 from http import cookiejar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 import dill
 import pytest
@@ -673,3 +678,143 @@ def test_the_mixin_prepares_every_field_as_stock_requests_does(
     assert dict(ours.headers) == dict(stock.headers)
     assert ours.body == stock.body
     assert ours.hooks == stock.hooks
+
+
+# Cookies as a browser reports them at capture: a Secure persistent domain
+# cookie, a path-scoped one, a host-only one and a localhost one.
+_EXPIRY = 2_000_000_000
+_CAPTURED: list[dict[str, Any]] = [
+    {"name": "sid", "domain": ".example.com", "path": "/", "secure": True, "expiry": _EXPIRY},
+    {"name": "app", "domain": ".example.com", "path": "/app", "secure": False, "expiry": None},
+    {"name": "host", "domain": "example.com", "path": "/", "secure": False, "expiry": None},
+    {"name": "lh", "domain": "localhost", "path": "/", "secure": True, "expiry": None},
+]
+
+
+def _cdp_cookie(record: dict[str, Any]) -> Any:
+    network = pytest.importorskip("nodriver.cdp.network")
+    expiry = record["expiry"]
+    return network.Cookie(
+        name=record["name"],
+        value="1",
+        domain=record["domain"],
+        path=record["path"],
+        size=0,
+        http_only=record["name"] == "sid",
+        secure=record["secure"],
+        session=expiry is None,
+        priority=network.CookiePriority.MEDIUM,
+        source_scheme=network.CookieSourceScheme.SECURE,
+        source_port=443,
+        # CDP reports seconds as a float, and -1 for a session cookie.
+        expires=-1.0 if expiry is None else expiry + 0.25,
+    )
+
+
+def _webdriver_cookie(record: dict[str, Any]) -> dict[str, Any]:
+    cookie = {
+        "name": record["name"],
+        "value": "1",
+        "domain": record["domain"],
+        "path": record["path"],
+        "secure": record["secure"],
+        "httpOnly": record["name"] == "sid",
+        "sameSite": "Lax",
+    }
+    # WebDriver leaves expiry out of a session cookie.
+    if record["expiry"] is not None:
+        cookie["expiry"] = record["expiry"]
+    return cookie
+
+
+def _browser_session() -> Any:
+    from graftpunk.session import BrowserSession
+
+    session = BrowserSession.__new__(BrowserSession)
+    requests.Session.__init__(session)
+    session._give_new_jar_the_browser_cookie_policy()
+    return session
+
+
+def _captured_by_nodriver() -> requests.Session:
+    cookies = [_cdp_cookie(record) for record in _CAPTURED]
+
+    async def get_all() -> list[Any]:
+        return cookies
+
+    session = _browser_session()
+    browser = types.SimpleNamespace(cookies=types.SimpleNamespace(get_all=get_all))
+    session._backend_instance = types.SimpleNamespace(_browser=browser)
+    asyncio.run(session.transfer_nodriver_cookies_to_session())
+    return session
+
+
+def _captured_by_selenium() -> requests.Session:
+    session = _browser_session()
+    session._backend_type = "selenium"
+    session._webdriver = types.SimpleNamespace(
+        get_cookies=lambda: [_webdriver_cookie(record) for record in _CAPTURED],
+        execute_script=lambda script: "BrowserUA/1.0",
+    )
+    session.transfer_driver_cookies_to_session()
+    assert session.headers["User-Agent"] == "BrowserUA/1.0"
+    return session
+
+
+_CAPTURE_PATHS = {"nodriver": _captured_by_nodriver, "selenium": _captured_by_selenium}
+
+
+@pytest.mark.parametrize("capture", sorted(_CAPTURE_PATHS))
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://example.com/", "sid=1; host=1"),
+        ("http://example.com/", "host=1"),
+        ("https://example.com/app/x", "app=1; sid=1; host=1"),
+        ("https://example.com/other", "sid=1; host=1"),
+        ("https://sub.example.com/", "sid=1"),
+        ("http://localhost:8080/", "lh=1"),
+        ("http://sub.localhost/", None),
+    ],
+)
+def test_a_captured_cookie_is_sent_where_the_browser_sends_it(
+    capture: str, url: str, expected: str | None
+) -> None:
+    session = _CAPTURE_PATHS[capture]()
+
+    assert _cookie_header(session, url) == expected
+
+
+def test_a_host_only_cookie_a_server_sets_is_not_sent_to_its_subdomains() -> None:
+    headers = email.message.Message()
+    headers["Set-Cookie"] = "host=1; Path=/"
+    headers["Set-Cookie"] = "dom=1; Domain=example.com; Path=/"
+    response = types.SimpleNamespace(info=lambda: headers)
+    session = GraftpunkSession()
+    session.cookies.extract_cookies(response, urllib.request.Request("https://example.com/"))
+
+    assert _cookie_header(session, "https://example.com/") == "host=1; dom=1"
+    assert _cookie_header(session, "https://sub.example.com/") == "dom=1"
+
+
+@pytest.mark.parametrize("capture", sorted(_CAPTURE_PATHS))
+def test_a_captured_cookie_keeps_its_expiry_and_httponly_flag(capture: str) -> None:
+    by_name = {cookie.name: cookie for cookie in _CAPTURE_PATHS[capture]().cookies}
+
+    assert by_name["sid"].expires == _EXPIRY
+    assert not by_name["sid"].discard
+    assert by_name["sid"].has_nonstandard_attr("HttpOnly")
+    assert by_name["host"].expires is None
+    assert by_name["host"].discard
+    assert not by_name["host"].has_nonstandard_attr("HttpOnly")
+
+
+@pytest.mark.parametrize("capture", sorted(_CAPTURE_PATHS))
+def test_captured_cookies_keep_their_attributes_through_the_cache(capture: str) -> None:
+    """The jar pickles with the session; an API session loaded from the cache
+    gets it as is."""
+    session = GraftpunkSession()
+    session.cookies = dill.loads(dill.dumps(_CAPTURE_PATHS[capture]().cookies))  # noqa: S301
+
+    assert _cookie_header(session, "http://example.com/") == "host=1"
+    assert _cookie_header(session, "https://sub.example.com/") == "sid=1"

@@ -1,9 +1,13 @@
 """The browser's cookie rules, applied to graftpunk's own sessions and nowhere else.
 
 A graftpunk session should send exactly the cookies the browser that captured it
-would send. The standard library's :class:`http.cookiejar.DefaultCookiePolicy`
-never sends a ``Secure`` cookie over plain HTTP; Chrome sends one to a
-loopback origin. :class:`BrowserCookiePolicy` adds that rule, and
+would send. :func:`cookie_from_browser` stores a captured cookie with the
+attributes that decide where the browser sends it. The standard library's
+:class:`http.cookiejar.DefaultCookiePolicy` never sends a ``Secure`` cookie
+over plain HTTP, where Chrome sends one to a loopback origin, and sends a
+host-only cookie to subdomains, where RFC 6265 (section 5.4) sends it to its
+own host alone. Chrome was measured on the first rule, not the second.
+:class:`BrowserCookiePolicy` changes those two rules, and
 :class:`BrowserCookiesMixin` makes a ``requests.Session`` subclass use its
 jar's policy for every request it sends, which stock ``requests`` does not
 (``Session.prepare_request`` merges cookies into a fresh jar with the default
@@ -25,7 +29,7 @@ import copy
 import copyreg
 import importlib
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from http import cookiejar
 from typing import TYPE_CHECKING, Any, Self, TypeVar
@@ -101,6 +105,10 @@ def _settings(policy: object) -> dict[str, Any]:
 class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
     """The standard library's policy, plus Chrome's rule that a loopback origin is secure.
 
+    A host-only cookie (one stored without ``domain_specified``, as
+    :func:`cookie_from_browser` stores a browser's host-only cookie and the
+    jar stores a ``Set-Cookie`` without ``Domain``) goes to its own host only.
+
     It pickles as a call of ``http.cookiejar.DefaultCookiePolicy``, looked up
     by name when loaded, with the same settings, so a session cached by this
     release loads in releases without :mod:`graftpunk.cookies`; graftpunk's
@@ -115,6 +123,20 @@ class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
         # hostname drops the port and an IPv6 literal's brackets.
         host = urlsplit(request.get_full_url()).hostname
         return host is not None and _is_secure_loopback_host(host)
+
+    def return_ok_domain(self, cookie: cookiejar.Cookie, request: Any) -> bool:
+        # A cookie set without a Domain attribute is host-only: sent to the
+        # host that set it and no other. The standard library also sends it to
+        # subdomains unless strict_ns_domain says otherwise, and never sends a
+        # dotless host's cookie whose domain names the host itself (it files
+        # its own under "<host>.local", the effective host), which is how a
+        # browser reports a localhost cookie. An empty domain is requests'
+        # cookie for every host, and is left to the standard library.
+        if cookie.domain and not cookie.domain_specified:
+            # eff_request_host is in http.cookiejar but not in its stubs.
+            req_host, effective_host = cookiejar.eff_request_host(request)  # ty: ignore[unresolved-attribute]
+            return cookie.domain.lower() in (req_host, effective_host)
+        return super().return_ok_domain(cookie, request)
 
     def __reduce__(self) -> tuple[Any, ...]:
         if type(self) is not BrowserCookiePolicy:
@@ -142,6 +164,60 @@ class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
         new = type(self).__new__(type(self))
         new.__dict__.update(copy.deepcopy(_settings(self), memo))
         return new
+
+
+def cookie_from_browser(record: Any) -> cookiejar.Cookie:
+    """A jar cookie for one cookie a browser reported, sent where the browser sends it.
+
+    *record* is a WebDriver cookie dict, as selenium's ``get_cookies()``
+    returns (``name``, ``value``, ``domain``, ``path``, ``secure``,
+    ``httpOnly``, and ``expiry`` only on a persistent cookie), or a CDP
+    ``Network.Cookie``, as nodriver's ``browser.cookies.get_all()`` returns
+    (``http_only``, ``session``, and ``expires``, which is -1 on a session
+    cookie).
+
+    The cookie keeps its name, value, domain, path, ``Secure`` flag and
+    expiry; a session cookie stays one (no expiry, discarded with the
+    session). HttpOnly is kept as the ``HttpOnly`` nonstandard attribute, as
+    ``http.cookiejar`` records it from a ``Set-Cookie`` header. A domain with
+    a leading dot is a domain cookie, sent to subdomains; one without is
+    host-only, which :class:`BrowserCookiePolicy` sends to that host alone.
+    """
+    if isinstance(record, Mapping):
+        name, value, domain = record["name"], record["value"], record["domain"]
+        path = record.get("path") or "/"
+        secure = bool(record.get("secure"))
+        http_only = bool(record.get("httpOnly"))
+        expires = record.get("expiry")
+    else:
+        name, value, domain = record.name, record.value, record.domain
+        path = record.path or "/"
+        secure = bool(record.secure)
+        http_only = bool(record.http_only)
+        expires = None if record.session or record.expires is None else record.expires
+    if expires is not None and expires < 0:
+        expires = None
+    domain_cookie = domain.startswith(".")
+    return cookiejar.Cookie(
+        version=0,
+        name=name,
+        value=value,
+        port=None,
+        port_specified=False,
+        domain=domain,
+        domain_specified=domain_cookie,
+        domain_initial_dot=domain_cookie,
+        path=path,
+        path_specified=True,
+        secure=secure,
+        expires=None if expires is None else int(expires),
+        discard=expires is None,
+        comment=None,
+        comment_url=None,
+        # http.cookiejar records a valueless attribute such as HttpOnly as None;
+        # the stubs type rest as str values.
+        rest={"HttpOnly": None} if http_only else {},  # ty: ignore[invalid-argument-type]
+    )
 
 
 def _replaceable(policy: object) -> bool:

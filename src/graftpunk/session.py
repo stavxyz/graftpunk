@@ -35,7 +35,7 @@ import webdriver_manager.chrome
 from graftpunk import console as gp_console
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
 from graftpunk.chrome import get_chrome_version
-from graftpunk.cookies import BrowserCookiesMixin, importing_httpie
+from graftpunk.cookies import BrowserCookiesMixin, cookie_from_browser, importing_httpie
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
@@ -368,8 +368,27 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             if cookie.value is None:
                 LOG.debug("skipping_none_valued_cookie", name=cookie.name, domain=cookie.domain)
                 continue
-            self.cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
+            self.cookies.set_cookie(cookie_from_browser(cookie))
         LOG.info("transferred_nodriver_cookies", count=len(cookies))
+
+    def transfer_driver_cookies_to_session(self, *, copy_user_agent: bool | None = True) -> None:
+        """Copy the selenium WebDriver's cookies into the requests session.
+
+        requestium's method keeps only each cookie's name, value and domain,
+        so every cookie was stored as a non-``Secure`` session cookie for path
+        ``/``. This keeps the attributes that decide
+        where the browser sends it (see
+        :func:`graftpunk.cookies.cookie_from_browser`). Like requestium's, it
+        copies every cookie the driver returns.
+
+        Args:
+            copy_user_agent: Also copy the browser's ``User-Agent`` into the
+                session headers, as requestium does by default.
+        """
+        if copy_user_agent:
+            self.copy_user_agent_from_driver()
+        for cookie in self.driver.get_cookies():
+            self.cookies.set_cookie(cookie_from_browser(cookie))
 
     async def start_async(self) -> None:
         """Start the browser asynchronously (for nodriver backend).
