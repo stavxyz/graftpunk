@@ -231,7 +231,9 @@ class BrowserCookiesMixin:
         # the order of the steps, is stock: the Cookie header is computed before
         # an auth handler runs, and the handler may replace it.
         # self.cookies may have been reassigned since __init__ (a loaded jar).
-        policy = use_browser_cookie_policy(self.cookies).get_policy()
+        # _policy, not get_policy(): requests accepts any http.cookiejar.CookieJar
+        # as Session.cookies, and only RequestsCookieJar has get_policy().
+        policy = use_browser_cookie_policy(self.cookies)._policy  # ty: ignore[unresolved-attribute]
         cookies = request.cookies or {}
         if not isinstance(cookies, cookiejar.CookieJar):
             cookies = cookiejar_from_dict(cookies)

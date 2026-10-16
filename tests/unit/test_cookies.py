@@ -555,3 +555,28 @@ def test_a_subclass_of_the_browser_policy_keeps_its_class_and_rules(
     assert type(policy) is _Stricter
     assert policy.blocked_domains() == ("blocked.example",)
     assert _cookie_header(other, "http://localhost/") == "ok=1"
+
+
+@pytest.mark.parametrize("jar_class", [cookiejar.CookieJar, cookiejar.MozillaCookieJar])
+@pytest.mark.parametrize("session_class", [GraftpunkSession, BrowserCookieSession])
+def test_a_standard_library_jar_sends_as_it_does_with_stock_requests(
+    session_class: type[requests.Session], jar_class: type[cookiejar.CookieJar]
+) -> None:
+    """requests accepts any http.cookiejar.CookieJar as Session.cookies."""
+
+    def with_jar(session: requests.Session) -> requests.Session:
+        jar = jar_class()
+        jar.set_cookie(requests.cookies.create_cookie("plain", "1", domain="example.com"))
+        jar.set_cookie(
+            requests.cookies.create_cookie("lh", "1", domain="localhost.local", secure=True)
+        )
+        session.cookies = jar  # ty: ignore[invalid-assignment]
+        return session
+
+    stock = with_jar(requests.Session())
+    ours = with_jar(session_class())
+
+    assert _cookie_header(stock, "http://example.com/") == "plain=1"
+    assert _cookie_header(ours, "http://example.com/") == "plain=1"
+    assert _cookie_header(ours, "http://localhost/") == "lh=1"
+    assert type(ours.cookies._policy) is BrowserCookiePolicy
