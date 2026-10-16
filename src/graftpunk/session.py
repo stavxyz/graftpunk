@@ -716,6 +716,8 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             import requests
 
             requests.Session.__init__(self)
+            # Past the mixin, as in __init__; kept when the state has no cookies.
+            self._give_new_jar_the_browser_cookie_policy()
             # Restore headers if present
             if "headers" in state and state["headers"]:
                 self.headers.update(state["headers"])

@@ -649,12 +649,29 @@ def test_a_graftpunk_sessions_own_jar_does_not_take_a_replaced_globals_settings(
 
     monkeypatch.setattr(cookiejar, "DefaultCookiePolicy", BlocksLocalhost)
 
-    for session_class in (GraftpunkSession, BrowserCookieSession):
-        session = _with_secure_cookies(session_class())
+    from graftpunk.session import BrowserSession
+
+    def nodriver_session() -> requests.Session:
+        return BrowserSession(backend="nodriver")
+
+    def nodriver_session_restored_without_cookies() -> requests.Session:
+        session = BrowserSession.__new__(BrowserSession)
+        session.__setstate__(
+            {"_backend_type": "nodriver", "cookies": requests.cookies.RequestsCookieJar()}
+        )
+        return session
+
+    for make_session in (
+        GraftpunkSession,
+        BrowserCookieSession,
+        nodriver_session,
+        nodriver_session_restored_without_cookies,
+    ):
+        session = _with_secure_cookies(make_session())
         policy = session.cookies.get_policy()
-        assert type(policy) is BrowserCookiePolicy
-        assert policy.blocked_domains() == ()
-        assert _cookie_header(session, "http://localhost/") == "lh=1"
+        assert type(policy) is BrowserCookiePolicy, make_session
+        assert policy.blocked_domains() == (), make_session
+        assert _cookie_header(session, "http://localhost/") == "lh=1", make_session
 
 
 def _session_hook(r: requests.Response, *args: object, **kwargs: object) -> None:
