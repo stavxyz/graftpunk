@@ -39,17 +39,24 @@ from requests.utils import get_netrc_auth
 
 from graftpunk._stdout_fd import stdout_with_a_file_descriptor
 
+__all__ = [
+    "BrowserCookiePolicy",
+    "BrowserCookieSession",
+    "BrowserCookiesMixin",
+    "importing_httpie",
+    "use_browser_cookie_policy",
+]
 # Hosts Chrome 155 (headless) was measured sending a Secure cookie to over plain
 # HTTP on 2026-10-16: http://localhost, http://foo.localhost, http://127.0.0.1
 # and http://[::1]. The rest of 127.0.0.0/8 was not measured and is not here.
-LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
-LOCALHOST_SUFFIX = ".localhost"
+_LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
+_LOCALHOST_SUFFIX = ".localhost"
 
 
-def is_secure_loopback_host(host: str) -> bool:
+def _is_secure_loopback_host(host: str) -> bool:
     """Whether Chrome treats *host* (no port, IPv6 without brackets) as secure."""
     host = host.lower()
-    return host in LOOPBACK_HOSTS or host.endswith(LOCALHOST_SUFFIX)
+    return host in _LOOPBACK_HOSTS or host.endswith(_LOCALHOST_SUFFIX)
 
 
 def _stdlib_default_policy() -> type:
@@ -64,9 +71,9 @@ def _stdlib_default_policy() -> type:
 
 
 if TYPE_CHECKING:
-    STDLIB_DEFAULT_POLICY = cookiejar.DefaultCookiePolicy
+    _STDLIB_DEFAULT_POLICY = cookiejar.DefaultCookiePolicy
 else:
-    STDLIB_DEFAULT_POLICY = _stdlib_default_policy()
+    _STDLIB_DEFAULT_POLICY = _stdlib_default_policy()
 
 
 class _PickledCall:
@@ -91,7 +98,7 @@ def _settings(policy: object) -> dict[str, Any]:
     return {k: v for k, v in vars(policy).items() if k != "_now"}
 
 
-class BrowserCookiePolicy(STDLIB_DEFAULT_POLICY):
+class BrowserCookiePolicy(_STDLIB_DEFAULT_POLICY):
     """The standard library's policy, plus Chrome's rule that a loopback origin is secure.
 
     It pickles as a call of ``http.cookiejar.DefaultCookiePolicy``, looked up
@@ -107,7 +114,7 @@ class BrowserCookiePolicy(STDLIB_DEFAULT_POLICY):
             return True
         # hostname drops the port and an IPv6 literal's brackets.
         host = urlsplit(request.get_full_url()).hostname
-        return host is not None and is_secure_loopback_host(host)
+        return host is not None and _is_secure_loopback_host(host)
 
     def __reduce__(self) -> tuple[Any, ...]:
         if type(self) is not BrowserCookiePolicy:
@@ -147,7 +154,7 @@ def _replaceable(policy: object) -> bool:
     # is one a program chose for this jar, and is kept.
     cls = type(policy)
     return (
-        cls is STDLIB_DEFAULT_POLICY
+        cls is _STDLIB_DEFAULT_POLICY
         or cls is cookiejar.DefaultCookiePolicy
         or cls.__name__ == "HTTPieCookiePolicy"
     )

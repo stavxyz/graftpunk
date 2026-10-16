@@ -22,11 +22,11 @@ from typer.testing import CliRunner
 from graftpunk import cache
 from graftpunk.cli.session_commands import session_app
 from graftpunk.cookies import (
-    LOCALHOST_SUFFIX,
-    LOOPBACK_HOSTS,
+    _LOCALHOST_SUFFIX,
+    _LOOPBACK_HOSTS,
     BrowserCookiePolicy,
     BrowserCookieSession,
-    is_secure_loopback_host,
+    _is_secure_loopback_host,
     use_browser_cookie_policy,
 )
 from graftpunk.graftpunk_session import GraftpunkSession
@@ -38,8 +38,8 @@ _FIX = pathlib.Path(__file__).parent.parent / "fixtures"
 def test_the_secure_hosts_are_the_ones_chrome_was_measured_on() -> None:
     """Chrome 155 sent a Secure cookie over plain HTTP to exactly these
     (2026-10-16). Widening the set needs a new measurement."""
-    assert frozenset({"localhost", "127.0.0.1", "::1"}) == LOOPBACK_HOSTS
-    assert LOCALHOST_SUFFIX == ".localhost"
+    assert frozenset({"localhost", "127.0.0.1", "::1"}) == _LOOPBACK_HOSTS
+    assert _LOCALHOST_SUFFIX == ".localhost"
 
 
 @pytest.mark.parametrize(
@@ -57,7 +57,7 @@ def test_the_secure_hosts_are_the_ones_chrome_was_measured_on() -> None:
     ],
 )
 def test_is_secure_loopback_host(host: str, secure: bool) -> None:
-    assert is_secure_loopback_host(host) is secure
+    assert _is_secure_loopback_host(host) is secure
 
 
 def _cookie_header(session: requests.Session, url: str, **kwargs: object) -> str | None:
