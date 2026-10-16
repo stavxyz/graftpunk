@@ -550,7 +550,8 @@ class GraftpunkSession(BrowserCookiesMixin, requests.Session):
 
         Args:
             request: The request to prepare.
-            **kwargs: Additional arguments passed to requests.Session.prepare_request().
+            **kwargs: Passed on to the next prepare_request in the MRO
+                (BrowserCookiesMixin's, which, like requests', takes none).
 
         Returns:
             A PreparedRequest with applied role headers (if configured).

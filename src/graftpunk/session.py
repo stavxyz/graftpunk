@@ -724,7 +724,9 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             # Restore cookies if present
             if "cookies" in state and state["cookies"]:
                 self.cookies = state["cookies"]
-            # Sessions pickled before #253 carry HTTPie's policy on their jar.
+            # A loaded jar carries the standard library's class (how this
+            # release pickles BrowserCookiePolicy) or HTTPie's (1.21.0 and
+            # earlier); give it the browser policy.
             self._use_browser_cookie_policy()
             # Restore session name
             if "session_name" in state:
@@ -733,8 +735,9 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             _restore_session_riders(self, state)
         else:
             # Selenium/requestium path
-            # requestium/requests don't define __setstate__, so this resolves
-            # to object.__setstate__ which does self.__dict__.update(state).
+            # super() is BrowserCookiesMixin.__setstate__, which runs
+            # requests.Session.__setstate__ and gives the restored jar the
+            # browser cookie policy (#253).
             # We keep __dict__.update as a safety net to ensure our custom
             # attributes (_backend_type, _use_stealth, etc.) are restored,
             # in case a future requestium version overrides __setstate__.

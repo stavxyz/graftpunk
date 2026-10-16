@@ -708,7 +708,8 @@ def test_the_mixin_prepares_every_field_as_stock_requests_does(
     kind: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     """The mixin copies requests.Session.prepare_request; a requests release
-    that changes the stock method fails this test rather than drifting."""
+    that changes what the stock method does for one of these request kinds
+    fails this test rather than drifting."""
     import urllib3.filepost
 
     netrc = tmp_path / "netrc"

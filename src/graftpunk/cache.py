@@ -479,7 +479,9 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     api_session = GraftpunkSession(header_roles=header_roles)
 
     if hasattr(source, "cookies"):
-        # Sessions pickled before #253 carry HTTPie's policy on their jar.
+        # A loaded jar carries the standard library's class (how this release
+        # pickles BrowserCookiePolicy) or HTTPie's (1.21.0 and earlier); give
+        # it the browser policy.
         api_session.cookies = use_browser_cookie_policy(source.cookies)
         LOG.debug("copied_cookies_from_session", cookie_count=len(source.cookies))
 

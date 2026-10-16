@@ -4,8 +4,9 @@ Each test runs one graftpunk code path in a fresh interpreter, then checks that
 ``http.cookiejar.DefaultCookiePolicy`` is still the standard library's class and
 that a plain ``requests.Session`` holding a ``Secure`` cookie for localhost
 sends no ``Cookie`` header to ``http://localhost/``. A fresh interpreter is the
-only honest place to check: other tests in this process import HTTPie, which
-replaces the global the moment ``httpie.compat`` loads.
+only honest place to check: once this worker has imported ``httpie.compat`` and
+graftpunk's modules, a later import does nothing, so a regression that imports
+HTTPie at module scope would go unseen here.
 """
 
 from __future__ import annotations
