@@ -614,3 +614,17 @@ def test_the_neighborhood_shows_gps_run_label_as_written(tmp_path: Path) -> None
     assert _leak_lines(result.stdout) == [
         f"{_PREFIX}'2026' (line 1: ...p/20261006-101500-4242. since >>2026<<)"
     ]
+
+
+def test_control_characters_around_a_match_are_escaped_in_the_output(tmp_path: Path) -> None:
+    """A fixture line may hold terminal escapes or a line separator; the context
+    printed around a match must not pass them through or split the output line."""
+    capture = json.dumps({"order": "ORD-4471023"})
+    fixture = "note \x1b[2J\x07 ORD-4471023 \u2028 tail\n"
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 1
+    for raw in ("\x1b", "\x07", "\u2028"):
+        assert raw not in result.stdout, repr(raw)
+    found = [line for line in result.stdout.splitlines() if "ORD-4471023" in line]
+    assert len(found) == 1, result.stdout
+    assert "\\x1b" in found[0] and "\\u2028" in found[0]

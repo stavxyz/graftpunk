@@ -286,7 +286,17 @@ def _neighborhood(text: str, start: int, end: int) -> str:
         + text[end:right]
         + ("..." if right < line_end else "")
     )
-    return shown.replace("\r", "\\r").replace("\n", "\\n").replace("\t", " ")
+    return _printable(shown)
+
+
+def _printable(text: str) -> str:
+    """*text* with every character that is not printable escaped, so a control
+    character or line separator from the fixture can neither split the one output
+    line nor reach the terminal as an escape sequence. A tab reads as a space."""
+    return "".join(
+        c if c.isprintable() else " " if c == "\t" else c.encode("unicode_escape").decode("ascii")
+        for c in text
+    )
 
 
 class _Form:
