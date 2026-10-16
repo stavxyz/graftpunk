@@ -21,6 +21,7 @@ from graftpunk import console as gp_console
 from graftpunk.cache import list_sessions, load_session_for_api_resolved, update_session_cookies
 from graftpunk.cli.command_factory import BUILTIN_OPTIONS
 from graftpunk.cli.errors import exit_ambiguous_session, exit_missing_browser_stack
+from graftpunk.cookies import BrowserCookieSession
 from graftpunk.exceptions import (
     AmbiguousSessionError,
     BrowserError,
@@ -151,7 +152,7 @@ def run_plugin_command(
                 resolve=pinned and split_session_name(operating_name)[1] is None,
             )
         else:
-            session = requests.Session()
+            session = BrowserCookieSession()
     except SessionNotFoundError:
         # operating_name is "" when the failure came from the resolution step
         # itself; name the plugin's base session rather than an empty string.

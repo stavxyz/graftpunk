@@ -471,6 +471,7 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     Shared by load_session_for_api (from a cached BrowserSession) and
     load_session_for_api_from_bytes (from a browser-free deserialize).
     """
+    from graftpunk.cookies import use_browser_cookie_policy
     from graftpunk.graftpunk_session import GraftpunkSession
     from graftpunk.tokens import _HEADER_ROLES_ATTR, SESSION_RIDER_ATTRS
 
@@ -478,7 +479,8 @@ def _api_session_from_session(source: SessionLike) -> "GraftpunkSession":
     api_session = GraftpunkSession(header_roles=header_roles)
 
     if hasattr(source, "cookies"):
-        api_session.cookies = source.cookies
+        # Sessions pickled before #253 carry HTTPie's policy on their jar.
+        api_session.cookies = use_browser_cookie_policy(source.cookies)
         LOG.debug("copied_cookies_from_session", cookie_count=len(source.cookies))
 
     if hasattr(source, "headers"):

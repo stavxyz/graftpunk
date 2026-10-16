@@ -25,6 +25,7 @@ from graftpunk import _distribution
 from graftpunk import console as gp_console
 from graftpunk.cache import load_session_for_api_resolved, no_account_cached_message
 from graftpunk.cli.errors import exit_missing_browser_stack
+from graftpunk.cookies import BrowserCookieSession
 from graftpunk.exceptions import SessionInvalidatedError, SessionNotFoundError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
@@ -150,7 +151,8 @@ def _make_request(
         url: Target URL.
         session_name: Session name to load — a plugin/base name is put through
             account resolution here. Falls back to ``resolve_session()``.
-        no_session: When True, use a bare ``requests.Session`` without cookies.
+        no_session: When True, use a session without cookies
+            (:class:`graftpunk.cookies.BrowserCookieSession`).
         browser_headers: Whether to keep auto-detected browser header roles.
             When False, clears ``_gp_header_roles`` so the session sends
             only its base headers.
@@ -178,7 +180,7 @@ def _make_request(
     resolved: str | None = None
     if no_session:
         gp_console.info("No session: making an unauthenticated request")
-        session = requests.Session()
+        session = BrowserCookieSession()
     else:
         resolved = session_name or resolve_session(None)
         if not resolved:

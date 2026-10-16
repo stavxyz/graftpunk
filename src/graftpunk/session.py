@@ -36,6 +36,7 @@ from graftpunk import console as gp_console
 from graftpunk._stdout_fd import stdout_with_a_file_descriptor
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
 from graftpunk.chrome import get_chrome_version
+from graftpunk.cookies import BrowserCookiesMixin
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
@@ -81,7 +82,7 @@ def _restore_session_riders(session: Any, state: dict[str, Any]) -> None:
 
 
 # requestium.Session has no type stubs, inheritance typing unavailable
-class BrowserSession(requestium.Session):
+class BrowserSession(BrowserCookiesMixin, requestium.Session):
     """Extended Requestium session with pluggable browser backends.
 
     This class combines browser automation with the requests library for
@@ -256,6 +257,9 @@ class BrowserSession(requestium.Session):
                 raise BrowserError(
                     "Failed to create browser session. Try clearing session cache with: gp clear"
                 ) from exc
+
+        # The nodriver branch initializes requests.Session directly, past the mixin.
+        self._use_browser_cookie_policy()
 
     @property
     def session_name(self) -> str:
@@ -711,6 +715,8 @@ class BrowserSession(requestium.Session):
             # Restore cookies if present
             if "cookies" in state and state["cookies"]:
                 self.cookies = state["cookies"]
+            # Sessions pickled before #253 carry HTTPie's policy on their jar.
+            self._use_browser_cookie_policy()
             # Restore session name
             if "session_name" in state:
                 self._session_name = state["session_name"]

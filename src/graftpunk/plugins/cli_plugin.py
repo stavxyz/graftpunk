@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from graftpunk.tokens import TokenConfig
 
 from graftpunk.cache import cache_session, get_session_metadata, load_session_for_api
+from graftpunk.cookies import BrowserCookieSession
 from graftpunk.exceptions import PluginError
 from graftpunk.har.naming import registered_name, to_cli_name
 from graftpunk.logging import get_logger
@@ -1398,7 +1399,8 @@ class SitePlugin:
     def get_session(self, session_name: str | None = None) -> requests.Session:
         """Load the graftpunk session for API calls.
 
-        If ``requires_session`` is False, returns a plain ``requests.Session``.
+        If ``requires_session`` is False, returns a plain session with the
+        browser's cookie rules (:class:`graftpunk.cookies.BrowserCookieSession`).
 
         The plain-session short-circuit applies only when no name is given:
         an explicit *session_name* names a slot to load, and is honoured even
@@ -1433,7 +1435,7 @@ class SitePlugin:
                 name.
         """
         if session_name is None and not self.requires_session:
-            return requests.Session()
+            return BrowserCookieSession()
         name, resolve = resolve_load_target(self.session_name, session_name)
         return load_session_for_api(name, resolve=resolve)
 
