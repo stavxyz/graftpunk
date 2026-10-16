@@ -204,6 +204,8 @@ def rebind():
         cookiejar.DefaultCookiePolicy = Mine
 
 
+# Created while the global is still the standard library's class.
+early = requests.cookies.RequestsCookieJar()
 order, kind = sys.argv[1], sys.argv[2]
 if order == "before":
     rebind()
@@ -232,6 +234,7 @@ reloaded = dill.loads(dill.dumps(pickled))
 handed = use_browser_cookie_policy(requests.cookies.RequestsCookieJar())
 chosen = requests.cookies.RequestsCookieJar(policy=Chosen())
 use_browser_cookie_policy(chosen)
+use_browser_cookie_policy(early)
 base = BrowserCookiePolicy.__mro__[1]
 print(json.dumps({
     "base": f"{base.__module__}.{base.__qualname__}",
@@ -241,6 +244,7 @@ print(json.dumps({
     "reloaded_cookie": cookie(reloaded),
     "handed": type(handed.get_policy()).__qualname__,
     "chosen": type(chosen.get_policy()).__qualname__,
+    "early": type(early.get_policy()).__qualname__,
 }))
 """
 
@@ -252,8 +256,9 @@ def test_a_replaced_global_policy_class_is_treated_the_same_in_either_import_ord
 ) -> None:
     """A session graftpunk builds or reloads, and a jar it is handed with the
     default policy, get the browser policy whatever class the global names,
-    whether the global was replaced before or after graftpunk was imported. A
-    policy class a program set on its jar is kept."""
+    whether the global was replaced before or after graftpunk was imported. So
+    does a jar created before the global was replaced. A policy class a
+    program set on its jar is kept."""
     result = subprocess.run(  # noqa: S603
         [sys.executable, "-c", _REBIND, order, kind],
         capture_output=True,
@@ -272,4 +277,5 @@ def test_a_replaced_global_policy_class_is_treated_the_same_in_either_import_ord
         "reloaded_cookie": "tok=1",
         "handed": "BrowserCookiePolicy",
         "chosen": "Chosen",
+        "early": "BrowserCookiePolicy",
     }

@@ -591,3 +591,85 @@ def test_a_standard_library_jar_sends_as_it_does_with_stock_requests(
     assert _cookie_header(ours, "http://example.com/") == "plain=1"
     assert _cookie_header(ours, "http://localhost/") == "lh=1"
     assert type(ours.cookies._policy) is BrowserCookiePolicy
+
+
+def test_a_graftpunk_sessions_own_jar_does_not_take_a_replaced_globals_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loaded or assigned jar keeps its default policy's settings; a jar the
+    session creates starts from the browser policy's own, whatever class the
+    global names."""
+
+    class BlocksLocalhost(cookiejar.DefaultCookiePolicy):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(blocked_domains=["localhost.local"], **kwargs)  # ty: ignore[invalid-argument-type]
+
+    monkeypatch.setattr(cookiejar, "DefaultCookiePolicy", BlocksLocalhost)
+
+    for session_class in (GraftpunkSession, BrowserCookieSession):
+        session = _with_secure_cookies(session_class())
+        policy = session.cookies.get_policy()
+        assert type(policy) is BrowserCookiePolicy
+        assert policy.blocked_domains() == ()
+        assert _cookie_header(session, "http://localhost/") == "lh=1"
+
+
+def _session_hook(r: requests.Response, *args: object, **kwargs: object) -> None:
+    return None
+
+
+def _request_hook(r: requests.Response, *args: object, **kwargs: object) -> None:
+    return None
+
+
+_DIGEST = requests.auth.HTTPDigestAuth("u", "p")
+_URL = "http://example.com/a"
+
+_REQUEST_KINDS = {
+    "params": lambda: requests.Request("GET", f"{_URL}?q=1", params={"rp": "2"}),
+    "json": lambda: requests.Request("POST", _URL, json={"a": 1}),
+    "form, lowercase method": lambda: requests.Request("post", _URL, data={"a": "1"}),
+    "files": lambda: requests.Request(
+        "POST", _URL, data={"a": "1"}, files={"f": ("f.txt", b"x", "text/plain")}
+    ),
+    "auth in url": lambda: requests.Request("GET", "http://user:pw@example.com/a"),
+    "tuple auth": lambda: requests.Request("GET", _URL, auth=("u", "p")),
+    "digest auth": lambda: requests.Request("GET", _URL, auth=_DIGEST),
+    "netrc": lambda: requests.Request("GET", "http://netrc.example/a"),
+    "request cookies": lambda: requests.Request("GET", _URL, cookies={"sid": "2", "rc": "1"}),
+    "caller cookie header": lambda: requests.Request("GET", _URL, headers={"Cookie": "mine=1"}),
+    "header set to None": lambda: requests.Request("GET", _URL, headers={"X-Drop": None}),
+    "request hooks": lambda: requests.Request("GET", _URL, hooks={"response": [_request_hook]}),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_REQUEST_KINDS))
+def test_the_mixin_prepares_every_field_as_stock_requests_does(
+    kind: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The mixin copies requests.Session.prepare_request; a requests release
+    that changes the stock method fails this test rather than drifting."""
+    import urllib3.filepost
+
+    netrc = tmp_path / "netrc"
+    netrc.write_text("machine netrc.example login nu password np\n")
+    netrc.chmod(0o600)
+    monkeypatch.setenv("NETRC", str(netrc))
+    monkeypatch.setattr(urllib3.filepost, "choose_boundary", lambda: "boundary")
+
+    def prepare(session: requests.Session) -> requests.PreparedRequest:
+        session.headers["X-Session"] = "s"
+        session.headers["X-Drop"] = "d"
+        session.params = {"sp": "1"}
+        session.hooks["response"].append(_session_hook)
+        session.cookies.set("sid", "1", domain="example.com")
+        return session.prepare_request(_REQUEST_KINDS[kind]())
+
+    stock = prepare(requests.Session())
+    ours = prepare(BrowserCookieSession())
+
+    assert ours.method == stock.method
+    assert ours.url == stock.url
+    assert dict(ours.headers) == dict(stock.headers)
+    assert ours.body == stock.body
+    assert ours.hooks == stock.hooks

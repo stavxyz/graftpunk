@@ -182,14 +182,16 @@ def use_browser_cookie_policy(jar: _Jar) -> _Jar:
 class BrowserCookiesMixin:
     """Mix into a ``requests.Session`` subclass, ahead of ``requests.Session``.
 
-    The jar the session creates gets a :class:`BrowserCookiePolicy` whatever
-    ``http.cookiejar.DefaultCookiePolicy`` names at the time, so a graftpunk
-    session sends what the browser would send even when other code replaced
-    that global. A jar assigned or unpickled later is treated as
-    :func:`use_browser_cookie_policy` says. Each request's ``Cookie`` header is
-    computed with the session jar's policy. Redirects keep it: requests follows
-    them with a copy of the prepared request's jar, and
-    ``RequestsCookieJar.copy()`` carries the policy.
+    The jar the session creates gets a new :class:`BrowserCookiePolicy`, with
+    the standard library's default settings even when other code replaced
+    ``http.cookiejar.DefaultCookiePolicy`` with a class that sets others. A
+    jar assigned or unpickled later is treated as
+    :func:`use_browser_cookie_policy` says, which keeps a default policy's
+    settings. Any ``http.cookiejar.CookieJar`` may be assigned, as with stock
+    ``requests``. Each request's ``Cookie`` header is computed with the
+    session jar's policy. Redirects keep it: requests follows them with a copy
+    of the prepared request's jar, and ``RequestsCookieJar.copy()`` carries
+    the policy.
 
     ``prepare_request`` replaces ``requests.Session.prepare_request`` rather
     than extending it, so no class between this mixin and ``requests.Session``
@@ -213,7 +215,9 @@ class BrowserCookiesMixin:
 
     def _give_new_jar_the_browser_cookie_policy(self) -> None:
         # requests.Session.__init__ just made this jar with whatever class the
-        # global named; no caller chose it.
+        # global named; no caller chose it or its settings.
+        # use_browser_cookie_policy would copy the settings that class's
+        # __init__ sets, which a program's class may change.
         jar = getattr(self, "cookies", None)
         if isinstance(jar, cookiejar.CookieJar):
             jar.set_policy(BrowserCookiePolicy())
