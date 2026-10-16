@@ -613,6 +613,17 @@ class TestStartAsync:
 class TestSaveHttpieSession:
     """Tests for save_httpie_session method."""
 
+    @pytest.fixture(autouse=True)
+    def _httpie_imported_under_the_guard(self) -> None:
+        """``patch("httpie...")`` imports httpie on first use. Importing it here
+        under graftpunk's guard first keeps HTTPie's global cookie policy out of
+        this worker's later tests."""
+        from graftpunk.cookies import importing_httpie
+
+        with importing_httpie():
+            import httpie.context  # noqa: F401
+            import httpie.sessions  # noqa: F401
+
     def test_save_httpie_session_creates_and_saves(self):
         """save_httpie_session transfers cookies and saves httpie session."""
         from graftpunk.session import BrowserSession
