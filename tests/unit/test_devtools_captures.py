@@ -122,6 +122,18 @@ class TestWriteSidecar:
         assert "url" not in json.loads(path.read_text())
         assert "captured_at" not in json.loads(path.read_text())
 
+    def test_an_empty_capture_records_no_hash(self, tmp_path: Path) -> None:
+        """An empty body has nothing to sanitise, and its fixture is empty too, so a
+        hash would fail the suite's unchanged-copy check on a fixture that holds no
+        captured value (#236)."""
+        fixture = tmp_path / "get_orders.html"
+        fixture.write_bytes(b"")
+        path = write_sidecar(
+            fixture, status=204, content_type="text/html", body_params=[], flagged_names=[]
+        )
+        assert load_sidecar(path).capture_sha256 is None
+        assert json.loads(path.read_text())["capture_sha256"] is None
+
 
 class TestWithIgnored:
     def test_the_line_is_added_once(self) -> None:

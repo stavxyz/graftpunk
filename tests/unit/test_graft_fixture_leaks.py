@@ -4,6 +4,7 @@ reported, so the skill can rewrite it before anything is committed."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -97,7 +98,10 @@ def test_a_fully_invented_fixture_reports_only_what_was_kept_on_purpose(tmp_path
     result = _run(tmp_path, json.dumps(_CAPTURE), fixture)
     assert result.returncode == 1
     lines = [line for line in result.stdout.splitlines() if line.startswith("still in")]
-    assert lines == ["still in the fixture: 'shipped'"]
+    assert lines == [
+        "still in the fixture: 'shipped' "
+        '(line 1: ...d": "ORD-9000001", "status": "»shipped«", "total": 999, "customer": {...)'
+    ]
 
 
 def test_nothing_left_exits_0(tmp_path: Path) -> None:
@@ -530,3 +534,189 @@ def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert f"fixture-leaks: cannot read the capture {capture}:" in result.stderr
     assert result.stdout == ""
+
+
+_PREFIX = "still in the fixture: "
+
+
+def _leak_lines(stdout: str) -> list[str]:
+    return [line for line in stdout.splitlines() if line.startswith(_PREFIX)]
+
+
+def test_each_place_names_its_line_and_marks_the_match(tmp_path: Path) -> None:
+    """The skill keeps a value only for a stated reason, so it is told where the
+    value is (#238): the 1-based line of the raw file and the match marked in it."""
+    capture = json.dumps({"placed": "2026-09-30", "status": "shipped"})
+    module = (
+        '"""Orders for myshop."""\n'
+        "\n"
+        "# Recorded from https://myshop.example/login in a browser on 2026-10-13.\n"
+        "STATUS = 'pending'\n"
+    )
+    result = _run(tmp_path, capture, module)
+    assert result.returncode == 1
+    assert _leak_lines(result.stdout) == [
+        "still in the fixture: '2026' (line 3: ...example/login in a browser on »2026«-10-13.)"
+    ]
+
+
+def test_a_value_on_several_lines_names_each_up_to_five(tmp_path: Path) -> None:
+    capture = json.dumps({"id": "4471023"})
+    fixture = "\n".join(f"row {n} 4471023" for n in range(1, 8))
+    result = _run(tmp_path, capture, fixture)
+    assert _leak_lines(result.stdout) == [
+        *(f"still in the fixture: '4471023' (line {n}: row {n} »4471023«)" for n in range(1, 6)),
+        "still in the fixture: '4471023' (and 2 more lines)",
+    ]
+
+
+def test_a_long_line_is_cut_around_the_match(tmp_path: Path) -> None:
+    """The file may hold other captured values, so no more of the line than the
+    match's neighborhood is printed."""
+    capture = json.dumps({"id": "4471023"})
+    fixture = json.dumps({"head": "H" * 200, "id": "4471023", "tail": "T" * 200})
+    result = _run(tmp_path, capture, fixture)
+    (line,) = _leak_lines(result.stdout)
+    assert line == (
+        "still in the fixture: '4471023' "
+        f'(line 1: ...{"H" * 20}", "id": "»4471023«", "tail": "{"T" * 18}...)'
+    )
+
+
+def test_a_long_value_and_match_are_shortened_in_the_middle(tmp_path: Path) -> None:
+    value = "Alice " + "x" * 100 + " Smith"
+    cut = f"{value[:30]}...{value[-30:]}"
+    result = _run(tmp_path, json.dumps({"note": value}), json.dumps({"note": value}))
+    whole = [line for line in _leak_lines(result.stdout) if line.startswith(f"{_PREFIX}{cut!r}")]
+    assert whole == [f'{_PREFIX}{cut!r} (line 1: {{"note": "»{cut}«"}})']
+
+
+def test_a_value_found_only_decoded_says_so_without_a_line(tmp_path: Path) -> None:
+    """A line number refers to the raw file, where an escaped copy does not read
+    as the value, so the decoded match is shown instead."""
+    capture = json.dumps({"name": "José García"}, ensure_ascii=False)
+    result = _run(tmp_path, capture, json.dumps({"name": "José García"}))
+    assert result.returncode == 1
+    lines = [line for line in _leak_lines(result.stdout) if "José García'" in line]
+    assert lines == [f"{_PREFIX}'José García' (found decoded: »José García«)"]
+
+
+def test_a_match_in_another_case_is_placed(tmp_path: Path) -> None:
+    capture = json.dumps({"note": "Leave with Okonkwo"})
+    result = _run(tmp_path, capture, "x = 1\nOKONKWO_ID = 2\n")
+    assert f"{_PREFIX}'Okonkwo' (line 2: »OKONKWO«_ID = 2)" in _leak_lines(result.stdout)
+
+
+def test_the_neighborhood_shows_gps_run_label_as_written(tmp_path: Path) -> None:
+    """The run label's date is blanked for the search, not for the output: a line
+    is shown as the file holds it."""
+    capture = json.dumps({"placed": "2026-09-30"})
+    module = "# seen 2 time(s) in run myshop/20261006-101500-4242. since 2026\n"
+    result = _run(tmp_path, capture, module)
+    assert _leak_lines(result.stdout) == [
+        f"{_PREFIX}'2026' (line 1: ...p/20261006-101500-4242. since »2026«)"
+    ]
+
+
+def test_control_characters_around_a_match_are_escaped_in_the_output(tmp_path: Path) -> None:
+    """A fixture line may hold terminal escapes or a line separator; the context
+    printed around a match must not pass them through or split the output line."""
+    capture = json.dumps({"order": "ORD-4471023"})
+    fixture = "note \x1b[2J\x07 ORD-4471023 \u2028 tail\n"
+    result = _run(tmp_path, capture, fixture)
+    assert result.returncode == 1
+    for raw in ("\x1b", "\x07", "\u2028"):
+        assert raw not in result.stdout, repr(raw)
+    found = [line for line in result.stdout.splitlines() if "ORD-4471023" in line]
+    assert len(found) == 1, result.stdout
+    assert "\\x1b" in found[0] and "\\u2028" in found[0]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "decoded"),
+    [
+        ("q=Okonkwo%20Adeyemi&page=2\n", "q=»Okonkwo Adeyemi«&page=2"),
+        ("<p>Okonkwo&#32;Adeyemi</p>\n", "»Okonkwo Adeyemi«"),
+    ],
+    ids=["percent-encoded", "html-escaped"],
+)
+def test_an_encoded_copy_is_found_decoded(tmp_path: Path, fixture: str, decoded: str) -> None:
+    """The pair is not in the raw file as written, so it has no line; each word on
+    its own is, and gets one."""
+    capture = json.dumps({"name": "Okonkwo Adeyemi"})
+    result = _run(tmp_path, capture, fixture)
+    lines = _leak_lines(result.stdout)
+    assert f"{_PREFIX}'Okonkwo Adeyemi' (found decoded: {decoded})" in lines
+    assert not [line for line in lines if "'Okonkwo Adeyemi' (line" in line]
+
+
+def test_a_crlf_file_is_placed_by_its_lines(tmp_path: Path) -> None:
+    """A file with Windows line endings is read with them translated, so a line
+    number is the editor's and no carriage return reaches the context."""
+    capture = json.dumps({"id": "4471023"})
+    result = _run(tmp_path, capture, "a\r\nb\r\nid 4471023 tail\r\n")
+    assert _leak_lines(result.stdout) == [f"{_PREFIX}'4471023' (line 3: id »4471023« tail)"]
+
+
+def test_the_context_is_the_files_own_text(tmp_path: Path) -> None:
+    """The search runs on the compatibility form, where a ligature is two letters;
+    the context is cut from the file as written, so it can be searched for there."""
+    capture = json.dumps({"id": "4471023", "firm": "ﬁnance Ltd"}, ensure_ascii=False)
+    fixture = "ﬁﬁﬁ ⑴ 4471023\nfinance Ltd\n"
+    result = _run(tmp_path, capture, fixture)
+    lines = _leak_lines(result.stdout)
+    assert f"{_PREFIX}'4471023' (line 1: ﬁﬁﬁ ⑴ »4471023«)" in lines
+    assert f"{_PREFIX}'ﬁnance Ltd' (line 2: »finance Ltd«)" in lines
+
+
+def test_marks_in_the_file_are_escaped_so_the_match_is_unambiguous(tmp_path: Path) -> None:
+    capture = json.dumps({"id": "4471023"})
+    result = _run(tmp_path, capture, "a »x« 4471023 >>y<<\n")
+    assert _leak_lines(result.stdout) == [
+        f"{_PREFIX}'4471023' (line 1: a \\xbbx\\xab »4471023« >>y<<)"
+    ]
+
+
+def test_past_fifty_values_survivors_are_named_without_places(tmp_path: Path) -> None:
+    """Places for thousands of values would flood the skill's context, so past fifty
+    each survivor is named without its places; a kept value cannot hide the rest."""
+    ids = [str(1000000 + n) for n in range(60)]
+    result = _run(tmp_path, json.dumps({"ids": ids}), json.dumps({"ids": ids}))
+    assert result.returncode == 1
+    lines = _leak_lines(result.stdout)
+    assert [line.split(" (")[0] for line in lines] == [f"{_PREFIX}{v!r}" for v in ids]
+    assert [line for line in lines if line.endswith("(not placed)")] == [
+        f"{_PREFIX}{v!r} (not placed)" for v in ids[50:]
+    ]
+    assert "more values not shown" not in result.stdout
+
+
+def test_past_five_hundred_values_the_rest_are_counted(tmp_path: Path) -> None:
+    ids = [str(1000000 + n) for n in range(510)]
+    result = _run(tmp_path, json.dumps({"ids": ids}), json.dumps({"ids": ids}))
+    assert result.returncode == 1
+    assert len(_leak_lines(result.stdout)) == 500
+    assert result.stdout.splitlines()[-1] == (
+        "fixture-leaks: 10 more values not shown; the fixture is not done while this line prints."
+    )
+
+
+def test_a_backslash_in_the_file_is_escaped_so_every_escape_is_the_scripts(tmp_path: Path) -> None:
+    capture = json.dumps({"id": "4471023"})
+    result = _run(tmp_path, capture, "path C:\\x1b 4471023\n")
+    assert _leak_lines(result.stdout) == [f"{_PREFIX}'4471023' (line 1: path C:\\\\x1b »4471023«)"]
+
+
+def test_a_console_that_cannot_encode_the_marks_gets_escapes_not_a_crash(tmp_path: Path) -> None:
+    capture = json.dumps({"name": "José García"})
+    (tmp_path / "capture.json").write_text(capture)
+    (tmp_path / "fixture.json").write_text(capture)
+    assert PYTHON is not None
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [PYTHON, str(SCRIPT), str(tmp_path / "capture.json"), str(tmp_path / "fixture.json")],
+        capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+    )
+    assert result.returncode == 1
+    assert b"Traceback" not in result.stderr
+    assert b"\\xbb" in result.stdout

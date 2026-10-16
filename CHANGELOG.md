@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A fixture for an empty response passes the generated suite's fixtures check** (#236). `gp observe fixtures` recorded `capture_sha256` for a 204 or a 3xx with no body as the hash of zero bytes. A fixture invented for an empty response is empty too, so `fixtures_are_sanitised` reported it as an unchanged copy of its capture, and the only way past it was to set the hash to null by hand. The sidecar of an empty capture now records `capture_sha256: null`, since an empty body holds nothing to sanitise, and the check counts that fixture among those accepted on declaration. A capture with a body still records its hash, and a fixture that is byte for byte that capture still fails.
+- **The graft skill's leak check says where each surviving value is** (#238). `skills/graft/scripts/fixture-leaks.py` printed each captured value still in a file (`still in the fixture: '2026'`) but not where, so the skill had to find the match itself and could give the wrong reason for keeping it. It now prints one line per line of the file that holds the value, at most five, with the 1-based line number and the match marked in up to 30 characters of the file's own text each side (`still in the fixture: '2026' (line 25: ...in a browser on »2026«-10-13.)`), then `(and N more lines)`. Characters that are not printable, and a `»` or `«` the file holds, are shown escaped. A value found only escaped, percent-encoded, or HTML-unescaped prints `found decoded:` and the decoded match, without a line number. Only the first 50 values are placed and the next 450 are named with `(not placed)`, so a value kept on purpose cannot hide the ones behind it; past 500 the script prints how many more there are, which keeps the output of an unchanged copy of a large capture small, and the skill treats that line as a fixture still to be rewritten. The skill's harden step cites the line, or the decoded text, for each value it keeps.
+
+### Changed
+
+- **The `/graftpunk:graft` skill is 0.1.5.** Its leak check prints the line of each value it finds, its harden step names that line for each value it keeps, and its guide says that the sidecar of an empty capture records no hash.
+
 ## [1.21.0] - 2026-10-14
 
 This is a minor release. The synchronous page and cookie calls on the `nodriver` backend now give up on a Chrome that stops answering, with limits that are on by default (Upgrading, item 1). `GraftpunkClient` runs commands when `sys.stdout` has no file descriptor, and `import graftpunk` works with `sys.stderr` set to `None`, as under `pythonw`. It ships in a minor rather than a patch release because a `nodriver` call that used to wait without limit now fails after its timeout on the first run after the upgrade.

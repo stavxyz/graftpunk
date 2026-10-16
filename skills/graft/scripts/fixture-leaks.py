@@ -27,11 +27,28 @@ digit run written by hand into those 14 digits is therefore not caught.
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
 capitalised word copied in lower case on its own, a number reformatted (``12345`` as
 ``12,345``), digits split across fields, and a copy re-encoded another way (base64).
-It does one substring search per captured value, so a capture of a megabyte or more
-takes tens of seconds.
+It searches each form of the fixture once per captured value, so a capture of a
+megabyte or more takes tens of seconds.
 
 A string the command branches or selects on (a status, a currency code, a class
 name) may be kept on purpose; the skill decides, so this reports and never edits.
+It says where each value is, so the skill can name the line it keeps: one line of
+output per line of FIXTURE that holds it, at most five, as ``still in the fixture:
+'2026' (line 25: ...in a browser on »2026«-10-13.)``, the 1-based line number in
+the file as read and the match between ``»`` and ``«`` with up to 30 characters
+each side, then ``(and N more lines)`` past five. A value
+found only in a decoded form (escaped, percent-encoded, or HTML-unescaped) has no
+line in the file, so it prints once as ``(found decoded: ...»José«...)``, from
+the decoded text in compatibility form, cut the same way. Characters that are not
+printable, a backslash (shown doubled), and a ``»`` or ``«`` in the file are shown
+escaped (``\\xbb``), so on a console that can print them a mark is always the
+script's, and each place is one line. A console that cannot print the marks gets
+them escaped too, where the line number still locates the match. A value or match longer
+than 60 characters is shown as its first and last 30. No more of the file than
+that is printed, since it may hold other captured values. Only the first 50
+values are placed; the next 450 are named with ``(not placed)``, so a value kept on
+purpose cannot hide the ones behind it, and past 500 only a count prints, with the
+fixture not done while it does.
 With SIDECAR, it also prints the names the sidecar lists, since a sidecar is
 committed and the guide asks for both lists to be read, and compares SIDECAR, as
 parsed JSON, with the sidecar gp wrote beside CAPTURE (``CAPTURE.meta.json``),
@@ -50,6 +67,10 @@ import json
 import re
 import sys
 import unicodedata
+from array import array
+from bisect import bisect_right
+from collections.abc import Callable, Iterator
+from heapq import merge
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -213,7 +234,7 @@ _AFTER = r"(?![^\W_])"
 
 
 def _found(value: str, haystack: str, folded: str) -> bool:
-    """Whether *value* is in the fixture.
+    """Whether *value* is in *haystack*, *folded* being it case-folded.
 
     A piece with a space, a digit, or an ``@`` matches in any case. A single word
     matches as written; in capitals as a whole word (``OKONKWO_ID``); and in lower
@@ -223,24 +244,264 @@ def _found(value: str, haystack: str, folded: str) -> bool:
     """
     if value in haystack:
         return True
-    if any(c.isspace() or c.isdigit() or c == "@" for c in value):
+    if _any_case(value):
         return value.casefold() in folded
-    word = re.escape(value.upper())
-    if re.search(rf"{_BEFORE}{word}{_AFTER}", haystack):
+    if re.search(_capitals(value), haystack):
         return True
-    low = re.escape(value.casefold())
-    joined = rf"(?:(?<=[_@.]){low}{_AFTER}|{_BEFORE}{low}(?=[_@.]))"
-    return re.search(joined, folded) is not None
+    return re.search(_joined(value), folded) is not None
 
 
-def survivors(capture: str, fixture: str) -> list[str]:
+def _any_case(value: str) -> bool:
+    return any(c.isspace() or c.isdigit() or c == "@" for c in value)
+
+
+def _capitals(word: str) -> str:
+    return rf"{_BEFORE}{re.escape(word.upper())}{_AFTER}"
+
+
+def _joined(word: str) -> str:
+    low = re.escape(word.casefold())
+    return rf"(?:(?<=[_@.]){low}{_AFTER}|{_BEFORE}{low}(?=[_@.]))"
+
+
+def _line_starts(text: str) -> array[int]:
+    # An array, not a list, since the joined forms of a large fixture have many
+    # lines and a list holds an object per line.
+    starts = array("q", [0])
+    starts.extend(m.end() for m in re.finditer("\n", text))
+    return starts
+
+
+class _Derived:
+    """*derived*, made from *source* line by line and, within a line, chunk by chunk
+    by *derive*, with an offset in it mapped back to *source*.
+
+    *chunks* gives the (start, end) of each chunk of a line that *derive* may
+    change. Only the chunks it does change are recorded, and only for a line asked
+    about; a one-character chunk that stays one character maps to itself. A match
+    that starts or ends inside a longer changed chunk is widened to the whole chunk.
+    """
+
+    def __init__(
+        self,
+        source: str,
+        derived: str,
+        chunks: Callable[[str], Iterator[tuple[int, int]]],
+        derive: Callable[[str], str],
+    ) -> None:
+        self.source, self.derived = source, derived
+        self._split, self._derive = chunks, derive
+        self._source_starts = _line_starts(source)
+        self.starts = _line_starts(derived)
+        self._changed: dict[int, tuple[list[int], list[tuple[int, int, int, int]]]] = {}
+
+    def line_of(self, offset: int) -> int:
+        """The 0-based line of *derived* that holds *offset*."""
+        return bisect_right(self.starts, offset) - 1
+
+    def back(self, offset: int, *, end: bool = False) -> int:
+        """*offset* in *derived* as an offset in *source*; *end* when it is a
+        match's exclusive end, so it is placed by the character before it."""
+        line = self.line_of(offset - 1 if end else offset)
+        column = offset - self.starts[line]
+        keys, chunks = self._chunks(line)
+        i = bisect_right(keys, column - 1 if end else column) - 1
+        base = self._source_starts[line]
+        if i < 0:
+            return base + column
+        _start, stop, source_start, source_stop = chunks[i]
+        if column < stop or (end and column == stop):
+            return base + (source_stop if end else source_start)
+        return base + source_stop + column - stop
+
+    def _chunks(self, line: int) -> tuple[list[int], list[tuple[int, int, int, int]]]:
+        if line not in self._changed:
+            first = self._source_starts[line]
+            last = self.source.find("\n", first)
+            text = self.source[first : len(self.source) if last == -1 else last]
+            chunks: list[tuple[int, int, int, int]] = []
+            shift = 0
+            for start, end in self._split(text):
+                piece = text[start:end]
+                derived = self._derive(piece)
+                if derived != piece and (len(piece) > 1 or len(derived) > 1):
+                    at = start + shift
+                    chunks.append((at, at + len(derived), start, end))
+                    shift += len(derived) - len(piece)
+            # The search ran on the text derived whole; mapping back is right only
+            # because deriving chunk by chunk gives the same line.
+            stop = self.derived.find("\n", self.starts[line])
+            length = (len(self.derived) if stop == -1 else stop) - self.starts[line]
+            assert len(text) + shift == length, (line, len(text), shift, length)
+            self._changed[line] = ([c[0] for c in chunks], chunks)
+        return self._changed[line]
+
+
+# Compatibility normalisation of a text is that of each run of non-ASCII characters
+# with the one character before it, since no ASCII character is the second part of
+# a composed one and ASCII text normalises to itself.
+_NON_ASCII = re.compile(r"[\x00-\x7f]?[^\x00-\x7f]+")
+
+
+def _normal_chunks(text: str) -> Iterator[tuple[int, int]]:
+    """Each character of a non-ASCII run of *text* with the combining marks after
+    it, or the whole run when it does not normalise piece by piece (Hangul jamo,
+    which compose without a combining mark)."""
+    for m in _NON_ASCII.finditer(text):
+        run = m.group()
+        cuts = [i for i, c in enumerate(run) if i == 0 or not unicodedata.combining(c)]
+        cuts.append(len(run))
+        pieces = [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1)]
+        if "".join(_normal(run[a:b]) for a, b in pieces) != _normal(run):
+            pieces = [(0, len(run))]
+        yield from ((m.start() + a, m.start() + b) for a, b in pieces)
+
+
+def _fold_chunks(text: str) -> Iterator[tuple[int, int]]:
+    """Each non-ASCII character of *text*: case folding works one character at a
+    time and folds an ASCII character to one character."""
+    return (m.span() for m in re.finditer(r"[^\x00-\x7f]", text))
+
+
+# How much of a line is shown each side of a match, and the longest match or value
+# shown whole; the file may hold captured values, so no more of it is printed than
+# this.
+_CONTEXT = 30
+_LONGEST_MATCH = 60
+# Each place is printed on a line of its own, at most this many per value, for at
+# most this many values.
+_MOST_PLACES = 5
+_MOST_VALUES = 50
+# Survivors past the placed ones are named without places, up to this many;
+# the rest are counted, as an unchanged copy of a large capture holds thousands.
+_MOST_NAMED = 500
+# The marks around a match. The context escapes them where the file holds them, so
+# a mark in the output is always the script's.
+_OPEN, _CLOSE = "»", "«"
+
+
+def _cut(text: str) -> str:
+    """*text*, or its first and last 30 characters when longer than 60."""
+    if len(text) <= _LONGEST_MATCH:
+        return text
+    half = _LONGEST_MATCH // 2
+    return f"{text[:half]}...{text[-half:]}"
+
+
+def _printable(text: str) -> str:
+    """*text* with every character that is not printable escaped, so a control
+    character or line separator from the fixture can neither split the one output
+    line nor reach the terminal as an escape sequence, and with the match marks
+    and backslashes escaped too, so every escape shown is the script's. A tab reads
+    as a space."""
+    return "".join(
+        " "
+        if c == "\t"
+        else c
+        if c.isprintable() and c not in (_OPEN, _CLOSE, "\\")
+        else c.encode("unicode_escape").decode("ascii")
+        for c in text
+    )
+
+
+def _neighborhood(text: str, start: int, end: int) -> str:
+    """The match at *start*:*end* marked within its line, cut to :data:`_CONTEXT`
+    characters each side, on one line."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    line_end = len(text) if line_end == -1 else line_end
+    left = max(line_start, start - _CONTEXT)
+    right = min(line_end, end + _CONTEXT)
+    before = ("..." if left > line_start else "") + _printable(text[left:start])
+    after = _printable(text[end:right]) + ("..." if right < line_end else "")
+    return f"{before}{_OPEN}{_printable(_cut(text[start:end]))}{_CLOSE}{after}"
+
+
+class _Fixture:
+    """The fixture searched as one text, its forms compatibility-normalised and
+    joined by newlines, with the means to place a match in the file as read."""
+
+    def __init__(self, fixture: str, shown: str | None = None) -> None:
+        # *shown* is the file as read when *fixture* is it with gp's run labels
+        # blanked; the blanking replaces characters one for one, so an offset in
+        # one is the same offset in the other.
+        self.shown = fixture if shown is None else shown
+        assert len(self.shown) == len(fixture)
+        self.haystack = _normal("\n".join(_decodings(fixture)))
+        self.folded = self.haystack.casefold()
+        self._normal = _Derived(fixture, self.haystack, _normal_chunks, _normal)
+        self._fold = _Derived(self.haystack, self.folded, _fold_chunks, str.casefold)
+        # The raw form is the haystack's first lines, as many as the file has:
+        # neither normalising nor folding makes or removes a newline.
+        lines = fixture.count("\n") + 1
+        self._raw_end = self._normal.starts[lines] - 1
+        self._raw_folded_end = self._fold.starts[lines] - 1
+
+    def holds(self, value: str) -> bool:
+        return _found(value, self.haystack, self.folded)
+
+    def _spans(self, value: str, end: int, folded_end: int) -> Iterator[tuple[int, int]]:
+        """Where *value* is in the haystack before *end* (*folded_end* in the folded
+        text), as :func:`_found` matches it, in order. A value can be in a large
+        fixture tens of thousands of times, so the places are made as read."""
+
+        def literal() -> Iterator[tuple[int, int]]:
+            at = self.haystack.find(value, 0, end)
+            while at != -1:
+                yield at, at + len(value)
+                at = self.haystack.find(value, at + 1, end)
+
+        def matches(pattern: str, text: str, stop: int) -> Iterator[tuple[int, int]]:
+            return (m.span() for m in re.compile(pattern).finditer(text, 0, stop))
+
+        if _any_case(value):
+            folded = matches(re.escape(value.casefold()), self.folded, folded_end)
+            sources = [literal()]
+        else:
+            folded = matches(_joined(value), self.folded, folded_end)
+            sources = [literal(), matches(_capitals(value), self.haystack, end)]
+        # A piece is at least _MIN_LENGTH characters, so a match is never empty.
+        sources.append((self._fold.back(s), self._fold.back(e, end=True)) for s, e in folded)
+        return merge(*sources)
+
+    def places(self, value: str) -> list[str]:
+        """Where *value* is: ``line N: <neighborhood>`` for each line of the file that
+        holds it, at most :data:`_MOST_PLACES`, or, when none does, ``found decoded:
+        <neighborhood>`` at its first place in a decoded form."""
+        first: list[tuple[int, int, int]] = []
+        lines, last = 0, -1
+        for start, end in self._spans(value, self._raw_end, self._raw_folded_end):
+            line = self._normal.line_of(start)
+            if line != last:
+                lines, last = lines + 1, line
+                if len(first) < _MOST_PLACES:
+                    first.append((line, start, end))
+        if first:
+            places = [
+                f"line {line + 1}: "
+                + _neighborhood(
+                    self.shown, self._normal.back(start), self._normal.back(end, end=True)
+                )
+                for line, start, end in first
+            ]
+            if lines > _MOST_PLACES:
+                places.append(f"and {lines - _MOST_PLACES} more lines")
+            return places
+        # Not in the raw form, so in a decoded one, or, rarely, only across the
+        # newline that joins two forms, which the haystack holds too.
+        start, end = next(self._spans(value, len(self.haystack), len(self.folded)))
+        return [f"found decoded: {_neighborhood(self.haystack, start, end)}"]
+
+
+def survivors(capture: str, fixture: _Fixture) -> list[str]:
     """Each captured value that still appears in *fixture*, in any of its forms."""
-    haystack = _normal("\n".join(_decodings(fixture)))
-    folded = haystack.casefold()
-    return [v for v in captured_values(capture) if _found(_normal(v), haystack, folded)]
+    return [v for v in captured_values(capture) if fixture.holds(_normal(v))]
 
 
 def main(argv: list[str]) -> int:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(errors="backslashreplace")
     if len(argv) not in (3, 4):
         print("usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]", file=sys.stderr)
         return 2
@@ -260,9 +521,21 @@ def main(argv: list[str]) -> int:
     differs = _keys_differing_from_gps(Path(argv[1]), sidecar) if sidecar is not None else []
     if differs is None:
         return 2
-    left = survivors(capture, _without_provenance(fixture))
-    for value in left:
-        print(f"still in the fixture: {value!r}")
+    found = _Fixture(_without_provenance(fixture), fixture)
+    left = survivors(capture, found)
+    for value in left[:_MOST_VALUES]:
+        for place in found.places(_normal(value)):
+            print(f"still in the fixture: {_cut(value)!r} ({place})")
+    # Past the placed values each survivor is still named, without its places: a
+    # value kept on purpose is never rewritten, so a count alone would hide the
+    # values behind it on every run.
+    for value in left[_MOST_VALUES:_MOST_NAMED]:
+        print(f"still in the fixture: {_cut(value)!r} (not placed)")
+    if len(left) > _MOST_NAMED:
+        print(
+            f"fixture-leaks: {len(left) - _MOST_NAMED} more values not shown; "
+            "the fixture is not done while this line prints."
+        )
     if differs:
         print(
             f"the sidecar differs from the capture's in {', '.join(differs)}: "
