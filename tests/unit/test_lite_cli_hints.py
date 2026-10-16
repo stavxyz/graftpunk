@@ -24,6 +24,7 @@ from typer.testing import CliRunner
 from graftpunk import _distribution
 from graftpunk.cli.observe_commands import observe_app
 from graftpunk.cli.session_commands import session_app
+from graftpunk.cookies import importing_httpie
 from tests.unit.cli_harness import invoke_plugin_app, strip_ansi
 from tests.unit.test_cache import _setup_local_env
 
@@ -71,8 +72,12 @@ def _cache_fixture_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     _setup_local_env(tmp_path, monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HTTPIE_CONFIG_DIR", str(tmp_path / "httpie"))
-    # httpie reads HTTPIE_CONFIG_DIR once, when it is first imported.
-    monkeypatch.setattr("httpie.context.Environment.config_dir", tmp_path / "httpie")
+    # httpie reads HTTPIE_CONFIG_DIR once, when it is first imported. Importing
+    # it through graftpunk's guard keeps httpie's global cookie policy out of
+    # this worker's later tests.
+    with importing_httpie():
+        import httpie.context
+    monkeypatch.setattr(httpie.context.Environment, "config_dir", tmp_path / "httpie")
     (tmp_path / ".session_key").write_bytes((_FIX / "browserfree_session.key").read_bytes())
     session_dir = tmp_path / "sessions" / "myshop"
     session_dir.mkdir(parents=True)
