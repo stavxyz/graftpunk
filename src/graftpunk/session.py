@@ -750,8 +750,8 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
 
         LOG.info("saving_httpie_session", name=session_name)
 
-        # Imported here, the one place graftpunk uses HTTPie's library, so that
-        # its process-wide cookie policy never applies outside this call (#253).
+        # Imported here, under importing_httpie, so that HTTPie's process-wide
+        # cookie policy never applies outside this call (#253).
         with importing_httpie():
             import httpie.context
             import httpie.sessions
