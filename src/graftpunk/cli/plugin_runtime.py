@@ -38,13 +38,6 @@ from graftpunk.plugins.formatters import format_output
 from graftpunk.session_context import get_active_session
 from graftpunk.session_identity import compute_operating_session_name, split_session_name
 
-if _distribution.has_browser_stack():
-    # Loaded as plugins register, so that httpie's process-wide cookie policy
-    # (see graftpunk.session, #253) is in place for every plugin command, including
-    # one that loads no session. graftpunk-lite has no browser stack to
-    # import, so there it is skipped.
-    import graftpunk.session  # noqa: F401
-
 LOG = get_logger(__name__)
 _format_console = Console()
 

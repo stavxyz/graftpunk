@@ -487,10 +487,10 @@ def test_a_plugin_command_runs_under_captured_stdout_on_the_full_install(
 ) -> None:
     """A plugin author's CliRunner test, loading a cached session, exits 0.
 
-    Loading the session needs graftpunk.session, whose httpie import calls
-    sys.stdout.fileno(), which CliRunner's captured stdout does not have. Run
-    in a fresh interpreter, so registration makes the first import, as in a
-    plugin author's test process.
+    Loading the session used to import httpie, which calls sys.stdout.fileno(),
+    which CliRunner's captured stdout does not have; since #253 it imports
+    graftpunk.session without httpie. Run in a fresh interpreter, so the load
+    makes the first import, as in a plugin author's test process.
     """
     _cache_fixture_session(tmp_path, monkeypatch)
     monkeypatch.delenv("FORCE_COLOR", raising=False)
@@ -544,9 +544,9 @@ def test_the_client_runs_a_command_when_stdout_has_no_file_descriptor(
     """#250: GraftpunkClient loading a cached session under ``sys.stdout =
     io.StringIO()`` returns the command's result.
 
-    Loading the session makes the first import of graftpunk.session, whose
-    httpie import calls curses.setupterm(), which needs sys.stdout.fileno().
-    A fresh interpreter makes that import happen under the StringIO.
+    Loading the session makes the first import of graftpunk.session, which
+    imported httpie (whose curses.setupterm() needs sys.stdout.fileno()) until
+    #253. A fresh interpreter makes that import happen under the StringIO.
     """
     _cache_fixture_session(tmp_path, monkeypatch)
     monkeypatch.delenv("FORCE_COLOR", raising=False)

@@ -9,11 +9,16 @@ jar's policy for every request it sends, which stock ``requests`` does not
 (``Session.prepare_request`` merges cookies into a fresh jar with the default
 policy, psf/requests#5449).
 
-Nothing here changes process-global state.
+Nothing here changes process-global state. HTTPie works around the same
+requests issue by replacing ``http.cookiejar.DefaultCookiePolicy`` for the
+whole process when ``httpie.compat`` is imported, so graftpunk imports HTTPie
+only under :func:`importing_httpie`, which puts the global back (#253).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from http import cookiejar
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
@@ -21,6 +26,8 @@ from urllib.parse import urlsplit
 import requests
 from requests.cookies import RequestsCookieJar
 from requests.structures import CaseInsensitiveDict
+
+from graftpunk._stdout_fd import stdout_with_a_file_descriptor
 
 # Hosts Chrome 155 (headless) was measured sending a Secure cookie to over plain
 # HTTP on 2026-10-16: http://localhost, http://foo.localhost, http://127.0.0.1
@@ -132,3 +139,20 @@ class BrowserCookieSession(BrowserCookiesMixin, requests.Session):
     graftpunk uses it wherever it would otherwise build a bare
     ``requests.Session`` (a command that needs no session, ``--no-session``).
     """
+
+
+@contextmanager
+def importing_httpie() -> Iterator[None]:
+    """Import HTTPie modules inside this block without leaving a global change.
+
+    ``httpie.compat`` replaces ``http.cookiejar.DefaultCookiePolicy`` at import;
+    the block puts back whatever was there before. ``httpie.context`` sets up
+    the terminal at import and needs a stdout with a file descriptor (#250),
+    which :func:`graftpunk._stdout_fd.stdout_with_a_file_descriptor` provides.
+    """
+    saved = cookiejar.DefaultCookiePolicy
+    try:
+        with stdout_with_a_file_descriptor():
+            yield
+    finally:
+        cookiejar.DefaultCookiePolicy = saved

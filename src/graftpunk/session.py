@@ -33,27 +33,15 @@ import slugify as slugify_lib
 import webdriver_manager.chrome
 
 from graftpunk import console as gp_console
-from graftpunk._stdout_fd import stdout_with_a_file_descriptor
 from graftpunk.backends.nodriver import DEFAULT_CALL_TIMEOUT_S, DEFAULT_NAVIGATE_TIMEOUT_S
 from graftpunk.chrome import get_chrome_version
-from graftpunk.cookies import BrowserCookiesMixin
+from graftpunk.cookies import BrowserCookiesMixin, importing_httpie
 from graftpunk.exceptions import BrowserError, ChromeDriverError
 from graftpunk.logging import get_logger
 from graftpunk.observe import OBSERVE_BASE_DIR
 from graftpunk.observe.capture import create_capture_backend
 from graftpunk.observe.storage import ObserveStorage, session_dirname
 from graftpunk.tokens import PICKLED_SESSION_RIDER_ATTRS, SESSION_RIDER_DEFAULTS
-
-# At module scope, not in save_httpie_session: importing httpie replaces
-# http.cookiejar.DefaultCookiePolicy process-wide with one that treats
-# localhost as secure, and every cookie jar created after this import (and
-# every session pickled from one) carries that policy (#253). The first import of
-# httpie.context needs a stdout with a file descriptor (#250); this module can
-# be first imported under a captured stdout, by unpickling a cached session
-# inside GraftpunkClient.
-with stdout_with_a_file_descriptor():
-    import httpie.context
-    import httpie.sessions
 
 LOG = get_logger(__name__)
 
@@ -761,6 +749,12 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
             session_name = self.session_name
 
         LOG.info("saving_httpie_session", name=session_name)
+
+        # Imported here, the one place graftpunk uses HTTPie's library, so that
+        # its process-wide cookie policy never applies outside this call (#253).
+        with importing_httpie():
+            import httpie.context
+            import httpie.sessions
 
         env = httpie.context.Environment()
         httpie_session_path = (

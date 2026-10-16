@@ -275,7 +275,11 @@ def export(
         raise typer.Exit(1) from None
 
     # httpie is part of the browser stack, which load_session above needed.
-    from httpie.config import ConfigFileError
+    # importing_httpie keeps httpie's cookie policy out of the process (#253).
+    from graftpunk.cookies import importing_httpie
+
+    with importing_httpie():
+        from httpie.config import ConfigFileError
 
     try:
         browser_session = cast("BrowserSession", session)
