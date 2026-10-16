@@ -17,6 +17,7 @@ only under :func:`importing_httpie`, which puts the global back (#253).
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http import cookiejar
@@ -165,18 +166,33 @@ class BrowserCookieSession(BrowserCookiesMixin, requests.Session):
     """
 
 
+# Reentrant because gp session export opens the block and save_httpie_session
+# opens it again inside.
+_IMPORTING_HTTPIE = threading.RLock()
+
+
 @contextmanager
 def importing_httpie() -> Iterator[None]:
     """Import HTTPie modules inside this block without leaving a global change.
 
     ``httpie.compat`` replaces ``http.cookiejar.DefaultCookiePolicy`` at import;
-    the block puts back whatever was there before. ``httpie.context`` sets up
-    the terminal at import and needs a stdout with a file descriptor (#250),
-    which :func:`graftpunk._stdout_fd.stdout_with_a_file_descriptor` provides.
+    the block puts back whatever was there before. One thread at a time runs
+    the block, so two overlapping blocks cannot save each other's replacement
+    and restore it last. ``httpie.context`` sets up the terminal at import and
+    needs a stdout with a file descriptor (#250), which
+    :func:`graftpunk._stdout_fd.stdout_with_a_file_descriptor` provides.
+
+    Python imports a module once per process. After this block has imported
+    ``httpie.compat``, a later ``import httpie.compat`` elsewhere in the
+    process does nothing, so a program that goes on to run HTTPie in the same
+    process does not get HTTPie's global policy, and HTTPie's sessions there
+    stop sending ``Secure`` cookies to ``http://localhost``. Such a program can
+    import ``httpie.compat`` itself before graftpunk exports a session.
     """
-    saved = cookiejar.DefaultCookiePolicy
-    try:
-        with stdout_with_a_file_descriptor():
-            yield
-    finally:
-        cookiejar.DefaultCookiePolicy = saved
+    with _IMPORTING_HTTPIE:
+        saved = cookiejar.DefaultCookiePolicy
+        try:
+            with stdout_with_a_file_descriptor():
+                yield
+        finally:
+            cookiejar.DefaultCookiePolicy = saved

@@ -361,3 +361,61 @@ def test_an_auth_handler_sees_the_cookie_header_the_browser_policy_computed() ->
     session.prepare_request(requests.Request("GET", "http://localhost/", auth=auth))
 
     assert seen == ["lh=1"]
+
+
+def test_overlapping_importing_httpie_blocks_leave_the_global_as_it_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thread B starts its block while thread A's block has another class
+    installed. Without a lock B saves that class and restores it last."""
+    from graftpunk.cookies import importing_httpie
+
+    class Before(cookiejar.DefaultCookiePolicy):
+        pass
+
+    class During(cookiejar.DefaultCookiePolicy):
+        pass
+
+    monkeypatch.setattr(cookiejar, "DefaultCookiePolicy", Before)
+    a_installed = threading.Event()
+    b_entered = threading.Event()
+    a_exited = threading.Event()
+
+    def thread_a() -> None:
+        with importing_httpie():
+            cookiejar.DefaultCookiePolicy = During
+            a_installed.set()
+            # With the lock, B cannot enter until this block ends.
+            b_entered.wait(timeout=1)
+        a_exited.set()
+
+    def thread_b() -> None:
+        a_installed.wait(timeout=5)
+        with importing_httpie():
+            b_entered.set()
+            a_exited.wait(timeout=5)
+
+    threads = [threading.Thread(target=thread_a), threading.Thread(target=thread_b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert cookiejar.DefaultCookiePolicy is Before
+
+
+def test_importing_httpie_blocks_nest() -> None:
+    """gp session export opens the block, then save_httpie_session opens it again."""
+    from graftpunk.cookies import importing_httpie
+
+    done = threading.Event()
+
+    def nested() -> None:
+        with importing_httpie(), importing_httpie():
+            done.set()
+
+    thread = threading.Thread(target=nested, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+
+    assert done.is_set()
