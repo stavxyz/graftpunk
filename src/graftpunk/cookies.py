@@ -24,8 +24,10 @@ from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
 import requests
-from requests.cookies import RequestsCookieJar
+from requests.cookies import RequestsCookieJar, cookiejar_from_dict, merge_cookies
+from requests.sessions import merge_hooks, merge_setting
 from requests.structures import CaseInsensitiveDict
+from requests.utils import get_netrc_auth
 
 from graftpunk._stdout_fd import stdout_with_a_file_descriptor
 
@@ -93,10 +95,18 @@ class BrowserCookiesMixin:
     ``Cookie`` header is computed with the session jar's policy. Redirects keep
     it: requests follows them with a copy of the prepared request's jar, and
     ``RequestsCookieJar.copy()`` carries the policy.
+
+    ``prepare_request`` replaces ``requests.Session.prepare_request`` rather
+    than extending it, so no class between this mixin and ``requests.Session``
+    in the MRO may override ``prepare_request``.
     """
 
     cookies: RequestsCookieJar
     headers: CaseInsensitiveDict
+    params: Any
+    auth: Any
+    hooks: Any
+    trust_env: bool
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -113,23 +123,37 @@ class BrowserCookiesMixin:
         if isinstance(jar, cookiejar.CookieJar):
             use_browser_cookie_policy(jar)
 
-    def prepare_request(self, request: requests.Request, **kwargs: Any) -> requests.PreparedRequest:
+    def prepare_request(self, request: requests.Request) -> requests.PreparedRequest:
+        # requests.Session.prepare_request (2.32), with the merged jar given the
+        # session jar's policy instead of the default one. The rest, including
+        # the order of the steps, is stock: the Cookie header is computed before
+        # an auth handler runs, and the handler may replace it.
         # self.cookies may have been reassigned since __init__ (a loaded jar).
-        policy = use_browser_cookie_policy(self.cookies)._policy  # ty: ignore[unresolved-attribute]
-        prepared = super().prepare_request(request, **kwargs)  # ty: ignore[unresolved-attribute]
-        jar = prepared._cookies
-        if not isinstance(jar, cookiejar.CookieJar):
-            return prepared
-        jar.set_policy(policy)
-        # requests left a Cookie header the caller set (on the request or the
-        # session) untouched; any other Cookie header it computed with the
-        # default policy, so compute it again with this one.
-        caller_headers = requests.sessions.merge_setting(
-            request.headers, self.headers, dict_class=CaseInsensitiveDict
+        policy = use_browser_cookie_policy(self.cookies).get_policy()
+        cookies = request.cookies or {}
+        if not isinstance(cookies, cookiejar.CookieJar):
+            cookies = cookiejar_from_dict(cookies)
+        merged_cookies = merge_cookies(
+            merge_cookies(RequestsCookieJar(policy=policy), self.cookies), cookies
         )
-        if "Cookie" not in caller_headers:
-            prepared.headers.pop("Cookie", None)
-            prepared.prepare_cookies(jar)
+
+        auth = request.auth
+        if self.trust_env and not auth and not self.auth:
+            auth = get_netrc_auth(request.url)
+
+        prepared = requests.PreparedRequest()
+        prepared.prepare(
+            method=request.method.upper(),  # ty: ignore[unresolved-attribute]
+            url=request.url,
+            files=request.files,
+            data=request.data,
+            json=request.json,
+            headers=merge_setting(request.headers, self.headers, dict_class=CaseInsensitiveDict),
+            params=merge_setting(request.params, self.params),
+            auth=merge_setting(auth, self.auth),
+            cookies=merged_cookies,
+            hooks=merge_hooks(request.hooks, self.hooks),
+        )
         return prepared
 
 

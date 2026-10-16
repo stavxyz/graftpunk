@@ -322,3 +322,42 @@ def test_an_exported_session_sends_its_cookies_through_httpie(
 
     assert sent.returncode == 0, sent.stderr
     assert "Cookie: User=dummyuser; Password=dummypass" in sent.stdout.splitlines(), sent.stdout
+
+
+class _CookieAuth(requests.auth.AuthBase):
+    """An auth handler that authenticates with a cookie of its own."""
+
+    def __call__(self, r: requests.PreparedRequest) -> requests.PreparedRequest:
+        r.headers["Cookie"] = "token=abc"
+        return r
+
+
+@pytest.mark.parametrize("auth_on", ["request", "session"])
+@pytest.mark.parametrize("session_class", [GraftpunkSession, BrowserCookieSession])
+def test_a_cookie_header_an_auth_handler_set_is_kept_as_stock_requests_keeps_it(
+    session_class: type[requests.Session], auth_on: str
+) -> None:
+    def header(session: requests.Session) -> str | None:
+        session.cookies.set("sid", "1", domain="example.com")
+        request = requests.Request("GET", "http://example.com/")
+        if auth_on == "request":
+            request.auth = _CookieAuth()
+        else:
+            session.auth = _CookieAuth()
+        return session.prepare_request(request).headers.get("Cookie")
+
+    assert header(requests.Session()) == "token=abc"
+    assert header(session_class()) == "token=abc"
+
+
+def test_an_auth_handler_sees_the_cookie_header_the_browser_policy_computed() -> None:
+    seen: list[str | None] = []
+
+    def auth(r: requests.PreparedRequest) -> requests.PreparedRequest:
+        seen.append(r.headers.get("Cookie"))
+        return r
+
+    session = _with_secure_cookies(GraftpunkSession())
+    session.prepare_request(requests.Request("GET", "http://localhost/", auth=auth))
+
+    assert seen == ["lh=1"]
