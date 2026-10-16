@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import pathlib
 import socket
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http import cookiejar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -502,10 +503,55 @@ def test_a_session_this_release_pickled_loads_with_the_browser_policy_and_its_se
 
 
 def test_copying_the_browser_policy_keeps_its_class_and_settings() -> None:
-    import copy
-
     policy = BrowserCookiePolicy(blocked_domains=["blocked.example"])
 
     for copied in (copy.copy(policy), copy.deepcopy(policy)):
         assert type(copied) is BrowserCookiePolicy
         assert copied.blocked_domains() == ("blocked.example",)
+
+
+class _Stricter(BrowserCookiePolicy):
+    """A program's own rule on top of the browser's: never send ``tracking``."""
+
+    def return_ok(self, cookie: cookiejar.Cookie, request: object) -> bool:
+        return cookie.name != "tracking" and super().return_ok(cookie, request)
+
+
+def _session_with_stricter_policy() -> requests.Session:
+    # BrowserCookieSession: a GraftpunkSession is built at load, not pickled.
+    session = BrowserCookieSession()
+    session.cookies.set_policy(_Stricter(blocked_domains=["blocked.example"]))
+    session.cookies.set("tracking", "1", domain="localhost.local", secure=True)
+    session.cookies.set("ok", "1", domain="localhost.local", secure=True)
+    return session
+
+
+def _copy_with_copied_policy(session: requests.Session) -> requests.Session:
+    other = BrowserCookieSession()
+    other.cookies = requests.cookies.RequestsCookieJar(
+        policy=copy.copy(session.cookies.get_policy())
+    )
+    other.cookies.update(session.cookies)
+    return other
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        pytest.param(lambda s: dill.loads(dill.dumps(s)), id="pickle"),  # noqa: S301
+        pytest.param(_copy_with_copied_policy, id="copy"),
+        pytest.param(copy.deepcopy, id="deepcopy"),
+    ],
+)
+def test_a_subclass_of_the_browser_policy_keeps_its_class_and_rules(
+    duplicate: Callable[[requests.Session], requests.Session],
+) -> None:
+    session = _session_with_stricter_policy()
+    assert _cookie_header(session, "http://localhost/") == "ok=1"
+
+    other = duplicate(session)
+
+    policy = other.cookies.get_policy()
+    assert type(policy) is _Stricter
+    assert policy.blocked_domains() == ("blocked.example",)
+    assert _cookie_header(other, "http://localhost/") == "ok=1"

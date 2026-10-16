@@ -19,12 +19,13 @@ here relies on that global either, since other code may have replaced it.
 from __future__ import annotations
 
 import copy
+import copyreg
 import importlib
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http import cookiejar
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Self, TypeVar
 from urllib.parse import urlsplit
 
 import requests
@@ -92,10 +93,10 @@ class BrowserCookiePolicy(STDLIB_DEFAULT_POLICY):
 
     It pickles as a call of ``http.cookiejar.DefaultCookiePolicy``, looked up
     by name when loaded, with the same settings, so a session cached by this
-    release loads in releases without :mod:`graftpunk.cookies` (1.21.0 and
-    earlier); graftpunk's load paths turn it back into a
-    ``BrowserCookiePolicy``. ``copy.copy`` and ``copy.deepcopy`` keep the
-    class.
+    release loads in releases without :mod:`graftpunk.cookies`; graftpunk's
+    load paths turn it back into a ``BrowserCookiePolicy``. A subclass, which
+    a program chose, pickles as itself. ``copy.copy`` and ``copy.deepcopy``
+    keep the class, a subclass's included.
     """
 
     def return_ok_secure(self, cookie: cookiejar.Cookie, request: Any) -> bool:
@@ -106,6 +107,11 @@ class BrowserCookiePolicy(STDLIB_DEFAULT_POLICY):
         return host is not None and is_secure_loopback_host(host)
 
     def __reduce__(self) -> tuple[Any, ...]:
+        if type(self) is not BrowserCookiePolicy:
+            # A program's subclass carries rules of its own, which loading it
+            # as the standard library's class would drop; it pickles by
+            # reference as any object does.
+            return (copyreg.__newobj__, (type(self),), _settings(self))  # ty: ignore[unresolved-attribute]
         # Loads as http.cookiejar.DefaultCookiePolicy() given these settings.
         # The class is looked up by name when loaded rather than saved by
         # reference, which fails while a program has replaced the global (the
@@ -115,13 +121,17 @@ class BrowserCookiePolicy(STDLIB_DEFAULT_POLICY):
         )
         return (default_policy, (), _settings(self))
 
-    def __copy__(self) -> BrowserCookiePolicy:
-        return _browser_policy_like(self)
+    # Without these, copy would go through __reduce__ and return the standard
+    # library's class.
+    def __copy__(self) -> Self:
+        new = type(self).__new__(type(self))
+        new.__dict__.update(_settings(self))
+        return new
 
-    def __deepcopy__(self, memo: dict[int, Any]) -> BrowserCookiePolicy:
-        browser = BrowserCookiePolicy()
-        browser.__dict__.update(copy.deepcopy(_settings(self), memo))
-        return browser
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        new = type(self).__new__(type(self))
+        new.__dict__.update(copy.deepcopy(_settings(self), memo))
+        return new
 
 
 def _replaceable(policy: object) -> bool:
