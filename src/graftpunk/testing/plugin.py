@@ -307,8 +307,9 @@ def check_fixtures_tree(tree: Path) -> FixturesTreeReport:
     fixture that is byte for byte its capture, and a flagged cookie or token
     name in a fixture or in its sidecar's other fields. It does not judge
     whether invented content is invented well. A sidecar with no capture hash
-    is the author's declaration that the file came off no account; it is
-    trusted, not checked, and counted. A dotfile (any path component starting
+    is the author's declaration that the file came off no account (or gp's,
+    for an empty capture, which holds nothing to sanitise); it is trusted,
+    not checked, and counted. A dotfile (any path component starting
     with ``.``, which covers ``FIXTURES_PLACEHOLDER`` itself, a macOS
     ``.DS_Store``, and an editor swap file) is never a fixture and is
     skipped.

@@ -1591,7 +1591,9 @@ written, as `gp plugin new` writes one test and a `GP-FILL` for such a pair;
 (`get_api_users.json`, never `get_api_users.csv.txt`), so those extras are there
 for you to read, not for a test to load. A 3xx or 204 response recorded with no
 text (graftpunk's own recorder keeps none for a redirect hop) has no body by
-definition and gets an empty fixture and its sidecar; any other response
+definition and gets an empty fixture and its sidecar, whose `capture_sha256` is
+null, since an empty body holds nothing to sanitise (the fixtures check below
+counts it among the fixtures accepted on declaration); any other response
 recorded with no text (a binary one) is skipped and named.
 
 Then do the work by hand. Copy the capture and its `.meta.json` sidecar into the

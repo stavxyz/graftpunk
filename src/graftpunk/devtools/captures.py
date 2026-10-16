@@ -149,11 +149,15 @@ def write_sidecar(
     The sort and dedupe of ``body_params`` and ``flagged_names`` is
     ``Sidecar``'s own job, not this writer's.
     """
+    body = fixture.read_bytes()
     sidecar = Sidecar(
         status=status,
         content_type=content_type,
         body_params=tuple(body_params),
-        capture_sha256=hashlib.sha256(fixture.read_bytes()).hexdigest(),
+        # An empty body (a 204, a 3xx with no text) holds nothing to sanitise, and
+        # its fixture is empty too, so a recorded hash would fail the suite's
+        # unchanged-copy check on a fixture that holds no captured value.
+        capture_sha256=hashlib.sha256(body).hexdigest() if body else None,
         flagged_names=tuple(flagged_names),
         redacted_names=redacted_names,
     )

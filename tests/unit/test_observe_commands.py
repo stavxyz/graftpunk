@@ -23,6 +23,7 @@ from graftpunk.cli.observe_commands import (  # noqa: F401
     observe_app,
     resolve_run,
 )
+from graftpunk.testing.plugin import check_fixtures_tree
 from tests.unit.cli_harness import strip_ansi
 
 runner = CliRunner()
@@ -1105,7 +1106,9 @@ class TestResponsesRecordedWithNoText:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int
     ) -> None:
         """graftpunk's recorder writes "text": null for a redirect hop; a 3xx or 204
-        has no body by definition, so its fixture is empty, with its sidecar."""
+        has no body by definition, so its fixture is empty, with its sidecar. The
+        sidecar records no hash, since there is nothing to sanitise, so the
+        generated suite's check passes the empty fixture (#236)."""
         observe_base = tmp_path / "observe"
         monkeypatch.setattr("graftpunk.cli.observe_commands.OBSERVE_BASE_DIR", observe_base)
         hop = _entry("GET", "https://api.myshop.example.com/orders/1001", content_type="text/html")
@@ -1121,7 +1124,10 @@ class TestResponsesRecordedWithNoText:
         assert fixture.read_text() == ""
         sidecars = [p for p in out_dir.iterdir() if p != fixture]
         assert len(sidecars) == 1
-        assert json.loads(sidecars[0].read_text())["status"] == status
+        sidecar = json.loads(sidecars[0].read_text())
+        assert sidecar["status"] == status
+        assert sidecar["capture_sha256"] is None
+        assert check_fixtures_tree(out_dir).problems == ()
 
 
 @contextmanager

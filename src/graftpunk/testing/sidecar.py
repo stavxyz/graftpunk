@@ -4,8 +4,9 @@ A ``<fixture>.meta.json`` sidecar sits beside every file ``gp observe fixtures``
 writes and travels with the fixture into a plugin's committed fixtures tree.
 Every field in it is meant to be committed: the capture's URL and time are not
 in it (the HAR and the digest hold them), ``capture_sha256`` is the hash of the
-captured body, and ``flagged_names`` is every cookie name the recording set and
-the token names the digest recorded, never a value. A name that holds an account
+captured body (null for an empty body, which holds nothing to sanitise), and
+``flagged_names`` is every cookie name the recording set and the token names the
+digest recorded, never a value. A name that holds an account
 value (:func:`graftpunk.har.paths.holds_an_id`) is written in no form, not even
 hashed (a hash of a short id is reversed by brute force): ``redacted_names``
 counts how many were left out. ``body_params`` is the request's body keys that read as
@@ -92,7 +93,9 @@ class Sidecar:
     content_type: str
     body_params: tuple[str, ...] = ()
     # None: the fixture came off no capture, which the author declares by
-    # writing null; the in-suite sanitisation check counts it as declared.
+    # writing null, or its capture was empty, which gp declares the same way
+    # since an empty body holds nothing to sanitise; the in-suite sanitisation
+    # check counts it as declared.
     capture_sha256: str | None = None
     flagged_names: tuple[str, ...] = ()
     # How many names were left out of flagged_names because they hold an account
@@ -130,7 +133,8 @@ class Sidecar:
 
     @property
     def declared(self) -> bool:
-        """True for a hand-made fixture's sidecar: trusted, not checked against a capture."""
+        """True for a hand-made fixture's sidecar, or an empty capture's: trusted, not
+        checked against a capture."""
         return self.capture_sha256 is None
 
 
