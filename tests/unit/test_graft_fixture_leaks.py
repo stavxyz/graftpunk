@@ -535,8 +535,11 @@ def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
     assert result.stdout == ""
 
 
+_PREFIX = "still in the fixture: "
+
+
 def _leak_lines(stdout: str) -> list[str]:
-    return [line for line in stdout.splitlines() if line.startswith("still in the fixture:")]
+    return [line for line in stdout.splitlines() if line.startswith(_PREFIX)]
 
 
 def test_each_place_names_its_line_and_marks_the_match(tmp_path: Path) -> None:
@@ -587,9 +590,6 @@ def test_a_long_value_and_match_are_shortened_in_the_middle(tmp_path: Path) -> N
     assert whole == [f'{_PREFIX}{cut!r} (line 1: {{"note": "»{cut}«"}})']
 
 
-_PREFIX = "still in the fixture: "
-
-
 def test_a_value_found_only_decoded_says_so_without_a_line(tmp_path: Path) -> None:
     """A line number refers to the raw file, where an escaped copy does not read
     as the value, so the decoded match is shown instead."""
@@ -629,6 +629,32 @@ def test_control_characters_around_a_match_are_escaped_in_the_output(tmp_path: P
     found = [line for line in result.stdout.splitlines() if "ORD-4471023" in line]
     assert len(found) == 1, result.stdout
     assert "\\x1b" in found[0] and "\\u2028" in found[0]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "decoded"),
+    [
+        ("q=Okonkwo%20Adeyemi&page=2\n", "q=»Okonkwo Adeyemi«&page=2"),
+        ("<p>Okonkwo&#32;Adeyemi</p>\n", "»Okonkwo Adeyemi«"),
+    ],
+    ids=["percent-encoded", "html-escaped"],
+)
+def test_an_encoded_copy_is_found_decoded(tmp_path: Path, fixture: str, decoded: str) -> None:
+    """The pair is not in the raw file as written, so it has no line; each word on
+    its own is, and gets one."""
+    capture = json.dumps({"name": "Okonkwo Adeyemi"})
+    result = _run(tmp_path, capture, fixture)
+    lines = _leak_lines(result.stdout)
+    assert f"{_PREFIX}'Okonkwo Adeyemi' (found decoded: {decoded})" in lines
+    assert not [line for line in lines if "'Okonkwo Adeyemi' (line" in line]
+
+
+def test_a_crlf_file_is_placed_by_its_lines(tmp_path: Path) -> None:
+    """A file with Windows line endings is read with them translated, so a line
+    number is the editor's and no carriage return reaches the context."""
+    capture = json.dumps({"id": "4471023"})
+    result = _run(tmp_path, capture, "a\r\nb\r\nid 4471023 tail\r\n")
+    assert _leak_lines(result.stdout) == [f"{_PREFIX}'4471023' (line 3: id »4471023« tail)"]
 
 
 def test_the_context_is_the_files_own_text(tmp_path: Path) -> None:
