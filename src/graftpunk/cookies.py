@@ -18,6 +18,8 @@ here relies on that global either, since other code may have replaced it.
 
 from __future__ import annotations
 
+import copy
+import importlib
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -63,6 +65,22 @@ else:
     STDLIB_DEFAULT_POLICY = _stdlib_default_policy()
 
 
+class _PickledCall:
+    """Pickles as the call ``func(*args)``; the pickle never names this class."""
+
+    def __init__(self, func: Any, *args: Any) -> None:
+        self._func = func
+        self._args = args
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (self._func, self._args)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        # The pickler requires a reduce callable to be callable; this one is
+        # only ever pickled.
+        raise TypeError("_PickledCall is evaluated by unpickling, not called")
+
+
 def _settings(policy: object) -> dict[str, Any]:
     # A policy's settings (blocked domains, strictness flags); _now is a
     # timestamp the jar refreshes on every use.
@@ -70,7 +88,15 @@ def _settings(policy: object) -> dict[str, Any]:
 
 
 class BrowserCookiePolicy(STDLIB_DEFAULT_POLICY):
-    """The standard library's policy, plus Chrome's rule that a loopback origin is secure."""
+    """The standard library's policy, plus Chrome's rule that a loopback origin is secure.
+
+    It pickles as a call of ``http.cookiejar.DefaultCookiePolicy``, looked up
+    by name when loaded, with the same settings, so a session cached by this
+    release loads in releases without :mod:`graftpunk.cookies` (1.21.0 and
+    earlier); graftpunk's load paths turn it back into a
+    ``BrowserCookiePolicy``. ``copy.copy`` and ``copy.deepcopy`` keep the
+    class.
+    """
 
     def return_ok_secure(self, cookie: cookiejar.Cookie, request: Any) -> bool:
         if super().return_ok_secure(cookie, request):
@@ -78,6 +104,24 @@ class BrowserCookiePolicy(STDLIB_DEFAULT_POLICY):
         # hostname drops the port and an IPv6 literal's brackets.
         host = urlsplit(request.get_full_url()).hostname
         return host is not None and is_secure_loopback_host(host)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # Loads as http.cookiejar.DefaultCookiePolicy() given these settings.
+        # The class is looked up by name when loaded rather than saved by
+        # reference, which fails while a program has replaced the global (the
+        # name no longer resolves to the class; dill then copies it by value).
+        default_policy = _PickledCall(
+            getattr, _PickledCall(importlib.import_module, "http.cookiejar"), "DefaultCookiePolicy"
+        )
+        return (default_policy, (), _settings(self))
+
+    def __copy__(self) -> BrowserCookiePolicy:
+        return _browser_policy_like(self)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> BrowserCookiePolicy:
+        browser = BrowserCookiePolicy()
+        browser.__dict__.update(copy.deepcopy(_settings(self), memo))
+        return browser
 
 
 def _replaceable(policy: object) -> bool:

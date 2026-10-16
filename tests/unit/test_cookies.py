@@ -419,3 +419,93 @@ def test_importing_httpie_blocks_nest() -> None:
     thread.join(timeout=5)
 
     assert done.is_set()
+
+
+def _session_with_settings(session_class: type[requests.Session]) -> requests.Session:
+    session = session_class()
+    session.cookies.get_policy().set_blocked_domains(["blocked.example"])
+    session.cookies.set("tok", "1", domain="localhost.local", secure=True)
+    return session
+
+
+@pytest.mark.parametrize("session_class", [GraftpunkSession, BrowserCookieSession])
+def test_the_browser_policy_pickles_as_the_standard_librarys_class(
+    session_class: type[requests.Session],
+) -> None:
+    """Releases through 1.21.0 have no graftpunk.cookies, so a cache written by
+    this release must not name it."""
+    session = _session_with_settings(session_class)
+
+    jar = dill.dumps(session.cookies)
+    assert b"graftpunk.cookies" not in jar
+    assert b"BrowserCookiePolicy" not in jar
+    # BrowserCookieSession is itself defined in graftpunk.cookies; the cached
+    # BrowserSession is not.
+    assert b"BrowserCookiePolicy" not in dill.dumps(session)
+
+
+_LOAD_WITHOUT_GRAFTPUNK_COOKIES = """
+import base64, json, sys
+
+
+class _Block:
+    def find_spec(self, name, path=None, target=None):
+        if name == "graftpunk.cookies":
+            raise ImportError("graftpunk.cookies is absent here")
+        return None
+
+
+sys.meta_path.insert(0, _Block())
+import dill
+
+jar = dill.loads(base64.b64decode(sys.argv[1]))
+policy = jar.get_policy()
+print(json.dumps({
+    "policy": f"{type(policy).__module__}.{type(policy).__qualname__}",
+    "blocked": list(policy.blocked_domains()),
+    "cookies": [c.name for c in jar],
+    "graftpunk_cookies_loaded": "graftpunk.cookies" in sys.modules,
+}))
+"""
+
+
+def test_a_pickled_jar_loads_where_graftpunk_cookies_cannot_be_imported() -> None:
+    import base64
+    import json
+
+    raw = dill.dumps(_session_with_settings(GraftpunkSession).cookies)
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-I", "-c", _LOAD_WITHOUT_GRAFTPUNK_COOKIES, base64.b64encode(raw)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "policy": "http.cookiejar.DefaultCookiePolicy",
+        "blocked": ["blocked.example"],
+        "cookies": ["tok"],
+        "graftpunk_cookies_loaded": False,
+    }
+
+
+def test_a_session_this_release_pickled_loads_with_the_browser_policy_and_its_settings() -> None:
+    loaded = dill.loads(dill.dumps(_session_with_settings(BrowserCookieSession)))  # noqa: S301
+    api = cache._api_session_from_session(loaded)
+
+    for jar in (loaded.cookies, api.cookies):
+        assert type(jar.get_policy()) is BrowserCookiePolicy
+        assert jar.get_policy().blocked_domains() == ("blocked.example",)
+    assert _cookie_header(api, "http://localhost/") == "tok=1"
+
+
+def test_copying_the_browser_policy_keeps_its_class_and_settings() -> None:
+    import copy
+
+    policy = BrowserCookiePolicy(blocked_domains=["blocked.example"])
+
+    for copied in (copy.copy(policy), copy.deepcopy(policy)):
+        assert type(copied) is BrowserCookiePolicy
+        assert copied.blocked_domains() == ("blocked.example",)
