@@ -4,6 +4,7 @@ reported, so the skill can rewrite it before anything is committed."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -676,14 +677,46 @@ def test_marks_in_the_file_are_escaped_so_the_match_is_unambiguous(tmp_path: Pat
     ]
 
 
-def test_only_the_first_values_are_placed_then_the_rest_counted(tmp_path: Path) -> None:
-    """An unchanged copy of a large capture holds thousands of values; their
-    places would flood the skill's context, so past fifty only a count prints."""
+def test_past_fifty_values_survivors_are_named_without_places(tmp_path: Path) -> None:
+    """Places for thousands of values would flood the skill's context, so past fifty
+    each survivor is named without its places; a kept value cannot hide the rest."""
     ids = [str(1000000 + n) for n in range(60)]
     result = _run(tmp_path, json.dumps({"ids": ids}), json.dumps({"ids": ids}))
     assert result.returncode == 1
     lines = _leak_lines(result.stdout)
-    assert [line.split(" (")[0] for line in lines] == [f"{_PREFIX}{v!r}" for v in ids[:50]]
+    assert [line.split(" (")[0] for line in lines] == [f"{_PREFIX}{v!r}" for v in ids]
+    assert [line for line in lines if line.endswith("(not placed)")] == [
+        f"{_PREFIX}{v!r} (not placed)" for v in ids[50:]
+    ]
+    assert "more values not shown" not in result.stdout
+
+
+def test_past_five_hundred_values_the_rest_are_counted(tmp_path: Path) -> None:
+    ids = [str(1000000 + n) for n in range(510)]
+    result = _run(tmp_path, json.dumps({"ids": ids}), json.dumps({"ids": ids}))
+    assert result.returncode == 1
+    assert len(_leak_lines(result.stdout)) == 500
     assert result.stdout.splitlines()[-1] == (
-        "fixture-leaks: 10 more values not shown; rewrite those above and run again."
+        "fixture-leaks: 10 more values not shown; the fixture is not done while this line prints."
     )
+
+
+def test_a_backslash_in_the_file_is_escaped_so_every_escape_is_the_scripts(tmp_path: Path) -> None:
+    capture = json.dumps({"id": "4471023"})
+    result = _run(tmp_path, capture, "path C:\\x1b 4471023\n")
+    assert _leak_lines(result.stdout) == [f"{_PREFIX}'4471023' (line 1: path C:\\\\x1b »4471023«)"]
+
+
+def test_a_console_that_cannot_encode_the_marks_gets_escapes_not_a_crash(tmp_path: Path) -> None:
+    capture = json.dumps({"name": "José García"})
+    (tmp_path / "capture.json").write_text(capture)
+    (tmp_path / "fixture.json").write_text(capture)
+    assert PYTHON is not None
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [PYTHON, str(SCRIPT), str(tmp_path / "capture.json"), str(tmp_path / "fixture.json")],
+        capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+    )
+    assert result.returncode == 1
+    assert b"Traceback" not in result.stderr
+    assert b"\\xbb" in result.stdout

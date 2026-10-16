@@ -43,8 +43,10 @@ the decoded text in compatibility form, cut the same way. Characters that are no
 printable, and a ``»`` or ``«`` in the file, are shown escaped (``\\xbb``), so a
 mark is always the script's and each place is one line. A value or match longer
 than 60 characters is shown as its first and last 30. No more of the file than
-that is printed, since it may hold other captured values, and only the first 50
-values are placed, then the count of the rest: rewrite those and run it again.
+that is printed, since it may hold other captured values. Only the first 50
+values are placed; the next 450 are named with ``(not placed)``, so a value kept on
+purpose cannot hide the ones behind it, and past 500 only a count prints, with the
+fixture not done while it does.
 With SIDECAR, it also prints the names the sidecar lists, since a sidecar is
 committed and the guide asks for both lists to be read, and compares SIDECAR, as
 parsed JSON, with the sidecar gp wrote beside CAPTURE (``CAPTURE.meta.json``),
@@ -368,6 +370,9 @@ _LONGEST_MATCH = 60
 # most this many values; past that, only the count of values not shown is printed.
 _MOST_PLACES = 5
 _MOST_VALUES = 50
+# Survivors past the placed ones are named without places, up to this many;
+# the rest are counted, as an unchanged copy of a large capture holds thousands.
+_MOST_NAMED = 500
 # The marks around a match. The context escapes them where the file holds them, so
 # a mark in the output is always the script's.
 _OPEN, _CLOSE = "»", "«"
@@ -385,12 +390,13 @@ def _printable(text: str) -> str:
     """*text* with every character that is not printable escaped, so a control
     character or line separator from the fixture can neither split the one output
     line nor reach the terminal as an escape sequence, and with the match marks
-    escaped too. A tab reads as a space."""
+    and backslashes escaped too, so every escape shown is the script's. A tab reads
+    as a space."""
     return "".join(
         " "
         if c == "\t"
         else c
-        if c.isprintable() and c not in (_OPEN, _CLOSE)
+        if c.isprintable() and c not in (_OPEN, _CLOSE, "\\")
         else c.encode("unicode_escape").decode("ascii")
         for c in text
     )
@@ -491,6 +497,9 @@ def survivors(capture: str, fixture: _Fixture) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(errors="backslashreplace")
     if len(argv) not in (3, 4):
         print("usage: fixture-leaks.py CAPTURE FIXTURE [SIDECAR]", file=sys.stderr)
         return 2
@@ -515,10 +524,15 @@ def main(argv: list[str]) -> int:
     for value in left[:_MOST_VALUES]:
         for place in found.places(_normal(value)):
             print(f"still in the fixture: {_cut(value)!r} ({place})")
-    if len(left) > _MOST_VALUES:
+    # Past the placed values each survivor is still named, without its places: a
+    # value kept on purpose is never rewritten, so a count alone would hide the
+    # values behind it on every run.
+    for value in left[_MOST_VALUES:_MOST_NAMED]:
+        print(f"still in the fixture: {_cut(value)!r} (not placed)")
+    if len(left) > _MOST_NAMED:
         print(
-            f"fixture-leaks: {len(left) - _MOST_VALUES} more values not shown; "
-            "rewrite those above and run again."
+            f"fixture-leaks: {len(left) - _MOST_NAMED} more values not shown; "
+            "the fixture is not done while this line prints."
         )
     if differs:
         print(

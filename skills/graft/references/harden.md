@@ -26,32 +26,32 @@ the text and the attribute values that carry data. Then run the fixture-leaks
 line of the Harden block on the capture, the fixture, and its sidecar. It prints
 each captured value or piece of one still in the fixture, with its line and the
 match marked `»` `«` (`found decoded:` for an escaped or encoded copy), and the
-names the sidecar lists; past fifty values, only a count. It exits 1, naming
-keys, when the sidecar differs from gp's: write gp's text again. Read the
-fixture for what it cannot see: a word in lower case on its own, a number
+names the sidecar lists; past fifty values, names only (`not placed`). It exits
+1, naming keys, when the sidecar differs from gp's: write gp's text again. Read
+the fixture for what it cannot see: a word in lower case on its own, a number
 written another way (`12345` as `12,345`), digits split across fields, and a
-copy re-encoded, such as base64. Exit 2 names what it could not read: rewrite a
-file you wrote; check a missing file's path. For the capture's sidecar, rerun
-the `gp observe fixtures` line and the check, and tell the user if it repeats. A
+copy re-encoded (base64). Exit 2 names what it could not read: rewrite a file
+you wrote; check a missing file's path. For the capture's sidecar, rerun the
+`gp observe fixtures` line and the check, and tell the user if it repeats. A
 capture that is not text (a PDF) was not compared: invent the fixture whole,
 read the plugin module by eye for that capture, and tell the user. Rewrite each
 value it prints unless it holds no account data and the command branches or
 selects on it (a status, a currency code, a class name), or the site shows it to
 every account (a heading, a button label), or it is part of a format (a year, a
-time-zone suffix). When every value left is one of those, the fixture is done;
-tell the user which values you kept, on which line (for `found decoded:`, its
-decoded text), and why. A sidecar is committed: when one of its names holds an
-account value, tell the user and do not commit it as it is (guide: Test against
-fixtures, not against the site). Run the same line again with the plugin module
-in place of the fixture and no sidecar, and rewrite any captured value it prints
-there, since a docstring and a comment hold invented values only; a match inside
-gp's `seen N time(s) in run` phrase is gp's run label, so keep it and tell the
-user. Then run the gate's `pytest` line through the runner in the Harden block:
-the generated suite checks every fixture on every run and names each one that is
-still byte for byte its capture or holds a flagged cookie or token name; rewrite
-any it names. Count the check as run only when that `pytest` output carries its
-`fixtures_are_sanitised:` line; without it the project lacks the wiring, so run
-the gate's plugin check and act on what it reports first.
+time-zone suffix). When every value left is one of those, with no
+`more values not shown` line, the fixture is done; tell the user which values
+you kept, where (the line, or a `found decoded:` text), and why. A sidecar is
+committed: when one of its names holds an account value, tell the user and do
+not commit it as it is (guide: Test against fixtures, not against the site). Run
+the same line again with the plugin module in place of the fixture and no
+sidecar, and rewrite any captured value it prints there, since a docstring and a
+comment hold invented values only; a match inside gp's `seen N time(s) in run`
+phrase is gp's run label, so keep it and tell the user. Then run the gate's
+`pytest` line through the runner in the Harden block: the generated suite checks
+every fixture on every run and names each one that is still byte for byte its
+capture or holds a flagged cookie or token name; rewrite any it names. Count the
+check as run only when that output carries its `fixtures_are_sanitised:` line;
+without it the project lacks the wiring: run the gate's plugin check, act on it.
 
 When gp says it can write no fixture for a command's endpoint, write a fixture
 and its sidecar yourself, with invented values in the shape the projection gives
