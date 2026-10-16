@@ -318,6 +318,14 @@ Cookies with `None` name or value are also skipped with a debug log (malformed c
 
 The filter can be disabled per-call with `skip_bot_cookies=False`. The `BOT_DETECTION_COOKIE_PREFIXES` tuple can be extended with patterns for Cloudflare, Imperva, PerimeterX, DataDome, and other WAFs as they are encountered.
 
+### Cookie Policy
+
+A graftpunk session sends the cookies the browser that captured it would send. The one place the standard library's rules differ from Chrome's is a `Secure` cookie over plain HTTP: `http.cookiejar.DefaultCookiePolicy` never sends one, and Chrome 155 (measured on 2026-10-16) sends one to `http://localhost`, `http://<name>.localhost`, `http://127.0.0.1` and `http://[::1]`. `graftpunk.cookies.BrowserCookiePolicy` is the standard policy plus that rule. Other addresses in `127.0.0.0/8` were not measured and are not treated as secure.
+
+Every `requests` session graftpunk builds carries the policy: `BrowserSession`, the `GraftpunkSession` that `load_session_for_api` and `load_session_for_api_from_bytes` return, and the plain session a command gets when it needs none (`graftpunk.cookies.BrowserCookieSession`, used for `gp http --no-session` and plugins with `requires_session = False`). Stock `requests` ignores a jar's policy when it sends (`Session.prepare_request` merges cookies into a new jar with the default policy, psf/requests#5449), so these sessions mix in `BrowserCookiesMixin`, which computes each request's `Cookie` header with the session jar's policy; a `Cookie` header the caller set is left alone. Redirects keep the policy, because `requests` follows them with a copy of the prepared request's jar and `RequestsCookieJar.copy()` copies the policy. A jar whose policy is a plain `DefaultCookiePolicy` gets a `BrowserCookiePolicy` with the same settings; a policy of any other class is kept as it is. Sessions cached by graftpunk 1.21.0 and earlier carry HTTPie's `HTTPieCookiePolicy` on their jar, and loading one replaces it the same way.
+
+graftpunk changes no process-global cookie state. HTTPie replaces `http.cookiejar.DefaultCookiePolicy` for the whole process when `httpie.compat` is imported, so graftpunk imports HTTPie only for `gp session export` (`BrowserSession.save_httpie_session`), inside `graftpunk.cookies.importing_httpie`, which puts the global back when the import returns. After `import graftpunk`, loading a session, a plugin command, `gp http` or `gp session export`, a program's own `requests.Session` uses the standard library's policy.
+
 ### Storage Backends
 
 Controlled by `GRAFTPUNK_STORAGE_BACKEND`:
