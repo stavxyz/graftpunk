@@ -11,9 +11,12 @@ policy, psf/requests#5449).
 
 graftpunk leaves process-global state as it found it. HTTPie works around the
 same requests issue by replacing ``http.cookiejar.DefaultCookiePolicy`` for the
-whole process when ``httpie.compat`` is imported, so graftpunk imports HTTPie
-only under :func:`importing_httpie`, which puts the global back (#253). Nothing
-here relies on that global either, since other code may have replaced it.
+whole process when ``httpie.compat`` is imported (``httpie.context`` imports
+it too), so graftpunk imports those only under :func:`importing_httpie`, which
+puts the global back (#253). Loading a session cached by 1.21.0 or earlier
+imports ``httpie.cookies``, whose class the pickle names; that module leaves
+the global alone. Nothing here relies on that global either, since other code
+may have replaced it.
 """
 
 from __future__ import annotations
