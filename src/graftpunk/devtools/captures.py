@@ -145,7 +145,8 @@ def write_sidecar(
     """Write *fixture*'s committable sidecar beside it and return its path.
 
     *fixture* must already be on disk: ``capture_sha256`` is the hash of its bytes
-    as written, which is what the in-suite check compares a derived fixture to.
+    as written, which is what the in-suite check compares a derived fixture to, or
+    null when it is empty, since an empty body holds nothing to sanitise.
     The sort and dedupe of ``body_params`` and ``flagged_names`` is
     ``Sidecar``'s own job, not this writer's.
     """
