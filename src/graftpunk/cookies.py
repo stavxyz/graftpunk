@@ -269,8 +269,8 @@ class BrowserCookieSession(BrowserCookiesMixin, requests.Session):
     """
 
 
-# Reentrant because gp session export opens the block and save_httpie_session
-# opens it again inside.
+# Reentrant so that a caller already inside the block can call
+# BrowserSession.save_httpie_session, which opens it again.
 _IMPORTING_HTTPIE = threading.RLock()
 
 

@@ -405,21 +405,32 @@ def test_overlapping_importing_httpie_blocks_leave_the_global_as_it_was(
     assert cookiejar.DefaultCookiePolicy is Before
 
 
-def test_importing_httpie_blocks_nest() -> None:
-    """gp session export opens the block, then save_httpie_session opens it again."""
+def test_a_caller_inside_importing_httpie_can_save_an_httpie_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """save_httpie_session opens the block again inside the caller's; a
+    plain Lock would deadlock here."""
     from graftpunk.cookies import importing_httpie
 
-    done = threading.Event()
+    _cache_fixture_session(tmp_path, monkeypatch)
+    session = cache.load_session("myshop")
+    target = tmp_path / "export.json"
+    errors: list[BaseException] = []
 
     def nested() -> None:
-        with importing_httpie(), importing_httpie():
-            done.set()
+        try:
+            with importing_httpie():
+                session.save_httpie_session("myshop", output=target)  # ty: ignore[unresolved-attribute]
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
 
     thread = threading.Thread(target=nested, daemon=True)
     thread.start()
-    thread.join(timeout=5)
+    thread.join(timeout=30)
 
-    assert done.is_set()
+    assert not thread.is_alive()
+    assert errors == []
+    assert target.exists()
 
 
 def _session_with_settings(session_class: type[requests.Session]) -> requests.Session:
