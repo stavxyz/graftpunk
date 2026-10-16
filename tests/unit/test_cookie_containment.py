@@ -181,3 +181,95 @@ def test_importing_httpie_puts_back_whatever_policy_was_there(
         raise RuntimeError("inside")
 
     assert cookiejar.DefaultCookiePolicy is Before
+
+
+_REBIND = """
+import json
+import sys
+from http import cookiejar
+
+import dill
+import requests
+
+
+class Mine(cookiejar.DefaultCookiePolicy):
+    def return_ok(self, cookie, request):
+        return False
+
+
+def rebind():
+    if kind == "httpie":
+        import httpie.compat  # noqa: F401
+    else:
+        cookiejar.DefaultCookiePolicy = Mine
+
+
+order, kind = sys.argv[1], sys.argv[2]
+if order == "before":
+    rebind()
+from graftpunk.cookies import BrowserCookiePolicy, BrowserCookieSession, use_browser_cookie_policy
+from graftpunk.graftpunk_session import GraftpunkSession
+if order == "after":
+    rebind()
+
+
+def cookie(session):
+    return session.prepare_request(requests.Request("GET", "http://localhost/")).headers.get(
+        "Cookie"
+    )
+
+
+class Chosen(cookiejar.DefaultCookiePolicy):
+    pass
+
+
+built = GraftpunkSession()
+built.cookies.set("tok", "1", domain="localhost.local", secure=True)
+# Unpickling resolves http.cookiejar.DefaultCookiePolicy through the global.
+pickled = BrowserCookieSession()
+pickled.cookies.set("tok", "1", domain="localhost.local", secure=True)
+reloaded = dill.loads(dill.dumps(pickled))
+handed = use_browser_cookie_policy(requests.cookies.RequestsCookieJar())
+chosen = requests.cookies.RequestsCookieJar(policy=Chosen())
+use_browser_cookie_policy(chosen)
+base = BrowserCookiePolicy.__mro__[1]
+print(json.dumps({
+    "base": f"{base.__module__}.{base.__qualname__}",
+    "built": type(built.cookies.get_policy()).__qualname__,
+    "built_cookie": cookie(built),
+    "reloaded": type(reloaded.cookies.get_policy()).__qualname__,
+    "reloaded_cookie": cookie(reloaded),
+    "handed": type(handed.get_policy()).__qualname__,
+    "chosen": type(chosen.get_policy()).__qualname__,
+}))
+"""
+
+
+@pytest.mark.parametrize("order", ["before", "after"])
+@pytest.mark.parametrize("kind", ["httpie", "mine"])
+def test_a_replaced_global_policy_class_is_treated_the_same_in_either_import_order(
+    order: str, kind: str, tmp_path: Path
+) -> None:
+    """A session graftpunk builds or reloads, and a jar it is handed with the
+    default policy, get the browser policy whatever class the global names,
+    whether the global was replaced before or after graftpunk was imported. A
+    policy class a program set on its jar is kept."""
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _REBIND, order, kind],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(_REPO), "HOME": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    assert json.loads(result.stdout.splitlines()[-1]) == {
+        "base": "http.cookiejar.DefaultCookiePolicy",
+        "built": "BrowserCookiePolicy",
+        "built_cookie": "tok=1",
+        "reloaded": "BrowserCookiePolicy",
+        "reloaded_cookie": "tok=1",
+        "handed": "BrowserCookiePolicy",
+        "chosen": "Chosen",
+    }

@@ -247,7 +247,7 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
                 ) from exc
 
         # The nodriver branch initializes requests.Session directly, past the mixin.
-        self._use_browser_cookie_policy()
+        self._give_new_jar_the_browser_cookie_policy()
 
     @property
     def session_name(self) -> str:

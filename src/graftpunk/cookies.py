@@ -9,10 +9,11 @@ jar's policy for every request it sends, which stock ``requests`` does not
 (``Session.prepare_request`` merges cookies into a fresh jar with the default
 policy, psf/requests#5449).
 
-Nothing here changes process-global state. HTTPie works around the same
-requests issue by replacing ``http.cookiejar.DefaultCookiePolicy`` for the
+graftpunk leaves process-global state as it found it. HTTPie works around the
+same requests issue by replacing ``http.cookiejar.DefaultCookiePolicy`` for the
 whole process when ``httpie.compat`` is imported, so graftpunk imports HTTPie
-only under :func:`importing_httpie`, which puts the global back (#253).
+only under :func:`importing_httpie`, which puts the global back (#253). Nothing
+here relies on that global either, since other code may have replaced it.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http import cookiejar
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import urlsplit
 
 import requests
@@ -45,8 +46,31 @@ def is_secure_loopback_host(host: str) -> bool:
     return host in LOOPBACK_HOSTS or host.endswith(LOCALHOST_SUFFIX)
 
 
-class BrowserCookiePolicy(cookiejar.DefaultCookiePolicy):
-    """The standard policy, plus Chrome's rule that a loopback origin is secure."""
+def _stdlib_default_policy() -> type:
+    # The module attribute may already name HTTPie's class or a program's own,
+    # which normally subclass the original; the original is the class that
+    # http.cookiejar defines.
+    candidates = [*cookiejar.DefaultCookiePolicy.__mro__, *cookiejar.CookiePolicy.__subclasses__()]
+    for cls in candidates:
+        if cls.__module__ == "http.cookiejar" and cls.__qualname__ == "DefaultCookiePolicy":
+            return cls
+    raise ImportError("cannot find the class http.cookiejar defines as DefaultCookiePolicy")
+
+
+if TYPE_CHECKING:
+    STDLIB_DEFAULT_POLICY = cookiejar.DefaultCookiePolicy
+else:
+    STDLIB_DEFAULT_POLICY = _stdlib_default_policy()
+
+
+def _settings(policy: object) -> dict[str, Any]:
+    # A policy's settings (blocked domains, strictness flags); _now is a
+    # timestamp the jar refreshes on every use.
+    return {k: v for k, v in vars(policy).items() if k != "_now"}
+
+
+class BrowserCookiePolicy(STDLIB_DEFAULT_POLICY):
+    """The standard library's policy, plus Chrome's rule that a loopback origin is secure."""
 
     def return_ok_secure(self, cookie: cookiejar.Cookie, request: Any) -> bool:
         if super().return_ok_secure(cookie, request):
@@ -57,19 +81,24 @@ class BrowserCookiePolicy(cookiejar.DefaultCookiePolicy):
 
 
 def _replaceable(policy: object) -> bool:
-    # The stdlib default, and HTTPie's policy as earlier releases pickled it
-    # (or the stub the browser-free unpickler substitutes when HTTPie is
-    # absent). Any other class is one a caller chose, and is kept.
-    return type(policy) is cookiejar.DefaultCookiePolicy or (
-        type(policy).__name__ == "HTTPieCookiePolicy"
+    # A default, not a choice: the standard library's class; HTTPie's as
+    # earlier releases pickled it (or the stub the browser-free unpickler
+    # substitutes when HTTPie is absent), matched by name so that checking
+    # never imports HTTPie; and the class the global names now, which a jar
+    # created or unpickled under that global was given (unpickling resolves
+    # http.cookiejar.DefaultCookiePolicy through the global). Any other class
+    # is one a program chose for this jar, and is kept.
+    cls = type(policy)
+    return (
+        cls is STDLIB_DEFAULT_POLICY
+        or cls is cookiejar.DefaultCookiePolicy
+        or cls.__name__ == "HTTPieCookiePolicy"
     )
 
 
 def _browser_policy_like(policy: object) -> BrowserCookiePolicy:
-    # Keeps the replaced policy's settings (blocked domains, strictness flags);
-    # _now is a timestamp the jar refreshes on every use.
     browser = BrowserCookiePolicy()
-    browser.__dict__.update({k: v for k, v in vars(policy).items() if k != "_now"})
+    browser.__dict__.update(_settings(policy))
     return browser
 
 
@@ -79,9 +108,16 @@ _Jar = TypeVar("_Jar", bound=cookiejar.CookieJar)
 def use_browser_cookie_policy(jar: _Jar) -> _Jar:
     """Give *jar* a :class:`BrowserCookiePolicy` with its current policy's settings.
 
-    Only a ``DefaultCookiePolicy`` or an HTTPie ``HTTPieCookiePolicy`` is
-    replaced; a jar whose policy is any other class keeps it. Returns *jar*, so
-    a load path can wrap the jar it hands back.
+    For a jar graftpunk did not create: one loaded from a cache, or one a
+    program assigns to a session. A default policy is replaced: the standard
+    library's ``DefaultCookiePolicy``, HTTPie's ``HTTPieCookiePolicy``, or the
+    class ``http.cookiejar.DefaultCookiePolicy`` names when this runs (a
+    program may have installed its own, before or after importing graftpunk
+    alike), since a jar created or unpickled under that global was given it
+    by default. A policy of any other class was set on this jar by a program,
+    and is kept. graftpunk cannot tell a policy set explicitly from a default
+    when both are the global's class, and replaces it. Returns *jar*, so a
+    load path can wrap the jar it hands back.
     """
     policy = getattr(jar, "_policy", None)
     if _replaceable(policy):
@@ -92,9 +128,13 @@ def use_browser_cookie_policy(jar: _Jar) -> _Jar:
 class BrowserCookiesMixin:
     """Mix into a ``requests.Session`` subclass, ahead of ``requests.Session``.
 
-    The session's jar gets a :class:`BrowserCookiePolicy`, and each request's
-    ``Cookie`` header is computed with the session jar's policy. Redirects keep
-    it: requests follows them with a copy of the prepared request's jar, and
+    The jar the session creates gets a :class:`BrowserCookiePolicy` whatever
+    ``http.cookiejar.DefaultCookiePolicy`` names at the time, so a graftpunk
+    session sends what the browser would send even when other code replaced
+    that global. A jar assigned or unpickled later is treated as
+    :func:`use_browser_cookie_policy` says. Each request's ``Cookie`` header is
+    computed with the session jar's policy. Redirects keep it: requests follows
+    them with a copy of the prepared request's jar, and
     ``RequestsCookieJar.copy()`` carries the policy.
 
     ``prepare_request`` replaces ``requests.Session.prepare_request`` rather
@@ -111,15 +151,22 @@ class BrowserCookiesMixin:
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._use_browser_cookie_policy()
+        self._give_new_jar_the_browser_cookie_policy()
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         super().__setstate__(state)  # ty: ignore[unresolved-attribute]
         self._use_browser_cookie_policy()
 
+    def _give_new_jar_the_browser_cookie_policy(self) -> None:
+        # requests.Session.__init__ just made this jar with whatever class the
+        # global named; no caller chose it.
+        jar = getattr(self, "cookies", None)
+        if isinstance(jar, cookiejar.CookieJar):
+            jar.set_policy(BrowserCookiePolicy())
+
     def _use_browser_cookie_policy(self) -> None:
-        # A session without a jar yet (requests.Session.__init__ not run, or a
-        # pickle state without cookies) gets the policy in prepare_request.
+        # A session without a jar yet (a pickle state without cookies) gets the
+        # policy in prepare_request.
         jar = getattr(self, "cookies", None)
         if isinstance(jar, cookiejar.CookieJar):
             use_browser_cookie_policy(jar)
