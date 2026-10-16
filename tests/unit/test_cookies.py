@@ -32,6 +32,7 @@ from graftpunk.cookies import (
     BrowserCookiePolicy,
     BrowserCookieSession,
     _is_secure_loopback_host,
+    importing_httpie,
     use_browser_cookie_policy,
 )
 from graftpunk.graftpunk_session import GraftpunkSession
@@ -310,24 +311,61 @@ def test_an_exported_session_sends_its_cookies_through_httpie(
     result = CliRunner().invoke(session_app, ["export", "myshop", "-o", str(target)])
     assert result.exit_code == 0, result.output
 
+    # The fixture's cookies are for example.com.
+    assert _httpie_cookie(target, "http://example.com/x", tmp_path) == (
+        "User=dummyuser; Password=dummypass"
+    )
+    assert _httpie_cookie(target, "http://localhost/x", tmp_path) is None
+
+
+def _httpie_cookie(session_file: pathlib.Path, url: str, tmp_path: pathlib.Path) -> str | None:
+    """The Cookie header HTTPie sends to *url* with *session_file*, offline."""
     http = pathlib.Path(sys.executable).parent / "http"
     sent = subprocess.run(  # noqa: S603
         [
             str(http),
             "--offline",
             "--ignore-stdin",
-            f"--session={target}",
+            f"--session-read-only={session_file}",
             "GET",
-            "http://localhost/x",
+            url,
         ],
         capture_output=True,
         text=True,
         timeout=60,
-        env={**os.environ, "HOME": str(tmp_path / "home")},
+        env={
+            **os.environ,
+            "HOME": str(tmp_path / "home"),
+            "HTTPIE_CONFIG_DIR": str(tmp_path / "httpie"),
+        },
     )
-
     assert sent.returncode == 0, sent.stderr
-    assert "Cookie: User=dummyuser; Password=dummypass" in sent.stdout.splitlines(), sent.stdout
+    cookies = [line for line in sent.stdout.splitlines() if line.startswith("Cookie: ")]
+    assert len(cookies) <= 1, sent.stdout
+    return cookies[0].removeprefix("Cookie: ") if cookies else None
+
+
+def test_an_exported_session_keeps_each_cookies_domain_path_and_secure_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """#260: the export used to keep only names and values."""
+    with importing_httpie():
+        import httpie.context
+    monkeypatch.setattr(httpie.context.Environment, "config_dir", tmp_path / "httpie")
+    session = _browser_session()
+    session._session_name = "myshop"
+    session._webdriver = types.SimpleNamespace(current_url="https://myshop.example/")
+    session.cookies.set("tok", "1", domain="myshop.example")
+    session.cookies.set("sec", "1", domain="myshop.example", secure=True)
+    session.cookies.set("api", "1", domain="myshop.example", path="/api")
+    target = session.save_httpie_session(output=tmp_path / "myshop.json")
+
+    assert _httpie_cookie(target, "http://other.example/", tmp_path) is None
+    assert _httpie_cookie(target, "http://myshop.example/", tmp_path) == "tok=1"
+    assert _httpie_cookie(target, "https://myshop.example/", tmp_path) == "tok=1; sec=1"
+    assert _httpie_cookie(target, "https://myshop.example/api/x", tmp_path) == (
+        "api=1; tok=1; sec=1"
+    )
 
 
 class _CookieAuth(requests.auth.AuthBase):

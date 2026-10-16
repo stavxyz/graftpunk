@@ -21,13 +21,13 @@ Example:
 """
 
 import asyncio
+import copy
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
 import requestium
 import requests.cookies
-import requests.utils
 import selenium.common.exceptions
 import slugify as slugify_lib
 import webdriver_manager.chrome
@@ -801,9 +801,12 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
 
         # get_httpie_session has already read any existing file, so assigning
         # the jar here replaces that file's cookies with this session's.
-        cookiejar_dict = requests.utils.dict_from_cookiejar(self.cookies)
-        cookiejar = requests.utils.cookiejar_from_dict(cookiejar_dict)
-        httpie_session.cookie_jar = cookiejar
+        # Copies, so HTTPie's session never holds this session's Cookie objects;
+        # each keeps its domain, path, Secure flag and expiry (#260).
+        exported = requests.cookies.RequestsCookieJar()
+        for cookie in self.cookies:
+            exported.set_cookie(copy.copy(cookie))
+        httpie_session.cookie_jar = exported
         httpie_session.post_process_data(httpie_session)
         httpie_session.save()
 
