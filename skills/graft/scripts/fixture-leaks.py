@@ -36,12 +36,14 @@ It says where each value is, so the skill can name the line it keeps: one line o
 output per line of FIXTURE that holds it, at most five, as ``still in the fixture:
 '2026' (line 25: ...in a browser on »2026«-10-13.)``, the 1-based line number in
 the file as read and the match between ``»`` and ``«`` with up to 30 characters
-each side, as the file holds them, then ``(and N more lines)`` past five. A value
+each side, then ``(and N more lines)`` past five. A value
 found only in a decoded form (escaped, percent-encoded, or HTML-unescaped) has no
 line in the file, so it prints once as ``(found decoded: ...»José«...)``, from
 the decoded text in compatibility form, cut the same way. Characters that are not
-printable, and a ``»`` or ``«`` in the file, are shown escaped (``\\xbb``), so a
-mark is always the script's and each place is one line. A value or match longer
+printable, a backslash (shown doubled), and a ``»`` or ``«`` in the file are shown
+escaped (``\\xbb``), so on a console that can print them a mark is always the
+script's, and each place is one line. A console that cannot print the marks gets
+them escaped too, where the line number still locates the match. A value or match longer
 than 60 characters is shown as its first and last 30. No more of the file than
 that is printed, since it may hold other captured values. Only the first 50
 values are placed; the next 450 are named with ``(not placed)``, so a value kept on
@@ -367,7 +369,7 @@ def _fold_chunks(text: str) -> Iterator[tuple[int, int]]:
 _CONTEXT = 30
 _LONGEST_MATCH = 60
 # Each place is printed on a line of its own, at most this many per value, for at
-# most this many values; past that, only the count of values not shown is printed.
+# most this many values.
 _MOST_PLACES = 5
 _MOST_VALUES = 50
 # Survivors past the placed ones are named without places, up to this many;
