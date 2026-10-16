@@ -97,7 +97,10 @@ def test_a_fully_invented_fixture_reports_only_what_was_kept_on_purpose(tmp_path
     result = _run(tmp_path, json.dumps(_CAPTURE), fixture)
     assert result.returncode == 1
     lines = [line for line in result.stdout.splitlines() if line.startswith("still in")]
-    assert lines == ["still in the fixture: 'shipped'"]
+    assert lines == [
+        "still in the fixture: 'shipped' "
+        '(line 1: ...d": "ORD-9000001", "status": ">>shipped<<", "total": 999, "customer": {...)'
+    ]
 
 
 def test_nothing_left_exits_0(tmp_path: Path) -> None:
@@ -530,3 +533,84 @@ def test_a_capture_that_is_not_text_exits_2(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert f"fixture-leaks: cannot read the capture {capture}:" in result.stderr
     assert result.stdout == ""
+
+
+def _leak_lines(stdout: str) -> list[str]:
+    return [line for line in stdout.splitlines() if line.startswith("still in the fixture:")]
+
+
+def test_each_place_names_its_line_and_marks_the_match(tmp_path: Path) -> None:
+    """The skill keeps a value only for a stated reason, so it is told where the
+    value is (#238): the 1-based line of the raw file and the match marked in it."""
+    capture = json.dumps({"placed": "2026-09-30", "status": "shipped"})
+    module = (
+        '"""Orders for myshop."""\n'
+        "\n"
+        "# Recorded from https://myshop.example/login in a browser on 2026-10-13.\n"
+        "STATUS = 'pending'\n"
+    )
+    result = _run(tmp_path, capture, module)
+    assert result.returncode == 1
+    assert _leak_lines(result.stdout) == [
+        "still in the fixture: '2026' (line 3: ...example/login in a browser on >>2026<<-10-13.)"
+    ]
+
+
+def test_a_value_on_several_lines_names_each_up_to_five(tmp_path: Path) -> None:
+    capture = json.dumps({"id": "4471023"})
+    fixture = "\n".join(f"row {n} 4471023" for n in range(1, 8))
+    result = _run(tmp_path, capture, fixture)
+    assert _leak_lines(result.stdout) == [
+        *(f"still in the fixture: '4471023' (line {n}: row {n} >>4471023<<)" for n in range(1, 6)),
+        "still in the fixture: '4471023' (and 2 more lines)",
+    ]
+
+
+def test_a_long_line_is_cut_around_the_match(tmp_path: Path) -> None:
+    """The file may hold other captured values, so no more of the line than the
+    match's neighborhood is printed."""
+    capture = json.dumps({"id": "4471023"})
+    fixture = json.dumps({"head": "H" * 200, "id": "4471023", "tail": "T" * 200})
+    result = _run(tmp_path, capture, fixture)
+    (line,) = _leak_lines(result.stdout)
+    assert line == (
+        "still in the fixture: '4471023' "
+        f'(line 1: ...{"H" * 20}", "id": ">>4471023<<", "tail": "{"T" * 18}...)'
+    )
+
+
+def test_a_long_match_is_shortened_in_the_middle(tmp_path: Path) -> None:
+    value = "Alice " + "x" * 100 + " Smith"
+    result = _run(tmp_path, json.dumps({"note": value}), json.dumps({"note": value}))
+    whole = [line for line in _leak_lines(result.stdout) if line.startswith(f"{_PREFIX}{value!r}")]
+    assert whole == [f'{_PREFIX}{value!r} (line 1: {{"note": ">>{value[:30]}...{value[-30:]}<<"}})']
+
+
+_PREFIX = "still in the fixture: "
+
+
+def test_a_value_found_only_decoded_says_so_without_a_line(tmp_path: Path) -> None:
+    """A line number refers to the raw file, where an escaped copy does not read
+    as the value, so the decoded match is shown instead."""
+    capture = json.dumps({"name": "José García"}, ensure_ascii=False)
+    result = _run(tmp_path, capture, json.dumps({"name": "José García"}))
+    assert result.returncode == 1
+    lines = [line for line in _leak_lines(result.stdout) if "José García'" in line]
+    assert lines == [f"{_PREFIX}'José García' (found decoded: >>José García<<)"]
+
+
+def test_a_match_in_another_case_is_placed(tmp_path: Path) -> None:
+    capture = json.dumps({"note": "Leave with Okonkwo"})
+    result = _run(tmp_path, capture, "x = 1\nOKONKWO_ID = 2\n")
+    assert f"{_PREFIX}'Okonkwo' (line 2: >>OKONKWO<<_ID = 2)" in _leak_lines(result.stdout)
+
+
+def test_the_neighborhood_shows_gps_run_label_as_written(tmp_path: Path) -> None:
+    """The run label's date is blanked for the search, not for the output: a line
+    is shown as the file holds it."""
+    capture = json.dumps({"placed": "2026-09-30"})
+    module = "# seen 2 time(s) in run myshop/20261006-101500-4242. since 2026\n"
+    result = _run(tmp_path, capture, module)
+    assert _leak_lines(result.stdout) == [
+        f"{_PREFIX}'2026' (line 1: ...p/20261006-101500-4242. since >>2026<<)"
+    ]

@@ -27,11 +27,19 @@ digit run written by hand into those 14 digits is therefore not caught.
 What it cannot see, which needs a read by eye: a captured lowercase word alone, a
 capitalised word copied in lower case on its own, a number reformatted (``12345`` as
 ``12,345``), digits split across fields, and a copy re-encoded another way (base64).
-It does one substring search per captured value, so a capture of a megabyte or more
-takes tens of seconds.
+It searches each form of the fixture once per captured value, so a capture of a
+megabyte or more takes tens of seconds.
 
 A string the command branches or selects on (a status, a currency code, a class
 name) may be kept on purpose; the skill decides, so this reports and never edits.
+It says where each value is, so the skill can name the line it keeps: one line of
+output per line of FIXTURE that holds it, at most five, as ``still in the fixture:
+'2026' (line 25: ...in a browser on >>2026<<-10-13.)``, the 1-based line number in
+the file as read and the match between ``>>`` and ``<<`` with up to 30 characters
+each side, then ``(and N more lines)`` past five. A value found only in a decoded
+form (escaped, percent-encoded, or HTML-unescaped) has no line in the file, so it
+prints once as ``(found decoded: ...>>José<<...)``, cut the same way. No more of
+the file than that is printed, since it may hold other captured values.
 With SIDECAR, it also prints the names the sidecar lists, since a sidecar is
 committed and the guide asks for both lists to be read, and compares SIDECAR, as
 parsed JSON, with the sidecar gp wrote beside CAPTURE (``CAPTURE.meta.json``),
@@ -50,6 +58,7 @@ import json
 import re
 import sys
 import unicodedata
+from bisect import bisect_right
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -212,8 +221,22 @@ _BEFORE = r"(?<![^\W_])"
 _AFTER = r"(?![^\W_])"
 
 
-def _found(value: str, haystack: str, folded: str) -> bool:
-    """Whether *value* is in the fixture.
+def _folded(text: str) -> tuple[str, list[int]]:
+    """*text* case-folded, and for each folded character the index in *text* of the
+    character it came from: folding can lengthen a character (``ß`` to ``ss``), and
+    a match in the folded text is reported at its place in *text*."""
+    folded: list[str] = []
+    origin: list[int] = []
+    for i, char in enumerate(text):
+        fold = char.casefold()
+        folded.append(fold)
+        origin.extend([i] * len(fold))
+    return "".join(folded), origin
+
+
+def _spans(value: str, text: str, folded: str, origin: list[int]) -> list[tuple[int, int]]:
+    """Where *value* is in *text*, as (start, end) pairs, *folded* and *origin* being
+    :func:`_folded` of *text*.
 
     A piece with a space, a digit, or an ``@`` matches in any case. A single word
     matches as written; in capitals as a whole word (``OKONKWO_ID``); and in lower
@@ -221,23 +244,107 @@ def _found(value: str, haystack: str, folded: str) -> bool:
     ``.`` (``test_okonkwo_order``, ``okonkwo@example.com``). A lowercase word standing
     alone is not matched, so ``Total`` on a page is not found in ``total, shipping``.
     """
-    if value in haystack:
-        return True
+    spans = [m.span() for m in re.finditer(re.escape(value), text)]
     if any(c.isspace() or c.isdigit() or c == "@" for c in value):
-        return value.casefold() in folded
-    word = re.escape(value.upper())
-    if re.search(rf"{_BEFORE}{word}{_AFTER}", haystack):
-        return True
-    low = re.escape(value.casefold())
-    joined = rf"(?:(?<=[_@.]){low}{_AFTER}|{_BEFORE}{low}(?=[_@.]))"
-    return re.search(joined, folded) is not None
+        folded_patterns = [re.escape(value.casefold())]
+    else:
+        word = re.escape(value.upper())
+        spans += [m.span() for m in re.finditer(rf"{_BEFORE}{word}{_AFTER}", text)]
+        low = re.escape(value.casefold())
+        folded_patterns = [rf"(?:(?<=[_@.]){low}{_AFTER}|{_BEFORE}{low}(?=[_@.]))"]
+    for pattern in folded_patterns:
+        # A piece is at least _MIN_LENGTH characters, so a match is never empty.
+        for m in re.finditer(pattern, folded):
+            spans.append((origin[m.start()], origin[m.end() - 1] + 1))
+    return sorted(set(spans))
 
 
-def survivors(capture: str, fixture: str) -> list[str]:
-    """Each captured value that still appears in *fixture*, in any of its forms."""
-    haystack = _normal("\n".join(_decodings(fixture)))
-    folded = haystack.casefold()
-    return [v for v in captured_values(capture) if _found(_normal(v), haystack, folded)]
+# How much of a line is shown each side of a match, and the longest match shown
+# whole; the file may hold captured values, so no more of it is printed than this.
+_CONTEXT = 30
+_LONGEST_MATCH = 60
+# Each place is printed on a line of its own, at most this many per value.
+_MOST_PLACES = 5
+
+
+def _neighborhood(text: str, start: int, end: int) -> str:
+    """The match at *start*:*end* marked ``>>`` ``<<`` within its line, cut to
+    :data:`_CONTEXT` characters each side, on one line."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    line_end = len(text) if line_end == -1 else line_end
+    left = max(line_start, start - _CONTEXT)
+    right = min(line_end, end + _CONTEXT)
+    match = text[start:end]
+    if len(match) > _LONGEST_MATCH:
+        half = _LONGEST_MATCH // 2
+        match = f"{match[:half]}...{match[-half:]}"
+    shown = (
+        ("..." if left > line_start else "")
+        + text[left:start]
+        + f">>{match}<<"
+        + text[end:right]
+        + ("..." if right < line_end else "")
+    )
+    return shown.replace("\r", "\\r").replace("\n", "\\n").replace("\t", " ")
+
+
+class _Form:
+    """One form of the fixture, compatibility-normalised, with what a search of it
+    needs computed once: its case-folded text and where each line starts."""
+
+    def __init__(self, text: str) -> None:
+        self.text = _normal(text)
+        self.folded, self.origin = _folded(self.text)
+        self.line_starts = [0] + [i + 1 for i, c in enumerate(self.text) if c == "\n"]
+
+    def spans(self, value: str) -> list[tuple[int, int]]:
+        return _spans(value, self.text, self.folded, self.origin)
+
+    def line_of(self, offset: int) -> int:
+        """The 1-based line number of *offset*."""
+        return bisect_right(self.line_starts, offset)
+
+
+def _places(value: str, raw: _Form, shown: str, decoded: list[_Form]) -> list[str]:
+    """Where *value* is: ``line N: <neighborhood>`` for each line of *raw* that holds
+    it, the neighborhood taken from *shown* (the same text before gp's run labels
+    were blanked), or, when no line does, ``found decoded: <neighborhood>`` from the
+    first decoded form that holds it. Empty when it is in neither."""
+    lines: dict[int, tuple[int, int]] = {}
+    for start, end in raw.spans(value):
+        lines.setdefault(raw.line_of(start), (start, end))
+    if lines:
+        places = [
+            f"line {number}: {_neighborhood(shown, *span)}"
+            for number, span in sorted(lines.items())[:_MOST_PLACES]
+        ]
+        if len(lines) > _MOST_PLACES:
+            places.append(f"and {len(lines) - _MOST_PLACES} more lines")
+        return places
+    for form in decoded:
+        spans = form.spans(value)
+        if spans:
+            return [f"found decoded: {_neighborhood(form.text, *spans[0])}"]
+    return []
+
+
+def survivors(capture: str, fixture: str, shown: str | None = None) -> list[tuple[str, list[str]]]:
+    """Each captured value that still appears in *fixture*, in any of its forms, with
+    the places :func:`_places` gives for it. *shown* is the fixture as read, when
+    *fixture* is that text with gp's run labels blanked, so a neighborhood shows the
+    file's own text; the blanking keeps every character in its place."""
+    raw = _Form(fixture)
+    display = _normal(shown) if shown is not None else raw.text
+    if len(display) != len(raw.text):
+        display = raw.text
+    decoded = [_Form(text) for text in _decodings(fixture)[1:]]
+    found = []
+    for value in captured_values(capture):
+        places = _places(_normal(value), raw, display, decoded)
+        if places:
+            found.append((value, places))
+    return found
 
 
 def main(argv: list[str]) -> int:
@@ -260,9 +367,10 @@ def main(argv: list[str]) -> int:
     differs = _keys_differing_from_gps(Path(argv[1]), sidecar) if sidecar is not None else []
     if differs is None:
         return 2
-    left = survivors(capture, _without_provenance(fixture))
-    for value in left:
-        print(f"still in the fixture: {value!r}")
+    left = survivors(capture, _without_provenance(fixture), fixture)
+    for value, places in left:
+        for place in places:
+            print(f"still in the fixture: {value!r} ({place})")
     if differs:
         print(
             f"the sidecar differs from the capture's in {', '.join(differs)}: "
