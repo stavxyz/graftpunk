@@ -322,5 +322,11 @@ def get_logger(name: str | None = None) -> GraftpunkLogger:
 
     Args:
         name: Passed to the logger factory, as ``structlog.get_logger(name)`` does.
+            Defaults to the calling module's ``__name__``: the factory runs at
+            log time, when the nearest frame outside structlog is graftpunk's,
+            so a factory that names loggers after their caller (the stdlib
+            ``LoggerFactory``) cannot find the module itself.
     """
+    if name is None:
+        name = sys._getframe(1).f_globals.get("__name__")
     return GraftpunkLogger(() if name is None else (name,), {})

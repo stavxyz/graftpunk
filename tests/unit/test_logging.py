@@ -557,3 +557,28 @@ class TestExceptionRendering:
             assert "Traceback (most recent call last):" in captured.err
             assert "ZeroDivisionError: division by zero" in captured.err
             assert "\n    1 / 0" in captured.err
+
+
+def test_unnamed_logger_is_named_after_the_calling_module(tmp_path: Path) -> None:
+    """With the stdlib LoggerFactory, ``get_logger()`` names the module that called it."""
+    (tmp_path / "plugin_mod.py").write_text(
+        "from graftpunk.logging import get_logger\n"
+        "LOG = get_logger()\n"
+        "def run():\n"
+        "    LOG.warning('named_marker')\n"
+    )
+    proc = _run(
+        "import logging, sys, structlog\n"
+        f"sys.path.insert(0, {str(tmp_path)!r})\n"
+        "logging.basicConfig(stream=sys.stderr, format='%(name)s|%(message)s')\n"
+        "structlog.configure(\n"
+        "    processors=[structlog.stdlib.add_logger_name,\n"
+        "                structlog.processors.KeyValueRenderer(key_order=['event'])],\n"
+        "    wrapper_class=structlog.stdlib.BoundLogger,\n"
+        "    logger_factory=structlog.stdlib.LoggerFactory(),\n"
+        ")\n"
+        "import plugin_mod\n"
+        "plugin_mod.run()\n"
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == "plugin_mod|event='named_marker' logger='plugin_mod'\n"
