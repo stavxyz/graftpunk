@@ -452,6 +452,7 @@ class TestBoundKeysNamedLikeStructlogParameters:
         import structlog
 
         from graftpunk.logging import get_logger
+        from tests.unit.cli_harness import strip_ansi
 
         structlog.get_logger().bind(**{key: "bound_value"}).warning("line")
         plain = capsys.readouterr().out
@@ -460,9 +461,12 @@ class TestBoundKeysNamedLikeStructlogParameters:
         assert captured.out == ""
         assert not structlog.is_configured()
         # The timestamp formats differ; the rest of the console line is the same.
+        # graftpunk colours by FORCE_COLOR, NO_COLOR and the terminal, while
+        # structlog's default renderer decided once at import, so compare text.
         level = "[warning  ] "
+        err, plain = strip_ansi(captured.err), strip_ansi(plain)
         assert "bound_value" in plain
-        assert captured.err.split(level, 1)[1] == plain.split(level, 1)[1]
+        assert err.split(level, 1)[1] == plain.split(level, 1)[1]
 
     @pytest.mark.parametrize("key", _WRAP_LOGGER_PARAMETER_NAMES)
     def test_configured(self, key: str) -> None:
