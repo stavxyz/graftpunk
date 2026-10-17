@@ -16,6 +16,14 @@ jar's policy for every request it sends, which stock ``requests`` does not
 (``Session.prepare_request`` merges cookies into a fresh jar with the default
 policy, psf/requests#5449).
 
+``http.cookiejar`` files a cookie from a host without a dot under
+``<host>.local``, the same domain as a cookie from the mDNS host of that name,
+so a host-only cookie records the host that set it in its ``graftpunk-host``
+nonstandard attribute, and the policy sends it to that host alone. An HTTPie
+session file has no place for that attribute: a host-only cookie exported for
+``printer`` or ``printer.local`` keeps the domain ``printer.local``, the only
+form HTTPie sends to ``printer``, and HTTPie sends it to both hosts.
+
 graftpunk leaves process-global state as it found it. HTTPie works around the
 same requests issue by replacing ``http.cookiejar.DefaultCookiePolicy`` for the
 whole process when ``httpie.compat`` is imported (``httpie.context`` imports
