@@ -930,6 +930,98 @@ def test_an_exported_session_sends_captured_cookies_for_hosts_without_a_dot(
     assert _httpie_cookie(target, "http://example.com/", tmp_path) is None
 
 
+def _set_through_credentialed_url(session: requests.Session) -> None:
+    headers = email.message.Message()
+    headers["Set-Cookie"] = "tok=1; Path=/"
+    response = types.SimpleNamespace(info=lambda: headers)
+    request = urllib.request.Request("http://u:secretpw@localhost:8080/")  # noqa: S310
+    session.cookies.extract_cookies(response, request)
+
+
+def test_an_export_keeps_credentials_from_the_url_out_of_the_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    with importing_httpie():
+        import httpie.context
+    monkeypatch.setattr(httpie.context.Environment, "config_dir", tmp_path / "httpie")
+    session = _captured_by_nodriver([])
+    _set_through_credentialed_url(session)
+    assert {c.domain for c in session.cookies} == {"u:secretpw@localhost.local"}
+    session._session_name = "local"
+    session._webdriver = types.SimpleNamespace(current_url="http://localhost:8080/")
+    target = session.save_httpie_session(output=tmp_path / "local.json")
+
+    assert "secretpw" not in target.read_text()
+    assert _httpie_cookie(target, "http://localhost:8080/", tmp_path) == "tok=1"
+
+
+def test_inject_logs_name_the_host_without_credentials_from_the_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graftpunk import session as session_module
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        session_module.LOG, "debug", lambda event, **kw: events.append({"event": event, **kw})
+    )
+    session = _captured_by_nodriver([])
+    _set_through_credentialed_url(session)
+    session.cookies.set_cookie(
+        cookiejar.Cookie(
+            0,
+            "ak_bmsc",
+            "1",
+            None,
+            False,
+            "u:secretpw@localhost.local",
+            False,
+            False,
+            "/",
+            True,
+            False,
+            None,
+            True,
+            None,
+            None,
+            {},
+        )
+    )
+    session.cookies.set_cookie(
+        cookiejar.Cookie(
+            0,
+            "empty",
+            None,
+            None,
+            False,
+            "u:secretpw@localhost.local",
+            False,
+            False,
+            "/",
+            True,
+            False,
+            None,
+            True,
+            None,
+            None,
+            {},
+        )
+    )
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            next(command)
+
+    asyncio.run(inject_cookies_to_nodriver(_Tab(), session.cookies))
+
+    skipped = {e["event"]: e["domain"] for e in events if e["event"].startswith("inject_skipping")}
+    assert skipped == {
+        "inject_skipping_bot_cookie": "localhost",
+        "inject_skipping_malformed_cookie": "localhost",
+    }
+    assert "secretpw" not in repr(events)
+
+
 def test_injecting_captured_cookies_gives_the_browser_the_host_that_set_them() -> None:
     from graftpunk.session import inject_cookies_to_nodriver
 

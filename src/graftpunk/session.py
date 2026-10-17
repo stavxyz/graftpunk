@@ -39,6 +39,7 @@ from graftpunk.chrome import get_chrome_version
 from graftpunk.cookies import (
     BrowserCookiesMixin,
     _browser_cookie_domain,
+    _without_userinfo,
     cookie_from_browser,
     importing_httpie,
 )
@@ -813,10 +814,14 @@ class BrowserSession(BrowserCookiesMixin, requestium.Session):
         # get_httpie_session has already read any existing file, so assigning
         # the jar here replaces that file's cookies with this session's.
         # Copies, so HTTPie's session never holds this session's Cookie objects;
-        # each keeps its domain, path, Secure flag and expiry (#260).
+        # each keeps its domain, path, Secure flag and expiry (#260). A cookie
+        # set through a "user:password@" URL is stored with the credentials in
+        # its domain, which the file must not hold.
         exported = requests.cookies.RequestsCookieJar()
         for cookie in self.cookies:
-            exported.set_cookie(copy.copy(cookie))
+            copied = copy.copy(cookie)
+            copied.domain = _without_userinfo(cookie.domain)
+            exported.set_cookie(copied)
         httpie_session.cookie_jar = exported
         httpie_session.post_process_data(httpie_session)
         httpie_session.save()
