@@ -180,8 +180,10 @@ class GraftpunkLogger:
     call goes through that configuration, as a logger from
     ``structlog.get_logger()`` would. While it is not, each call goes through a
     configuration graftpunk keeps to itself: stderr (devnull when
-    ``sys.stderr`` is None), WARNING and above. So graftpunk never writes a log
-    line to stdout (#163) and never configures structlog for the program.
+    ``sys.stderr`` is None), WARNING and above. So while structlog is
+    unconfigured graftpunk never writes a log line to stdout (#163), and it
+    never configures structlog for the program; once the program configures
+    structlog, graftpunk's lines go wherever that configuration sends them.
 
     ``bind()``, ``new()``, ``unbind()`` and ``try_unbind()`` return another
     ``GraftpunkLogger`` holding the new context, so a logger bound before the

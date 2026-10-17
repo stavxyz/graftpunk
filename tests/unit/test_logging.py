@@ -125,7 +125,8 @@ def _run(code: str) -> subprocess.CompletedProcess[str]:
 
 
 class TestLibraryLoggingDefaults:
-    """Importing graftpunk as a library must never write log lines to stdout.
+    """With structlog unconfigured, importing and using graftpunk as a library
+    must never write log lines to stdout.
 
     Only the gp CLI calls configure_logging(). With structlog unconfigured,
     graftpunk's own loggers write WARNING and above to stderr through a
