@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import types
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator
 from http import cookiejar
@@ -1103,6 +1104,127 @@ def test_a_cookie_a_server_sets_through_requests_goes_to_that_host_alone(
     # localhost.local is where the standard library files localhost's cookies.
     assert _cookie_header(session, "http://localhost.local/") is None
     assert session.get(f"http://127.0.0.1:{cookie_server}/echo", timeout=10).text == ""
+
+
+class _ForgingProxy(BaseHTTPRequestHandler):
+    """An HTTP proxy that answers every request itself, with a host-only cookie
+    whose graftpunk-host attribute names the host in the ``forge`` query."""
+
+    def do_GET(self) -> None:
+        forged = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)["forge"][0]
+        self.send_response(200)
+        self.send_header("Set-Cookie", f"h=1; Path=/; graftpunk-host={forged}")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+@pytest.fixture
+def forging_proxy() -> Iterator[int]:
+    yield from _serve(ThreadingHTTPServer(("127.0.0.1", 0), _ForgingProxy))
+
+
+def _forged_response(proxy: int, session: requests.Session, url: str, forged: str) -> Any:
+    session.trust_env = False
+    proxies = {"http": f"http://127.0.0.1:{proxy}"}
+    return session.get(f"{url}?forge={forged}", proxies=proxies, timeout=10)
+
+
+def _forged_from_response_cookies(proxy: int, url: str, forged: str) -> requests.Session:
+    # response.cookies always has the standard library's policy, which keeps
+    # an attribute it does not know; merging it is a plugin idiom.
+    response = _forged_response(proxy, requests.Session(), url, forged)
+    session = GraftpunkSession()
+    session.cookies.update(response.cookies)
+    return session
+
+
+def _forged_from_an_old_cache(proxy: int, url: str, forged: str) -> requests.Session:
+    # A session cached by 1.21.0 extracted its cookies under HTTPie's policy.
+    old = requests.Session()
+    old.cookies.set_policy(_httpie_policy())
+    _forged_response(proxy, old, url, forged)
+    key = Fernet.generate_key()
+    return cache.load_session_for_api_from_bytes(Fernet(key).encrypt(dill.dumps(old)), key=key)
+
+
+_FORGED_PATHS: dict[str, Callable[[int, str, str], requests.Session]] = {
+    "response.cookies": _forged_from_response_cookies,
+    "1.21.0 cache": _forged_from_an_old_cache,
+}
+
+
+def _injected_domains(jar: Any) -> list[str]:
+    from graftpunk.session import inject_cookies_to_nodriver
+
+    sent: list[dict[str, Any]] = []
+
+    class _Tab:
+        async def send(self, command: Any) -> None:
+            sent.extend(next(command)["params"]["cookies"])
+
+    asyncio.run(inject_cookies_to_nodriver(_Tab(), jar))
+    return [cookie["domain"] for cookie in sent]
+
+
+@pytest.mark.parametrize("path", sorted(_FORGED_PATHS))
+def test_a_graftpunk_host_a_server_sent_does_not_move_a_cookie_to_a_subdomain(
+    forging_proxy: int, path: str
+) -> None:
+    session = _FORGED_PATHS[path](forging_proxy, "http://example.com/", "sub.example.com")
+
+    assert [c.get_nonstandard_attr("graftpunk-host") for c in session.cookies] == [
+        "sub.example.com"
+    ]
+    assert _cookie_header(session, "http://example.com/") == "h=1"
+    assert _cookie_header(session, "http://sub.example.com/") is None
+
+
+@pytest.mark.parametrize("path", sorted(_FORGED_PATHS))
+def test_a_graftpunk_host_a_server_sent_names_neither_the_browsers_nor_the_caches_domain(
+    forging_proxy: int, path: str
+) -> None:
+    session = _FORGED_PATHS[path](forging_proxy, "http://evil.example/", "bank.example")
+
+    assert _injected_domains(session.cookies) == ["evil.example"]
+    metadata = cache._extract_session_metadata(session, "forged")
+    assert metadata["cookie_domains"] == ["evil.example"]
+    assert metadata["domain"] == "evil.example"
+
+
+def test_a_graftpunk_host_a_server_sent_can_pick_only_between_a_host_and_its_local_name(
+    forging_proxy: int,
+) -> None:
+    """Both are stored as printer.local, the ambiguity the attribute settles."""
+    session = _forged_from_response_cookies(forging_proxy, "http://printer/", "printer.local")
+
+    assert _cookie_header(session, "http://printer.local/") == "h=1"
+    assert _cookie_header(session, "http://printer/") is None
+
+
+def test_credentials_in_the_url_stay_out_of_the_recorded_host_and_the_domains_graftpunk_gives(
+    cookie_server: int,
+) -> None:
+    session = GraftpunkSession()
+    base = f"http://user:pw@localhost:{cookie_server}"
+    session.get(f"{base}/set", timeout=10)
+
+    # The standard library stores the domain with the credentials in it.
+    assert {c.domain for c in session.cookies} == {"user:pw@localhost.local"}
+    assert {c.get_nonstandard_attr("graftpunk-host") for c in session.cookies} == {"localhost"}
+    assert session.get(f"{base}/echo", timeout=10).text == "sec=1; plain=1"
+    assert _injected_domains(session.cookies) == ["localhost", "localhost"]
+    assert cache._extract_session_metadata(session, "creds")["cookie_domains"] == ["localhost"]
+
+    # Cookies a stock requests session extracted record no host.
+    stock = requests.Session()
+    stock.get(f"{base}/set", timeout=10)
+    unrecorded = GraftpunkSession()
+    unrecorded.cookies.update(stock.cookies)
+    assert _injected_domains(unrecorded.cookies) == ["localhost", "localhost"]
+    assert cache._extract_session_metadata(unrecorded, "c")["cookie_domains"] == ["localhost"]
 
 
 def test_the_public_names_are_the_ones_the_changelog_lists() -> None:

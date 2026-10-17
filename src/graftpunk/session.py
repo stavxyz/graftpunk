@@ -22,6 +22,7 @@ Example:
 
 import asyncio
 import copy
+from http import cookiejar
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -900,7 +901,9 @@ async def inject_cookies_to_nodriver(
             LOG.debug(
                 "inject_skipping_malformed_cookie",
                 name=cookie.name,
-                domain=getattr(cookie, "domain", None),
+                domain=_browser_cookie_domain(cookie)
+                if isinstance(cookie, cookiejar.Cookie)
+                else getattr(cookie, "domain", None),
             )
             skipped += 1
             continue
@@ -912,7 +915,7 @@ async def inject_cookies_to_nodriver(
             LOG.debug(
                 "inject_skipping_bot_cookie",
                 name=cookie.name,
-                domain=cookie.domain,
+                domain=_browser_cookie_domain(cookie),
             )
             skipped += 1
             continue
