@@ -83,17 +83,23 @@ def _reset_structlog():
     the test, CliRunner closes the file. We reset structlog to prevent stale
     references.
 
-    It also resets before each test: importing ``graftpunk.cli.main`` (which
-    test collection does) runs ``configure_logging()``, so without this the
-    first test on each xdist worker sees the CLI's configuration while every
-    later test sees an unconfigured structlog, and a test that reads log output
-    passes or fails by which worker ran it first. Unconfigured, graftpunk's own
-    loggers write WARNING and above to stderr (graftpunk.logging.get_logger).
+    It also resets before each test: importing ``graftpunk.cli.main`` runs
+    ``configure_logging()``, so without this the first test on each xdist
+    worker sees the CLI's configuration while every later test sees an
+    unconfigured structlog, and a test that reads log output passes or fails by
+    which worker ran it first. It imports ``graftpunk.cli.main`` before the
+    reset because collection does not always do so (a run of one test module
+    that never imports it), and the unit suite's ``_wide_consoles`` fixture,
+    which runs after this one, would otherwise import it inside the test.
+    Unconfigured, graftpunk's own loggers write WARNING and above to stderr
+    (graftpunk.logging.get_logger).
 
     Note: With cache_logger_on_first_use=False (our current setting), the
     bind-cache clearing loop below is no longer strictly necessary, but we
     keep it as defense-in-depth in case caching is re-enabled.
     """
+    import graftpunk.cli.main  # noqa: F401
+
     structlog.reset_defaults()
     yield
     structlog.reset_defaults()
