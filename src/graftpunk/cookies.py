@@ -47,6 +47,7 @@ __all__ = [
     "BrowserCookiePolicy",
     "BrowserCookieSession",
     "BrowserCookiesMixin",
+    "cookie_from_browser",
     "importing_httpie",
     "use_browser_cookie_policy",
 ]

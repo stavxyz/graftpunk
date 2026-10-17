@@ -963,3 +963,17 @@ def test_a_cached_sessions_cookie_domains_name_the_hosts_that_set_them() -> None
 
     assert metadata["cookie_domains"] == ["[::1]", "localhost"]
     assert metadata["domain"] == "[::1]"
+
+
+def test_the_public_names_are_the_ones_the_changelog_lists() -> None:
+    namespace: dict[str, Any] = {}
+    exec("from graftpunk.cookies import *", namespace)  # noqa: S102
+
+    assert sorted(name for name in namespace if name != "__builtins__") == [
+        "BrowserCookiePolicy",
+        "BrowserCookieSession",
+        "BrowserCookiesMixin",
+        "cookie_from_browser",
+        "importing_httpie",
+        "use_browser_cookie_policy",
+    ]
