@@ -6,7 +6,10 @@ attributes that decide where the browser sends it. The standard library's
 :class:`http.cookiejar.DefaultCookiePolicy` never sends a ``Secure`` cookie
 over plain HTTP, where Chrome sends one to a loopback origin, and sends a
 host-only cookie to subdomains, where RFC 6265 (section 5.4) sends it to its
-own host alone. Chrome was measured on the first rule, not the second.
+own host alone. Chrome 155 was measured on both on 2026-10-16; for the second,
+a host-only cookie set by ``http://site.localhost`` was sent to
+``site.localhost`` and not to ``sub.site.localhost``. ChromeDriver was not
+measured.
 :class:`BrowserCookiePolicy` changes those two rules, and
 :class:`BrowserCookiesMixin` makes a ``requests.Session`` subclass use its
 jar's policy for every request it sends, which stock ``requests`` does not
