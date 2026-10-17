@@ -134,7 +134,7 @@ _quiet_processors: dict[bool, list[Any]] = {}
 
 
 class _CurrentStderrLogger:
-    """structlog's PrintLogger, writing to whatever ``sys.stderr`` is at write time.
+    """A stand-in for structlog's PrintLogger that writes to ``sys.stderr`` as of each write.
 
     CliRunner, pytest and ``contextlib.redirect_stderr`` swap ``sys.stderr``,
     and pythonw sets it to None. A PrintLogger per stream would also register
