@@ -518,3 +518,42 @@ class TestQuietLoggerStream:
         assert "first_marker" in first.getvalue()
         assert "second_marker" not in first.getvalue()
         assert "second_marker" in second.getvalue()
+
+
+def _log_an_exception() -> None:
+    from graftpunk.logging import get_logger
+
+    try:
+        1 / 0  # noqa: B018
+    except ZeroDivisionError:
+        get_logger("t").exception("boom_marker")
+
+
+class TestExceptionRendering:
+    """``exception()`` renders the traceback in every format, with no structlog warning."""
+
+    @pytest.mark.parametrize("setup", ["unconfigured", "cli_console", "cli_json"])
+    def test_exception_renders_the_traceback(
+        self, setup: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import warnings
+
+        from graftpunk.logging import configure_logging
+
+        if setup != "unconfigured":
+            configure_logging(level="WARNING", json_output=setup == "cli_json")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _log_an_exception()
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        if setup == "cli_json":
+            line = json.loads(captured.err)
+            assert line["event"] == "boom_marker"
+            assert line["exception"].startswith("Traceback (most recent call last):")
+            assert "ZeroDivisionError: division by zero" in line["exception"]
+        else:
+            assert "boom_marker" in captured.err
+            assert "Traceback (most recent call last):" in captured.err
+            assert "ZeroDivisionError: division by zero" in captured.err
+            assert "\n    1 / 0" in captured.err

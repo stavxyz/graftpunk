@@ -63,10 +63,17 @@ def configured_by_consumer() -> bool:
 
 
 def _processors(json_output: bool, colors: bool) -> list[Any]:
-    renderer: Any = (
-        structlog.processors.JSONRenderer()
+    # ConsoleRenderer formats exc_info itself and warns when format_exc_info
+    # ran before it (structlog 21.2.0 and later), so only JSON output gets it.
+    # plain_traceback keeps the console traceback as format_exc_info wrote it.
+    tail: list[Any] = (
+        [structlog.processors.format_exc_info, structlog.processors.JSONRenderer()]
         if json_output
-        else structlog.dev.ConsoleRenderer(colors=colors)
+        else [
+            structlog.dev.ConsoleRenderer(
+                colors=colors, exception_formatter=structlog.dev.plain_traceback
+            )
+        ]
     )
     return [
         structlog.contextvars.merge_contextvars,
@@ -74,9 +81,8 @@ def _processors(json_output: bool, colors: bool) -> list[Any]:
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        renderer,
+        *tail,
     ]
 
 
