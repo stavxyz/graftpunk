@@ -307,9 +307,9 @@ class TestFindOrphans:
         assert find_orphans([proc], ops=FakeKernel({}, alive_pids=frozenset({4240})).ops) == []
 
     def test_the_matching_rule_is_logged_with_the_process(self) -> None:
-        # capture_logs() keeps the WARNING filter graftpunk installs at import,
-        # which would drop this INFO event before it is captured;
-        # reset_defaults() lifts it for the rest of this test. The autouse
+        # capture_logs() keeps a configured WARNING filter (configure_logging(),
+        # as the CLI installs it), which would drop this INFO event before it
+        # is captured; reset_defaults() lifts it for the rest of this test. The autouse
         # _reset_structlog fixture in tests/conftest.py resets structlog again
         # afterwards, so the next test starts from structlog's own defaults.
         structlog.reset_defaults()
@@ -386,7 +386,7 @@ class TestReapOrphans:
         )
 
         # The already-gone case logs at DEBUG, below the WARNING filter
-        # graftpunk installs at import; reset_defaults() lifts it for this test.
+        # configure_logging() installs; reset_defaults() lifts any such filter.
         structlog.reset_defaults()
         with capture_logs() as logs:
             reaped = reap_orphans(ops=kernel.ops)

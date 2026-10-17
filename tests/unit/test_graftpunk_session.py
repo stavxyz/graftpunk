@@ -341,7 +341,7 @@ class TestCanonicalFallback:
         req = requests.Request("GET", "https://example.com/page")
         prepared = session.prepare_request(req)
         captured = capsys.readouterr()
-        assert "unknown_role_no_headers_applied" in captured.out
+        assert "unknown_role_no_headers_applied" in captured.err
         # Browser identity still present from session defaults
         assert prepared.headers["User-Agent"] == "Mozilla/5.0 Test"
 
@@ -423,12 +423,12 @@ class TestWarnings:
         }
         GraftpunkSession(header_roles=roles)
         captured = capsys.readouterr()
-        assert "no_browser_identity_in_roles" in captured.out
+        assert "no_browser_identity_in_roles" in captured.err
 
     def test_empty_roles_does_not_warn(self, capsys):
         GraftpunkSession(header_roles={})
         captured = capsys.readouterr()
-        assert "no_browser_identity_in_roles" not in captured.out
+        assert "no_browser_identity_in_roles" not in captured.err
 
 
 class TestCaseInsensitiveGet:
@@ -534,7 +534,7 @@ class TestRoleHeadersFor:
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
         session._role_headers_for("nonexistent")
         captured = capsys.readouterr()
-        assert "unknown_role_no_headers_applied" in captured.out
+        assert "unknown_role_no_headers_applied" in captured.err
 
     def test_excludes_identity_headers(self):
         session = GraftpunkSession(header_roles=SAMPLE_ROLES)
@@ -897,7 +897,7 @@ class TestRoleRegistry:
         assert result is not None
         assert result["Accept"] == "application/json"
         captured = capsys.readouterr()
-        assert "role_overwritten" in captured.out
+        assert "role_overwritten" in captured.err
 
     @pytest.mark.usefixtures("_clean_registry")
     def test_register_role_appears_in_list(self):

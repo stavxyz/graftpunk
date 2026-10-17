@@ -1475,3 +1475,25 @@ class TestObserveNamesAreNotMarkup:
         result = runner.invoke(cli_main.app, ["observe", "show", "evil [bold]", "nope [/z]"])
         assert result.exit_code != 0
         assert "nope [/z]" in strip_ansi(result.output)
+
+
+def test_graftpunk_cli_app_is_imported_on_first_read() -> None:
+    """``graftpunk.cli`` lists ``app`` and imports ``graftpunk.cli.main`` only when it is read."""
+    import subprocess
+    import sys
+
+    script = (
+        "import sys\n"
+        "import graftpunk.cli\n"
+        "assert 'app' in dir(graftpunk.cli), dir(graftpunk.cli)\n"
+        "assert 'graftpunk.cli.main' not in sys.modules\n"
+        "app = graftpunk.cli.app\n"
+        "import graftpunk.cli.main\n"
+        "assert app is graftpunk.cli.main.app\n"
+        "from graftpunk.cli import app as again\n"
+        "assert again is app\n"
+    )
+    result = subprocess.run(  # noqa: S603 - argv is fixed, not untrusted input
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

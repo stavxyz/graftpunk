@@ -264,8 +264,8 @@ class TestPlainSessionHasNoRoles:
         `capsys` assertion on a specific stream flakes. `capture_logs()` is
         the pattern used elsewhere in this suite for the same reason (see
         `tests/unit/test_storage_local.py`, `test_nodriver_backend.py`,
-        `test_login_identity.py`). `reset_defaults()` first lifts the
-        library's import-time level filter, matching
+        `test_login_identity.py`). `reset_defaults()` first lifts any level
+        filter `configure_logging()` installed, matching
         `test_storage_local.py`'s precedent, even though this event is
         already at WARNING.
         """
